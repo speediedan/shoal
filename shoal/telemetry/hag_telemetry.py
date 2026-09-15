@@ -47,7 +47,10 @@ TYPES = {
 
 VALID_STATES = {"active", "waiting", "idle", "paused", "offline"}
 VALID_SUB = {"local-ci", "remote-ci", "user-auth", "user-design", "session-blocked",
-             "queue-empty", "monitor-armed"}
+             "queue-empty"}
+# NOTE (2026-09-15): `monitor-armed` was removed. Every real wait already has a precise
+# substate: CI waits (however watched) are local-ci/remote-ci with the watch named in the
+# `monitor` field; awaiting refill is queue-empty; awaiting a session is session-blocked.
 
 
 def _sha(path):
@@ -171,9 +174,19 @@ def report(args):
     print("\n## queue latencies (xeco)")
     for e in evs:
         if e.get("type") == "xeco_transition":
-            print(f"- {e['ts_utc']} {e.get('queue')}/{e.get('item','?')}: {e.get('event')}"
+            print(f"- {e['ts_utc']} {e.get('queue')}/{e.get('item','?')}"
+                  + (f":{e['kind']}" if e.get("kind") else "")
+                  + f": {e.get('event')}"
                   + (f" queue_latency_s={e['queue_latency_s']}" if "queue_latency_s" in e else "")
                   + (f" completion_latency_s={e['completion_latency_s']}" if "completion_latency_s" in e else ""))
+    print("\n## queue add/remove")
+    for e in evs:
+        if e.get("type") in ("queue_add", "queue_remove"):
+            print(f"- {e['ts_utc']} {e.get('type')} {e.get('queue')}/{e.get('issue','?')}"
+                  + (f":{e['kind']}" if e.get("kind") else "")
+                  + (f" repo={e['repo']}" if e.get("repo") else "")
+                  + (f" by={e.get('added_by') or e.get('removed_by') or '?'}" if (e.get('added_by') or e.get('removed_by')) else "")
+                  + (f" disposition={e['disposition']}" if e.get("disposition") else ""))
 
 
 def main():
