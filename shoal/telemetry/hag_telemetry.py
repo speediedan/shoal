@@ -36,6 +36,7 @@ SERVER = "speediedl"
 TYPES = {
     "session_transition": ["from_state", "to_state"],
     "coord_comms": ["direction"],
+    "watch_event": ["kind"],
     "queue_add": ["issue", "queue"],
     "queue_remove": ["issue", "queue", "disposition"],
     "issue_closed": ["issue", "repo"],
