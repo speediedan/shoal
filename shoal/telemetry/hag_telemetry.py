@@ -77,7 +77,14 @@ def run_pin():
     }
 
 
+def resolve_dir(d, hag):
+    if d:
+        return d
+    return os.path.join(REPO, ".agents/hags", hag, "telemetry")
+
+
 def emit(args):
+    logdir = resolve_dir(args.dir, args.hag)
     now = datetime.datetime.now(datetime.timezone.utc)
     pdt = now.astimezone(PDT).strftime("%H:%M:%S") if PDT else ""
     ev = {
@@ -96,9 +103,8 @@ def emit(args):
     for f in TYPES.get(args.type, []):
         ev.setdefault(f, "")
     day = now.strftime("%Y%m%d")
-    d = os.path.join(args.dir, args.hag)
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, f"events-{day}.jsonl"), "a") as fh:
+    os.makedirs(logdir, exist_ok=True)
+    with open(os.path.join(logdir, f"events-{day}.jsonl"), "a") as fh:
         fh.write(json.dumps(ev) + "\n")
     print(json.dumps(ev))
 
@@ -110,34 +116,39 @@ def _parse_ts(s):
 
 def load(logdir, hag, since, until):
     evs = []
-    d = os.path.join(logdir, hag)
-    if not os.path.isdir(d):
-        return evs
-    for fn in sorted(os.listdir(d)):
-        if not (fn.startswith("events-") and fn.endswith(".jsonl")):
+    dirs = [logdir]
+    legacy = os.path.join(logdir, hag)
+    if os.path.isdir(legacy) and legacy != logdir:
+        dirs.append(legacy)
+    for d in dirs:
+        if not os.path.isdir(d):
             continue
-        with open(os.path.join(d, fn)) as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    e = json.loads(line)
-                except Exception:
-                    continue
-                try:
-                    t = _parse_ts(e["ts_utc"])
-                except Exception:
-                    continue
-                if since and t < since:
-                    continue
-                if until and t > until:
-                    continue
-                evs.append(e)
+        for fn in sorted(os.listdir(d)):
+            if not (fn.startswith("events-") and fn.endswith(".jsonl")):
+                continue
+            with open(os.path.join(d, fn)) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        continue
+                    try:
+                        t = _parse_ts(e["ts_utc"])
+                    except Exception:
+                        continue
+                    if since and t < since:
+                        continue
+                    if until and t > until:
+                        continue
+                    evs.append(e)
     return sorted(evs, key=lambda e: e["ts_utc"])
 
 
 def report(args):
+    args.dir = resolve_dir(args.dir, args.hag)
     now = datetime.datetime.now(datetime.timezone.utc)
     if args.hours is not None:
         since = now - datetime.timedelta(hours=args.hours)
@@ -198,10 +209,10 @@ def main():
     e.add_argument("--ecosystem", required=True)
     e.add_argument("--type", required=True)
     e.add_argument("--field", action="append", default=[])
-    e.add_argument("--dir", default=os.path.join(REPO, "project_admin/interpretune/telemetry"))
+    e.add_argument("--dir", default=None)
     r = sub.add_parser("report")
     r.add_argument("--hag", required=True)
-    r.add_argument("--dir", default=os.path.join(REPO, "project_admin/interpretune/telemetry"))
+    r.add_argument("--dir", default=None)
     r.add_argument("--hours", type=float, default=None)
     r.add_argument("--since", default=None)
     r.add_argument("--until", default=None)

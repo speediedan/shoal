@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hag_telemetry import emit as _emit  # noqa: E402  (single-file reuse, no package)
+from hag_telemetry import emit as _emit, resolve_dir  # noqa: E402  (single-file reuse, no package)
 
 REPOS = ["speediedan/interpretune", "speediedan/it-interp-engine-adapter"]
 
@@ -32,10 +32,11 @@ class Args:
 
 def seen(logdir, hag):
     have = set()
-    d = os.path.join(logdir, hag)
-    if not os.path.isdir(d):
-        return have
-    for fn in sorted(os.listdir(d)):
+    dirs = [logdir, os.path.join(logdir, hag)]
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
         if not (fn.startswith("events-") and fn.endswith(".jsonl")):
             continue
         with open(os.path.join(d, fn)) as fh:
@@ -66,8 +67,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hag", required=True)
     ap.add_argument("--since-hours", type=float, default=24)
-    ap.add_argument("--dir", default="/home/speediedan/repos/distributed-insight/project_admin/interpretune/telemetry")
+    ap.add_argument("--dir", default=None)
     a = ap.parse_args()
+    a.dir = resolve_dir(a.dir, a.hag)
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=a.since_hours)
     have = seen(a.dir, a.hag)
     n = 0
