@@ -186,6 +186,12 @@ def report(args):
     print(f"\n## invalid states offered: {len(invalid)}")
     for e in invalid[:10]:
         print(f"- {e['ts_utc']} {e['session']}: {e.get('to_state')}/{e.get('to_sub')}")
+    auth_claims = [e for e in evs if e.get("type") == "session_transition"
+                   and e.get("to_state") == "waiting" and e.get("to_sub") == "user-auth"]
+    prompts = [e for e in evs if e.get("type") == "user_prompt"]
+    print(f"\n## unverified-auth check: {len(auth_claims)} user-auth claims vs {len(prompts)} prompt events")
+    if auth_claims and not prompts:
+        print("WARNING: auth waits claimed with no raised ask on record — treat as suspect idle, not verified wait")
     print("\n## queue latencies (xeco)")
     for e in evs:
         if e.get("type") == "xeco_transition":
