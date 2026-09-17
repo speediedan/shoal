@@ -81,6 +81,9 @@ def run_pin():
 def resolve_dir(d, hag):
     if d:
         return d
+    cache = os.path.join("/mnt/cache_extended/speediedan/hags", hag, "telemetry")
+    if os.path.isdir(cache):
+        return cache
     return os.path.join(REPO, ".agents/hags", hag, "telemetry")
 
 
