@@ -37,8 +37,9 @@ def extract_grants(doc: str) -> list[str]:
             continue
         item = b.group(1).strip()
         low = item.lower()
-        if re.match(r"none\b", low) or low.startswith("upcoming:"):
-            continue  # "None", "None pending", "None — ..." all mean no grant
+        if re.match(r"none\b", low) or low.startswith("upcoming:") \
+                or low.startswith("pre-authorized") or low.startswith("standing:"):
+            continue  # recorded, never asked: Nones, UPCOMING, PRE-AUTHORIZED, STANDING
         grants.append(item)
     return grants
 
