@@ -39,7 +39,7 @@ class Backend:
         raise NotImplementedError
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
-             dry_run: bool = False) -> None:
+             dry_run: bool = False, model: str = "") -> None:
         raise NotImplementedError
 
     def messages(self, session_id: str, repo_dir: str, limit: int = 20,
@@ -71,11 +71,15 @@ class OpenChamberBackend(Backend):
         return m.group(0)
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
-             dry_run: bool = False) -> None:
+             dry_run: bool = False, model: str = "") -> None:
         if dry_run:
             return
-        r = _run("openchamber", "session", "send", "--session", session_id,
-                 "--dir", repo_dir, "--prompt", prompt)
+        argv = ["openchamber", "session", "send", "--session", session_id,
+                "--dir", repo_dir, "--prompt", prompt]
+        if model:
+            argv += ["--model", model]
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=60,
+                           env=_ENV)
         if r.returncode != 0:
             raise RuntimeError(f"session send to {session_id} failed: "
                                f"{(r.stdout + r.stderr).strip()[-500:]}")

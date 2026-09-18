@@ -8,7 +8,10 @@ too — no third-party dependencies by design (cron-safe, no venv).
 
 Subcommands:
   start        mint a new HAG (id, dirs, hag.json, queue files), then restart
-               stages handoffs+restart into live sessions.
+               stages handoffs+restart into live sessions. Roles:
+               SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,model=M][,effort=E]
+               (DOC = the single plan_state.md start document; grants come
+               from its grants-needed section, never the CLI).
   restart      staged generation restart from --spec hag.json:
                handoffs, sync-plans, retire, restart. Every stage honors
                --dry-run independently. Non-opencode roles auto-launch by
@@ -49,6 +52,8 @@ from heartbeat import cmd_heartbeat, touch as hb_touch  # noqa: E402
 from queue_section import QueueReadError, read_queue  # noqa: E402
 from queue_watch import cmd_queue_watch  # noqa: E402
 from roles import HAG_ROOT, HagSpec, Role, default_spec_path  # noqa: E402
+from systemd import cmd_install as cmd_install_systemd  # noqa: E402
+from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
 from watchers import cmd_lanes, cmd_pipeline, cmd_queue  # noqa: E402
 
 ALL_STAGES = ("handoffs", "sync-plans", "retire", "restart")
@@ -59,26 +64,27 @@ def want(stages: str, name: str) -> bool:
 
 
 def parse_role(spec: str) -> Role:
-    """SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord][,model=<m>][,grant=<text>...]."""
+    """SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,model=M][,effort=E]. DOC is the
+    single plan_state.md start document. Grants come from the doc's
+    grants-needed section at brief time — never from the CLI."""
     parts = spec.split(",")
-    if len(parts) < 5:
-        raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,HANDOFF,PLAN[,...]): {spec!r}")
-    slug, eco, title, handoff, plan = parts[:5]
-    queue, coord, model, grants = "", False, "", []
-    for tok in parts[5:]:
+    if len(parts) < 4:
+        raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,DOC[,...]): {spec!r}")
+    slug, eco, title, doc = parts[:4]
+    queue, coord, model, effort = "", False, "", ""
+    for tok in parts[4:]:
         if tok == "coord":
             coord = True
         elif tok.startswith("model="):
             model = tok[len("model="):]
-        elif tok.startswith("grant="):
-            grants.append(tok[len("grant="):])
+        elif tok.startswith("effort="):
+            effort = tok[len("effort="):]
         elif not queue:
             queue = tok
         else:
             raise ValueError(f"bad --role token {tok!r} in {spec!r}")
-    return Role(slug=slug, ecosystem=eco, title=title, handoff=handoff,
-                plan=plan, queue=queue, coordinator=coord, model=model,
-                grants=grants)
+    return Role(slug=slug, ecosystem=eco, title=title, doc=doc,
+                queue=queue, coordinator=coord, model=model, effort=effort)
 
 
 def load_spec(args: argparse.Namespace) -> HagSpec:
@@ -98,36 +104,49 @@ def load_spec(args: argparse.Namespace) -> HagSpec:
 # ---- stages ---------------------------------------------------------------
 
 def stage_handoffs(spec: HagSpec, dry_run: bool) -> int:
-    print("=== 0a. handoffs (template-seeded, sessions fill them)")
-    print("handoffs live in each goal's handoffs/ dir; this stage verifies presence + metadata headers:")
+    print("=== 0a. start docs (one plan_state.md per role; sessions keep them current)")
+    print("each role's doc verifies: presence + plan header:")
     rc = 0
     for role in spec.roles:
         if dry_run:
-            print(f"[dry-run] verify {role.handoff} (role, queue, base, blockers, grants, metadata header)")
+            print(f"[dry-run] verify {role.doc} (mission, current state, grants-needed, next)")
             continue
         try:
-            text = open(role.handoff).read()
+            text = open(role.doc).read()
         except OSError:
-            print(f"MISSING: {role.handoff} ({role.slug} must write it before restart)")
+            print(f"MISSING: {role.doc} ({role.slug} has no start doc)")
             rc = 5
             continue
-        if re.search(r"^- handing-off-model:|^# Handoff", text, flags=re.M):
-            print(f"ok: {role.handoff}")
+        if re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan state)",
+                     text, flags=re.M | re.I):
+            print(f"ok: {role.doc}")
         else:
-            print(f"INCOMPLETE: {role.handoff} (metadata header missing)")
+            print(f"INCOMPLETE: {role.doc} (no plan header)")
             rc = 5
     return rc
 
 
 def stage_sync_plans(spec: HagSpec, dry_run: bool) -> int:
-    print("=== 0b. sync-plans (only where orchestration-standard plan_state docs exist)")
+    print("=== 0b. start-doc sections (grants-needed + current state present)")
+    rc = 0
     for role in spec.roles:
-        if role.plan.endswith(("_coordination.md", "_plan_state.md")):
-            print(f"plan doc in scope: {role.plan} (sessions instructed separately to sync;"
-                  " verify mtimes moved before restart)")
+        if dry_run:
+            print(f"[dry-run] sections in {role.doc}")
+            continue
+        try:
+            text = open(role.doc).read().lower()
+        except OSError:
+            print(f"MISSING: {role.doc}")
+            rc = 5
+            continue
+        missing = [s for s in ("grants-needed", "current state")
+                   if s not in text]
+        if missing:
+            print(f"INCOMPLETE: {role.doc} (missing: {', '.join(missing)})")
+            rc = 5
         else:
-            print(f"skip (no orchestration-standard plan): {role.plan or '(none)'}")
-    return 0
+            print(f"ok: {role.doc}")
+    return rc
 
 
 def stage_retire(spec: HagSpec, old_sessions: list[str],
@@ -173,7 +192,8 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
             coord_id = be_oc.create(f"{coord.title}-{spec.gen}", spec.dir)
             coord.session = coord_id
             print(f"coordinator: {coord_id}")
-            be_oc.send(coord_id, spec.dir, brief_for(coord, spec))
+            be_oc.send(coord_id, spec.dir, brief_for(coord, spec),
+            model=coord.model)
     print("=== 2. lanes/roles")
     for role in spec.roles:
         if role.coordinator:
@@ -191,7 +211,8 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
             else:
                 role.session = be.create(f"{role.title}-{spec.gen}", spec.dir)
                 print(f"lane {tag}: {role.session}")
-                be.send(role.session, spec.dir, brief_for(role, spec, coord_id))
+                be.send(role.session, spec.dir, brief_for(role, spec, coord_id),
+                model=role.model)
         else:
             # Non-opencode ecosystem: default is auto-launch (no manual step).
             text = brief_for(role, spec, coord_id)
@@ -398,7 +419,7 @@ def cmd_status(spec: HagSpec) -> int:
         from heartbeat import age_min, hb_path
         age = age_min(hb_path(spec.hag, r.slug))
         parts.append(f"hb={'never' if age is None else f'{age:.0f}m ago'}")
-        parts.append(f"handoff={'ok' if r.handoff and os.path.exists(r.handoff) else 'MISSING'}")
+        parts.append(f"doc={'ok' if r.doc and os.path.exists(r.doc) else 'MISSING'}")
         if r.queue and os.path.exists(r.queue):
             try:
                 h, ids = read_queue(r.queue)
@@ -480,8 +501,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--spec", required=True)
     p.set_defaults(func=lambda a: cmd_status(HagSpec.load(a.spec)))
 
+    p = sub.add_parser("install-systemd",
+                       help="write systemd --user watcher units for a live HAG")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--coord-id", default="")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_install_cli)
+
+    p = sub.add_parser("uninstall-systemd",
+                       help="disable + remove a retired HAG's watcher units")
+    p.add_argument("--hag", required=True)
+    p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.hag))
+
     args = ap.parse_args(argv)
     return args.func(args)
+
+
+def cmd_install_cli(a: argparse.Namespace) -> int:
+    try:
+        spec = HagSpec.load(a.spec)
+    except OSError as exc:
+        print(f"cannot read spec {a.spec}: {exc}")
+        return 1
+    coord_id = a.coord_id
+    if not coord_id and spec.coordinator:
+        coord_id = spec.coordinator.session
+    return cmd_install_systemd(spec, os.path.abspath(a.spec), coord_id,
+                               dry_run=a.dry_run)
 
 
 def cmd_watch(a: argparse.Namespace) -> int:

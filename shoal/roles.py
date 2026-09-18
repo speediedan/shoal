@@ -26,16 +26,17 @@ class Role:
     slug: str
     ecosystem: str = "opencode"  # opencode | claude | codex
     title: str = ""              # session title stem (generation suffix appended)
-    handoff: str = ""            # absolute path to lane handoff
-    plan: str = ""               # absolute path to plan_state doc (may be "")
+    doc: str = ""                # absolute path to THE start document (plan_state.md;
+        # mission + current state + grants-needed + next). One doc per role;
+        # handoffs/ dirs hold the immutable restart record, never the start doc.
     queue: str = ""              # absolute queue file (consumer roles)
     coordinator: bool = False    # exactly one role carries this pre-flattening
     session: str = ""            # live session id once started
-    model: str = ""              # ecosystem model override ("" = harness default)
-    grants: list[str] = dataclasses.field(default_factory=list)  # grants-needed:
-        # authorizations the new session must request first-person, all in ONE
-        # direct question to the maintainer, before starting work. The grants
-        # ask is the only sanctioned interactive step of start/restart.
+    model: str = ""              # native model id ("" = harness default)
+    effort: str = ""             # agent-neutral pace/depth knob ("" = default);
+        # honored natively where the harness supports it, briefed otherwise.
+    grants: list[str] = dataclasses.field(default_factory=list)  # extracted
+        # from the doc's grants-needed section at brief time, never CLI.
 
     def validate(self) -> list[str]:
         errs = []
@@ -45,8 +46,8 @@ class Role:
             errs.append(f"role {self.slug}: unknown ecosystem {self.ecosystem!r}")
         if not self.title:
             errs.append(f"role {self.slug}: missing title stem")
-        if not self.handoff:
-            errs.append(f"role {self.slug}: missing handoff path")
+        if not self.doc:
+            errs.append(f"role {self.slug}: missing start doc (plan_state.md)")
         return errs
 
 
