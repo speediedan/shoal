@@ -73,7 +73,11 @@ def run_pin():
     return {
         "instructions_sha": _sha(".agents/instructions/shared-orchestration-instructions.md"),
         "runbook_sha": _sha(".agents/agent_coordination_runbook.md"),
-        "scripts_sha": _sha("project_admin/shared_admin_scripts/hag/watch-coordination.sh"),
+        "scripts_sha": "+".join(
+            _sha(f"project_admin/shared_admin_scripts/hag/{f}")[:12]
+            for f in ("hag.py", "roles.py", "backends.py", "briefs.py",
+                      "watchers.py", "queue_watch.py", "heartbeat.py",
+                      "queue_section.py")),
         "schema_v": SCHEMA_V,
     }
 

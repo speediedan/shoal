@@ -37,18 +37,18 @@ def seen(logdir, hag):
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
-        if not (fn.startswith("events-") and fn.endswith(".jsonl")):
-            continue
-        with open(os.path.join(d, fn)) as fh:
-            for line in fh:
-                try:
-                    e = json.loads(line)
-                except Exception:
-                    continue
-                key = e.get("type"), str(e.get("issue") or e.get("pr") or "")
-                if key[1]:
-                    have.add(key)
-    return have
+            if not (fn.startswith("events-") and fn.endswith(".jsonl")):
+                continue
+            with open(os.path.join(d, fn)) as fh:
+                for line in fh:
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        continue
+                    key = e.get("type"), str(e.get("issue") or e.get("pr") or "")
+                    if key[1]:
+                        have.add(key)
+        return have
 
 
 def gh(*a):

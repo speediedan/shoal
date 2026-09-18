@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Session backends: one interface per agent ecosystem.
+
+- OpenChamberBackend (opencode sessions): fully scripted create/send/status.
+- ClaudeBackend (claude sessions): brief generation + explicit operator launch.
+  A Claude session CANNOT be created headless — it needs an interactive
+  terminal on the native `claude` binary, and subscription models must never
+  be routed through opencode. So restart never silently skips a consumer:
+  it writes the brief file (built from the lane plan_state + queue paths)
+  and either launches `claude "<brief>"` when a TTY is present or prints the
+  exact launch command and records the consumer as PENDING until the operator
+  confirms with --consumer-launched. "Needs no prompt" after a HAG restart
+  is therefore a spec violation by construction, not a judgment call.
+- CodexBackend: stub. Accepts the role shape, raises NotSupported on every
+  operation, so adding the real transport later touches this file only.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+
+TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
+             "/home/speediedan/.bun/bin:/usr/bin:/bin")
+
+_ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+
+
+class UnsupportedError(RuntimeError):
+    pass
+
+
+class Backend:
+    ecosystem = "?"
+
+    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+        raise NotImplementedError
+
+    def send(self, session_id: str, repo_dir: str, prompt: str,
+             dry_run: bool = False) -> None:
+        raise NotImplementedError
+
+    def messages(self, session_id: str, repo_dir: str, limit: int = 20,
+                 role: str = "") -> str:
+        raise NotImplementedError
+
+    def status(self, session_id: str, repo_dir: str) -> str:
+        raise NotImplementedError
+
+
+def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(list(argv), capture_output=True, text=True,
+                          timeout=timeout, env=_ENV)
+
+
+class OpenChamberBackend(Backend):
+    ecosystem = "opencode"
+
+    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+        if dry_run:
+            return "ses_DRYRUN_" + re.sub(r"\W+", "_", title)
+        r = _run("openchamber", "session", "create", "--dir", repo_dir,
+                 "--title", title)
+        m = re.search(r"ses_[A-Za-z0-9]+", r.stdout + r.stderr)
+        if not m:
+            raise RuntimeError(f"session create failed for {title!r}: "
+                               f"{(r.stdout + r.stderr).strip()[-500:]}")
+        return m.group(0)
+
+    def send(self, session_id: str, repo_dir: str, prompt: str,
+             dry_run: bool = False) -> None:
+        if dry_run:
+            return
+        r = _run("openchamber", "session", "send", "--session", session_id,
+                 "--dir", repo_dir, "--prompt", prompt)
+        if r.returncode != 0:
+            raise RuntimeError(f"session send to {session_id} failed: "
+                               f"{(r.stdout + r.stderr).strip()[-500:]}")
+
+    def messages(self, session_id: str, repo_dir: str, limit: int = 20,
+                 role: str = "") -> str:
+        argv = ["openchamber", "session", "messages", "--session", session_id,
+                "--dir", repo_dir, "--limit", str(limit)]
+        if role:
+            argv += ["--role", role]
+        return _run(*argv).stdout
+
+    def status(self, session_id: str, repo_dir: str) -> str:
+        r = _run("openchamber", "session", "status", "--session", session_id,
+                 "--dir", repo_dir)
+        return (r.stdout + r.stderr).strip().splitlines()[0] \
+            if (r.stdout + r.stderr).strip() else ""
+
+
+class ClaudeBackend(Backend):
+    """Native `claude` binary. No headless create, no headless send."""
+    ecosystem = "claude"
+
+    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+        raise UnsupportedError(
+            "claude sessions need an interactive terminal: run the printed "
+            "`claude \"<brief>\"` launch command by hand, then pass "
+            "--consumer-launched <slug>:<session-or-transcript-id>")
+
+    def send(self, session_id: str, repo_dir: str, prompt: str,
+             dry_run: bool = False) -> None:
+        raise UnsupportedError(
+            "no headless send into a live claude session: paste the prompt "
+            "into the session by hand (socket-post framing is unproven).")
+
+    def messages(self, session_id: str, repo_dir: str, limit: int = 20,
+                 role: str = "") -> str:
+        raise UnsupportedError("claude transcripts are read in-session, "
+                               "not from this host.")
+
+    def status(self, session_id: str, repo_dir: str) -> str:
+        raise UnsupportedError("claude liveness is observed via STATUS "
+                               "section updates + heartbeats, not probed.")
+
+    @staticmethod
+    def launch_command(brief_file: str) -> str:
+        b = shutil.which("claude") or "claude"
+        return f'{b} "$(cat {brief_file})"'
+
+    @staticmethod
+    def probe_sockets() -> str:
+        import glob
+        uid = os.getuid()
+        socks = glob.glob(f"/run/user/{uid}/cc-socks/*")
+        return f"{len(socks)} socket(s) in /run/user/{uid}/cc-socks/"
+
+    @staticmethod
+    def probe_turn(model: str = "claude-haiku-4-5-20251001") -> str:
+        b = shutil.which("claude") or "claude"
+        r = subprocess.run(
+            [b, "-p", "Reply with exactly: HAG-PROBE-OK (connectivity probe, "
+                      "no action)", "--model", model, "--output-format", "text"],
+            capture_output=True, text=True, timeout=300, env=_ENV)
+        return (r.stdout + r.stderr).strip()[-200:]
+
+
+class CodexBackend(Backend):
+    """Placeholder for a future `codex` CLI transport."""
+    ecosystem = "codex"
+
+    def _no(self, op: str) -> UnsupportedError:
+        return UnsupportedError(
+            f"codex backend not implemented (op={op}): implement the transport "
+            "in backends.py CodexBackend; roles/specs need no changes.")
+
+    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+        raise self._no("create")
+
+    def send(self, session_id: str, repo_dir: str, prompt: str,
+             dry_run: bool = False) -> None:
+        raise self._no("send")
+
+    def messages(self, session_id: str, repo_dir: str, limit: int = 20,
+                 role: str = "") -> str:
+        raise self._no("messages")
+
+    def status(self, session_id: str, repo_dir: str) -> str:
+        raise self._no("status")
+
+
+def get(ecosystem: str) -> Backend:
+    return {"opencode": OpenChamberBackend(), "claude": ClaudeBackend(),
+            "codex": CodexBackend()}[ecosystem]
