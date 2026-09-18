@@ -64,6 +64,17 @@ def state_dir(hag: str) -> str:
     return d
 
 
+def tick(hag: str, job: str) -> None:
+    """Self-tick: /tmp/<hag>/tick-<job>. A watcher that never runs must read
+    as dead from `status`/`doctor`; the mtime is the evidence."""
+    p = os.path.join(state_dir(hag), f"tick-{job}")
+    try:
+        with open(p, "a"):
+            os.utime(p, None)
+    except OSError:
+        pass
+
+
 def log(sdir: str, msg: str) -> None:
     line = f"{utcnow()} {msg}"
     print(line)
@@ -74,10 +85,18 @@ def log(sdir: str, msg: str) -> None:
         pass
 
 
-def fire(target: str, repo_dir: str, tag: str, summary: str) -> None:
-    subprocess.run(["openchamber", "session", "send", "--session", target,
-                    "--dir", repo_dir, "--prompt", f"{tag}: {summary}"],
-                   capture_output=True, timeout=60, env=_ENV)
+def fire(target: str, repo_dir: str, tag: str, summary: str) -> bool:
+    """Session send; returns False (and logs) when dispatch fails. Send
+    confirmation is the only delivery signal — a failed send must never be
+    logged as a fire."""
+    r = subprocess.run(["openchamber", "session", "send", "--session", target,
+                        "--dir", repo_dir, "--prompt", f"{tag}: {summary}"],
+                       capture_output=True, text=True, timeout=60, env=_ENV)
+    if r.returncode != 0:
+        print(f"{utcnow()} ERROR: {tag} send to {target} failed rc={r.returncode}: "
+              f"{(r.stdout + r.stderr).strip()[-200:]}")
+        return False
+    return True
 
 
 def health(sdir: str) -> None:
@@ -110,6 +129,7 @@ def status_snapshot(queue_file: str) -> str:
 def cmd_queue(hag: str, queue_file: str, target: str, repo_dir: str,
               test: bool = False) -> int:
     sdir = state_dir(hag)
+    tick(hag, "queue")
     health(sdir)
     if not os.path.isfile(queue_file):
         log(sdir, f"ERROR: queue file {queue_file} missing.")
@@ -173,6 +193,7 @@ def server_pid() -> str:
 def cmd_lanes(hag: str, target: str, repo_dir: str, lanes: list[str],
               test: bool = False) -> int:
     sdir = state_dir(hag)
+    tick(hag, "lanes")
     health(sdir)
     if not lanes:
         print("at least one lane session id required.", file=sys.stderr)
@@ -226,6 +247,7 @@ def cmd_lanes(hag: str, target: str, repo_dir: str, lanes: list[str],
 def cmd_pipeline(hag: str, target: str, repo_dir: str, org: str,
                  proj: str) -> int:
     sdir = state_dir(hag)
+    tick(hag, "pipeline")
     health(sdir)
     env = dict(_ENV)
     if not env.get("AZURE_DEVOPS_EXT_PAT"):

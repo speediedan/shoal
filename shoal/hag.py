@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
-"""hag.py — scripted HAG management (start + generation restart + watchers).
-
-Replaces hag-restart.sh / watch-coordination.sh / hag_queue_watch.sh with one
-CLI over a role/spec model (roles.py) and per-ecosystem backends (backends.py).
-Runbook §1. Telemetry lives in telemetry/ (stdlib); this CLI is stdlib-only
-too — no third-party dependencies by design (cron-safe, no venv).
+"""hag.py — scripted HAG management (start, generation restart, watchers,
+state, health, reports). Stdlib only by design (systemd-safe, no venv).
+Runbook §1 has the operator sequence; the readme is the human map.
 
 Subcommands:
-  start        mint a new HAG (id, dirs, hag.json, queue files), then restart
-               stages handoffs+restart into live sessions. Roles:
-               SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,model=M][,effort=E]
-               (DOC = the single plan_state.md start document; grants come
-               from its grants-needed section, never the CLI).
-  restart      staged generation restart from --spec hag.json:
-               handoffs, sync-plans, retire, restart. Every stage honors
-               --dry-run independently. Non-opencode roles auto-launch by
-               default (claude --bg); --consumer-launched records an
-               already-live session, --defer-consumers writes briefs only.
-  watch        coordinator-side watchers: queue | lanes | pipeline (cron).
-  queue-watch  consumer QUEUE self-watch (background, exits on unseen items).
-  heartbeat    stall daemon over /tmp/<hag>/hb-<slug> ticks (cron */5).
-  brief        print/write one role's first prompt (restart uses this).
-  status       restart preconditions at a glance: session state, hb age,
-               handoff presence, queue counts.
+  doctor        preflight (host) + live health (with --spec). Read-only.
+  start         mint a new HAG (id, dirs, hag.json, queue files), launch its
+                first generation, save live ids + generation record back,
+                verify loops. Roles: SLUG,ECO,TITLE,DOC[,QUEUE][,coord]
+                [,model=M][,effort=E] (DOC = the single plan_state.md;
+                grants come from its grants-needed section, never the CLI).
+  restart       staged generation restart from --spec hag.json: handoffs,
+                sync-plans, retire, restart. Every stage honors --dry-run.
+                Non-opencode roles auto-launch (claude --bg) unless
+                --consumer-launched SLUG:ID or --defer-consumers.
+  retire        close the current generation (ended_utc), mark the spec
+                retired, optionally uninstall its watcher units. Deletes no
+                session (retire-by-neglect stands).
+  transition    THE session-side state primitive: heartbeat + wait proof +
+                telemetry in one command (state.py).
+  status        one line per role: session state, heartbeat/wait posture,
+                doc, queue; plus watcher ticks and timers.
+  lint-queues   queue-file linter + commit ownership gate (pre-commit).
+  report        per-incarnation report, md (versioned) + html (bulk).
+  watch         coordinator-side watchers: queue | lanes | pipeline (timers).
+  queue-watch   consumer QUEUE self-watch (background, exits on unseen items).
+  heartbeat     stall daemon over /tmp/<hag>/hb-* + wait-* (timer */5).
+  brief         print/write one role's first prompt (restart uses this).
+  install-systemd / uninstall-systemd   watcher units per HAG generation.
 
 Flattening (proposal 5.k): pass --no-coordinator (or a spec with no
 coordinator role) — coordinator creation, registry delivery, and the
@@ -44,17 +49,30 @@ import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "telemetry"))
 
 from backends import ClaudeBackend, UnsupportedError, get as get_backend  # noqa: E402
 from briefs import brief_for  # noqa: E402
-from heartbeat import cmd_heartbeat, touch as hb_touch  # noqa: E402
+from heartbeat import age_min, cmd_heartbeat, hb_path, touch as hb_touch  # noqa: E402
 from queue_section import QueueReadError, read_queue  # noqa: E402
 from queue_watch import cmd_queue_watch  # noqa: E402
-from roles import HAG_ROOT, HagSpec, Role, default_spec_path  # noqa: E402
+from roles import (HAG_DATA_ROOT, HAG_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
+                   state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
-from watchers import cmd_lanes, cmd_pipeline, cmd_queue  # noqa: E402
+from watchers import cmd_lanes, cmd_pipeline, cmd_queue, hag_emit  # noqa: E402
+import doctor as _doctor  # noqa: E402
+import lint as _lint  # noqa: E402
+import state as _state  # noqa: E402
+import hag_report as _report  # noqa: E402
+
+try:
+    from hag_telemetry import run_pin  # noqa: E402
+except Exception:  # pragma: no cover
+    def run_pin():
+        return {}
 
 ALL_STAGES = ("handoffs", "sync-plans", "retire", "restart")
 
@@ -98,7 +116,6 @@ def load_spec(args: argparse.Namespace) -> HagSpec:
         for r in spec.roles:
             r.coordinator = False
     return spec
-    return build_legacy(args)
 
 
 # ---- stages ---------------------------------------------------------------
@@ -117,7 +134,7 @@ def stage_handoffs(spec: HagSpec, dry_run: bool) -> int:
             print(f"MISSING: {role.doc} ({role.slug} has no start doc)")
             rc = 5
             continue
-        if re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan state)",
+        if re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan state|plan state)",
                      text, flags=re.M | re.I):
             print(f"ok: {role.doc}")
         else:
@@ -174,9 +191,36 @@ def write_brief(spec: HagSpec, role: Role, coord_id: str = "") -> str:
     return path
 
 
+def verify_consumer(spec: HagSpec, role: Role, cap_s: int = 600) -> bool:
+    """Effect-verification for a launched non-opencode consumer: its sidecar
+    appears (bound to a session id) or its heartbeat ticks within the cap."""
+    sidecar = os.path.join(state_dir(spec.hag), f"hag-watch-{spec.hag}-{role.slug}.state")
+    hb = hb_path(spec.hag, role.slug)
+    t0 = time.time()
+    while time.time() - t0 < cap_s:
+        if os.path.exists(sidecar):
+            sid = ""
+            for line in open(sidecar):
+                if line.startswith("session_id="):
+                    sid = line.split("=", 1)[1].strip()
+            print(f"CONSUMER LOOP ALIVE: {role.slug} sidecar bound to {sid or '(no id yet)'}")
+            if sid and role.session and not (sid.startswith(role.session) or role.session.startswith(sid)):
+                print(f"  note: sidecar session {sid} != launched id {role.session} (adopting sidecar id)")
+                role.session = sid
+            return True
+        a = age_min(hb)
+        if a is not None and a * 60 < time.time() - t0 + 60:
+            print(f"CONSUMER LOOP ALIVE: {role.slug} heartbeat ticked ({a:.0f}m ago)")
+            return True
+        time.sleep(30)
+    print(f"CONSUMER LOOP INCOMPLETE: {role.slug} showed no sidecar/heartbeat in {cap_s // 60} min "
+          "— check `claude logs <id>`; grants ask may be pending in-session")
+    return False
+
+
 def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, str],
                   defer_consumers: bool, probe_claude: bool,
-                  dry_run: bool) -> int:
+                  dry_run: bool, verify_consumers: bool = True) -> int:
     coord = None if spec.flattened else spec.coordinator
     if spec.flattened:
         print("=== flattened mode: no coordinator (registry/loop-test skipped, shared-channel briefs)")
@@ -192,9 +236,9 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
             coord_id = be_oc.create(f"{coord.title}-{spec.gen}", spec.dir)
             coord.session = coord_id
             print(f"coordinator: {coord_id}")
-            be_oc.send(coord_id, spec.dir, brief_for(coord, spec),
-            model=coord.model)
+            be_oc.send(coord_id, spec.dir, brief_for(coord, spec), model=coord.model)
     print("=== 2. lanes/roles")
+    consumers_launched: list[Role] = []
     for role in spec.roles:
         if role.coordinator:
             continue
@@ -212,17 +256,19 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
                 role.session = be.create(f"{role.title}-{spec.gen}", spec.dir)
                 print(f"lane {tag}: {role.session}")
                 be.send(role.session, spec.dir, brief_for(role, spec, coord_id),
-                model=role.model)
+                        model=role.model)
         else:
-            # Non-opencode ecosystem: default is auto-launch (no manual step).
             text = brief_for(role, spec, coord_id)
             print(f"consumer {tag}: brief -> {brief_path}")
             if role.slug in launched:
                 role.session = launched[role.slug]
                 print(f"  recorded live as {role.session} (--consumer-launched)")
-            elif defer_consumers or dry_run:
-                print(f"  {'[dry-run] ' if dry_run else ''}DEFERRED "
-                      f"(--defer-consumers): launch by hand when ready.")
+            elif defer_consumers:
+                print("  DEFERRED (--defer-consumers): launch by hand when ready.")
+            elif dry_run:
+                print(f"  [dry-run] would auto-launch via {be.ecosystem} backend "
+                      f"(claude --bg -n {role.slug}-{spec.gen}) and verify sidecar/heartbeat")
+                role.session = f"cc_DRYRUN_{role.slug}"
             else:
                 try:
                     role.session = be.create(
@@ -233,6 +279,13 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
                     print(f"  FAIL: auto-launch failed: {exc}")
                     return 4
                 print(f"  launched: {role.session} (backend: {be.ecosystem})")
+                consumers_launched.append(role)
+    if not dry_run:
+        spec.record_generation(run_pin())
+        hag_emit(spec.hag, coord_id or "hag.py", "script", "generation",
+                 event="started", gen=spec.gen,
+                 note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session))
+    rc = 0
     if coord and not spec.flattened:
         print("=== 3. registry + loop test (coordinator-executed)")
         reg = (f"REGISTRY ({spec.gen}, direct-relay): "
@@ -262,23 +315,32 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
                 msgs = be_oc.messages(coord_id, spec.dir, limit=20, role="user")
                 n = len(re.findall(r"ack-1", msgs))
                 print(f"LOOP TEST INCOMPLETE: {n}/{nlanes} ack-1s — investigate before steady-state")
-                return 3
+                rc = 3
     print("=== 5. claude/codex consumers")
     print(f"  sockets (no turn): {ClaudeBackend.probe_sockets()}")
     if probe_claude and not dry_run:
         print("  probe turn:", ClaudeBackend.probe_turn()[:200])
-    print("DONE. Old generation retires by neglect;"
-          " new spec sessions recorded in hag.json (save it with --save-spec).")
-    return 0
+    if consumers_launched and verify_consumers and not dry_run:
+        print("  effect-verification (sidecar or heartbeat within 10 min):")
+        for role in consumers_launched:
+            if not verify_consumer(spec, role):
+                rc = rc or 3
+        spec.record_generation()
+    print("DONE. Old generation retires by neglect; live session ids + generation record saved to the spec.")
+    return rc
 
 
 # ---- start ----------------------------------------------------------------
 
 QUEUE_TEMPLATE = """# QUEUE + STATUS: {slug} (HAG {hag})
 
+Ownership: QUEUE coordinator-only, STATUS consumer-only; one section per commit.
+Completion is verified against GitHub, never against STATUS claims.
+Lint: `hag.py lint-queues --file <this file>`.
+
 ## QUEUE (coordinator-owned; consumer: read-only)
 
-(empty — coordinator seeds top-down with bases)
+(empty — coordinator seeds top-down with bases; items as `N. **repo#n:verb** (base repo@sha): ...`)
 
 ## STATUS (consumer-owned; coordinator: read-only)
 
@@ -307,9 +369,13 @@ def adopt_status(old_queue: str, ts: str) -> str:
     return (last_done or " none (fresh HAG)") + base + f"\n- predecessor: {old_queue}"
 
 
+def mint_hag_id(name: str) -> str:
+    """<name>-YYYYMMDD-HHMMSS in the LOCAL timezone of creation (readme §1)."""
+    return f"{name}-{datetime.datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
+
+
 def cmd_start(args: argparse.Namespace) -> int:
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    hag = f"{args.name}-{ts}"
+    hag = mint_hag_id(args.name)
     hagdir = os.path.join(HAG_ROOT, hag)
     roles = [parse_role(r) for r in args.role]
     if not any(r.coordinator for r in roles) and not args.no_coordinator:
@@ -321,7 +387,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     if args.no_coordinator:
         for r in roles:
             r.coordinator = False
-    spec = HagSpec(hag=hag, dir=args.dir, gen="r1", roles=roles)
+    spec = HagSpec(hag=hag, dir=args.dir, gen="r1", roles=roles,
+                   repos=list(args.repo or []))
     errs = spec.validate()
     if errs:
         print("spec invalid:", *errs, sep="\n  ")
@@ -331,33 +398,52 @@ def cmd_start(args: argparse.Namespace) -> int:
             continue
         r.queue = os.path.join(hagdir, "queues", f"{r.slug}.md")
     if args.dry_run:
-        print(f"[dry-run] new HAG {hag} at {hagdir}")
+        print(f"[dry-run] new HAG {hag} at {hagdir} (data: {os.path.join(HAG_DATA_ROOT, hag)})")
         print(f"[dry-run] spec: {spec.to_dict()}")
         if args.adopt_queue:
             print(f"[dry-run] adopt last-done + base from {args.adopt_queue}")
         rc = stage_handoffs(spec, True) or stage_sync_plans(spec, True)
+        rc = stage_restart(spec, [], {}, args.defer_consumers, False, True) or rc
+        print("[dry-run] would save spec with live ids, then: install-systemd"
+              + (" --enable" if args.enable_watchers else " (run with --enable when ready)"))
         return rc
     os.makedirs(os.path.join(hagdir, "queues"), exist_ok=True)
-    os.makedirs(os.path.join(hagdir, "telemetry"), exist_ok=True)
+    os.makedirs(os.path.join(hagdir, "briefs"), exist_ok=True)
+    os.makedirs(os.path.join(hagdir, "reports"), exist_ok=True)
+    os.makedirs(os.path.join(HAG_DATA_ROOT, hag, "telemetry"), exist_ok=True)
+    os.makedirs(os.path.join(HAG_DATA_ROOT, hag, "reports"), exist_ok=True)
+    os.makedirs(state_dir(hag), exist_ok=True)
     spec_path = os.path.join(hagdir, "hag.json")
     for r in roles:
         if r.coordinator or not r.queue or os.path.exists(r.queue):
             continue
-        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%FT%TZ")
+        ts = utcnow_iso()
         last_done = adopt_status(args.adopt_queue, ts) if args.adopt_queue else " none (fresh HAG)"
         with open(r.queue, "w") as fh:
             fh.write(QUEUE_TEMPLATE.format(slug=r.slug, hag=hag, ts=ts,
                                            last_done=last_done))
     spec.save(spec_path)
-    print(f"new HAG {hag} at {hagdir} (spec: {spec_path})")
+    print(f"new HAG {hag} at {hagdir} (spec: {spec_path}; telemetry: {os.path.join(HAG_DATA_ROOT, hag, 'telemetry')})")
     args.spec = spec_path
     args.hag = hag
     args.stages = "handoffs,restart"
-    return cmd_restart(args)
+    args.save_spec = spec_path
+    args.gen = ""
+    args.old_session = []
+    rc = cmd_restart(args)
+    if rc in (0, 3) and args.enable_watchers:
+        print("=== 6. watchers (systemd user units)")
+        spec = HagSpec.load(spec_path)
+        coord_id = spec.coordinator.session if spec.coordinator else ""
+        cmd_install_systemd(spec, spec_path, coord_id, dry_run=False, enable=True)
+    return rc
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
     spec = load_spec(args)
+    if spec.retired_utc and not getattr(args, "force", False):
+        print(f"spec is retired ({spec.retired_utc}); start a fresh HAG or pass --force")
+        return 1
     if getattr(args, "no_coordinator", False):
         for r in spec.roles:
             r.coordinator = False
@@ -371,6 +457,14 @@ def cmd_restart(args: argparse.Namespace) -> int:
     old = list(args.old_session or [])
     if getattr(args, "spec", "") and old_sessions_from_spec(args.spec, spec.gen):
         old += old_sessions_from_spec(args.spec, spec.gen)
+    if want(stages, "restart") and not dry:
+        # a new generation starts from clean role sessions; old ids live in `generations`
+        prev = HagSpec.load(args.spec)
+        if prev.gen and prev.gen != spec.gen:
+            prev.close_generation(prev.gen)
+            spec.generations = prev.generations
+            for r in spec.roles:
+                r.session = ""
     rc = 0
     if want(stages, "handoffs"):
         rc = stage_handoffs(spec, dry) or rc
@@ -380,13 +474,14 @@ def cmd_restart(args: argparse.Namespace) -> int:
         rc = stage_retire(spec, old, dry) or rc
     if want(stages, "restart"):
         rc = stage_restart(spec, old, launched,
-                           args.defer_consumers, args.probe_claude, dry) or rc
+                           args.defer_consumers, args.probe_claude, dry,
+                           verify_consumers=not getattr(args, "no_verify", False)) or rc
     else:
         print(f"DONE (stages: {stages}).")
-    if getattr(args, "save_spec", "") and not dry and rc == 0:
-        HagSpec(hag=spec.hag, dir=spec.dir, gen=spec.gen,
-                roles=spec.roles).save(args.save_spec)
-        print(f"spec with live session ids saved to {args.save_spec}")
+    save_to = getattr(args, "save_spec", "") or (args.spec if want(stages, "restart") else "")
+    if save_to and not dry and rc in (0, 3):
+        spec.save(save_to)
+        print(f"spec with live session ids + generation record saved to {save_to}")
     return rc
 
 
@@ -400,25 +495,50 @@ def old_sessions_from_spec(path: str, gen: str) -> list[str]:
     return [r.session for r in old.roles if r.session]
 
 
+def cmd_retire(a: argparse.Namespace) -> int:
+    spec = HagSpec.load(a.spec)
+    g = spec.close_generation()
+    if a.dry_run:
+        print(f"[dry-run] close generation {spec.gen} ({'open' if g else 'already closed/absent'}), "
+              f"set retired_utc, {'uninstall units' if a.uninstall_units else 'keep units'}; "
+              f"sessions untouched: {[r.session for r in spec.roles if r.session]}")
+        return 0
+    spec.retired_utc = utcnow_iso()
+    spec.save(a.spec)
+    hag_emit(spec.hag, "hag.py", "script", "generation", event="retired", gen=spec.gen,
+             note=a.note or "")
+    print(f"retired {spec.hag} gen {spec.gen} at {spec.retired_utc} (sessions untouched; retire-by-neglect)")
+    if a.uninstall_units:
+        cmd_uninstall_systemd(spec.hag)
+    print("next: `hag.py report --spec <spec> --gen <gen>` writes the incarnation report; "
+          "review it in hag_system_reviews.md before the next protocol change.")
+    return 0
+
+
 # ---- status ---------------------------------------------------------------
 
 def cmd_status(spec: HagSpec) -> int:
     print(f"HAG {spec.hag} gen={spec.gen} dir={spec.dir} "
-          f"mode={'flattened' if spec.flattened else 'coordinated'}")
-    be_oc = get_backend("opencode")
+          f"mode={'flattened' if spec.flattened else 'coordinated'}"
+          + (f" RETIRED {spec.retired_utc}" if spec.retired_utc else ""))
+    g = spec.current_generation()
+    if g:
+        print(f"  generation {g.get('gen')}: started {g.get('started_utc')} ended {g.get('ended_utc') or '(open)'}")
     for r in spec.roles:
         parts = [f"{r.slug} [{r.ecosystem}]"]
         if r.coordinator:
             parts.append("COORD")
         parts.append(f"session={r.session or '(none)'}")
-        if r.ecosystem == "opencode" and r.session and not r.session.startswith("ses_DRYRUN"):
+        if r.session and not r.session.startswith(("ses_DRYRUN", "cc_DRYRUN")):
             try:
-                parts.append(f"state: {be_oc.status(r.session, spec.dir)}")
+                parts.append(f"state: {get_backend(r.ecosystem).status(r.session, spec.dir)}")
             except Exception as exc:  # noqa: BLE001
                 parts.append(f"state: QUERY-FAILED ({exc})")
-        from heartbeat import age_min, hb_path
         age = age_min(hb_path(spec.hag, r.slug))
         parts.append(f"hb={'never' if age is None else f'{age:.0f}m ago'}")
+        ws, w = _state.wait_status(spec.hag, r.slug)
+        if ws != "none":
+            parts.append(f"wait={ws}:{w.get('sub')} holder={w.get('holder')} rescan={w.get('rescan_utc')}")
         parts.append(f"doc={'ok' if r.doc and os.path.exists(r.doc) else 'MISSING'}")
         if r.queue and os.path.exists(r.queue):
             try:
@@ -427,6 +547,14 @@ def cmd_status(spec: HagSpec) -> int:
             except QueueReadError as exc:
                 parts.append(f"queue=UNREADABLE ({exc})")
         print("  " + " | ".join(parts))
+    ticks = []
+    for job, interval in _doctor.TICK_INTERVAL_MIN.items():
+        a = age_min(os.path.join(state_dir(spec.hag), f"tick-{job}"))
+        ticks.append(f"{job}={'never' if a is None else f'{a:.0f}m'}"
+                     + ("!" if a is not None and a > 3 * interval else ""))
+    print("  watcher ticks: " + " ".join(ticks) + "  (! = older than 3x interval)")
+    timers = _doctor.timer_state(spec.hag)
+    print(f"  systemd timers: {timers or 'none installed'}")
     return 0
 
 
@@ -438,18 +566,25 @@ def main(argv: list[str] | None = None) -> int:
                                  description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    _doctor.add_parser(sub)
+
     p = sub.add_parser("start", help="mint a new HAG and start its first generation")
     p.add_argument("--name", required=True)
     p.add_argument("--dir", required=True)
     p.add_argument("--role", action="append", default=[],
-                   help="SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord][,model=M][,grant=TXT] (repeatable)")
+                   help="SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,model=M][,effort=E] (repeatable)")
+    p.add_argument("--repo", action="append", default=[],
+                   help="GitHub repo owner/name the HAG works (reconcile ground truth; repeatable)")
     p.add_argument("--adopt-queue", default="",
                    help="retired queue file: carry last-done + base into new STATUS")
     p.add_argument("--no-coordinator", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--consumer-launched", action="append", default=[])
     p.add_argument("--defer-consumers", action="store_true")
+    p.add_argument("--no-verify", action="store_true", help="skip consumer effect-verification poll")
     p.add_argument("--probe-claude", action="store_true")
+    p.add_argument("--enable-watchers", action="store_true",
+                   help="after a live start: install + enable the systemd watcher units")
     p.set_defaults(func=lambda a: cmd_start(a))
 
     p = sub.add_parser("restart", help="staged generation restart")
@@ -461,13 +596,26 @@ def main(argv: list[str] | None = None) -> int:
                    help="SLUG:ID for an already-live non-opencode session (skip auto-launch)")
     p.add_argument("--defer-consumers", action="store_true",
                    help="write consumer briefs only; launch by hand later")
+    p.add_argument("--no-verify", action="store_true")
     p.add_argument("--probe-claude", action="store_true")
     p.add_argument("--no-coordinator", action="store_true")
-    p.add_argument("--save-spec", default="")
+    p.add_argument("--save-spec", default="", help="(default: the --spec path itself)")
+    p.add_argument("--force", action="store_true", help="restart a retired spec anyway")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=lambda a: cmd_restart(a))
 
-    p = sub.add_parser("watch", help="coordinator-side watchers (cron)")
+    p = sub.add_parser("retire", help="close the generation, mark the spec retired")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--uninstall-units", action="store_true")
+    p.add_argument("--note", default="")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_retire)
+
+    _state.add_parser(sub)
+    _lint.add_parser(sub)
+    _report.add_parser(sub)
+
+    p = sub.add_parser("watch", help="coordinator-side watchers (systemd timers)")
     p.add_argument("--hag", required=True)
     p.add_argument("mode", choices=("queue", "lanes", "pipeline"))
     p.add_argument("args", nargs="*",
@@ -479,15 +627,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--interval", required=True, type=float)
     p.set_defaults(func=lambda a: cmd_queue_watch(a.sidecar, a.interval))
 
-    p = sub.add_parser("heartbeat", help="stall daemon over hb ticks")
+    p = sub.add_parser("heartbeat", help="stall daemon over hb + wait ticks")
     p.add_argument("--hag", default="")
     p.add_argument("--spec", default="")
     p.add_argument("--threshold-min", type=float, default=60)
+    p.add_argument("--refire-min", type=float, default=60)
     p.add_argument("--notify", default="")
     p.add_argument("--dir", default="")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--touch", default="",
-                   help="session-side tick: touch hb file for SLUG and exit")
+                   help="session-side tick: touch hb file for SLUG and exit (prefer `transition`)")
     p.set_defaults(func=lambda a: cmd_heartbeat_cli(a))
 
     p = sub.add_parser("brief", help="print/write one role's first prompt")
@@ -497,21 +646,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="")
     p.set_defaults(func=lambda a: cmd_brief(a))
 
-    p = sub.add_parser("status", help="restart preconditions at a glance")
+    p = sub.add_parser("status", help="restart preconditions + live posture at a glance")
     p.add_argument("--spec", required=True)
     p.set_defaults(func=lambda a: cmd_status(HagSpec.load(a.spec)))
 
     p = sub.add_parser("install-systemd",
-                       help="write systemd --user watcher units for a live HAG")
+                       help="write (and optionally enable) systemd --user watcher units")
     p.add_argument("--spec", required=True)
     p.add_argument("--coord-id", default="")
+    p.add_argument("--enable", action="store_true", help="daemon-reload + enable --now each timer")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_install_cli)
 
     p = sub.add_parser("uninstall-systemd",
                        help="disable + remove a retired HAG's watcher units")
     p.add_argument("--hag", required=True)
-    p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.hag))
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.hag, dry_run=a.dry_run))
 
     args = ap.parse_args(argv)
     return args.func(args)
@@ -527,7 +678,7 @@ def cmd_install_cli(a: argparse.Namespace) -> int:
     if not coord_id and spec.coordinator:
         coord_id = spec.coordinator.session
     return cmd_install_systemd(spec, os.path.abspath(a.spec), coord_id,
-                               dry_run=a.dry_run)
+                               dry_run=a.dry_run, enable=a.enable)
 
 
 def cmd_watch(a: argparse.Namespace) -> int:
@@ -558,12 +709,12 @@ def cmd_heartbeat_cli(a: argparse.Namespace) -> int:
         return 0
     spec = HagSpec.load(a.spec) if a.spec else HagSpec(hag=a.hag, dir=a.dir)
     return cmd_heartbeat(spec, a.threshold_min, notify=a.notify,
-                         dry_run=a.dry_run)
+                         dry_run=a.dry_run, refire_min=a.refire_min)
 
 
 def cmd_brief(a: argparse.Namespace) -> int:
     spec = HagSpec.load(a.spec)
-    role = next((r for r in spec.roles if r.slug == a.slug), None)
+    role = spec.role(a.slug)
     if role is None:
         print(f"no role {a.slug} in {a.spec}")
         return 1

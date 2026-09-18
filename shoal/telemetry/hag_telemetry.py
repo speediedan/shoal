@@ -8,13 +8,23 @@ Usage:
       # human summary over an ARBITRARY window (hours, not just days): time-in-state
       # per session, instruct/report latency, queue latencies, invalid-state counts.
 
-Storage: <logdir>/<hag>/events-YYYYMMDD.jsonl (UTC day). Analysis windows are free
-(--hours N covers the last N hours across day boundaries); rotation stays daily.
+Storage: <HAG_DATA_ROOT>/<hag>/telemetry/events-YYYYMMDD.jsonl (UTC day) — the
+bulk tier, never committed. The versioned <HAG_ROOT>/<hag>/telemetry/ path is
+read as a legacy fallback only (events from before 2026-09-17 live there).
+Analysis windows are free (--hours N covers the last N hours across day
+boundaries); rotation stays daily.
 
 Every event carries ts_utc, ts_pdt (America/Los_Angeles wall clock), hag, server
 (speediedl default), session, ecosystem, and a `run` pin {instructions_sha, runbook_sha,
 scripts_sha, schema_v} resolved best-effort from the live checkout (`dirty` markers when
 uncommitted). Emit never fails the caller: wrap it in `|| true` from shell.
+
+Vocabulary: invalid values are recorded verbatim and counted at analysis time
+(never coerced). A small ALIASES map handles measured systematic drift
+(`user-feedback` -> `user-design`, 7 offers in one incarnation): the emitter
+writes the canonical value in `to_sub` and keeps the offered one in
+`to_sub_raw`, and the report counts aliased offers separately from invalid
+ones. Sessions should use `hag.py transition`, which emits through here.
 """
 import argparse
 import datetime
@@ -32,6 +42,8 @@ except Exception:  # pragma: no cover
 SCHEMA_V = "v1"
 REPO = "/home/speediedan/repos/distributed-insight"
 SERVER = "speediedl"
+HAG_ROOT = os.environ.get("HAG_ROOT", os.path.join(REPO, ".agents/hags"))
+HAG_DATA_ROOT = os.environ.get("HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags")
 
 TYPES = {
     "session_transition": ["from_state", "to_state"],
@@ -44,6 +56,8 @@ TYPES = {
     "pr_merged": ["pr", "repo"],
     "user_prompt": ["prompt_id"],
     "xeco_transition": ["queue", "event"],
+    "generation": ["event", "gen"],   # started | ended | retired (spec lifecycle)
+    "reconcile": ["new_events"],      # nightly ground-truth marker
 }
 
 VALID_STATES = {"active", "waiting", "idle", "paused", "offline"}
@@ -52,6 +66,21 @@ VALID_SUB = {"local-ci", "remote-ci", "user-auth", "user-design", "session-block
 # NOTE (2026-09-15): `monitor-armed` was removed. Every real wait already has a precise
 # substate: CI waits (however watched) are local-ci/remote-ci with the watch named in the
 # `monitor` field; awaiting refill is queue-empty; awaiting a session is session-blocked.
+ALIASES = {
+    "user-feedback": "user-design",   # measured drift: 7 offers, 2026-09-16/17
+    "design": "user-design",
+    "auth": "user-auth",
+    "ci": "remote-ci",
+    "gate": "remote-ci",
+    "blocked": "session-blocked",
+    "queue-exhausted": "queue-empty",
+}
+
+SCRIPT_FILES = ("hag.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
+                "queue_watch.py", "heartbeat.py", "queue_section.py", "systemd.py",
+                "state.py", "doctor.py", "lint.py",
+                "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
+                "telemetry/hag_report.py")
 
 
 def _sha(path):
@@ -75,46 +104,70 @@ def run_pin():
         "runbook_sha": _sha(".agents/agent_coordination_runbook.md"),
         "scripts_sha": "+".join(
             _sha(f"project_admin/shared_admin_scripts/hag/{f}")[:12]
-            for f in ("hag.py", "roles.py", "backends.py", "briefs.py",
-                      "watchers.py", "queue_watch.py", "heartbeat.py",
-                      "queue_section.py")),
+            for f in SCRIPT_FILES),
         "schema_v": SCHEMA_V,
     }
 
 
 def resolve_dir(d, hag):
+    """Event home. Explicit --dir wins; else the data root (created on demand)."""
     if d:
         return d
-    cache = os.path.join("/mnt/cache_extended/speediedan/hags", hag, "telemetry")
-    if os.path.isdir(cache):
-        return cache
-    return os.path.join(REPO, ".agents/hags", hag, "telemetry")
+    return os.path.join(HAG_DATA_ROOT, hag, "telemetry")
 
 
-def emit(args):
-    logdir = resolve_dir(args.dir, args.hag)
+def legacy_dirs(hag):
+    return [os.path.join(HAG_ROOT, hag, "telemetry")]
+
+
+def canonical_sub(value):
+    """Return (canonical, aliased_from) for a waiting substate offer."""
+    v = (value or "").strip()
+    if v in VALID_SUB or not v:
+        return v, ""
+    if v in ALIASES:
+        return ALIASES[v], v
+    return v, ""
+
+
+def build_event(hag, session, ecosystem, typ, fields):
     now = datetime.datetime.now(datetime.timezone.utc)
     pdt = now.astimezone(PDT).strftime("%H:%M:%S") if PDT else ""
     ev = {
         "ts_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "ts_pdt": pdt,
-        "hag": args.hag,
+        "hag": hag,
         "server": os.environ.get("HAG_SERVER", SERVER),
-        "session": args.session,
-        "ecosystem": args.ecosystem,
-        "type": args.type,
+        "session": session,
+        "ecosystem": ecosystem,
+        "type": typ,
         "run": run_pin(),
     }
-    for kv in args.field or []:
+    for kv in fields or []:
         k, _, v = kv.partition("=")
         ev[k] = v
-    for f in TYPES.get(args.type, []):
+    for f in TYPES.get(typ, []):
         ev.setdefault(f, "")
-    day = now.strftime("%Y%m%d")
+    if typ == "session_transition" and ev.get("to_state") == "waiting":
+        canon, raw = canonical_sub(ev.get("to_sub", ""))
+        if raw:
+            ev["to_sub"], ev["to_sub_raw"] = canon, raw
+    return ev
+
+
+def append_event(logdir, ev):
+    day = ev["ts_utc"][:10].replace("-", "")
     os.makedirs(logdir, exist_ok=True)
     with open(os.path.join(logdir, f"events-{day}.jsonl"), "a") as fh:
         fh.write(json.dumps(ev) + "\n")
+
+
+def emit(args):
+    logdir = resolve_dir(args.dir, args.hag)
+    ev = build_event(args.hag, args.session, args.ecosystem, args.type, args.field)
+    append_event(logdir, ev)
     print(json.dumps(ev))
+    return ev
 
 
 def _parse_ts(s):
@@ -123,8 +176,10 @@ def _parse_ts(s):
 
 
 def load(logdir, hag, since, until):
-    evs = []
-    dirs = [logdir]
+    """Events in [since, until] from the event home plus legacy dirs, sorted,
+    de-duplicated by (ts, session, type, item-ish key)."""
+    evs, seen = [], set()
+    dirs = [logdir] + [d for d in legacy_dirs(hag) if d != logdir]
     legacy = os.path.join(logdir, hag)
     if os.path.isdir(legacy) and legacy != logdir:
         dirs.append(legacy)
@@ -151,8 +206,25 @@ def load(logdir, hag, since, until):
                         continue
                     if until and t > until:
                         continue
+                    key = (e["ts_utc"], e.get("session"), e.get("type"),
+                           e.get("issue") or e.get("pr") or e.get("item") or e.get("note", ""))
+                    if key in seen:
+                        continue
+                    seen.add(key)
                     evs.append(e)
     return sorted(evs, key=lambda e: e["ts_utc"])
+
+
+def classify_transition(e):
+    """'valid' | 'aliased' | 'invalid' for a session_transition event."""
+    st, sub = e.get("to_state"), e.get("to_sub", "")
+    if st not in VALID_STATES:
+        return "invalid"
+    if st == "waiting":
+        if sub in VALID_SUB:
+            return "aliased" if e.get("to_sub_raw") else "valid"
+        return "invalid"
+    return "valid"
 
 
 def report(args):
@@ -183,15 +255,15 @@ def report(args):
             last[e["session"]] = (e.get("to_state"), e.get("to_sub", ""), e["ts_utc"])
     for s, (st, sub, ts) in sorted(last.items()):
         print(f"- {s}: {st}{('/' + sub) if sub else ''} @ {ts}")
-    invalid = [e for e in evs
-               if e.get("type") == "session_transition"
-               and (e.get("to_state") not in VALID_STATES
-                    or (e.get("to_state") == "waiting" and e.get("to_sub") not in VALID_SUB))]
-    print(f"\n## invalid states offered: {len(invalid)}")
+    trans = [e for e in evs if e.get("type") == "session_transition"]
+    invalid = [e for e in trans if classify_transition(e) == "invalid"]
+    aliased = [e for e in trans if classify_transition(e) == "aliased"]
+    print(f"\n## invalid states offered: {len(invalid)} (aliased, counted separately: {len(aliased)})")
     for e in invalid[:10]:
         print(f"- {e['ts_utc']} {e['session']}: {e.get('to_state')}/{e.get('to_sub')}")
-    auth_claims = [e for e in evs if e.get("type") == "session_transition"
-                   and e.get("to_state") == "waiting" and e.get("to_sub") == "user-auth"]
+    for e in aliased[:5]:
+        print(f"- aliased {e['ts_utc']} {e['session']}: {e.get('to_sub_raw')} -> {e.get('to_sub')}")
+    auth_claims = [e for e in trans if e.get("to_state") == "waiting" and e.get("to_sub") == "user-auth"]
     prompts = [e for e in evs if e.get("type") == "user_prompt"]
     print(f"\n## unverified-auth check: {len(auth_claims)} user-auth claims vs {len(prompts)} prompt events")
     if auth_claims and not prompts:
@@ -212,6 +284,14 @@ def report(args):
                   + (f" repo={e['repo']}" if e.get("repo") else "")
                   + (f" by={e.get('added_by') or e.get('removed_by') or '?'}" if (e.get('added_by') or e.get('removed_by')) else "")
                   + (f" disposition={e['disposition']}" if e.get("disposition") else ""))
+    watch = [e for e in evs if e.get("type") == "watch_event"]
+    if watch:
+        print("\n## watch events")
+        kinds = {}
+        for e in watch:
+            kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+        for k, n in sorted(kinds.items()):
+            print(f"- {k}: {n}")
 
 
 def main():
