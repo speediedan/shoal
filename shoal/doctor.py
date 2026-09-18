@@ -129,7 +129,12 @@ def timer_state(hag: str) -> dict[str, str]:
     for line in r.stdout.splitlines():
         m = re.search(rf"(hag-{re.escape(hag)}-([\w.-]+?)\.timer)", line)
         if m:
-            out[m.group(2)] = "inactive" if "n/a" in line.split(m.group(1))[0] else "scheduled"
+            head = line.split(m.group(1))[0].strip()
+            # columns are NEXT LEFT LAST PASSED: a real weekday timestamp in
+            # NEXT means scheduled+waiting; LAST "n/a" only means never fired
+            # yet (reconcile/weekly on a fresh HAG) — not inactive.
+            scheduled = bool(re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s", head))
+            out[m.group(2)] = "scheduled" if scheduled else "inactive"
     return out
 
 
