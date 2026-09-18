@@ -9,9 +9,11 @@ too — no third-party dependencies by design (cron-safe, no venv).
 Subcommands:
   start        mint a new HAG (id, dirs, hag.json, queue files), then restart
                stages handoffs+restart into live sessions.
-  restart      staged generation restart from --spec hag.json or legacy flags:
+  restart      staged generation restart from --spec hag.json:
                handoffs, sync-plans, retire, restart. Every stage honors
-               --dry-run independently.
+               --dry-run independently. Non-opencode roles auto-launch by
+               default (claude --bg); --consumer-launched records an
+               already-live session, --defer-consumers writes briefs only.
   watch        coordinator-side watchers: queue | lanes | pipeline (cron).
   queue-watch  consumer QUEUE self-watch (background, exits on unseen items).
   heartbeat    stall daemon over /tmp/<hag>/hb-<slug> ticks (cron */5).
@@ -24,10 +26,11 @@ coordinator role) — coordinator creation, registry delivery, and the
 coordinator-executed loop test are skipped; lanes get the shared-channel
 brief; STALL traffic goes to channel.md. Same machinery, one spec edit.
 
-Claude consumers are never silently skipped: restart writes their brief file
-and then FAILS LOUDLY (exit 4) unless --consumer-launched <slug>:<id> or
---defer-consumers is given. A restarted consumer always gets its prompt,
-built from its plan_state + queue paths.
+Claude consumers launch headless (`claude --bg -n <slug-gen>`); sends into
+a live claude session are refused (resume would fork a copy) — the queue
+file is the only coordinator-to-consumer channel. Every new session carries
+its role's grants-needed list and asks the maintainer first-person, all in
+one question, before starting work: that ask is the only interactive step.
 """
 from __future__ import annotations
 
@@ -55,47 +58,40 @@ def want(stages: str, name: str) -> bool:
     return name in [s.strip() for s in stages.split(",") if s.strip()]
 
 
-def parse_role(spec: str, default_eco: str = "opencode") -> Role:
-    """SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord]. Legacy --lane shape
-    (SLUG,TITLE,HANDOFF,PLAN) is accepted with ecosystem=opencode."""
+def parse_role(spec: str) -> Role:
+    """SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord][,model=<m>][,grant=<text>...]."""
     parts = spec.split(",")
-    if len(parts) == 4 and parts[1] not in ("opencode", "claude", "codex"):
-        slug, title, handoff, plan = parts
-        return Role(slug=slug, ecosystem="opencode", title=title,
-                    handoff=handoff, plan=plan)
     if len(parts) < 5:
-        raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord]): {spec!r}")
+        raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,HANDOFF,PLAN[,...]): {spec!r}")
     slug, eco, title, handoff, plan = parts[:5]
-    rest = parts[5:]
-    coord = "coord" in rest
-    queue = next((r for r in rest if r != "coord"), "")
+    queue, coord, model, grants = "", False, "", []
+    for tok in parts[5:]:
+        if tok == "coord":
+            coord = True
+        elif tok.startswith("model="):
+            model = tok[len("model="):]
+        elif tok.startswith("grant="):
+            grants.append(tok[len("grant="):])
+        elif not queue:
+            queue = tok
+        else:
+            raise ValueError(f"bad --role token {tok!r} in {spec!r}")
     return Role(slug=slug, ecosystem=eco, title=title, handoff=handoff,
-                plan=plan, queue=queue, coordinator=coord)
-
-
-def build_legacy(args: argparse.Namespace) -> HagSpec:
-    roles = []
-    if getattr(args, "coord_title", ""):
-        roles.append(Role(slug=args.coord_title, ecosystem="opencode",
-                          title=args.coord_title, handoff=args.coord_handoff,
-                          plan=args.coord_plan, coordinator=True))
-    for lane in getattr(args, "lane", []) or []:
-        roles.append(parse_role(lane))
-    for role in getattr(args, "role", []) or []:
-        roles.append(parse_role(role))
-    return HagSpec(hag=args.hag, dir=args.dir, gen=args.gen or "r2",
-                   roles=roles)
+                plan=plan, queue=queue, coordinator=coord, model=model,
+                grants=grants)
 
 
 def load_spec(args: argparse.Namespace) -> HagSpec:
-    if getattr(args, "spec", ""):
-        spec = HagSpec.load(args.spec)
-        if getattr(args, "gen", ""):
-            spec.gen = args.gen
-        if getattr(args, "no_coordinator", False):
-            for r in spec.roles:
-                r.coordinator = False
-        return spec
+    if not getattr(args, "spec", ""):
+        print("restart needs --spec <hag.json> (legacy coord/lane flags removed 2026-09-19)")
+        sys.exit(1)
+    spec = HagSpec.load(args.spec)
+    if getattr(args, "gen", ""):
+        spec.gen = args.gen
+    if getattr(args, "no_coordinator", False):
+        for r in spec.roles:
+            r.coordinator = False
+    return spec
     return build_legacy(args)
 
 
@@ -197,20 +193,25 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
                 print(f"lane {tag}: {role.session}")
                 be.send(role.session, spec.dir, brief_for(role, spec, coord_id))
         else:
-            # Non-scriptable ecosystem: brief is written, launch is explicit.
+            # Non-opencode ecosystem: default is auto-launch (no manual step).
+            text = brief_for(role, spec, coord_id)
             print(f"consumer {tag}: brief -> {brief_path}")
             if role.slug in launched:
                 role.session = launched[role.slug]
                 print(f"  recorded live as {role.session} (--consumer-launched)")
             elif defer_consumers or dry_run:
-                print(f"  {'[dry-run] ' if dry_run else ''}DEFERRED: start with "
-                      f"`{ClaudeBackend.launch_command(brief_path)}`"
-                      + ("; sockets: " + ClaudeBackend.probe_sockets() if not dry_run else ""))
+                print(f"  {'[dry-run] ' if dry_run else ''}DEFERRED "
+                      f"(--defer-consumers): launch by hand when ready.")
             else:
-                print(f"  FAIL: consumer brief ready at {brief_path} but no launch recorded.\n"
-                      f"  run in a terminal: {ClaudeBackend.launch_command(brief_path)}\n"
-                      f"  then re-run with --consumer-launched {role.slug}:<session-id>, or pass --defer-consumers.")
-                return 4
+                try:
+                    role.session = be.create(
+                        f"{role.title}-{spec.gen}", spec.dir,
+                        brief=text, name=f"{role.slug}-{spec.gen}",
+                        model=role.model)
+                except (UnsupportedError, RuntimeError) as exc:
+                    print(f"  FAIL: auto-launch failed: {exc}")
+                    return 4
+                print(f"  launched: {role.session} (backend: {be.ecosystem})")
     if coord and not spec.flattened:
         print("=== 3. registry + loop test (coordinator-executed)")
         reg = (f"REGISTRY ({spec.gen}, direct-relay): "
@@ -262,9 +263,27 @@ QUEUE_TEMPLATE = """# QUEUE + STATUS: {slug} (HAG {hag})
 
 - state: idle
 - active-issue: none
+- waiting-on: queue-empty
 - updated-utc: {ts}
-- last-done:
+- last-done:{last_done}
 """
+
+
+def adopt_status(old_queue: str, ts: str) -> str:
+    """Carry last-done (max 3) + base lines from a retired queue file's STATUS."""
+    try:
+        text = open(old_queue).read()
+        status = text[text.index("## STATUS"):]
+    except Exception:
+        return ""
+    last_done, base = "", ""
+    m = re.search(r"^- last-done:(.*)", status, flags=re.M)
+    if m:
+        last_done = " " + m.group(1).strip()[:600]
+    m = re.search(r"^- base:(.*)", status, flags=re.M)
+    if m:
+        base = "\n- base:" + m.group(1).rstrip()
+    return (last_done or " none (fresh HAG)") + base + f"\n- predecessor: {old_queue}"
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -287,23 +306,27 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("spec invalid:", *errs, sep="\n  ")
         return 1
     for r in roles:
-        if r.queue or r.coordinator:
+        if r.queue or r.coordinator or r.ecosystem == "opencode":
             continue
-        q = os.path.join(hagdir, "queues", f"{r.slug}.md")
-        if not os.path.exists(q):
-            with open(q, "w") as fh:
-                fh.write(QUEUE_TEMPLATE.format(slug=r.slug, hag=hag,
-                                               ts=datetime.datetime.now(
-                                                   datetime.timezone.utc
-                                               ).strftime("%FT%TZ")))
-        r.queue = q
-    spec_path = os.path.join(hagdir, "hag.json")
+        r.queue = os.path.join(hagdir, "queues", f"{r.slug}.md")
     if args.dry_run:
         print(f"[dry-run] new HAG {hag} at {hagdir}")
         print(f"[dry-run] spec: {spec.to_dict()}")
-        return 0
+        if args.adopt_queue:
+            print(f"[dry-run] adopt last-done + base from {args.adopt_queue}")
+        rc = stage_handoffs(spec, True) or stage_sync_plans(spec, True)
+        return rc
     os.makedirs(os.path.join(hagdir, "queues"), exist_ok=True)
     os.makedirs(os.path.join(hagdir, "telemetry"), exist_ok=True)
+    spec_path = os.path.join(hagdir, "hag.json")
+    for r in roles:
+        if r.coordinator or not r.queue or os.path.exists(r.queue):
+            continue
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%FT%TZ")
+        last_done = adopt_status(args.adopt_queue, ts) if args.adopt_queue else " none (fresh HAG)"
+        with open(r.queue, "w") as fh:
+            fh.write(QUEUE_TEMPLATE.format(slug=r.slug, hag=hag, ts=ts,
+                                           last_done=last_done))
     spec.save(spec_path)
     print(f"new HAG {hag} at {hagdir} (spec: {spec_path})")
     args.spec = spec_path
@@ -398,7 +421,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--name", required=True)
     p.add_argument("--dir", required=True)
     p.add_argument("--role", action="append", default=[],
-                   help="SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord] (repeatable)")
+                   help="SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord][,model=M][,grant=TXT] (repeatable)")
+    p.add_argument("--adopt-queue", default="",
+                   help="retired queue file: carry last-done + base into new STATUS")
     p.add_argument("--no-coordinator", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--consumer-launched", action="append", default=[])
@@ -407,21 +432,14 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=lambda a: cmd_start(a))
 
     p = sub.add_parser("restart", help="staged generation restart")
-    p.add_argument("--hag", default="")
-    p.add_argument("--dir", default="")
+    p.add_argument("--spec", required=True, help="hag.json path")
     p.add_argument("--gen", default="")
-    p.add_argument("--spec", default="", help="hag.json path (preferred)")
-    p.add_argument("--role", action="append", default=[],
-                   help="SLUG,ECO,TITLE,HANDOFF,PLAN[,QUEUE][,coord] (repeatable)")
-    p.add_argument("--lane", action="append", default=[],
-                   help="legacy alias: SLUG,TITLE,HANDOFF,PLAN (opencode)")
-    p.add_argument("--coord-title", default="")
-    p.add_argument("--coord-handoff", default="")
-    p.add_argument("--coord-plan", default="")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
     p.add_argument("--old-session", action="append", default=[])
-    p.add_argument("--consumer-launched", action="append", default=[])
-    p.add_argument("--defer-consumers", action="store_true")
+    p.add_argument("--consumer-launched", action="append", default=[],
+                   help="SLUG:ID for an already-live non-opencode session (skip auto-launch)")
+    p.add_argument("--defer-consumers", action="store_true",
+                   help="write consumer briefs only; launch by hand later")
     p.add_argument("--probe-claude", action="store_true")
     p.add_argument("--no-coordinator", action="store_true")
     p.add_argument("--save-spec", default="")

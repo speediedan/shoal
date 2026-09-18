@@ -60,9 +60,23 @@ def consumer_brief(role: Role, spec: HagSpec) -> str:
         f"echoed, loop alive.")
 
 
+def grants_block(role: Role) -> str:
+    if not role.grants:
+        return ""
+    items = "\n".join(f"- {g}" for g in role.grants)
+    return (
+        "\nGRANTS NEEDED — before starting any work, ask the maintainer "
+        "directly (first-person), all items in ONE question with a "
+        "grant / deny option on each (this ask is the only sanctioned "
+        "interactive step of the restart):\n" + items)
+
+
 def brief_for(role: Role, spec: HagSpec, coord_id: str = "") -> str:
+    tick = (" Tick your heartbeat on every REPORT/STATUS update: "
+            "`python3 project_admin/shared_admin_scripts/hag/hag.py heartbeat "
+            f"--hag {spec.hag} --touch {role.slug}`.")
     if role.coordinator:
-        return coordinator_brief(role, spec)
+        return coordinator_brief(role, spec) + tick + grants_block(role)
     if role.ecosystem == "opencode":
-        return lane_brief(role, spec, coord_id)
-    return consumer_brief(role, spec)
+        return lane_brief(role, spec, coord_id) + tick + grants_block(role)
+    return consumer_brief(role, spec) + tick + grants_block(role)

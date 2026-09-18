@@ -34,7 +34,8 @@ class UnsupportedError(RuntimeError):
 class Backend:
     ecosystem = "?"
 
-    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+    def create(self, title: str, repo_dir: str, dry_run: bool = False,
+               brief: str = "", name: str = "", model: str = "") -> str:
         raise NotImplementedError
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
@@ -57,7 +58,8 @@ def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
 class OpenChamberBackend(Backend):
     ecosystem = "opencode"
 
-    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+    def create(self, title: str, repo_dir: str, dry_run: bool = False,
+               brief: str = "", name: str = "", model: str = "") -> str:
         if dry_run:
             return "ses_DRYRUN_" + re.sub(r"\W+", "_", title)
         r = _run("openchamber", "session", "create", "--dir", repo_dir,
@@ -94,34 +96,86 @@ class OpenChamberBackend(Backend):
 
 
 class ClaudeBackend(Backend):
-    """Native `claude` binary. No headless create, no headless send."""
+    """Native `claude` binary. Launched headless via `claude --bg`.
+
+    create() runs `claude --bg -n <name> [--model m] '<brief>'` with
+    cwd=repo_dir and returns the background id (`claude agents` /
+    `attach` / `logs` / `stop` / `rm` take it). No operator terminal needed:
+    start/restart launch every ecosystem by default. status() reads
+    `claude agents --json`; messages() tails `claude logs` (best-effort).
+    send() stays unsupported on purpose: --resume against a RUNNING bg
+    session forks a copy instead of injecting (verified 2026-09-19), so
+    headless sends would silently fork consumers. Coordinator→consumer
+    traffic travels ONLY in the queue file — that is the channel, and the
+    reason sends are refused rather than approximated.
+    """
     ecosystem = "claude"
 
-    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
-        raise UnsupportedError(
-            "claude sessions need an interactive terminal: run the printed "
-            "`claude \"<brief>\"` launch command by hand, then pass "
-            "--consumer-launched <slug>:<session-or-transcript-id>")
+    def create(self, title: str, repo_dir: str, dry_run: bool = False,
+               brief: str = "", name: str = "", model: str = "") -> str:
+        if dry_run:
+            return "cc_DRYRUN_" + re.sub(r"\W+", "_", title)
+        if not brief:
+            raise UnsupportedError("claude create needs the role brief text")
+        b = shutil.which("claude") or "claude"
+        argv = [b, "--bg", "-n", name or title]
+        if model:
+            argv += ["--model", model]
+        argv += [brief]
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=120,
+                           cwd=repo_dir, env=_ENV)
+        m = re.search(r"backgrounded\s+[·.]\s*([0-9a-f]+)", r.stdout + r.stderr)
+        if not m:
+            raise RuntimeError(f"claude --bg failed for {title!r}: "
+                               f"{(r.stdout + r.stderr).strip()[-500:]}")
+        return m.group(1)
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
              dry_run: bool = False) -> None:
         raise UnsupportedError(
-            "no headless send into a live claude session: paste the prompt "
-            "into the session by hand (socket-post framing is unproven).")
+            "no headless send into a live claude session: --resume forks a "
+            "copy when the session is running, so sends would fork consumers. "
+            "Coordinator-to-consumer traffic goes in the queue file ONLY.")
+
+    def _agents(self) -> list:
+        import json as _json
+        b = shutil.which("claude") or "claude"
+        r = subprocess.run([b, "agents", "--json"], capture_output=True,
+                           text=True, timeout=30, env=_ENV)
+        try:
+            return _json.loads(r.stdout) if r.returncode == 0 else []
+        except Exception:
+            return []
 
     def messages(self, session_id: str, repo_dir: str, limit: int = 20,
                  role: str = "") -> str:
-        raise UnsupportedError("claude transcripts are read in-session, "
-                               "not from this host.")
+        b = shutil.which("claude") or "claude"
+        r = subprocess.run([b, "logs", session_id], capture_output=True,
+                           text=True, timeout=30, env=_ENV)
+        out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", r.stdout)
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        return "\n".join(lines[-max(limit, 1) * 4:])
 
     def status(self, session_id: str, repo_dir: str) -> str:
-        raise UnsupportedError("claude liveness is observed via STATUS "
-                               "section updates + heartbeats, not probed.")
+        for e in self._agents():
+            sid = str(e.get("sessionId", ""))
+            if sid == session_id or sid.startswith(session_id) \
+                    or str(e.get("id", "")) == session_id:
+                return f"{e.get('name', '?')} state:{e.get('state', '?')}"
+        return "not-listed (retired or unknown id)"
 
     @staticmethod
     def launch_command(brief_file: str) -> str:
         b = shutil.which("claude") or "claude"
         return f'{b} "$(cat {brief_file})"'
+
+    @staticmethod
+    def stop(session_id: str) -> str:
+        import shutil as _sh
+        b = _sh.which("claude") or "claude"
+        r = subprocess.run([b, "stop", session_id], capture_output=True,
+                           text=True, timeout=30, env=_ENV)
+        return (r.stdout + r.stderr).strip()[-200:]
 
     @staticmethod
     def probe_sockets() -> str:
@@ -149,7 +203,8 @@ class CodexBackend(Backend):
             f"codex backend not implemented (op={op}): implement the transport "
             "in backends.py CodexBackend; roles/specs need no changes.")
 
-    def create(self, title: str, repo_dir: str, dry_run: bool = False) -> str:
+    def create(self, title: str, repo_dir: str, dry_run: bool = False,
+               brief: str = "", name: str = "", model: str = "") -> str:
         raise self._no("create")
 
     def send(self, session_id: str, repo_dir: str, prompt: str,

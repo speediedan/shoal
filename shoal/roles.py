@@ -31,6 +31,11 @@ class Role:
     queue: str = ""              # absolute queue file (consumer roles)
     coordinator: bool = False    # exactly one role carries this pre-flattening
     session: str = ""            # live session id once started
+    model: str = ""              # ecosystem model override ("" = harness default)
+    grants: list[str] = dataclasses.field(default_factory=list)  # grants-needed:
+        # authorizations the new session must request first-person, all in ONE
+        # direct question to the maintainer, before starting work. The grants
+        # ask is the only sanctioned interactive step of start/restart.
 
     def validate(self) -> list[str]:
         errs = []
