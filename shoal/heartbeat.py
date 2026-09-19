@@ -70,6 +70,34 @@ def age_min(path: str) -> float | None:
         return None
 
 
+def status_updated_min(queue_file: str) -> float | None:
+    """Minutes since the consumer's STATUS updated-utc (None if unparseable).
+
+    A consumer that writes STATUS is alive by definition — a fresh STATUS
+    covers a stale heartbeat the same way a verified wait does. (Learned
+    2026-09-19: it-architect wrote STATUS at 23:14Z with a 16:12Z heartbeat
+    and read as a stall; it was healthy and polling.)
+    """
+    try:
+        text = open(queue_file).read()
+        status = text[text.index("## STATUS"):]
+    except Exception:
+        return None
+    m = re.search(r"^- updated-utc:\s*(\S+)", status, flags=re.M)
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    try:
+        if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$", raw):
+            ts = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%MZ")
+        else:
+            ts = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+        ts = ts.replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    return (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
+
+
 def status_wait_cover(queue_file: str) -> str | None:
     """Return the covering wait reason if STATUS shows a verified wait."""
     try:
@@ -123,15 +151,21 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                 row.update(klass="covered*", suspect=False,
                            detail=f"stale {age:.0f}m but STATUS waiting-on: {cover}")
             else:
-                extra = ""
-                if role.ecosystem == "opencode" and role.session:
-                    try:
-                        extra = get_backend("opencode").status(role.session, spec.dir)
-                    except Exception as exc:  # noqa: BLE001
-                        extra = f"status query failed: {exc}"
-                row.update(klass="stale", suspect=True,
-                           detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
-                                  + (f" [{extra}]" if extra else ""))
+                smin = status_updated_min(role.queue) if role.queue else None
+                if smin is not None and smin <= threshold_min:
+                    row.update(klass="covered*", suspect=False,
+                               detail=f"stale {age:.0f}m but STATUS written "
+                                      f"{smin:.0f}m ago (alive, no wait declared)")
+                else:
+                    extra = ""
+                    if role.ecosystem == "opencode" and role.session:
+                        try:
+                            extra = get_backend("opencode").status(role.session, spec.dir)
+                        except Exception as exc:  # noqa: BLE001
+                            extra = f"status query failed: {exc}"
+                    row.update(klass="stale", suspect=True,
+                               detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
+                                      + (f" [{extra}]" if extra else ""))
         rows.append(row)
     return rows
 
