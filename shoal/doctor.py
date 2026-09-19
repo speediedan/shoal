@@ -25,6 +25,7 @@ import glob
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -123,6 +124,51 @@ def host_checks(d: Doc) -> None:
     (d.warn if stale else d.ok)("systemd hag units", f"{len(stale)} unit(s) point at missing scripts: {stale}" if stale else "no stale ExecStart paths")
 
 
+def provider_failures(session_ids: list[str], hours: float = 24) -> dict:
+    """Read-only scan of the opencode message store for failed-send records.
+
+    Catches the provider-outage class (e.g. stale encrypted-reasoning blobs
+    rejected with "not issued to this caller"): those failures land as error
+    message rows, never as assistant output, so heartbeat/watcher checks read
+    them as a quiet world. Returns counts + a sample; never raises.
+    Storage layout is version-sensitive (v1: opencode.db message/data) —
+    re-validate after any opencode major upgrade.
+    """
+    out: dict = {"total": 0, "by_session": {}, "last_utc": "",
+                 "last_hour": False, "sample": ""}
+    try:
+        db = os.path.join(os.path.expanduser("~"), ".local", "share",
+                          "opencode", "opencode.db")
+        if not os.path.isfile(db) or not session_ids:
+            return out
+        cutoff_ms = (datetime.datetime.now(datetime.timezone.utc).timestamp()
+                     - hours * 3600) * 1000
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=20)
+        try:
+            q = (f"SELECT session_id, time_created, substr(data, 1, 300) FROM message "
+                 f"WHERE time_created >= ? AND data LIKE '%was not issued to this caller%'")
+            for sid, ts, head in con.execute(q, (cutoff_ms,)):
+                if sid not in session_ids and not any(
+                        sid.startswith(s[:8]) or s.startswith(sid[:8])
+                        for s in session_ids):
+                    continue
+                out["total"] += 1
+                out["by_session"][sid] = out["by_session"].get(sid, 0) + 1
+                tutc = datetime.datetime.fromtimestamp(
+                    ts / 1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+                if not out["last_utc"] or tutc > out["last_utc"]:
+                    out["last_utc"] = tutc
+                    m = re.search(r"Upstream request failed: ([^\"\\]{0,140})", head)
+                    out["sample"] = m.group(1) if m else head[:120]
+                if ts >= (cutoff_ms + (hours - 1) * 3600000):
+                    out["last_hour"] = True
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return out
+
+
 def timer_state(hag: str) -> dict[str, str]:
     r = run(["systemctl", "--user", "list-timers", "--all", "--no-pager", "--no-legend"], timeout=30)
     out = {}
@@ -205,6 +251,14 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
         d.ok("telemetry", f"{tdir}: {len(files)} day file(s), last write {'never' if last is None else f'{last:.0f}m ago'}")
     else:
         d.warn("telemetry", f"{tdir} absent (created on first emit)")
+    if live:
+        fails = provider_failures([r.session for r in live if r.session], hours=24)
+        if fails["total"]:
+            recent = fails["last_utc"] or "unknown"
+            (d.fail if fails["last_hour"] else d.warn)(
+                "provider errors",
+                f"{fails['total']} failed-send records in 24h across {len(fails['by_session'])} session(s), "
+                f"last {recent} :: {fails['sample'][:160]}")
 
 
 def cmd_doctor(a: argparse.Namespace) -> int:
