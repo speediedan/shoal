@@ -6,6 +6,11 @@ in the unit (systemd's user PATH lacks openchamber, claude, node), no manual
 cron. Regenerate per HAG generation (session ids change); stale units for a
 retired HAG are removed by `uninstall-systemd --hag <old-id>`.
 
+Ledger mode (2026-09-20): no queue-<file> jobs (every role runs its own
+`ledger-watch`); lanes/pipeline/heartbeat notify through the ledger
+(`ledger:<hag>` target) so they need no coordinator session id. Legacy
+(no ledger in the spec) keeps the coordinator-addressed shape below.
+
 Units land in ~/.config/systemd/user/ as hag-<hag>-<job>.{service,timer}.
 `install-systemd --enable` runs daemon-reload + `enable --now` on every
 timer it wrote, so a launch is one command. Jobs:
@@ -58,7 +63,17 @@ def jobs_for(spec, spec_path: str, coord_id: str) -> list[tuple[str, str, list[s
              if not r.coordinator and r.ecosystem == "opencode" and r.session]
     consumer_q = [r.queue for r in spec.roles if r.queue]
     jobs = []
-    if coord_id:
+    if spec.ledger_mode:
+        target = f"ledger:{spec.hag}"
+        if lanes:
+            jobs.append(("lanes", f"HAG {spec.hag} lanes watch (server respawn -> ledger)",
+                         ["watch", "--hag", spec.hag, "lanes", target, spec.dir] + lanes,
+                         "*:0/5", ""))
+        jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch (starvation -> ledger)",
+                     ["watch", "--hag", spec.hag, "pipeline", target, spec.dir],
+                     "*:0/10", ""))
+        coord_id = ""  # heartbeat delivers through the ledger
+    elif coord_id:
         for q in consumer_q:
             jobs.append((f"queue-{os.path.basename(q).replace('.md', '')}",
                          f"HAG {spec.hag} queue watch {os.path.basename(q)}",
@@ -87,7 +102,7 @@ def cmd_install(spec, spec_path: str, coord_id: str,
                 dry_run: bool = False, enable: bool = False) -> int:
     from roles import HagSpec
     assert isinstance(spec, HagSpec)
-    if not coord_id and not spec.flattened:
+    if not coord_id and not spec.flattened and not spec.ledger_mode:
         print("need a coordinator session id (--coord-id, or a spec saved after a live start)")
         return 1
     if not any(r.session for r in spec.roles):

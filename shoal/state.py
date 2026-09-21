@@ -12,6 +12,10 @@ command cannot be half-done.
       --holder "gate 1290 (approved, queued)" --rescan-min 30 [--monitor ...]
   hag.py transition --hag H --slug S --to idle|paused|offline
 
+Ledger mode (2026-09-20): the same command also appends a `state` event to
+the HAG ledger (ledger.py), so every peer and every host sees the row state
+without a coordinator transcribing it; `--no-ledger` skips that (tests).
+
 Wait files (`/tmp/<hag>/wait-<slug>`, JSON) are the lane-side wait proof
 the v0 heartbeat daemon lacked: a wait is covered while it is unexpired
 (now < rescan_utc); past its rescan time it is a STALE WAIT (failure-modes
@@ -150,8 +154,26 @@ def cmd_transition(a: argparse.Namespace) -> int:
         print("[dry-run]", json.dumps(ev))
     else:
         append_event(resolve_dir(a.dir, hag), ev)
+    # 4. ledger (cross-host, cross-ecosystem visibility)
+    ledger_line = ""
+    if spec is not None and spec.ledger_mode and not a.no_ledger and not a.dry_run:
+        try:
+            from ledger import Ledger
+            led = Ledger(hag, root=a.ledger_dir or spec.ledger_dir)
+            if led.exists():
+                led.pull()
+                lev = led.append(a.slug, "state", state=a.to, sub=sub, holder=a.holder,
+                                 rescan_utc=(w["rescan_utc"] if a.to == "waiting" else ""),
+                                 rescan_min=(f"{a.rescan_min:g}" if a.to == "waiting" else ""),
+                                 monitor=a.monitor, note=a.note, session=session,
+                                 host=os.uname().nodename)
+                ledger_line = f" | ledger {lev['id']}"
+            else:
+                ledger_line = " | ledger: MISSING (ledger-init)"
+        except Exception as exc:  # noqa: BLE001
+            ledger_line = f" | ledger FAILED ({str(exc)[:80]})"
     print(f"{a.slug}: -> {a.to}{('/' + sub) if sub else ''} | hb {hb} | {wait_line}"
-          f" | event {'(dry-run)' if a.dry_run else ev['ts_utc']}")
+          f" | event {'(dry-run)' if a.dry_run else ev['ts_utc']}{ledger_line}")
     return 0
 
 
@@ -173,6 +195,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--ecosystem", default="")
     p.add_argument("--spec", default="")
     p.add_argument("--dir", default=None, help="telemetry dir override")
+    p.add_argument("--no-ledger", action="store_true", help="skip the ledger state event")
+    p.add_argument("--ledger-dir", default="", help="ledger clone override (tests / other hosts)")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_transition)
 

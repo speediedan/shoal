@@ -15,7 +15,10 @@ HAG checks: spec valid; start docs present with required sections; queue
 files lint clean; live session ids present + reachable; heartbeat/wait
 posture per role; watcher ticks vs 3x interval; systemd timers present and
 active for this HAG; sidecars bound to the recorded consumer session id;
-telemetry dir writable + last event age; reconcile tick age.
+telemetry dir writable + last event age; reconcile tick age. Ledger mode
+(2026-09-20): clone present with a reachable remote, no unpushed commits
+older than an hour, lint clean (no violations, no contested claims), and
+one ledger-watch sidecar per role bound to its session with a live pid.
 """
 from __future__ import annotations
 
@@ -244,6 +247,8 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
                     sid = line.split("=", 1)[1].strip()
             bound = sid and r.session and (sid.startswith(r.session) or r.session.startswith(sid))
             (d.ok if bound else d.warn)(f"sidecar {r.slug}", f"bound to {sid or '(none)'}" + ("" if bound else f" != spec {r.session or '(none)'}"))
+    if spec.ledger_mode:
+        ledger_checks(d, spec)
     tdir = telemetry_dir(spec.hag)
     if os.path.isdir(tdir):
         files = sorted(glob.glob(os.path.join(tdir, "events-*.jsonl")))
@@ -259,6 +264,69 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
                 "provider errors",
                 f"{fails['total']} failed-send records in 24h across {len(fails['by_session'])} session(s), "
                 f"last {recent} :: {fails['sample'][:160]}")
+
+
+def ledger_checks(d: Doc, spec: HagSpec) -> None:
+    try:
+        from ledger import Ledger, View, git, lint, unpushed
+        from ledger_watch import load_sidecar, sidecar_path
+    except Exception as exc:  # noqa: BLE001
+        d.fail("ledger modules", str(exc))
+        return
+    root = spec.ledger_dir
+    if not os.path.isdir(os.path.join(root, ".git")):
+        d.fail("ledger clone", f"{root} is not a git clone (hag.py ledger-init --spec ...)")
+        return
+    d.ok("ledger clone", root)
+    try:
+        r = git(root, "ls-remote", "--exit-code", "--heads", "origin", timeout=30, check=False)
+        (d.ok if r.returncode == 0 else d.fail)("ledger remote", "reachable" if r.returncode == 0
+                                                else f"unreachable: {(r.stdout + r.stderr).strip()[-120:]}")
+    except Exception as exc:  # noqa: BLE001
+        d.fail("ledger remote", str(exc))
+    led = Ledger(spec.hag, root=root)
+    if not led.exists():
+        d.fail("ledger dir", f"{led.ldir} absent (hag.py ledger-init --spec ...)")
+        return
+    n = unpushed(root)
+    if n:
+        r = git(root, "log", "-1", "--format=%ct", "origin/HEAD..HEAD", check=False)
+        (d.warn)("ledger unpushed", f"{n} local commit(s) not on the remote (hag.py sync --hag {spec.hag})")
+    else:
+        d.ok("ledger unpushed", "none")
+    view = View(led, spec)
+    findings = lint(view)
+    errs = [m for c, m in findings if c.startswith("E")]
+    warns = [m for c, m in findings if c.startswith("W")]
+    (d.fail if errs else d.ok)("ledger lint", f"{len(led.events())} events; "
+                               + ("; ".join(errs)[:200] if errs else f"clean ({len(warns)} warn)"))
+    for r in spec.roles:
+        if r.fill == "none" and not r.session:
+            continue
+        sc = load_sidecar(sidecar_path(spec.hag, r.slug))
+        if not sc:
+            d.warn(f"ledger-watch {r.slug}", "not armed (no sidecar)")
+            continue
+        sid, pid = sc.get("session_id", ""), sc.get("pid", "")
+        bound = sid and r.session and (sid.startswith(r.session) or r.session.startswith(sid))
+        alive = bool(pid) and os.path.exists(f"/proc/{pid}")
+        if r.server and r.server != os.uname().nodename:
+            d.ok(f"ledger-watch {r.slug}", f"remote host {r.server}: sidecar not expected here")
+        elif not alive:
+            d.fail(f"ledger-watch {r.slug}", f"pid {pid or '?'} not running (last tick {sc.get('last_tick', 'never')}); re-arm")
+        elif not bound:
+            d.warn(f"ledger-watch {r.slug}", f"alive (pid {pid}) but bound to {sid or '(none)'} != spec {r.session or '(none)'}")
+        else:
+            d.ok(f"ledger-watch {r.slug}", f"alive pid {pid}, bound {sid[:12]}, last tick {sc.get('last_tick', 'never')}")
+    if spec.sources:
+        try:
+            from sources import github_project_items
+            for src in spec.sources:
+                items = github_project_items(src["owner"], int(src["number"]))
+                open_n = sum(1 for i in items if i["state"] == "OPEN")
+                d.ok(f"source {src['owner']}/{src['number']}", f"{len(items)} items, {open_n} open (board order = priority)")
+        except Exception as exc:  # noqa: BLE001
+            d.fail("sources", f"priority table unreadable: {exc}")
 
 
 def cmd_doctor(a: argparse.Namespace) -> int:

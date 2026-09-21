@@ -21,8 +21,13 @@ or after --refire-min (default 60). Every run ticks /tmp/<hag>/tick-heartbeat
 so `status`/`doctor` can see the daemon itself is alive (a watcher that
 never runs is the failure mode the v0 reconcile demonstrated).
 
-Delivery: coordinator role present -> session send to the coordinator;
-flattened -> append to <hagdir>/channel.md. Telemetry watch_event either way.
+Delivery (ledger mode, 2026-09-20): one ledger `msg kind=stall-suspect`
+to EACH suspect role (its own watcher wakes it to re-verify its wait or
+transition — self-recovery without a coordinator) plus one to every
+filler/coordinator role and to `user`. Legacy (no ledger): session send to
+the coordinator, or channel.md when flattened. Telemetry watch_event
+either way. Ledger `state` events count as freshness for roles on other
+hosts (no /tmp heartbeat reaches across hosts).
 """
 from __future__ import annotations
 
@@ -125,8 +130,28 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
     except Exception:
         pass
     rows = []
+    ledger_age: dict[str, float] = {}
+    if spec.ledger_mode:
+        try:
+            from ledger import Ledger, View
+            led = Ledger(spec.hag, root=spec.ledger_dir)
+            if led.exists():
+                led.pull()
+                v = View(led, spec)
+                now = datetime.datetime.now(datetime.timezone.utc)
+                for slug, ts in v.last_by.items():
+                    try:
+                        t = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+                        ledger_age[slug] = (now - t).total_seconds() / 60
+                    except ValueError:
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
     for role in spec.roles:
         age = age_min(hb_path(spec.hag, role.slug))
+        la = ledger_age.get(role.slug)
+        if la is not None and (age is None or la < age):
+            age = la  # a ledger write is a heartbeat (works across hosts)
         wstate, w = wait_status(spec.hag, role.slug)
         row = {"slug": role.slug, "age_min": age, "wait": w, "detail": ""}
         if age is None:
@@ -214,6 +239,24 @@ def cmd_heartbeat(spec, threshold_min: float, notify: str = "",
         return 0
     with open(sfile, "w") as fh:
         json.dump({"key": key, "fired_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ")}, fh)
+    if spec.ledger_mode:
+        try:
+            from ledger import Ledger
+            led = Ledger(spec.hag, root=spec.ledger_dir)
+            led.pull()
+            targets = {r["slug"] for r in rows if r["suspect"]} | {r.slug for r in spec.fillers} | {"user"}
+            for t in sorted(targets):
+                mine = [r["detail"] for r in rows if r["suspect"] and r["slug"] == t]
+                led.append("hag.py", "msg", to=t, kind="stall-suspect",
+                           text=("; ".join(mine) + " — re-verify your wait (transition) or act"
+                                 if mine else body), _push=False)
+            from ledger import sync_push
+            sync_push(led.root)
+            print(f"ledger: stall-suspect msgs to {sorted(targets)}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"ERROR: ledger delivery failed: {exc}")
+            return 2
+        return 0
     coord = spec.coordinator
     target = notify or (coord.session if coord else "")
     if coord and target:

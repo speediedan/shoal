@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Consumer QUEUE self-watch (port of hag_queue_watch.sh).
+"""LEGACY (pre-2026-09-20 QUEUE/STATUS HAGs): consumer QUEUE self-watch (port of
+hag_queue_watch.sh). Ledger-mode HAGs use `hag.py ledger-watch` (ledger_watch.py).
 
 Every INTERVAL s: rehash the QUEUE section; exit (which wakes the owning
 session) ONLY when an item id is in neither `consumed` nor `declined` of the

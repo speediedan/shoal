@@ -10,6 +10,13 @@ deleted never trusted, state in /tmp/<hag>/ (never committed).
 
 Test mode (test/--test) sends *-WATCH-TEST to the notify session and exits 0;
 REQUIRED once per notify session before trusting the path.
+
+Ledger mode (2026-09-20): when the target argument is `ledger:<hag>` the
+fire is a ledger `msg` instead of a session send — lanes SERVER-RESPAWNED
+goes to `*` (every role re-verifies), pipeline STARVED goes to the roles
+whose ledger state is waiting/remote-ci (else fillers, else user). The
+`queue` mode (STATUS-section hash of a legacy queue file) is legacy only:
+in ledger mode every role runs its own `ledger-watch`.
 """
 from __future__ import annotations
 
@@ -85,10 +92,35 @@ def log(sdir: str, msg: str) -> None:
         pass
 
 
+def ledger_fire(hag: str, to: list[str], kind: str, text: str) -> bool:
+    try:
+        from ledger import Ledger, sync_push
+        from roles import HagSpec, find_spec
+        spec = HagSpec.load(find_spec(hag))
+        led = Ledger(hag, root=spec.ledger_dir)
+        led.pull()
+        for t in to:
+            led.append("hag.py", "msg", to=t, kind=kind, text=text[:500], _push=False)
+        sync_push(led.root)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"{utcnow()} ERROR: ledger fire {kind} failed: {exc}")
+        return False
+
+
 def fire(target: str, repo_dir: str, tag: str, summary: str) -> bool:
     """Session send; returns False (and logs) when dispatch fails. Send
     confirmation is the only delivery signal — a failed send must never be
-    logged as a fire."""
+    logged as a fire. target `ledger:<hag>` routes to the ledger instead."""
+    if target.startswith("ledger:"):
+        hag = target[len("ledger:"):]
+        kind = {"LANES-WATCH": "server-respawned", "PIPELINE-WATCH": "starved"}.get(tag.split("-TEST")[0], "info")
+        to = ["*"]
+        if kind == "starved":
+            to = starved_targets(hag)
+        if tag.endswith("-TEST"):
+            kind = "wake-test"
+        return ledger_fire(hag, to, kind, f"{tag}: {summary}")
     r = subprocess.run(["openchamber", "session", "send", "--session", target,
                         "--dir", repo_dir, "--prompt", f"{tag}: {summary}"],
                        capture_output=True, text=True, timeout=60, env=_ENV)
@@ -97,6 +129,24 @@ def fire(target: str, repo_dir: str, tag: str, summary: str) -> bool:
               f"{(r.stdout + r.stderr).strip()[-200:]}")
         return False
     return True
+
+
+def starved_targets(hag: str) -> list[str]:
+    """Roles whose ledger state is waiting on remote CI, else fillers, else user."""
+    try:
+        from ledger import Ledger, View
+        from roles import HagSpec, find_spec
+        spec = HagSpec.load(find_spec(hag))
+        v = View(Ledger(hag, root=spec.ledger_dir), spec)
+        waiting = [s for s, st in v.states.items()
+                   if st.get("state") == "waiting" and st.get("sub") == "remote-ci"]
+        if waiting:
+            return sorted(set(waiting) | {r.slug for r in spec.fillers})
+        if spec.fillers:
+            return [r.slug for r in spec.fillers]
+    except Exception:
+        pass
+    return ["user"]
 
 
 def health(sdir: str) -> None:
@@ -235,6 +285,9 @@ def cmd_lanes(hag: str, target: str, repo_dir: str, lanes: list[str],
             print(f"{utcnow()} lanes baseline established for {target}")
             return 0
         detail = snap.replace("\n", ";")
+        if target.startswith("ledger:"):
+            print(f"{utcnow()} lanes state moved (ledger mode: transitions travel in the ledger, no fire)")
+            return 0
         hag_emit(hag, target, "opencode", "coord_comms", direction="watch-fire",
                  peer="lanes", note="lane state transition", channel="within-ecosystem")
         fire(target, repo_dir, "LANES-WATCH", f"lane state transition: {detail}")

@@ -18,6 +18,15 @@ hag_failure_modes.md section numbers), and a VERDICT block the reviewer
 fills (protocol proposal or explicit no-change — the rule from
 hag_system_reviews.md). Every number is computed from events; a missing
 instrument prints as `unobserved`, never as zero.
+
+Ledger mode (2026-09-20): the HAG ledger is folded in (ledger.as_telemetry)
+and three sections are added — Ledger economics (offers by source, claims
+and self-fill share, releases by kind, done verified against reconcile,
+offer→claim and claim→done latencies), Wake efficiency (ledger-wake
+events → first ledger action by that role; wakes with no action are the
+token-waste figure), and Messages (by kind and target; broadcasts; ack
+latency). Failure signatures gain §13 (wasted wakes), §14 (contested
+claims), §15 (permission violations) and §16 (broadcast storms).
 """
 from __future__ import annotations
 
@@ -273,6 +282,102 @@ def gpu_share(w0, w1, org="https://dev.azure.com/speediedan", proj="interpretune
     return len(iv), busy, (100 * busy / w if w else 0)
 
 
+# ---- ledger analyses --------------------------------------------------------
+
+def ledger_economics(evs, w1):
+    offers = [e for e in evs if e.get("type") == "ledger_offer"]
+    claims = [e for e in evs if e.get("type") == "ledger_claim"]
+    rels = [e for e in evs if e.get("type") == "ledger_release"]
+    dones = [e for e in evs if e.get("type") == "ledger_done"]
+    wds = [e for e in evs if e.get("type") == "ledger_withdraw"]
+    by_src, by_writer = {}, {}
+    for o in offers:
+        by_src[o.get("src") or "?"] = by_src.get(o.get("src") or "?", 0) + 1
+        by_writer[o.get("slug", "?")] = by_writer.get(o.get("slug", "?"), 0) + 1
+    claim_src = {}
+    for c in claims:
+        claim_src[c.get("src") or "?"] = claim_src.get(c.get("src") or "?", 0) + 1
+    rel_kind = {}
+    for r in rels:
+        rel_kind[r.get("kind") or "?"] = rel_kind.get(r.get("kind") or "?", 0) + 1
+    # verification: done item number appears in a reconcile pr_merged/issue_closed
+    verified_nums = {str(e.get("pr") or e.get("issue")) for e in evs if e.get("type") in ("pr_merged", "issue_closed")}
+    ver = sum(1 for d in dones if re.search(r"#(\d+)", d.get("item", "")) and re.search(r"#(\d+)", d.get("item", "")).group(1) in verified_nums)
+    # latencies per role
+    first_offer = {}
+    for o in offers:
+        k = (o.get("item", "").lower(), o.get("to"))
+        first_offer.setdefault(k, parse_ts(o["ts_utc"]))
+    lat_oc, lat_cd = {}, {}
+    claim_at = {}
+    for c in claims:
+        key = c.get("item", "").lower()
+        t = parse_ts(c["ts_utc"])
+        claim_at[(key, c.get("slug"))] = t
+        t0 = first_offer.get((key, c.get("slug"))) or first_offer.get((key, "*"))
+        if t0:
+            lat_oc.setdefault(c.get("slug", "?"), []).append((t - t0).total_seconds())
+    for d in dones:
+        key = d.get("item", "").lower()
+        t0 = claim_at.get((key, d.get("slug")))
+        if t0:
+            lat_cd.setdefault(d.get("slug", "?"), []).append((parse_ts(d["ts_utc"]) - t0).total_seconds())
+    per_role = {}
+    for e in offers:
+        per_role.setdefault(e.get("to", "?"), {"offered": 0, "claimed": 0, "self": 0, "done": 0, "declined": 0})["offered"] += 1
+    for c in claims:
+        row = per_role.setdefault(c.get("slug", "?"), {"offered": 0, "claimed": 0, "self": 0, "done": 0, "declined": 0})
+        row["claimed"] += 1
+        if (c.get("src") or "") in ("board", "self"):
+            row["self"] += 1
+    for d in dones:
+        per_role.setdefault(d.get("slug", "?"), {"offered": 0, "claimed": 0, "self": 0, "done": 0, "declined": 0})["done"] += 1
+    for r in rels:
+        if r.get("kind") == "decline":
+            per_role.setdefault(r.get("slug", "?"), {"offered": 0, "claimed": 0, "self": 0, "done": 0, "declined": 0})["declined"] += 1
+    return {"offers": offers, "claims": claims, "rels": rels, "dones": dones, "wds": wds,
+            "by_src": by_src, "by_writer": by_writer, "claim_src": claim_src, "rel_kind": rel_kind,
+            "verified": ver, "lat_oc": lat_oc, "lat_cd": lat_cd, "per_role": per_role}
+
+
+def wake_efficiency(evs, w1, act_window_min=30):
+    """ledger-wake watch_events → next ledger action (claim/done/release/msg/
+    state) by the same role. No action within act_window = wasted wake."""
+    wakes = [e for e in evs if e.get("type") == "watch_event" and e.get("kind") == "ledger-wake"]
+    acts = [e for e in evs if e.get("type") in ("ledger_claim", "ledger_done", "ledger_release",
+                                                "ledger_msg", "session_transition")]
+    rows, per = [], {}
+    for w in wakes:
+        t0 = parse_ts(w["ts_utc"])
+        slug = w.get("slug", "?")
+        nxt = next((a for a in acts if a.get("slug") == slug and parse_ts(a["ts_utc"]) > t0), None)
+        lat = (parse_ts(nxt["ts_utc"]) - t0).total_seconds() if nxt else None
+        wasted = lat is None or lat > act_window_min * 60
+        p = per.setdefault(slug, {"wakes": 0, "wasted": 0, "lat": []})
+        p["wakes"] += 1
+        p["wasted"] += 1 if wasted else 0
+        if lat is not None and not wasted:
+            p["lat"].append(lat)
+        rows.append((w["ts_utc"], slug, w.get("note", "")[:40], w.get("n", ""), dur(lat) if lat is not None else "no action in window",
+                     "WASTED" if wasted else ""))
+    return wakes, rows, per
+
+
+def message_stats(evs):
+    msgs = [e for e in evs if e.get("type") == "ledger_msg"]
+    by_kind, by_to = {}, {}
+    for m in msgs:
+        by_kind[m.get("kind") or "info"] = by_kind.get(m.get("kind") or "info", 0) + 1
+        by_to[m.get("to") or "?"] = by_to.get(m.get("to") or "?", 0) + 1
+    acks = []
+    ids = {m.get("ledger_id"): m for m in msgs if m.get("ledger_id")}
+    for m in msgs:
+        if m.get("re") in ids:
+            acks.append((parse_ts(m["ts_utc"]) - parse_ts(ids[m["re"]]["ts_utc"])).total_seconds())
+    unacked = sum(1 for m in msgs if m.get("ack") and not any(x.get("re") == m.get("ledger_id") for x in msgs))
+    return msgs, by_kind, by_to, acks, unacked
+
+
 def signatures(evs, stale_waits, quality, recov):
     """Failure-mode signatures (hag_failure_modes.md § numbers) detected from events."""
     def count(pred):
@@ -288,6 +393,19 @@ def signatures(evs, stale_waits, quality, recov):
         ("unrecovered stall-suspects in window", sum(1 for r in recov if r[2].startswith("unrecovered"))),
     ]
     return sig
+
+
+def ledger_signatures(evs, wake_per, msgs_by_to, view_lint):
+    wasted = sum(p["wasted"] for p in wake_per.values())
+    wakes = sum(p["wakes"] for p in wake_per.values())
+    contested = sum(1 for c, _ in view_lint if c == "E2")
+    viol = sum(1 for c, _ in view_lint if c == "E1")
+    return [
+        ("§13 wasted wakes (ledger-wake with no action in 30 min)", f"{wasted} of {wakes}"),
+        ("§14 contested claims (two live claims on one item)", contested),
+        ("§15 permission violations (ignored events)", viol),
+        ("§16 broadcast msgs (to=*) in window", msgs_by_to.get("*", 0)),
+    ]
 
 
 # ---- rendering -------------------------------------------------------------
@@ -369,9 +487,15 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
                    [(*k, n) for k, n in sorted(pins.items(), key=lambda x: -x[1])]))
     L.append("")
     L.append("## Roles")
-    L.append(table(["slug", "ecosystem", "coord", "model", "effort", "session", "queue"],
-                   [(r.slug, r.ecosystem, "yes" if r.coordinator else "", r.model or "(default)", r.effort or "(default)",
-                     r.session or "(none)", os.path.basename(r.queue) if r.queue else "") for r in spec.roles]))
+    L.append(table(["slug", "ecosystem", "coord", "fill", "model", "effort", "session", "server", "queue"],
+                   [(r.slug, r.ecosystem, "yes" if r.coordinator else "",
+                     getattr(r, "fill", "assigned") + ("+fills" if getattr(r, "fills_others", False) else ""),
+                     r.model or "(default)", r.effort or "(default)",
+                     r.session or "(none)", getattr(r, "server", "") or "local",
+                     os.path.basename(r.queue) if r.queue else ("ledger" if spec.ledger_mode else "")) for r in spec.roles]))
+    if spec.ledger_mode:
+        srcs = ", ".join(f"{x.get('kind', '?')}:{x.get('owner', '?')}/{x.get('number', '?')}" for x in spec.sources) or "none"
+        L.append(f"- mode: ledger ({spec.ledger.get('repo', '')}), {'flattened' if spec.flattened else 'coordinated'}; sources: {srcs}")
     merged, closed, recon = outcomes(evs)
     L.append("")
     L.append("## Outcomes (GitHub ground truth via reconcile events)")
@@ -437,12 +561,52 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         L.append("")
         L.append(f"### Queue file history: {os.path.basename(r.queue)} ({len(hist)} commits in window)")
         L.append(table(["ts", "commit", "subject", "QUEUE items", "state", "active-issue", "updated-utc"], hist[-25:]))
+    if spec.ledger_mode:
+        ec = ledger_economics(evs, w1)
+        L.append("")
+        L.append("## Ledger economics (offers, claims, completions)")
+        L.append(f"- offers: {len(ec['offers'])} by src {ec['by_src'] or '{}'} · withdrawn: {len(ec['wds'])} · "
+                 f"claims: {len(ec['claims'])} by src {ec['claim_src'] or '{}'} · releases: {ec['rel_kind'] or '{}'} · "
+                 f"done: {len(ec['dones'])} (verified against GitHub via reconcile: {ec['verified']})")
+        if ec["per_role"]:
+            L.append(table(["role", "offered to", "claimed", "self-filled", "done", "declined",
+                            "offer→claim median", "claim→done median"],
+                           [(slug, v["offered"], v["claimed"], v["self"], v["done"], v["declined"],
+                             dur(sorted(ec["lat_oc"].get(slug, []))[len(ec["lat_oc"].get(slug, [])) // 2]) if ec["lat_oc"].get(slug) else "—",
+                             dur(sorted(ec["lat_cd"].get(slug, []))[len(ec["lat_cd"].get(slug, [])) // 2]) if ec["lat_cd"].get(slug) else "—")
+                            for slug, v in sorted(ec["per_role"].items())]))
+        else:
+            L.append("_no ledger offers/claims in window_")
+        wakes, wrows, wper = wake_efficiency(evs, w1)
+        L.append("")
+        L.append("## Wake efficiency (ledger-wake → first action by the woken role)")
+        if wper:
+            L.append(table(["role", "wakes", "wasted (no action ≤30m)", "wake→action median"],
+                           [(slug, p["wakes"], p["wasted"], dur(sorted(p["lat"])[len(p["lat"]) // 2]) if p["lat"] else "—")
+                            for slug, p in sorted(wper.items())]))
+            L.append(table(["ts", "role", "reason", "n", "first action", ""], wrows[-20:]))
+        else:
+            L.append("_no ledger-wake events: watchers never fired (or never emitted) — unobserved_")
+        msgs, by_kind, by_to, acks, unacked = message_stats(evs)
+        L.append("")
+        L.append("## Messages (ledger msg)")
+        L.append(f"- msgs: {len(msgs)} by kind {by_kind or '{}'} · by target {by_to or '{}'} · "
+                 f"ack latency median {dur(sorted(acks)[len(acks) // 2]) if acks else '—'} · unacked ack-requests: {unacked}")
+        if getattr(opts, "view_lint", None):
+            L.append("")
+            L.append("## Ledger lint (live)")
+            for code, msg in opts.view_lint[:20]:
+                L.append(f"- {code} {msg}")
     if opts.gpu:
         g = gpu_share(w0, w1)
         L.append("")
         L.append("## GPU pool (gated pipeline, completed builds)")
         L.append("_az query failed_" if g is None else f"- builds overlapping: {g[0]} · union-busy {dur(g[1])} = {g[2]:.1f}% of window")
     sig = signatures(evs, stale, q, recov)
+    if spec.ledger_mode:
+        _w, _r, wper2 = wake_efficiency(evs, w1)
+        _m, _k, by_to2, _a, _u = message_stats(evs)
+        sig += ledger_signatures(evs, wper2, by_to2, getattr(opts, "view_lint", []) or [])
     L.append("")
     L.append("## Failure-mode signatures (hag_failure_modes.md)")
     L.append(table(["signature", "count"], sig))
@@ -459,6 +623,18 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         hints.append("no reconcile ran: outcomes unverified; check the reconcile timer tick")
     if not rows:
         hints.append("no transitions recorded: the transition primitive was not used; brief it or the incarnation is unmeasurable")
+    if spec.ledger_mode:
+        _w, _r, wper3 = wake_efficiency(evs, w1)
+        tw = sum(p["wakes"] for p in wper3.values())
+        ww = sum(p["wasted"] for p in wper3.values())
+        if tw and ww / tw > 0.3:
+            hints.append(f"wasted wakes {ww}/{tw} (>30%): tighten actionable rules or raise --interval")
+        if not tw:
+            hints.append("no ledger-wake events: watchers unarmed or wake telemetry not written")
+        for code, msg in (getattr(opts, "view_lint", []) or []):
+            if code == "E2":
+                hints.append("contested claim(s) live: a loser must release kind=lost-race")
+                break
     L.append("- auto-hints: " + ("; ".join(hints) if hints else "none"))
     L.append("- PROPOSAL / NO-CHANGE: _fill in_")
     L.append("- next incarnation measured against: _fill in_")
@@ -485,6 +661,23 @@ def cmd_report(a: argparse.Namespace) -> int:
         w0 = parse_ts(g["started_utc"])
         w1 = parse_ts(g["ended_utc"]) if g.get("ended_utc") else now
     evs = load(resolve_dir(a.dir, spec.hag), spec.hag, w0, w1)
+    a.view_lint = []
+    if spec.ledger_mode:
+        try:
+            from ledger import Ledger, View, as_telemetry, lint as ledger_lint
+            led = Ledger(spec.hag, root=spec.ledger_dir)
+            if led.exists():
+                if not a.no_pull:
+                    led.pull()
+                seen = {(e["ts_utc"], e.get("session"), e.get("type")) for e in evs}
+                for e in as_telemetry(led, spec, w0, w1):
+                    if e["type"] == "session_transition" and (e["ts_utc"], e.get("session"), e["type"]) in seen:
+                        continue  # transition already emitted locally
+                    evs.append(e)
+                evs.sort(key=lambda e: e["ts_utc"])
+                a.view_lint = ledger_lint(View(led, spec))
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: ledger not folded in: {exc}")
     md = build(spec, a.spec, w0, w1, evs, gen_label, a)
     stem = f"incarnation-{gen_label}-{w0.strftime('%Y%m%dT%H%M')}-{w1.strftime('%Y%m%dT%H%M')}"
     out_md = a.out_md or os.path.join(HAG_ROOT, spec.hag, "reports", stem + ".md")
@@ -513,6 +706,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--dir", default=None, help="telemetry dir override")
     p.add_argument("--repo", default="/home/speediedan/repos/distributed-insight")
     p.add_argument("--gpu", action="store_true", help="add gated-pool busy share via az")
+    p.add_argument("--no-pull", action="store_true", help="do not pull the ledger first")
     p.add_argument("--dry-run", action="store_true", help="print the markdown, write nothing")
     p.set_defaults(func=cmd_report)
 

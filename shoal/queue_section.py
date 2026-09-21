@@ -1,4 +1,5 @@
-"""Hash the QUEUE section of a queue file and list its item ids (bold headings).
+"""LEGACY (pre-2026-09-20 QUEUE/STATUS HAGs). Hash the QUEUE section of a queue file and
+list its item ids (bold headings).
 
 Prints ``<sha256[:12]> <n>`` on the first line, then one ``ITEM <id>`` line per numbered item.
 Exit 2 with an ERROR line when the section cannot be read or is empty: an empty snapshot is

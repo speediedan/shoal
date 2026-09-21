@@ -39,7 +39,7 @@ try:
 except Exception:  # pragma: no cover
     PDT = None
 
-SCHEMA_V = "v1"
+SCHEMA_V = "v2"  # v2 (2026-09-20): ledger_* event types + channel=ledger; v1 events still load
 REPO = "/home/speediedan/repos/distributed-insight"
 SERVER = "speediedl"
 HAG_ROOT = os.environ.get("HAG_ROOT", os.path.join(REPO, ".agents/hags"))
@@ -58,6 +58,15 @@ TYPES = {
     "xeco_transition": ["queue", "event"],
     "generation": ["event", "gen"],   # started | ended | retired (spec lifecycle)
     "reconcile": ["new_events"],      # nightly ground-truth marker
+    # ledger bridge (ledger.as_telemetry): one type per ledger verb; `state`
+    # arrives as session_transition with via=ledger
+    "ledger_offer": ["to", "item"],
+    "ledger_withdraw": ["item"],
+    "ledger_claim": ["item"],
+    "ledger_release": ["item", "kind"],
+    "ledger_done": ["item"],
+    "ledger_msg": ["to", "kind"],
+    "ledger_system": ["event"],
 }
 
 VALID_STATES = {"active", "waiting", "idle", "paused", "offline"}
@@ -79,6 +88,7 @@ ALIASES = {
 SCRIPT_FILES = ("hag.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
                 "queue_watch.py", "heartbeat.py", "queue_section.py", "systemd.py",
                 "state.py", "doctor.py", "lint.py",
+                "ledger.py", "ledger_cli.py", "ledger_watch.py", "sources.py",
                 "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
                 "telemetry/hag_report.py")
 

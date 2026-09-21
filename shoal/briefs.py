@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Brief builders: the exact first prompt each started session gets.
 
+Ledger mode (2026-09-20) uses ONE brief for every role (`ledger_brief`);
+the coordinator/lane/consumer briefs below are the legacy shapes kept for
+specs without a ledger.
+
 One function per addressee. Every brief points at the role's single start
 document (plan_state.md) plus the shared instructions; grants-needed items
 are extracted from that document at brief time, so the doc is the only place
@@ -133,8 +137,65 @@ def consumer_brief(role: Role, spec: HagSpec) -> str:
         f"decline/hold options. Confirm with QUEUE item count, sidecar echoed, loop alive.")
 
 
+def ledger_brief(role: Role, spec: HagSpec) -> str:
+    """ONE brief shape for every role in ledger mode (5.j/5.k): the same
+    verbs, the same watcher, the same wake discipline, whatever the
+    ecosystem. Differences are data: fill mode, permissions, wake adapter."""
+    hag = spec.hag
+    wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
+    arm = (f"{HAGPY} ledger-watch --hag {hag} --slug {role.slug} --wake {wake} "
+           f"--session <your-full-session-id> --interval 120")
+    how_arm = ("as a background command that re-invokes you when it exits (Claude: persistent "
+               "Monitor / run_in_background; a killed background command is a lost wake path — re-arm)"
+               if role.ecosystem != "opencode" else
+               "setsid-detached (`setsid nohup <cmd> >>/tmp/" + hag + "/ledger-watch-" + role.slug
+               + ".log 2>&1 < /dev/null &`); it self-sends LEDGER-WAKE to your session id and exits")
+    if role.fill == "self":
+        fill = (f"FILL: self. When your queue is empty and you hold nothing, the watcher offers the top "
+                f"board candidates (priority table in board order, minus what the ledger shows taken or "
+                f"declined by you). Claim the top one that fits your lane (`claim`), or decline it with a "
+                f"reason (`release --kind decline --reason .. --retry ..`) so it never re-wakes you; "
+                f"user/filler offers ALWAYS outrank board candidates.")
+    elif role.fill == "assigned":
+        fill = ("FILL: assigned. You work only offers addressed to you or to `*`; you never pop the board. "
+                "An empty queue is `transition --to waiting --sub queue-empty --holder user` plus one "
+                "`msg --to user` naming the next item you would take, then wait for the watcher.")
+    else:
+        fill = "FILL: none. You never claim; you fill and observe."
+    fills = ("" if not role.fills_others else
+             " You hold can_fill_others: you may `offer` items to other roles and `withdraw` them; a "
+             "seeded queue at start is your duty (an empty queue is a verdict, never an omission).")
+    coord = ("" if not spec.flattened else
+             "There is NO coordinator: nobody relays for you. Status is the ledger; the maintainer reads "
+             f"`hag.py show --hag {hag}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
+             "(transition) or acting.")
+    return (
+        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode"
+        f"{', flattened' if spec.flattened else ''}) in HAG {hag}. Read: (1) {role.doc} (your plan_state "
+        f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the shared "
+        f"orchestration instructions section 'Unified ledger primitive'. ALL traffic is the ledger "
+        f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, hags/{hag}/ledger/<writer>.jsonl, "
+        f"one file per writer, append-only) through `{HAGPY}` verbs: `show --hag {hag} --slug {role.slug} "
+        f"[--board]` (your view), `claim --slug {role.slug} --item repo#n:verb --base repo@sha`, "
+        f"`done --slug {role.slug} --item .. --url ..`, `release --slug {role.slug} --item .. --kind "
+        f"decline|blocked|handoff --reason ..`, `msg --by {role.slug} --to <slug|*|user> --text .. [--ack]` "
+        f"(answer an ack request with `--re <id> --kind ack`). No direct session sends to peers, ever. "
+        f"{fill}{fills} {coord} "
+        f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}. It wakes you ONLY for offers "
+        f"to you, msgs to you or `*`, a lost/contested claim, a withdrawal, or board candidates when "
+        f"self-filling; each event wakes at most once. Run it once with `--test` first and confirm "
+        f"LEDGER-WAKE-TEST arrived. On EVERY wake (this watcher or any CI/lease watch): run `show`, act, "
+        f"`transition`, re-arm — the ledger is read only on wakes, never polled by you. CI/lease waits arm "
+        f"agent_ci_watch.sh (or a harness Monitor) exactly as before, with your own session id. Keep a "
+        f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
+        f"first-person: ask the maintainer directly with decline/hold options; authorizations never transfer. "
+        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen.")
+
+
 def brief_for(role: Role, spec: HagSpec, coord_id: str = "") -> str:
-    if role.coordinator:
+    if spec.ledger_mode:
+        body = ledger_brief(role, spec)
+    elif role.coordinator:
         body = coordinator_brief(role, spec)
     elif role.ecosystem == "opencode":
         body = lane_brief(role, spec, coord_id)

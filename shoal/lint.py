@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Queue-file linter + commit ownership gate (readme (d), proposal §7).
+"""LEGACY (pre-2026-09-20 QUEUE/STATUS HAGs): queue-file linter + commit ownership gate
+(readme (d), proposal §7). Ledger-mode HAGs use `hag.py ledger-lint` (ledger.py).
 
   hag.py lint-queues --spec hag.json            # every consumer queue in the spec
   hag.py lint-queues --file <queue.md> ...      # explicit files
