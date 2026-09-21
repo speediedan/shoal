@@ -119,6 +119,31 @@ def status_wait_cover(queue_file: str) -> str | None:
     return None
 
 
+def watch_dead(hag: str, slug: str) -> bool:
+    """True when the role's ledger-watch sidecar is absent or its pid is gone.
+
+    A dead watch is deafness, not quietness: board polls stop, so a fill=self
+    role with an empty queue idles forever while heartbeat reads mere idle.
+    """
+    try:
+        from ledger_watch import load_sidecar, sidecar_path
+    except Exception:
+        return False
+    sc = load_sidecar(sidecar_path(hag, slug))
+    if not sc:
+        return True
+    pid = sc.get("pid", "")
+    return not (pid and os.path.exists(f"/proc/{pid}"))
+
+
+def _watch_last_tick(hag: str, slug: str) -> str:
+    try:
+        from ledger_watch import load_sidecar, sidecar_path
+        return load_sidecar(sidecar_path(hag, slug)).get("last_tick", "never")
+    except Exception:
+        return "never"
+
+
 def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
     """One row per role: {slug, klass, age_min, detail, suspect: bool}."""
     from state import wait_status  # local import: state imports heartbeat
@@ -181,16 +206,28 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                     row.update(klass="covered*", suspect=False,
                                detail=f"stale {age:.0f}m but STATUS written "
                                       f"{smin:.0f}m ago (alive, no wait declared)")
-                else:
-                    extra = ""
-                    if role.ecosystem == "opencode" and role.session:
-                        try:
-                            extra = get_backend("opencode").status(role.session, spec.dir)
-                        except Exception as exc:  # noqa: BLE001
-                            extra = f"status query failed: {exc}"
-                    row.update(klass="stale", suspect=True,
-                               detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
-                                      + (f" [{extra}]" if extra else ""))
+                    rows.append(row)
+                    continue
+                deaf = (spec.ledger_mode
+                        and getattr(role, "fill", "") == "self"
+                        and watch_dead(spec.hag, role.slug))
+                if deaf:
+                    row.update(klass="idle-deaf", suspect=True,
+                               detail=f"IDLE with empty queue and dead ledger-watch "
+                                      f"(fill=self, no board poll since "
+                                      f"{_watch_last_tick(spec.hag, role.slug)}): "
+                                      f"WAKEUP-READ needed — show, claim/decline, re-arm")
+                    rows.append(row)
+                    continue
+                extra = ""
+                if role.ecosystem == "opencode" and role.session:
+                    try:
+                        extra = get_backend("opencode").status(role.session, spec.dir)
+                    except Exception as exc:  # noqa: BLE001
+                        extra = f"status query failed: {exc}"
+                row.update(klass="stale", suspect=True,
+                           detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
+                                  + (f" [{extra}]" if extra else ""))
         rows.append(row)
     return rows
 
@@ -256,6 +293,23 @@ def cmd_heartbeat(spec, threshold_min: float, notify: str = "",
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR: ledger delivery failed: {exc}")
             return 2
+        for r in rows:
+            if r.get("klass") != "idle-deaf":
+                continue
+            role = spec.role(r["slug"])
+            if role is None or role.ecosystem != "opencode" or not role.session:
+                continue
+            try:
+                get_backend("opencode").send(
+                    role.session, spec.dir,
+                    f"OPERATOR WAKEUP-READ (heartbeat: your ledger-watch is dead — "
+                    f"no board poll, queue empty, heartbeat stale): run hag.py show "
+                    f"--hag {spec.hag} --slug {role.slug}, claim or decline the top "
+                    f"board candidate, transition, re-arm ledger-watch and VERIFY "
+                    f"the new PID with ps -p plus sidecar pid match. REPORT.")
+                print(f"direct WAKEUP-READ sent to {role.slug} ({role.session})")
+            except Exception as exc:  # noqa: BLE001
+                print(f"ERROR: WAKEUP-READ send to {role.slug} failed: {exc}")
         return 0
     coord = spec.coordinator
     target = notify or (coord.session if coord else "")

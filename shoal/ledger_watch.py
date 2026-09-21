@@ -91,8 +91,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     for e in view.ledger.events():
         if e.get("type") == "withdraw" and item_key(e.get("item", "")) in mine:
             out.append((e["id"], f"WITHDRAWN {e.get('item')} by {e['by']}: {short(e.get('reason', ''), 80)}"))
-    if board and role is not None and getattr(role, "fill", "assigned") == "self" and not view.queue(slug) \
-            and not view.active(slug):
+    if board and role is not None and getattr(role, "fill", "assigned") == "self" and not view.queue(slug):
         try:
             from sources import candidates
             taken = view.taken() | view.offered_open()
