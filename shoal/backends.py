@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import os
 import re
 import shutil
@@ -48,6 +49,14 @@ class Backend:
 
     def status(self, session_id: str, repo_dir: str) -> str:
         raise NotImplementedError
+
+    def live_model(self, session_id: str, repo_dir: str) -> str:
+        return ""
+
+    def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
+        """'' or the quota-reset hint (agent-neutral contract; see heartbeat
+        quota-paused klass). Each backend implements its own signal."""
+        return ""
 
     def live_model(self, session_id: str, repo_dir: str) -> str:
         """Provider/model the session actually runs ('' when unexposed).
@@ -122,6 +131,40 @@ class OpenChamberBackend(Backend):
                 pid, mid = m.get("providerID", ""), m.get("id", "")
                 return f"{pid}/{mid}" if pid and mid else (mid or "")
         return ""
+
+    def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
+        """'' or the quota-reset hint. opencode refuses sends at quota: those
+        failures land as error message rows, so scan recent rows for
+        hard-exhaustion signatures (PROVISIONAL patterns — no live opencode
+        quota event has been seen on this host to calibrate against; transient
+        429 rate-limits deliberately excluded, they self-resolve). Storage
+        layout is v1-bound; re-validate on opencode v2."""
+        import sqlite3 as _sqlite3
+        try:
+            db = os.path.join(os.path.expanduser("~"), ".local", "share",
+                              "opencode", "opencode.db")
+            if not os.path.isfile(db):
+                return ""
+            con = _sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=20)
+            try:
+                cutoff = (datetime.datetime.now(datetime.timezone.utc).timestamp()
+                          - 6 * 3600) * 1000
+                rows = con.execute(
+                    "SELECT data FROM message WHERE session_id=? AND "
+                    "time_created >= ? AND (data LIKE '%insufficient_quota%' OR "
+                    "data LIKE '%insufficient credits%' OR data LIKE "
+                    "'%quota exceeded%' OR data LIKE '%out of credits%' OR "
+                    "data LIKE '%payment required%') ORDER BY time_created DESC "
+                    "LIMIT 3", (session_id, cutoff)).fetchall()
+            finally:
+                con.close()
+        except Exception:
+            return ""
+        if not rows:
+            return ""
+        m = re.search(r"resets? ([^.\n|]{0,40})", rows[0][0], flags=re.I)
+        reset = m.group(1).split("\x1b")[0].strip() if m else "reset time unknown"
+        return reset or "reset time unknown"
 
 
 class ClaudeBackend(Backend):
@@ -205,6 +248,26 @@ class ClaudeBackend(Backend):
         r = subprocess.run([b, "stop", session_id], capture_output=True,
                            text=True, timeout=30, env=_ENV)
         return (r.stdout + r.stderr).strip()[-200:]
+
+    def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
+        """Terminal-log limit signature (zero model cost). Verified 2026-09-21:
+        'reached your Fable limit' present while quota-dead, absent after the
+        opus switch on the same session."""
+        b = shutil.which("claude")
+        if not b:
+            return ""
+        try:
+            r = subprocess.run([b, "logs", session_id], capture_output=True,
+                               text=True, timeout=60, env=_ENV)
+        except Exception:
+            return ""
+        tail = r.stdout[-6000:]
+        if not re.search(r"reached your .{0,30} limit|used \d+% of your .{0,30} limit",
+                         tail, flags=re.I):
+            return ""
+        m = re.search(r"resets? ([^.\n|]{0,40})", r.stdout, flags=re.I)
+        reset = m.group(1).strip() if m else "reset time unknown"
+        return reset.split("\x1b")[0].strip() or "reset time unknown"
 
     @staticmethod
     def probe_sockets() -> str:

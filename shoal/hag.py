@@ -755,6 +755,13 @@ def cmd_retire(a: argparse.Namespace) -> int:
 
 # ---- status ---------------------------------------------------------------
 
+def cmd_watch_register(a: argparse.Namespace) -> int:
+    from heartbeat import register_watch
+    print(register_watch(a.hag, a.slug, a.kind, a.target, a.pid,
+                         a.session, a.rescan_min))
+    return 0
+
+
 def cmd_sync_models(a: argparse.Namespace) -> int:
     """Reconcile recorded role models against live sessions.
 
@@ -992,6 +999,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--spec", required=True)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_sync_models)
+
+    p = sub.add_parser("watch-register", help="record one armed per-session monitor for daemon validation")
+    p.add_argument("--hag", required=True)
+    p.add_argument("--slug", required=True)
+    p.add_argument("--kind", required=True, choices=("ci", "ledger", "lease"))
+    p.add_argument("--target", required=True, help="what the watch waits on (PR#, build, queue)")
+    p.add_argument("--pid", required=True)
+    p.add_argument("--session", required=True)
+    p.add_argument("--rescan-min", type=float, default=0)
+    p.set_defaults(func=lambda a: cmd_watch_register(a))
 
     p = sub.add_parser("install-systemd",
                        help="write (and optionally enable) systemd --user watcher units")

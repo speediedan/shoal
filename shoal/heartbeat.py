@@ -136,28 +136,63 @@ def watch_dead(hag: str, slug: str) -> bool:
     return not (pid and os.path.exists(f"/proc/{pid}"))
 
 
-def quota_paused(session_id: str) -> str:
-    """'' or the quota-reset hint. Reads only the tail of `claude logs`
-    (terminal output, zero model cost) for the limit signature. opencode
-    sessions have no quota concept here — returns '' (extend per ecosystem
-    only when one grows an equivalent machine-readable signal)."""
-    import shutil as _shutil
-    import subprocess as _sp
-    b = _shutil.which("claude")
-    if not b:
-        return ""
+def quota_paused(role, repo_dir: str = "") -> str:
+    """Dispatch to the role ecosystem's backend (see backends.quota_paused)."""
     try:
-        r = _sp.run([b, "logs", session_id], capture_output=True, text=True,
-                    timeout=60)
+        return get_backend(role.ecosystem).quota_paused(role.session or "", repo_dir)
     except Exception:
         return ""
-    tail = r.stdout[-6000:]
-    if not re.search(r"reached your .{0,30} limit|used \d+% of your .{0,30} limit",
-                     tail, flags=re.I):
-        return ""
-    m = re.search(r"resets? ([^.\n|]{0,40})", r.stdout, flags=re.I)
-    reset = m.group(1).strip() if m else "reset time unknown"
-    return reset.split("\x1b")[0].strip() or "reset time unknown"
+
+
+def watches_path(hag: str, slug: str) -> str:
+    return os.path.join(state_dir(hag), "watches", f"{slug}.json")
+
+
+def register_watch(hag: str, slug: str, kind: str, target: str, pid: str,
+                   session: str, rescan_min: float = 0) -> str:
+    """Record one armed per-session monitor. Sessions call this at arm time
+    (alongside the plan_state inventory); the daemon validates liveness and
+    the +50% rescan rule against the registry."""
+    p = watches_path(hag, slug)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    try:
+        reg = json.load(open(p))
+    except Exception:
+        reg = {"watches": []}
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    reg["watches"] = [w for w in reg.get("watches", [])
+                      if not (w.get("kind") == kind and w.get("target") == target)]
+    reg["watches"].append({"kind": kind, "target": target, "pid": str(pid),
+                           "session": session, "armed_utc": now,
+                           "rescan_min": rescan_min})
+    with open(p, "w") as fh:
+        json.dump(reg, fh, indent=1)
+    return p
+
+
+def registry_findings(hag: str, slug: str) -> list[str]:
+    """Invalid registered watches: dead pid, or rescan exceeded by >50%."""
+    try:
+        reg = json.load(open(watches_path(hag, slug)))
+    except Exception:
+        return []
+    out = []
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for w in reg.get("watches", []):
+        pid = str(w.get("pid", ""))
+        if not pid or not os.path.exists(f"/proc/{pid}"):
+            out.append(f"watch dead: {w.get('kind')}:{w.get('target')} (pid {pid or '?'} gone)")
+            continue
+        try:
+            armed = datetime.datetime.strptime(w.get("armed_utc", ""), "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        except Exception:
+            continue
+        rm = float(w.get("rescan_min") or 0)
+        if rm > 0 and (now - armed).total_seconds() > rm * 90:
+            out.append(f"watch overdue: {w.get('kind')}:{w.get('target')} "
+                       f"(armed {w.get('armed_utc')}, rescan {rm:g}m +50% lapsed)")
+    return out
 
 
 def _watch_last_tick(hag: str, slug: str) -> str:
@@ -169,7 +204,13 @@ def _watch_last_tick(hag: str, slug: str) -> str:
 
 
 def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
-    """One row per role: {slug, klass, age_min, detail, suspect: bool}."""
+    """One row per role: {slug, klass, age_min, detail, suspect: bool}.
+
+    Single paging criterion: a role pages IFF it is quiet (no ledger write
+    AND no heartbeat for > threshold, past generation grace) AND an obligation
+    is outstanding (stale wait, invalid registered watch, or idle-deaf
+    self-filler). quota-paused never pages. Klasses are diagnosis; suspect is
+    the page bit."""
     from state import wait_status  # local import: state imports heartbeat
     gen = spec.current_generation() or {}
     gen_age = None
@@ -210,8 +251,8 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
             else:
                 row.update(klass="never", suspect=True, detail="NO HEARTBEAT FILE (never ticked)")
         elif wstate == "stale":
-            if role.ecosystem == "claude" and role.session:
-                q = quota_paused(role.session)
+            if role.session:
+                q = quota_paused(role, spec.dir)
                 if q:
                     row.update(klass="quota-paused", suspect=False,
                                detail=f"provider quota exhausted (reset: {q}) — wait "
@@ -251,12 +292,11 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                                       f"WAKEUP-READ needed — show, claim/decline, re-arm")
                     rows.append(row)
                     continue
-                if role.ecosystem == "claude" and role.session:
-                    q = quota_paused(role.session)
+                if role.session:
+                    q = quota_paused(role, spec.dir)
                     if q:
                         row.update(klass="quota-paused", suspect=False,
-                                   detail=f"provider quota exhausted (limit signature in "
-                                          f"terminal log; reset: {q}) — not a stall, "
+                                   detail=f"provider quota exhausted (reset: {q}) — not a stall, "
                                           f"not evictable;suppress pages until reset")
                         rows.append(row)
                         continue
@@ -270,6 +310,16 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                            detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
                                   + (f" [{extra}]" if extra else ""))
         rows.append(row)
+    for row in rows:
+        if row["suspect"] or row.get("klass") == "quota-paused":
+            continue
+        quiet = row["age_min"] is None or row["age_min"] > threshold_min
+        if not quiet:
+            continue
+        findings = registry_findings(spec.hag, row["slug"])
+        if findings:
+            row.update(klass="watch-invalid", suspect=True,
+                       detail="; ".join(findings) + " — re-arm or re-register")
     return rows
 
 

@@ -170,8 +170,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
              f"`hag.py show --hag {hag}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
              "(transition) or acting.")
     return (
-        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode"
-        f"{', flattened' if spec.flattened else ''}) in HAG {hag}. Read: (1) {role.doc} (your plan_state "
+        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode"        f"{', flattened' if spec.flattened else ''}) in HAG {hag}. Read: (1) {role.doc} (your plan_state "
         f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the shared "
         f"orchestration instructions section 'Unified ledger primitive'. ALL traffic is the ledger "
         f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, hags/{hag}/ledger/<writer>.jsonl, "
@@ -186,7 +185,10 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
         f"self-filling; each event wakes at most once. Run it once with `--test` first and confirm "
         f"LEDGER-WAKE-TEST arrived. On EVERY wake (this watcher or any CI/lease watch): run `show`, act, "
         f"`transition`, re-arm — the ledger is read only on wakes, never polled by you. CI/lease waits arm "
-        f"agent_ci_watch.sh (or a harness Monitor) exactly as before, with your own session id. Keep a "
+        f"agent_ci_watch.sh (or a harness Monitor) exactly as before, with your own session id. Register EVERY "
+        f"armed watch for daemon validation: `{HAGPY} watch-register --hag {hag} --slug {role.slug} "
+        f"--kind ci|ledger|lease --target <what> --pid <pid> --session <your-full-session-id> "
+        f"[--rescan-min N]` (the daemon pages you if the pid dies or the rescan lapses +50%). Keep a "
         f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
         f"first-person: ask the maintainer directly with decline/hold options; authorizations never transfer. "
         f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen.")
