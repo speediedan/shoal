@@ -793,6 +793,9 @@ def cmd_status(spec: HagSpec) -> int:
     print(f"HAG {spec.hag} incarnation={spec.incarnation} ({spec.display_gen}) dir={spec.dir} "
           f"mode={'flattened' if spec.flattened else 'coordinated'}"
           + (f" RETIRED {spec.retired_utc}" if spec.retired_utc else ""))
+    if not spec.generations:
+        print("  note: no generation history — snapshot copy? canonical spec lives at "
+              "distributed-insight:.agents/hags/<hag>/hag.json")
     g = spec.current_generation()
     if g:
         print(f"  generation {g.get('gen')}: started {g.get('started_utc')} ended {g.get('ended_utc') or '(open)'}")

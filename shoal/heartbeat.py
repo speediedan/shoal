@@ -136,6 +136,30 @@ def watch_dead(hag: str, slug: str) -> bool:
     return not (pid and os.path.exists(f"/proc/{pid}"))
 
 
+def quota_paused(session_id: str) -> str:
+    """'' or the quota-reset hint. Reads only the tail of `claude logs`
+    (terminal output, zero model cost) for the limit signature. opencode
+    sessions have no quota concept here — returns '' (extend per ecosystem
+    only when one grows an equivalent machine-readable signal)."""
+    import shutil as _shutil
+    import subprocess as _sp
+    b = _shutil.which("claude")
+    if not b:
+        return ""
+    try:
+        r = _sp.run([b, "logs", session_id], capture_output=True, text=True,
+                    timeout=60)
+    except Exception:
+        return ""
+    tail = r.stdout[-6000:]
+    if not re.search(r"reached your .{0,30} limit|used \d+% of your .{0,30} limit",
+                     tail, flags=re.I):
+        return ""
+    m = re.search(r"resets? ([^.\n|]{0,40})", r.stdout, flags=re.I)
+    reset = m.group(1).strip() if m else "reset time unknown"
+    return reset.split("\x1b")[0].strip() or "reset time unknown"
+
+
 def _watch_last_tick(hag: str, slug: str) -> str:
     try:
         from ledger_watch import load_sidecar, sidecar_path
@@ -186,6 +210,14 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
             else:
                 row.update(klass="never", suspect=True, detail="NO HEARTBEAT FILE (never ticked)")
         elif wstate == "stale":
+            if role.ecosystem == "claude" and role.session:
+                q = quota_paused(role.session)
+                if q:
+                    row.update(klass="quota-paused", suspect=False,
+                               detail=f"provider quota exhausted (reset: {q}) — wait "
+                                      f"re-verification deferred, not paged, not evictable")
+                    rows.append(row)
+                    continue
             row.update(klass="stale-wait", suspect=True,
                        detail=f"STALE WAIT past rescan {w.get('rescan_utc')} "
                               f"(holder: {w.get('holder')}, sub: {w.get('sub')}) — re-verify, never extend")
@@ -219,6 +251,15 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                                       f"WAKEUP-READ needed — show, claim/decline, re-arm")
                     rows.append(row)
                     continue
+                if role.ecosystem == "claude" and role.session:
+                    q = quota_paused(role.session)
+                    if q:
+                        row.update(klass="quota-paused", suspect=False,
+                                   detail=f"provider quota exhausted (limit signature in "
+                                          f"terminal log; reset: {q}) — not a stall, "
+                                          f"not evictable;suppress pages until reset")
+                        rows.append(row)
+                        continue
                 extra = ""
                 if role.ecosystem == "opencode" and role.session:
                     try:
