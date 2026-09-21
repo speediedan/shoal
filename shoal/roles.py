@@ -25,6 +25,7 @@ import dataclasses
 import datetime
 import json
 import os
+import re
 
 ECOSYSTEMS = ("opencode", "claude", "codex")
 
@@ -58,9 +59,12 @@ def state_dir(hag: str) -> str:
 
 @dataclasses.dataclass
 class Role:
-    slug: str
+    slug: str                # stable identity (queue files, sidecars, heartbeats, telemetry)
     ecosystem: str = "opencode"  # opencode | claude | codex
-    title: str = ""              # session title stem (generation suffix appended)
+    title: str = ""              # session title stem (sequence suffix appended)
+    seq: int = 1                 # per-role session sequence; session tag is {slug}-r{seq}.
+        # Bump ONLY this role's seq on a single-ecosystem restart; other roles keep
+        # their sessions AND their seqs, so hag.json never conflates them.
     doc: str = ""                # absolute path to THE start document (plan_state.md;
         # mission + current state + grants-needed + next). One doc per role;
         # handoffs/ dirs hold the immutable restart record, never the start doc.
@@ -77,6 +81,8 @@ class Role:
         errs = []
         if not self.slug:
             errs.append("role missing slug")
+        if self.seq < 1:
+            errs.append(f"role {self.slug}: seq must be >= 1 (got {self.seq})")
         if self.ecosystem not in ECOSYSTEMS:
             errs.append(f"role {self.slug}: unknown ecosystem {self.ecosystem!r}")
         if not self.title:
@@ -84,6 +90,11 @@ class Role:
         if not self.doc:
             errs.append(f"role {self.slug}: missing start doc (plan_state.md)")
         return errs
+
+    @property
+    def tag(self) -> str:
+        """Session tag: {slug}-r{seq}. Stable slug, rolling sequence."""
+        return f"{self.slug}-r{self.seq}"
 
     @staticmethod
     def from_dict(d: dict) -> "Role":
@@ -95,7 +106,10 @@ class Role:
 class HagSpec:
     hag: str
     dir: str = ""   # repo dir sessions run in
-    gen: str = ""   # generation suffix, e.g. r3
+    gen: str = ""   # legacy display string ("r1"); kept for old specs, else derived
+    incarnation: int = 0  # 0-indexed HAG incarnation: THE telemetry counter.
+        # Bumped on every restart that creates sessions (full or partial).
+        # Display string is r{incarnation+1}, so --gen is unnecessary.
     roles: list[Role] = dataclasses.field(default_factory=list)
     repos: list[str] = dataclasses.field(default_factory=list)  # GitHub repos
         # the HAG works (reconcile ground truth); DEFAULT_REPOS when empty.
@@ -120,6 +134,14 @@ class HagSpec:
         for r in self.roles:
             errs.extend(r.validate())
         return errs
+
+    @property
+    def display_gen(self) -> str:
+        """Human generation string, derived: r{incarnation+1}. Old specs that
+        stored gen explicitly keep working (migration in from_dict)."""
+        if self.gen:
+            return self.gen
+        return f"r{self.incarnation + 1}"
 
     @property
     def coordinator(self) -> Role | None:
@@ -147,24 +169,28 @@ class HagSpec:
 
     def current_generation(self) -> dict | None:
         for g in reversed(self.generations):
-            if g.get("gen") == self.gen:
+            if g.get("gen") == self.display_gen:
                 return g
         return None
 
     def record_generation(self, run: dict | None = None) -> dict:
-        """Open (or refresh) the entry for `self.gen` with the live session ids."""
+        """Open (or refresh) the entry for the current incarnation with the live
+        session ids AND per-role seqs (slug -> id is stable; seqs explain tags)."""
         g = self.current_generation()
         if g is None:
-            g = {"gen": self.gen, "started_utc": utcnow_iso(), "ended_utc": "",
-                 "sessions": {}, "run": run or {}}
+            g = {"gen": self.display_gen, "incarnation": self.incarnation,
+                 "started_utc": utcnow_iso(), "ended_utc": "",
+                 "sessions": {}, "seqs": {}, "run": run or {}}
             self.generations.append(g)
+        g["incarnation"] = self.incarnation
         g["sessions"] = {r.slug: r.session for r in self.roles if r.session}
+        g["seqs"] = {r.slug: r.seq for r in self.roles}
         if run and not g.get("run"):
             g["run"] = run
         return g
 
     def close_generation(self, gen: str = "") -> dict | None:
-        gen = gen or self.gen
+        gen = gen or self.display_gen
         for g in reversed(self.generations):
             if g.get("gen") == gen and not g.get("ended_utc"):
                 g["ended_utc"] = utcnow_iso()
@@ -172,15 +198,23 @@ class HagSpec:
         return None
 
     def to_dict(self) -> dict:
-        return {"hag": self.hag, "dir": self.dir, "gen": self.gen,
+        return {"hag": self.hag, "dir": self.dir, "gen": self.display_gen,
+                "incarnation": self.incarnation,
                 "repos": self.repos, "retired_utc": self.retired_utc,
                 "roles": [dataclasses.asdict(r) for r in self.roles],
                 "generations": self.generations}
 
     @staticmethod
     def from_dict(d: dict) -> "HagSpec":
+        gen = d.get("gen", "") or ""
+        if "incarnation" in d:
+            inc = int(d.get("incarnation") or 0)
+        else:
+            m = re.match(r"r(\d+)$", gen)
+            inc = int(m.group(1)) - 1 if m else 0
         return HagSpec(hag=d.get("hag", ""), dir=d.get("dir", ""),
-                       gen=d.get("gen", ""),
+                       gen="" if "incarnation" in d else gen,
+                       incarnation=inc,
                        roles=[Role.from_dict(r) for r in d.get("roles", [])],
                        repos=list(d.get("repos", []) or []),
                        generations=list(d.get("generations", []) or []),

@@ -468,7 +468,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
 def cmd_report(a: argparse.Namespace) -> int:
     spec = HagSpec.load(a.spec)
     now = datetime.datetime.now(datetime.timezone.utc)
-    gen_label = a.gen or spec.gen or "window"
+    gen_label = a.gen or spec.display_gen or "window"
     if a.since or a.until:
         w0 = parse_ts(a.since) if a.since else now - datetime.timedelta(hours=168)
         w1 = parse_ts(a.until) if a.until else now
@@ -476,9 +476,11 @@ def cmd_report(a: argparse.Namespace) -> int:
         w0, w1 = now - datetime.timedelta(hours=a.hours), now
         gen_label = f"rolling-{a.hours:g}h"
     else:
-        g = next((g for g in reversed(spec.generations) if g.get("gen") == (a.gen or spec.gen)), None)
+        want = a.gen or spec.display_gen
+        g = next((g for g in reversed(spec.generations)
+                  if g.get("gen") == want or str(g.get("incarnation")) == want), None)
         if not g or not g.get("started_utc"):
-            print(f"no generation record for {a.gen or spec.gen} in {a.spec}; give --hours or --since/--until")
+            print(f"no generation record for {want} in {a.spec}; give --hours or --since/--until")
             return 1
         w0 = parse_ts(g["started_utc"])
         w1 = parse_ts(g["ended_utc"]) if g.get("ended_utc") else now
@@ -502,7 +504,7 @@ def cmd_report(a: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("report", help="per-incarnation report (md + html), spec-driven")
     p.add_argument("--spec", required=True)
-    p.add_argument("--gen", default="", help="generation to window on (default: spec.gen)")
+    p.add_argument("--gen", default="", help="generation to window on: display (rN) or incarnation int (default: current)")
     p.add_argument("--hours", type=float, default=0)
     p.add_argument("--since", default="")
     p.add_argument("--until", default="")

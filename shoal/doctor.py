@@ -186,7 +186,7 @@ def timer_state(hag: str) -> dict[str, str]:
 
 def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> None:
     errs = spec.validate()
-    (d.ok if not errs else d.fail)("spec", f"{spec_path} gen={spec.gen} roles={[r.slug for r in spec.roles]}"
+    (d.ok if not errs else d.fail)("spec", f"{spec_path} incarnation={spec.incarnation} ({spec.display_gen}) roles={[r.slug for r in spec.roles]}"
                                    if not errs else "; ".join(errs))
     if spec.retired_utc:
         d.warn("spec retired", f"retired_utc={spec.retired_utc}; launches refuse this spec")

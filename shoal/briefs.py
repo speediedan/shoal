@@ -78,7 +78,7 @@ def state_block(role: Role, spec: HagSpec) -> str:
 def coordinator_brief(role: Role, spec: HagSpec) -> str:
     mode = "direct-relay" if not spec.flattened else "shared-channel"
     return (
-        f"You are {role.title} ({spec.gen}, {mode}) in HAG {spec.hag}. Read: (1) {role.doc} "
+        f"You are {role.title} ({spec.display_gen}, {mode}) in HAG {spec.hag}. Read: (1) {role.doc} "
         f"(your plan_state start doc: mission, current state, grants-needed, "
         f"next), (2) shared-orchestration-instructions.md incl. Direct "
         f"session relay + Telemetry mapping. You coordinate only. "
@@ -92,7 +92,7 @@ def coordinator_brief(role: Role, spec: HagSpec) -> str:
 def lane_brief(role: Role, spec: HagSpec, coord_id: str = "") -> str:
     if spec.flattened or not coord_id:
         return (
-            f"You are {role.slug} ({spec.gen}, shared-channel, flattened — no "
+            f"You are {role.slug} ({spec.display_gen}, shared-channel, flattened — no "
             f"coordinator) in HAG {spec.hag}. Read: (1) {role.doc} (your plan_state start doc), "
             f"(2) shared-orchestration-instructions.md incl. queue + decline + "
             f"telemetry sections. Your queue file is {role.queue or '(none)'}: "
@@ -101,7 +101,7 @@ def lane_brief(role: Role, spec: HagSpec, coord_id: str = "") -> str:
             f"go to agent vote per the proposal §5 mechanism. Authorizations "
             f"do not transfer: obtain your own first-person.")
     return (
-        f"You are {role.slug} ({spec.gen}) in HAG {spec.hag}. Read: (1) {role.doc} "
+        f"You are {role.slug} ({spec.display_gen}) in HAG {spec.hag}. Read: (1) {role.doc} "
         f"(your plan_state start doc), "
         f"(2) shared-orchestration-instructions.md incl. "
         f"Direct session relay. Coordinator is {coord_id} (same dir). Report "
@@ -115,7 +115,7 @@ def lane_brief(role: Role, spec: HagSpec, coord_id: str = "") -> str:
 def consumer_brief(role: Role, spec: HagSpec) -> str:
     sidecar = f"/tmp/{spec.hag}/hag-watch-{spec.hag}-{role.slug}.state"
     return (
-        f"You are {role.slug} in HAG {spec.hag} ({spec.gen}). Read: "
+        f"You are {role.slug} in HAG {spec.hag} ({spec.display_gen}). Read: "
         f"(1) {role.doc} (your plan_state start doc — convert to the "
         f"plan_state cadence from here on: keep mission/current/decisions/"
         f"next current, grants-needed maintained), (2) {role.queue}, "
