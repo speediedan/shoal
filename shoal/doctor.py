@@ -172,6 +172,26 @@ def provider_failures(session_ids: list[str], hours: float = 24) -> dict:
     return out
 
 
+def tools_skew_note(armed_utc: str) -> str:
+    """Non-empty when the watch was armed before the newest hag/ tool commit:
+    the running process executes pre-fix code (measured 2026-09-21: a holder
+    gate fixed after arming left a live watcher silently not offering)."""
+    try:
+        out = subprocess.run(["git", "log", "-1", "--format=%ci", "--",
+                              "project_admin/shared_admin_scripts/hag/"],
+                             capture_output=True, text=True, timeout=30,
+                             cwd="/home/speediedan/repos/distributed-insight").stdout.strip()
+        tools_ts = datetime.datetime.strptime(out[:19], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc)
+        armed = datetime.datetime.strptime(armed_utc, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+    except Exception:
+        return ""
+    if armed < tools_ts:
+        return f"armed {armed_utc} predates tool update {out[:16]}Z — kill + re-arm"
+    return ""
+
+
 def timer_state(hag: str) -> dict[str, str]:
     r = run(["systemctl", "--user", "list-timers", "--all", "--no-pager", "--no-legend"], timeout=30)
     out = {}
@@ -310,6 +330,7 @@ def ledger_checks(d: Doc, spec: HagSpec) -> None:
         sid, pid = sc.get("session_id", ""), sc.get("pid", "")
         bound = sid and r.session and (sid.startswith(r.session) or r.session.startswith(sid))
         alive = bool(pid) and os.path.exists(f"/proc/{pid}")
+        skew = tools_skew_note(sc.get("armed_utc", ""))
         if r.server and r.server != os.uname().nodename:
             d.ok(f"ledger-watch {r.slug}", f"remote host {r.server}: sidecar not expected here")
         elif not alive:
@@ -317,7 +338,8 @@ def ledger_checks(d: Doc, spec: HagSpec) -> None:
         elif not bound:
             d.warn(f"ledger-watch {r.slug}", f"alive (pid {pid}) but bound to {sid or '(none)'} != spec {r.session or '(none)'}")
         else:
-            d.ok(f"ledger-watch {r.slug}", f"alive pid {pid}, bound {sid[:12]}, last tick {sc.get('last_tick', 'never')}")
+            d.ok(f"ledger-watch {r.slug}", f"alive pid {pid}, bound {sid[:12]}, last tick {sc.get('last_tick', 'never')}"
+                 + (f"; STALE-CODE {skew}" if skew else ""))
     if spec.sources:
         try:
             from sources import github_project_items
