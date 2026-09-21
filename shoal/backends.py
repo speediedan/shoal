@@ -49,6 +49,15 @@ class Backend:
     def status(self, session_id: str, repo_dir: str) -> str:
         raise NotImplementedError
 
+    def live_model(self, session_id: str, repo_dir: str) -> str:
+        """Provider/model the session actually runs ('' when unexposed).
+
+        Sessions can be switched mid-life at user direction, so the spec's
+        recorded model drifts; sync-models reconciles it. Matters at relaunch:
+        a relaunched session inherits the RECORDED model, so a drifted record
+        relaunches the wrong model."""
+        return ""
+
 
 def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(list(argv), capture_output=True, text=True,
@@ -97,6 +106,22 @@ class OpenChamberBackend(Backend):
                  "--dir", repo_dir)
         return (r.stdout + r.stderr).strip().splitlines()[0] \
             if (r.stdout + r.stderr).strip() else ""
+
+    def live_model(self, session_id: str, repo_dir: str) -> str:
+        import json as _json
+        r = _run("openchamber", "session", "list", "--dir", repo_dir,
+                 "--all", "--json")
+        try:
+            d = _json.loads(r.stdout)
+        except Exception:
+            return ""
+        sessions = d.get("sessions") if isinstance(d, dict) else d
+        for s in sessions or []:
+            if s.get("id") == session_id:
+                m = s.get("model") or {}
+                pid, mid = m.get("providerID", ""), m.get("id", "")
+                return f"{pid}/{mid}" if pid and mid else (mid or "")
+        return ""
 
 
 class ClaudeBackend(Backend):

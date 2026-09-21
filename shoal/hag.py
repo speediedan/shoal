@@ -602,6 +602,19 @@ def run_restart(spec: HagSpec, args: argparse.Namespace) -> int:
             print(f"unknown --seq slug: {slug}")
             return 1
         r.seq = num
+    for kv in (getattr(args, "set_model", None) or []):
+        try:
+            slug, model = kv.split(":", 1)
+        except ValueError:
+            print(f"bad --set-model {kv!r} (want SLUG:MODEL)")
+            return 1
+        r = spec.role(slug)
+        if r is None:
+            print(f"unknown --set-model slug: {slug}")
+            return 1
+        if r.model != model:
+            print(f"{slug}: recorded model {r.model or '(unset)'} -> {model}")
+            r.model = model
     only = None
     if getattr(args, "only", ""):
         only = [s.strip() for s in args.only.split(",") if s.strip()]
@@ -742,6 +755,40 @@ def cmd_retire(a: argparse.Namespace) -> int:
 
 # ---- status ---------------------------------------------------------------
 
+def cmd_sync_models(a: argparse.Namespace) -> int:
+    """Reconcile recorded role models against live sessions.
+
+    opencode roles: read from `session list --json`; drift updates the spec
+    (relaunch inherits the record, so a drifted record relaunches wrong).
+    claude/codex roles: model unexposed by the backend — reported, kept;
+    correct with --set-model on restart/add-role or by editing the spec.
+    """
+    spec = HagSpec.load(a.spec)
+    changed = False
+    for r in spec.roles:
+        if not r.session:
+            print(f"{r.slug}: no live session, kept {r.model or '(unset)'}")
+            continue
+        try:
+            live = get_backend(r.ecosystem).live_model(r.session, spec.dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{r.slug}: query failed ({exc}), kept {r.model or '(unset)'}")
+            continue
+        if not live:
+            print(f"{r.slug}: backend does not expose model, kept {r.model or '(unset)'}")
+        elif live != (r.model or ""):
+            print(f"{r.slug}: {r.model or '(unset)'} -> {live}")
+            if not a.dry_run:
+                r.model = live
+                changed = True
+        else:
+            print(f"{r.slug}: {live} (matches)")
+    if changed and not a.dry_run:
+        spec.save(a.spec)
+        print(f"spec models saved to {a.spec}")
+    return 0
+
+
 def cmd_status(spec: HagSpec) -> int:
     print(f"HAG {spec.hag} incarnation={spec.incarnation} ({spec.display_gen}) dir={spec.dir} "
           f"mode={'flattened' if spec.flattened else 'coordinated'}"
@@ -856,6 +903,9 @@ def main(argv: list[str] | None = None) -> int:
                         "Kept roles join --only implicitly")
     p.add_argument("--seq", action="append", default=[],
                    help="SLUG:N to pin a role's session sequence explicitly (repeatable)")
+    p.add_argument("--set-model", action="append", default=[],
+                   help="SLUG:MODEL to correct a role's recorded model (repeatable; "
+                        "adoptions and relaunches inherit the record)")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
     p.add_argument("--old-session", action="append", default=[])
     p.add_argument("--consumer-launched", action="append", default=[],
@@ -878,6 +928,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--keep", action="append", default=[],
                    help="SLUG:ID to adopt an already-live session instead of launching")
     p.add_argument("--seq", action="append", default=[])
+    p.add_argument("--set-model", action="append", default=[],
+                   help="SLUG:MODEL to correct a role's recorded model (repeatable)")
     p.add_argument("--defer-consumers", action="store_true")
     p.add_argument("--no-verify", action="store_true")
     p.add_argument("--probe-claude", action="store_true")
@@ -932,6 +984,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("status", help="restart preconditions + live posture at a glance")
     p.add_argument("--spec", required=True)
     p.set_defaults(func=lambda a: cmd_status(HagSpec.load(a.spec)))
+
+    p = sub.add_parser("sync-models", help="reconcile recorded role models against live sessions")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_sync_models)
 
     p = sub.add_parser("install-systemd",
                        help="write (and optionally enable) systemd --user watcher units")
