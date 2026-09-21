@@ -68,7 +68,7 @@ from queue_watch import cmd_queue_watch  # noqa: E402
 import ledger_cli as _ledger_cli  # noqa: E402
 import ledger_watch as _ledger_watch  # noqa: E402
 from roles import (HAG_DATA_ROOT, HAG_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
-                   state_dir, utcnow_iso)
+                   home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
 from watchers import cmd_lanes, cmd_pipeline, cmd_queue, hag_emit  # noqa: E402
@@ -207,8 +207,28 @@ def stage_retire(spec: HagSpec, old_sessions: list[str],
     return 0
 
 
+def persist_spec(spec: HagSpec, path: str, note: str = "") -> None:
+    """Save the spec; when the path lives under the ledger clone it is the
+    canonical copy, so commit+push (remote agents read it). Legacy paths
+    (.agents/hags) save plain — read-only since the ledger incarnation."""
+    spec.save(path)
+    try:
+        root = spec.ledger_dir if spec.ledger_mode else ""
+    except Exception:
+        root = ""
+    if root and os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root):
+        from ledger import git as _git
+        rel = os.path.relpath(path, root)
+        _git(root, "add", "--", rel, check=False)
+        _git(root, "commit", "--quiet", "-m", f"{spec.hag}: spec update{(' ' + note) if note else ''}",
+             "--", rel, check=False)
+        from ledger import sync_push
+        sync_push(root)
+        print(f"spec committed + pushed in {root}")
+
+
 def write_brief(spec: HagSpec, role: Role, coord_id: str = "") -> str:
-    d = os.path.join(HAG_ROOT, spec.hag, "briefs")
+    d = os.path.join(home_dir(spec.hag), "briefs")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f"{role.tag}.md")
     with open(path, "w") as fh:
@@ -315,7 +335,7 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
         if (role.coordinator and not spec.ledger_mode) or role not in targets:
             continue
         be = get_backend(role.ecosystem)
-        brief_path = os.path.join(HAG_ROOT, spec.hag, "briefs",
+        brief_path = os.path.join(home_dir(spec.hag), "briefs",
                                   f"{role.tag}.md")
         if not dry_run:
             brief_path = write_brief(spec, role, coord_id)
@@ -466,7 +486,7 @@ def mint_hag_id(name: str) -> str:
 
 def cmd_start(args: argparse.Namespace) -> int:
     hag = mint_hag_id(args.name)
-    hagdir = os.path.join(HAG_ROOT, hag)
+    home = home_dir(hag)
     roles = [parse_role(r) for r in args.role]
     ledger_mode = not args.legacy_queues
     if args.coordinator:
@@ -507,9 +527,13 @@ def cmd_start(args: argparse.Namespace) -> int:
     for r in roles:
         if ledger_mode or r.queue or r.coordinator or r.ecosystem == "opencode":
             continue
-        r.queue = os.path.join(hagdir, "queues", f"{r.slug}.md")
+        r.queue = os.path.join(home, "queues", f"{r.slug}.md")
+    if ledger_mode:
+        spec_path = os.path.join(spec.ledger_dir, "hags", hag, "hag.json")
+    else:
+        spec_path = os.path.join(home, "hag.json")
     if args.dry_run:
-        print(f"[dry-run] new HAG {hag} at {hagdir} (data: {os.path.join(HAG_DATA_ROOT, hag)})")
+        print(f"[dry-run] new HAG {hag} (home: {home}; canonical spec: {spec_path})")
         print(f"[dry-run] spec: {spec.to_dict()}")
         if ledger_mode:
             print(f"[dry-run] ledger: {spec.ledger['repo']} at {spec.ledger_dir}/hags/{hag}/ledger/ "
@@ -523,13 +547,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("[dry-run] would save spec with live ids, then: install-systemd"
               + (" --enable" if args.enable_watchers else " (run with --enable when ready)"))
         return rc
-    os.makedirs(os.path.join(hagdir, "queues"), exist_ok=True)
-    os.makedirs(os.path.join(hagdir, "briefs"), exist_ok=True)
-    os.makedirs(os.path.join(hagdir, "reports"), exist_ok=True)
-    os.makedirs(os.path.join(HAG_DATA_ROOT, hag, "telemetry"), exist_ok=True)
-    os.makedirs(os.path.join(HAG_DATA_ROOT, hag, "reports"), exist_ok=True)
+    os.makedirs(os.path.join(home, "briefs"), exist_ok=True)
+    os.makedirs(os.path.join(home, "reports"), exist_ok=True)
+    os.makedirs(os.path.join(home, "telemetry"), exist_ok=True)
+    if not ledger_mode:
+        os.makedirs(os.path.join(home, "queues"), exist_ok=True)
     os.makedirs(state_dir(hag), exist_ok=True)
-    spec_path = os.path.join(hagdir, "hag.json")
     for r in roles:
         if r.coordinator or not r.queue or os.path.exists(r.queue):
             continue
@@ -538,15 +561,14 @@ def cmd_start(args: argparse.Namespace) -> int:
         with open(r.queue, "w") as fh:
             fh.write(QUEUE_TEMPLATE.format(slug=r.slug, hag=hag, ts=ts,
                                            last_done=last_done))
-    spec.save(spec_path)
-    print(f"new HAG {hag} at {hagdir} (spec: {spec_path}; telemetry: {os.path.join(HAG_DATA_ROOT, hag, 'telemetry')})")
     if ledger_mode:
         from ledger import Ledger, ensure_clone, migrate_queue_file
         try:
             ensure_clone(spec.ledger_dir, spec.ledger["repo"], quiet=True)
             led = Ledger(hag, root=spec.ledger_dir)
             led.pull()
-            led.init(spec.snapshot(), note=f"start {hag}")
+            persist_spec(spec, spec_path, note=f"start {hag}")
+            led.init(None, note=f"start {hag}")
             print(f"ledger initialized: {led.ldir}")
             if args.adopt_queue:
                 slug = os.path.basename(args.adopt_queue).replace(".md", "")
@@ -555,6 +577,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"FAIL: ledger init: {exc}")
             return 4
+    else:
+        persist_spec(spec, spec_path, note=f"start {hag}")
+    print(f"new HAG {hag} (home: {home}; spec: {spec_path}; telemetry: {os.path.join(home, 'telemetry')})")
     args.spec = spec_path
     args.hag = hag
     args.stages = "handoffs,restart"
@@ -671,7 +696,7 @@ def run_restart(spec: HagSpec, args: argparse.Namespace) -> int:
         print(f"DONE (stages: {stages}).")
     save_to = getattr(args, "save_spec", "") or (args.spec if want(stages, "restart") else "")
     if save_to and not dry and rc in (0, 3):
-        spec.save(save_to)
+        persist_spec(spec, save_to)
         print(f"spec with live session ids + generation record saved to {save_to}")
     return rc
 
@@ -742,7 +767,7 @@ def cmd_retire(a: argparse.Namespace) -> int:
               f"sessions untouched: {[r.session for r in spec.roles if r.session]}")
         return 0
     spec.retired_utc = utcnow_iso()
-    spec.save(a.spec)
+    persist_spec(spec, a.spec, note="retire")
     hag_emit(spec.hag, "hag.py", "script", "generation", event="retired", gen=spec.display_gen,
              incarnation=str(spec.incarnation), note=a.note or "")
     print(f"retired {spec.hag} gen {spec.display_gen} at {spec.retired_utc} (sessions untouched; retire-by-neglect)")
@@ -791,7 +816,7 @@ def cmd_sync_models(a: argparse.Namespace) -> int:
         else:
             print(f"{r.slug}: {live} (matches)")
     if changed and not a.dry_run:
-        spec.save(a.spec)
+        persist_spec(spec, a.spec, note="sync-models")
         print(f"spec models saved to {a.spec}")
     return 0
 

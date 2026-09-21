@@ -14,8 +14,15 @@ flattened shape; setting the flag on one role is the coordinated shape.
 Same machinery either way — one spec edit.
 
 Two roots (both overridable by environment for tests and other hosts):
-  HAG_ROOT       versioned control plane: <root>/<hag>/{hag.json,queues/,briefs/,reports/}
-  HAG_DATA_ROOT  bulk, unversioned: <root>/<hag>/{telemetry/,reports/} (events + HTML)
+  HAG_DATA_ROOT  per-hag local home (unversioned bulk): <root>/<hag>/{briefs/,
+                     reports/,telemetry/}. Briefs, report .md twins and events
+                     live here, never in version control.
+  HAG_LEDGER / ledger.dir (git repo speediedan/hag-queues):
+                     hags/<hag>/{hag.json (THE canonical live spec, mutated by
+                     hag.py with commit+push),ledger/}. Remote agents read this.
+  HAG_ROOT       legacy versioned control plane (read-only since the ledger
+                     incarnation): <root>/<hag>/{hag.json,queues/,briefs/,reports/}.
+                     Resolves old specs by explicit path; new starts never write it.
 
 A spec also records its generation history (`generations`): one entry per
 generation with start/end timestamps, the live session ids, and the run pin
@@ -48,6 +55,11 @@ def utcnow_iso() -> str:
 
 def hag_dir(hag: str) -> str:
     return os.path.join(HAG_ROOT, hag)
+
+
+def home_dir(hag: str) -> str:
+    """Local per-hag home: briefs/, reports/, telemetry/ (unversioned)."""
+    return os.path.join(HAG_DATA_ROOT, hag)
 
 
 def data_dir(hag: str) -> str:

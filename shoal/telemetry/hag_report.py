@@ -6,7 +6,10 @@
 
 Window: --gen reads the generation record in the spec (started_utc ..
 ended_utc-or-now); --hours is a rolling window; --since/--until explicit.
-Default output: <HAG_ROOT>/<hag>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
+Default output: <HAG_DATA_ROOT>/<hag>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
+(the per-hag local home; editable review artifact carrying the VERDICT).
+HTML is a pure function of the .md: pass --out-html to render one, otherwise
+skipped (regenerate anytime; nothing reads it programmatically).
 (versioned, small, cited from hag_system_reviews.md) and the same stem .html
 under <HAG_DATA_ROOT>/<hag>/reports/ (bulk).
 
@@ -43,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
-from roles import HAG_DATA_ROOT, HAG_ROOT, HagSpec  # noqa: E402
+from roles import HAG_DATA_ROOT, HAG_ROOT, HagSpec, home_dir  # noqa: E402
 
 try:
     from zoneinfo import ZoneInfo
@@ -680,17 +683,20 @@ def cmd_report(a: argparse.Namespace) -> int:
             print(f"WARN: ledger not folded in: {exc}")
     md = build(spec, a.spec, w0, w1, evs, gen_label, a)
     stem = f"incarnation-{gen_label}-{w0.strftime('%Y%m%dT%H%M')}-{w1.strftime('%Y%m%dT%H%M')}"
-    out_md = a.out_md or os.path.join(HAG_ROOT, spec.hag, "reports", stem + ".md")
-    out_html = a.out_html or os.path.join(HAG_DATA_ROOT, spec.hag, "reports", stem + ".html")
+    out_md = a.out_md or os.path.join(home_dir(spec.hag), "reports", stem + ".md")
+    out_html = a.out_html or ""
     if a.dry_run:
         print(md)
-        print(f"[dry-run] would write {out_md} and {out_html}")
+        print(f"[dry-run] would write {out_md}" + (f" and {out_html}" if out_html else " (no html: pass --out-html)"))
         return 0
-    for p, body in ((out_md, md), (out_html, md_to_html(md, f"HAG {spec.hag} {gen_label}"))):
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w") as fh:
-            fh.write(body)
-    print(f"wrote {out_md}\nwrote {out_html} ({len(evs)} events)")
+    os.makedirs(os.path.dirname(out_md), exist_ok=True)
+    with open(out_md, "w") as fh:
+        fh.write(md)
+    if out_html:
+        os.makedirs(os.path.dirname(out_html), exist_ok=True)
+        with open(out_html, "w") as fh:
+            fh.write(md_to_html(md, f"HAG {spec.hag} {gen_label}"))
+    print(f"wrote {out_md}" + (f"\nwrote {out_html}" if out_html else "") + f" ({len(evs)} events)")
     return 0
 
 
