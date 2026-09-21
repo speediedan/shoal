@@ -159,7 +159,7 @@ def stage_handoffs(spec: HagSpec, dry_run: bool) -> int:
             print(f"MISSING: {role.doc} ({role.slug} has no start doc)")
             rc = 5
             continue
-        if re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan state|plan state)",
+        if re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan[ _]state|plan[ _]state)",
                      text, flags=re.M | re.I):
             print(f"ok: {role.doc}")
         else:
@@ -570,7 +570,10 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
-    spec = load_spec(args)
+    return run_restart(load_spec(args), args)
+
+
+def run_restart(spec: HagSpec, args: argparse.Namespace) -> int:
     if spec.retired_utc and not getattr(args, "force", False):
         print(f"spec is retired ({spec.retired_utc}); start a fresh HAG or pass --force")
         return 1
@@ -634,7 +637,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
             spec.incarnation = prev.incarnation + 1
             for r in spec.roles:
                 if r.slug in only and r.slug not in launched and r.slug not in seq_over:
-                    r.seq += 1
+                    had = prev.role(r.slug)
+                    if had is not None and had.session:
+                        r.seq += 1
                 if r.slug in only and r.slug not in launched:
                     r.session = ""
     rc = 0
@@ -676,6 +681,43 @@ def old_sessions_from_spec(path: str, gen: str) -> list[str]:
     if old.display_gen == gen:
         return []
     return [r.session for r in old.roles if r.session]
+
+
+def cmd_add_role(a: argparse.Namespace) -> int:
+    """Extend a live HAG with new roles (no restart of existing sessions).
+
+    New slugs are gated (handoffs + sync-plans over the whole spec, so the new
+    docs must pass), then launched exactly like a partial restart with
+    --only=new-slugs. Incarnation bumps; untouched roles keep sessions+seqs;
+    the ledger spec snapshot refreshes inside stage_restart.
+    """
+    spec = HagSpec.load(a.spec)
+    if spec.retired_utc and not getattr(a, "force", False):
+        print(f"spec is retired ({spec.retired_utc}); pass --force")
+        return 1
+    new_roles = [parse_role(r) for r in (a.role or [])]
+    if not new_roles:
+        print("add-role needs at least one --role")
+        return 1
+    dupes = [r.slug for r in new_roles if spec.role(r.slug) is not None]
+    if dupes:
+        print(f"slugs already in spec (use restart --only to relaunch): {dupes}")
+        return 1
+    spec.roles.extend(new_roles)
+    errs = spec.validate()
+    if errs:
+        print("spec invalid:", *errs, sep="\n  ")
+        return 1
+    a.only = ",".join(r.slug for r in new_roles)
+    a.stages = getattr(a, "stages", "") or "handoffs,sync-plans,restart"
+    a.save_spec = a.spec
+    for attr, default in (("old_session", []), ("consumer_launched", []),
+                          ("keep", []), ("seq", []), ("defer_consumers", False),
+                          ("probe_claude", False), ("no_verify", False),
+                          ("no_coordinator", False)):
+        if not hasattr(a, attr):
+            setattr(a, attr, default)
+    return run_restart(spec, a)
 
 
 def cmd_retire(a: argparse.Namespace) -> int:
@@ -827,6 +869,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--force", action="store_true", help="restart a retired spec anyway")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=lambda a: cmd_restart(a))
+
+    p = sub.add_parser("add-role", help="extend a live HAG with new roles (existing sessions untouched)")
+    p.add_argument("--spec", required=True, help="hag.json path")
+    p.add_argument("--role", action="append", default=[],
+                   help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,fills][,scope=R][,model=M][,effort=E][,seq=N] (repeatable)")
+    p.add_argument("--stages", default="handoffs,sync-plans,restart")
+    p.add_argument("--keep", action="append", default=[],
+                   help="SLUG:ID to adopt an already-live session instead of launching")
+    p.add_argument("--seq", action="append", default=[])
+    p.add_argument("--defer-consumers", action="store_true")
+    p.add_argument("--no-verify", action="store_true")
+    p.add_argument("--probe-claude", action="store_true")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=lambda a: cmd_add_role(a))
 
     p = sub.add_parser("retire", help="close the generation, mark the spec retired")
     p.add_argument("--spec", required=True)
