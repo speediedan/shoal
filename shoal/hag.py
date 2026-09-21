@@ -583,10 +583,10 @@ def cmd_restart(args: argparse.Namespace) -> int:
         return 1
     stages = args.stages or ",".join(ALL_STAGES)
     dry = args.dry_run
-    launched = dict(kv.split(":", 1) for kv in (args.consumer_launched or []))
-    launched.update(dict(kv.split(":", 1) for kv in (args.keep or [])))
+    launched = dict(kv.split(":", 1) for kv in (getattr(args, "consumer_launched", None) or []))
+    launched.update(dict(kv.split(":", 1) for kv in (getattr(args, "keep", None) or [])))
     seq_over = {}
-    for kv in (args.seq or []):
+    for kv in (getattr(args, "seq", None) or []):
         try:
             slug, num = kv.split(":", 1)
             seq_over[slug] = int(num)
@@ -793,6 +793,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-coordinator", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--consumer-launched", action="append", default=[])
+    p.add_argument("--keep", action="append", default=[],
+                   help="SLUG:ID to adopt an already-live session (any ecosystem; repeatable)")
+    p.add_argument("--seq", action="append", default=[],
+                   help="SLUG:N to pin a role's session sequence explicitly (repeatable)")
     p.add_argument("--defer-consumers", action="store_true")
     p.add_argument("--no-verify", action="store_true", help="skip consumer effect-verification poll")
     p.add_argument("--probe-claude", action="store_true")
