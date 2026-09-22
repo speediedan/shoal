@@ -203,6 +203,41 @@ def _watch_last_tick(hag: str, slug: str) -> str:
         return "never"
 
 
+def _stale_active(spec, role, last_state: dict, threshold_min: float,
+                  now_utc) -> str | None:
+    """STALE-ACTIVE detector (failure-modes §20): the ledger row says `active`
+    but the session is provably between turns and no wait is proven — a turn
+    ended (or crashed) without its closing transition.
+
+    Returns the page detail, or None when the row is not stale-active. Only
+    fires on positive idle evidence (opencode CLI `status:idle`); a busy
+    session, a failed status query, or a non-opencode ecosystem never fires,
+    so a long work burst can never false-page."""
+    if role.ecosystem != "opencode" or not role.session:
+        return None
+    st, sts = last_state.get(role.slug, ("", ""))
+    if st != "active" or not sts:
+        return None
+    try:
+        stt = datetime.datetime.strptime(sts, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+    s_age = (now_utc - stt).total_seconds() / 60
+    if s_age <= threshold_min:
+        return None
+    try:
+        cli = get_backend("opencode").status(role.session, spec.dir)
+    except Exception:
+        return None
+    if not cli or "status:idle" not in cli:
+        return None
+    return (f"STALE-ACTIVE: ledger row active since {sts} ({s_age:.0f}m), "
+            f"session CLI-idle, no wait proven — the turn ended without a "
+            f"closing transition: transition to waiting (reason + watchers) "
+            f"or idle, or resume work. [{cli.strip()[:80]}]")
+
+
 def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
     """One row per role: {slug, klass, age_min, detail, suspect: bool}.
 
@@ -221,6 +256,8 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
         pass
     rows = []
     ledger_age: dict[str, float] = {}
+    last_state: dict[str, tuple[str, str]] = {}  # slug -> (state, ts) of last state event
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
     if spec.ledger_mode:
         try:
             from ledger import Ledger, View
@@ -235,6 +272,9 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                         ledger_age[slug] = (now - t).total_seconds() / 60
                     except ValueError:
                         pass
+                for slug, ev in v.states.items():
+                    if isinstance(ev, dict) and ev.get("state"):
+                        last_state[slug] = (ev["state"], ev.get("ts", ""))
         except Exception:  # noqa: BLE001
             pass
     for role in spec.roles:
@@ -262,53 +302,60 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
             row.update(klass="stale-wait", suspect=True,
                        detail=f"STALE WAIT past rescan {w.get('rescan_utc')} "
                               f"(holder: {w.get('holder')}, sub: {w.get('sub')}) — re-verify, never extend")
-        elif age <= threshold_min:
-            row.update(klass="fresh", suspect=False, detail=f"ok ({age:.0f}m)")
-        elif wstate == "covered":
-            row.update(klass="covered", suspect=False,
-                       detail=f"stale {age:.0f}m but wait proven until {w.get('rescan_utc')} "
-                              f"(holder: {w.get('holder')})")
         else:
-            cover = status_wait_cover(role.queue) if role.queue else None
-            if cover:
-                row.update(klass="covered*", suspect=False,
-                           detail=f"stale {age:.0f}m but STATUS waiting-on: {cover}")
+            stale_active = None
+            if spec.ledger_mode and wstate != "covered":
+                stale_active = _stale_active(spec, role, last_state,
+                                             threshold_min, now_utc)
+            if stale_active is not None:
+                row.update(klass="stale-active", suspect=True, detail=stale_active)
+            elif age is not None and age <= threshold_min:
+                row.update(klass="fresh", suspect=False, detail=f"ok ({age:.0f}m)")
+            elif wstate == "covered":
+                row.update(klass="covered", suspect=False,
+                           detail=f"stale {age:.0f}m but wait proven until {w.get('rescan_utc')} "
+                                  f"(holder: {w.get('holder')})")
             else:
-                smin = status_updated_min(role.queue) if role.queue else None
-                if smin is not None and smin <= threshold_min:
+                cover = status_wait_cover(role.queue) if role.queue else None
+                if cover:
                     row.update(klass="covered*", suspect=False,
-                               detail=f"stale {age:.0f}m but STATUS written "
-                                      f"{smin:.0f}m ago (alive, no wait declared)")
-                    rows.append(row)
-                    continue
-                deaf = (spec.ledger_mode
-                        and getattr(role, "fill", "") == "self"
-                        and watch_dead(spec.hag, role.slug))
-                if deaf:
-                    row.update(klass="idle-deaf", suspect=True,
-                               detail=f"IDLE with empty queue and dead ledger-watch "
-                                      f"(fill=self, no board poll since "
-                                      f"{_watch_last_tick(spec.hag, role.slug)}): "
-                                      f"WAKEUP-READ needed — show, claim/decline, re-arm")
-                    rows.append(row)
-                    continue
-                if role.session:
-                    q = quota_paused(role, spec.dir)
-                    if q:
-                        row.update(klass="quota-paused", suspect=False,
-                                   detail=f"provider quota exhausted (reset: {q}) — not a stall, "
-                                          f"not evictable;suppress pages until reset")
+                               detail=f"stale {age:.0f}m but STATUS waiting-on: {cover}")
+                else:
+                    smin = status_updated_min(role.queue) if role.queue else None
+                    if smin is not None and smin <= threshold_min:
+                        row.update(klass="covered*", suspect=False,
+                                    detail=f"stale {age:.0f}m but STATUS written "
+                                           f"{smin:.0f}m ago (alive, no wait declared)")
                         rows.append(row)
                         continue
-                extra = ""
-                if role.ecosystem == "opencode" and role.session:
-                    try:
-                        extra = get_backend("opencode").status(role.session, spec.dir)
-                    except Exception as exc:  # noqa: BLE001
-                        extra = f"status query failed: {exc}"
-                row.update(klass="stale", suspect=True,
-                           detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
-                                  + (f" [{extra}]" if extra else ""))
+                    deaf = (spec.ledger_mode
+                            and getattr(role, "fill", "") == "self"
+                            and watch_dead(spec.hag, role.slug))
+                    if deaf:
+                        row.update(klass="idle-deaf", suspect=True,
+                                    detail=f"IDLE with empty queue and dead ledger-watch "
+                                           f"(fill=self, no board poll since "
+                                           f"{_watch_last_tick(spec.hag, role.slug)}): "
+                                           f"WAKEUP-READ needed — show, claim/decline, re-arm")
+                        rows.append(row)
+                        continue
+                    if role.session:
+                        q = quota_paused(role, spec.dir)
+                        if q:
+                            row.update(klass="quota-paused", suspect=False,
+                                        detail=f"provider quota exhausted (reset: {q}) — not a stall, "
+                                               f"not evictable;suppress pages until reset")
+                            rows.append(row)
+                            continue
+                    extra = ""
+                    if role.ecosystem == "opencode" and role.session:
+                        try:
+                            extra = get_backend("opencode").status(role.session, spec.dir)
+                        except Exception as exc:  # noqa: BLE001
+                            extra = f"status query failed: {exc}"
+                    row.update(klass="stale", suspect=True,
+                                detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
+                                       + (f" [{extra}]" if extra else ""))
         rows.append(row)
     for row in rows:
         if row["suspect"] or row.get("klass") == "quota-paused":
