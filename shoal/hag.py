@@ -92,11 +92,13 @@ def want(stages: str, name: str) -> bool:
 
 def parse_role(spec: str) -> Role:
     """SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,fills][,fill=self|assigned|none]
-    [,scope=repo|repo][,server=H][,model=M][,effort=E][,seq=N]. DOC is the
+    [,scope=repo|repo][,scope-label=NAME][,server=H][,model=M][,effort=E][,seq=N]. DOC is the
     single plan_state.md start document. Grants come from the doc's
     grants-needed section at brief time — never from the CLI. seq sets the
     session tag ({slug}-r{seq}); default 1. fill defaults to self (5.k);
-    `fills` grants can_fill_others without making the role the coordinator."""
+    `fills` grants can_fill_others without making the role the coordinator.
+    scope= entries narrow by repo; scope-label= entries require the board label
+    (labels_any) — e.g. a migration lane that only sees its own labeled items."""
     parts = spec.split(",")
     if len(parts) < 4:
         raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,DOC[,...]): {spec!r}")
@@ -112,6 +114,8 @@ def parse_role(spec: str) -> Role:
             fill = tok[len("fill="):]
         elif tok.startswith("scope="):
             scope = {"repos": [x for x in tok[len("scope="):].split("|") if x]}
+        elif tok.startswith("scope-label="):
+            scope.setdefault("labels_any", []).append(tok[len("scope-label="):])
         elif tok.startswith("server="):
             server = tok[len("server="):]
         elif tok.startswith("model="):
