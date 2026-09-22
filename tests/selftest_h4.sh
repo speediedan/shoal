@@ -51,6 +51,14 @@ cat > "$S/up_ctx.json" <<'JSON'
 JSON
 $H context set --hag $HAGID --spec "$SPEC" --slug up --file "$S/up_ctx.json" >/dev/null
 check '"upstream": 2.0' $H context show --hag $HAGID --spec "$SPEC" --slug up
+# contexts are per-HAG orchestration state in the data dir: export, edit there, load back
+check "wrote $S/data/$HAGID/contexts/tl.json" $H context export --hag $HAGID --spec "$SPEC"
+python3 - "$S/data/$HAGID/contexts/tl.json" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["affinity"].setdefault("keywords",{})["HookedTransformer"]=2.5; json.dump(d,open(p,"w"))
+PY
+check "context load: \['tl'\]" $H context load --hag $HAGID --spec "$SPEC"
+check '"HookedTransformer": 2.5' $H context show --hag $HAGID --spec "$SPEC" --slug tl
+check "nothing to change" $H context load --hag $HAGID --spec "$SPEC"
 
 echo "== 2 digest: one board read, ranked per role, written to the data root"
 check '\[dry-run\] digest h4selftest' $H digest --hag $HAGID --spec "$SPEC" --refresh --dry-run --no-sync
@@ -107,10 +115,18 @@ check "hag-$HAGID-tl-ok" $H job status --hag $HAGID
 echo "== 7 work loop: next reads, queue writes ONE commit (claim + posture + version)"
 python3 - "$SPEC" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p))
-d["features"]={"digest":True,"jobs":True,"workwake":True,"health":{"validity_wake_min":90},"relay":True}
-d["roles"].append({"slug":"hag-relay","ecosystem":"claude","title":"hag-relay","doc":d["roles"][0]["doc"],"fill":"none","session":"rrrr3333","model":"haiku"})
+d["features"]={"digest":True,"jobs":True,"workwake":True,"health":{"validity_wake_min":90}}
 json.dump(d,open(p,"w"),indent=1)
 PY
+check "\[dry-run\] relay-init $HAGID: doc $S/data/$HAGID/roles/hag-relay/plan_state.md; role ADD" $H relay-init --hag $HAGID --spec "$SPEC" --dry-run
+check "role ADD" $H relay-init --hag $HAGID --spec "$SPEC"
+grep -qi "current state" "$S/data/$HAGID/roles/hag-relay/plan_state.md" || fail "relay doc lacks the current-state section restart verifies"
+python3 - "$SPEC" <<'PY' || fail "relay-init did not add the role / feature"
+import json,sys; d=json.load(open(sys.argv[1])); r=[x for x in d["roles"] if x["slug"]=="hag-relay"]
+assert r and r[0]["fill"]=="none" and d["features"].get("relay") is True, (r, d["features"])
+r[0]["session"]="rrrr3333"; json.dump(d,open(sys.argv[1],"w"),indent=1)
+PY
+check "role present" $H relay-init --hag $HAGID --spec "$SPEC"
 git -C "$A" add -A >/dev/null 2>&1; git -C "$A" commit -qm spec >/dev/null 2>&1 || true
 check "QUEUE v0" $H next --hag $HAGID --spec "$SPEC" --slug up --no-sync
 I1=interpretune#9101; I2=interpretune#9102; I3=interpretune#9103; I4=interpretune#9104

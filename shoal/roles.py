@@ -70,6 +70,19 @@ def telemetry_dir(hag: str) -> str:
     return os.path.join(data_dir(hag), "telemetry")
 
 
+def contexts_dir(hag: str) -> str:
+    """Per-HAG orchestration state: one editable working-context file per role,
+    `<slug>.json`, loaded into the spec by `hag.py context set|load` (architecture §4)."""
+    return os.path.join(data_dir(hag), "contexts")
+
+
+def roles_dir(hag: str) -> str:
+    """Per-HAG orchestration state: generated start docs for infrastructure roles
+    (e.g. `roles/hag-relay/plan_state.md`); worker roles keep their plan_state in the
+    design repo, where their mission lives."""
+    return os.path.join(data_dir(hag), "roles")
+
+
 def state_dir(hag: str) -> str:
     """Scratch state (/tmp): sidecars, heartbeats, wait files, watcher ticks."""
     return os.path.join("/tmp", hag)

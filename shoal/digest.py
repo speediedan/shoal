@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 
-from roles import HagSpec, data_dir, find_spec, scope_to_context  # noqa: E402
+from roles import HagSpec, contexts_dir, data_dir, find_spec, scope_to_context  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
 EXCERPT_CHARS = 600
@@ -421,23 +421,58 @@ def cmd_context(a) -> int:
     if a.slug and targets[0] is None:
         print(f"ERROR: {a.slug} is not a role in {spec.hag}")
         return 1
+    cdir = contexts_dir(spec.hag)
     if a.action == "show":
         for r in targets:
             src = "context" if r.context else ("scope (derived)" if r.scope else "none")
-            print(f"{r.slug} [{src}]: {json.dumps(r.working_context())}")
+            f = os.path.join(cdir, f"{r.slug}.json")
+            print(f"{r.slug} [{src}; file {'present' if os.path.exists(f) else 'absent'}: {f}]: "
+                  f"{json.dumps(r.working_context())}")
+        return 0
+    if a.action == "export":
+        os.makedirs(cdir, exist_ok=True)
+        for r in targets:
+            f = os.path.join(cdir, f"{r.slug}.json")
+            if os.path.exists(f) and not a.force:
+                print(f"kept {f} (exists; --force to overwrite)")
+                continue
+            if a.dry_run:
+                print(f"[dry-run] would write {f}")
+                continue
+            with open(f, "w") as fh:
+                json.dump(r.working_context() or {"brief": "", "affinity": {}, "never": {}}, fh, indent=1)
+            print(f"wrote {f}")
         return 0
     changed = []
-    if a.action == "set":
-        if not a.slug or not a.file:
-            print("ERROR: context set needs --slug and --file CONTEXT.json")
-            return 1
-        with open(a.file) as fh:
+
+    def _read(path: str) -> dict | None:
+        with open(path) as fh:
             ctx = json.load(fh)
         if not isinstance(ctx, dict) or set(ctx) - {"brief", "affinity", "never"}:
-            print("ERROR: context keys must be a subset of brief, affinity, never")
+            print(f"ERROR: {path}: context keys must be a subset of brief, affinity, never")
+            return None
+        return ctx
+
+    if a.action == "set":
+        if not a.slug:
+            print("ERROR: context set needs --slug (and --file, default <data-root>/<hag>/contexts/<slug>.json)")
+            return 1
+        ctx = _read(a.file or os.path.join(cdir, f"{a.slug}.json"))
+        if ctx is None:
             return 1
         targets[0].context, targets[0].scope = ctx, {}
         changed.append(targets[0].slug)
+    elif a.action == "load":
+        for r in targets:
+            f = os.path.join(cdir, f"{r.slug}.json")
+            if not os.path.exists(f):
+                continue
+            ctx = _read(f)
+            if ctx is None:
+                return 1
+            if ctx != r.context or r.scope:
+                r.context, r.scope = ctx, {}
+                changed.append(r.slug)
     elif a.action == "migrate":
         for r in targets:
             if r.scope and not r.context:
@@ -484,11 +519,14 @@ def add_parsers(sub) -> None:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_triage)
 
-    p = sub.add_parser("context", help="show / set / migrate role working contexts (replaces scope)")
-    p.add_argument("action", choices=["show", "set", "migrate"])
+    p = sub.add_parser("context", help="show / set / load / export / migrate role working contexts (replaces scope)")
+    p.add_argument("action", choices=["show", "set", "load", "export", "migrate"],
+                   help="load: every <data-root>/<hag>/contexts/<slug>.json into the spec; "
+                        "export: the spec's (or scope-derived) contexts to those files")
     p.add_argument("--hag", required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="")
-    p.add_argument("--file", default="", help="context JSON for `set`")
+    p.add_argument("--file", default="", help="context JSON for `set` (default <data-root>/<hag>/contexts/<slug>.json)")
+    p.add_argument("--force", action="store_true", help="export: overwrite existing files")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_context)
