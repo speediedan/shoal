@@ -574,18 +574,24 @@ def md_to_html(md: str, title: str) -> str:
 def recovery_sections(evs, w0, w1):
     """Recovery tiers, job units, digest refreshes (architecture doc §4-§6) and host
     PSI / harness reaps from the H4 instruments (failure modes §21)."""
-    L = ["", "## Recovery tiers, job units, digest"]
-    tiers, jobs, digests, deadman = {}, {"start": 0, "success": 0, "failed": 0, "gone": 0}, 0, {"ok": 0, "dead": 0}
+    L = ["", "## Health quorum actions, wakes per item, job units, digest"]
+    tiers, jobs, digests = {}, {"start": 0, "success": 0, "failed": 0, "gone": 0}, 0
+    wakes, msg_wakes = {}, 0
     for e in evs:
         if e.get("type") != "watch_event":
             continue
         k = e.get("kind", "")
-        if k == "deadman":
-            deadman["ok" if e.get("note") == "ok" else "dead"] += 1
-            tiers["T1 deadman dead->re-arm"] = tiers.get("T1 deadman dead->re-arm", 0) + (e.get("note") != "ok")
+        if k == "health":
+            what = (e.get("note", "") or "").split(" -> ")[0]
+            key = f"{e.get('tier', 'T2')} {what.split(' step')[0].split(' ', 1)[-1] if ' ' in what else what}"
+            tiers[key] = tiers.get(key, 0) + 1
         elif k == "stall-suspect":
             t = e.get("tier") or "T2"
-            tiers[f"{t} heartbeat page"] = tiers.get(f"{t} heartbeat page", 0) + 1
+            tiers[f"{t} heartbeat page (legacy)"] = tiers.get(f"{t} heartbeat page (legacy)", 0) + 1
+        elif k == "ledger-wake":
+            s_ = e.get("slug", "?")
+            wakes[s_] = wakes.get(s_, 0) + 1
+            msg_wakes += "MSG" in (e.get("note", "") or "").split(",")
         elif k == "job-start":
             jobs["start"] += 1
         elif k == "job-verdict":
@@ -593,10 +599,21 @@ def recovery_sections(evs, w0, w1):
             jobs["success" if "result=success" in n else "gone" if "UNIT-GONE" in n else "failed"] += 1
         elif k == "digest-refresh":
             digests += 1
-    L.append(f"- deadman checks: {deadman['ok']} ok, {deadman['dead']} dead · digest refreshes: {digests}"
-             f" · job units: {jobs['start']} started, {jobs['success']} success, {jobs['failed']} failed, "
-             f"{jobs['gone']} killed outside their command (bar: 0)")
-    L.append(table(["tier", "count"], sorted(tiers.items())) if tiers else "_no recovery-tier events_")
+    done_by, queue_v = {}, {}
+    for e in evs:
+        if e.get("type") == "ledger_done":
+            done_by[e.get("slug", "?")] = done_by.get(e.get("slug", "?"), 0) + 1
+        if e.get("type") == "ledger_queue":
+            queue_v[e.get("slug", "?")] = queue_v.get(e.get("slug", "?"), 0) + 1
+    L.append(f"- job units: {jobs['start']} started, {jobs['success']} success, {jobs['failed']} failed, "
+             f"{jobs['gone']} killed outside their command (bar: 0) · digest refreshes: {digests} · "
+             f"msg-induced wakes: {msg_wakes} (bar under workwake: 0)")
+    rows = [[s_, wakes.get(s_, 0), done_by.get(s_, 0), queue_v.get(s_, 0),
+             f"{wakes.get(s_, 0) / done_by[s_]:.1f}" if done_by.get(s_) else "-"]
+            for s_ in sorted(set(wakes) | set(done_by) | set(queue_v))]
+    if rows:
+        L.append(table(["role", "wakes", "done", "queue versions", "wakes per done item"], rows))
+    L.append(table(["tier", "count"], sorted(tiers.items())) if tiers else "_no health-quorum actions_")
     instr = os.path.join(os.environ.get("HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags"), "_instruments")
     psi_n, kills = 0, []
     try:

@@ -54,10 +54,11 @@ LEDGER_DIR = os.environ.get("HAG_LEDGER_DIR", os.path.expanduser("~/repos/hag-qu
 GIT_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get("PATH", ""),
                GIT_TERMINAL_PROMPT="0")
 
-TYPES = ("offer", "withdraw", "claim", "release", "done", "msg", "state", "system")
+TYPES = ("offer", "withdraw", "claim", "release", "done", "msg", "state", "system", "queue")
+QUEUE_NEXT_MAX = 3  # a role's declared queue: one active item + at most this many next
 RELEASE_KINDS = ("decline", "lost-race", "blocked", "handoff")
 MSG_KINDS = ("info", "ack", "ask", "instruct", "stall-suspect", "server-respawned",
-             "starved", "hold", "wake-test")
+             "starved", "hold", "wake-test", "health")
 OFFER_SRC = ("user", "coordinator", "self", "board", "migration", "peer")
 VERB_RE = re.compile(r":(fix|review|scope|design|verify|triage|merge|doc|test|release|investigate)$")
 DEFAULT_PRIO = 50
@@ -409,6 +410,8 @@ class View:
         self.releases: list[dict] = []
         self.msgs: list[dict] = []
         self.states: dict[str, dict] = {}         # slug -> last state event
+        self.queues: dict[str, dict] = {}         # slug -> latest role-owned `queue` version
+        self.modes: dict[str, dict] = {}          # mode name -> latest system mode event
         self.last_by: dict[str, str] = {}         # writer -> last ts
         self.violations: list[tuple[dict, str]] = []
         self.contested: dict[str, list[dict]] = {}
@@ -500,6 +503,16 @@ class View:
                 self.msgs.append(e)
             elif typ == "state":
                 self.states[by] = e
+            elif typ == "queue":
+                if e.get("_writer_file") != by or (self.spec is not None and not self.perms.is_role(by)):
+                    self._viol(e, f"queue event by {by} not in its own role file")
+                    continue
+                self.queues[by] = e
+            elif typ == "system" and e.get("mode"):
+                if by not in ("user", "hag.py"):
+                    self._viol(e, f"{by} may not set mode {e.get('mode')}")
+                    continue
+                self.modes[e["mode"]] = e
         for key, cs in self.claims.items():
             live = [c for c in cs if c.get("_live")]
             if len(live) > 1:
@@ -567,6 +580,23 @@ class View:
 
     def role_state(self, slug: str) -> dict | None:
         return self.states.get(slug)
+
+    def current_queue(self, slug: str) -> dict | None:
+        """The role's latest declared queue version (proposal §D), or None."""
+        return self.queues.get(slug)
+
+    def is_idle(self, slug: str) -> bool:
+        """Idle = the role's latest queue version has no active item. A role that has
+        never written a queue version is idle unless it holds a live claim."""
+        q = self.queues.get(slug)
+        if q is not None:
+            return not q.get("active")
+        return not self.active(slug)
+
+    def user_offline(self) -> dict | None:
+        """The live user-offline mode event, or None when the maintainer is online."""
+        m = self.modes.get("user-offline")
+        return m if m is not None and m.get("state") == "on" else None
 
 
 # ---- rendering ---------------------------------------------------------------

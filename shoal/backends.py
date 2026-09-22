@@ -183,7 +183,12 @@ class ClaudeBackend(Backend):
     session forks a copy instead of injecting (verified 2026-09-19), so
     headless sends would silently fork consumers. Coordinator→consumer
     traffic travels ONLY in the queue file — that is the channel, and the
-    reason sends are refused rather than approximated.
+    reason sends are refused rather than approximated. The health quorum's
+    Claude wake adapter is therefore not here: it is a wake-request file the
+    role's own ledger-watch delivers, else the `hag-relay` session's
+    cross-session message (health.request_wake; architecture doc §6). The
+    relay is launched by create() like every lane, so it shares their
+    permission mode, which cross-session delivery requires.
     """
     ecosystem = "claude"
 

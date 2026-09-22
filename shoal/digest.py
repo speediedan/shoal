@@ -312,6 +312,9 @@ def _spec_view(a, need_view: bool = True):
 def cmd_digest(a) -> int:
     spec, view = _spec_view(a)
     if a.refresh:
+        if not a.dry_run:
+            from watchers import tick
+            tick(spec.hag, "digest")  # self-tick: an old tick is a dead timer, never a quiet board
         t0 = time.time()
         doc = build(spec, view)
         dt = time.time() - t0

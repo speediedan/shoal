@@ -137,11 +137,73 @@ def consumer_brief(role: Role, spec: HagSpec) -> str:
         f"decline/hold options. Confirm with QUEUE item count, sidecar echoed, loop alive.")
 
 
+def relay_brief(role: Role, spec: HagSpec) -> str:
+    """The Claude wake relay (architecture doc §6): not a worker; one waiter, one tool."""
+    hag = spec.hag
+    return (
+        f"You are {role.slug} ({role.tag}) in HAG {hag}: the wake relay for Claude roles whose own watcher "
+        f"is dead. You do no project work, claim nothing, and message nobody on your own initiative. "
+        f"LOOP: run `{HAGPY} relay-watch --hag {hag}` as a background command. When it exits it prints "
+        f"`RELAY-WAKE to=<session name> session=<id> :: <text>` lines: for EACH line call SendMessage with "
+        f"to=<session name> and message=<text> verbatim (use ListAgents to add the [ref] only when two sessions "
+        f"share the name; prefer the one whose session id starts with <id>), then re-arm relay-watch, then end "
+        f"the turn with one line: `relayed N`. Never add commentary to a relayed message. Keep your context "
+        f"small: no other reading. Confirm arming with the relay-watch pid.")
+
+
+def workwake_brief(role: Role, spec: HagSpec) -> str:
+    """The work-loop brief (architecture doc §3): wake on work only, two verbs per boundary."""
+    hag = spec.hag
+    feats = getattr(spec, "features", {}) or {}
+    wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
+    arm = (f"{HAGPY} ledger-watch --hag {hag} --slug {role.slug} --wake {wake} "
+           f"--session <your-full-session-id> --interval 120")
+    how_arm = ("as a background command that re-invokes you when it exits"
+               if role.ecosystem != "opencode" else
+               "setsid-detached (`setsid nohup <cmd> >>/tmp/" + hag + "/ledger-watch-" + role.slug
+               + ".log 2>&1 < /dev/null &`); it self-sends its wake to your session id and exits")
+    fill = {"self": "You fill your own queue: from offers first (by prio), then your digest/board candidates.",
+            "assigned": "You work only offers addressed to you (or `*`); you never pop the board.",
+            "none": "You never claim."}.get(role.fill, "")
+    fills = (" You hold can_fill_others: you may `offer` work to other roles (`--now` interrupts a busy role; "
+             "use it only when the work cannot wait for their next boundary)." if role.fills_others else "")
+    return (
+        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}) in HAG {hag}. Read: (1) {role.doc} "
+        f"(your plan_state start doc: mission, current state, decisions, grants-needed, next; keep it current), "
+        f"(2) the shared orchestration instructions sections 'Unified ledger primitive' and 'Watcher placement, "
+        f"kills and recovery'. Your job is to work through a QUEUE: one active item and up to three next items, "
+        f"declared by you in the ledger. {fill}{fills} "
+        f"AT EVERY BOUNDARY (a wake, or finishing/blocking an item) do exactly two things: READ `{HAGPY} next "
+        f"--hag {hag} --slug {role.slug}` (queue, offers, candidates with scores and excerpts, mail, waits, watcher) "
+        f"and WRITE ONE `{HAGPY} queue --hag {hag} --slug {role.slug} --active <repo#n:verb> --next <a,b,c> "
+        f"[--done <item> --url <evidence>] [--pass <item>:<class>[:suggest=<role>]] [--wait <sub> --holder <who> "
+        f"--target <lease:..|job:..|gh-run:..|gh-pr:..|az-build:..>] | --idle`. The write claims the active item, "
+        f"records done/passes/posture and your new queue version in one commit. Every pop BACKFILLS next to three "
+        f"(or give --reason why fewer). Then keep working the active item without sleeping. Sleep only when "
+        f"WAITING (arm the waiter first, give --target so the health quorum can verify it) or when your queue is "
+        f"empty (--idle). WAKES ARE WORK-ONLY: new work while you are idle, a change to your active item, a wait "
+        f"you armed, or a health wake. Mail from other roles never wakes you; read it in `next` and act at the "
+        f"boundary. To get another role to DO something, offer it as work; do not message for it. "
+        f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}; run it once with `--test` first and "
+        f"confirm the test wake arrived. Re-arm after every wake and prove the pid (ps -p plus sidecar). "
+        f"USER-OFFLINE: when `next` prints "
+        f"USER OFFLINE, never wait on the maintainer: record each blocking ask with `queue --ask`, stack PRs "
+        f"(gh-stack) or take the next unblocked item; you are woken when they return. "
+        f"{h4_disciplines(role, spec)}Grants are first-person: ask the maintainer directly with decline/hold "
+        f"options; authorizations never transfer. Confirm arming with: `next` output echoed, watcher pid, test "
+        f"wake seen, first `queue` version written.")
+
+
 def ledger_brief(role: Role, spec: HagSpec) -> str:
     """ONE brief shape for every role in ledger mode (5.j/5.k): the same
     verbs, the same watcher, the same wake discipline, whatever the
     ecosystem. Differences are data: fill mode, permissions, wake adapter."""
     hag = spec.hag
+    feats0 = getattr(spec, "features", {}) or {}
+    if role.slug == "hag-relay":
+        return relay_brief(role, spec)
+    if feats0.get("workwake"):
+        return workwake_brief(role, spec)
     wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
     arm = (f"{HAGPY} ledger-watch --hag {hag} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
@@ -203,14 +265,13 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
         f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
         f"first-person: ask the maintainer directly with decline/hold options; authorizations never transfer. "
         f"{h4_disciplines(role, spec)}"
-        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen"
-        f"{', deadman scheduled (job id)' if role.ecosystem == 'claude' and feats.get('deadman') else ''}.")
+        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen.")
 
 
 def h4_disciplines(role: Role, spec: HagSpec) -> str:
     """Watcher placement and recovery (architecture doc §5.3, §6); empty unless opted in."""
     feats = getattr(spec, "features", {}) or {}
-    if not (feats.get("jobs") or feats.get("deadman")):
+    if not (feats.get("jobs") or feats.get("workwake")):
         return ""
     hag = spec.hag
     out = []
@@ -226,14 +287,6 @@ def h4_disciplines(role: Role, spec: HagSpec) -> str:
         "A KILL IS A WAKE: a watcher notification with status killed (any reason) is handled exactly like a "
         "wake: show, act, re-arm, then prove the new pid (ps -p plus sidecar pid) in the same turn. Tally "
         "kills from notification status only, never from exit counts.")
-    if role.ecosystem == "claude" and feats.get("deadman"):
-        from deadman import DEADMAN_CRON
-        out.append(
-            f"DEADMAN (Claude recovery tier T1): right after arming the watcher, schedule a recurring harness "
-            f"prompt (CronCreate, cron `{DEADMAN_CRON}`, recurring) whose text is exactly the prompt printed by "
-            f"`{HAGPY} watch-check --hag {hag} --slug {role.slug} --print-schedule`. It is not a shell, so the "
-            f"reaper cannot kill it; on DEADMAN OK end the turn silently, on DEADMAN DEAD re-arm as printed. "
-            f"Record its job id in `## Running monitors`; it expires after 7 days (a restart re-creates it).")
     return " ".join(out) + " "
 
 

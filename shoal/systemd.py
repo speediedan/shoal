@@ -17,7 +17,8 @@ timer it wrote, so a launch is one command. Jobs:
   queue-<file>   every :0/10   STATUS change -> QUEUE-WATCH to the coordinator
   lanes          every :0/5    lane transitions + SERVER-RESPAWNED
   pipeline       every :0/10   depth-zero starvation -> PIPELINE-WATCH
-  heartbeat      every :0/5    STALL-SUSPECT (deduped) unless a wait is proven
+  heartbeat      every :0/5    STALL-SUSPECT (deduped) unless a wait is proven (without features.health)
+  health-a/-b    :0/5, :2/5    health quorum (features.health): policy ladder, per-ecosystem wakes
   digest         every :3/10   one board read per HAG -> board_digest.json (features.digest)
   reconcile      04,16:07      GitHub ground truth into telemetry
   weekly-report  Mon 05:11     rolling 168h report (md + html) for the review
@@ -87,10 +88,17 @@ def jobs_for(spec, spec_path: str, coord_id: str) -> list[tuple[str, str, list[s
         jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch",
                      ["watch", "--hag", spec.hag, "pipeline", coord_id, spec.dir],
                      "*:0/10", ""))
-    jobs.append(("heartbeat", f"HAG {spec.hag} stall daemon",
-                 ["heartbeat", "--spec", spec_path, "--threshold-min", "60"]
-                 + (["--notify", coord_id] if coord_id else []),
-                 "*:0/5", ""))
+    if (getattr(spec, "features", {}) or {}).get("health"):
+        # the health quorum: two identical, offset instances (architecture doc §6)
+        jobs.append(("health-a", f"HAG {spec.hag} health quorum (a)",
+                     ["health", "--spec", spec_path, "--instance", "a"], "*:0/5", ""))
+        jobs.append(("health-b", f"HAG {spec.hag} health quorum (b)",
+                     ["health", "--spec", spec_path, "--instance", "b"], "*:2/5", ""))
+    else:
+        jobs.append(("heartbeat", f"HAG {spec.hag} stall daemon",
+                     ["heartbeat", "--spec", spec_path, "--threshold-min", "60"]
+                     + (["--notify", coord_id] if coord_id else []),
+                     "*:0/5", ""))
     if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
         jobs.append(("digest", f"HAG {spec.hag} board digest (one board read per HAG)",
                      ["digest", "--hag", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))

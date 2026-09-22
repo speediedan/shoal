@@ -93,7 +93,7 @@ def cmd_offer(a) -> int:
         print(f"[dry-run] offer {a.item} to {a.to} by {by} prio={a.prio} base={a.base or '-'}")
         return 0
     ev = led.append(by, "offer", to=a.to, item=a.item, base=a.base, prio=int(a.prio),
-                    note=a.note, src=a.src or ("user" if by == "user" else "coordinator" if by != a.to else "self"))
+                    note=a.note, src=a.src or ("user" if by == "user" else "coordinator" if by != a.to else "self"), now=(True if getattr(a, "now", False) else None))
     print(f"offered {fmt_item(ev)} to {a.to} by {by} [{ev['id']}]" + ("" if led.sync else " (local only)"))
     return 0
 
@@ -217,7 +217,8 @@ def cmd_msg(a) -> int:
     if a.dry_run:
         print(f"[dry-run] msg {by}->{a.to} [{a.kind}] {a.text[:80]}")
         return 0
-    ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re, ack=(True if a.ack else None))
+    ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re, ack=(True if a.ack else None),
+                    wake=(True if getattr(a, "wake", False) else None))
     print(f"msg {by}->{a.to} [{a.kind}] [{ev['id']}]")
     return 0
 
@@ -393,6 +394,8 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--prio", type=int, default=DEFAULT_PRIO, help="lower runs sooner (default 50)")
     p.add_argument("--note", default="")
     p.add_argument("--src", default="", help="user|coordinator|self|board|migration|peer")
+    p.add_argument("--now", action="store_true",
+                   help="wake the target even while it is busy (honoured for user / can_fill_others only)")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_offer)
 
@@ -432,6 +435,8 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     common(p, by=True)
     p.add_argument("--to", required=True)
     p.add_argument("--text", required=True)
+    p.add_argument("--wake", action="store_true",
+                   help="wake the target now (honoured only when sent by user; msgs are otherwise mail)")
     p.add_argument("--kind", default="info")
     p.add_argument("--re", default="", help="event id this answers (acks)")
     p.add_argument("--ack", action="store_true", help="ask the target to ack")

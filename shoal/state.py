@@ -72,9 +72,12 @@ def wait_status(hag: str, slug: str, now: datetime.datetime | None = None) -> tu
 
 
 def write_wait(hag: str, slug: str, sub: str, holder: str, rescan_min: float,
-               monitor: str, note: str) -> dict:
+               monitor: str, note: str, target: str = "") -> dict:
+    """`target` is machine-checkable where possible (the health quorum verifies it):
+    lease:<key> | job:<unit> | gh-run:<owner/repo>:<run-id> | gh-pr:<owner/repo>#<n> |
+    az-build:<id>; anything else is free text and only the periodic validity wake covers it."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    w = {"slug": slug, "sub": sub, "holder": holder, "monitor": monitor,
+    w = {"slug": slug, "sub": sub, "holder": holder, "monitor": monitor, "target": target,
          "note": note, "since_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
          "rescan_utc": (now + datetime.timedelta(minutes=rescan_min)).strftime("%Y-%m-%dT%H:%M:%SZ")}
     p = wait_path(hag, slug)
@@ -146,7 +149,8 @@ def cmd_transition(a: argparse.Namespace) -> int:
     hb = hb_touch(hag, a.slug)
     # 2. wait proof
     if a.to == "waiting":
-        w = write_wait(hag, a.slug, sub, a.holder, a.rescan_min, a.monitor, a.note)
+        w = write_wait(hag, a.slug, sub, a.holder, a.rescan_min, a.monitor, a.note,
+                       target=getattr(a, "target", "") or "")
         wait_line = f"wait proven until {w['rescan_utc']} (holder: {a.holder})"
     else:
         wait_line = "wait cleared" if clear_wait(hag, a.slug) else "no wait to clear"
@@ -200,6 +204,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--rescan-min", type=float, default=30,
                    help="minutes until the wait must be re-verified (default 30)")
     p.add_argument("--monitor", default="", help="armed watch, e.g. 'agent_ci_watch PR#580 @abc123'")
+    p.add_argument("--target", default="", help="what the wait is on, machine-checkable where possible: "
+                   "lease:<key> | job:<unit> | gh-run:<repo>:<id> | gh-pr:<repo>#<n> | az-build:<id>")
     p.add_argument("--from", dest="from_state", default="")
     p.add_argument("--note", default="")
     p.add_argument("--channel", default="within-ecosystem")

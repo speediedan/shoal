@@ -125,6 +125,9 @@ def fire(target: str, repo_dir: str, tag: str, summary: str) -> bool:
     if target.startswith("ledger:"):
         hag = target[len("ledger:"):]
         kind = {"LANES-WATCH": "server-respawned", "PIPELINE-WATCH": "starved"}.get(tag.split("-TEST")[0], "info")
+        routed = _health_route(hag, kind, f"{tag}: {summary}") if not tag.endswith("-TEST") else None
+        if routed is not None:
+            return routed
         to = ["*"]
         if kind == "starved":
             to = starved_targets(hag)
@@ -139,6 +142,29 @@ def fire(target: str, repo_dir: str, tag: str, summary: str) -> bool:
               f"{(r.stdout + r.stderr).strip()[-200:]}")
         return False
     return True
+
+
+def _health_route(hag: str, kind: str, text: str) -> bool | None:
+    """With spec features.health, a sensor fire is WORK for specific roles, delivered through
+    the health wake adapters instead of a ledger msg (msgs no longer wake anyone):
+    starvation -> roles waiting on remote CI; server respawn -> every opencode role.
+    None = feature off (caller falls back to the ledger msg)."""
+    try:
+        from roles import HagSpec, find_spec
+        spec = HagSpec.load(find_spec(hag))
+        if not (spec.features or {}).get("health") or kind not in ("starved", "server-respawned"):
+            return None
+        from health import request_wake
+        if kind == "starved":
+            to = [s for s in starved_targets(hag) if s != "user" and spec.role(s) is not None]
+        else:
+            to = [r.slug for r in spec.roles if r.ecosystem == "opencode" and r.session]
+        for s in to:
+            print(f"{utcnow()} {kind} -> {s}: {request_wake(spec, s, text, condition=kind)}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"{utcnow()} ERROR: health route {kind} failed: {exc}")
+        return None
 
 
 def starved_targets(hag: str) -> list[str]:

@@ -187,9 +187,10 @@ class HagSpec:
     sources: list[dict] = dataclasses.field(default_factory=list)  # priority tables
         # for self-filling roles: [{"kind": "github-project", "owner", "number", ...}]
     features: dict = dataclasses.field(default_factory=dict)  # per-HAG opt-ins so new
-        # behaviour lands at a restart, never under running sessions:
-        # {"digest": true} = ledger-watch reads the shared board digest (architecture
-        # §4.3); {"deadman": true} = heartbeat honours deadman ticks (§6).
+        # behaviour lands at a restart, never under running sessions (architecture doc):
+        # "digest" board digest; "jobs" job-unit brief discipline; "workwake" work-only
+        # wakes + the next/queue loop; "health" (true or {"validity_wake_min": 90}) the
+        # health quorum timers replacing heartbeat; "relay" the Claude wake relay role.
 
     def validate(self) -> list[str]:
         errs = []

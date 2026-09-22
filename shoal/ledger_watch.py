@@ -71,7 +71,7 @@ def save_sidecar(path: str, d: dict[str, str]) -> None:
 
 def _exit_verdict(path: str, sc: dict[str, str], verdict: str) -> None:
     """Record a designed exit for THIS pid, so a later dead pid without one reads as
-    killed (the verdict-line control, readme §4; deadman and kill-audit consume it)."""
+    killed (the verdict-line control, readme §4; the health quorum and kill-audit consume it)."""
     sc["exit"] = f"{os.getpid()} {verdict} {now_iso()}"
     save_sidecar(path, sc)
     print(f"{now_iso()} VERDICT {verdict} (pid {os.getpid()})")
@@ -82,16 +82,36 @@ def now_iso() -> str:
 
 
 def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str, str]]:
-    """[(event id, one-line description)] for everything that needs slug now."""
+    """[(event id, one-line description)] for everything that needs slug now.
+
+    With spec `features.workwake` (architecture doc §3.3) only WORK wakes the role: an
+    offer while it is idle (or a `--now` offer from user / can_fill_others), a change to
+    its ACTIVE item, board candidates when idle with nothing queued, or a health wake
+    request. Msgs are mail (read by `hag.py next`), except a `user` msg sent `--wake`."""
     out = []
+    workwake = bool((getattr(spec, "features", {}) or {}).get("workwake")) if spec is not None else False
+    idle = view.is_idle(slug) if workwake else True
+    q = view.current_queue(slug) or {}
+    for w in _wake_requests(view.ledger.hag, slug):
+        out.append(w)
     for o in view.queue(slug):
+        if workwake and not idle:
+            now_ok = o.get("now") and (o["by"] in ("user", "hag.py")
+                                       or view.perms.roles.get(o["by"], {}).get("can_fill_others"))
+            if not now_ok:
+                continue  # folds in at the role's next boundary
         out.append((o["id"], f"OFFER {fmt_item(o)} to={o['to']} prio={o.get('prio', 50)} by={o['by']}"
+                    + (" NOW" if o.get("now") else "")
                     + (f" base={o['base']}" if o.get("base") else "")
                     + (f" — {short(o.get('note', ''), 80)}" if o.get("note") else "")))
     for m in view.msgs_to(slug):
+        if workwake and not (m.get("by") == "user" and m.get("wake")):
+            continue  # mail, not a wake
         out.append((m["id"], f"MSG {m['by']}->{m['to']} [{m.get('kind', 'info')}] {short(m.get('text', ''), 120)}"
                     + (" (ack requested)" if m.get("ack") else "")))
     mine = {item_key(c["item"]) for c in view.active(slug)}
+    if workwake and q.get("active"):
+        mine = {item_key(q["active"])}  # only the ACTIVE item's integrity is worth a wake
     for key in mine:
         w = view.winner(key)
         if w is not None and w["by"] != slug:
@@ -99,7 +119,8 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     for e in view.ledger.events():
         if e.get("type") == "withdraw" and item_key(e.get("item", "")) in mine:
             out.append((e["id"], f"WITHDRAWN {e.get('item')} by {e['by']}: {short(e.get('reason', ''), 80)}"))
-    if board and role is not None and getattr(role, "fill", "assigned") == "self" and not view.queue(slug):
+    if board and role is not None and getattr(role, "fill", "assigned") == "self" and not view.queue(slug) \
+            and (not workwake or (idle and not q.get("next"))):
         try:
             taken = view.taken() | view.offered_open()
             declined = set(view.declined(slug))
@@ -116,6 +137,24 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
                     out.append((f"board:{c['item']}", f"BOARD {c['item']}:{c['verb']} pos={c['pos']} — {short(c['title'], 70)}"))
         except Exception as exc:  # noqa: BLE001
             out.append(("board:error", f"BOARD-ERROR {short(str(exc), 120)} (self-fill unavailable this tick)"))
+    return out
+
+
+def _wake_requests(hag: str, slug: str) -> list[tuple[str, str]]:
+    """Health-quorum wake requests (/tmp/<hag>/wake-<slug>): one delivery per request line.
+    The file is removed by the role's next `hag.py queue` write (the acknowledgement)."""
+    import json as _json
+    out = []
+    try:
+        with open(os.path.join(state_dir(hag), f"wake-{slug}")) as fh:
+            for line in fh:
+                try:
+                    d = _json.loads(line)
+                except ValueError:
+                    continue
+                out.append((f"wake:{d.get('ts')}", f"HEALTH {d.get('condition', '')}: {short(d.get('text', ''), 160)}"))
+    except OSError:
+        pass
     return out
 
 

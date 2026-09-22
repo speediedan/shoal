@@ -42,6 +42,23 @@ TICK_INTERVAL_MIN = {"queue": 10, "lanes": 5, "pipeline": 10, "heartbeat": 5,
                      "reconcile": 24 * 60, "weekly-report": 7 * 24 * 60}
 
 
+def tick_jobs(spec) -> dict:
+    """The self-ticking jobs this spec actually installs (features change the set):
+    health-a/-b replace heartbeat, digest joins, reconcile runs twice a day."""
+    feats = (getattr(spec, "features", {}) or {}) if spec is not None else {}
+    jobs = dict(TICK_INTERVAL_MIN)
+    jobs["reconcile"] = 12 * 60
+    if getattr(spec, "ledger_mode", False):
+        jobs.pop("queue", None)
+    if feats.get("health"):
+        jobs.pop("heartbeat", None)
+        jobs["health-a"] = 5
+        jobs["health-b"] = 5
+    if feats.get("digest") and getattr(spec, "sources", None):
+        jobs["digest"] = 10
+    return jobs
+
+
 class Doc:
     def __init__(self):
         self.fails = 0
@@ -240,7 +257,7 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
     if live:
         for row in classify(spec, threshold_min):
             (d.warn if row["suspect"] else d.ok)(f"heartbeat {row['slug']}", f"{row['klass']}: {row['detail']}")
-        for job, interval in TICK_INTERVAL_MIN.items():
+        for job, interval in tick_jobs(spec).items():
             age = age_min(os.path.join(state_dir(spec.hag), f"tick-{job}"))
             if age is None:
                 d.warn(f"tick {job}", "never ran")

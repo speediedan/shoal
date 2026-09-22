@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 # Isolated proof of the H4 components (architecture doc §4-§6): working context, board
-# digest, batch triage, digest-driven ledger-watch wake, exit verdicts, deadman, job units.
+# digest, batch triage, digest-driven ledger-watch wake, exit verdicts, job units, the work loop
+# (next/queue), work-only wakes, the health quorum, user-offline mode and the Claude relay.
 # Touches nothing live: a bare local remote, HAG_ROOT/HAG_DATA_ROOT under a scratch dir,
 # hag id h4selftest (state in /tmp/h4selftest). Reads the real GitHub board (read-only).
 #   selftest_h4.sh [SCRATCH_DIR]
 set -eu
 HAGD="$(cd "$(dirname "$0")" && pwd)"
 S="${1:-${TMPDIR:-/tmp}/hag-h4-selftest-$$}"
+# background watchers this test starts must never outlive it (a stray one shares the
+# sidecar and silently swallows the next run's wakes)
+cleanup() { pkill -f -- 'hag.py (ledger-watch|relay-watch) --hag h4selftest' 2>/dev/null || true; }
+trap cleanup EXIT
+cleanup
 rm -rf "$S" /tmp/h4selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
 export HAG_ROOT="$S/root" HAG_DATA_ROOT="$S/data"
 HAGID=h4selftest; SPEC="$HAG_ROOT/$HAGID/hag.json"; A="$S/cloneA"
 H="python3 $HAGD/hag.py"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
-check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: ${out: -600}"; }
+check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); printf "%s\n" "$out" > "$S/last_check.out"; grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 600 <<<"$out")"; }
 rc_of() { "$@" >/dev/null 2>&1 && echo 0 || echo $?; }
 
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
@@ -84,19 +90,7 @@ grep -q "score=" <<<"$OUT" || fail "watch wake did not carry digest candidates :
 grep -q "VERDICT WAKE" <<<"$OUT" || fail "no exit verdict line :: $OUT"
 grep -q "^exit=.* WAKE " /tmp/$HAGID/ledger-watch-tl.state || fail "sidecar lacks exit verdict"
 
-echo "== 6 deadman: by-design exit, alive, killed externally, never armed"
-check "exited by design" $H watch-check --hag $HAGID --slug tl
-[ "$(rc_of $H watch-check --hag $HAGID --slug tl)" = 3 ] || fail "dead watch not rc 3"
-check "never armed" $H watch-check --hag $HAGID --slug up
-setsid $H ledger-watch --hag $HAGID --spec "$SPEC" --slug up --wake print --interval 30 --no-sync --no-board >/dev/null 2>&1 &
-WP=$!; sleep 3
-check "DEADMAN OK up@$HAGID: ledger-watch pid" $H watch-check --hag $HAGID --slug up
-kill -9 $WP; sleep 1
-check "killed externally" $H watch-check --hag $HAGID --slug up
-[ -f /tmp/$HAGID/deadman-up ] || fail "deadman tick not written"
-check "cron: 13 \* \* \* \*" $H watch-check --hag $HAGID --slug up --print-schedule
-
-echo "== 7 job units: success, failure exit code, external kill, idempotent waiter"
+echo "== 6 job units: success, failure exit code, external kill, idempotent waiter"
 check "\[dry-run\] systemd-run --user --unit hag-$HAGID-tl-ok" $H job run --hag $HAGID --slug tl --name ok --dry-run -- true
 check "JOB-STARTED" $H job run --hag $HAGID --slug tl --name ok --memory-high 1G -- bash -c 'echo job-ok-output; sleep 2'
 check "JOB-ALREADY-RUNNING" $H job run --hag $HAGID --slug tl --name ok -- true
@@ -109,6 +103,99 @@ systemctl --user kill --signal=KILL hag-$HAGID-tl-kill.service
 check "UNIT-GONE-NO-STATUS" $H job wait --hag $HAGID --slug tl --name kill --poll 1
 check "NOT-FOUND" $H job wait --hag $HAGID --slug tl --name never --poll 1
 check "hag-$HAGID-tl-ok" $H job status --hag $HAGID
+
+echo "== 7 work loop: next reads, queue writes ONE commit (claim + posture + version)"
+python3 - "$SPEC" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p))
+d["features"]={"digest":True,"jobs":True,"workwake":True,"health":{"validity_wake_min":90},"relay":True}
+d["roles"].append({"slug":"hag-relay","ecosystem":"claude","title":"hag-relay","doc":d["roles"][0]["doc"],"fill":"none","session":"rrrr3333","model":"haiku"})
+json.dump(d,open(p,"w"),indent=1)
+PY
+git -C "$A" add -A >/dev/null 2>&1; git -C "$A" commit -qm spec >/dev/null 2>&1 || true
+check "QUEUE v0" $H next --hag $HAGID --spec "$SPEC" --slug up --no-sync
+I1=interpretune#9101; I2=interpretune#9102; I3=interpretune#9103; I4=interpretune#9104
+check "\[dry-run\] up queue v1" $H queue --hag $HAGID --spec "$SPEC" --slug up --active $I1:fix --next $I2,$I3 --dry-run --no-sync
+N0=$(git -C "$A" rev-list --count HEAD)
+check "up queue v1: active=$I1:fix" $H queue --hag $HAGID --spec "$SPEC" --slug up --active $I1:fix --next $I2,$I3 --reason "two known" --no-sync
+N1=$(git -C "$A" rev-list --count HEAD); [ $((N1 - N0)) = 1 ] || fail "queue made $((N1 - N0)) commits (want 1)"
+check "CLAIM-REFUSED" $H queue --hag $HAGID --spec "$SPEC" --slug tl --active $I1:fix --no-sync
+check "QUEUE v1 .*active=$I1" $H next --hag $HAGID --spec "$SPEC" --slug up --no-sync
+check "up queue v2: active=$I2 next=$I3 posture=active.*done=\['$I1:fix'\]" $H queue --hag $HAGID --spec "$SPEC" --slug up --done $I1:fix --url https://example.invalid/pr/1 --active $I2 --next $I3 --no-sync
+check "posture=waiting/remote-ci" $H queue --hag $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder "gate 1" --target job:hag-$HAGID-none --no-sync
+grep -q '"target": "job:hag-h4selftest-none"' /tmp/$HAGID/wait-up || fail "wait proof lacks target"
+[ "$(rc_of $H queue --hag $HAGID --spec "$SPEC" --slug up --next a,b,c,d --no-sync)" = 1 ] || fail "4 next items accepted"
+
+echo "== 8 wakes are work-only: busy roles are not woken by offers or peer mail"
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --active $I4:fix --next "" --no-sync >/dev/null
+$H offer --hag $HAGID --spec "$SPEC" --to tl --item interpretune#9201:fix --no-sync >/dev/null
+$H msg --hag $HAGID --spec "$SPEC" --by up --to tl --text "peer chatter" --no-sync >/dev/null
+python3 - "$HAGD" "$SPEC" "$A" <<'PY' || fail "busy-role gating wrong"
+import sys; sys.path.insert(0,sys.argv[1])
+from roles import HagSpec; from ledger import Ledger, View; from ledger_watch import actionable
+s=HagSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
+acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
+assert not any(d.startswith(("OFFER","MSG","BOARD")) for d in acts), acts
+PY
+$H offer --hag $HAGID --spec "$SPEC" --to tl --item interpretune#9202:fix --now --no-sync >/dev/null
+$H msg --hag $HAGID --spec "$SPEC" --by user --to tl --text "maintainer ping" --wake --no-sync >/dev/null
+python3 - "$HAGD" "$SPEC" "$A" <<'PY' || fail "--now offer / user --wake msg did not wake the busy role"
+import sys; sys.path.insert(0,sys.argv[1])
+from roles import HagSpec; from ledger import Ledger, View; from ledger_watch import actionable
+s=HagSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
+acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
+assert any("9202" in d and "NOW" in d for d in acts) and any("maintainer ping" in d for d in acts), acts
+assert not any("9201" in d or "peer chatter" in d for d in acts), acts
+PY
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --idle --next "" --no-sync >/dev/null
+python3 - "$HAGD" "$SPEC" "$A" <<'PY' || fail "idle role not woken by a plain offer"
+import sys; sys.path.insert(0,sys.argv[1])
+from roles import HagSpec; from ledger import Ledger, View; from ledger_watch import actionable
+s=HagSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
+acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
+assert any("9201" in d for d in acts) and not any("peer chatter" in d for d in acts), acts
+PY
+check "MAIL" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync
+
+echo "== 9 health quorum: leeway, ladder, adapters, peer check, validity, resolved waits"
+check "health-a: ok" env HAG_HEALTH_SHIFT_MIN=0 $H health --spec "$SPEC" --instance a --dry-run
+$H offer --hag $HAGID --spec "$SPEC" --to tl --item interpretune#9203:fix --no-sync >/dev/null   # arrives after tl's last queue version
+setsid $H ledger-watch --hag $HAGID --spec "$SPEC" --slug tl --wake print --interval 2 --no-sync --no-board >"$S/tl-watch.log" 2>&1 &
+TLW=$!
+for i in $(seq 1 30); do grep -q "^pid=$TLW$" /tmp/$HAGID/ledger-watch-tl.state 2>/dev/null && break; sleep 0.5; done
+grep -q "^pid=$TLW$" /tmp/$HAGID/ledger-watch-tl.state || fail "tl watcher never bound its sidecar"
+check "tl unacked-work step1:wake -> wake-file" env HAG_HEALTH_SHIFT_MIN=11 $H health --spec "$SPEC" --instance a
+[ -f /tmp/$HAGID/wake-tl ] || fail "wake request file not written"
+sleep 5; grep -q "HEALTH unacked-work" "$S/tl-watch.log" || fail "live ledger-watch did not deliver the wake request :: $(tail -3 $S/tl-watch.log)"
+check "tl unacked-work step2:wake" env HAG_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --active interpretune#9201:fix --next "" --no-sync >/dev/null
+[ ! -f /tmp/$HAGID/wake-tl ] || fail "queue write did not acknowledge the wake request"
+kill $TLW 2>/dev/null || true
+check "up wait-resolved step1:wake" env HAG_HEALTH_SHIFT_MIN=27 $H health --spec "$SPEC" --instance a
+check "up wait-validity step1:wake" env HAG_HEALTH_SHIFT_MIN=91 $H health --spec "$SPEC" --instance b --dry-run
+echo "2026-01-01T00:00:00Z" > /tmp/$HAGID/tick-health-b
+check "user peer-dead" $H health --spec "$SPEC" --instance a --dry-run
+
+echo "== 10 Claude relay: dead watcher -> relay queue -> relay-watch exits with the SendMessage line"
+setsid $H relay-watch --hag $HAGID --interval 1 >"$S/relay.log" 2>&1 &
+RW=$!
+for i in $(seq 1 30); do [ "$(cat /tmp/$HAGID/relay-watch.pid 2>/dev/null)" = "$RW" ] && break; sleep 0.5; done
+python3 - "$HAGD" "$SPEC" <<'PY' | grep -q "^relay$" || fail "request_wake did not choose the relay"
+import sys; sys.path.insert(0,sys.argv[1])
+from roles import HagSpec; from health import request_wake
+print(request_wake(HagSpec.load(sys.argv[2]), "tl", "relay test", "watcher-dead"))
+PY
+sleep 3; grep -q "RELAY-WAKE to=tl-r1" "$S/relay.log" || fail "relay-watch did not deliver :: $(cat $S/relay.log)"
+grep -q "VERDICT RELAY-DELIVER 1" "$S/relay.log" || fail "relay-watch verdict missing"
+kill $RW 2>/dev/null || true
+
+echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --no-sync >/dev/null
+check "user-offline on" $H offline on --hag $HAGID --spec "$SPEC" --until tomorrow --note "travel" --no-sync
+check "USER OFFLINE since" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync
+DEF=""; for i in 1 2 3 4; do DEF+=$(env HAG_HEALTH_SHIFT_MIN=200 $H health --spec "$SPEC" --instance a 2>&1); done
+grep -q "deferred (user offline)" <<<"$DEF" || fail "no page was deferred while offline :: $(tail -c 400 <<<"$DEF")"
+check "ASK tl: merge interpretune#9201" $H offline off --hag $HAGID --spec "$SPEC" --no-sync
+check "user deferred pages -> page" $H health --spec "$SPEC" --instance a --dry-run
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$HAGID

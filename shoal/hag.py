@@ -69,7 +69,8 @@ import ledger_cli as _ledger_cli  # noqa: E402
 import ledger_watch as _ledger_watch  # noqa: E402
 import digest as _digest  # noqa: E402
 import jobs as _jobs  # noqa: E402
-import deadman as _deadman  # noqa: E402
+import worker as _worker  # noqa: E402
+import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 from roles import (HAG_DATA_ROOT, HAG_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
@@ -253,6 +254,13 @@ def verify_consumer(spec: HagSpec, role: Role, cap_s: int = 600) -> bool:
     hb = hb_path(spec.hag, role.slug)
     t0 = time.time()
     while time.time() - t0 < cap_s:
+        if role.slug == "hag-relay":  # the relay has no ledger-watch: its effect is a live relay-watch
+            from health import relay_alive
+            if relay_alive(spec.hag):
+                print(f"RELAY LOOP ALIVE: {role.slug} relay-watch running")
+                return True
+            time.sleep(30)
+            continue
         if spec.ledger_mode:
             try:
                 from ledger import Ledger, View
@@ -883,7 +891,7 @@ def cmd_status(spec: HagSpec) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  ledger: QUERY-FAILED ({exc})")
     ticks = []
-    for job, interval in _doctor.TICK_INTERVAL_MIN.items():
+    for job, interval in _doctor.tick_jobs(spec).items():
         a = age_min(os.path.join(state_dir(spec.hag), f"tick-{job}"))
         ticks.append(f"{job}={'never' if a is None else f'{a:.0f}m'}"
                      + ("!" if a is not None and a > 3 * interval else ""))
@@ -994,7 +1002,8 @@ def main(argv: list[str] | None = None) -> int:
     _ledger_watch.add_parser(sub)
     _digest.add_parsers(sub)
     _jobs.add_parsers(sub)
-    _deadman.add_parser(sub)
+    _worker.add_parsers(sub)
+    _health.add_parsers(sub)
     _kill_audit.add_parser(sub)
 
     p = sub.add_parser("watch", help="coordinator-side watchers (systemd timers)")
