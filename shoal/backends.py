@@ -36,7 +36,8 @@ class Backend:
     ecosystem = "?"
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
-               brief: str = "", name: str = "", model: str = "") -> str:
+               brief: str = "", name: str = "", model: str = "",
+               effort: str = "") -> str:
         raise NotImplementedError
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
@@ -77,7 +78,10 @@ class OpenChamberBackend(Backend):
     ecosystem = "opencode"
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
-               brief: str = "", name: str = "", model: str = "") -> str:
+               brief: str = "", name: str = "", model: str = "",
+               effort: str = "") -> str:
+        # opencode create takes no model/effort flags (model rides on send);
+        # effort stays briefed per the agent-neutral design.
         if dry_run:
             return "ses_DRYRUN_" + re.sub(r"\W+", "_", title)
         r = _run("openchamber", "session", "create", "--dir", repo_dir,
@@ -184,7 +188,8 @@ class ClaudeBackend(Backend):
     ecosystem = "claude"
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
-               brief: str = "", name: str = "", model: str = "") -> str:
+               brief: str = "", name: str = "", model: str = "",
+               effort: str = "") -> str:
         if dry_run:
             return "cc_DRYRUN_" + re.sub(r"\W+", "_", title)
         if not brief:
@@ -193,6 +198,8 @@ class ClaudeBackend(Backend):
         argv = [b, "--bg", "-n", name or title]
         if model:
             argv += ["--model", model]
+        if effort:
+            argv += ["--effort", effort]
         argv += [brief]
         r = subprocess.run(argv, capture_output=True, text=True, timeout=120,
                            cwd=repo_dir, env=_ENV)
@@ -296,7 +303,8 @@ class CodexBackend(Backend):
             "in backends.py CodexBackend; roles/specs need no changes.")
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
-               brief: str = "", name: str = "", model: str = "") -> str:
+               brief: str = "", name: str = "", model: str = "",
+               effort: str = "") -> str:
         raise self._no("create")
 
     def send(self, session_id: str, repo_dir: str, prompt: str,

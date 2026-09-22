@@ -370,7 +370,7 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
                     role.session = be.create(
                         f"{role.title}-r{role.seq}", spec.dir,
                         brief=text, name=role.tag,
-                        model=role.model)
+                        model=role.model, effort=role.effort)
                 except (UnsupportedError, RuntimeError) as exc:
                     print(f"  FAIL: auto-launch failed: {exc}")
                     return 4
