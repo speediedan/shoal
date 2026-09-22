@@ -98,8 +98,14 @@ class Role:
         # table when its queue is empty; assigned: works only offers addressed to
         # it (or `*`); none: never claims (a pure filler/observer role).
     can_fill_others: bool = False  # may `offer` to other roles (coordinator-class)
-    scope: dict = dataclasses.field(default_factory=dict)  # self-fill filter:
-        # {"repos": [...], "labels_any": [...], "labels_none": [...]}
+    scope: dict = dataclasses.field(default_factory=dict)  # DEPRECATED hard self-fill
+        # filter {"repos", "labels_any", "labels_none"}; read only to derive `context`
+        # when a spec predates it (`hag.py context migrate` converts and removes it).
+    context: dict = dataclasses.field(default_factory=dict)  # working context
+        # (architecture doc §4.2): {"brief": str, "affinity": {"repos": {r: w},
+        # "labels": {l: w}, "keywords": {k: w}, "paths": {glob: w}},
+        # "never": {"repos": [...], "labels": [...]}}. Soft ranking; `never` is the
+        # only hard exclusion and is reserved for safety.
     server: str = ""             # host the session runs on ("" = this host)
 
     def validate(self) -> list[str]:
@@ -136,7 +142,30 @@ class Role:
             d["fill"] = "assigned"
         if d.get("scope") is None:
             d["scope"] = {}
+        if d.get("context") is None:
+            d["context"] = {}
         return Role(**{k: v for k, v in d.items() if k in known})
+
+    def working_context(self) -> dict:
+        """The role's working context, derived from a legacy `scope` when unset."""
+        return self.context or scope_to_context(self.scope)
+
+
+def scope_to_context(scope: dict | None) -> dict:
+    """Mechanical conversion of a legacy hard `scope` into a soft working context:
+    repos become affinity weights, labels_any strong label weights, labels_none
+    negative weights (a safety exclusion must be moved to `never` by hand)."""
+    scope = scope or {}
+    if not scope:
+        return {}
+    aff: dict = {}
+    if scope.get("repos"):
+        aff["repos"] = {r: 1.0 for r in scope["repos"]}
+    labels = {l: 3.0 for l in scope.get("labels_any") or []}
+    labels.update({l: -3.0 for l in scope.get("labels_none") or []})
+    if labels:
+        aff["labels"] = labels
+    return {"brief": "", "affinity": aff, "never": {}}
 
 
 @dataclasses.dataclass
@@ -157,6 +186,10 @@ class HagSpec:
         # empty = legacy QUEUE/STATUS queue files (pre-2026-09-20 HAGs)
     sources: list[dict] = dataclasses.field(default_factory=list)  # priority tables
         # for self-filling roles: [{"kind": "github-project", "owner", "number", ...}]
+    features: dict = dataclasses.field(default_factory=dict)  # per-HAG opt-ins so new
+        # behaviour lands at a restart, never under running sessions:
+        # {"digest": true} = ledger-watch reads the shared board digest (architecture
+        # §4.3); {"deadman": true} = heartbeat honours deadman ticks (§6).
 
     def validate(self) -> list[str]:
         errs = []
@@ -262,7 +295,7 @@ class HagSpec:
         return {"hag": self.hag, "dir": self.dir, "gen": self.display_gen,
                 "incarnation": self.incarnation,
                 "repos": self.repos, "retired_utc": self.retired_utc,
-                "ledger": self.ledger, "sources": self.sources,
+                "ledger": self.ledger, "sources": self.sources, "features": self.features,
                 "roles": [dataclasses.asdict(r) for r in self.roles],
                 "generations": self.generations}
 
@@ -291,7 +324,8 @@ class HagSpec:
                        generations=list(d.get("generations", []) or []),
                        retired_utc=d.get("retired_utc", "") or "",
                        ledger=dict(d.get("ledger", {}) or {}),
-                       sources=list(d.get("sources", []) or []))
+                       sources=list(d.get("sources", []) or []),
+                       features=dict(d.get("features", {}) or {}))
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)

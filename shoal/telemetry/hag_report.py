@@ -86,22 +86,81 @@ def sh(argv, timeout=60):
 
 # ---- analyses ---------------------------------------------------------------
 
-def state_rows(evs, w0, w1, spec):
-    tot = (w1 - w0).total_seconds()
-    by = {}
-    for e in evs:
-        if e.get("type") == "session_transition":
-            by.setdefault(e["session"], []).append((parse_ts(e["ts_utc"]), e))
-    slug_of = {r.session: r.slug for r in spec.roles if r.session}
-    for g in spec.generations:
+def sub_of(e):
+    """Waiting substate of a transition; '' for every non-waiting state (ledger
+    and local emitters disagree on whether a non-waiting event carries a sub)."""
+    return (e.get("to_sub", "") or "") if e.get("to_state") == "waiting" else ""
+
+
+def role_resolver(spec):
+    """Map an event to a spec role slug, or None. Order: the event's own `slug`
+    field, a session equal to a slug (pre-spec NO-SPEC transitions), then a
+    session prefix match (8-char short ids vs full UUIDs, either direction)
+    against current roles first and then generation records newest first."""
+    slugs = {r.slug for r in spec.roles}
+    pairs = [(r.session, r.slug) for r in spec.roles if r.session]
+    for g in reversed(spec.generations or []):
         for slug, sid in (g.get("sessions") or {}).items():
-            slug_of.setdefault(sid, slug)
+            if sid and slug in slugs:
+                pairs.append((sid, slug))
+    cache = {}
+
+    def resolve(e):
+        sl = e.get("slug") or ""
+        if sl in slugs:
+            return sl
+        sess = e.get("session") or ""
+        if sess in cache:
+            return cache[sess]
+        out = sess if sess in slugs else None
+        if out is None and len(sess) >= 8:
+            for sid, slug in pairs:
+                if len(sid) >= 8 and (sid.startswith(sess) or sess.startswith(sid)):
+                    out = slug
+                    break
+        cache[sess] = out
+        return out
+    return resolve
+
+
+def seed_states(pre, resolve):
+    """Last pre-window transition per role: {slug: (state, sub, ts_utc)}."""
+    seed = {}
+    for e in sorted(pre, key=lambda x: x["ts_utc"]):
+        if e.get("type") != "session_transition":
+            continue
+        slug = resolve(e)
+        if slug:
+            seed[slug] = (e.get("to_state"), sub_of(e), e["ts_utc"])
+    return seed
+
+
+STATE_KEYS = (["active", "idle", "waiting"] + [f"w:{x}" for x in SUBS]
+              + ["w:other", "paused/offline", "other-state"])
+
+
+def state_rows(evs, w0, w1, spec, seed=None, resolve=None):
+    """One row per spec role. A role's state at w0 is seeded from its last
+    pre-window transition, so `unobserved` means no transition ever before
+    that point. Returns (rows, window_secs, unresolved_count); each row is
+    (slug, eco, sessions, agg, unobs, n, changes, reemits, seeded)."""
+    tot = (w1 - w0).total_seconds()
+    resolve = resolve or role_resolver(spec)
+    seed = seed or {}
+    by = {r.slug: [] for r in spec.roles}
+    unresolved = 0
+    for e in evs:
+        if e.get("type") != "session_transition":
+            continue
+        slug = resolve(e)
+        if slug is None:
+            unresolved += 1
+            continue
+        by[slug].append((parse_ts(e["ts_utc"]), e))
     rows = []
-    for s, l in sorted(by.items()):
-        l.sort(key=lambda x: x[0])
-        agg = {"active": 0.0, "idle": 0.0, "waiting": 0.0, **{f"w:{x}": 0.0 for x in SUBS},
-               "w:other": 0.0, "paused/offline": 0.0}
-        unobs = (l[0][0] - w0).total_seconds()
+    for r in spec.roles:
+        lst = sorted(by[r.slug], key=lambda x: x[0])
+        agg = {k: 0.0 for k in STATE_KEYS}
 
         def add(st, sub, secs):
             if st in ("active", "idle"):
@@ -112,21 +171,34 @@ def state_rows(evs, w0, w1, spec):
             elif st in ("paused", "offline"):
                 agg["paused/offline"] += secs
             else:
-                agg["w:other"] += secs
+                agg["other-state"] += secs
 
-        cur_t, cur, cur_sub = None, None, ""
-        for t, e in l:
+        sd = seed.get(r.slug)
+        if sd:
+            cur_t, cur, cur_sub, prev, unobs = w0, sd[0], sd[1], (sd[0], sd[1]), 0.0
+        else:
+            cur_t, cur, cur_sub, prev = None, None, "", None
+            unobs = (lst[0][0] - w0).total_seconds() if lst else tot
+        changes = reemits = 0
+        for t, e in lst:
+            key = (e.get("to_state"), sub_of(e))
+            if key == prev:
+                reemits += 1
+            else:
+                changes += 1
+            prev = key
             if cur is not None:
                 add(cur, cur_sub, (t - cur_t).total_seconds())
-            cur_t, cur, cur_sub = t, e.get("to_state"), e.get("to_sub", "")
-        add(cur, cur_sub, (w1 - cur_t).total_seconds())
-        slug = slug_of.get(s, e.get("slug", "") if l else "")
-        eco = l[0][1].get("ecosystem", "?")
-        rows.append((slug or "?", eco, s, agg, unobs, len(l)))
-    return rows, tot
+            cur_t, cur, cur_sub = t, key[0], key[1]
+        if cur is not None:
+            add(cur, cur_sub, (w1 - cur_t).total_seconds())
+        sessions = sorted({(e.get("session") or "")[:8] for _t, e in lst} - {""})
+        rows.append((r.slug, r.ecosystem, ",".join(sessions) or "-", agg, unobs, len(lst),
+                     changes, reemits, bool(sd)))
+    return rows, tot, unresolved
 
 
-def transition_quality(evs):
+def transition_quality(evs, resolve=None):
     q = {"valid": 0, "aliased": 0, "invalid": 0}
     bad, per = [], {}
     for e in evs:
@@ -134,20 +206,23 @@ def transition_quality(evs):
             continue
         c = classify_transition(e)
         q[c] += 1
-        per.setdefault(e["session"], {"valid": 0, "aliased": 0, "invalid": 0})[c] += 1
+        who = (resolve(e) if resolve else None) or f"unresolved:{e.get('session', '?')}"
+        per.setdefault(who, {"valid": 0, "aliased": 0, "invalid": 0})[c] += 1
         if c != "valid":
-            bad.append((e["ts_utc"], e["session"], e.get("to_state"), e.get("to_sub_raw") or e.get("to_sub"), c))
+            bad.append((e["ts_utc"], who, e.get("to_state"), e.get("to_sub_raw") or e.get("to_sub"), c))
     return q, per, bad
 
 
-def wait_discipline(evs, w1):
+def wait_discipline(evs, w1, resolve=None):
     """Waiting segments emitted with rescan_min: stale = segment outlived its rescan."""
     segs, stale = [], []
     by = {}
     for e in evs:
         if e.get("type") == "session_transition":
-            by.setdefault(e["session"], []).append(e)
+            who = (resolve(e) if resolve else None) or f"unresolved:{e.get('session', '?')}"
+            by.setdefault(who, []).append(e)
     for s, l in by.items():
+        l.sort(key=lambda x: x["ts_utc"])
         for i, e in enumerate(l):
             if e.get("to_state") != "waiting":
                 continue
@@ -287,7 +362,12 @@ def gpu_share(w0, w1, org="https://dev.azure.com/speediedan", proj="interpretune
 
 # ---- ledger analyses --------------------------------------------------------
 
-def ledger_economics(evs, w1):
+def _repo_num(repo, num):
+    """('interpretune', '594') from ('speediedan/interpretune', 594)."""
+    return ((repo or "").rsplit("/", 1)[-1].lower(), str(num or ""))
+
+
+def ledger_economics(evs, w1, truth=None):
     offers = [e for e in evs if e.get("type") == "ledger_offer"]
     claims = [e for e in evs if e.get("type") == "ledger_claim"]
     rels = [e for e in evs if e.get("type") == "ledger_release"]
@@ -303,9 +383,18 @@ def ledger_economics(evs, w1):
     rel_kind = {}
     for r in rels:
         rel_kind[r.get("kind") or "?"] = rel_kind.get(r.get("kind") or "?", 0) + 1
-    # verification: done item number appears in a reconcile pr_merged/issue_closed
-    verified_nums = {str(e.get("pr") or e.get("issue")) for e in evs if e.get("type") in ("pr_merged", "issue_closed")}
-    ver = sum(1 for d in dones if re.search(r"#(\d+)", d.get("item", "")) and re.search(r"#(\d+)", d.get("item", "")).group(1) in verified_nums)
+    # verification: done item (repo#n) appears as a reconcile pr_merged or
+    # issue_closed for the SAME repo and number. `truth` is the ground truth
+    # from any time (a reconcile after the window still verifies a done in it);
+    # it defaults to the in-window events.
+    truth = evs if truth is None else truth
+    verified_keys = {_repo_num(e.get("repo"), e.get("pr") or e.get("issue"))
+                     for e in truth if e.get("type") in ("pr_merged", "issue_closed")}
+    ver = 0
+    for d in dones:
+        m = re.search(r"([\w.-]+)#(\d+)", d.get("item", ""))
+        if m and _repo_num(m.group(1), m.group(2)) in verified_keys:
+            ver += 1
     # latencies per role
     first_offer = {}
     for o in offers:
@@ -381,6 +470,15 @@ def message_stats(evs):
     return msgs, by_kind, by_to, acks, unacked
 
 
+def stall_suspect_minutes(evs):
+    """Distinct minutes with a stall-suspect fire. The heartbeat daemon records
+    a fire as one watch_event (when its emit works) plus one ledger msg per
+    target, so both sources are unioned by minute rather than summed."""
+    return {e["ts_utc"][:16] for e in evs
+            if (e.get("type") == "watch_event" and e.get("kind") == "stall-suspect")
+            or (e.get("type") == "ledger_msg" and e.get("kind") == "stall-suspect")}
+
+
 def signatures(evs, stale_waits, quality, recov):
     """Failure-mode signatures (hag_failure_modes.md § numbers) detected from events."""
     def count(pred):
@@ -389,7 +487,8 @@ def signatures(evs, stale_waits, quality, recov):
         ("§1 depth-zero starvation (PIPELINE-WATCH STARVED fires)",
          count(lambda e: e.get("type") == "coord_comms" and "depth-zero" in e.get("note", ""))),
         ("§2 stale waits (segment outlived its rescan by 1.5x)", len(stale_waits)),
-        ("§5/§10 stall-suspect fires (heartbeat daemon)", count(lambda e: e.get("type") == "watch_event" and e.get("kind") == "stall-suspect")),
+        ("§5/§10 stall-suspect fires (heartbeat daemon; watch_event + ledger msg, deduped by minute)",
+         len(stall_suspect_minutes(evs))),
         ("§7 server respawn (LANES-WATCH SERVER-RESPAWNED)", count(lambda e: e.get("type") == "watch_event" and "respawn" in e.get("kind", ""))),
         ("vocabulary drift: aliased offers", quality["aliased"]),
         ("vocabulary drift: invalid offers", quality["invalid"]),
@@ -472,6 +571,60 @@ def md_to_html(md: str, title: str) -> str:
     return "\n".join(out)
 
 
+def recovery_sections(evs, w0, w1):
+    """Recovery tiers, job units, digest refreshes (architecture doc §4-§6) and host
+    PSI / harness reaps from the H4 instruments (failure modes §21)."""
+    L = ["", "## Recovery tiers, job units, digest"]
+    tiers, jobs, digests, deadman = {}, {"start": 0, "success": 0, "failed": 0, "gone": 0}, 0, {"ok": 0, "dead": 0}
+    for e in evs:
+        if e.get("type") != "watch_event":
+            continue
+        k = e.get("kind", "")
+        if k == "deadman":
+            deadman["ok" if e.get("note") == "ok" else "dead"] += 1
+            tiers["T1 deadman dead->re-arm"] = tiers.get("T1 deadman dead->re-arm", 0) + (e.get("note") != "ok")
+        elif k == "stall-suspect":
+            t = e.get("tier") or "T2"
+            tiers[f"{t} heartbeat page"] = tiers.get(f"{t} heartbeat page", 0) + 1
+        elif k == "job-start":
+            jobs["start"] += 1
+        elif k == "job-verdict":
+            n = e.get("note", "")
+            jobs["success" if "result=success" in n else "gone" if "UNIT-GONE" in n else "failed"] += 1
+        elif k == "digest-refresh":
+            digests += 1
+    L.append(f"- deadman checks: {deadman['ok']} ok, {deadman['dead']} dead · digest refreshes: {digests}"
+             f" · job units: {jobs['start']} started, {jobs['success']} success, {jobs['failed']} failed, "
+             f"{jobs['gone']} killed outside their command (bar: 0)")
+    L.append(table(["tier", "count"], sorted(tiers.items())) if tiers else "_no recovery-tier events_")
+    instr = os.path.join(os.environ.get("HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags"), "_instruments")
+    psi_n, kills = 0, []
+    try:
+        with open(os.path.join(instr, "psi_events.jsonl")) as fh:
+            for line in fh:
+                if '"kind":"event"' in line:
+                    ts = parse_ts(json.loads(line)["ts"][:19] + "Z")
+                    psi_n += w0 <= ts <= w1
+    except (OSError, ValueError, KeyError):
+        psi_n = -1
+    try:
+        with open(os.path.join(instr, "kills.jsonl")) as fh:
+            for line in fh:
+                k = json.loads(line)
+                if w0 <= parse_ts(k["ts"][:19] + "Z") <= w1:
+                    kills.append([k["ts"][:19], k.get("session", ""), k.get("version", ""), k.get("psi", "")[:70],
+                                  k.get("summary", "")[:60]])
+    except (OSError, ValueError, KeyError):
+        pass
+    L.append("")
+    L.append("## Host memory pressure and harness reaps (psi_watch + kill-audit)")
+    L.append(f"- host PSI trigger fires in window: {'unavailable' if psi_n < 0 else psi_n}"
+             f" · genuine harness reaps: {len(kills)} (run `hag.py kill-audit` first to record new ones)")
+    if kills:
+        L.append(table(["ts", "session", "harness", "psi context", "command"], kills[-15:]))
+    return L
+
+
 def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L = []
     tot = (w1 - w0).total_seconds()
@@ -479,15 +632,19 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append("")
     L.append(f"- window: {fmt(w0)} .. {fmt(w1)} UTC ({local(w0)} .. {local(w1)}), duration {dur(tot)}")
     L.append(f"- events: {len(evs)} · generated {fmt(datetime.datetime.now(datetime.timezone.utc))} by hag_report.py · spec {spec_path}")
-    pins = {}
+    pins, ledger_folded = {}, 0
     for e in evs:
         r = e.get("run") or {}
+        if e.get("channel") == "ledger" and not r:
+            ledger_folded += 1  # ledger-derived (as_telemetry): carries no run pin
+            continue
         k = (r.get("instructions_sha", "?")[:10], r.get("runbook_sha", "?")[:10], r.get("scripts_sha", "?")[:26], r.get("schema_v", "?"))
         pins[k] = pins.get(k, 0) + 1
     L.append("")
     L.append("## Protocol pins seen (instructions / runbook / scripts / schema → events)")
     L.append(table(["instructions", "runbook", "scripts", "schema", "events"],
                    [(*k, n) for k, n in sorted(pins.items(), key=lambda x: -x[1])]))
+    L.append(f"- ledger-folded events (no run pin, excluded above): {ledger_folded}")
     L.append("")
     L.append("## Roles")
     L.append(table(["slug", "ecosystem", "coord", "fill", "model", "effort", "session", "server", "queue"],
@@ -508,26 +665,34 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         L.append(table(["repo", "PR", "title"], merged))
     if closed:
         L.append(table(["repo", "issue", "title"], closed))
-    rows, tot = state_rows(evs, w0, w1, spec)
+    resolve = role_resolver(spec)
+    seed = getattr(opts, "seed", None) or {}
+    rows, tot, unresolved = state_rows(evs, w0, w1, spec, seed=seed, resolve=resolve)
     L.append("")
-    L.append("## Time in state per session (seconds; share of window; `unobserved` = before first event)")
-    if rows:
-        hdr = ["slug", "eco", "session", "active", "idle", "waiting"] + [f"w:{s}" for s in SUBS] + ["w:other", "paused/offline", "unobserved", "transitions"]
-        L.append(table(hdr, [(slug, eco, s[:18], *[f"{agg[k]:.0f} ({100 * agg[k] / tot:.0f}%)" for k in
-                                                  ["active", "idle", "waiting"] + [f"w:{x}" for x in SUBS] + ["w:other", "paused/offline"]],
-                              f"{unobs:.0f}", n) for slug, eco, s, agg, unobs, n in rows]))
-    else:
-        L.append("_no session_transition events: time-in-state unobserved for every role_")
-    missing = [r.slug for r in spec.roles if r.session and r.session not in {x[2] for x in rows}]
+    L.append("## Time in state per role (seconds; share of window; `unobserved` = no transition ever "
+             "before that point; state at window start is seeded from the last pre-window transition)")
+    pct = lambda x: f"{x:.0f} ({100 * x / tot:.0f}%)" if tot else f"{x:.0f}"  # noqa: E731
+    hdr = (["slug", "eco", "sessions", "active", "idle", "waiting"]
+           + [f"of which w:{x}" for x in SUBS] + ["of which w:other", "paused/offline", "other state",
+                                                  "unobserved", "transitions", "changes", "re-emits", "seeded"])
+    L.append(table(hdr, [(slug, eco, sess, *[pct(agg[k]) for k in STATE_KEYS[:-2]],
+                          pct(agg["paused/offline"]), pct(agg["other-state"]), pct(unobs), n, ch, rem,
+                          "yes" if sd else "no")
+                         for slug, eco, sess, agg, unobs, n, ch, rem, sd in rows]))
+    L.append(f"- unresolved transitions (no spec role by slug or session prefix; not in any row): {unresolved}")
+    missing = [r[0] for r in rows if r[5] == 0]
     if missing:
-        L.append(f"- roles with NO transitions in window (unobserved, not idle): {', '.join(missing)}")
-    q, per, bad = transition_quality(evs)
+        L.append(f"- roles with NO transitions in window: {', '.join(missing)}"
+                 " (time carried from the seeded pre-window state where `seeded` is yes, else unobserved)")
+    q, per, bad = transition_quality(evs, resolve)
     L.append("")
     L.append("## Transition quality")
-    L.append(f"- valid: {q['valid']} · aliased: {q['aliased']} · invalid: {q['invalid']}")
+    L.append(f"- valid: {q['valid']} · aliased: {q['aliased']} · invalid: {q['invalid']}"
+             f" · ledger twins dropped (same role/state within 5 s of a local transition): "
+             f"{getattr(opts, 'twins_dropped', 0)}")
     if bad:
-        L.append(table(["ts", "session", "to_state", "offered sub", "class"], bad[:20]))
-    segs, stale, by_sub = wait_discipline(evs, w1)
+        L.append(table(["ts", "role", "to_state", "offered sub", "class"], bad[:20]))
+    segs, stale, by_sub = wait_discipline(evs, w1, resolve)
     L.append("")
     L.append("## Wait discipline")
     if by_sub:
@@ -538,7 +703,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append(f"- stale waits (segment outlived its declared rescan by 1.5x): {len(stale)}"
              + ("" if any(e.get("rescan_min") for e in evs) else " (no rescan_min on any event: pre-transition-primitive incarnation, unobserved)"))
     if stale:
-        L.append(table(["ts", "session", "sub", "lasted", "rescan", "holder"], stale[:15]))
+        L.append(table(["ts", "role", "sub", "lasted", "rescan", "holder"], stale[:15]))
     kinds, fires, recov = watch_summary(evs)
     L.append("")
     L.append("## Watchers")
@@ -547,6 +712,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     if recov:
         L.append("Stall-suspect → next transition of a named role:")
         L.append(table(["fired", "suspects", "recovery"], recov))
+    L.extend(recovery_sections(evs, w0, w1))
     dirs, gauges = coord_summary(evs)
     L.append("")
     L.append("## Coordinator comms (direction/peer counts)")
@@ -565,12 +731,12 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         L.append(f"### Queue file history: {os.path.basename(r.queue)} ({len(hist)} commits in window)")
         L.append(table(["ts", "commit", "subject", "QUEUE items", "state", "active-issue", "updated-utc"], hist[-25:]))
     if spec.ledger_mode:
-        ec = ledger_economics(evs, w1)
+        ec = ledger_economics(evs, w1, truth=getattr(opts, "truth", None))
         L.append("")
         L.append("## Ledger economics (offers, claims, completions)")
         L.append(f"- offers: {len(ec['offers'])} by src {ec['by_src'] or '{}'} · withdrawn: {len(ec['wds'])} · "
                  f"claims: {len(ec['claims'])} by src {ec['claim_src'] or '{}'} · releases: {ec['rel_kind'] or '{}'} · "
-                 f"done: {len(ec['dones'])} (verified against GitHub via reconcile: {ec['verified']})")
+                 f"done: {len(ec['dones'])} (verified against GitHub via reconcile, repo+number, any reconcile run: {ec['verified']})")
         if ec["per_role"]:
             L.append(table(["role", "offered to", "claimed", "self-filled", "done", "declined",
                             "offer→claim median", "claim→done median"],
@@ -624,7 +790,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         hints.append(f"stale waits {len(stale)}: re-scan discipline not held; consider shorter rescan or watch re-arm")
     if not recon:
         hints.append("no reconcile ran: outcomes unverified; check the reconcile timer tick")
-    if not rows:
+    if not any(r[5] for r in rows):
         hints.append("no transitions recorded: the transition primitive was not used; brief it or the incarnation is unmeasurable")
     if spec.ledger_mode:
         _w, _r, wper3 = wake_efficiency(evs, w1)
@@ -642,6 +808,59 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append("- PROPOSAL / NO-CHANGE: _fill in_")
     L.append("- next incarnation measured against: _fill in_")
     return "\n".join(L) + "\n"
+
+
+def sibling_truth(hag):
+    """GitHub ground truth written by OTHER HAGs' reconcile runs. A merge or
+    close is a fact about GitHub, not about the HAG whose timer happened to see
+    it (the r5 HAG's dones were reconciled by its successor's timer). Only
+    events marked reconciled=true count; best-effort, never fatal."""
+    out = []
+    try:
+        names = sorted(os.listdir(HAG_DATA_ROOT))
+    except OSError:
+        return out
+    for h in names:
+        d = os.path.join(HAG_DATA_ROOT, h, "telemetry")
+        if h == hag or not os.path.isdir(d):
+            continue
+        try:
+            out += [e for e in load(d, h, None, None)
+                    if e.get("type") in ("pr_merged", "issue_closed") and e.get("reconciled") == "true"]
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def drop_ledger_twins(local, ledger_evs, resolve, tol_s=5):
+    """Drop a ledger-derived `state` event (session_transition via=ledger) when
+    the same role has a local telemetry transition with the same to_state and
+    waiting sub within tol_s. `hag.py transition` writes both, the ledger one
+    landing 1-2 s later, so an exact-timestamp match never deduped them. Each
+    local transition absorbs at most one twin. Returns (kept, dropped_ts)."""
+    idx = {}
+    for e in local:
+        if e.get("type") == "session_transition" and e.get("via") != "ledger":
+            slug = resolve(e)
+            if slug:
+                idx.setdefault(slug, []).append([parse_ts(e["ts_utc"]), e.get("to_state"), sub_of(e), False])
+    kept, dropped = [], []
+    for e in ledger_evs:
+        if e.get("type") == "session_transition":
+            slug = resolve(e)
+            t = parse_ts(e["ts_utc"])
+            hit = None
+            for cand in idx.get(slug, []) if slug else []:
+                if (not cand[3] and cand[1] == e.get("to_state") and cand[2] == sub_of(e)
+                        and abs((t - cand[0]).total_seconds()) <= tol_s):
+                    if hit is None or abs((t - cand[0]).total_seconds()) < abs((t - hit[0]).total_seconds()):
+                        hit = cand
+            if hit is not None:
+                hit[3] = True
+                dropped.append(t)
+                continue
+        kept.append(e)
+    return kept, dropped
 
 
 def cmd_report(a: argparse.Namespace) -> int:
@@ -663,8 +882,15 @@ def cmd_report(a: argparse.Namespace) -> int:
             return 1
         w0 = parse_ts(g["started_utc"])
         w1 = parse_ts(g["ended_utc"]) if g.get("ended_utc") else now
-    evs = load(resolve_dir(a.dir, spec.hag), spec.hag, w0, w1)
+    # Load everything up to w1: the pre-window transitions seed each role's
+    # state at w0, and reconcile ground truth from any time verifies dones.
+    everything = load(resolve_dir(a.dir, spec.hag), spec.hag, None, None)
+    a.truth = [e for e in everything if e.get("type") in ("pr_merged", "issue_closed")]
+    a.truth += sibling_truth(spec.hag)
+    upto = [e for e in everything if parse_ts(e["ts_utc"]) <= w1]
+    resolve = role_resolver(spec)
     a.view_lint = []
+    a.twins_dropped = []
     if spec.ledger_mode:
         try:
             from ledger import Ledger, View, as_telemetry, lint as ledger_lint
@@ -672,15 +898,16 @@ def cmd_report(a: argparse.Namespace) -> int:
             if led.exists():
                 if not a.no_pull:
                     led.pull()
-                seen = {(e["ts_utc"], e.get("session"), e.get("type")) for e in evs}
-                for e in as_telemetry(led, spec, w0, w1):
-                    if e["type"] == "session_transition" and (e["ts_utc"], e.get("session"), e["type"]) in seen:
-                        continue  # transition already emitted locally
-                    evs.append(e)
-                evs.sort(key=lambda e: e["ts_utc"])
+                folded, a.twins_dropped = drop_ledger_twins(upto, as_telemetry(led, spec, None, w1), resolve)
+                upto.extend(folded)
+                upto.sort(key=lambda e: e["ts_utc"])
                 a.view_lint = ledger_lint(View(led, spec))
         except Exception as exc:  # noqa: BLE001
             print(f"WARN: ledger not folded in: {exc}")
+    evs = [e for e in upto if parse_ts(e["ts_utc"]) >= w0]
+    a.seed = seed_states([e for e in upto if parse_ts(e["ts_utc"]) < w0], resolve)
+    # twins dropped inside the window only (the pre-window ones affect seeding, not counts)
+    a.twins_dropped = sum(1 for t in a.twins_dropped if t >= w0)
     md = build(spec, a.spec, w0, w1, evs, gen_label, a)
     stem = f"incarnation-{gen_label}-{w0.strftime('%Y%m%dT%H%M')}-{w1.strftime('%Y%m%dT%H%M')}"
     out_md = a.out_md or os.path.join(home_dir(spec.hag), "reports", stem + ".md")

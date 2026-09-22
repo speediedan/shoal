@@ -18,7 +18,8 @@ timer it wrote, so a launch is one command. Jobs:
   lanes          every :0/5    lane transitions + SERVER-RESPAWNED
   pipeline       every :0/10   depth-zero starvation -> PIPELINE-WATCH
   heartbeat      every :0/5    STALL-SUSPECT (deduped) unless a wait is proven
-  reconcile      04:07 daily   GitHub ground truth into telemetry
+  digest         every :3/10   one board read per HAG -> board_digest.json (features.digest)
+  reconcile      04,16:07      GitHub ground truth into telemetry
   weekly-report  Mon 05:11     rolling 168h report (md + html) for the review
 """
 from __future__ import annotations
@@ -90,8 +91,11 @@ def jobs_for(spec, spec_path: str, coord_id: str) -> list[tuple[str, str, list[s
                  ["heartbeat", "--spec", spec_path, "--threshold-min", "60"]
                  + (["--notify", coord_id] if coord_id else []),
                  "*:0/5", ""))
-    jobs.append(("reconcile", f"HAG {spec.hag} nightly reconcile",
-                 ["--hag", spec.hag, "--spec", spec_path], "04:07",
+    if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
+        jobs.append(("digest", f"HAG {spec.hag} board digest (one board read per HAG)",
+                     ["digest", "--hag", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))
+    jobs.append(("reconcile", f"HAG {spec.hag} reconcile (twice daily)",
+                 ["--hag", spec.hag, "--spec", spec_path], "04,16:07",
                  os.path.join(HERE, "telemetry", "hag-reconcile.py")))
     jobs.append(("weekly-report", f"HAG {spec.hag} weekly report",
                  ["report", "--spec", spec_path, "--hours", "168"], "Mon 05:11", ""))

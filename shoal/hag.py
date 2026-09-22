@@ -67,6 +67,10 @@ from queue_section import QueueReadError, read_queue  # noqa: E402
 from queue_watch import cmd_queue_watch  # noqa: E402
 import ledger_cli as _ledger_cli  # noqa: E402
 import ledger_watch as _ledger_watch  # noqa: E402
+import digest as _digest  # noqa: E402
+import jobs as _jobs  # noqa: E402
+import deadman as _deadman  # noqa: E402
+import kill_audit as _kill_audit  # noqa: E402
 from roles import (HAG_DATA_ROOT, HAG_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
@@ -988,6 +992,10 @@ def main(argv: list[str] | None = None) -> int:
     _report.add_parser(sub)
     _ledger_cli.add_parsers(sub)
     _ledger_watch.add_parser(sub)
+    _digest.add_parsers(sub)
+    _jobs.add_parsers(sub)
+    _deadman.add_parser(sub)
+    _kill_audit.add_parser(sub)
 
     p = sub.add_parser("watch", help="coordinator-side watchers (systemd timers)")
     p.add_argument("--hag", required=True)

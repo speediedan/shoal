@@ -69,6 +69,14 @@ def save_sidecar(path: str, d: dict[str, str]) -> None:
     os.replace(tmp, path)
 
 
+def _exit_verdict(path: str, sc: dict[str, str], verdict: str) -> None:
+    """Record a designed exit for THIS pid, so a later dead pid without one reads as
+    killed (the verdict-line control, readme §4; deadman and kill-audit consume it)."""
+    sc["exit"] = f"{os.getpid()} {verdict} {now_iso()}"
+    save_sidecar(path, sc)
+    print(f"{now_iso()} VERDICT {verdict} (pid {os.getpid()})")
+
+
 def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -93,11 +101,19 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
             out.append((e["id"], f"WITHDRAWN {e.get('item')} by {e['by']}: {short(e.get('reason', ''), 80)}"))
     if board and role is not None and getattr(role, "fill", "assigned") == "self" and not view.queue(slug):
         try:
-            from sources import candidates
             taken = view.taken() | view.offered_open()
             declined = set(view.declined(slug))
-            for c in candidates(spec.sources, getattr(role, "scope", None), taken, declined, limit=3):
-                out.append((f"board:{c['item']}", f"BOARD {c['item']}:{c['verb']} pos={c['pos']} — {short(c['title'], 70)}"))
+            dig = None
+            if (getattr(spec, "features", {}) or {}).get("digest"):
+                from digest import candidates as digest_candidates, fmt_candidate
+                dig = digest_candidates(spec.hag, slug, taken, declined, limit=5)
+            if dig is not None:  # shared digest: no GitHub call from this watcher
+                for c in dig:
+                    out.append((f"board:{c['item']}", fmt_candidate(c)))
+            else:
+                from sources import candidates
+                for c in candidates(spec.sources, getattr(role, "scope", None), taken, declined, limit=3):
+                    out.append((f"board:{c['item']}", f"BOARD {c['item']}:{c['verb']} pos={c['pos']} — {short(c['title'], 70)}"))
         except Exception as exc:  # noqa: BLE001
             out.append(("board:error", f"BOARD-ERROR {short(str(exc), 120)} (self-fill unavailable this tick)"))
     return out
@@ -175,6 +191,7 @@ def cmd_ledger_watch(a) -> int:
             save_sidecar(sc_path, sc)
             if fails >= 5:
                 print("LEDGER-WATCH INSTRUMENT-FAILED: 5 consecutive fetch failures — re-arm after checking the remote")
+                _exit_verdict(sc_path, sc, "INSTRUMENT-FAILED")
                 return 2
         else:
             fails = 0
@@ -202,6 +219,7 @@ def cmd_ledger_watch(a) -> int:
         fired = fire(a.wake, text, repo_dir)
         if a.wake == "print":
             continue
+        _exit_verdict(sc_path, sc, "WAKE" if fired else "WAKE-SEND-FAILED")
         return 0 if fired else 2
 
 

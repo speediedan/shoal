@@ -119,6 +119,9 @@ def status_wait_cover(queue_file: str) -> str | None:
     return None
 
 
+DEADMAN_GRACE_MIN = 75  # hourly deadman plus jitter: past this the T1 tier has failed
+
+
 def watch_dead(hag: str, slug: str) -> bool:
     """True when the role's ledger-watch sidecar is absent or its pid is gone.
 
@@ -331,6 +334,15 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                     deaf = (spec.ledger_mode
                             and getattr(role, "fill", "") == "self"
                             and watch_dead(spec.hag, role.slug))
+                    dm_age = age_min(os.path.join(state_dir(spec.hag), f"deadman-{role.slug}"))
+                    if (deaf and role.ecosystem == "claude"
+                            and (getattr(spec, "features", {}) or {}).get("deadman")
+                            and dm_age is not None and dm_age <= DEADMAN_GRACE_MIN):
+                        row.update(klass="deadman-covered", suspect=False,
+                                   detail=f"ledger-watch dead but deadman ticked {dm_age:.0f}m ago: "
+                                          f"tier T1 re-arms it (page only if the deadman goes stale)")
+                        rows.append(row)
+                        continue
                     if deaf:
                         row.update(klass="idle-deaf", suspect=True,
                                     detail=f"IDLE with empty queue and dead ledger-watch "
@@ -406,12 +418,14 @@ def cmd_heartbeat(spec, threshold_min: float, notify: str = "",
               f"refire after {refire_min:g}m)")
         return 0
     print(body)
-    hag_emit(spec.hag, notify or "heartbeat", "script", "watch_event",
-             kind="stall-suspect", note="; ".join(suspects),
-             channel="within-ecosystem" if spec.coordinator else "shared-channel")
     if dry_run:
         print("[dry-run] would fire + record")
         return 0
+    hag_emit(spec.hag, notify or "heartbeat", "script", "watch_event",
+             kind="stall-suspect", note="; ".join(suspects),
+             tier=("T3" if any(r.get("klass") == "idle-deaf" and getattr(spec.role(r["slug"]), "ecosystem", "")
+                               == "claude" for r in rows) else "T2"),
+             channel="within-ecosystem" if spec.coordinator else "shared-channel")
     with open(sfile, "w") as fh:
         json.dump({"key": key, "fired_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ")}, fh)
     if spec.ledger_mode:

@@ -45,10 +45,19 @@ def seen(logdir, hag):
                         e = json.loads(line)
                     except Exception:
                         continue
-                    key = e.get("type"), str(e.get("issue") or e.get("pr") or "")
-                    if key[1]:
-                        have.add(key)
+                    num = str(e.get("issue") or e.get("pr") or "")
+                    if not num:
+                        continue
+                    # (type, repo, n) when the event names its repo; a
+                    # repo-less (lane-reported) event keeps the old (type, n)
+                    # key, which still suppresses a duplicate in any repo
+                    repo = (e.get("repo") or "").lower()
+                    have.add((e.get("type"), repo, num) if repo else (e.get("type"), num))
     return have
+
+
+def already(have, typ, repo, num):
+    return (typ, repo.lower(), str(num)) in have or (typ, str(num)) in have
 
 
 def gh(*a):
@@ -102,14 +111,20 @@ def main():
     a = ap.parse_args()
     a.dir = resolve_dir(a.dir, a.hag)
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=a.since_hours)
+    # Date-filter at the source: `gh ... list --limit N` returns the newest N
+    # by creation, so an old issue closed today fell outside it (measured
+    # 2026-09-22: interpretune#421 and #338 closed in window, never reconciled).
+    since_day = since.strftime("%Y-%m-%d")
     have = seen(a.dir, a.hag)
     repos = repos_for(a)
     pending = []
     for repo in repos:
         try:
-            prs = gh("pr", "list", "--repo", repo, "--state", "merged", "--limit", "50",
+            prs = gh("pr", "list", "--repo", repo, "--state", "merged", "--limit", "200",
+                     "--search", f"merged:>={since_day}",
                      "--json", "number,title,mergedAt,updatedAt,mergeCommit")
-            iss = gh("issue", "list", "--repo", repo, "--state", "closed", "--limit", "50",
+            iss = gh("issue", "list", "--repo", repo, "--state", "closed", "--limit", "200",
+                     "--search", f"closed:>={since_day}",
                      "--json", "number,title,closedAt,updatedAt")
         except RuntimeError as exc:
             print(f"ERROR: {exc}")
@@ -119,7 +134,7 @@ def main():
                 up = parse_gh_ts(pr["updatedAt"])
             except Exception:
                 continue
-            if up >= since and ("pr_merged", str(pr["number"])) not in have:
+            if up >= since and not already(have, "pr_merged", repo, pr["number"]):
                 sha = (pr.get("mergeCommit") or {}).get("oid", "") or ""
                 pending.append(("pr_merged",
                                 [f"pr={pr['number']}", f"repo={repo}", "by=reconcile",
@@ -130,7 +145,7 @@ def main():
                 up = parse_gh_ts(it["updatedAt"])
             except Exception:
                 continue
-            if up >= since and ("issue_closed", str(it["number"])) not in have:
+            if up >= since and not already(have, "issue_closed", repo, it["number"]):
                 pending.append(("issue_closed",
                                 [f"issue={it['number']}", f"repo={repo}", "closed_by=reconcile",
                                  f"closed_at={it.get('closedAt','')}", "via_pr=", "unfixed=",

@@ -150,7 +150,18 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
                if role.ecosystem != "opencode" else
                "setsid-detached (`setsid nohup <cmd> >>/tmp/" + hag + "/ledger-watch-" + role.slug
                + ".log 2>&1 < /dev/null &`); it self-sends LEDGER-WAKE to your session id and exits")
-    if role.fill == "self":
+    feats = getattr(spec, "features", {}) or {}
+    if role.fill == "self" and feats.get("digest"):
+        fill = (f"FILL: self, via the shared board digest. When your queue is empty and you hold nothing, the "
+                f"watcher delivers your top digest candidates ranked against your working context (`{HAGPY} "
+                f"context show --hag {hag} --slug {role.slug}`), each with score, why-tokens, blockers and a body "
+                f"excerpt: decide from those, open an issue only when the excerpt is not enough. Record ALL "
+                f"decisions of one wake in one call: `{HAGPY} triage --hag {hag} --slug {role.slug} "
+                f"[--claim repo#n:verb] [--pass repo#n:CLASS[:suggest=<role>][:note=..]]...` with CLASS one of "
+                f"out-of-lane|blocked|needs-maintainer|needs-hardware|duplicate-or-stale; name `suggest=` "
+                f"whenever you know whose lane it is. Full ranked list: `{HAGPY} digest --hag {hag} --slug "
+                f"{role.slug}`. user/filler offers ALWAYS outrank board candidates.")
+    elif role.fill == "self":
         fill = (f"FILL: self. When your queue is empty and you hold nothing, the watcher offers the top "
                 f"board candidates (priority table in board order, minus what the ledger shows taken or "
                 f"declined by you). Claim the top one that fits your lane (`claim`), or decline it with a "
@@ -191,7 +202,39 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
         f"[--rescan-min N]` (the daemon pages you if the pid dies or the rescan lapses +50%). Keep a "
         f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
         f"first-person: ask the maintainer directly with decline/hold options; authorizations never transfer. "
-        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen.")
+        f"{h4_disciplines(role, spec)}"
+        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen"
+        f"{', deadman scheduled (job id)' if role.ecosystem == 'claude' and feats.get('deadman') else ''}.")
+
+
+def h4_disciplines(role: Role, spec: HagSpec) -> str:
+    """Watcher placement and recovery (architecture doc §5.3, §6); empty unless opted in."""
+    feats = getattr(spec, "features", {}) or {}
+    if not (feats.get("jobs") or feats.get("deadman")):
+        return ""
+    hag = spec.hag
+    out = []
+    if feats.get("jobs"):
+        out.append(
+            f"JOBS: any local work that would hurt to lose (test suites, GPU renders, A/B runs, anything "
+            f"over a few minutes) runs as a job unit, never as a harness background command: `{HAGPY} job run "
+            f"--hag {hag} --slug {role.slug} --name <short> [--memory-high 24G] -- <cmd>` (wrap GPU work in "
+            f"gpu_lease.sh inside <cmd>), then follow it with `{HAGPY} job wait --hag {hag} --slug {role.slug} "
+            f"--name <short>` as your background waiter. The job survives your session and any reap; the "
+            f"waiter is safe to re-arm and prints one JOB-VERDICT line.")
+    out.append(
+        "A KILL IS A WAKE: a watcher notification with status killed (any reason) is handled exactly like a "
+        "wake: show, act, re-arm, then prove the new pid (ps -p plus sidecar pid) in the same turn. Tally "
+        "kills from notification status only, never from exit counts.")
+    if role.ecosystem == "claude" and feats.get("deadman"):
+        from deadman import DEADMAN_CRON
+        out.append(
+            f"DEADMAN (Claude recovery tier T1): right after arming the watcher, schedule a recurring harness "
+            f"prompt (CronCreate, cron `{DEADMAN_CRON}`, recurring) whose text is exactly the prompt printed by "
+            f"`{HAGPY} watch-check --hag {hag} --slug {role.slug} --print-schedule`. It is not a shell, so the "
+            f"reaper cannot kill it; on DEADMAN OK end the turn silently, on DEADMAN DEAD re-arm as printed. "
+            f"Record its job id in `## Running monitors`; it expires after 7 days (a restart re-creates it).")
+    return " ".join(out) + " "
 
 
 def brief_for(role: Role, spec: HagSpec, coord_id: str = "") -> str:

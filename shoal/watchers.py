@@ -46,23 +46,33 @@ def utcnow() -> str:
 
 class Args:  # minimal namespace for the telemetry emit() signature
     def __init__(self, logdir: str, hag: str, session: str, eco: str,
-                 fields: list[str]):
+                 fields: list[str], typ: str = ""):
         self.dir = logdir
         self.hag = hag
         self.session = session
         self.ecosystem = eco
         self.field = fields
+        # emit() reads args.type; before 2026-09-22 it was missing here, so
+        # every hag_emit raised AttributeError and wrote nothing.
+        self.type = typ
 
 
 def hag_emit(hag: str, session: str, eco: str, typ: str,
              **fields: str) -> None:
     if _telemetry_emit is None:
+        print("hag_emit failed: hag_telemetry not importable", file=sys.stderr)
         return
     try:
-        _telemetry_emit(Args("", hag, session, eco,
-                             [f"{k}={v}" for k, v in fields.items()]))
-    except Exception:
-        pass  # best-effort; never break the watcher
+        import contextlib
+        import io
+        # emit() echoes the event JSON on stdout; keep watcher stdout unchanged
+        with contextlib.redirect_stdout(io.StringIO()):
+            _telemetry_emit(Args("", hag, session, eco,
+                                 [f"{k}={v}" for k, v in fields.items()],
+                                 typ=typ))
+    except Exception as exc:  # noqa: BLE001
+        # best-effort (never break the watcher), but never silent
+        print(f"hag_emit failed: {exc}", file=sys.stderr)
 
 
 def state_dir(hag: str) -> str:

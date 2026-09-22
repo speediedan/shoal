@@ -282,6 +282,19 @@ class Ledger:
             sync_push(self.root)
         return ev
 
+    def commit_own(self, by: str, subject: str) -> None:
+        """Commit lines appended with `_commit=False` to `by`'s file as ONE commit
+        (batch verbs such as `triage`); a no-op when nothing is staged."""
+        path = self.writer_path(by)
+        rel = os.path.relpath(path, self.root)
+        with Lock(self.root):
+            git(self.root, "add", "--", rel)
+            if subprocess.run(["git", "-C", self.root, "diff", "--cached", "--quiet", "--", rel],
+                              env=GIT_ENV).returncode == 0:
+                return
+            git(self.root, "commit", "--quiet", "-m", subject[:72], "--", rel)
+        self._events = None
+
     # -- read
     def pull(self) -> bool:
         ok = sync_pull(self.root) if self.sync else True

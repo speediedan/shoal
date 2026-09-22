@@ -116,18 +116,30 @@ def cmd_transition(a: argparse.Namespace) -> int:
         if not a.holder:
             print("ERROR: waiting needs --holder (who or what clears this wait)")
             return 1
-    # resolve session id + ecosystem from the spec when not given
+    # resolve session id + ecosystem from the spec. A missing spec used to
+    # degrade to session=<slug>, eco='?', which produced events no report could
+    # attribute to a role; fail loudly instead, before any side effect.
     session, eco = a.session, a.ecosystem
-    spec, spec_path = None, find_spec(hag, a.spec)
+    spec_path = find_spec(hag, a.spec)
     try:
         spec = HagSpec.load(spec_path)
-    except OSError:
-        pass
-    if spec is not None:
-        role = spec.role(a.slug)
-        if role is not None:
-            session = session or role.session or a.slug
-            eco = eco or role.ecosystem
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"ERROR: no readable HAG spec for {hag!r} at {spec_path} ({exc}); "
+              "refusing to emit an unattributable transition. Pass --spec <hag.json>.",
+              file=sys.stderr)
+        return 2
+    role = spec.role(a.slug)
+    if role is None:
+        print(f"WARNING: slug {a.slug!r} is not a role in {spec_path}; the event "
+              "will be reported as unresolved", file=sys.stderr)
+    else:
+        rs = role.session or ""
+        # a prefix-compatible override (8-char short id vs full UUID) is the
+        # same session: record the spec's canonical form
+        if session and rs and (rs.startswith(session) or session.startswith(rs)):
+            session = rs
+        session = session or rs or a.slug
+        eco = eco or role.ecosystem
     session = session or a.slug
     eco = eco or "?"
     # 1. heartbeat
@@ -156,11 +168,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
         append_event(resolve_dir(a.dir, hag), ev)
     # 4. ledger (cross-host, cross-ecosystem visibility)
     ledger_line = ""
-    if spec is None and not a.no_ledger and not a.dry_run:
-        # Silence here is what made this class of miss invisible: the two paths
-        # below both print, so a skipped ledger write must too.
-        ledger_line = f" | ledger: NO SPEC ({spec_path})"
-    elif spec is not None and spec.ledger_mode and not a.no_ledger and not a.dry_run:
+    if spec.ledger_mode and not a.no_ledger and not a.dry_run:
         try:
             from ledger import Ledger
             led = Ledger(hag, root=a.ledger_dir or spec.ledger_dir)
