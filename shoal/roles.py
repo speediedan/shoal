@@ -308,7 +308,21 @@ class HagSpec:
 
 
 def default_spec_path(hag: str) -> str:
-    return os.path.join(HAG_ROOT, hag, "hag.json")
+    """Legacy versioned control plane first, then the ledger clone.
+
+    Ledger-mode starts write THE canonical live spec into the ledger clone and
+    never touch HAG_ROOT, so defaulting to HAG_ROOT alone hands every caller a
+    path that does not exist. The callers that tolerate a missing spec then
+    degrade silently rather than refusing, which is how a ledger-mode HAG ran
+    with four of five roles emitting no state event at all. Returning the
+    legacy path when NEITHER exists keeps an unknown HAG failing by name.
+    """
+    legacy = os.path.join(HAG_ROOT, hag, "hag.json")
+    if os.path.exists(legacy):
+        return legacy
+    ledger_root = os.environ.get("HAG_LEDGER_DIR", DEFAULT_LEDGER["dir"])
+    ledger = os.path.join(ledger_root, "hags", hag, "hag.json")
+    return ledger if os.path.exists(ledger) else legacy
 
 
 def find_spec(hag: str, explicit: str = "") -> str:
