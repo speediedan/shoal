@@ -118,9 +118,9 @@ def cmd_transition(a: argparse.Namespace) -> int:
             return 1
     # resolve session id + ecosystem from the spec when not given
     session, eco = a.session, a.ecosystem
-    spec = None
+    spec, spec_path = None, find_spec(hag, a.spec)
     try:
-        spec = HagSpec.load(find_spec(hag, a.spec))
+        spec = HagSpec.load(spec_path)
     except OSError:
         pass
     if spec is not None:
@@ -156,7 +156,11 @@ def cmd_transition(a: argparse.Namespace) -> int:
         append_event(resolve_dir(a.dir, hag), ev)
     # 4. ledger (cross-host, cross-ecosystem visibility)
     ledger_line = ""
-    if spec is not None and spec.ledger_mode and not a.no_ledger and not a.dry_run:
+    if spec is None and not a.no_ledger and not a.dry_run:
+        # Silence here is what made this class of miss invisible: the two paths
+        # below both print, so a skipped ledger write must too.
+        ledger_line = f" | ledger: NO SPEC ({spec_path})"
+    elif spec is not None and spec.ledger_mode and not a.no_ledger and not a.dry_run:
         try:
             from ledger import Ledger
             led = Ledger(hag, root=a.ledger_dir or spec.ledger_dir)
