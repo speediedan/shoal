@@ -180,8 +180,14 @@ def cmd_aux_launch(a) -> int:
     from backends import get as get_backend
     from hag import persist_spec, write_brief
     brief = open(write_brief(spec, role)).read()
-    role.session = get_backend(role.ecosystem).create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
-                                                      name=role.tag, model=role.model, effort=role.effort)
+    be = get_backend(role.ecosystem)
+    role.session = be.create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
+                             name=role.tag, model=role.model, effort=role.effort)
+    if role.ecosystem == "opencode":
+        # opencode create takes no prompt: the brief must be sent, or the new
+        # session idles forever with an empty transcript (measured 2026-09-23:
+        # hag-aux-r1 sat promptless until the brief was sent by hand).
+        be.send(role.session, spec.dir, brief, model=role.model)
     spec.record_generation()
     persist_spec(spec, path, note=f"aux-launch {role.tag}")
     print(plan + f" -> launched {role.session}")
