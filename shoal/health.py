@@ -86,6 +86,14 @@ def age_min(ts: str) -> float | None:
     return None if t is None else (utcnow() - t).total_seconds() / 60
 
 
+def continuation_cfg(spec: HagSpec) -> dict | None:
+    """features.continuation: true or {"after_min": N}; None when off."""
+    c = (spec.features or {}).get("continuation")
+    if not c:
+        return None
+    return c if isinstance(c, dict) else {}
+
+
 def health_cfg(spec: HagSpec) -> dict:
     h = (spec.features or {}).get("health")
     return h if isinstance(h, dict) else {}
@@ -238,15 +246,20 @@ def claude_busy() -> dict[str, str]:
     """sessionId -> 'busy'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
     try:
         r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
-        return {str(e.get("sessionId", "")): str(e.get("status", "")) for e in json.loads(r.stdout or "[]")}
+        # a session blocked on a question to the maintainer is never "between turns"
+        return {str(e.get("sessionId", "")): ("blocked" if e.get("state") == "blocked" else str(e.get("status", "")))
+                for e in json.loads(r.stdout or "[]")}
     except Exception:
         return {}
 
 
 def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | None:
+    # HAG_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
+    if role.slug in [x for x in os.environ.get("HAG_HEALTH_BETWEEN", "").split(",") if x]:
+        return True
     if role.ecosystem == "claude":
         st = next((v for k, v in cbusy.items() if role.session and k.startswith(role.session)), None)
-        return None if st is None else st != "busy"
+        return None if st is None else st not in ("busy", "blocked")
     if role.ecosystem == "opencode":
         try:
             from backends import get as get_backend
@@ -331,8 +344,22 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 "since": b["since"],
                                 "detail": f"{b['role']} has waited on your {b['item']} since {b['since']}, and your queue "
                                           f"does not schedule it: schedule it (active/next) or pass it with a reason"})
-        # stale active
-        if posture == "active" and between:
+        # continuation: a turn that ended while the posture says active (architecture doc §3.2)
+        cont = continuation_cfg(spec)
+        if cont is not None and posture == "active" and between:
+            last = view.last_by.get(slug, "")
+            act = q.get("active") or "(no active item)"
+            out.append({"slug": slug, "condition": "turn-ended-active", "key": f"stop:{last}", "since": iso(),
+                        "first_seen": True,
+                        "detail": f"CONTINUE {act}: your turn ended with posture active and nothing running. Continue "
+                                  f"the item now; if it cannot continue, write your real sleep posture: `queue --wait "
+                                  f"<sub> --holder .. --target ..` after arming the waiter (GPU work: a job unit under "
+                                  f"the lease), `--active <next item>` to pivot, or `--idle`"})
+            continue_done = True
+        else:
+            continue_done = False
+        # stale active (the crash catcher; superseded by continuation when that is on)
+        if posture == "active" and between and not continue_done:
             last = view.last_by.get(slug, "")
             out.append({"slug": slug, "condition": "stale-active", "key": f"last:{last}", "since": last,
                         "detail": f"posture active, last ledger write {last}, session between turns"})
@@ -387,6 +414,9 @@ def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
         if c["condition"] == "wait-validity":
             v = float(health_cfg(spec).get("validity_wake_min", 90))
             steps = [(0, "wake"), (v, "wake"), (2 * v, "page")]
+        elif c["condition"] == "turn-ended-active":
+            m = float((continuation_cfg(spec) or {}).get("after_min", 5))
+            steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
         else:
             steps = LADDERS[c["condition"]]
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:

@@ -168,6 +168,8 @@ def cmd_next(a) -> int:
         out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}")
     except Exception:
         pass
+    out.append("# END EVERY TURN IN A SLEEP POSTURE: the last write of a turn is `queue --wait ..` (waiter armed) or "
+               "`queue --idle`; `active` means you are still working. A turn that stops while active is woken to continue.")
     out.append(f"# then ONE write: hag.py queue --hag {spec.hag} --slug {slug} --active .. --next .. "
                f"[--done .. --url ..] [--claim ..] [--pass ..] [--wait ..|--idle]")
     print("\n".join(out))
@@ -307,6 +309,10 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                 lost.append(item_key(c))
     print(plan + f" [{qev['id']}]" + ("" if pushed else " (push pending: `hag.py sync`)")
           + (f" CLAIM-LOST {lost}: re-run `next` and repick" if lost else ""))
+    if posture == "active":
+        print("note: posture ACTIVE means you keep working in this turn. The LAST write of every turn is a sleep "
+              "posture: `queue --wait <sub> --holder .. --target ..` (arm the waiter first) or `queue --idle`, or "
+              "`--active <next item>` and continue. A turn that ends while active is woken to CONTINUE.")
     try:
         os.remove(os.path.join(state_dir(spec.hag), f"wake-{slug}"))  # a pending health wake is now answered
     except OSError:

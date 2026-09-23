@@ -250,5 +250,22 @@ check "handed interpretune#9401 to tl" $H release --hag $HAGID --spec "$SPEC" --
 check "OFFER interpretune#9401.* by=up" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync --peek
 check "claimed interpretune#9401" $H claim --hag $HAGID --spec "$SPEC" --slug tl --item interpretune#9401:fix --no-sync
 
+echo "== 13 continuation: a turn that ends while active is woken to continue (not after 90 min)"
+python3 - "$SPEC" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["continuation"]={"after_min":5}; json.dump(d,open(p,"w"),indent=1)
+PY
+check "note: posture ACTIVE means you keep working in this turn" $H queue --hag $HAGID --spec "$SPEC" --slug tl --active interpretune#9501:fix --next "" --reason test --no-sync
+check "END EVERY TURN IN A SLEEP POSTURE" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync --peek
+rm -f /tmp/$HAGID/health.json
+env HAG_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
+check "tl turn-ended-active step1:wake" env HAG_HEALTH_BETWEEN=tl HAG_HEALTH_SHIFT_MIN=6 $H health --spec "$SPEC" --instance b --dry-run
+OUT=$(env HAG_HEALTH_BETWEEN=tl HAG_HEALTH_SHIFT_MIN=6 $H health --spec "$SPEC" --instance b --dry-run 2>&1)
+! grep -q "tl stale-active" <<<"$OUT" || fail "stale-active fired alongside continuation :: $OUT"
+OUT=$(env HAG_HEALTH_SHIFT_MIN=6 $H health --spec "$SPEC" --instance b --dry-run 2>&1)
+! grep -q "tl turn-ended-active" <<<"$OUT" || fail "continuation fired for a session not proven between turns :: $OUT"
+check "posture=idle" $H queue --hag $HAGID --spec "$SPEC" --slug tl --idle --next "" --no-sync
+OUT=$(env HAG_HEALTH_BETWEEN=tl HAG_HEALTH_SHIFT_MIN=12 $H health --spec "$SPEC" --instance b --dry-run 2>&1)
+! grep -q "tl turn-ended-active" <<<"$OUT" || fail "continuation fired after the role wrote a sleep posture :: $OUT"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$HAGID
