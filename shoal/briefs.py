@@ -143,11 +143,15 @@ def relay_brief(role: Role, spec: HagSpec) -> str:
     return (
         f"You are {role.slug} ({role.tag}) in HAG {hag}: the wake relay for Claude roles whose own watcher "
         f"is dead. You do no project work, claim nothing, and message nobody on your own initiative. "
-        f"LOOP: run `{HAGPY} relay-watch --hag {hag}` as a background command. When it exits it prints "
+        f"LOOP: run `{HAGPY} relay-watch --hag {hag}` with the Bash tool and run_in_background=true, on exactly "
+        f"that command: no trailing `&`, no nohup, and NEVER the Monitor tool (a Monitor expires every 5-30 min and "
+        f"each expiry costs a turn; a background Bash command never expires and wakes you when it exits). "
+        f"When it exits it prints "
         f"`RELAY-WAKE to=<session name> session=<id> :: <text>` lines: for EACH line call SendMessage with "
         f"to=<session name> and message=<text> verbatim (use ListAgents to add the [ref] only when two sessions "
         f"share the name; prefer the one whose session id starts with <id>), then re-arm relay-watch, then end "
-        f"the turn with one line: `relayed N`. Never add commentary to a relayed message. Keep your context "
+        f"the turn with one line: `relayed N`. Never transition yourself offline and never kill relay-watch; only "
+        f"the operator stops the relay. Never add commentary to a relayed message. Keep your context "
         f"small: no other reading. Confirm arming with the relay-watch pid.")
 
 
@@ -158,7 +162,8 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
     wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
     arm = (f"{HAGPY} ledger-watch --hag {hag} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
-    how_arm = ("as a background command that re-invokes you when it exits"
+    how_arm = ("with the Bash tool and run_in_background=true (no trailing `&`, never the Monitor tool, which "
+               "expires and costs a turn per expiry): it re-invokes you when it exits"
                if role.ecosystem != "opencode" else
                "setsid-detached (`setsid nohup <cmd> >>/tmp/" + hag + "/ledger-watch-" + role.slug
                + ".log 2>&1 < /dev/null &`); it self-sends its wake to your session id and exits")

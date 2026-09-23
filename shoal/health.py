@@ -58,6 +58,7 @@ LADDERS = {
     # and a peer's wait on you is work you are woken for
     "wait-expired": [(0, "wake"), (60, "wake"), (120, "page")],
     "blocking-unscheduled": [(30, "wake"), (120, "page")],
+    "relay-dead": [(10, "page"), (360, "page")],
 }
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
@@ -368,6 +369,14 @@ def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
     led.pull()
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
+    relay = spec.role(RELAY_SLUG)
+    if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.hag):
+        # the relay has no adapter of its own: its death is a page, never a wake
+        tk = os.path.join(sdir, "tick-relay-watch")
+        since = open(tk).read().strip() if os.path.exists(tk) else iso()
+        conds.append({"slug": RELAY_SLUG, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
+                      "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
+                                f"have no wake path; relaunch with `hag.py restart --spec <spec> --only hag-relay`"})
     ladders = state.setdefault("ladders", {})
     live_keys = set()
     for c in conds:
@@ -446,8 +455,16 @@ def cmd_relay_watch(a) -> int:
     with open(os.path.join(sdir, "relay-watch.pid"), "w") as fh:
         fh.write(str(os.getpid()))
     qp, cp = relay_queue_path(a.hag), os.path.join(sdir, "relay-queue.cursor")
-    print(f"{iso()} relay-watch armed (pid {os.getpid()})", flush=True)
+    tick = os.path.join(sdir, "tick-relay-watch")
+    deadline = time.time() + a.max_hours * 3600 if a.max_hours > 0 else None
+    print(f"{iso()} relay-watch armed (pid {os.getpid()}; runs until a wake is due"
+          + (f" or {a.max_hours:g} h pass" if deadline else ", indefinitely") + ")", flush=True)
     while True:
+        with open(tick, "w") as fh:  # self-tick: an old tick is a dead relay, never a quiet one
+            fh.write(iso() + "\n")
+        if deadline and time.time() > deadline:
+            print(f"{iso()} VERDICT RELAY-MAX-HOURS {a.max_hours:g} (nothing to relay; re-arm)")
+            return 0
         try:
             lines = open(qp).read().splitlines()
         except OSError:
@@ -484,13 +501,17 @@ the relay-queue cursor under `/tmp/{hag}/`.
 
 ## Loop
 
-1. Run `python3 {hagpy} relay-watch --hag {hag}` as a background command.
+1. Run `python3 {hagpy} relay-watch --hag {hag}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
 2. When it exits it prints one `RELAY-WAKE to=<session name> session=<id> :: <text>` line per
    wake. For each, call SendMessage with to=<session name> and the text verbatim. Add the `[ref]`
    from ListAgents only when two sessions share the name, choosing the one whose session id
    starts with <id>.
-3. Re-arm relay-watch and prove its pid.
+3. Re-arm relay-watch (same rule: Bash, run_in_background=true, no `&`, no Monitor) and prove its
+   pid with `cat /tmp/{hag}/relay-watch.pid` plus `ps -p <pid>`.
 4. End the turn with one line: `relayed N`.
+
+Never transition yourself `offline` and never kill relay-watch: only the operator stops the relay
+(`claude stop <id>`). If your session is being closed, leave relay-watch running and end the turn.
 
 Keep the context small: read nothing else. A `killed` notification for relay-watch is a wake:
 re-arm.
@@ -538,6 +559,52 @@ def cmd_relay_init(a) -> int:
     return 0
 
 
+def cmd_relay_launch(a) -> int:
+    """(Re)launch the relay session alone: no restart, no incarnation bump. The relay's seq
+    bumps (new tag), the new session id is recorded in the spec, and the launch counts only
+    once relay-watch is proven running."""
+    path = a.spec or find_spec(a.hag)
+    spec = HagSpec.load(path)
+    role = spec.role(RELAY_SLUG)
+    if role is None:
+        print(f"ERROR: no {RELAY_SLUG} role in {spec.hag}: run `hag.py relay-init --hag {spec.hag}` first")
+        return 1
+    if relay_alive(spec.hag) and not a.force:
+        print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.hag), 'relay-watch.pid')).read().strip()}); "
+              f"nothing to do (--force to launch anyway)")
+        return 0
+    st = claude_busy().get(next((k for k in claude_busy() if role.session and k.startswith(role.session)), ""), "")
+    if st == "busy" and not a.force:
+        print(f"ERROR: the current relay session {role.session} is still executing a turn; stop it first "
+              f"(`claude stop {role.session[:8]}`) or pass --force")
+        return 1
+    old = role.session
+    role.seq += 1
+    plan = f"relay-launch {spec.hag}: {role.label} model={role.model} (previous session {old or '-'}; incarnation unchanged)"
+    if a.dry_run:
+        print("[dry-run] " + plan)
+        return 0
+    from hag import persist_spec, write_brief
+    from backends import get as get_backend
+    brief = open(write_brief(spec, role)).read()
+    role.session = get_backend("claude").create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
+                                                name=role.tag, model=role.model, effort=role.effort)
+    spec.record_generation()
+    persist_spec(spec, path, note=f"relay-launch {role.tag}")
+    print(plan + f" -> launched {role.session}")
+    t0 = time.time()
+    while time.time() - t0 < a.verify_s:
+        if relay_alive(spec.hag):
+            pid = open(os.path.join(state_dir(spec.hag), "relay-watch.pid")).read().strip()
+            print(f"RELAY LOOP ALIVE: relay-watch pid {pid} (verify it was armed as a Bash background command: "
+                  f"`claude logs {role.session}`)")
+            return 0
+        time.sleep(10)
+    print(f"RELAY LOOP INCOMPLETE: no relay-watch within {a.verify_s:g}s; check `claude logs {role.session}` "
+          f"(a pending grant ask or a failed arm)")
+    return 4
+
+
 def add_parsers(sub) -> None:
     p = sub.add_parser("health", help="health quorum run (what the two health timers execute)")
     p.add_argument("--spec", default="")
@@ -551,7 +618,16 @@ def add_parsers(sub) -> None:
     p.add_argument("--doc-only", action="store_true", help="write the start doc only; leave the spec alone")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_relay_init)
+    p = sub.add_parser("relay-launch", help="(re)launch the hag-relay session alone (no restart, no incarnation bump)")
+    p.add_argument("--hag", required=True)
+    p.add_argument("--spec", default="")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--verify-s", type=float, default=300)
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_relay_launch)
     p = sub.add_parser("relay-watch", help="the Claude relay session's waiter (exits when a wake is due)")
     p.add_argument("--hag", required=True)
     p.add_argument("--interval", type=float, default=15)
+    p.add_argument("--max-hours", type=float, default=0,
+                   help="exit after this long with nothing to relay (default 0: run indefinitely)")
     p.set_defaults(func=cmd_relay_watch)

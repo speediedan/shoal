@@ -203,6 +203,9 @@ PY
 sleep 3; grep -q "RELAY-WAKE to=tl-r1" "$S/relay.log" || fail "relay-watch did not deliver :: $(cat $S/relay.log)"
 grep -q "VERDICT RELAY-DELIVER 1" "$S/relay.log" || fail "relay-watch verdict missing"
 kill $RW 2>/dev/null || true
+sleep 1
+check "hag-relay relay-dead step1:page" env HAG_HEALTH_SHIFT_MIN=11 $H health --spec "$SPEC" --instance a --dry-run
+check "VERDICT RELAY-MAX-HOURS" timeout 30 $H relay-watch --hag $HAGID --interval 1 --max-hours 0.0005
 
 echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"
 $H queue --hag $HAGID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --no-sync >/dev/null
