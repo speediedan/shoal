@@ -111,6 +111,14 @@ systemctl --user kill --signal=KILL hag-$HAGID-tl-kill.service
 check "UNIT-GONE-NO-STATUS" $H job wait --hag $HAGID --slug tl --name kill --poll 1
 check "NOT-FOUND" $H job wait --hag $HAGID --slug tl --name never --poll 1
 check "hag-$HAGID-tl-ok" $H job status --hag $HAGID
+# a health wait target names the job, not the unit: a live job whose name extends a finished
+# one must read pending, the finished one resolved, an unknown one unknown (never resolved)
+$H job run --hag $HAGID --slug tl --name ok-long --memory-high 1G -- sleep 4 >/dev/null
+TP=$(cd "$HAGD" && python3 -c "import health
+for t in ('job:ok-long','job:ok','job:never'): print(t, health.target_pending(t,'tl','$HAGID')[0])")
+grep -q "job:ok-long True" <<<"$TP" && grep -q "job:ok False" <<<"$TP" && grep -q "job:never None" <<<"$TP" \
+  || fail "job wait target misread: $TP"
+check "result=success exit=0" $H job wait --hag $HAGID --slug tl --name ok-long --poll 1
 
 echo "== 7 work loop: next reads, queue writes ONE commit (claim + posture + version)"
 python3 - "$SPEC" <<'PY'
@@ -137,8 +145,10 @@ N1=$(git -C "$A" rev-list --count HEAD); [ $((N1 - N0)) = 1 ] || fail "queue mad
 check "CLAIM-REFUSED" $H queue --hag $HAGID --spec "$SPEC" --slug tl --active $I1:fix --no-sync
 check "QUEUE v1 .*active=$I1" $H next --hag $HAGID --spec "$SPEC" --slug up --no-sync
 check "up queue v2: active=$I2 next=$I3 posture=active.*done=\['$I1:fix'\]" $H queue --hag $HAGID --spec "$SPEC" --slug up --done $I1:fix --url https://example.invalid/pr/1 --active $I2 --next $I3 --no-sync
-check "posture=waiting/remote-ci" $H queue --hag $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder "gate 1" --target job:hag-$HAGID-none --no-sync
-grep -q '"target": "job:hag-h4selftest-none"' /tmp/$HAGID/wait-up || fail "wait proof lacks target"
+$H job run --hag $HAGID --slug up --name gate1 -- true >/dev/null   # a finished job: its wait is resolved
+check "result=success exit=0" $H job wait --hag $HAGID --slug up --name gate1 --poll 1
+check "posture=waiting/remote-ci" $H queue --hag $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder "gate 1" --target job:gate1 --no-sync
+grep -q '"target": "job:gate1"' /tmp/$HAGID/wait-up || fail "wait proof lacks target"
 [ "$(rc_of $H queue --hag $HAGID --spec "$SPEC" --slug up --next a,b,c,d --no-sync)" = 1 ] || fail "4 next items accepted"
 
 echo "== 8 wakes are work-only: busy roles are not woken by offers or peer mail"

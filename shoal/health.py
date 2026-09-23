@@ -189,17 +189,29 @@ def page_user(spec: HagSpec, text: str, state: dict, dry_run: bool = False) -> s
 
 # ---- wait-target heuristics ------------------------------------------------------
 
-def target_pending(target: str, slug: str) -> tuple[bool | None, str]:
+def target_pending(target: str, slug: str, hag: str = "") -> tuple[bool | None, str]:
     """(True pending | False resolved/invalid | None unknown, detail) for a wait target."""
     if not target:
         return None, "no target"
     kind, _, rest = target.partition(":")
     try:
         if kind == "job":
-            r = subprocess.run(["systemctl", "--user", "show", f"{rest}.service", "-p", "ActiveState"],
-                               capture_output=True, text=True, timeout=20)
-            st = r.stdout.strip().split("=", 1)[-1]
-            return st in ("active", "activating", "deactivating"), f"unit {st or 'gone'}"
+            # `job:<name>` is the name given to `job run`; the unit is hag-<hag>-<slug>-<name>.
+            # Querying the bare name asked systemd about a unit that never exists, which
+            # reads `inactive` and marked every live job wait resolved (2026-09-23, #t401).
+            import jobs
+            unit = rest if rest.startswith("hag-") or not hag else jobs.unit_name(hag, slug, rest)
+            st = jobs.unit_state(unit)
+            active = st.get("ActiveState", "")
+            if active in ("active", "activating", "deactivating", "reloading"):
+                return True, f"unit {unit} {active}"
+            rc_file = jobs.paths(hag, unit)["rc"] if hag else ""
+            if rc_file and os.path.exists(rc_file):
+                with open(rc_file) as fh:
+                    return False, f"unit {unit} exited rc={fh.read().strip()}"
+            if st.get("LoadState") == "not-found":
+                return None, f"unit {unit} not found and no rc file (unknown, not resolved)"
+            return False, f"unit {unit} {active or 'gone'}"
         if kind == "lease":
             lease = os.path.join(os.path.dirname(HERE), "gpu_lease.sh")
             r = subprocess.run([lease, "--status"], capture_output=True, text=True, timeout=30, env=_ENV)
@@ -308,7 +320,7 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
         w = read_wait(spec.hag, slug) or {}
         target = w.get("target") or st.get("target", "")
         if posture == "waiting" and sub not in USER_WAITS:
-            pending, why = target_pending(target, slug)
+            pending, why = target_pending(target, slug, spec.hag)
             if pending is False:
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
                             "detail": f"wait target {target} no longer pending ({why})", "first_seen": True})
