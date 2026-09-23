@@ -193,7 +193,9 @@ def state_rows(evs, w0, w1, spec, seed=None, resolve=None):
         if cur is not None:
             add(cur, cur_sub, (w1 - cur_t).total_seconds())
         sessions = sorted({(e.get("session") or "")[:8] for _t, e in lst} - {""})
-        rows.append((r.slug, r.ecosystem, ",".join(sessions) or "-", agg, unobs, len(lst),
+        tags = sorted({str(e.get("tag")) for _t, e in lst if e.get("tag")}) or [r.tag]
+        label = f"{r.slug} ({', '.join(tags)})"  # base name first; the generations seen in parentheses
+        rows.append((label, r.ecosystem, ",".join(sessions) or "-", agg, unobs, len(lst),
                      changes, reemits, bool(sd)))
     return rows, tot, unresolved
 
@@ -664,8 +666,8 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append(f"- ledger-folded events (no run pin, excluded above): {ledger_folded}")
     L.append("")
     L.append("## Roles")
-    L.append(table(["slug", "ecosystem", "coord", "fill", "model", "effort", "session", "server", "queue"],
-                   [(r.slug, r.ecosystem, "yes" if r.coordinator else "",
+    L.append(table(["role (tag)", "ecosystem", "coord", "fill", "model", "effort", "session", "server", "queue"],
+                   [(r.label, r.ecosystem, "yes" if r.coordinator else "",
                      getattr(r, "fill", "assigned") + ("+fills" if getattr(r, "fills_others", False) else ""),
                      r.model or "(default)", r.effort or "(default)",
                      r.session or "(none)", getattr(r, "server", "") or "local",
@@ -689,7 +691,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append("## Time in state per role (seconds; share of window; `unobserved` = no transition ever "
              "before that point; state at window start is seeded from the last pre-window transition)")
     pct = lambda x: f"{x:.0f} ({100 * x / tot:.0f}%)" if tot else f"{x:.0f}"  # noqa: E731
-    hdr = (["slug", "eco", "sessions", "active", "idle", "waiting"]
+    hdr = (["role (tags in window)", "eco", "sessions", "active", "idle", "waiting"]
            + [f"of which w:{x}" for x in SUBS] + ["of which w:other", "paused/offline", "other state",
                                                   "unobserved", "transitions", "changes", "re-emits", "seeded"])
     L.append(table(hdr, [(slug, eco, sess, *[pct(agg[k]) for k in STATE_KEYS[:-2]],

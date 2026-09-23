@@ -213,5 +213,39 @@ grep -q "deferred (user offline)" <<<"$DEF" || fail "no page was deferred while 
 check "ASK tl: merge interpretune#9201" $H offline off --hag $HAGID --spec "$SPEC" --no-sync
 check "user deferred pages -> page" $H health --spec "$SPEC" --instance a --dry-run
 
+echo "== 12 wait discipline: asks, blockers, rescan caps, expiry and blocking wakes, labels, peek"
+python3 - "$SPEC" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["waitdiscipline"]=True; json.dump(d,open(p,"w"),indent=1)
+PY
+check "tl (tl-r1)" $H show --hag $HAGID --spec "$SPEC" --no-sync
+check "IDENTITY: your Lane row label is \`tl (tl-r1)\`" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync --peek
+[ "$(rc_of $H queue --hag $HAGID --spec "$SPEC" --slug up --asks-clear --wait user-design --holder maintainer --no-sync)" = 3 ] || fail "user wait accepted without an ask"
+check "a user-design wait needs the prompted ask" $H queue --hag $HAGID --spec "$SPEC" --slug up --asks-clear --wait user-design --holder maintainer --no-sync
+check "clamped to the user-design cap 240m" $H queue --hag $HAGID --spec "$SPEC" --slug up --wait user-design --holder maintainer \
+   --ask "Who owns #9301: A, B, or hold?" --rescan-min 720 --no-sync
+grep -q '"rescan_utc"' /tmp/$HAGID/wait-up || fail "no wait proof"
+python3 - /tmp/$HAGID/wait-up <<'PY' || fail "rescan not clamped in the wait proof"
+import json,sys,datetime as d; w=json.load(open(sys.argv[1]))
+f=lambda s: d.datetime.strptime(s,"%Y-%m-%dT%H:%M:%SZ"); assert (f(w["rescan_utc"])-f(w["since_utc"])).total_seconds()<=240*60+5, w
+PY
+[ "$(rc_of $H transition --hag $HAGID --spec "$SPEC" --slug tl --to waiting --sub session-blocked --holder "up")" = 3 ] || fail "session-blocked accepted without --blocked-on"
+check "posture=waiting/session-blocked" $H queue --hag $HAGID --spec "$SPEC" --slug tl --wait session-blocked --holder "up #9301" \
+   --blocked-on up:interpretune#9301 --no-sync
+check "BLOCKING tl since .* on interpretune#9301 -- NOT in your queue" $H next --hag $HAGID --spec "$SPEC" --slug up --no-sync --peek
+check "BLOCKING tl on interpretune#9301" $H show --hag $HAGID --spec "$SPEC" --slug up --no-sync
+check "up blocking-unscheduled step1:wake" env HAG_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run
+check "wait-expired step1:wake" env HAG_HEALTH_SHIFT_MIN=245 $H health --spec "$SPEC" --instance b --dry-run
+M0=$(cat /tmp/$HAGID/mail-read-up 2>/dev/null || echo none)
+$H next --hag $HAGID --spec "$SPEC" --slug up --no-sync --peek >/dev/null
+[ "$(cat /tmp/$HAGID/mail-read-up 2>/dev/null || echo none)" = "$M0" ] || fail "--peek consumed the role's mail"
+$H claim --hag $HAGID --spec "$SPEC" --slug up --item interpretune#9401:fix --no-sync >/dev/null
+check "HELD-UNSCHEDULED interpretune#9401" $H queue --hag $HAGID --spec "$SPEC" --slug up --active interpretune#9301:fix --next "" --reason test --no-sync
+# a holder hands its claim to a named role: an implicit offer the recipient can claim
+[ "$(rc_of $H release --hag $HAGID --spec "$SPEC" --slug up --item interpretune#9401 --kind decline --to tl --no-sync)" = 1 ] || fail "--to accepted on a decline"
+check "handed interpretune#9401 to tl" $H release --hag $HAGID --spec "$SPEC" --slug up --item interpretune#9401 --kind handoff --to tl \
+   --reason "maintainer ruling: tl owns it" --no-sync
+check "OFFER interpretune#9401.* by=up" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync --peek
+check "claimed interpretune#9401" $H claim --hag $HAGID --spec "$SPEC" --slug tl --item interpretune#9401:fix --no-sync
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$HAGID

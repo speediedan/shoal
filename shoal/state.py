@@ -97,6 +97,60 @@ def clear_wait(hag: str, slug: str) -> bool:
         return False
 
 
+# Wait discipline (spec features.waitdiscipline; architecture doc §3.5). Every wait expires:
+# a rescan longer than its cap is clamped, because an expired rescan is the ONLY signal that
+# a silent wait has gone stale (measured 2026-09-23: two lanes set 12 h rescans on waits
+# nobody was answering and sat 14 h without a prompt reaching the maintainer).
+USER_WAITS = ("user-auth", "user-design", "user-feedback")
+RESCAN_CAP_MIN = {"user-auth": 240, "user-design": 240, "user-feedback": 240,
+                  "session-blocked": 240, "queue-empty": 360, "local-ci": 180, "remote-ci": 180}
+
+
+def wait_discipline(spec) -> dict | None:
+    """The spec's wait-discipline config ({} = defaults), or None when the feature is off."""
+    f = (getattr(spec, "features", {}) or {}).get("waitdiscipline")
+    if not f:
+        return None
+    return f if isinstance(f, dict) else {}
+
+
+def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
+               asks: list[str] | None) -> tuple[float, list[str], str]:
+    """(clamped rescan, notes, refusal) for a wait under the discipline. A user wait must
+    name the prompted ask it waits on; a session-blocked wait must name the blocking role."""
+    cfg = wait_discipline(spec)
+    if cfg is None:
+        return rescan_min, [], ""
+    notes = []
+    cap = float((cfg.get("rescan_cap_min") or {}).get(sub, RESCAN_CAP_MIN.get(sub, 240)))
+    if rescan_min > cap:
+        notes.append(f"rescan {rescan_min:g}m clamped to the {sub} cap {cap:g}m (an expired rescan is the only "
+                     f"stale-wait signal; re-prove the wait when it expires)")
+        rescan_min = cap
+    if sub in USER_WAITS and not asks:
+        return rescan_min, notes, (f"a {sub} wait needs the prompted ask it waits on: raise it first-person as a "
+                                   f"question with options (opencode question tool / Claude AskUserQuestion) in "
+                                   f"this turn, then record it: `hag.py queue --slug {slug} --ask \"<question>\"`")
+    if sub == "session-blocked":
+        who = (blocked_on or "").split(":", 1)[0]
+        if not who or spec.role(who) is None:
+            return rescan_min, notes, ("a session-blocked wait names the blocking role (and item): "
+                                       "--blocked-on <role>[:<repo#n>] so the blocker sees it in `next` "
+                                       "and the health quorum can follow the chain")
+    return rescan_min, notes, ""
+
+
+def current_asks(spec, slug: str) -> list[str]:
+    try:
+        from ledger import Ledger, View
+        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led.pull()
+        q = View(led, spec).current_queue(slug) or {}
+        return list(q.get("asks") or [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def cmd_transition(a: argparse.Namespace) -> int:
     hag = a.hag
     if a.to not in VALID_STATES:
@@ -145,6 +199,17 @@ def cmd_transition(a: argparse.Namespace) -> int:
         eco = eco or role.ecosystem
     session = session or a.slug
     eco = eco or "?"
+    blocked_on = getattr(a, "blocked_on", "") or ""
+    if a.to == "waiting" and wait_discipline(spec) is not None:
+        asks = getattr(a, "asks", None)
+        if asks is None:
+            asks = current_asks(spec, a.slug) if sub in USER_WAITS else []
+        a.rescan_min, notes, refusal = check_wait(spec, a.slug, sub, a.rescan_min, blocked_on, asks)
+        for n in notes:
+            print(f"note: {n}")
+        if refusal:
+            print(f"ERROR: {refusal} (nothing written)")
+            return 3
     # 1. heartbeat
     hb = hb_touch(hag, a.slug)
     # 2. wait proof
@@ -179,6 +244,8 @@ def cmd_transition(a: argparse.Namespace) -> int:
             if led.exists():
                 led.pull()
                 lev = led.append(a.slug, "state", state=a.to, sub=sub, holder=a.holder,
+                                 blocked_on=(blocked_on if a.to == "waiting" else ""),
+                                 tag=(role.tag if role is not None else ""),
                                  rescan_utc=(w["rescan_utc"] if a.to == "waiting" else ""),
                                  rescan_min=(f"{a.rescan_min:g}" if a.to == "waiting" else ""),
                                  monitor=a.monitor, note=a.note, session=session,
@@ -204,6 +271,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--rescan-min", type=float, default=30,
                    help="minutes until the wait must be re-verified (default 30)")
     p.add_argument("--monitor", default="", help="armed watch, e.g. 'agent_ci_watch PR#580 @abc123'")
+    p.add_argument("--blocked-on", default="", help="session-blocked waits: the blocking role[:repo#n]")
     p.add_argument("--target", default="", help="what the wait is on, machine-checkable where possible: "
                    "lease:<key> | job:<unit> | gh-run:<repo>:<id> | gh-pr:<repo>#<n> | az-build:<id>")
     p.add_argument("--from", dest="from_state", default="")

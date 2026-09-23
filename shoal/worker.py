@@ -91,7 +91,10 @@ def cmd_next(a) -> int:
     if spec.role(slug) is None:
         print(f"ERROR: {slug} is not a role in {spec.hag}")
         return 1
-    out = [f"# next for {slug}@{spec.hag} at {now_iso()}"]
+    me = spec.role(slug)
+    out = [f"# next for {me.label} in HAG {spec.hag} (incarnation {spec.incarnation}) at {now_iso()}",
+           f"IDENTITY: your Lane row label is `{me.label}` (base name, then your session tag; never the "
+           f"incarnation number)"]
     banner = offline_banner(view)
     if banner:
         out.append(banner)
@@ -111,9 +114,20 @@ def cmd_next(a) -> int:
         elif w is not None and w["by"] != slug:
             out.append(f"TAKEN {it}: claimed by {w['by']} {w['ts']}"
                        + (" (you lost the race on your ACTIVE item: release kind=lost-race)" if it == active else " (drop it)"))
-    held = [fmt_item(c) for c in view.active(slug) if item_key(c["item"]) != item_key(active)]
+    held = view.held_unscheduled(slug) if q else [
+        fmt_item(c) for c in view.active(slug) if item_key(c["item"]) != item_key(active)]
     if held:
-        out.append(f"HELD but not active: {', '.join(held)} (release or schedule them)")
+        out.append(f"HELD-UNSCHEDULED {', '.join(held)}: you hold these claims but your queue does not list them "
+                   f"(schedule them, or release them with --kind handoff|blocked so another role can take them)")
+    for b in view.blocked_by(slug):
+        mine = b["item"] and item_key(b["item"]) in {item_key(x) for x in [active] + nxt if x}
+        out.append(f"BLOCKING {b['role']} since {b['since']} on {b['item'] or '(item unnamed)'}"
+                   + ("" if mine else " -- NOT in your queue: schedule it (active or next) or say why in a pass"))
+    st = view.role_state(slug) or {}
+    if st.get("state") == "waiting" and st.get("rescan_utc") and st["rescan_utc"] < now_iso():
+        out.append(f"RESCAN EXPIRED {st['rescan_utc']}: your {st.get('sub')} wait is unproven; re-verify it"
+                   + (" and re-raise the prompted ask" if st.get("sub", "").startswith("user-") else "")
+                   + ", then write a fresh `queue --wait` (or pivot to the next unblocked item)")
     offers = [o for o in view.queue(slug) if item_key(o["item"]) not in {item_key(x) for x in [active] + nxt if x}]
     for o in offers:
         out.append(f"OFFER {fmt_item(o)} prio={o.get('prio', DEFAULT_PRIO)} by={o['by']}"
@@ -130,9 +144,10 @@ def cmd_next(a) -> int:
     except OSError:
         since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
     mail = view.msgs_to(slug, since_ts=since)
-    os.makedirs(os.path.dirname(marker), exist_ok=True)
-    with open(marker, "w") as fh:
-        fh.write(max([since] + [m["ts"] for m in mail]) + "\n")
+    if not getattr(a, "peek", False):  # a reviewer's read must not consume the role's mail
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, "w") as fh:
+            fh.write(max([since] + [m["ts"] for m in mail]) + "\n")
     if mail:
         out.append(f"MAIL {len(mail)} unread since your last `next` (act at this boundary; mail never wakes you):")
         for m in mail[-5:]:
@@ -226,6 +241,20 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         return 1
     asks = [] if a.asks_clear else list(prev.get("asks") or [])
     asks += [x for x in (a.ask or []) if x not in asks]
+    rescan_min = a.rescan_min
+    if a.wait:
+        import state as _st
+        rescan_min, notes, refusal = _st.check_wait(spec, slug, a.wait, a.rescan_min, a.blocked_on or "", asks)
+        for n in notes:
+            print(f"note: {n}")
+        if refusal:
+            print(f"ERROR: {refusal} (nothing written)")
+            return 3
+    planned = {item_key(x) for x in [active] + nxt if x} | {item_key(c) for c in claims}
+    for h in view.held_unscheduled(slug):
+        if h not in planned:
+            print(f"note: HELD-UNSCHEDULED {h}: you hold its claim but neither active nor next lists it; "
+                  f"schedule it, or release it (`release --kind handoff|blocked`) so another role can take it")
     posture = "waiting" if a.wait else ("idle" if not active else "active")
     reason = a.reason or ("" if len(nxt) >= QUEUE_NEXT_MAX else "no further eligible items")
     version = int(prev.get("version", 0)) + 1
@@ -239,7 +268,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     import state as _state
     tns = argparse.Namespace(
         hag=spec.hag, slug=slug, to=posture, sub=a.wait or "", holder=a.holder or "",
-        rescan_min=a.rescan_min, monitor=a.monitor or "", target=a.target or "", from_state="",
+        rescan_min=rescan_min, monitor=a.monitor or "", target=a.target or "", from_state="", asks=asks,
+        blocked_on=a.blocked_on or "",
         note=f"queue v{version}", channel="within-ecosystem", session="", ecosystem="", spec=getattr(a, "spec", ""),
         dir=None, no_ledger=True, ledger_dir="", dry_run=False)
     rc = _state.cmd_transition(tns)
@@ -259,9 +289,10 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     w = _state.read_wait(spec.hag, slug) if a.wait else None
     led.append(slug, "state", _commit=False, state=posture, sub=a.wait or "", holder=a.holder or "",
                rescan_utc=(w or {}).get("rescan_utc", ""), target=a.target or "", note=f"queue v{version}",
+               blocked_on=(a.blocked_on or None) if a.wait else None, tag=role.tag,
                session=sess, host=os.uname().nodename)
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
-                     asks=asks or None, reason=reason or None, posture=posture, session=sess)
+                     asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag)
     led.commit_own(slug, f"{spec.hag} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     # 3. first-landed-wins re-check for the claims just made
@@ -328,6 +359,7 @@ def add_parsers(sub) -> None:
     p = sub.add_parser("next", help="READ at a boundary: queue, offers, candidates, mail, waits (one call)")
     p.add_argument("--hag", required=True)
     p.add_argument("--slug", required=True)
+    p.add_argument("--peek", action="store_true", help="read-only view for operators/reviewers: mail stays unread")
     p.add_argument("--spec", default="")
     p.add_argument("--no-sync", action="store_true")
     p.set_defaults(func=cmd_next)
@@ -348,6 +380,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--holder", default="")
     p.add_argument("--target", default="", help="lease:<key>|job:<unit>|gh-run:<repo>:<id>|gh-pr:<repo>#<n>|az-build:<id>")
     p.add_argument("--rescan-min", type=float, default=90)
+    p.add_argument("--blocked-on", default="", help="session-blocked waits: the blocking role[:repo#n]")
     p.add_argument("--monitor", default="")
     p.add_argument("--ask", action="append", help="record a blocking maintainer ask (user-offline mode)")
     p.add_argument("--asks-clear", action="store_true", help="drop all recorded asks (they were answered)")

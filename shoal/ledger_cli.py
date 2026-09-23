@@ -183,10 +183,23 @@ def cmd_release(a) -> int:
     key = item_key(a.item)
     if not any(c["by"] == by for c in view.active(by) if item_key(c["item"]) == key) and a.kind != "decline":
         print(f"note: {by} holds no live claim on {key}; recording the {a.kind} anyway")
+    to = getattr(a, "to", "") or ""
+    if to:
+        if a.kind != "handoff":
+            print("ERROR: --to is only for --kind handoff (hand your own claim to a named role)")
+            return 1
+        if spec is not None and spec.role(to) is None:
+            print(f"ERROR: --to {to!r} is not a role in {spec.hag}")
+            return 1
+        if not any(item_key(c["item"]) == key for c in view.active(by)):
+            print(f"ERROR: {by} holds no live claim on {key}; only the holder can hand it off")
+            return 1
     if a.dry_run:
-        print(f"[dry-run] release {key} kind={a.kind} by {by}")
+        print(f"[dry-run] release {key} kind={a.kind} by {by}" + (f" -> offered to {to}" if to else ""))
         return 0
-    ev = led.append(by, "release", item=key, kind=a.kind, reason=a.reason, retry=a.retry)
+    ev = led.append(by, "release", item=key, kind=a.kind, reason=a.reason, retry=a.retry, to=to or None)
+    if to:
+        print(f"handed {key} to {to} (an implicit offer; {to} claims it at its next boundary, woken if idle)")
     print(f"released {key} ({a.kind}) by {by} [{ev['id']}]")
     return 0
 
@@ -418,6 +431,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     common(p, slug=True)
     p.add_argument("--item", required=True)
     p.add_argument("--kind", required=True, choices=("decline", "blocked", "handoff", "lost-race"))
+    p.add_argument("--to", default="", help="handoff only: the role that should take your claim (an implicit offer)")
     p.add_argument("--reason", default="")
     p.add_argument("--retry", default="", help="condition under which to retry")
     p.set_defaults(func=cmd_release)

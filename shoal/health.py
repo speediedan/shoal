@@ -54,6 +54,10 @@ LADDERS = {
     "wait-resolved": [(15, "wake"), (60, "page")],
     "watcher-dead": [(10, "wake"), (40, "page")],
     "stale-active": [(90, "wake"), (180, "page")],
+    # features.waitdiscipline (architecture doc §3.5, §6): no wait is silent past its rescan,
+    # and a peer's wait on you is work you are woken for
+    "wait-expired": [(0, "wake"), (60, "wake"), (120, "page")],
+    "blocking-unscheduled": [(30, "wake"), (120, "page")],
 }
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
@@ -164,6 +168,13 @@ def page_user(spec: HagSpec, text: str, state: dict, dry_run: bool = False) -> s
     if dry_run:
         return "page (dry-run)"
     led.append("hag.py", "msg", to="user", kind="health", text=text[:500])
+    channel = str(health_cfg(spec).get("page") or "")
+    if channel.startswith("gh-issue:"):  # a place the maintainer is notified, not only the ledger
+        repo, _, num = channel[len("gh-issue:"):].partition("#")
+        r = subprocess.run(["gh", "issue", "comment", num, "--repo", repo, "--body",
+                            f"**HAG {spec.hag} page** ({iso()}): {text[:1500]}"],
+                           capture_output=True, text=True, timeout=60, env=_ENV)
+        return "page+gh-issue" if r.returncode == 0 else f"page (gh-issue FAILED rc={r.returncode})"
     return "page"
 
 
@@ -303,6 +314,22 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
             out.append({"slug": slug, "condition": "watcher-dead", "key": f"pid:{sc.get('pid', 'none')}", "since": since,
                         "first_seen": True,
                         "detail": f"ledger-watch not running ({'designed exit, no re-arm: ' + ex if ex else 'no exit verdict: killed or never armed'})"})
+        # wait discipline: expired rescans, and peers blocked on unscheduled items
+        if (spec.features or {}).get("waitdiscipline"):
+            ru = st.get("rescan_utc", "")
+            if posture == "waiting" and ru and parse(ru) is not None and parse(ru) < utcnow():
+                ask = " Re-raise your prompted ask (question tool / AskUserQuestion) or pivot to the next unblocked item." \
+                    if sub in USER_WAITS else " Re-verify the blocker (is it still pending?), then write a fresh wait or pivot."
+                out.append({"slug": slug, "condition": "wait-expired", "key": f"rescan:{ru}", "since": ru,
+                            "detail": f"{sub} wait on '{str(st.get('holder', ''))[:80]}' passed its rescan {ru} unproven.{ask}"})
+            planned = {x.lower() for x in [q.get("active") or ""] + list(q.get("next") or []) if x}
+            for b in view.blocked_by(slug):
+                item = (b["item"] or "").lower()
+                if item and item.split(":", 1)[0] not in {p.split(":", 1)[0] for p in planned}:
+                    out.append({"slug": slug, "condition": "blocking-unscheduled", "key": f"block:{b['role']}:{item}",
+                                "since": b["since"],
+                                "detail": f"{b['role']} has waited on your {b['item']} since {b['since']}, and your queue "
+                                          f"does not schedule it: schedule it (active/next) or pass it with a reason"})
         # stale active
         if posture == "active" and between:
             last = view.last_by.get(slug, "")
@@ -369,8 +396,13 @@ def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
             del ladders[k]  # condition cleared: its ladder resets
     # daily digest of maintainer waits; deferred pages once the maintainer is back
     today = iso()[:10]
-    waits = [f"{s}:{st.get('sub')} ({st.get('holder', '')})" for s, st in view.states.items()
-             if st.get("state") == "waiting" and st.get("sub") in USER_WAITS]
+    waits = []
+    for s_, st in view.states.items():
+        if st.get("state") == "waiting" and st.get("sub") in USER_WAITS:
+            asks = (view.current_queue(s_) or {}).get("asks") or []
+            role_ = spec.role(s_)
+            waits.append(f"{role_.label if role_ else s_}: {st.get('sub')} ({str(st.get('holder', ''))[:80]})"
+                         + (f" ASKS: {' | '.join(a[:120] for a in asks)}" if asks else " NO ASK RECORDED"))
     if waits and state.get("digest_day") != today and view.user_offline() is None:
         acts.append(("user", "user-waits digest", page_user(spec, "roles waiting on you: " + "; ".join(waits), state, dry_run)))
         state["digest_day"] = today

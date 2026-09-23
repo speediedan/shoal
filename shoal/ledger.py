@@ -483,6 +483,15 @@ class View:
                     c["_live"] = False
                     c["released"] = e
                 self.releases.append(e)
+                if e.get("kind") == "handoff" and e.get("to") and mine:
+                    # the holder hands ITS OWN claim to a named role: an implicit offer, so the
+                    # recipient can claim it (and is woken if idle); no peer write to a queue
+                    o = {"id": e["id"] + "-h", "ts": e["ts"], "by": by, "type": "offer", "to": e["to"],
+                         "item": key, "verb": e.get("verb") or (mine[0].get("verb") or ""),
+                         "prio": int(e.get("prio") or 20), "src": "handoff",
+                         "note": e.get("reason", ""), "status": "open"}
+                    self.offers[o["id"]] = o
+                    self.by_item.setdefault(key, []).append(o)
                 if e.get("kind") == "decline":
                     for o in self.by_item.get(key, []):
                         if o["status"] == "claimed" and o.get("claimed_by") == by:
@@ -593,6 +602,25 @@ class View:
             return not q.get("active")
         return not self.active(slug)
 
+    def blocked_by(self, slug: str) -> list[dict]:
+        """Roles whose latest state waits on `slug` (state `blocked_on` = `<slug>[:item]`):
+        [{role, item, since, holder}]. The blocker's `next` and the health quorum read this."""
+        out = []
+        for r, st in self.states.items():
+            b = str(st.get("blocked_on") or "")
+            if st.get("state") == "waiting" and b and b.split(":", 1)[0] == slug and r != slug:
+                out.append({"role": r, "item": b.split(":", 1)[1] if ":" in b else "",
+                            "since": st["ts"], "holder": st.get("holder", "")})
+        return out
+
+    def held_unscheduled(self, slug: str) -> list[str]:
+        """Live claims the role holds that its declared queue (active + next) omits."""
+        q = self.queues.get(slug)
+        if q is None:
+            return []
+        planned = {item_key(x) for x in [q.get("active") or ""] + list(q.get("next") or []) if x}
+        return sorted(item_key(c["item"]) for c in self.active(slug) if item_key(c["item"]) not in planned)
+
     def user_offline(self) -> dict | None:
         """The live user-offline mode event, or None when the maintainer is online."""
         m = self.modes.get("user-offline")
@@ -614,18 +642,32 @@ def short(s: str, n: int = 60) -> str:
 def render_role(view: View, slug: str, candidates: list[dict] | None = None,
                 hb_age_min: float | None = None, n_msgs: int = 5) -> str:
     L = []
+    role = view.spec.role(slug) if view.spec is not None else None
+    if role is not None:
+        L.append(f"role: {role.label}")
     st = view.role_state(slug)
     if st:
         sub = f"/{st['sub']}" if st.get("sub") else ""
         holder = f" holder={short(st.get('holder', ''), 50)}" if st.get("holder") else ""
         rescan = f" rescan={st['rescan_utc']}" if st.get("rescan_utc") else ""
-        L.append(f"state: {st.get('state')}{sub}{holder}{rescan} (at {st['ts']})")
+        if st.get("state") == "waiting" and st.get("rescan_utc") and st["rescan_utc"] < iso():
+            rescan += " RESCAN EXPIRED"
+        blk = f" blocked-on={st['blocked_on']}" if st.get("blocked_on") else ""
+        L.append(f"state: {st.get('state')}{sub}{holder}{blk}{rescan} (at {st['ts']})")
     else:
         L.append("state: (no state event yet)")
     if hb_age_min is not None:
         L.append(f"heartbeat: {hb_age_min:.0f}m ago (this host)")
+    qv = view.current_queue(slug)
+    if qv is not None:
+        L.append(f"queue v{qv.get('version')}: active={qv.get('active') or '-'} next={','.join(qv.get('next') or []) or '-'}"
+                 + (f" asks={len(qv['asks'])}" if qv.get("asks") else ""))
+    for h in view.held_unscheduled(slug):
+        L.append(f"HELD-UNSCHEDULED {h}: claimed but in neither active nor next (schedule or release it)")
+    for b in view.blocked_by(slug):
+        L.append(f"BLOCKING {b['role']} on {b['item'] or '(unnamed item)'} since {b['since']}")
     act = view.active(slug)
-    L.append("active: " + (", ".join(fmt_item(c) + (" [CONTESTED: lost]" if c.get("contested") else "")
+    L.append("claims: " + (", ".join(fmt_item(c) + (" [CONTESTED: lost]" if c.get("contested") else "")
                                      + (f" base={c['base']}" if c.get("base") else "") for c in act) or "none"))
     q = view.queue(slug)
     if q:
@@ -672,8 +714,18 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
             state = st.get("state", "?") + (f"/{st['sub']}" if st.get("sub") else "")
             if st.get("holder"):
                 state += f" ({short(st['holder'], 40)})"
-        act = ", ".join(fmt_item(c) + (" CONTESTED" if c.get("contested") else "") for c in view.active(r.slug)) or "—"
-        nxt = [fmt_item(o) for o in view.queue(r.slug)[:3]]
+            if st.get("state") == "waiting" and st.get("rescan_utc") and st["rescan_utc"] < iso():
+                state += " RESCAN-EXPIRED"
+        qv = view.current_queue(r.slug)
+        if qv is not None:  # the role's declared queue is the truth when it exists
+            act = qv.get("active") or "—"
+            nxt = list(qv.get("next") or [])[:3]
+        else:
+            act = ", ".join(fmt_item(c) + (" CONTESTED" if c.get("contested") else "") for c in view.active(r.slug)) or "—"
+            nxt = [fmt_item(o) for o in view.queue(r.slug)[:3]]
+        held = view.held_unscheduled(r.slug)
+        if held:
+            act += f" (+held-unscheduled {', '.join(held)})"
         if len(nxt) < 3 and candidates_for is not None:
             for c in (candidates_for(r.slug) or [])[:3 - len(nxt)]:
                 nxt.append(c["item"] + " (board)")
@@ -681,7 +733,9 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
         last = view.last_by.get(r.slug, "never")
         if hb_ages and r.slug in hb_ages and hb_ages[r.slug] is not None:
             last += f" (hb {hb_ages[r.slug]:.0f}m)"
-        L.append(f"| **{r.slug}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {last} |")
+        if not r.session:
+            state = "parked (no session)"
+        L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {last} |")
     pool = [o for o in view.offers.values() if o["status"] == "open" and o["to"] == "*"]
     if pool:
         L.append("")
