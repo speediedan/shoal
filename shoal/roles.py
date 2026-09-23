@@ -120,6 +120,9 @@ class Role:
         # "never": {"repos": [...], "labels": [...]}}. Soft ranking; `never` is the
         # only hard exclusion and is reserved for safety.
     server: str = ""             # host the session runs on ("" = this host)
+    aux: bool = False            # residual lane (architecture doc §4.1): no brief of its own;
+        # the digest ranks it the work no other ACTIVE role's brief covers (minmax over the
+        # semantic matcher's fits, unblockers first). Needs features.matcher.
 
     def validate(self) -> list[str]:
         errs = []
@@ -135,6 +138,8 @@ class Role:
             errs.append(f"role {self.slug}: missing start doc (plan_state.md)")
         if self.fill not in FILL_MODES:
             errs.append(f"role {self.slug}: fill must be one of {FILL_MODES} (got {self.fill!r})")
+        if self.aux and self.fill != "self":
+            errs.append(f"role {self.slug}: an aux role must be fill=self (got {self.fill!r})")
         return errs
 
     @property
@@ -211,7 +216,10 @@ class HagSpec:
         # behaviour lands at a restart, never under running sessions (architecture doc):
         # "digest" board digest; "jobs" job-unit brief discipline; "workwake" work-only
         # wakes + the next/queue loop; "health" (true or {"validity_wake_min": 90}) the
-        # health quorum timers replacing heartbeat; "relay" the Claude wake relay role.
+        # health quorum timers replacing heartbeat; "relay" the Claude wake relay role;
+        # "matcher" the semantic board matcher (architecture §4.1).
+    tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "prev", "upgraded_utc",
+        # "changed"}: the hag/ tooling commit this HAG was last upgraded to (`hag.py upgrade`)
 
     def validate(self) -> list[str]:
         errs = []
@@ -318,6 +326,7 @@ class HagSpec:
                 "incarnation": self.incarnation,
                 "repos": self.repos, "retired_utc": self.retired_utc,
                 "ledger": self.ledger, "sources": self.sources, "features": self.features,
+                "tooling": self.tooling,
                 "roles": [dataclasses.asdict(r) for r in self.roles],
                 "generations": self.generations}
 
@@ -347,7 +356,8 @@ class HagSpec:
                        retired_utc=d.get("retired_utc", "") or "",
                        ledger=dict(d.get("ledger", {}) or {}),
                        sources=list(d.get("sources", []) or []),
-                       features=dict(d.get("features", {}) or {}))
+                       features=dict(d.get("features", {}) or {}),
+                       tooling=dict(d.get("tooling", {}) or {}))
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)

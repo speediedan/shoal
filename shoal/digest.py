@@ -17,6 +17,15 @@ Scoring (soft, never a gate except `never`):
 An item matching a role's `never` list is excluded for that role. An item every
 self-filling role has passed on is listed under `unowned`.
 
+Semantic mode (`features.matcher`, architecture §4.1; matcher.py): a model scores every
+item 0-3 against every lane's brief. Lanes rank by fit, then EFFECTIVE board position:
+items blocking an active lane's work are lifted above what they block, and items with an
+open blocker sink below every workable item. An `aux` role ranks the free workable items
+whose best fit to any other ACTIVE role is lowest (minmax), unblockers first. With
+`live: false` (shadow) the live digest is unchanged and the semantic ranking is written to
+`board_digest.semantic.json` for `digest --compare`; without `features.matcher` nothing
+here changes.
+
 `hag.py triage` records a role's decisions in one go: each claim keeps the
 first-landed-wins check of `claim`; all passes land as ONE ledger commit with a
 reason class from a fixed vocabulary, so routing and reports can count them.
@@ -196,8 +205,109 @@ def _routing(view) -> dict[str, set[str]]:
     return out
 
 
-def build(spec: HagSpec, view=None, items: list[dict] | None = None) -> dict:
-    """The digest document: eligible items, per-role ranked candidates, unowned."""
+def semantic_path(hag: str) -> str:
+    return os.path.join(data_dir(hag), "board_digest.semantic.json")
+
+
+def _never(item: dict, ctx: dict) -> bool:
+    never = ctx.get("never") or {}
+    return (any(_match_repo(item, r) for r in never.get("repos") or [])
+            or bool(set(never.get("labels") or []) & set(item["labels"])))
+
+
+def active_lanes(spec: HagSpec, lanes: list[str]) -> list[str]:
+    """Scored roles that hold a session now (a parked role's territory is aux territory)."""
+    return [s for s in lanes if (spec.role(s) is not None and spec.role(s).session)]
+
+
+def effective_positions(spec: HagSpec, view, items: list[dict], sem: dict | None) -> tuple[dict, set]:
+    """(item -> effective board position, items lifted as unblockers). The board is never
+    reordered; this is the order the digest ranks by."""
+    from ledger import item_key
+    n = max(len(items), 1)
+    eff = {it["item"]: float(it["pos"]) for it in items}
+    by_key = {item_key(it["item"]): it["item"] for it in items}
+    work: set[str] = set()
+    if view is not None:
+        for r in spec.roles:
+            if not r.session:
+                continue
+            q = view.current_queue(r.slug) or {}
+            for w in [q.get("active") or ""] + list(q.get("next") or []) + [c["item"] for c in view.active(r.slug)]:
+                if w:
+                    work.add(item_key(w))
+    unblock: set[str] = set()
+    for it in items:
+        if item_key(it["item"]) in work:
+            for b in it.get("blocked_by") or []:
+                bi = by_key.get(item_key(b))
+                if bi and item_key(bi) not in work:
+                    eff[bi] = min(eff[bi], it["pos"] - 0.5)
+                    unblock.add(bi)
+    if view is not None:
+        for r in spec.roles:
+            for b in view.blocked_by(r.slug):  # a peer's session-blocked wait names this item
+                bi = by_key.get(item_key(b["item"])) if b.get("item") else None
+                if bi:
+                    eff[bi] = min(eff[bi], 0.5)
+                    unblock.add(bi)
+    fits = (sem or {}).get("fits") or {}
+    for it in items:
+        f = fits.get(it["item"]) or {}
+        blocked = (bool(it.get("blocked_by")) or any(l.lower() == "status: blocked" for l in it["labels"])
+                   or f.get("class") == "blocked")
+        if blocked and it["item"] not in unblock:
+            eff[it["item"]] = float(it["pos"] + n)
+    return eff, unblock
+
+
+def semantic_roles(spec: HagSpec, view, items: list[dict], sem: dict, eff: dict, unblock: set,
+                   taken: set, declined: dict) -> dict[str, list[dict]]:
+    """Per self-filling role: lanes by fit then effective position; aux roles by minmax."""
+    from ledger import item_key
+    n = max(len(items), 1) + 1
+    fits = sem.get("fits") or {}
+    active = active_lanes(spec, sem.get("lanes") or [])
+    out: dict[str, list[dict]] = {}
+    for r in [r for r in spec.roles if r.fill == "self"]:
+        ctx = r.working_context() or {}
+        rows = []
+        for it in items:
+            key = item_key(it["item"])
+            f = fits.get(it["item"])
+            if f is None or key in taken or key in declined.get(r.slug, set()) or _never(it, ctx):
+                continue
+            base = {"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix", "pos": it["pos"],
+                    "eff_pos": eff.get(it["item"], it["pos"]), "class": f.get("class")}
+            e = eff.get(it["item"], it["pos"])
+            if getattr(r, "aux", False):
+                if f.get("class") != "workable":
+                    continue
+                others = {s: int(f["fits"].get(s, 0)) for s in active if s != r.slug}
+                mx = max(others.values(), default=0)
+                owners = [s for s, v in others.items() if v >= 2]
+                if owners and not all(key in declined.get(s, set()) for s in owners):
+                    continue
+                tier = 0 if it["item"] in unblock else 1
+                rows.append(dict(base, score=float(3 - mx), strong=mx <= 1, tier=tier,
+                                 rank=round((1 - tier) * 10 + (3 - mx) - e / n, 3),
+                                 why=[f"aux:max-fit={mx}"] + (["unblocks"] if tier == 0 else []) + [f.get("why", "")]))
+            else:
+                fit = int(f["fits"].get(r.slug, 0))
+                if fit < 1:
+                    continue
+                rows.append(dict(base, score=float(fit), strong=fit >= 2, rank=round(fit - e / n, 3),
+                                 why=[f"sem:{fit}", f.get("why", "")]
+                                 + ([f"class:{f['class']}"] if f.get("class") != "workable" else [])
+                                 + (["unblocks"] if it["item"] in unblock else [])))
+        rows.sort(key=lambda x: -x["rank"])
+        out[r.slug] = rows[:15]
+    return out
+
+
+def build(spec: HagSpec, view=None, items: list[dict] | None = None, no_model: bool = False) -> dict:
+    """The digest document: eligible items, per-role ranked candidates, unowned. With
+    features.matcher in shadow mode the semantic document rides along under `shadow`."""
     from ledger import item_key
     fillers = [r for r in spec.roles if r.fill == "self"]
     src_desc = []
@@ -217,10 +327,30 @@ def build(spec: HagSpec, view=None, items: list[dict] | None = None) -> dict:
                 items.append(dict(it, source=src_desc[-1]))
     taken = (view.taken() | view.offered_open()) if view is not None else set()
     routing = _routing(view) if view is not None else {}
-    declined = {r.slug: set(view.declined(r.slug)) for r in fillers} if view is not None else {}
+    declined = {r.slug: set(view.declined(r.slug)) for r in spec.roles} if view is not None else {}
+    import matcher
+    mcfg = matcher.config(spec)
+    sem_doc = None
+    if mcfg is not None:
+        suggest = {it["item"]: routing.get(item_key(it["item"]), set()) for it in items}
+        try:
+            sem = matcher.score(spec, items, suggest=suggest, no_call=no_model)
+        except Exception as exc:  # noqa: BLE001 - a matcher failure never takes the digest down
+            sem = {"fits": {}, "lanes": [], "notes": [f"matcher failed: {str(exc)[:200]}"], "live": False,
+                   "unscored": [it["item"] for it in items], "calls": 0}
+        eff, unblock = effective_positions(spec, view, items, sem)
+        s_items = {it["item"]: dict(it, eff_pos=eff[it["item"]], sem=(sem["fits"].get(it["item"]))) for it in items}
+        s_roles = semantic_roles(spec, view, items, sem, eff, unblock, taken, declined)
+        summary = {k: sem.get(k) for k in ("model", "backend", "calls", "latency_s", "scored_now", "live")}
+        summary.update(unscored=len(sem.get("unscored") or []), withheld=len(sem.get("withheld") or []),
+                       notes=(sem.get("notes") or [])[-8:], unblockers=sorted(unblock))
+        sem_doc = {"hag": spec.hag, "generated_utc": now_iso(), "sources": src_desc, "ranking": "semantic",
+                   "n_items": len(items), "items": s_items, "roles": s_roles, "matcher": summary}
+    live = bool(mcfg and mcfg.get("live") and sem_doc is not None and (sem_doc["matcher"].get("unscored", 0)
+                                                                      < len(items) or not items))
     n = max(len(items), 1)
     roles: dict[str, list[dict]] = {}
-    for r in fillers:
+    for r in ([] if live else fillers):
         ctx = r.working_context()
         ranked = []
         for it in items:
@@ -241,18 +371,38 @@ def build(spec: HagSpec, view=None, items: list[dict] | None = None) -> dict:
             key = item_key(it["item"])
             if key not in taken and all(key in declined.get(r.slug, set()) for r in fillers):
                 unowned.append(it["item"])
-    return {"hag": spec.hag, "generated_utc": now_iso(), "sources": src_desc,
-            "n_items": len(items), "items": {it["item"]: it for it in items},
-            "roles": roles, "unowned": unowned}
+    if live:
+        doc = dict(sem_doc, unowned=unowned)
+        return doc
+    doc = {"hag": spec.hag, "generated_utc": now_iso(), "sources": src_desc, "ranking": "keyword",
+           "n_items": len(items), "items": {it["item"]: it for it in items},
+           "roles": roles, "unowned": unowned}
+    if sem_doc is not None:
+        for r in fillers:  # the keyword ranking means nothing for a lane with no brief
+            if getattr(r, "aux", False):
+                roles[r.slug] = sem_doc["roles"].get(r.slug, [])
+        # shadow: the live ranking is untouched; the semantic one is written beside it. A live
+        # matcher with nothing scored also lands here, so roles keep the keyword ranking.
+        doc["shadow"] = dict(sem_doc, unowned=unowned)
+        doc["matcher"] = dict(sem_doc["matcher"], shadow=True)
+    return doc
 
 
-def write(spec: HagSpec, doc: dict) -> str:
-    path = digest_path(spec.hag)
+def _write_json(path: str, doc: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(doc, fh, indent=1)
     os.replace(tmp, path)
+
+
+def write(spec: HagSpec, doc: dict) -> str:
+    doc = dict(doc)
+    shadow = doc.pop("shadow", None)
+    if shadow is not None:
+        _write_json(semantic_path(spec.hag), shadow)
+    path = digest_path(spec.hag)
+    _write_json(path, doc)
     return path
 
 
@@ -279,7 +429,7 @@ def candidates(hag: str, slug: str, taken: set[str], declined: set[str], limit: 
     from ledger import item_key
     rows = [r for r in (doc.get("roles") or {}).get(slug, [])
             if item_key(r["item"]) not in taken and item_key(r["item"]) not in declined]
-    strong = [r for r in rows if r["score"] >= min_score]
+    strong = [r for r in rows if r.get("strong", r["score"] >= min_score)]
     out = []
     for r in (strong or rows)[:limit]:
         it = (doc.get("items") or {}).get(r["item"], {})
@@ -311,16 +461,24 @@ def _spec_view(a, need_view: bool = True):
 
 def cmd_digest(a) -> int:
     spec, view = _spec_view(a)
+    if getattr(a, "compare", False):
+        return cmd_compare(a, spec, view)
     if a.refresh:
         if not a.dry_run:
             from watchers import tick
             tick(spec.hag, "digest")  # self-tick: an old tick is a dead timer, never a quiet board
         t0 = time.time()
-        doc = build(spec, view)
+        doc = build(spec, view, no_model=a.no_model)
         dt = time.time() - t0
-        summary = (f"digest {spec.hag}: {doc['n_items']} open items, "
+        m = doc.get("matcher") or {}
+        summary = (f"digest {spec.hag}: {doc['n_items']} open items, ranking={doc.get('ranking', 'keyword')}"
+                   + (" (semantic in shadow)" if m.get("shadow") else "") + ", "
                    + ", ".join(f"{k}={len(v)}" for k, v in doc["roles"].items())
-                   + f", unowned={len(doc['unowned'])} ({dt:.1f}s)")
+                   + f", unowned={len(doc['unowned'])} ({dt:.1f}s)"
+                   + (f"; matcher model={m.get('model')} calls={m.get('calls')} scored_now={m.get('scored_now')} "
+                      f"unscored={m.get('unscored')}" if m else ""))
+        for note in m.get("notes") or []:
+            print(f"matcher: {note}", file=sys.stderr)
         if a.dry_run:
             print("[dry-run] " + summary)
         else:
@@ -335,10 +493,13 @@ def cmd_digest(a) -> int:
         if not a.slug:
             return 0
         docmem = doc
+        if a.semantic and doc.get("shadow"):
+            docmem = doc["shadow"]
     else:
-        docmem = load(spec.hag, max_age_min=1e9)
+        docmem = load_semantic(spec.hag) if a.semantic else load(spec.hag, max_age_min=1e9)
         if docmem is None:
-            print(f"no digest for {spec.hag}; run `hag.py digest --hag {spec.hag} --refresh`")
+            print(f"no {'semantic ' if a.semantic else ''}digest for {spec.hag}; run "
+                  f"`hag.py digest --hag {spec.hag} --refresh`")
             return 1
     if a.slug:
         rows = (docmem.get("roles") or {}).get(a.slug)
@@ -353,6 +514,91 @@ def cmd_digest(a) -> int:
         if docmem.get("unowned"):
             print(f"# unowned (passed by every self-filling role): {', '.join(docmem['unowned'])}")
     return 0
+
+
+def load_semantic(hag: str) -> dict | None:
+    """The live digest when it is semantic, else the shadow file."""
+    doc = load(hag, max_age_min=1e9)
+    if doc is not None and doc.get("ranking") == "semantic":
+        return doc
+    try:
+        with open(semantic_path(hag)) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def compare(spec: HagSpec, view, k: int = 10, n_claims: int = 80) -> dict:
+    """Switch bar (H8 proposal §2.5): per self-filling lane, over the whole board (no taken
+    filter), how often the lane's recent claims sat in its top k, and how often its recorded
+    out-of-lane declines did, semantic vs keyword. Items since closed are skipped."""
+    from ledger import item_key
+    semd = load_semantic(spec.hag)
+    if semd is None:
+        raise RuntimeError("no semantic digest: enable features.matcher and refresh first")
+    items = list((semd.get("items") or {}).values())
+    lanes = [r for r in spec.roles if r.fill == "self" and not getattr(r, "aux", False)]
+    top: dict[str, dict[str, set]] = {}
+    for r in lanes:
+        ctx = r.working_context() or {}
+        kw = []
+        for it in items:
+            sc, _ = score_item(it, ctx)
+            if sc is not None:
+                kw.append((sc, -it["pos"], item_key(it["item"])))
+        sm = []
+        for it in items:
+            f = it.get("sem") or {}
+            fit = int((f.get("fits") or {}).get(r.slug, 0))
+            if fit >= 1 and not _never(it, ctx):
+                sm.append((fit, -float(it.get("eff_pos", it["pos"])), item_key(it["item"])))
+        top[r.slug] = {"keyword": {x[2] for x in sorted(kw, reverse=True)[:k]},
+                       "semantic": {x[2] for x in sorted(sm, reverse=True)[:k]}}
+    on_board = {item_key(it["item"]) for it in items}
+    slugs = {r.slug for r in lanes}
+    claims = [e for e in view.ledger.events() if e.get("type") == "claim" and e.get("by") in slugs]
+    claims = [e for e in claims if item_key(e.get("item", "")) in on_board][-n_claims:]
+    declines = [e for e in view.ledger.events() if e.get("type") == "release" and e.get("kind") == "decline"
+                and e.get("by") in slugs and e.get("cls", "out-of-lane") == "out-of-lane"
+                and item_key(e.get("item", "")) in on_board]
+    res = {"k": k, "claims": len(claims), "declines": len(declines), "per_lane": {}}
+    for mode in ("keyword", "semantic"):
+        hit = sum(1 for e in claims if item_key(e["item"]) in top[e["by"]][mode])
+        leak = sum(1 for e in declines if item_key(e["item"]) in top[e["by"]][mode])
+        res[mode] = {"claim_recall": round(hit / len(claims), 3) if claims else None,
+                     "decline_leakage": round(leak / len(declines), 3) if declines else None}
+    for r in lanes:
+        res["per_lane"][r.slug] = {
+            m: [sum(1 for e in claims if e["by"] == r.slug and item_key(e["item"]) in top[r.slug][m]),
+                sum(1 for e in declines if e["by"] == r.slug and item_key(e["item"]) in top[r.slug][m])]
+            for m in ("keyword", "semantic")}
+    kw, sm = res["keyword"], res["semantic"]
+    recall_ok = (sm["claim_recall"] or 0) >= (kw["claim_recall"] or 0)
+    leak_ok = (sm["decline_leakage"] or 0) <= (kw["decline_leakage"] or 0)
+    res["bar_met"] = bool(claims) and recall_ok and leak_ok
+    res["matcher"] = semd.get("matcher") or {}
+    return res
+
+
+def cmd_compare(a, spec: HagSpec, view) -> int:
+    try:
+        r = compare(spec, view, k=a.k)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    m = r["matcher"]
+    print(f"# digest compare {spec.hag}: top-{r['k']} over the whole board; {r['claims']} recent claims and "
+          f"{r['declines']} out-of-lane declines on items still open; matcher model={m.get('model')} "
+          f"calls={m.get('calls')} latency={m.get('latency_s')}s unscored={m.get('unscored')}")
+    for mode in ("keyword", "semantic"):
+        print(f"{mode:9s} claim recall={r[mode]['claim_recall']}  decline leakage={r[mode]['decline_leakage']}")
+    for slug, d in r["per_lane"].items():
+        print(f"  {slug}: claims-in-top keyword={d['keyword'][0]} semantic={d['semantic'][0]}; "
+              f"declines-in-top keyword={d['keyword'][1]} semantic={d['semantic'][1]}")
+    print("SWITCH BAR: " + ("MET (semantic recall >= keyword and leakage <= keyword): "
+                            "`hag.py upgrade --spec <spec> --enable matcher.live`" if r["bar_met"] else
+                            "NOT MET (keep shadow; see the per-lane lines)"))
+    return 0 if r["bar_met"] else 3
 
 
 def cmd_triage(a) -> int:
@@ -504,6 +750,13 @@ def add_parsers(sub) -> None:
     p.add_argument("--excerpt", type=int, default=220)
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="build but do not write")
+    p.add_argument("--no-model", action="store_true",
+                   help="semantic mode: use cached fits only, make no model call")
+    p.add_argument("--semantic", action="store_true",
+                   help="with --slug: show the semantic ranking (the shadow file while matcher.live is off)")
+    p.add_argument("--compare", action="store_true",
+                   help="switch bar: claim recall and decline leakage, semantic vs keyword (exit 0 = met)")
+    p.add_argument("--k", type=int, default=10, help="--compare: top-k window")
     p.set_defaults(func=cmd_digest)
 
     p = sub.add_parser("triage", help="batch claim/pass for one role (passes land as ONE commit)")

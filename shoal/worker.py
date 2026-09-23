@@ -133,6 +133,12 @@ def cmd_next(a) -> int:
         out.append(f"OFFER {fmt_item(o)} prio={o.get('prio', DEFAULT_PRIO)} by={o['by']}"
                    + (" NOW" if o.get("now") else "") + (f" base={o['base']}" if o.get("base") else "")
                    + (f" :: {short(o.get('note', ''), 100)}" if o.get("note") else ""))
+    if getattr(me, "aux", False):
+        try:
+            from aux import header as aux_header
+            out.append(aux_header(spec, slug))
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"AUX: (header unavailable: {short(str(exc), 100)})")
     short_by = QUEUE_NEXT_MAX - len(nxt) - (0 if active else 1)
     if short_by > 0:
         excl = {item_key(x) for x in [active] + nxt if x} | {item_key(o["item"]) for o in offers}

@@ -170,6 +170,11 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
     fill = {"self": "You fill your own queue: from offers first (by prio), then your digest/board candidates.",
             "assigned": "You work only offers addressed to you (or `*`); you never pop the board.",
             "none": "You never claim."}.get(role.fill, "")
+    if getattr(role, "aux", False):
+        fill += (" You are the RESIDUAL lane (aux): your candidates are the free workable items no other active "
+                 "lane's brief covers, unblockers of their work first; `next` prints an AUX line naming the lanes "
+                 "you stay out of, and it changes as the roster changes. Pass an item that belongs to a lane with "
+                 "`--pass <item>:out-of-lane:suggest=<lane>`.")
     fills = (" You hold can_fill_others: you may `offer` work to other roles (`--now` interrupts a busy role; "
              "use it only when the work cannot wait for their next boundary)." if role.fills_others else "")
     return (

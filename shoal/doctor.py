@@ -286,6 +286,7 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
             (d.ok if bound else d.warn)(f"sidecar {r.slug}", f"bound to {sid or '(none)'}" + ("" if bound else f" != spec {r.session or '(none)'}"))
     if spec.ledger_mode:
         ledger_checks(d, spec)
+        matcher_checks(d, spec)
     tdir = telemetry_dir(spec.hag)
     if os.path.isdir(tdir):
         files = sorted(glob.glob(os.path.join(tdir, "events-*.jsonl")))
@@ -301,6 +302,27 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
                 "provider errors",
                 f"{fails['total']} failed-send records in 24h across {len(fails['by_session'])} session(s), "
                 f"last {recent} :: {fails['sample'][:160]}")
+
+
+def matcher_checks(d: Doc, spec: HagSpec) -> None:
+    """features.matcher (architecture §4.1): the model that last answered, and freshness."""
+    import matcher
+    c = matcher.config(spec)
+    if c is None:
+        return
+    st = matcher.load_state(spec.hag)
+    mode = "live" if c.get("live") else "shadow"
+    if c.get("backend") == "opencode-run" and not os.path.exists(matcher.opencode_bin()):
+        d.fail("matcher", f"{mode}: opencode not found at {matcher.opencode_bin()}")
+        return
+    act = (st.get("active") or {}).get("model")
+    if not act:
+        d.warn("matcher", f"{mode}: no model has answered yet (configured {c.get('model')}); "
+                          f"`hag.py digest --hag {spec.hag} --refresh` runs it")
+        return
+    pinned = "" if act == c.get("model") else f" (FALLBACK: configured {c.get('model')} did not answer)"
+    d.ok("matcher", f"{mode}: model {act}{pinned}, last answered {st.get('last_ok', '?')}, "
+                    f"{sum(1 for k in matcher.load_cache(spec.hag) if not k.startswith('_'))} items cached")
 
 
 def ledger_checks(d: Doc, spec: HagSpec) -> None:

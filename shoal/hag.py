@@ -72,6 +72,8 @@ import jobs as _jobs  # noqa: E402
 import worker as _worker  # noqa: E402
 import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
+import aux as _aux  # noqa: E402
+import upgrade as _upgrade  # noqa: E402
 from roles import (HAG_DATA_ROOT, HAG_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
@@ -96,7 +98,7 @@ def want(stages: str, name: str) -> bool:
 
 
 def parse_role(spec: str) -> Role:
-    """SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,fills][,fill=self|assigned|none]
+    """SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,fills][,aux][,fill=self|assigned|none]
     [,scope=repo|repo][,scope-label=NAME][,server=H][,model=M][,effort=E][,seq=N]. DOC is the
     single plan_state.md start document. Grants come from the doc's
     grants-needed section at brief time — never from the CLI. seq sets the
@@ -109,9 +111,11 @@ def parse_role(spec: str) -> Role:
         raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,DOC[,...]): {spec!r}")
     slug, eco, title, doc = parts[:4]
     queue, coord, model, effort, seq = "", False, "", "", 1
-    fill, fills, scope, server = "self", False, {}, ""
+    fill, fills, scope, server, aux = "self", False, {}, "", False
     for tok in parts[4:]:
-        if tok == "coord":
+        if tok == "aux":
+            aux = True  # residual lane (architecture §4.1); always fill=self
+        elif tok == "coord":
             coord = True
         elif tok == "fills":
             fills = True
@@ -138,7 +142,8 @@ def parse_role(spec: str) -> Role:
             raise ValueError(f"bad --role token {tok!r} in {spec!r}")
     return Role(slug=slug, ecosystem=eco, title=title, doc=doc,
                 queue=queue, coordinator=coord, model=model, effort=effort,
-                seq=seq, fill=fill, can_fill_others=fills, scope=scope, server=server)
+                seq=seq, fill="self" if aux else fill, can_fill_others=fills, scope=scope, server=server,
+                aux=aux)
 
 
 def load_spec(args: argparse.Namespace) -> HagSpec:
@@ -504,6 +509,11 @@ def cmd_start(args: argparse.Namespace) -> int:
     hag = mint_hag_id(args.name)
     home = home_dir(hag)
     roles = [parse_role(r) for r in args.role]
+    if getattr(args, "aux", ""):  # the residual lane (architecture §4.1)
+        eco, model = _aux.parse_aux_arg(args.aux)
+        roles.append(_aux.aux_role(hag, eco, model))
+        if not args.dry_run:
+            _aux.write_doc(hag)
     ledger_mode = not args.legacy_queues
     if args.coordinator:
         for r in roles:
@@ -750,6 +760,11 @@ def cmd_add_role(a: argparse.Namespace) -> int:
         print(f"spec is retired ({spec.retired_utc}); pass --force")
         return 1
     new_roles = [parse_role(r) for r in (a.role or [])]
+    if getattr(a, "aux", ""):  # the residual lane (architecture §4.1); aux-launch avoids the bump
+        eco, model = _aux.parse_aux_arg(a.aux)
+        new_roles.append(_aux.aux_role(spec.hag, eco, model))
+        if not getattr(a, "dry_run", False):
+            _aux.write_doc(spec.hag)
     if not new_roles:
         print("add-role needs at least one --role")
         return 1
@@ -913,6 +928,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("start", help="mint a new HAG and start its first generation")
     p.add_argument("--name", required=True)
+    p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
+                   help="also start the hag-aux residual lane (needs features.matcher)")
     p.add_argument("--dir", required=True)
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,QUEUE][,coord][,fills][,fill=self|assigned|none]"
@@ -973,6 +990,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("add-role", help="extend a live HAG with new roles (existing sessions untouched)")
     p.add_argument("--spec", required=True, help="hag.json path")
+    p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
+                   help="also add the hag-aux residual lane (needs features.matcher); on a running HAG "
+                        "prefer `aux-init` + `aux-launch`, which do not bump the incarnation")
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,fills][,scope=R][,model=M][,effort=E][,seq=N] (repeatable)")
     p.add_argument("--stages", default="handoffs,sync-plans,restart")
@@ -1005,6 +1025,8 @@ def main(argv: list[str] | None = None) -> int:
     _worker.add_parsers(sub)
     _health.add_parsers(sub)
     _kill_audit.add_parser(sub)
+    _aux.add_parsers(sub)
+    _upgrade.add_parser(sub)
 
     p = sub.add_parser("watch", help="coordinator-side watchers (systemd timers)")
     p.add_argument("--hag", required=True)

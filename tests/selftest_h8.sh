@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+# H8 selftest (architecture doc §4.1, §11): semantic matcher (fallback, switch record, cache),
+# shadow vs live ranking, effective priority, the aux lane's minmax + unblocker ranking and
+# AUX header, aux-init, `digest --compare`, `upgrade`. Isolated: scratch HAG_ROOT/HAG_DATA_ROOT,
+# a local bare ledger remote, synthetic board items, and a fake model behind the `command`
+# backend, so no network, no board read and no model call.
+set -uo pipefail
+HAGD="$(cd "$(dirname "$0")" && pwd)"
+S="${1:-${TMPDIR:-/tmp}/hag-h8-selftest-$$}"
+rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
+export HAG_ROOT="$S/root" HAG_DATA_ROOT="$S/data"
+HAGID=h8selftest; SPEC="$HAG_ROOT/$HAGID/hag.json"; A="$S/cloneA"
+H="python3 $HAGD/hag.py"; export HAGD PYTHONPATH="$HAGD"
+fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
+check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 600 <<<"$out")"; }
+
+git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
+( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
+mkdir -p "$HAG_ROOT/$HAGID"
+DOC=/home/speediedan/repos/distributed-insight/project_admin/interpretune/design/ie_integration_hub/ie_integration_hub_plan_state.md
+
+# fake models: `good` scores by keyword and counts its calls; `bad` is a rotated-out model
+cat > "$S/good.py" <<'PY'
+import json, re, sys
+p = sys.stdin.read()
+if "single word ok" in p:
+    print("ok"); sys.exit(0)
+open(sys.argv[1], "a").write("call\n")
+out = []
+for m in re.finditer(r"^(\S+#\d+) \| pos \d+ \| ([^|]*)\|", p, re.M):
+    t = m.group(2)
+    out.append({"item": m.group(1), "fits": {"tl": 3 if "TL4" in t else 0, "jl": 3 if "jlens" in t else 0,
+                                             "up": 3 if "upstream" in t else 0},
+                "class": "blocked" if "BLOCKED" in t else "workable", "blocker": "", "why": "fake"})
+print("here you go: " + json.dumps({"items": out}))
+PY
+printf 'import sys\nsys.stderr.write("Upstream request failed: Model is unavailable.")\nsys.exit(1)\n' > "$S/bad.py"
+GOOD="python3 $S/good.py $S/calls"; BAD="python3 $S/bad.py"
+
+cat > "$SPEC" <<JSON
+{"hag":"$HAGID","dir":"/home/speediedan/repos/interpretune","incarnation":0,"repos":["speediedan/interpretune"],
+ "ledger":{"repo":"$S/remote/q.git","dir":"$A"},
+ "features":{"digest":true,"workwake":true,
+   "matcher":{"backend":"command","model":"$BAD","fallbacks":[{"backend":"command","model":"$GOOD"}],
+              "discover_free":false,"live":false}},
+ "sources":[{"kind":"github-project","owner":"speediedan","number":2}],
+ "roles":[
+  {"slug":"tl","ecosystem":"claude","title":"tl","doc":"$DOC","fill":"self","session":"aaaa1111",
+   "context":{"brief":"Upgrades interpretune to TL4.","affinity":{"keywords":{"hygiene":3.0}},"never":{}}},
+  {"slug":"jl","ecosystem":"opencode","title":"jl","doc":"$DOC","fill":"self","session":"ses_jl",
+   "context":{"brief":"J-lens support.","never":{}}},
+  {"slug":"up","ecosystem":"claude","title":"up","doc":"$DOC","fill":"self","session":"",
+   "context":{"brief":"Files upstream issues.","never":{}}},
+  {"slug":"hag-aux","ecosystem":"opencode","title":"hag-aux","doc":"$DOC","fill":"self","session":"ses_aux","aux":true}
+ ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-22T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
+JSON
+$H ledger-init --spec "$SPEC" >/dev/null
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --active interpretune#1:fix --no-sync >/dev/null \
+  || fail "tl queue write failed"
+
+cat > "$S/items.py" <<'PY'
+def items():
+    def it(n, title, **kw):
+        d = {"pos": n, "item": f"interpretune#{n}", "repo": "speediedan/interpretune", "number": n, "kind": "issue",
+             "title": title, "state": "OPEN", "status": "", "labels": [], "excerpt": title, "blocked_by": []}
+        d.update(kw)
+        return d
+    return [it(1, "TL4 bridge removal", blocked_by=["interpretune#5"]), it(2, "jlens readout"),
+            it(3, "comment hygiene sweep"), it(4, "docs wide tables"), it(5, "small fix the migration lane waits on"),
+            it(6, "upstream filing for a parked lane"), it(7, "BLOCKED on a release")]
+PY
+
+echo "== 1 matcher: rotated-out model falls back, shadow keeps the live ranking, aux reads semantic"
+python3 - "$SPEC" "$S" <<'PY' || fail "shadow build"
+import json, os, sys
+sys.path.insert(0, sys.argv[2])
+from items import items
+import digest, matcher
+from roles import HagSpec
+from ledger import Ledger, View
+spec = HagSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+doc = digest.build(spec, view, items=items())
+m = doc["matcher"]
+assert doc["ranking"] == "keyword" and doc["shadow"]["ranking"] == "semantic", doc["ranking"]
+assert m["calls"] == 1 and m["unscored"] == 0, m
+assert any("skip command" in n and "unavailable" in n.lower() for n in m["notes"]), m["notes"]
+assert "good.py" in (m["model"] or ""), m["model"]
+sem = doc["shadow"]
+# effective priority: #5 blocks tl's active #1 -> lifted; #7 blocked -> sunk
+assert sem["items"]["interpretune#5"]["eff_pos"] == 0.5 and sem["items"]["interpretune#7"]["eff_pos"] == 14.0
+# lanes rank by fit: jl sees #2 only; tl's own item is taken, and its keyword 'hygiene' weight is ignored
+assert [r["item"] for r in sem["roles"]["jl"]] == ["interpretune#2"], sem["roles"]["jl"]
+assert sem["roles"]["tl"] == [], sem["roles"]["tl"]
+# aux: unblocker first, then minmax over ACTIVE lanes (up is parked, so #6 is aux work); #7 blocked, #2 jl's
+aux = [r["item"] for r in sem["roles"]["hag-aux"]]
+assert aux[0] == "interpretune#5" and "unblocks" in sem["roles"]["hag-aux"][0]["why"], aux
+assert set(aux) == {"interpretune#5", "interpretune#3", "interpretune#4", "interpretune#6"}, aux
+# in shadow the live doc still carries the keyword ranking for lanes, the semantic one for aux
+assert doc["roles"]["hag-aux"] == sem["roles"]["hag-aux"]
+assert any(r["item"] == "interpretune#3" for r in doc["roles"]["tl"]), doc["roles"]["tl"]
+digest.write(spec, doc)
+assert os.path.exists(digest.semantic_path(spec.hag))
+PY
+[ "$(wc -l < "$S/calls")" = 1 ] || fail "expected one scoring call"
+
+echo "== 2 matcher: the cache makes a quiet board free; a stale active model is switched and recorded"
+python3 - "$SPEC" "$S" <<'PY' || fail "cache/switch"
+import json, os, sys
+sys.path.insert(0, sys.argv[2])
+from items import items
+import digest, matcher
+from roles import HagSpec
+from ledger import Ledger, View
+spec = HagSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+doc = digest.build(spec, view, items=items())
+assert doc["matcher"]["calls"] == 0 and doc["matcher"]["unscored"] == 0, doc["matcher"]
+its = items(); its[2]["title"] = "comment hygiene sweep, rescoped"
+st = matcher.load_state(spec.hag); st["active"] = {"backend": "command", "model": spec.features["matcher"]["model"]}
+matcher.save_state(spec.hag, st)
+doc = digest.build(spec, view, items=its)
+assert doc["matcher"]["calls"] == 1 and doc["matcher"]["scored_now"] == 1, doc["matcher"]
+assert any("matcher model switched" in n for n in doc["matcher"]["notes"]), doc["matcher"]["notes"]
+evs = Ledger(spec.hag, root=spec.ledger_dir, sync=False).events(reload=True)
+assert any(e.get("type") == "system" and e.get("kind") == "matcher-model" for e in evs), "no switch event"
+assert any(e.get("type") == "msg" and e.get("to") == "user" and "[matcher]" in e.get("text", "") for e in evs), "no page"
+PY
+
+echo "== 3 matcher: live makes the semantic ranking the one roles read; absent matcher changes nothing"
+python3 - "$SPEC" "$S" <<'PY' || fail "live/absent"
+import copy, json, os, sys
+sys.path.insert(0, sys.argv[2])
+from items import items
+import digest
+from roles import HagSpec
+from ledger import Ledger, View
+spec = HagSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+live = copy.deepcopy(spec); live.features["matcher"]["live"] = True
+doc = digest.build(live, view, items=items())
+assert doc["ranking"] == "semantic" and "shadow" not in doc and doc["roles"]["tl"] == [], doc["ranking"]
+off = copy.deepcopy(spec); off.features.pop("matcher")
+doc = digest.build(off, view, items=items())
+assert doc["ranking"] == "keyword" and "matcher" not in doc and "shadow" not in doc
+assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leaked into a matcher-less HAG"
+PY
+
+echo "== 4 candidates, next AUX header, compare"
+check "BOARD interpretune#5:fix" $H digest --hag $HAGID --spec "$SPEC" --slug hag-aux --no-sync
+check "aux:max-fit=0" $H digest --hag $HAGID --spec "$SPEC" --slug hag-aux --semantic --no-sync
+OUT=$($H next --hag $HAGID --spec "$SPEC" --slug hag-aux --peek --no-sync 2>&1)
+grep -q "AUX: you are the residual lane. Stay out of: tl (Upgrades interpretune to TL4); jl (J-lens support)" <<<"$OUT" \
+  || fail "AUX header :: $OUT"
+grep -q "Parked lanes whose work is yours meanwhile: up" <<<"$OUT" || fail "parked lane not named :: $OUT"
+grep -q "BOARD interpretune#5:fix" <<<"$OUT" || fail "aux next lacks the unblocker :: $OUT"
+check "SWITCH BAR:" $H digest --hag $HAGID --spec "$SPEC" --compare --no-sync
+
+echo "== 5 aux-init / role token / validation"
+python3 - "$SPEC" "$S/spec2.json" <<'PY'
+import json, sys; d = json.load(open(sys.argv[1])); d["roles"] = [r for r in d["roles"] if r["slug"] != "hag-aux"]
+json.dump(d, open(sys.argv[2], "w"))
+PY
+check "\[dry-run\] aux-init $HAGID: doc $S/data/$HAGID/roles/hag-aux/plan_state.md; role ADD hag-aux" \
+  $H aux-init --hag $HAGID --spec "$S/spec2.json" --dry-run
+check "role ADD hag-aux" $H aux-init --hag $HAGID --spec "$S/spec2.json"
+grep -q "residual lane of HAG \`$HAGID\`" "$S/data/$HAGID/roles/hag-aux/plan_state.md" || fail "aux doc not written"
+python3 - "$S/spec2.json" <<'PY' || fail "aux role not added"
+import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "hag-aux"][0]
+assert r["aux"] is True and r["fill"] == "self", r
+PY
+check "\[dry-run\] aux-launch $HAGID: hag-aux (hag-aux-r1) opencode" $H aux-launch --hag $HAGID --spec "$S/spec2.json" --dry-run
+(cd "$HAGD" && python3 -c "
+import hag
+r = hag.parse_role('x,opencode,x,/d.md,aux,fill=assigned')
+assert r.aux and r.fill == 'self', r
+from roles import Role
+assert Role(slug='y', ecosystem='claude', title='y', doc='/d', fill='assigned', aux=True).validate()
+") || fail "aux token / validation"
+
+echo "== 6 upgrade: classes, feature edit, tooling sha, ledger record"
+check "features: matcher.live=true" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty --dry-run
+check "\[dry-run\] nothing written" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty --dry-run
+check "upgraded $HAGID to tooling" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty
+python3 - "$SPEC" "$A" <<'PY' || fail "upgrade did not record"
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+assert d["features"]["matcher"]["live"] is True and d["tooling"]["sha"], d.get("tooling")
+evs = [json.loads(l) for fn in os.listdir(os.path.join(sys.argv[2], "hags", d["hag"], "ledger"))
+       for l in open(os.path.join(sys.argv[2], "hags", d["hag"], "ledger", fn)) if l.strip()]
+assert any(e.get("type") == "system" and e.get("kind") == "upgrade" for e in evs)
+PY
+check "tooling $(python3 -c "import json;print(json.load(open('$SPEC'))['tooling']['sha'])") ->" \
+  $H upgrade --spec "$SPEC" --skip-selftests --allow-dirty --dry-run
+
+echo "SELFTEST H8 OK ($S)"
+rm -rf /tmp/$HAGID

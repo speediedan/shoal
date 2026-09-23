@@ -735,6 +735,15 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
             last += f" (hb {hb_ages[r.slug]:.0f}m)"
         if not r.session:
             state = "parked (no session)"
+        elif getattr(r, "fill", "") == "none" and r.slug == "hag-relay":
+            # the relay writes no state events (a stale one may predate this session), so its
+            # row is its waiter's liveness
+            try:
+                pid = open(os.path.join("/tmp", view.ledger.hag, "relay-watch.pid")).read().strip()
+                with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                    state = f"relaying (relay-watch pid {pid})" if b"relay-watch" in fh.read() else "relay-watch DEAD"
+            except (OSError, ValueError):
+                state = "relay-watch DEAD"
         L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {last} |")
     pool = [o for o in view.offers.values() if o["status"] == "open" and o["to"] == "*"]
     if pool:
