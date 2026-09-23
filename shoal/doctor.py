@@ -320,8 +320,11 @@ def matcher_checks(d: Doc, spec: HagSpec) -> None:
         d.warn("matcher", f"{mode}: no model has answered yet (configured {c.get('model')}); "
                           f"`hag.py digest --hag {spec.hag} --refresh` runs it")
         return
+    tier = matcher.tier_of(st["active"])
     pinned = "" if act == c.get("model") else f" (FALLBACK: configured {c.get('model')} did not answer)"
-    d.ok("matcher", f"{mode}: model {act}{pinned}, last answered {st.get('last_ok', '?')}, "
+    paid = {"go": "; PAID tier: Go subscription usage", "zen": "; PAID tier: Zen balance"}.get(tier, "")
+    (d.warn if paid else d.ok)("matcher", f"{mode}: model {act} ({tier} tier){pinned}{paid}, last answered "
+                                          f"{st.get('last_ok', '?')}, "
                     f"{sum(1 for k in matcher.load_cache(spec.hag) if not k.startswith('_'))} items cached")
 
 

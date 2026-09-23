@@ -190,5 +190,34 @@ PY
 check "tooling $(python3 -c "import json;print(json.load(open('$SPEC'))['tooling']['sha'])") ->" \
   $H upgrade --spec "$SPEC" --skip-selftests --allow-dirty --dry-run
 
+echo "== 7 tiers: free first, then the Go subscription, then the Zen balance; paid tiers recheck free"
+python3 - "$SPEC" "$GOOD" "$BAD" <<'PY' || fail "tiers"
+import sys
+import matcher
+from roles import HagSpec
+spec = HagSpec.load(sys.argv[1]); good, bad = sys.argv[2], sys.argv[3]
+c = dict(matcher.DEFAULTS, backend="command", model=bad, fallbacks=[], discover_free=False,
+         go_fallbacks=[{"backend": "command", "model": good}],
+         paid_fallback={"backend": "command", "model": good})
+st, notes = {}, []
+r = matcher.resolve(spec, c, st, {}, notes)
+assert r and matcher.tier_of(r) == "go", (r, notes)          # free failed -> Go before the Zen balance
+st2, notes2 = {"active": {"backend": "command", "model": bad}}, []
+matcher.resolve(spec, c, st2, {}, notes2)
+assert any("PAID: the Go subscription" in n for n in notes2), notes2   # a paid switch says so
+# while Go is active and the recheck is not due, the free tier is not re-probed
+st3 = {"active": dict(r), "free_checked": matcher.now_iso()}
+c2 = dict(c, model=good)                                      # the free model is back...
+r3 = matcher.resolve(spec, c2, st3, {}, [])
+assert matcher.tier_of(r3) == "go", r3                        # ...but not rechecked yet
+st3["free_checked"] = "2000-01-01T00:00:00Z"                  # recheck due
+notes4 = []
+r4 = matcher.resolve(spec, c2, st3, {}, notes4)
+assert matcher.tier_of(r4) == "free" and any("free-tier recheck" in n for n in notes4), (r4, notes4)
+# no Go route and no key: the Zen tier is skipped, never probed
+c5 = dict(c, go_fallbacks=[], paid_fallback={"model": "m", "key_env": "HAG_TEST_KEY"})
+assert matcher.resolve(spec, c5, {}, {}, []) is None
+PY
+
 echo "SELFTEST H8 OK ($S)"
 rm -rf /tmp/$HAGID

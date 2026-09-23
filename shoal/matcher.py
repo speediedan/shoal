@@ -17,9 +17,13 @@ Transport, measured 2026-09-23:
 The direct OpenAI-compatible API is only the optional paid fallback, keyed by
 `HAG_MATCHER_API_KEY` in `hag/.env` (gitignored; created by the maintainer).
 
-Models rotate. Resolution order: the model that last worked, the configured model, the
-configured fallbacks, free models discovered from `opencode models opencode` cross-checked
-against the Zen pricing table, then the paid fallback when a key is present. A switch is
+Models rotate. Resolution is tiered, cheapest first:
+  free  the model that last worked, the configured model and fallbacks, then free models
+        discovered from `opencode models opencode` cross-checked against the Zen pricing table;
+  go    the OpenCode Go subscription (`go_fallbacks`, opencode's stored login): the first
+        PAID tier, a flat monthly fee with usage caps;
+  zen   the Zen balance (`paid_fallback`, pay per token, key in hag/.env).
+While a paid tier is active the free tier is re-probed every `free_recheck_min`. A switch is
 warned on stderr, recorded as a ledger `system` event, and paged at most once a day.
 
 Results are cached per (item content, lane brief): a quiet board costs no model call.
@@ -35,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -57,11 +62,19 @@ DEFAULTS = {
     "model": "opencode/muse-spark-1.3-contributor-free",
     "fallbacks": ["opencode/space-bunny-free", "opencode/nemotron-3.5-lightning-free"],
     "discover_free": True,
+    # paid tiers, tried only after every free route: the OpenCode Go subscription first (flat
+    # monthly fee with usage caps; opencode's stored `opencode-go` login, no key file), then the
+    # Zen balance (pay per token; `paid_fallback`, keyed from hag/.env)
+    # measured 2026-09-23: both answer in ~5 s and neither trains on prompts (Go privacy table);
+    # opencode-go/deepseek-v4-flash needs the workspace's Global-regions setting and, through
+    # `opencode run`, hangs silently instead of erroring, so it is not a default
+    "go_fallbacks": ["opencode-go/glm-5.3-flash", "opencode-go/kimi-k2.6"],
     "paid_fallback": None,  # {"backend": "openai-compat", "base_url", "model", "key_env"}
+    "free_recheck_min": 60,  # while a paid tier is active, re-probe the free tier this often
     "private_repos": "send",  # send | withhold
     "chunk": 40,
     "timeout_s": 600,
-    "probe_timeout_s": 120,
+    "probe_timeout_s": 60,  # a healthy probe answers in ~5 s; a refused route can hang silently
     "stale_hours": 24,
     "live": False,
 }
@@ -170,12 +183,22 @@ def call_opencode(model: str, prompt: str, workdir: str, timeout: float) -> str:
     ids: set[str] = set()
     try:
         try:
-            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=workdir,
-                               stdin=subprocess.DEVNULL)
-        except subprocess.TimeoutExpired as exc:
-            raise Transient(f"{model}: timed out after {timeout:g}s") from exc
+            # own process group: a hung run is killed whole, so a leftover child cannot hold
+            # opencode's store and stall the next run (measured: a hung Go run did)
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=workdir,
+                                    stdin=subprocess.DEVNULL, start_new_session=True)
         except OSError as exc:
             raise Unavailable(f"opencode not runnable: {exc}") from exc
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.communicate()
+            raise Transient(f"{model}: timed out after {timeout:g}s") from exc
+        p = subprocess.CompletedProcess(argv, proc.returncode, out, err)
         text, errs = [], []
         for line in p.stdout.splitlines():
             try:
@@ -271,27 +294,59 @@ def discover_free(warn) -> list[str]:
     return [m for m in ids if m.split("/", 1)[1] in free]
 
 
-def candidates(c: dict, st: dict, env: dict, warn, discover: bool = True) -> list[dict]:
-    """Ordered (backend, model) routes to try, without duplicates."""
+TIERS = ("free", "go", "zen")
+
+
+def tier_of(route: dict) -> str:
+    """free: a Zen free model through opencode; go: the Go subscription; zen: the Zen balance."""
+    if route.get("tier"):
+        return route["tier"]
+    if route.get("backend") == "openai-compat":
+        return "zen"
+    return "go" if str(route.get("model", "")).startswith("opencode-go/") else "free"
+
+
+def _age_min(ts: str) -> float:
+    try:
+        t = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return float("inf")
+    return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 60
+
+
+def candidates(c: dict, st: dict, env: dict, warn, stage: str, recheck: bool = False) -> list[dict]:
+    """Routes for one resolution stage, in order:
+      first       the route that last answered, unless it is a paid tier and the periodic
+                  free-tier recheck is due (then the free tier gets its chance first);
+      free        the configured model and fallbacks;
+      discovered  free models from `opencode models opencode` x the Zen pricing table;
+      go          the Go subscription (`go_fallbacks`);
+      zen         the Zen balance (`paid_fallback`, when its key is present)."""
     out: list[dict] = []
 
     def add(route: dict) -> None:
         if route.get("model") and route not in out:
             out.append(route)
 
-    if st.get("active"):
-        add(st["active"])
-    add({"backend": c["backend"], "model": c["model"]})
-    for m in c.get("fallbacks") or []:  # "opencode/<id>" or {"backend", "model", ...}
-        add(dict(m) if isinstance(m, dict) else {"backend": "opencode-run", "model": m})
-    if discover and c.get("discover_free"):
+    if stage == "first":
+        if st.get("active") and not recheck:
+            add(st["active"])
+    elif stage == "free":
+        add({"backend": c["backend"], "model": c["model"]})
+        for m in c.get("fallbacks") or []:  # "opencode/<id>" or {"backend", "model", ...}
+            add(dict(m) if isinstance(m, dict) else {"backend": "opencode-run", "model": m})
+    elif stage == "discovered" and c.get("discover_free"):
         for m in discover_free(warn):
             add({"backend": "opencode-run", "model": m})
-    pf = c.get("paid_fallback") or None
-    if pf and env.get(pf.get("key_env", "HAG_MATCHER_API_KEY")):
-        add({"backend": pf.get("backend", "openai-compat"), "model": pf["model"],
-             "base_url": pf.get("base_url", "https://opencode.ai/zen/v1"),
-             "key_env": pf.get("key_env", "HAG_MATCHER_API_KEY")})
+    elif stage == "go":
+        for m in c.get("go_fallbacks") or []:
+            add(dict(m, tier="go") if isinstance(m, dict) else {"backend": "opencode-run", "model": m, "tier": "go"})
+    elif stage == "zen":
+        pf = c.get("paid_fallback") or None
+        if pf and env.get(pf.get("key_env", "HAG_MATCHER_API_KEY")):
+            add({"backend": pf.get("backend", "openai-compat"), "model": pf["model"], "tier": "zen",
+                 "base_url": pf.get("base_url", "https://opencode.ai/zen/v1"),
+                 "key_env": pf.get("key_env", "HAG_MATCHER_API_KEY")})
     return out
 
 
@@ -313,10 +368,16 @@ def call(route: dict, prompt: str, hag: str, timeout: float, env: dict) -> str:
 
 
 def resolve(spec: HagSpec, c: dict, st: dict, env: dict, notes: list[str]) -> dict | None:
-    """The first route that answers the probe; records a switch. None when nothing answers."""
+    """The first route that answers the probe, cheapest tier first; records a switch. None
+    when nothing answers."""
     tried: set[str] = set()
-    for discover in (False, True):
-        for route in candidates(c, st, env, notes.append, discover=discover):
+    act = st.get("active")
+    recheck = bool(act) and tier_of(act) != "free" and _age_min(st.get("free_checked", "")) >= c["free_recheck_min"]
+    if recheck:
+        st["free_checked"] = now_iso()
+        notes.append(f"free-tier recheck (active route is the {tier_of(act)} tier)")
+    for stage in ("first", "free", "discovered", "go", "zen"):
+        for route in candidates(c, st, env, notes.append, stage, recheck):
             key = f"{route['backend']}:{route['model']}"
             if key in tried:
                 continue
@@ -328,16 +389,20 @@ def resolve(spec: HagSpec, c: dict, st: dict, env: dict, notes: list[str]) -> di
                 notes.append(f"skip {key}: {str(exc)[:160]}")
                 continue
             prev = st.get("active")
-            if prev and prev != route:
+            if prev and (prev.get("backend"), prev.get("model")) != (route.get("backend"), route.get("model")):
                 announce_switch(spec, prev, route, notes, st)
+            if tier_of(route) != "free" and not st.get("free_checked"):
+                st["free_checked"] = now_iso()
             st["active"], st["last_ok"] = route, now_iso()
             return route
     return None
 
 
 def announce_switch(spec: HagSpec, prev: dict, new: dict, notes: list[str], st: dict) -> None:
-    text = (f"matcher model switched: {prev.get('model')} ({prev.get('backend')}) is unavailable; now using "
-            f"{new['model']} ({new['backend']}). Set features.matcher.model to pin a model.")
+    paid = {"go": " (PAID: the Go subscription's monthly usage)", "zen": " (PAID: the Zen balance)"}
+    text = (f"matcher model switched: {prev.get('model')} ({tier_of(prev)} tier) -> {new['model']} "
+            f"({tier_of(new)} tier){paid.get(tier_of(new), '')}. Free models are re-probed every "
+            f"free_recheck_min while a paid tier is active; set features.matcher.model to pin a model.")
     print(f"WARNING: {text}", file=sys.stderr)
     notes.append(text)
     try:
@@ -521,6 +586,8 @@ def score(spec: HagSpec, items: list[dict], suggest: dict[str, set[str]] | None 
                             "blocker": e.get("blocker", ""), "why": e.get("why", ""), "model": e.get("model"),
                             "stale": stale}
     return {"fits": fits, "lanes": list(briefs), "model": (route or st.get("active") or {}).get("model"),
-            "backend": (route or st.get("active") or {}).get("backend"), "calls": calls,
+            "backend": (route or st.get("active") or {}).get("backend"),
+            "tier": tier_of(route or st.get("active") or {"model": ""}) if (route or st.get("active")) else None,
+            "calls": calls,
             "latency_s": round(time.time() - t0, 1), "scored_now": len(todo) - len(set(failed) & todo_keys),
             "unscored": unscored, "withheld": withheld, "notes": notes, "live": bool(c.get("live"))}
