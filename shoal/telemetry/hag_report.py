@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
-from roles import HAG_DATA_ROOT, HAG_ROOT, HagSpec, home_dir  # noqa: E402
+from roles import HAG_DATA_ROOT, HagSpec, home_dir  # noqa: E402
 
 try:
     from zoneinfo import ZoneInfo

@@ -74,7 +74,7 @@ import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
-from roles import (HAG_DATA_ROOT, HAG_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
+from roles import (HAG_DATA_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
@@ -224,7 +224,7 @@ def stage_retire(spec: HagSpec, old_sessions: list[str],
 def persist_spec(spec: HagSpec, path: str, note: str = "") -> None:
     """Save the spec; when the path lives under the ledger clone it is the
     canonical copy, so commit+push (remote agents read it). Legacy paths
-    (.agents/hags) save plain — read-only since the ledger incarnation."""
+    save plain."""
     spec.save(path)
     try:
         root = spec.ledger_dir if spec.ledger_mode else ""
@@ -858,7 +858,7 @@ def cmd_status(spec: HagSpec) -> int:
           + (f" RETIRED {spec.retired_utc}" if spec.retired_utc else ""))
     if not spec.generations:
         print("  note: no generation history — snapshot copy? canonical spec lives at "
-              "distributed-insight:.agents/hags/<hag>/hag.json")
+              "the ledger clone's hags/<hag>/hag.json")
     g = spec.current_generation()
     if g:
         print(f"  generation {g.get('gen')}: started {g.get('started_utc')} ended {g.get('ended_utc') or '(open)'}")

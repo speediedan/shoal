@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 # H8 selftest (architecture doc §4.1, §11): semantic matcher (fallback, switch record, cache),
 # shadow vs live ranking, effective priority, the aux lane's minmax + unblocker ranking and
-# AUX header, aux-init, `digest --compare`, `upgrade`. Isolated: scratch HAG_ROOT/HAG_DATA_ROOT,
+# AUX header, aux-init, `digest --compare`, `upgrade`. Isolated: scratch spec dir and HAG_DATA_ROOT,
 # a local bare ledger remote, synthetic board items, and a fake model behind the `command`
 # backend, so no network, no board read and no model call.
 set -uo pipefail
 HAGD="$(cd "$(dirname "$0")" && pwd)"
 S="${1:-${TMPDIR:-/tmp}/hag-h8-selftest-$$}"
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
-export HAG_ROOT="$S/root" HAG_DATA_ROOT="$S/data"
-HAGID=h8selftest; SPEC="$HAG_ROOT/$HAGID/hag.json"; A="$S/cloneA"
+export HAG_DATA_ROOT="$S/data"; ROOT="$S/root"
+HAGID=h8selftest; SPEC="$ROOT/$HAGID/hag.json"; A="$S/cloneA"
+export HAG_SPEC="$SPEC"
 H="python3 $HAGD/hag.py"; export HAGD PYTHONPATH="$HAGD"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 600 <<<"$out")"; }
 
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
-mkdir -p "$HAG_ROOT/$HAGID"
+mkdir -p "$ROOT/$HAGID"
 DOC=/home/speediedan/repos/distributed-insight/project_admin/interpretune/design/ie_integration_hub/ie_integration_hub_plan_state.md
 
 # fake models: `good` scores by keyword and counts its calls; `bad` is a rotated-out model

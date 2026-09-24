@@ -9,7 +9,7 @@ Usage:
       # per session, instruct/report latency, queue latencies, invalid-state counts.
 
 Storage: <HAG_DATA_ROOT>/<hag>/telemetry/events-YYYYMMDD.jsonl (UTC day) — the
-bulk tier, never committed. The versioned <HAG_ROOT>/<hag>/telemetry/ path is
+bulk tier, never committed. The retired versioned telemetry path, archived at <HAG_DATA_ROOT>/<hag>/legacy-di/telemetry/, is
 read as a legacy fallback only (events from before 2026-09-17 live there).
 Analysis windows are free (--hours N covers the last N hours across day
 boundaries); rotation stays daily.
@@ -42,7 +42,6 @@ except Exception:  # pragma: no cover
 SCHEMA_V = "v2"  # v2 (2026-09-20): ledger_* event types + channel=ledger; v1 events still load
 REPO = "/home/speediedan/repos/distributed-insight"
 SERVER = "speediedl"
-HAG_ROOT = os.environ.get("HAG_ROOT", os.path.join(REPO, ".agents/hags"))
 HAG_DATA_ROOT = os.environ.get("HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags")
 
 TYPES = {
@@ -127,7 +126,9 @@ def resolve_dir(d, hag):
 
 
 def legacy_dirs(hag):
-    return [os.path.join(HAG_ROOT, hag, "telemetry")]
+    """Pre-2026-09-17 telemetry lived in the retired versioned control plane; archived copies
+    sit under <data root>/<hag>/legacy-di/telemetry."""
+    return [os.path.join(HAG_DATA_ROOT, hag, "legacy-di", "telemetry")]
 
 
 def canonical_sub(value):

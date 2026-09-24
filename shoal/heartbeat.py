@@ -40,7 +40,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backends import get as get_backend  # noqa: E402
-from roles import HAG_ROOT, HagSpec, state_dir  # noqa: E402
+from roles import HagSpec, data_dir, state_dir  # noqa: E402
 
 HB_PREFIX = "hb-"
 
@@ -460,7 +460,7 @@ def cmd_heartbeat(spec, threshold_min: float, notify: str = "",
             print(f"ERROR: send to {target} failed: {exc}")
             return 2
     else:
-        chan = os.path.join(HAG_ROOT, spec.hag, "channel.md")
+        chan = os.path.join(data_dir(spec.hag), "channel.md")
         os.makedirs(os.path.dirname(chan), exist_ok=True)
         with open(chan, "a") as fh:
             fh.write(f"\n## {now:%Y-%m-%dT%H:%M:%SZ} {body}\n")

@@ -35,7 +35,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backends import TOOL_PATH, get as get_backend  # noqa: E402
 from heartbeat import age_min, classify  # noqa: E402
-from roles import HAG_DATA_ROOT, HAG_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
+from roles import HAG_DATA_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
 
 ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
 TICK_INTERVAL_MIN = {"queue": 10, "lanes": 5, "pipeline": 10, "heartbeat": 5,
@@ -108,7 +108,7 @@ def host_checks(d: Doc) -> None:
         except OSError:
             pass
     (d.ok if pat else d.warn)("AZURE_DEVOPS_EXT_PAT", "resolvable" if pat else "unset (pipeline watcher will refuse to judge)")
-    for name, root in (("HAG_ROOT", HAG_ROOT), ("HAG_DATA_ROOT", HAG_DATA_ROOT)):
+    for name, root in (("HAG_DATA_ROOT", HAG_DATA_ROOT),):
         if os.path.isdir(root) and os.access(root, os.W_OK):
             d.ok(name, root)
         elif not os.path.isdir(root):

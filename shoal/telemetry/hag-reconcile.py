@@ -76,9 +76,9 @@ def parse_gh_ts(s):
 def repos_for(a):
     if a.repo:
         return list(a.repo)
-    spec_path = a.spec or os.path.join(
-        os.environ.get("HAG_ROOT", "/home/speediedan/repos/distributed-insight/.agents/hags"),
-        a.hag, "hag.json")
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from roles import find_spec
+    spec_path = find_spec(a.hag, a.spec or "")
     try:
         with open(spec_path) as fh:
             repos = json.load(fh).get("repos") or []

@@ -20,9 +20,8 @@ Two roots (both overridable by environment for tests and other hosts):
   HAG_LEDGER / ledger.dir (git repo speediedan/hag-queues):
                      hags/<hag>/{hag.json (THE canonical live spec, mutated by
                      hag.py with commit+push),ledger/}. Remote agents read this.
-  HAG_ROOT       legacy versioned control plane (read-only since the ledger
-                     incarnation): <root>/<hag>/{hag.json,queues/,briefs/,reports/}.
-                     Resolves old specs by explicit path; new starts never write it.
+  HAG_SPEC       optional pin: the path of one HAG's spec (<dir named for the hag>/hag.json).
+                     Tests and operators use it to resolve a spec outside the ledger clone.
 
 A spec also records its generation history (`generations`): one entry per
 generation with start/end timestamps, the live session ids, and the run pin
@@ -42,8 +41,6 @@ FILL_MODES = ("self", "assigned", "none")
 DEFAULT_LEDGER = {"repo": "git@github.com:speediedan/hag-queues.git",
                   "dir": os.path.expanduser("~/repos/hag-queues")}
 
-HAG_ROOT = os.environ.get(
-    "HAG_ROOT", "/home/speediedan/repos/distributed-insight/.agents/hags")
 HAG_DATA_ROOT = os.environ.get(
     "HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags")
 DEFAULT_REPOS = ["speediedan/interpretune", "speediedan/it-interp-engine-adapter"]
@@ -51,10 +48,6 @@ DEFAULT_REPOS = ["speediedan/interpretune", "speediedan/it-interp-engine-adapter
 
 def utcnow_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def hag_dir(hag: str) -> str:
-    return os.path.join(HAG_ROOT, hag)
 
 
 def home_dir(hag: str) -> str:
@@ -336,7 +329,7 @@ class HagSpec:
         d = self.to_dict()
         d.pop("generations", None)
         d["snapshot_utc"] = utcnow_iso()
-        d["canonical"] = "distributed-insight:.agents/hags/<hag>/hag.json (this copy is a read-only snapshot)"
+        d["canonical"] = "the operator's spec (this copy is a read-only snapshot for remote agents)"
         return d
 
     @staticmethod
@@ -374,25 +367,18 @@ class HagSpec:
 
 
 def default_spec_path(hag: str) -> str:
-    """Legacy versioned control plane first, then the ledger clone.
-
-    Ledger-mode starts write THE canonical live spec into the ledger clone and
-    never touch HAG_ROOT, so defaulting to HAG_ROOT alone hands every caller a
-    path that does not exist. The callers that tolerate a missing spec then
-    degrade silently rather than refusing, which is how a ledger-mode HAG ran
-    with four of five roles emitting no state event at all. Returning the
-    legacy path when NEITHER exists keeps an unknown HAG failing by name.
-    """
-    legacy = os.path.join(HAG_ROOT, hag, "hag.json")
-    if os.path.exists(legacy):
-        return legacy
+    """The canonical live spec: `$HAG_SPEC` when it pins this hag (its directory is named
+    for the hag), else the ledger clone's `hags/<hag>/hag.json`. A missing spec fails by
+    name when loaded; there is no fallback location (the pre-ledger control plane is gone)."""
+    pin = os.environ.get("HAG_SPEC", "")
+    if pin and os.path.basename(os.path.dirname(os.path.abspath(pin))) == hag:
+        return pin
     ledger_root = os.environ.get("HAG_LEDGER_DIR", DEFAULT_LEDGER["dir"])
-    ledger = os.path.join(ledger_root, "hags", hag, "hag.json")
-    return ledger if os.path.exists(ledger) else legacy
+    return os.path.join(ledger_root, "hags", hag, "hag.json")
 
 
 def find_spec(hag: str, explicit: str = "") -> str:
-    """Resolve a spec path: explicit wins, else <HAG_ROOT>/<hag>/hag.json."""
+    """Resolve a spec path: explicit wins, else default_spec_path."""
     if explicit:
         return explicit
     return default_spec_path(hag)

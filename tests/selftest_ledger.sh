@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # selftest_ledger.sh — isolated end-to-end proof of the ledger primitive
 # (readme 5.j). Builds a local bare "remote" + two clones (two hosts), a
-# 3-role spec under a scratch HAG_ROOT/HAG_DATA_ROOT, and drives every verb:
+# 3-role spec under a scratch spec dir and HAG_DATA_ROOT, and drives every verb:
 # init + legacy migration, offers + permissions, the claim race across
 # clones (contested -> lost-race), withdraw, decline, msg + ack, board fill
 # (reads the REAL priority table read-only), exit-wake watcher, transition,
@@ -12,8 +12,9 @@ set -eu
 HAGD="$(cd "$(dirname "$0")" && pwd)"
 S="${1:-${TMPDIR:-/tmp}/hag-selftest-$$}"
 rm -rf "$S"; mkdir -p "$S/root" "$S/data" "$S/remote"
-export HAG_ROOT="$S/root" HAG_DATA_ROOT="$S/data"
-SPEC="$HAG_ROOT/t1hag/hag.json"; A="$S/cloneA"; B="$S/cloneB"
+export HAG_DATA_ROOT="$S/data"; ROOT="$S/root"
+SPEC="$ROOT/t1hag/hag.json"; A="$S/cloneA"; B="$S/cloneB"
+export HAG_SPEC="$SPEC"
 H="python3 $HAGD/hag.py"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 expect() { local rc=$1 got=0; shift; "$@" && got=0 || got=$?; [ "$got" = "$rc" ] || fail "rc=$got (want $rc): $*"; }
@@ -23,7 +24,7 @@ git init -q --bare "$S/remote/hag-queues.git"
 git clone -q "$S/remote/hag-queues.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
 git clone -q "$S/remote/hag-queues.git" "$B" 2>/dev/null
-mkdir -p "$HAG_ROOT/t1hag"
+mkdir -p "$ROOT/t1hag"
 DOCS=/home/speediedan/repos/distributed-insight/project_admin/interpretune/design
 cat > "$SPEC" <<JSON
 {"hag":"t1hag","dir":"/home/speediedan/repos/interpretune","incarnation":0,"repos":["speediedan/interpretune"],

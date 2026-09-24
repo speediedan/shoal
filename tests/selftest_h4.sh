@@ -2,7 +2,7 @@
 # Isolated proof of the H4 components (architecture doc §4-§6): working context, board
 # digest, batch triage, digest-driven ledger-watch wake, exit verdicts, job units, the work loop
 # (next/queue), work-only wakes, the health quorum, user-offline mode and the Claude relay.
-# Touches nothing live: a bare local remote, HAG_ROOT/HAG_DATA_ROOT under a scratch dir,
+# Touches nothing live: a bare local remote, the spec and HAG_DATA_ROOT under a scratch dir,
 # hag id h4selftest (state in /tmp/h4selftest). Reads the real GitHub board (read-only).
 #   selftest_h4.sh [SCRATCH_DIR]
 set -eu
@@ -14,8 +14,9 @@ cleanup() { pkill -f -- 'hag.py (ledger-watch|relay-watch) --hag h4selftest' 2>/
 trap cleanup EXIT
 cleanup
 rm -rf "$S" /tmp/h4selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
-export HAG_ROOT="$S/root" HAG_DATA_ROOT="$S/data"
-HAGID=h4selftest; SPEC="$HAG_ROOT/$HAGID/hag.json"; A="$S/cloneA"
+export HAG_DATA_ROOT="$S/data"; ROOT="$S/root"
+HAGID=h4selftest; SPEC="$ROOT/$HAGID/hag.json"; A="$S/cloneA"
+export HAG_SPEC="$SPEC"
 H="python3 $HAGD/hag.py"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); printf "%s\n" "$out" > "$S/last_check.out"; grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 600 <<<"$out")"; }
@@ -23,7 +24,7 @@ rc_of() { "$@" >/dev/null 2>&1 && echo 0 || echo $?; }
 
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
-mkdir -p "$HAG_ROOT/$HAGID"
+mkdir -p "$ROOT/$HAGID"
 DOCS=/home/speediedan/repos/distributed-insight/project_admin/interpretune/design
 cat > "$SPEC" <<JSON
 {"hag":"$HAGID","dir":"/home/speediedan/repos/interpretune","incarnation":0,"repos":["speediedan/interpretune"],
