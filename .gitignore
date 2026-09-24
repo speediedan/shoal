@@ -1,1 +1,12 @@
+# secrets and host configuration
+.env
+.env.*
+*.env
 config/host.toml
+
+# python and build output
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/

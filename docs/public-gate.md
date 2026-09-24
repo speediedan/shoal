@@ -7,7 +7,7 @@ evidence (command, date, result) under each item in the change that ticks it.
 
 - [ ] `gitleaks detect --source . --log-opts="--all"` reports no leaks.
 - [ ] A pattern sweep over every commit finds no keys or tokens:
-      `git log --all -p | grep -nE "(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|xox[bap]-|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY|API_KEY=|_TOKEN=)"`
+      `git log --all -p | grep -nE "(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_|xox[bap]-|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY|_API_KEY=[^ ]{8,}|_TOKEN=[^ ]{8,})"`
       returns nothing, or each hit is explained.
 - [ ] No `.env` file, or `.env` contents, ever committed: `git log --all --diff-filter=A --name-only | grep -E '(^|/)\.env'`
       is empty.

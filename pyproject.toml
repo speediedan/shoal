@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shoal"
+version = "0.1.0.dev0"
+description = "SHOAL (Stigmergic Heterogeneous Open Agent Lattice): agent sessions in any harness working one backlog through a shared append-only ledger."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [{ name = "Daniel Dale" }]
+dependencies = [
+    'tomli; python_version < "3.11"',
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+shoal = "shoal.cli:main"
+
+[tool.setuptools]
+packages = ["shoal", "shoal.telemetry"]
+
+[tool.setuptools.package-data]
+shoal = ["scripts/*.sh"]
