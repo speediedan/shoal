@@ -15,14 +15,19 @@ work wake the role.
 
 User-offline mode (`offline on`) tells every role the maintainer is away: record blocking asks
 with `queue --ask` instead of waiting on them, stack PRs, and proceed with unblocked work.
-Roles waiting on the user are woken once so they pivot; `offline off` wakes the roles holding
-asks and prints every open ask.
+Roles waiting on the user are woken once so they pivot. `offline off` is the RETURN protocol:
+it prints every open ask with a staleness hint (the GitHub state of the items the ask names, and
+the ledger's done items), and wakes the roles holding asks to (1) re-verify each ask and drop the
+ones that no longer apply (`queue --drop-ask <n>`), then (2) raise the rest first-person as
+prompted question sets: one question per ask, at most four per set, as many sets as needed. `next`
+repeats that instruction while the role holds asks and the maintainer is online.
 """
 from __future__ import annotations
 
 import argparse
 import datetime
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +65,87 @@ def offline_banner(view: View) -> str:
     return (f"USER OFFLINE since {m['ts']}{until}{note}: do not wait on the maintainer. Record each "
             f"blocking auth/design ask with `queue --ask`, stack PRs where the work depends on an "
             f"unmerged one, and proceed with unblocked items. You will be woken when they return.")
+
+
+ASK_REF = re.compile(r"(?<![\w/])(?:(?P<owner>[A-Za-z0-9_.-]+)/)?(?P<repo>[A-Za-z0-9_.-]+)?#(?P<n>\d+)")
+ASKS_PER_SET = 4  # AskUserQuestion takes at most four questions per call
+RETURN_PROTOCOL = (
+    "the maintainer is online. (1) Re-verify every recorded ask against current state (merged or closed "
+    "PRs, finished items, rulings already given) and drop each one that no longer applies with `queue "
+    "--drop-ask <n>`; the LIKELY-STALE hints are a starting point, not a verdict. (2) Raise the rest "
+    "first-person as prompted question sets (AskUserQuestion / the question tool): one question per ask, "
+    f"at most {ASKS_PER_SET} per set, as many sets as needed, each with grant / deny / defer options and "
+    "your stacked-work option. (3) Drop each ask as it is answered.")
+
+
+def ask_refs(ask: str, default_repo: str, known: dict[str, str] | None = None) -> list[str]:
+    """`owner/repo#n` for every issue/PR reference in an ask. `#n` alone means the HAG's first
+    repo; a bare `Repo#n` resolves through `known` (repo name -> owner/repo) and is skipped when
+    unknown, never guessed."""
+    out = []
+    known = {k.lower(): v for k, v in (known or {}).items()}
+    for m in ASK_REF.finditer(ask or ""):
+        if m.group("owner") and m.group("repo"):
+            full = f"{m.group('owner')}/{m.group('repo')}"
+        elif m.group("repo"):
+            full = known.get(m.group("repo").lower(), "")
+        else:
+            full = default_repo
+        if full and f"{full}#{m.group('n')}" not in out:
+            out.append(f"{full}#{m.group('n')}")
+    return out
+
+
+def known_repos(spec: HagSpec) -> dict[str, str]:
+    """Repo name -> owner/repo from the spec and the board digest's items."""
+    out = {r.split("/", 1)[-1]: r for r in spec.effective_repos if "/" in r}
+    try:
+        from digest import load
+        doc = load(spec.hag, max_age_min=1e9) or {}
+        for it in (doc.get("items") or {}).values():
+            if "/" in it.get("repo", ""):
+                out.setdefault(it["repo"].split("/", 1)[1], it["repo"])
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+_REF_STATE: dict[str, str] = {}
+
+
+def ref_state(ref: str) -> str:
+    """OPEN | CLOSED | MERGED | UNKNOWN for one issue or PR (cached per process).
+    HAG_FAKE_REF_STATE (JSON {ref: state}) replaces GitHub in selftests."""
+    fake = os.environ.get("HAG_FAKE_REF_STATE")
+    if fake:
+        import json
+        return json.loads(fake).get(ref, "UNKNOWN")
+    if ref not in _REF_STATE:
+        import subprocess
+        repo, _, n = ref.partition("#")
+        try:
+            r = subprocess.run(["gh", "api", f"repos/{repo}/issues/{n}", "--jq",
+                                '.state + (if .pull_request.merged_at then " merged" else "" end)'],
+                               capture_output=True, text=True, timeout=30)
+            out = r.stdout.strip().lower()
+            _REF_STATE[ref] = ("MERGED" if out.endswith("merged") else out.upper()) if r.returncode == 0 and out else "UNKNOWN"
+        except Exception:  # noqa: BLE001
+            _REF_STATE[ref] = "UNKNOWN"
+    return _REF_STATE[ref]
+
+
+def ask_hint(spec: HagSpec, view: View, ask: str) -> str:
+    """` (LIKELY STALE: ...)` when an item the ask names is merged, closed or done; else ``."""
+    default = (spec.effective_repos or ["speediedan/interpretune"])[0]
+    why = []
+    for ref in ask_refs(ask, default, known_repos(spec)):
+        if item_key(ref) in view.done:
+            why.append(f"{ref.split('/', 1)[1]} done by {view.done[item_key(ref)]['by']}")
+            continue
+        st = ref_state(ref)
+        if st in ("MERGED", "CLOSED"):
+            why.append(f"{ref.split('/', 1)[1]} {st.lower()}")
+    return f" (LIKELY STALE: {'; '.join(why)})" if why else ""
 
 
 def candidates_for(spec: HagSpec, view: View, slug: str, exclude: set[str], limit: int) -> list[str]:
@@ -104,7 +190,11 @@ def cmd_next(a) -> int:
     out.append(f"QUEUE v{q.get('version', 0)} ({q.get('ts', 'never written')}): active={active or '-'} "
                f"next={','.join(nxt) or '-'}" + (f" reason={q['reason']}" if q.get("reason") else ""))
     if q.get("asks"):
-        out.append("ASKS (open): " + " | ".join(q["asks"]))
+        online = view.user_offline() is None
+        out.append("ASKS (open): " + " | ".join(
+            f"[{i}] {x}" + (ask_hint(spec, view, x) if online else "") for i, x in enumerate(q["asks"], 1)))
+        if online:
+            out.append("ASKS TO RAISE: " + RETURN_PROTOCOL)
     # integrity of what the role holds or intends
     for it in ([active] if active else []) + nxt:
         key = item_key(it)
@@ -248,6 +338,17 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         print("ERROR: --wait needs --holder (who or what clears it)")
         return 1
     asks = [] if a.asks_clear else list(prev.get("asks") or [])
+    if a.drop_ask:
+        drop = set()
+        for d in a.drop_ask:
+            if d.isdigit() and 1 <= int(d) <= len(asks):
+                drop.add(int(d) - 1)
+            elif d in asks:
+                drop.add(asks.index(d))
+            else:
+                print(f"ERROR: --drop-ask {d!r}: not an ask number (1..{len(asks)}) or ask text")
+                return 1
+        asks = [x for i, x in enumerate(asks) if i not in drop]
     asks += [x for x in (a.ask or []) if x not in asks]
     rescan_min = a.rescan_min
     if a.wait:
@@ -354,16 +455,24 @@ def cmd_offline(a) -> int:
         print(f"[dry-run] user-offline {a.state}; would wake {targets or 'nobody'}")
         return 0
     ev = led.append("user", "system", mode="user-offline", state=a.state, until=a.until or None, note=a.note or None)
-    reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: the maintainer is back; raise your queued asks now")
+    reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL)
     from health import request_wake
     for s in targets:
         request_wake(spec, s, reason, condition=f"user-offline-{a.state}")
     print(f"user-offline {a.state} [{ev['id']}]; woke {targets or 'nobody'}")
     if not on:
+        stale = total = 0
         for r in spec.roles:
             q = view.current_queue(r.slug) or {}
-            for ask in q.get("asks") or []:
-                print(f"  ASK {r.slug}: {ask}")
+            for i, ask in enumerate(q.get("asks") or [], 1):
+                hint = ask_hint(spec, view, ask)
+                total += 1
+                stale += bool(hint)
+                print(f"  ASK {r.slug} [{i}]: {ask}{hint}")
+        if total:
+            print(f"{total} recorded ask(s), {stale} likely stale. Each woken role re-verifies its asks, drops the "
+                  f"stale ones, and raises the rest to you as prompted question sets (at most {ASKS_PER_SET} "
+                  f"per set).")
     return 0
 
 
@@ -396,6 +505,8 @@ def add_parsers(sub) -> None:
     p.add_argument("--monitor", default="")
     p.add_argument("--ask", action="append", help="record a blocking maintainer ask (user-offline mode)")
     p.add_argument("--asks-clear", action="store_true", help="drop all recorded asks (they were answered)")
+    p.add_argument("--drop-ask", action="append", default=[], metavar="N|TEXT",
+                   help="drop one recorded ask by its number in `next` (1-based) or its text (repeatable)")
     p.add_argument("--reason", default="", help="why next is shorter than the maximum")
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--dry-run", action="store_true")

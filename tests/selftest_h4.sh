@@ -218,12 +218,26 @@ check "hag-relay relay-dead step1:page" env HAG_HEALTH_SHIFT_MIN=11 $H health --
 check "VERDICT RELAY-MAX-HOURS" timeout 30 $H relay-watch --hag $HAGID --interval 1 --max-hours 0.0005
 
 echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"
-$H queue --hag $HAGID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --no-sync >/dev/null
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --ask "ruling on #9202 scope" --no-sync >/dev/null
+export HAG_FAKE_REF_STATE='{"speediedan/interpretune#9201": "MERGED", "speediedan/interpretune#9202": "OPEN"}'
 check "user-offline on" $H offline on --hag $HAGID --spec "$SPEC" --until tomorrow --note "travel" --no-sync
 check "USER OFFLINE since" $H next --hag $HAGID --spec "$SPEC" --slug tl --no-sync
 DEF=""; for i in 1 2 3 4; do DEF+=$(env HAG_HEALTH_SHIFT_MIN=200 $H health --spec "$SPEC" --instance a 2>&1); done
 grep -q "deferred (user offline)" <<<"$DEF" || fail "no page was deferred while offline :: $(tail -c 400 <<<"$DEF")"
-check "ASK tl: merge interpretune#9201" $H offline off --hag $HAGID --spec "$SPEC" --no-sync
+OUT=$($H offline off --hag $HAGID --spec "$SPEC" --no-sync 2>&1)
+grep -q "ASK tl \[1\]: merge interpretune#9201 (PR green) (LIKELY STALE: interpretune#9201 merged)" <<<"$OUT" \
+  || fail "return summary lacks the stale hint :: $OUT"
+grep -q "ASK tl \[2\]: ruling on #9202 scope$" <<<"$OUT" || fail "open ask mislabelled :: $OUT"
+grep -q "2 recorded ask(s), 1 likely stale" <<<"$OUT" || fail "no return count :: $OUT"
+OUT=$($H next --hag $HAGID --spec "$SPEC" --slug tl --peek --no-sync 2>&1)
+grep -q "ASKS TO RAISE: the maintainer is online" <<<"$OUT" && grep -q "at most 4 per set" <<<"$OUT" \
+  || fail "next lacks the return protocol :: $OUT"
+check "asks=1" $H queue --hag $HAGID --spec "$SPEC" --slug tl --drop-ask 1 --no-sync
+OUT=$($H next --hag $HAGID --spec "$SPEC" --slug tl --peek --no-sync 2>&1)
+grep -q "ASKS (open): \[1\] ruling on #9202 scope$" <<<"$OUT" || fail "drop-ask kept the wrong ask :: $OUT"
+[ "$(rc_of $H queue --hag $HAGID --spec "$SPEC" --slug tl --drop-ask 7 --no-sync)" = 1 ] || fail "bad --drop-ask accepted"
+$H queue --hag $HAGID --spec "$SPEC" --slug tl --drop-ask "ruling on #9202 scope" --no-sync >/dev/null
+unset HAG_FAKE_REF_STATE
 check "user deferred pages -> page" $H health --spec "$SPEC" --instance a --dry-run
 
 echo "== 12 wait discipline: asks, blockers, rescan caps, expiry and blocking wakes, labels, peek"
