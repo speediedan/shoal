@@ -62,9 +62,10 @@ def offline_banner(view: View) -> str:
         return ""
     until = f" until {m['until']}" if m.get("until") else ""
     note = f" ({m['note']})" if m.get("note") else ""
-    return (f"USER OFFLINE since {m['ts']}{until}{note}: do not wait on the maintainer. Record each "
-            f"blocking auth/design ask with `queue --ask`, stack PRs where the work depends on an "
-            f"unmerged one, and proceed with unblocked items. You will be woken when they return.")
+    return (f"USER OFFLINE since {m['ts']}{until}{note}: do not wait on the maintainer and raise NO prompted "
+            f"question now (merge asks included). Record each blocking auth/design ask with `queue --ask`, stack "
+            f"PRs where the work depends on an unmerged one, and proceed with unblocked items. You will be woken "
+            f"when they return.")
 
 
 ASK_REF = re.compile(r"(?<![\w/])(?:(?P<owner>[A-Za-z0-9_.-]+)/)?(?P<repo>[A-Za-z0-9_.-]+)?#(?P<n>\d+)")
@@ -72,10 +73,11 @@ ASKS_PER_SET = 4  # AskUserQuestion takes at most four questions per call
 RETURN_PROTOCOL = (
     "the maintainer is online. (1) Re-verify every recorded ask against current state (merged or closed "
     "PRs, finished items, rulings already given) and drop each one that no longer applies with `queue "
-    "--drop-ask <n>`; the LIKELY-STALE hints are a starting point, not a verdict. (2) Raise the rest "
-    "first-person as prompted question sets (AskUserQuestion / the question tool): one question per ask, "
-    f"at most {ASKS_PER_SET} per set, as many sets as needed, each with grant / deny / defer options and "
-    "your stacked-work option. (3) Drop each ask as it is answered.")
+    "--drop-ask <n> --drop-reason <why>`, verifying live state first (a gate id is not a PR); the "
+    "LIKELY-STALE hints are a starting point, not a verdict. (2) Build the question sets with `hag.py asks "
+    "--question-json` (live PR titles and checks; never label a PR from memory), record a user-auth wait, "
+    f"then raise EVERY set, one question-tool call per set (at most {ASKS_PER_SET} questions each). (3) Remove "
+    "each answered ask with `queue --answered <n>`; disclose any DROPPED ASKS in your last set.")
 
 
 def ask_refs(ask: str, default_repo: str, known: dict[str, str] | None = None) -> list[str]:
@@ -148,6 +150,108 @@ def ask_hint(spec: HagSpec, view: View, ask: str) -> str:
     return f" (LIKELY STALE: {'; '.join(why)})" if why else ""
 
 
+def recent_drops(view: View, slug: str, hours: float = 24.0) -> list[dict]:
+    """Unanswered asks the role dropped in the last `hours` (from its queue events), for disclosure."""
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    out = []
+    for e in view.ledger.events():
+        if e.get("type") == "queue" and e.get("by") == slug and e.get("ts", "") >= cutoff:
+            for d in e.get("dropped") or []:
+                if not d.get("answered"):
+                    out.append(dict(d, ts=e["ts"]))
+    return out
+
+
+def pr_live(ref: str) -> dict:
+    """Live facts for a PR reference (owner/repo#n): title, state, head, checks; {} when not a PR."""
+    import json
+    import subprocess
+    fake = os.environ.get("HAG_FAKE_PR")
+    if fake:
+        return json.loads(fake).get(ref, {})
+    repo, _, n = ref.partition("#")
+    try:
+        r = subprocess.run(["gh", "pr", "view", n, "--repo", repo, "--json",
+                            "number,title,state,headRefOid,mergeable,isDraft"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return {}
+        d = json.loads(r.stdout)
+        c = subprocess.run(["gh", "pr", "checks", n, "--repo", repo, "--json", "bucket"],
+                           capture_output=True, text=True, timeout=30)
+        buckets = [x.get("bucket") for x in json.loads(c.stdout or "[]")] if c.returncode in (0, 8) else []
+        d["checks"] = {b: buckets.count(b) for b in sorted(set(buckets))}
+        return d
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def question_sets(spec: HagSpec, view: View, slug: str) -> dict:
+    """The role's recorded asks as prompted question sets: at most ASKS_PER_SET questions per set, each
+    labelled from LIVE PR data (title, state, head, checks), never from the model's memory (measured
+    2026-09-24: a hand-written merge question described another PR, and the grant merged the wrong
+    description onto main)."""
+    q = view.current_queue(slug) or {}
+    default = (spec.effective_repos or ["speediedan/interpretune"])[0]
+    known = known_repos(spec)
+    questions = []
+    for i, ask in enumerate(q.get("asks") or [], 1):
+        facts = []
+        for ref in ask_refs(ask, default, known):
+            live = pr_live(ref)
+            if live:
+                checks = ", ".join(f"{k} {v}" for k, v in (live.get("checks") or {}).items()) or "no checks"
+                facts.append(f"PR {ref.split('/', 1)[1]} is \"{live.get('title')}\" ({live.get('state')}"
+                             f"{', draft' if live.get('isDraft') else ''}, head {str(live.get('headRefOid'))[:8]}, "
+                             f"mergeable {live.get('mergeable')}, checks: {checks})")
+        hint = ask_hint(spec, view, ask)
+        merge = "merge" in ask.lower()
+        opts = ([{"label": "Grant merge", "description": "Merge now (explicit squash subject and body)."},
+                 {"label": "Defer review", "description": "Keep it open; the lane stacks or continues other work."},
+                 {"label": "Delegate review", "description": "Offer a review to another role (name it)."},
+                 {"label": "Deny", "description": "Do not merge; say what should change."}] if merge else
+                [{"label": "Grant", "description": "Proceed as asked."},
+                 {"label": "Defer", "description": "Not now; the lane continues other work."},
+                 {"label": "Deny", "description": "Do not proceed; say what should change."}])
+        questions.append({"ask": i, "header": f"Ask {i}", "multiSelect": False,
+                          "question": ask + (hint or "") + ("\n\nLive: " + "; ".join(facts) if facts else ""),
+                          "options": opts})
+    sets = [questions[k:k + ASKS_PER_SET] for k in range(0, len(questions), ASKS_PER_SET)]
+    return {"role": slug, "sets": sets, "dropped_unanswered": recent_drops(view, slug),
+            "rule": (f"Raise every set, one question-tool call per set, in order; at most {ASKS_PER_SET} per set. "
+                     "Before the first call record a user-auth wait (`queue --wait user-auth ...`): the question "
+                     "tool blocks your turn. After the answers, `queue --answered N` per answered ask. Disclose "
+                     "every dropped_unanswered ask in the last set.")}
+
+
+def cmd_asks(a) -> int:
+    import json
+    try:
+        spec, led, view = _load(a)
+    except (LedgerError, OSError) as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    if view.user_offline() is not None and not a.force:
+        print("USER OFFLINE: do not raise questions now; record asks with `queue --ask` (they are raised on return). "
+              "--force to print the sets anyway")
+        return 3
+    doc = question_sets(spec, view, a.slug)
+    if a.question_json:
+        print(json.dumps(doc, indent=1))
+        return 0
+    n = sum(len(x) for x in doc["sets"])
+    print(f"# {a.slug}: {n} ask(s) in {len(doc['sets'])} set(s) of at most {ASKS_PER_SET}")
+    for k, qs in enumerate(doc["sets"], 1):
+        print(f"SET {k}:")
+        for q in qs:
+            print(f"  [{q['ask']}] {q['question']}")
+    for d in doc["dropped_unanswered"]:
+        print(f"DROPPED (disclose): {d['ask']} [{d['ts']}: {d['reason']}]")
+    print("RULE: " + doc["rule"])
+    return 0
+
+
 def candidates_for(spec: HagSpec, view: View, slug: str, exclude: set[str], limit: int) -> list[str]:
     taken = view.taken() | view.offered_open() | exclude
     declined = set(view.declined(slug))
@@ -184,6 +288,29 @@ def cmd_next(a) -> int:
     banner = offline_banner(view)
     if banner:
         out.append(banner)
+    # MAIL prints right after the identity and offline lines: a `next` piped through `head` must still
+    # show it, because this call marks it read (measured 2026-09-24: a lane's piped `next` consumed a
+    # maintainer rules update unseen). Maintainer mail prints in full; peer mail is shortened.
+    marker = os.path.join(state_dir(spec.hag), f"mail-read-{slug}")
+    try:
+        since = open(marker).read().strip()
+    except OSError:
+        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mail = view.msgs_to(slug, since_ts=since)
+    if not getattr(a, "peek", False):  # a reviewer's read must not consume the role's mail
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, "w") as fh:
+            fh.write(max([since] + [m["ts"] for m in mail]) + "\n")
+    if mail:
+        out.append(f"MAIL {len(mail)} unread since your last `next` (read it now; this call marked it read; "
+                   f"mail never wakes you):")
+        for m in mail[-5:]:
+            text = m.get("text", "") if m.get("by") == "user" else short(m.get("text", ""), 300)
+            out.append(f"  {m['ts']} {m['by']}->{m['to']} [{m.get('kind', 'info')}] {text}")
+    dropped = recent_drops(view, slug)
+    if dropped:
+        out.append("DROPPED ASKS (not answered; disclose each to the maintainer in your next question set): "
+                   + " | ".join(f"{d['ask']} [dropped {d['ts']}: {d['reason']}]" for d in dropped))
     q = view.current_queue(slug) or {}
     active = q.get("active") or ""
     nxt = list(q.get("next") or [])
@@ -234,20 +361,6 @@ def cmd_next(a) -> int:
         excl = {item_key(x) for x in [active] + nxt if x} | {item_key(o["item"]) for o in offers}
         for c in candidates_for(spec, view, slug, excl, limit=max(short_by, 3)):
             out.append(c)
-    marker = os.path.join(state_dir(spec.hag), f"mail-read-{slug}")
-    try:
-        since = open(marker).read().strip()
-    except OSError:
-        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    mail = view.msgs_to(slug, since_ts=since)
-    if not getattr(a, "peek", False):  # a reviewer's read must not consume the role's mail
-        os.makedirs(os.path.dirname(marker), exist_ok=True)
-        with open(marker, "w") as fh:
-            fh.write(max([since] + [m["ts"] for m in mail]) + "\n")
-    if mail:
-        out.append(f"MAIL {len(mail)} unread since your last `next` (act at this boundary; mail never wakes you):")
-        for m in mail[-5:]:
-            out.append(f"  {m['ts']} {m['by']}->{m['to']} [{m.get('kind', 'info')}] {short(m.get('text', ''), 140)}")
     try:
         from state import wait_status
         ws, w = wait_status(spec.hag, slug)
@@ -337,18 +450,40 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     if a.wait and not a.holder:
         print("ERROR: --wait needs --holder (who or what clears it)")
         return 1
-    asks = [] if a.asks_clear else list(prev.get("asks") or [])
-    if a.drop_ask:
-        drop = set()
-        for d in a.drop_ask:
-            if d.isdigit() and 1 <= int(d) <= len(asks):
-                drop.add(int(d) - 1)
-            elif d in asks:
-                drop.add(asks.index(d))
-            else:
-                print(f"ERROR: --drop-ask {d!r}: not an ask number (1..{len(asks)}) or ask text")
-                return 1
-        asks = [x for i, x in enumerate(asks) if i not in drop]
+    asks = list(prev.get("asks") or [])
+    dropped: list[dict] = []
+    if a.asks_clear and asks:
+        if not a.drop_reason:
+            print("ERROR: --asks-clear drops every recorded ask: give --drop-reason, or use --answered N per ask "
+                  "(a blind clear erased an unanswered merge ask on 2026-09-24)")
+            return 1
+        dropped += [{"ask": x, "reason": a.drop_reason, "answered": False} for x in asks]
+        asks = []
+
+    def _idx(d: str, flag: str) -> int | None:
+        if d.isdigit() and 1 <= int(d) <= len(asks):
+            return int(d) - 1
+        if d in asks:
+            return asks.index(d)
+        print(f"ERROR: {flag} {d!r}: not an ask number (1..{len(asks)}) or ask text")
+        return None
+    drop: dict[int, dict] = {}
+    for d in a.answered or []:
+        i = _idx(d, "--answered")
+        if i is None:
+            return 1
+        drop[i] = {"ask": asks[i], "reason": "answered", "answered": True}
+    for d in a.drop_ask or []:
+        if not a.drop_reason:
+            print("ERROR: --drop-ask needs --drop-reason (why it no longer applies); an answered ask is "
+                  "--answered N. A silent drop lost a ripe merge ask on 2026-09-24.")
+            return 1
+        i = _idx(d, "--drop-ask")
+        if i is None:
+            return 1
+        drop[i] = {"ask": asks[i], "reason": a.drop_reason, "answered": False}
+    dropped += [drop[i] for i in sorted(drop)]
+    asks = [x for i, x in enumerate(asks) if i not in drop]
     asks += [x for x in (a.ask or []) if x not in asks]
     rescan_min = a.rescan_min
     if a.wait:
@@ -401,7 +536,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                blocked_on=(a.blocked_on or None) if a.wait else None, tag=role.tag,
                session=sess, host=os.uname().nodename)
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
-                     asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag)
+                     asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag,
+                     dropped=dropped or None)
     led.commit_own(slug, f"{spec.hag} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     # 3. first-landed-wins re-check for the claims just made
@@ -504,13 +640,28 @@ def add_parsers(sub) -> None:
     p.add_argument("--blocked-on", default="", help="session-blocked waits: the blocking role[:repo#n]")
     p.add_argument("--monitor", default="")
     p.add_argument("--ask", action="append", help="record a blocking maintainer ask (user-offline mode)")
-    p.add_argument("--asks-clear", action="store_true", help="drop all recorded asks (they were answered)")
+    p.add_argument("--asks-clear", action="store_true",
+                   help="drop every recorded ask; needs --drop-reason (use --answered N per answered ask)")
     p.add_argument("--drop-ask", action="append", default=[], metavar="N|TEXT",
-                   help="drop one recorded ask by its number in `next` (1-based) or its text (repeatable)")
+                   help="drop an ask that no longer applies, by number (1-based) or text; needs --drop-reason. "
+                        "Unanswered drops are shown in `next` for disclosure to the maintainer")
+    p.add_argument("--drop-reason", default="", help="why the dropped asks no longer apply (required)")
+    p.add_argument("--answered", action="append", default=[], metavar="N|TEXT",
+                   help="remove an ask the maintainer answered (repeatable); prefer this to --asks-clear")
     p.add_argument("--reason", default="", help="why next is shorter than the maximum")
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_queue)
+
+    p = sub.add_parser("asks", help="a role's recorded asks as prompted question sets (live PR labels)")
+    p.add_argument("--hag", required=True)
+    p.add_argument("--spec", default="")
+    p.add_argument("--slug", required=True)
+    p.add_argument("--question-json", action="store_true", help="emit the sets as JSON for the question tool")
+    p.add_argument("--force", action="store_true", help="print even while the maintainer is offline")
+    p.add_argument("--no-sync", action="store_true")
+    p.add_argument("--ledger-dir", default="")
+    p.set_defaults(func=cmd_asks)
 
     p = sub.add_parser("offline", help="user-offline mode for every role: on|off")
     p.add_argument("state", choices=["on", "off"])

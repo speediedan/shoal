@@ -121,13 +121,29 @@ def relay_queue_path(hag: str) -> str:
     return os.path.join(state_dir(hag), "relay-queue")
 
 
+def wake_text(spec: HagSpec, slug: str, reason: str, condition: str = "") -> str:
+    """The text of a HAG wake, prefixed with the offline banner while the maintainer is away."""
+    text = (f"HAG-WAKE {slug}@{spec.hag} [{condition or 'request'}]: {reason} || run "
+            f"`hag.py next --hag {spec.hag} --slug {slug}`, act, write ONE `hag.py queue`, re-arm your watcher.")
+    # every wake carries the offline state, because a role that skips `next` never sees the banner
+    # (measured 2026-09-24: a lane raised a blocking merge question 3 h into an offline window)
+    try:
+        from ledger import Ledger, View
+        from worker import offline_banner
+        banner = offline_banner(View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec))
+        if banner:
+            text = banner + " || " + text
+    except Exception:  # noqa: BLE001 - a wake must never fail on its annotation
+        pass
+    return text
+
+
 def request_wake(spec: HagSpec, slug: str, reason: str, condition: str = "", dry_run: bool = False) -> str:
     """Wake one role through its ecosystem's designated adapter; returns the channel used."""
     role = spec.role(slug)
     if role is None:
         return "no-such-role"
-    text = (f"HAG-WAKE {slug}@{spec.hag} [{condition or 'request'}]: {reason} || run "
-            f"`hag.py next --hag {spec.hag} --slug {slug}`, act, write ONE `hag.py queue`, re-arm your watcher.")
+    text = wake_text(spec, slug, reason, condition)
     if role.ecosystem == "opencode":
         if dry_run:
             return "opencode-send (dry-run)"
