@@ -8,8 +8,8 @@ ties, with unblockers of active lanes' work first. Its territory therefore follo
 roster: a parked lane's items become aux work, and return when the lane does, with no
 re-brief. `next` prints an AUX header naming the lanes it stays out of.
 
-  hag.py aux-init   --hag H [--ecosystem opencode] [--model M] [--effort E] [--doc-only] [--dry-run]
-  hag.py aux-launch --hag H [--dry-run] [--force] [--verify-s 600]
+  shoal aux-init   --shoal H [--ecosystem opencode] [--model M] [--effort E] [--doc-only] [--dry-run]
+  shoal aux-launch --shoal H [--dry-run] [--force] [--verify-s 600]
 
 `aux-init` writes the start doc to the HAG data dir and adds the role; `aux-launch` starts
 its session alone (no restart, no incarnation bump) and counts only once the role's
@@ -24,6 +24,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import config  # noqa: E402
 
 from roles import HagSpec, Role, find_spec, roles_dir  # noqa: E402
 
@@ -46,7 +47,7 @@ otherwise sit unowned. You never compete with a lane for its own work.
   lane's brief. Your candidates are the free items classed `workable` whose HIGHEST fit to
   any active lane is lowest, in effective board order. Items that block an active lane's
   work come first (`unblocks` in the candidate line).
-- `hag.py next` prints an `AUX` line naming the lanes you stay out of. The set changes
+- `shoal next` prints an `AUX` line naming the lanes you stay out of. The set changes
   when roles are added, parked or retired; `next` is always current, this doc is not.
 - A candidate that plainly belongs to a named lane is passed, not worked:
   `--pass <item>:out-of-lane:suggest=<lane>`.
@@ -55,7 +56,7 @@ otherwise sit unowned. You never compete with a lane for its own work.
 
 ## Current state
 
-- Created {created} by `hag.py aux-init`. No items claimed yet.
+- Created {created} by `shoal aux-init`. No items claimed yet.
 
 ## Decisions
 
@@ -148,7 +149,7 @@ def cmd_aux_init(a) -> int:
         if errs:
             print("spec invalid:", *errs, sep="\n  ")
             return 1
-        from hag import persist_spec
+        from cli import persist_spec
         persist_spec(spec, path, note=f"aux-init {slug}")
     print(plan + warn)
     return 0
@@ -163,7 +164,7 @@ def cmd_aux_launch(a) -> int:
     slug = a.slug or AUX_SLUG
     role = spec.role(slug)
     if role is None or not getattr(role, "aux", False):
-        print(f"ERROR: no aux role {slug} in {spec.hag}: run `hag.py aux-init --hag {spec.hag}` first")
+        print(f"ERROR: no aux role {slug} in {spec.hag}: run `shoal aux-init --shoal {spec.hag}` first")
         return 1
     alive, _ = watcher_alive(spec.hag, slug)
     if alive and not a.force:
@@ -178,7 +179,7 @@ def cmd_aux_launch(a) -> int:
         print("[dry-run] " + plan)
         return 0
     from backends import get as get_backend
-    from hag import persist_spec, write_brief
+    from cli import persist_spec, write_brief
     brief = open(write_brief(spec, role)).read()
     be = get_backend(role.ecosystem)
     role.session = be.create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
@@ -205,7 +206,7 @@ def cmd_aux_launch(a) -> int:
 
 def add_parsers(sub) -> None:
     p = sub.add_parser("aux-init", help="write the hag-aux start doc (data dir) and add the aux role to the spec")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="", help=f"role slug (default {AUX_SLUG})")
     p.add_argument("--ecosystem", default=AUX_ECOSYSTEM, choices=["opencode", "claude"])
@@ -215,7 +216,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_aux_init)
     p = sub.add_parser("aux-launch", help="(re)launch the aux session alone (no restart, no incarnation bump)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="")
     p.add_argument("--force", action="store_true")

@@ -8,11 +8,11 @@ the lane-reported events are checked against.
 
 Repos come from the HAG spec (`repos` in hag.json, default list when empty);
 --repo overrides. --dry-run prints what would be emitted and writes nothing.
-Each run touches /tmp/<hag>/tick-reconcile so `hag.py status` / `doctor` can
+Each run touches /tmp/<hag>/tick-reconcile so `shoal status` / `doctor` can
 tell a reconcile that never ran from one that ran and found nothing (the v0
 IndentationError sat undetected for three nights for lack of exactly that).
 
-Usage: hag-reconcile.py --hag ID [--spec hag.json] [--repo R ...]
+Usage: hag-reconcile.py --shoal ID [--spec hag.json] [--repo R ...]
                         [--since-hours N] [--dir LOGDIR] [--dry-run]
 """
 import argparse
@@ -103,7 +103,7 @@ def tick(hag):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hag", required=True)
+    config.add_id_arg(ap, required=True)
     ap.add_argument("--spec", default="")
     ap.add_argument("--repo", action="append", default=[])
     ap.add_argument("--since-hours", type=float, default=24)

@@ -2,14 +2,14 @@
 """HAG telemetry collector/analyzer (schema v1, stdlib only).
 
 Usage:
-  hag_telemetry.py emit --hag ID --session S --ecosystem E --type T [--field k=v ...]
+  hag_telemetry.py emit --shoal ID --session S --ecosystem E --type T [--field k=v ...]
       [--dir LOGDIR]            # append one event to today's log (creates dirs)
-  hag_telemetry.py report --hag ID [--dir LOGDIR] [--hours N | --since ISO --until ISO]
+  hag_telemetry.py report --shoal ID [--dir LOGDIR] [--hours N | --since ISO --until ISO]
       # human summary over an ARBITRARY window (hours, not just days): time-in-state
       # per session, instruct/report latency, queue latencies, invalid-state counts.
 
-Storage: <HAG_DATA_ROOT>/<hag>/telemetry/events-YYYYMMDD.jsonl (UTC day) — the
-bulk tier, never committed. The retired versioned telemetry path, archived at <HAG_DATA_ROOT>/<hag>/legacy-di/telemetry/, is
+Storage: <SHOAL_DATA_ROOT>/<hag>/telemetry/events-YYYYMMDD.jsonl (UTC day) — the
+bulk tier, never committed. The retired versioned telemetry path, archived at <SHOAL_DATA_ROOT>/<hag>/legacy-di/telemetry/, is
 read as a legacy fallback only (events from before 2026-09-17 live there).
 Analysis windows are free (--hours N covers the last N hours across day
 boundaries); rotation stays daily.
@@ -25,7 +25,7 @@ Vocabulary: invalid values are recorded verbatim and counted at analysis time
 (`user-feedback` -> `user-design`, 7 offers in one incarnation): the emitter
 writes the canonical value in `to_sub` and keeps the offered one in
 `to_sub_raw`, and the report counts aliased offers separately from invalid
-ones. Sessions should use `hag.py transition`, which emits through here.
+ones. Sessions should use `shoal transition`, which emits through here.
 """
 import argparse
 import datetime
@@ -42,7 +42,7 @@ import config  # noqa: E402
 SCHEMA_V = "v2"  # v2 (2026-09-20): ledger_* event types + channel=ledger; v1 events still load
 SERVER = config.server()
 PDT = config.tzinfo()  # local wall clock for ts_pdt (historical field name)
-HAG_DATA_ROOT = config.data_root()
+SHOAL_DATA_ROOT = config.data_root()
 # the protocol skill ships in the repository (path relative to its root); its sha is the protocol pin
 PROTOCOL_SKILL = "plugins/shoal-skills/skills/shoal-protocol/SKILL.md"
 
@@ -86,7 +86,7 @@ ALIASES = {
     "queue-exhausted": "queue-empty",
 }
 
-SCRIPT_FILES = ("hag.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
+SCRIPT_FILES = ("cli.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
                 "heartbeat.py", "systemd.py", "state.py", "doctor.py",
                 "ledger.py", "ledger_cli.py", "ledger_watch.py", "sources.py",
                 "config.py", "providers.py", "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
@@ -140,13 +140,13 @@ def resolve_dir(d, hag):
     """Event home. Explicit --dir wins; else the data root (created on demand)."""
     if d:
         return d
-    return os.path.join(HAG_DATA_ROOT, hag, "telemetry")
+    return os.path.join(SHOAL_DATA_ROOT, hag, "telemetry")
 
 
 def legacy_dirs(hag):
     """Pre-2026-09-17 telemetry lived in the retired versioned control plane; archived copies
     sit under <data root>/<hag>/legacy-di/telemetry."""
-    return [os.path.join(HAG_DATA_ROOT, hag, "legacy-di", "telemetry")]
+    return [os.path.join(SHOAL_DATA_ROOT, hag, "legacy-di", "telemetry")]
 
 
 def canonical_sub(value):
@@ -166,7 +166,7 @@ def build_event(hag, session, ecosystem, typ, fields):
         "ts_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "ts_pdt": pdt,
         "hag": hag,
-        "server": os.environ.get("HAG_SERVER", SERVER),
+        "server": config.env("SERVER", SERVER),
         "session": session,
         "ecosystem": ecosystem,
         "type": typ,
@@ -327,14 +327,14 @@ def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("emit")
-    e.add_argument("--hag", required=True)
+    config.add_id_arg(e, required=True)
     e.add_argument("--session", required=True)
     e.add_argument("--ecosystem", required=True)
     e.add_argument("--type", required=True)
     e.add_argument("--field", action="append", default=[])
     e.add_argument("--dir", default=None)
     r = sub.add_parser("report")
-    r.add_argument("--hag", required=True)
+    config.add_id_arg(r, required=True)
     r.add_argument("--dir", default=None)
     r.add_argument("--hours", type=float, default=None)
     r.add_argument("--since", default=None)

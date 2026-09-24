@@ -24,6 +24,8 @@ import os
 import subprocess
 import time
 
+import config  # sibling module: the package dir is on sys.path wherever this is imported
+
 GH_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
 _CACHE: dict[str, tuple[float, list[dict]]] = {}
 
@@ -69,10 +71,10 @@ def gh_graphql(query: str, **vars) -> dict:
 
 
 def board_fixture() -> list[dict] | None:
-    """Test hook: `HAG_BOARD_FIXTURE=<path to a JSON list of items>` replaces every board read
+    """Test hook: `SHOAL_BOARD_FIXTURE=<path to a JSON list of items>` replaces every board read
     (this module and digest.fetch_board) with those items, in file order. Each item needs at
     least `repo` and `number`; the other board fields get neutral defaults. None when unset."""
-    path = os.environ.get("HAG_BOARD_FIXTURE", "")
+    path = config.env("BOARD_FIXTURE")
     if not path:
         return None
     with open(path) as fh:

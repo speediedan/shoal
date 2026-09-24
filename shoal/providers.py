@@ -12,7 +12,7 @@ wait with its periodic validity check only. A kind with no resolver answers
 (None, "no provider for <kind>").
 
 Kinds shipped here:
-  job       the name given to `hag.py job run --name` (systemd --user job unit)
+  job       the name given to `shoal job run --name` (systemd --user job unit)
   lease     a lease key, via the configured lease provider (`lease_cmd --status --json`)
   gh-run    <owner/repo>:<run id>, via `gh run view`
   gh-pr     <owner/repo>#<n>, via `gh pr checks` (an empty check list is unknown)
@@ -66,11 +66,12 @@ def _run(argv: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
 
 @register("job")
 def job(ref: str, slug: str, hag: str) -> Result:
-    # `job:<name>` is the name given to `job run`; the unit is hag-<hag>-<slug>-<name>.
+    # `job:<name>` is the name given to `job run`; the unit is shoal-<hag>-<slug>-<name>
+    # (hag-<hag>-<slug>-<name> for a job started before the rename).
     # Querying the bare name asked systemd about a unit that never exists, which
     # reads `inactive` and marked every live job wait resolved (2026-09-23, #t401).
     import jobs
-    unit = ref if ref.startswith("hag-") or not hag else jobs.unit_name(hag, slug, ref)
+    unit = ref if ref.startswith(("shoal-", "hag-")) or not hag else jobs.find_unit(hag, slug, ref)
     st = jobs.unit_state(unit)
     active = st.get("ActiveState", "")
     if active in ("active", "activating", "deactivating", "reloading"):

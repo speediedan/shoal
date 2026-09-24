@@ -4,12 +4,12 @@
 One-shot services + Persistent timers, journal logging, explicit tool PATH
 in the unit (systemd's user PATH lacks openchamber, claude, node), no manual
 cron. Regenerate per HAG generation (session ids change); stale units for a
-retired HAG are removed by `uninstall-systemd --hag <old-id>`.
+retired HAG are removed by `uninstall-systemd --shoal <old-id>`.
 
 Every role runs its own `ledger-watch`; lanes/pipeline/heartbeat notify
 through the ledger (`ledger:<hag>` target), so no unit needs a session id.
 
-Units land in ~/.config/systemd/user/ as hag-<hag>-<job>.{service,timer}.
+Units land in ~/.config/systemd/user/ as shoal-<hag>-<job>.{service,timer}.
 `install-systemd --enable` runs daemon-reload + `enable --now` on every
 timer it wrote, so a launch is one command. Jobs:
   lanes          every :0/5    lane transitions + SERVER-RESPAWNED
@@ -40,7 +40,7 @@ TOOL_PATH = config.tool_path()
 
 def unit_name(hag: str, job: str, ext: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in hag)
-    return f"hag-{safe}-{job}.{ext}"
+    return f"shoal-{safe}-{job}.{ext}"
 
 
 def service_unit(description: str, repo_dir: str, argv: list[str],
@@ -70,10 +70,10 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
     target = f"ledger:{spec.hag}"
     if lanes:
         jobs.append(("lanes", f"HAG {spec.hag} lanes watch (server respawn -> ledger)",
-                     ["watch", "--hag", spec.hag, "lanes", target, spec.dir] + lanes,
+                     ["watch", "--shoal", spec.hag, "lanes", target, spec.dir] + lanes,
                      "*:0/5", ""))
     jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch (starvation -> ledger)",
-                 ["watch", "--hag", spec.hag, "pipeline", target, spec.dir],
+                 ["watch", "--shoal", spec.hag, "pipeline", target, spec.dir],
                  "*:0/10", ""))
     if (getattr(spec, "features", {}) or {}).get("health"):
         # the health quorum: two identical, offset instances (architecture doc §6)
@@ -87,9 +87,9 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
                      "*:0/5", ""))
     if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
         jobs.append(("digest", f"HAG {spec.hag} board digest (one board read per HAG)",
-                     ["digest", "--hag", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))
+                     ["digest", "--shoal", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))
     jobs.append(("reconcile", f"HAG {spec.hag} reconcile (twice daily)",
-                 ["--hag", spec.hag, "--spec", spec_path], "04,16:07",
+                 ["--shoal", spec.hag, "--spec", spec_path], "04,16:07",
                  os.path.join(config.cli_pkg_dir(), "telemetry", "hag-reconcile.py")))
     jobs.append(("weekly-report", f"HAG {spec.hag} weekly report",
                  ["report", "--spec", spec_path, "--hours", "168"], "Mon 05:11", ""))
@@ -130,14 +130,16 @@ def cmd_install(spec, spec_path: str,
     else:
         print("enable with:\n  systemctl --user daemon-reload\n"
               "  for t in ~/.config/systemd/user/"
-              f"hag-{spec.hag}-*.timer; do systemctl --user enable --now "
+              f"shoal-{spec.hag}-*.timer; do systemctl --user enable --now "
               "\"$(basename $t)\"; done\n(or re-run install-systemd --enable)")
     return 0
 
 
 def cmd_uninstall(hag: str, dry_run: bool = False) -> int:
     removed = []
-    for path in sorted(glob.glob(os.path.join(UNIT_DIR, f"hag-{hag}-*"))):
+    # units installed before the rename carry the legacy `hag-` prefix; remove those too
+    for path in sorted(glob.glob(os.path.join(UNIT_DIR, f"shoal-{hag}-*"))
+                       + glob.glob(os.path.join(UNIT_DIR, f"hag-{hag}-*"))):
         base = os.path.basename(path)
         if dry_run:
             print(f"[dry-run] disable + remove {base}")

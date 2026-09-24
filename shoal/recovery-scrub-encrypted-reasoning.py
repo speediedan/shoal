@@ -1,4 +1,4 @@
-"""VENDORED recovery tool (read-only addition to this repo; not executed by hag.py).
+"""VENDORED recovery tool (read-only addition to this repo; not executed by the shoal CLI).
 
 Provenance: https://github.com/hailongcoding/opencode-session-rescue
 File: Fix-EncryptedContent-Portable.bat, v4 session-locator, fetched 2026-09-19.

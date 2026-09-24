@@ -33,6 +33,7 @@ try:
 except Exception:  # pragma: no cover
     _telemetry_emit = None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ledger import SYSTEM_WRITER  # noqa: E402
 import config  # noqa: E402
 
 TOOL_PATH = config.tool_path()
@@ -109,7 +110,7 @@ def ledger_fire(hag: str, to: list[str], kind: str, text: str) -> bool:
         led = Ledger(hag, root=spec.ledger_dir)
         led.pull()
         for t in to:
-            led.append("hag.py", "msg", to=t, kind=kind, text=text[:500], _push=False)
+            led.append(SYSTEM_WRITER, "msg", to=t, kind=kind, text=text[:500], _push=False)
         sync_push(led.root)
         return True
     except Exception as exc:  # noqa: BLE001
@@ -224,7 +225,7 @@ def cmd_lanes(hag: str, target: str, repo_dir: str, lanes: list[str],
     if test:
         fire(target, repo_dir, "LANES-WATCH-TEST",
              f"dry-run wakeup proof for {len(lanes)} lane(s); confirm arrival in-transcript")
-        print(f"test fired to {target}; confirm the wake-test msg in `hag.py show`, then arm the timer")
+        print(f"test fired to {target}; confirm the wake-test msg in `shoal show`, then arm the timer")
         return 0
     snap = "\n".join(lane_snapshot(l, repo_dir) for l in lanes)
     snap += f"\nserver_pid={server_pid()}"

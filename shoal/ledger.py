@@ -8,7 +8,7 @@ line appended to `hags/<hag>/ledger/<writer>.jsonl` in the queue repo
 (config `ledger_repo`, cloned at config `ledger_dir`). One writer per file
 means `git pull --rebase` never conflicts; append-only means history is the
 audit trail; JSONL means every reader (agent, watcher, report, human via
-`hag.py show`) parses the same grammar. Direct session sends between peers
+`shoal show`) parses the same grammar. Direct session sends between peers
 are retired: a peer that wants another's attention appends `msg`, and the
 target's own `ledger-watch` wakes it.
 
@@ -24,7 +24,7 @@ Grammar (every line: ts, by, type, id; the rest per type):
   system   event [note]                        ledger-init|generation-*
 
 Permissions (checked at read time, so a bad line is flagged and ignored,
-never silently honored): only `user` (and the `hag.py` system writer) may
+never silently honored): only `user` (and the `shoal` system writer) may
 offer or withdraw; an offer or withdraw written by a role is a violation
 (flattened only, 2026-09-24). A role self-fills by
 claiming board items, and hands its own claim to a peer with `release
@@ -151,7 +151,7 @@ def ensure_clone(root: str = LEDGER_DIR, remote: str = DEFAULT_LEDGER_REPO,
         return root
     if not remote:
         raise LedgerError(f"no ledger clone at {root} and no ledger repo to clone: pass --ledger-repo "
-                          "or set `ledger_repo` in the host config (HAG_LEDGER_REPO)")
+                          "or set `ledger_repo` in the host config (SHOAL_LEDGER_REPO)")
     os.makedirs(os.path.dirname(root), exist_ok=True)
     r = subprocess.run(["git", "clone", "--quiet", remote, root], capture_output=True,
                        text=True, timeout=120, env=GIT_ENV)
@@ -245,7 +245,7 @@ class Ledger:
             git(self.root, "add", "--", *rels)
             git(self.root, "commit", "--quiet", "-m", f"{self.hag}: ledger init (spec snapshot)", "--", *rels,
                 check=False)
-        return self.append("hag.py", "system", event="ledger-init", note=note, _commit=True)["id"]
+        return self.append(SYSTEM_WRITER, "system", event="ledger-init", note=note, _commit=True)["id"]
 
     def snapshot_spec(self, spec_dict: dict, push: bool = True) -> None:
         """Refresh hags/<hag>/hag.json (the copy remote agents read)."""
@@ -360,11 +360,15 @@ class Ledger:
 
 # ---- permissions -------------------------------------------------------------
 
-OFFER_WRITERS = ("user", "hag.py")  # the only writers that may offer or withdraw
+# The system writer: `shoal` for new events. Ledgers written before the rename carry
+# `hag.py` as the system writer, and both are honoured so existing ledgers read unchanged.
+SYSTEM_WRITER = "shoal"
+SYSTEM_WRITERS = ("shoal", "hag.py")
+OFFER_WRITERS = ("user",) + SYSTEM_WRITERS  # the only writers that may offer or withdraw
 
 
 class Perms:
-    """Resolved from the HAG spec; `user` and `hag.py` are implicit writers."""
+    """Resolved from the HAG spec; `user` and `shoal` are implicit writers."""
 
     def __init__(self, spec=None):
         self.roles = {}
@@ -376,7 +380,7 @@ class Perms:
         return by in self.roles
 
     def may_offer(self, by: str, to: str) -> bool:
-        """Only `user` (and the `hag.py` system writer) puts work on a queue; a role-written
+        """Only `user` (and the `shoal` system writer) puts work on a queue; a role-written
         offer is a violation. Peer transfer is `release --kind handoff --to`, never an offer."""
         return by in OFFER_WRITERS
 
@@ -386,7 +390,7 @@ class Perms:
     def may_claim(self, by: str, addressed_to: str | None, src: str) -> bool:
         """addressed_to: the offer's `to` (slug, `*`) or None when no offer exists
         (board/self claim)."""
-        if by in ("user", "hag.py"):
+        if by in OFFER_WRITERS:
             return True
         role = self.roles.get(by)
         if role is None:
@@ -523,7 +527,7 @@ class View:
                     continue
                 self.queues[by] = e
             elif typ == "system" and e.get("mode"):
-                if by not in ("user", "hag.py"):
+                if by not in OFFER_WRITERS:
                     self._viol(e, f"{by} may not set mode {e.get('mode')}")
                     continue
                 self.modes[e["mode"]] = e
@@ -765,7 +769,7 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
         L.append("CONTESTED claims: " + "; ".join(f"{k}: {', '.join(c['by'] for c in cs)}" for k, cs in view.contested.items()))
     if view.violations:
         L.append("")
-        L.append(f"permission violations ignored: {len(view.violations)} (see `hag.py ledger-lint`)")
+        L.append(f"permission violations ignored: {len(view.violations)} (see `shoal ledger-lint`)")
     return "\n".join(L)
 
 

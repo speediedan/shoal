@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The one session watcher every role arms: `hag.py ledger-watch`.
+"""The one session watcher every role arms: `shoal ledger-watch`.
 
 Every INTERVAL seconds: pull the ledger (git fetch + rebase; a failed fetch
 is tolerated, five in a row is an instrument failure -> exit 2), fold it,
@@ -33,6 +33,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+from ledger import OFFER_WRITERS  # noqa: E402
 
 from ledger import Ledger, View, fmt_item, item_key, short  # noqa: E402
 from roles import HagSpec, find_spec, state_dir  # noqa: E402
@@ -87,7 +88,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     With spec `features.workwake` (architecture doc §3.3) only WORK wakes the role: an
     offer while it is idle (or a `--now` offer from user), a change to
     its ACTIVE item, board candidates when idle with nothing queued, or a health wake
-    request. Msgs are mail (read by `hag.py next`), except a `user` msg sent `--wake`."""
+    request. Msgs are mail (read by `shoal next`), except a `user` msg sent `--wake`."""
     out = []
     workwake = bool((getattr(spec, "features", {}) or {}).get("workwake")) if spec is not None else False
     idle = view.is_idle(slug) if workwake else True
@@ -96,7 +97,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
         out.append(w)
     for o in view.queue(slug):
         if workwake and not idle:
-            now_ok = o.get("now") and o["by"] in ("user", "hag.py")
+            now_ok = o.get("now") and o["by"] in OFFER_WRITERS
             if not now_ok:
                 continue  # folds in at the role's next boundary
         out.append((o["id"], f"OFFER {fmt_item(o)} to={o['to']} prio={o.get('prio', 50)} by={o['by']}"
@@ -141,7 +142,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
 
 def _wake_requests(hag: str, slug: str) -> list[tuple[str, str]]:
     """Health-quorum wake requests (/tmp/<hag>/wake-<slug>): one delivery per request line.
-    The file is removed by the role's next `hag.py queue` write (the acknowledgement)."""
+    The file is removed by the role's next `shoal queue` write (the acknowledgement)."""
     import json as _json
     out = []
     try:
@@ -206,7 +207,7 @@ def cmd_ledger_watch(a) -> int:
     if not led.exists() and led.sync:
         led.pull()
     if not led.exists():
-        print(f"ERROR: no ledger for {hag} at {led.ldir} (run `hag.py ledger-init`)")
+        print(f"ERROR: no ledger for {hag} at {led.ldir} (run `shoal ledger-init`)")
         return 3
     label = f"LEDGER-WAKE {slug}@{hag}"
     if a.test:
@@ -252,7 +253,7 @@ def cmd_ledger_watch(a) -> int:
         save_sidecar(sc_path, sc)
         reason = ",".join(sorted({d.split()[0] for _, d in new}))
         text = (f"{label} at {now_iso()} ({len(new)} new): " + " | ".join(d for _, d in new)
-                + f" || next: `hag.py show --hag {hag} --slug {slug}`; act (claim/msg/release), transition, re-arm.")
+                + f" || next: `shoal show --shoal {hag} --slug {slug}`; act (claim/msg/release), transition, re-arm.")
         emit_wake(hag, slug, session, role.ecosystem if role else "", reason, len(new))
         fired = fire(a.wake, text, repo_dir)
         if a.wake == "print":
@@ -263,7 +264,7 @@ def cmd_ledger_watch(a) -> int:
 
 def add_parser(sub) -> None:
     p = sub.add_parser("ledger-watch", help="the unified session watcher (wakes on offers/msgs/claims/board)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
     p.add_argument("--wake", default="exit", help="exit | send:<session-id> | print")
     p.add_argument("--interval", type=float, default=120, help="seconds between ledger pulls (default 120)")

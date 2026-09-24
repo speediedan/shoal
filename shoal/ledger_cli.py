@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""hag.py subcommands over the ledger (ledger.py): the verbs every role and
+"""shoal subcommands over the ledger (ledger.py): the verbs every role and
 the maintainer use. Each is one command, one event, one commit, one push.
 
-  offer     --hag H --to SLUG|* --item repo#n:verb [--base repo@sha --prio N --note ..] [--by user]
-  withdraw  --hag H --item repo#n [--to SLUG --reason ..]
-  claim     --hag H --slug S --item repo#n:verb [--base ..]     first landed wins; loser told
-  release   --hag H --slug S --item repo#n --kind decline|blocked|handoff|lost-race [--reason .. --retry ..]
-  done      --hag H --slug S --item repo#n:verb [--kind merge|fix|.. --url .. --sha ..]
-  msg       --hag H --by S --to SLUG|*|user --text .. [--kind .. --re ID --ack]
-  show      --hag H [--slug S] [--board] [--json]                the status table / one role's view
-  fill      --hag H --slug S [--limit N] [--claim-top]           board candidates for a self-filler
-  sync      --hag H                                              pull + push pending ledger commits
+  offer     --shoal H --to SLUG|* --item repo#n:verb [--base repo@sha --prio N --note ..] [--by user]
+  withdraw  --shoal H --item repo#n [--to SLUG --reason ..]
+  claim     --shoal H --slug S --item repo#n:verb [--base ..]     first landed wins; loser told
+  release   --shoal H --slug S --item repo#n --kind decline|blocked|handoff|lost-race [--reason .. --retry ..]
+  done      --shoal H --slug S --item repo#n:verb [--kind merge|fix|.. --url .. --sha ..]
+  msg       --shoal H --by S --to SLUG|*|user --text .. [--kind .. --re ID --ack]
+  show      --shoal H [--slug S] [--board] [--json]                the status table / one role's view
+  fill      --shoal H --slug S [--limit N] [--claim-top]           board candidates for a self-filler
+  sync      --shoal H                                              pull + push pending ledger commits
   ledger-init  --spec hag.json                                  create hags/<hag>/ in the queue repo
-  ledger-lint  --hag H                                           permission violations, contested claims
+  ledger-lint  --shoal H                                           permission violations, contested claims
 
 `--by` defaults to `user` for offer/withdraw/msg when run by a human; roles
 pass their own slug to `msg`. A role that is not in the spec is refused as a
-writer, and only `user` (or `hag.py`) may offer or withdraw (flattened only).
+writer, and only `user` (or `shoal`) may offer or withdraw (flattened only).
 """
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from ledger import OFFER_WRITERS  # noqa: E402
+import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, fmt_item,  # noqa: E402
                     item_key, lint, render_all, render_role, split_item,
@@ -49,14 +51,14 @@ def _ledger(a, spec: HagSpec | None) -> Ledger:
     if not led.exists() and led.sync:
         led.pull()  # a fresh clone on another host: the ledger may simply not be fetched yet
     if not led.exists():
-        raise LedgerError(f"no ledger for {a.hag} at {led.ldir}: run `hag.py ledger-init --spec <hag.json>`"
-                          + (" (or `hag.py sync` if this clone is behind)" if not led.sync else ""))
+        raise LedgerError(f"no ledger for {a.hag} at {led.ldir}: run `shoal ledger-init --spec <hag.json>`"
+                          + (" (or `shoal sync` if this clone is behind)" if not led.sync else ""))
     return led
 
 
 def _writer(a, spec: HagSpec | None, attr: str = "by", default: str = "user") -> str:
     by = getattr(a, attr, "") or default
-    if spec is not None and by not in ("user", "hag.py") and spec.role(by) is None:
+    if spec is not None and by not in OFFER_WRITERS and spec.role(by) is None:
         raise LedgerError(f"writer {by!r} is not a role in {spec.hag} ({[r.slug for r in spec.roles]})")
     return by
 
@@ -170,7 +172,7 @@ def cmd_claim(a) -> int:
         print(f"CLAIM-LOST {key}: {w['by']} landed first; released (lost-race)")
         return 4
     print(f"claimed {key}:{verb or a.verb or '?'} by {by} [{ev['id']}]"
-          + ("" if pushed else " (push pending: run `hag.py sync`)"))
+          + ("" if pushed else " (push pending: run `shoal sync`)"))
     return 0
 
 
@@ -289,7 +291,7 @@ def cmd_show(a) -> int:
     print(render_all(view, spec, cf, hb))
     n = unpushed(led.root)
     if n:
-        print(f"\n(unpushed ledger commits on this host: {n} — `hag.py sync --hag {a.hag}`)")
+        print(f"\n(unpushed ledger commits on this host: {n} — `shoal sync --shoal {a.hag}`)")
     return 0
 
 
@@ -342,7 +344,7 @@ def cmd_ledger_init(a) -> int:
     root = a.ledger_dir or spec.ledger_dir
     if not spec.ledger.get("repo") and not os.path.isdir(os.path.join(root, ".git")):
         print(f"ledger-init: no ledger repo and no clone at {root}: pass --ledger-repo URL (or set "
-              "`ledger_repo` in the host config / HAG_LEDGER_REPO)")
+              "`ledger_repo` in the host config / SHOAL_LEDGER_REPO)")
         return 1
     if a.dry_run:
         print(f"[dry-run] ledger for {spec.hag}: clone {spec.ledger.get('repo')} at {root}, "
@@ -386,7 +388,7 @@ def cmd_ledger_lint(a) -> int:
 
 def add_parsers(sub: argparse._SubParsersAction) -> None:
     def common(p, slug=False, by=False):
-        p.add_argument("--hag", required=True)
+        config.add_id_arg(p, required=True)
         p.add_argument("--spec", default="")
         p.add_argument("--ledger-dir", default="")
         p.add_argument("--no-sync", action="store_true", help="local clone only (tests/offline)")

@@ -6,10 +6,10 @@ the session and is killed by the Claude harness memory-pressure reaper. As a job
 runs under `systemd-run --user` in its own cgroup with a `MemoryHigh` cap, survives the
 session, and is followed by a tiny in-session waiter that is safe to re-arm:
 
-    hag.py job run  --hag H --slug S --name suite [--memory-high 24G] [--cwd DIR] -- pytest -x tests/
-    hag.py job wait --hag H --slug S --name suite      # run as the background command; re-arm freely
-    hag.py job status --hag H [--slug S]
-    hag.py job stop --hag H --slug S --name suite
+    shoal job run  --shoal H --slug S --name suite [--memory-high 24G] [--cwd DIR] -- pytest -x tests/
+    shoal job wait --shoal H --slug S --name suite      # run as the background command; re-arm freely
+    shoal job status --shoal H [--slug S]
+    shoal job stop --shoal H --slug S --name suite
 
 The command runs inside a wrapper that writes its exit code to a status file, because a
 collected transient unit forgets its result. `wait` prints exactly one verdict line on
@@ -45,9 +45,23 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def unit_name(hag: str, slug: str, name: str) -> str:
-    raw = f"hag-{hag}-{slug}-{name}"
+UNIT_PREFIX = "shoal"
+LEGACY_UNIT_PREFIX = "hag"  # job units started before the rename
+
+
+def unit_name(hag: str, slug: str, name: str, prefix: str = UNIT_PREFIX) -> str:
+    raw = f"{prefix}-{hag}-{slug}-{name}"
     return re.sub(r"[^A-Za-z0-9:_.\-]", "-", raw)
+
+
+def find_unit(hag: str, slug: str, name: str) -> str:
+    """The unit a job name refers to: the `shoal-` unit, unless only a legacy `hag-` job of that
+    name was ever recorded here (a job started by the pre-rename tool and still followed)."""
+    unit = unit_name(hag, slug, name)
+    legacy = unit_name(hag, slug, name, LEGACY_UNIT_PREFIX)
+    if not os.path.exists(paths(hag, unit)["meta"]) and os.path.exists(paths(hag, legacy)["meta"]):
+        return legacy
+    return unit
 
 
 def paths(hag: str, unit: str) -> dict[str, str]:
@@ -99,10 +113,10 @@ def cmd_run(a) -> int:
     p = paths(a.hag, unit)
     st = unit_state(unit)
     if st.get("ActiveState") in ("active", "activating", "reloading"):
-        print(f"JOB-ALREADY-RUNNING {unit} (follow it with `hag.py job wait --hag {a.hag} --slug {a.slug} --name {a.name}`)")
+        print(f"JOB-ALREADY-RUNNING {unit} (follow it with `shoal job wait --shoal {a.hag} --slug {a.slug} --name {a.name}`)")
         return 4
     cwd = os.path.abspath(a.cwd or os.getcwd())
-    wrapper = ["/bin/bash", "-c", f'"$@"; rc=$?; echo "$rc" > {shlex.quote(p["rc"])}; exit "$rc"', "hag-job"]
+    wrapper = ["/bin/bash", "-c", f'"$@"; rc=$?; echo "$rc" > {shlex.quote(p["rc"])}; exit "$rc"', "shoal-job"]
     argv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
             "-p", f"WorkingDirectory={cwd}",
             "-p", f"StandardOutput=append:{p['log']}", "-p", f"StandardError=append:{p['log']}"]
@@ -138,12 +152,12 @@ def cmd_run(a) -> int:
     _emit(a.hag, a.slug, "job-start", f"{unit} {' '.join(cmd)[:120]}")
     print(f"JOB-STARTED {unit} log={p['log']}\n"
           f"follow with (background command, re-arm freely): "
-          f"{config.cli()} job wait --hag {a.hag} --slug {a.slug} --name {a.name}")
+          f"{config.cli()} job wait --shoal {a.hag} --slug {a.slug} --name {a.name}")
     return 0
 
 
 def resolve(a) -> tuple[str, dict[str, str]]:
-    unit = a.unit or unit_name(a.hag, a.slug, a.name)
+    unit = a.unit or find_unit(a.hag, a.slug, a.name)
     return unit, paths(a.hag, unit)
 
 
@@ -225,7 +239,7 @@ def add_parsers(sub) -> None:
     jsub = p.add_subparsers(dest="job_cmd", required=True)
 
     def common(q, need_name=True):
-        q.add_argument("--hag", required=True)
+        config.add_id_arg(q, required=True)
         q.add_argument("--slug", default="" if not need_name else None, required=need_name)
         q.add_argument("--name", required=need_name, default="")
 
@@ -240,7 +254,7 @@ def add_parsers(sub) -> None:
     q.set_defaults(func=cmd_run)
 
     q = jsub.add_parser("wait", help="follow a job to its verdict (safe to re-arm)")
-    q.add_argument("--hag", required=True)
+    config.add_id_arg(q, required=True)
     q.add_argument("--slug", default="")
     q.add_argument("--name", default="")
     q.add_argument("--unit", default="")
@@ -250,12 +264,12 @@ def add_parsers(sub) -> None:
     q.set_defaults(func=cmd_wait)
 
     q = jsub.add_parser("status", help="list recorded jobs")
-    q.add_argument("--hag", required=True)
+    config.add_id_arg(q, required=True)
     q.add_argument("--slug", default="")
     q.set_defaults(func=cmd_status)
 
     q = jsub.add_parser("stop", help="stop a job unit")
-    q.add_argument("--hag", required=True)
+    config.add_id_arg(q, required=True)
     q.add_argument("--slug", default="")
     q.add_argument("--name", default="")
     q.add_argument("--unit", default="")

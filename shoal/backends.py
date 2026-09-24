@@ -32,10 +32,10 @@ _ENV = config.tool_env()
 
 
 def fake_sessions() -> dict | None:
-    """Test hook (same family as HAG_FAKE_PR / HAG_FAKE_REF_STATE): HAG_FAKE_SESSIONS=
+    """Test hook (same family as SHOAL_FAKE_PR / SHOAL_FAKE_REF_STATE): SHOAL_FAKE_SESSIONS=
     '{"claude": [<claude agents --json rows>], "opencode": {"<session id>": "<status line>"}}'
     answers every session-liveness probe without calling a harness CLI. None when unset."""
-    raw = os.environ.get("HAG_FAKE_SESSIONS", "")
+    raw = config.env("FAKE_SESSIONS")
     if not raw:
         return None
     import json as _json

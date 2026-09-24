@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """HAG health quorum (architecture doc §6): watchers of the watchers, no model tokens.
 
-    hag.py health --spec <hag.json> --instance a|b [--dry-run]     # what the two timers run
-    hag.py relay-watch --hag H                                     # the Claude relay's one waiter
+    shoal health --spec <hag.json> --instance a|b [--dry-run]     # what the two timers run
+    shoal relay-watch --shoal H                                     # the Claude relay's one waiter
 
-Two identical systemd timers per host (`hag-<hag>-health-a` at *:0/5, `-b` at *:2/5) run
+Two identical systemd timers per host (`shoal-<hag>-health-a` at *:0/5, `-b` at *:2/5) run
 `health`. They share one state file under an flock, so whichever runs first acts; each run
 self-ticks and checks its peer's tick, and a peer silent past 15 min pages the maintainer
 once. That mutual check is the quorum.
@@ -42,6 +42,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
@@ -66,9 +67,9 @@ USER_WAITS = ("user-auth", "user-design", "user-feedback")
 
 
 def utcnow() -> datetime.datetime:
-    """Now; HAG_HEALTH_SHIFT_MIN (tests only) moves the clock forward to exercise the ladders."""
+    """Now; SHOAL_HEALTH_SHIFT_MIN (tests only) moves the clock forward to exercise the ladders."""
     return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-        minutes=float(os.environ.get("HAG_HEALTH_SHIFT_MIN", "0") or 0))
+        minutes=float(config.env("HEALTH_SHIFT_MIN", "0") or 0))
 
 
 def iso(dt: datetime.datetime | None = None) -> str:
@@ -125,7 +126,7 @@ def relay_queue_path(hag: str) -> str:
 def wake_text(spec: HagSpec, slug: str, reason: str, condition: str = "") -> str:
     """The text of a HAG wake, prefixed with the offline banner while the maintainer is away."""
     text = (f"HAG-WAKE {slug}@{spec.hag} [{condition or 'request'}]: {reason} || run "
-            f"`hag.py next --hag {spec.hag} --slug {slug}`, act, write ONE `hag.py queue`, re-arm your watcher.")
+            f"`shoal next --shoal {spec.hag} --slug {slug}`, act, write ONE `shoal queue`, re-arm your watcher.")
     # every wake carries the offline state, because a role that skips `next` never sees the banner
     # (measured 2026-09-24: a lane raised a blocking merge question 3 h into an offline window)
     try:
@@ -193,7 +194,7 @@ def page_user(spec: HagSpec, text: str, state: dict, dry_run: bool = False) -> s
         return "deferred (user offline)"
     if dry_run:
         return "page (dry-run)"
-    led.append("hag.py", "msg", to="user", kind="health", text=text[:500])
+    led.append(SYSTEM_WRITER, "msg", to="user", kind="health", text=text[:500])
     channel = str(health_cfg(spec).get("page") or "")
     if channel.startswith("gh-issue:"):  # a place the maintainer is notified, not only the ledger
         repo, _, num = channel[len("gh-issue:"):].partition("#")
@@ -222,7 +223,7 @@ def claude_busy() -> dict[str, str]:
     """sessionId -> 'busy'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
     try:
         from backends import fake_sessions
-        fake = fake_sessions()  # HAG_FAKE_SESSIONS (tests): no harness call
+        fake = fake_sessions()  # SHOAL_FAKE_SESSIONS (tests): no harness call
         if fake is not None:
             rows = list(fake.get("claude") or [])
         else:
@@ -236,8 +237,8 @@ def claude_busy() -> dict[str, str]:
 
 
 def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | None:
-    # HAG_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
-    if role.slug in [x for x in os.environ.get("HAG_HEALTH_BETWEEN", "").split(",") if x]:
+    # SHOAL_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
+    if role.slug in [x for x in config.env("HEALTH_BETWEEN").split(",") if x]:
         return True
     if role.ecosystem == "claude":
         st = next((v for k, v in cbusy.items() if role.session and k.startswith(role.session)), None)
@@ -277,7 +278,7 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
         for o in view.queue(slug):
             if o["ts"] < boundary:  # strictly older: a same-second offer cannot have been seen
                 continue
-            now_ok = o.get("now") and o["by"] in ("user", "hag.py")
+            now_ok = o.get("now") and o["by"] in OFFER_WRITERS
             if idle or now_ok:
                 out.append({"slug": slug, "condition": "unacked-work", "key": f"offer:{o['id']}", "since": o["ts"],
                             "detail": f"offer {o.get('item')} by {o['by']} not acknowledged"})
@@ -385,7 +386,7 @@ def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
         since = open(tk).read().strip() if os.path.exists(tk) else iso()
         conds.append({"slug": RELAY_SLUG, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
                       "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
-                                f"have no wake path; relaunch with `hag.py restart --spec <spec> --only hag-relay`"})
+                                f"have no wake path; relaunch with `shoal restart --spec <spec> --only hag-relay`"})
     ladders = state.setdefault("ladders", {})
     live_keys = set()
     for c in conds:
@@ -498,7 +499,7 @@ RELAY_MODEL = "claude-haiku-4-5-20251001"
 RELAY_DOC = """# hag-relay plan_state ({hag})
 
 - role: `hag-relay` (infrastructure, not a worker; `fill=none`), model haiku
-- generated by `hag.py relay-init`; lives in the HAG's data directory, not the design repo
+- generated by `shoal relay-init`; lives in the HAG's data directory, not the design repo
 - design: `.agents/hag_architecture.md` §6 (wake adapters)
 
 ## Mission
@@ -513,7 +514,7 @@ the relay-queue cursor under `/tmp/{hag}/`.
 
 ## Loop
 
-1. Run `{cli} relay-watch --hag {hag}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
+1. Run `{cli} relay-watch --shoal {hag}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
 2. When it exits it prints one `RELAY-WAKE to=<session name> session=<id> :: <text>` line per
    wake. For each, call SendMessage with to=<session name> and the text verbatim. Add the `[ref]`
    from ListAgents only when two sessions share the name, choosing the one whose session id
@@ -530,7 +531,7 @@ re-arm.
 
 ## Running monitors
 
-- relay-watch: `{cli} relay-watch --hag {hag}` (pid in `/tmp/{hag}/relay-watch.pid`)
+- relay-watch: `{cli} relay-watch --shoal {hag}` (pid in `/tmp/{hag}/relay-watch.pid`)
 
 ## grants-needed
 
@@ -565,7 +566,7 @@ def cmd_relay_init(a) -> int:
         else:
             spec.role(RELAY_SLUG).doc = doc
         spec.features = dict(spec.features or {}, relay=True)
-        from hag import persist_spec
+        from cli import persist_spec
         persist_spec(spec, path, note="relay-init")
     print(plan)
     return 0
@@ -579,7 +580,7 @@ def cmd_relay_launch(a) -> int:
     spec = HagSpec.load(path)
     role = spec.role(RELAY_SLUG)
     if role is None:
-        print(f"ERROR: no {RELAY_SLUG} role in {spec.hag}: run `hag.py relay-init --hag {spec.hag}` first")
+        print(f"ERROR: no {RELAY_SLUG} role in {spec.hag}: run `shoal relay-init --shoal {spec.hag}` first")
         return 1
     if relay_alive(spec.hag) and not a.force:
         print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.hag), 'relay-watch.pid')).read().strip()}); "
@@ -596,7 +597,7 @@ def cmd_relay_launch(a) -> int:
     if a.dry_run:
         print("[dry-run] " + plan)
         return 0
-    from hag import persist_spec, write_brief
+    from cli import persist_spec, write_brief
     from backends import get as get_backend
     brief = open(write_brief(spec, role)).read()
     role.session = get_backend("claude").create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
@@ -620,25 +621,25 @@ def cmd_relay_launch(a) -> int:
 def add_parsers(sub) -> None:
     p = sub.add_parser("health", help="health quorum run (what the two health timers execute)")
     p.add_argument("--spec", default="")
-    p.add_argument("--hag", default="")
+    config.add_id_arg(p, default="")
     p.add_argument("--instance", choices=["a", "b"], default="a")
     p.add_argument("--dry-run", action="store_true", help="evaluate and print actions; wake and page nobody")
     p.set_defaults(func=cmd_health)
     p = sub.add_parser("relay-init", help="generate the hag-relay start doc (data dir) and add the role to the spec")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--doc-only", action="store_true", help="write the start doc only; leave the spec alone")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_relay_init)
     p = sub.add_parser("relay-launch", help="(re)launch the hag-relay session alone (no restart, no incarnation bump)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--force", action="store_true")
     p.add_argument("--verify-s", type=float, default=300)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_relay_launch)
     p = sub.add_parser("relay-watch", help="the Claude relay session's waiter (exits when a wake is due)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--interval", type=float, default=15)
     p.add_argument("--max-hours", type=float, default=0,
                    help="exit after this long with nothing to relay (default 0: run indefinitely)")

@@ -4,7 +4,7 @@
 #   selftest_hermetic.sh SUITE [suite args...]     e.g. selftest_hermetic.sh selftest_h4.sh
 #
 # gh, az, opencode, openchamber and claude are put first on PATH as stubs that print
-# "network tool called: <argv>" to stderr and exit 1, and HAG_TEST_NO_SYSTEMD=1 makes the
+# "network tool called: <argv>" to stderr and exit 1, and SHOAL_TEST_NO_SYSTEMD=1 makes the
 # systemd sections skip. The suite must still pass. Each stub also appends its line to a
 # call log, because the suites capture most command output (a stub's stderr inside a
 # `check` is never printed), so the suite output alone undercounts. Afterwards every call is
@@ -14,7 +14,7 @@
 set -u
 TESTD="$(cd "$(dirname "$0")" && pwd)"
 SUITE="${1:?usage: selftest_hermetic.sh SUITE [args...]}"; shift
-STUBS="$(mktemp -d "${TMPDIR:-/tmp}/hag-stubs-XXXXXX")"
+STUBS="$(mktemp -d "${TMPDIR:-/tmp}/shoal-stubs-XXXXXX")"
 CALLS="$STUBS/calls.log"
 : > "$CALLS"
 for t in gh az opencode openchamber claude; do
@@ -27,7 +27,7 @@ EOF
   chmod +x "$STUBS/$t"
 done
 LOG="$STUBS/suite.log"
-PATH="$STUBS:$PATH" HAG_TEST_NO_SYSTEMD=1 "$TESTD/$SUITE" "$@" 2>&1 | tee "$LOG"
+PATH="$STUBS:$PATH" SHOAL_TEST_NO_SYSTEMD=1 "$TESTD/$SUITE" "$@" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
 out_hits=$(grep -c "network tool called" "$LOG" || true)
 hits=$(grep -c "network tool called" "$CALLS" || true)

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """The role's work loop: two verbs per boundary (architecture doc §3.2), plus user-offline mode.
 
-    hag.py next  --hag H --slug S                        # READ: everything this boundary needs, one call
-    hag.py queue --hag H --slug S --active X:verb --next a,b,c [--done Y --url U] [--claim ..]
+    shoal next  --shoal H --slug S                        # READ: everything this boundary needs, one call
+    shoal queue --shoal H --slug S --active X:verb --next a,b,c [--done Y --url U] [--claim ..]
                  [--pass ..:class[:suggest=R]] [--wait SUB --holder .. --target .. --rescan N]
                  [--idle] [--ask TEXT] [--reason TEXT]   # WRITE: one ledger commit
-    hag.py offline on|off --hag H [--until TS] [--note ..]
+    shoal offline on|off --shoal H [--until TS] [--note ..]
 
 `queue` folds claim, triage passes, done and transition into ONE commit that ends in a new
 version of the role's own `queue` event: `{version, active, next (<= 3), asks, reason}`. The
@@ -33,6 +33,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, Ledger, LedgerError, View, fmt_item,  # noqa: E402
                     item_key, short, split_item, sync_push)
@@ -74,7 +75,7 @@ RETURN_PROTOCOL = (
     "the maintainer is online. (1) Re-verify every recorded ask against current state (merged or closed "
     "PRs, finished items, rulings already given) and drop each one that no longer applies with `queue "
     "--drop-ask <n> --drop-reason <why>`, verifying live state first (a gate id is not a PR); the "
-    "LIKELY-STALE hints are a starting point, not a verdict. (2) Build the question sets with `hag.py asks "
+    "LIKELY-STALE hints are a starting point, not a verdict. (2) Build the question sets with `shoal asks "
     "--question-json` (live PR titles and checks; never label a PR from memory), record a user-auth wait, "
     f"then raise EVERY set, one question-tool call per set (at most {ASKS_PER_SET} questions each). (3) Remove "
     "each answered ask with `queue --answered <n>`; disclose any DROPPED ASKS in your last set.")
@@ -117,8 +118,8 @@ _REF_STATE: dict[str, str] = {}
 
 def ref_state(ref: str) -> str:
     """OPEN | CLOSED | MERGED | UNKNOWN for one issue or PR (cached per process).
-    HAG_FAKE_REF_STATE (JSON {ref: state}) replaces GitHub in selftests."""
-    fake = os.environ.get("HAG_FAKE_REF_STATE")
+    SHOAL_FAKE_REF_STATE (JSON {ref: state}) replaces GitHub in selftests."""
+    fake = config.env("FAKE_REF_STATE")
     if fake:
         import json
         return json.loads(fake).get(ref, "UNKNOWN")
@@ -167,7 +168,7 @@ def pr_live(ref: str) -> dict:
     """Live facts for a PR reference (owner/repo#n): title, state, head, checks; {} when not a PR."""
     import json
     import subprocess
-    fake = os.environ.get("HAG_FAKE_PR")
+    fake = config.env("FAKE_PR")
     if fake:
         return json.loads(fake).get(ref, {})
     repo, _, n = ref.partition("#")
@@ -379,7 +380,7 @@ def cmd_next(a) -> int:
         pass
     out.append("# END EVERY TURN IN A SLEEP POSTURE: the last write of a turn is `queue --wait ..` (waiter armed) or "
                "`queue --idle`; `active` means you are still working. A turn that stops while active is woken to continue.")
-    out.append(f"# then ONE write: hag.py queue --hag {spec.hag} --slug {slug} --active .. --next .. "
+    out.append(f"# then ONE write: shoal queue --shoal {spec.hag} --slug {slug} --active .. --next .. "
                f"[--done .. --url ..] [--claim ..] [--pass ..] [--wait ..|--idle]")
     print("\n".join(out))
     return 0
@@ -550,7 +551,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             if w2 is not None and w2["by"] != slug:
                 led.append(slug, "release", item=item_key(c), kind="lost-race", reason=f"{w2['by']} landed first [{w2['id']}]")
                 lost.append(item_key(c))
-    print(plan + f" [{qev['id']}]" + ("" if pushed else " (push pending: `hag.py sync`)")
+    print(plan + f" [{qev['id']}]" + ("" if pushed else " (push pending: `shoal sync`)")
           + (f" CLAIM-LOST {lost}: re-run `next` and repick" if lost else ""))
     if posture == "active":
         print("note: posture ACTIVE means you keep working in this turn. The LAST write of every turn is a sleep "
@@ -614,7 +615,7 @@ def cmd_offline(a) -> int:
 
 def add_parsers(sub) -> None:
     p = sub.add_parser("next", help="READ at a boundary: queue, offers, candidates, mail, waits (one call)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
     p.add_argument("--peek", action="store_true", help="read-only view for operators/reviewers: mail stays unread")
     p.add_argument("--spec", default="")
@@ -622,7 +623,7 @@ def add_parsers(sub) -> None:
     p.set_defaults(func=cmd_next)
 
     p = sub.add_parser("queue", help="WRITE at a boundary: done/claims/passes/posture + queue version, one commit")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--active", default="", help="the item worked now, repo#n:verb (claimed if not held)")
@@ -654,7 +655,7 @@ def add_parsers(sub) -> None:
     p.set_defaults(func=cmd_queue)
 
     p = sub.add_parser("asks", help="a role's recorded asks as prompted question sets (live PR labels)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", required=True)
     p.add_argument("--question-json", action="store_true", help="emit the sets as JSON for the question tool")
@@ -665,7 +666,7 @@ def add_parsers(sub) -> None:
 
     p = sub.add_parser("offline", help="user-offline mode for every role: on|off")
     p.add_argument("state", choices=["on", "off"])
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--until", default="", help="expected return (free text or ISO time)")
     p.add_argument("--note", default="")

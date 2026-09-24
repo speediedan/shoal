@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Session-side state primitive: `hag.py transition`.
+"""Session-side state primitive: `shoal transition`.
 
 ONE command per row-state change, whatever the ecosystem. It does the three
 things every session was previously asked to do separately (and measurably
@@ -7,10 +7,10 @@ did not): tick the heartbeat, prove or clear a wait, emit the telemetry
 event. Sessions that forget one of three forget it silently; a single
 command cannot be half-done.
 
-  hag.py transition --hag H --slug S --to active [--note ...]
-  hag.py transition --hag H --slug S --to waiting --sub remote-ci \
+  shoal transition --shoal H --slug S --to active [--note ...]
+  shoal transition --shoal H --slug S --to waiting --sub remote-ci \
       --holder "gate 1290 (approved, queued)" --rescan-min 30 [--monitor ...]
-  hag.py transition --hag H --slug S --to idle|paused|offline
+  shoal transition --shoal H --slug S --to idle|paused|offline
 
 The same command also appends a `state` event to the HAG ledger (ledger.py,
 2026-09-20), so every peer and every host sees the row state without anyone
@@ -33,6 +33,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry"))
+import config  # noqa: E402
 
 from roles import HagSpec, find_spec, state_dir  # noqa: E402
 from heartbeat import touch as hb_touch  # noqa: E402
@@ -130,7 +131,7 @@ def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
     if sub in USER_WAITS and not asks:
         return rescan_min, notes, (f"a {sub} wait needs the prompted ask it waits on: raise it first-person as a "
                                    f"question with options (opencode question tool / Claude AskUserQuestion) in "
-                                   f"this turn, then record it: `hag.py queue --slug {slug} --ask \"<question>\"`")
+                                   f"this turn, then record it: `shoal queue --slug {slug} --ask \"<question>\"`")
     if sub == "session-blocked":
         who = (blocked_on or "").split(":", 1)[0]
         if not who or spec.role(who) is None:
@@ -227,7 +228,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
               f"to_sub={sub}", f"holder={a.holder}", f"monitor={a.monitor or 'none'}",
               f"rescan_min={a.rescan_min:g}" if a.to == "waiting" else "rescan_min=",
               f"note={a.note}", f"channel={a.channel}", f"slug={a.slug}",
-              "via=hag.py transition"]
+              "via=shoal transition"]
     if raw:
         fields.append(f"to_sub_raw={raw}")
     ev = build_event(hag, session, eco, "session_transition", fields)
@@ -263,7 +264,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("transition",
                        help="row-state change: heartbeat + wait proof + telemetry in one")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True, help="role slug (session id resolves from the spec)")
     p.add_argument("--to", required=True, help="active|waiting|idle|paused|offline")
     p.add_argument("--sub", default="", help="waiting substate (canonical or alias)")

@@ -3,24 +3,27 @@
 
 Every setting resolves in the same order: an environment variable, then the host
 config file, then a generic default that works on any host. The host config file is
-`$HAG_CONFIG` when set, else `<repository root>/config/host.toml` (gitignored; see
+`$SHOAL_CONFIG` when set, else `<repository root>/config/host.toml` (gitignored; see
 `config/host.example.toml`). TOML is read with `tomllib` (Python 3.11+) or `tomli`;
 when neither is importable the file is skipped with one warning on stderr.
 
-  key            env var                         generic default
-  data_root      HAG_DATA_ROOT                   $XDG_DATA_HOME/hag (else ~/.local/share/hag)
-  ledger_dir     HAG_LEDGER_DIR                  <data_root>/ledger
-  ledger_repo    HAG_LEDGER_REPO                 "" (start / ledger-init then need --ledger-repo)
-  tool_path      HAG_TOOL_PATH                   this process's PATH
-  lease_cmd      HAG_LEASE_CMD, GPU_LEASE_CMD    "" (no lease provider: lease waits read unknown)
-  default_repos  (none)                          [] (a spec's own `repos` still wins)
-  cli            HAG_CLI                         python3 <this package>/hag.py
-  psi_out        HAG_PSI_OUT                     <data_root>/_instruments/psi_events.jsonl
-  server         HAG_SERVER                      this host's name
-  timezone       HAG_TZ                          $TZ or /etc/timezone when it is an IANA name, else UTC
-  default_owner  HAG_DEFAULT_OWNER               "" (item keys keep every owner)
-  azure_org      HAG_AZURE_ORG                   "" (Azure pipeline sensors and GPU share need it)
-  azure_project  HAG_AZURE_PROJECT               ""
+  key            env var                                     generic default
+  data_root      SHOAL_DATA_ROOT                             $XDG_DATA_HOME/shoal (else ~/.local/share/shoal)
+  ledger_dir     SHOAL_LEDGER_DIR                            <data_root>/ledger
+  ledger_repo    SHOAL_LEDGER_REPO                           "" (start / ledger-init then need --ledger-repo)
+  tool_path      SHOAL_TOOL_PATH                             this process's PATH
+  lease_cmd      SHOAL_LEASE_CMD, GPU_LEASE_CMD              "" (no lease provider: lease waits read unknown)
+  default_repos  (none)                                      [] (a spec's own `repos` still wins)
+  cli            SHOAL_CLI                                   `shoal` when installed, else python3 <this package>/cli.py
+  psi_out        SHOAL_PSI_OUT                               <data_root>/_instruments/psi_events.jsonl
+  server         SHOAL_SERVER                                this host's name
+  timezone       SHOAL_TZ                                    $TZ or /etc/timezone when it is an IANA name, else UTC
+  default_owner  SHOAL_DEFAULT_OWNER                         "" (item keys keep every owner)
+  azure_org      SHOAL_AZURE_ORG                             "" (Azure pipeline sensors and GPU share need it)
+  azure_project  SHOAL_AZURE_PROJECT                         ""
+
+Every `SHOAL_*` variable also honours its legacy `HAG_*` name as a fallback (the SHOAL name
+wins when both are set), and `lease_cmd` falls back further to `GPU_LEASE_CMD`.
 
 An empty environment variable counts as unset. Values are read at call time, so a test
 that exports a variable before importing a module sees it.
@@ -38,14 +41,41 @@ _CACHE: dict[str, dict] = {}
 _WARNED: set[str] = set()
 
 
+ENV_PREFIXES = ("SHOAL_", "HAG_")  # current name first, then the legacy one
+
+
+def names(suffix: str) -> tuple[str, ...]:
+    """The environment variable names for one setting: `SHOAL_<suffix>`, then `HAG_<suffix>`."""
+    return tuple(p + suffix for p in ENV_PREFIXES)
+
+
+def env(suffix: str, default: str = "") -> str:
+    """`$SHOAL_<suffix>`, else the legacy `$HAG_<suffix>`, else `default` (empty counts as unset)."""
+    for n in names(suffix):
+        v = os.environ.get(n, "")
+        if v:
+            return v
+    return default
+
+
+def add_id_arg(parser, **kw):
+    """`--shoal ID` on an argparse parser, with `--hag` kept as a hidden alias (same dest,
+    `hag`) because existing role documents carry `--hag` re-arm commands. The alias stays in
+    the parser's option map, so it parses; help, usage and errors name `--shoal` only."""
+    kw.setdefault("metavar", "ID")
+    action = parser.add_argument("--shoal", "--hag", dest="hag", **kw)
+    action.option_strings = ["--shoal"]
+    return action
+
+
 def config_path() -> str:
-    return os.environ.get("HAG_CONFIG") or os.path.join(REPO_DIR, "config", "host.toml")
+    return env("CONFIG") or os.path.join(REPO_DIR, "config", "host.toml")
 
 
 def _warn(key: str, msg: str) -> None:
     if key not in _WARNED:
         _WARNED.add(key)
-        print(f"hag config: {msg}", file=sys.stderr)
+        print(f"shoal config: {msg}", file=sys.stderr)
 
 
 def file_values() -> dict:
@@ -93,20 +123,20 @@ def _path(v: str) -> str:
 def data_root() -> str:
     def dflt():
         xdg = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-        return os.path.join(xdg, "hag")
-    return _path(_get("data_root", ("HAG_DATA_ROOT",), dflt))
+        return os.path.join(xdg, "shoal")
+    return _path(_get("data_root", names("DATA_ROOT"), dflt))
 
 
 def ledger_dir() -> str:
-    return _path(_get("ledger_dir", ("HAG_LEDGER_DIR",), lambda: os.path.join(data_root(), "ledger")))
+    return _path(_get("ledger_dir", names("LEDGER_DIR"), lambda: os.path.join(data_root(), "ledger")))
 
 
 def ledger_repo() -> str:
-    return str(_get("ledger_repo", ("HAG_LEDGER_REPO",), ""))
+    return str(_get("ledger_repo", names("LEDGER_REPO"), ""))
 
 
 def tool_path() -> str:
-    return str(_get("tool_path", ("HAG_TOOL_PATH",), lambda: os.environ.get("PATH", "")))
+    return str(_get("tool_path", names("TOOL_PATH"), lambda: os.environ.get("PATH", "")))
 
 
 def tool_env(base: dict | None = None) -> dict:
@@ -123,7 +153,7 @@ def tool_env(base: dict | None = None) -> dict:
 
 
 def lease_cmd() -> str:
-    return _path(_get("lease_cmd", ("HAG_LEASE_CMD", "GPU_LEASE_CMD"), ""))
+    return _path(_get("lease_cmd", names("LEASE_CMD") + ("GPU_LEASE_CMD",), ""))
 
 
 def default_repos() -> list[str]:
@@ -132,8 +162,13 @@ def default_repos() -> list[str]:
 
 
 def cli() -> str:
-    """The command line that runs hag.py, as briefs, docs and units print it."""
-    return str(_get("cli", ("HAG_CLI",), lambda: f"python3 {os.path.join(PKG_DIR, 'hag.py')}"))
+    """The command line that runs the SHOAL CLI, as briefs, docs and units print it: `shoal`
+    when that console script is on PATH, else `python3 <this package>/cli.py`."""
+    def dflt():
+        if shutil.which("shoal"):
+            return "shoal"
+        return f"python3 {os.path.join(PKG_DIR, 'cli.py')}"
+    return str(_get("cli", names("CLI"), dflt))
 
 
 def cli_exec() -> tuple[str, str]:
@@ -156,13 +191,13 @@ def cli_pkg_dir() -> str:
 
 
 def psi_out() -> str:
-    return _path(_get("psi_out", ("HAG_PSI_OUT",),
+    return _path(_get("psi_out", names("PSI_OUT"),
                       lambda: os.path.join(data_root(), "_instruments", "psi_events.jsonl")))
 
 
 def server() -> str:
     import socket
-    return str(_get("server", ("HAG_SERVER",), socket.gethostname))
+    return str(_get("server", names("SERVER"), socket.gethostname))
 
 
 def timezone() -> str:
@@ -179,7 +214,7 @@ def timezone() -> str:
         except OSError:
             pass
         return "UTC"
-    return str(_get("timezone", ("HAG_TZ",), dflt))
+    return str(_get("timezone", names("TZ"), dflt))
 
 
 def tzinfo():
@@ -193,15 +228,15 @@ def tzinfo():
 
 def default_owner() -> str:
     """The owner stripped from item keys (`<owner>/<repo>#<n>` -> `<repo>#<n>`)."""
-    return str(_get("default_owner", ("HAG_DEFAULT_OWNER",), "")).lower()
+    return str(_get("default_owner", names("DEFAULT_OWNER"), "")).lower()
 
 
 def azure_org() -> str:
-    return str(_get("azure_org", ("HAG_AZURE_ORG",), ""))
+    return str(_get("azure_org", names("AZURE_ORG"), ""))
 
 
 def azure_project() -> str:
-    return str(_get("azure_project", ("HAG_AZURE_PROJECT",), ""))
+    return str(_get("azure_project", names("AZURE_PROJECT"), ""))
 
 
 def summary() -> dict:

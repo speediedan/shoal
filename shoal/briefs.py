@@ -7,7 +7,7 @@ features.workwake and the relay's own brief for `hag-relay`. Every brief points 
 document (plan_state.md) plus the shared instructions; grants-needed items
 are extracted from that document at brief time, so the doc is the only place
 grants are configured. Model/effort ride along as launch config. Every brief
-names ONE state primitive (`hag.py transition`) so heartbeat, wait proof and
+names ONE state primitive (`shoal transition`) so heartbeat, wait proof and
 telemetry cannot be done separately and forgotten separately.
 """
 from __future__ import annotations
@@ -70,7 +70,7 @@ def grants_block(role: Role) -> str:
 def state_block(role: Role, spec: HagSpec) -> str:
     return (
         f"\nSTATE PRIMITIVE (mandatory, one command per row-state change): "
-        f"`{HAGPY} transition --hag {spec.hag} --slug {role.slug} --to active|idle|paused|offline` "
+        f"`{HAGPY} transition --shoal {spec.hag} --slug {role.slug} --to active|idle|paused|offline` "
         f"or `--to waiting --sub <local-ci|remote-ci|user-auth|user-design|session-blocked|queue-empty> "
         f"--holder '<who/what clears it>' --rescan-min <N> [--monitor '<armed watch>']`. "
         f"It ticks your heartbeat, proves the wait (stale past rescan = STALL-SUSPECT), and "
@@ -84,7 +84,7 @@ def relay_brief(role: Role, spec: HagSpec) -> str:
     return (
         f"You are {role.slug} ({role.tag}) in HAG {hag}: the wake relay for Claude roles whose own watcher "
         f"is dead. You do no project work, claim nothing, and message nobody on your own initiative. "
-        f"LOOP: run `{HAGPY} relay-watch --hag {hag}` with the Bash tool and run_in_background=true, on exactly "
+        f"LOOP: run `{HAGPY} relay-watch --shoal {hag}` with the Bash tool and run_in_background=true, on exactly "
         f"that command: no trailing `&`, no nohup, and NEVER the Monitor tool (a Monitor expires every 5-30 min and "
         f"each expiry costs a turn; a background Bash command never expires and wakes you when it exits). "
         f"When it exits it prints "
@@ -101,7 +101,7 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
     hag = spec.hag
     feats = getattr(spec, "features", {}) or {}
     wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
-    arm = (f"{HAGPY} ledger-watch --hag {hag} --slug {role.slug} --wake {wake} "
+    arm = (f"{HAGPY} ledger-watch --shoal {hag} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
     how_arm = ("with the Bash tool and run_in_background=true (no trailing `&`, never the Monitor tool, which "
                "expires and costs a turn per expiry): it re-invokes you when it exits"
@@ -125,8 +125,8 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
         f"kills and recovery'. Your job is to work through a QUEUE: one active item and up to three next items, "
         f"declared by you in the ledger. {fill} "
         f"AT EVERY BOUNDARY (a wake, or finishing/blocking an item) do exactly two things: READ `{HAGPY} next "
-        f"--hag {hag} --slug {role.slug}` (queue, offers, candidates with scores and excerpts, mail, waits, watcher) "
-        f"and WRITE ONE `{HAGPY} queue --hag {hag} --slug {role.slug} --active <repo#n:verb> --next <a,b,c> "
+        f"--shoal {hag} --slug {role.slug}` (queue, offers, candidates with scores and excerpts, mail, waits, watcher) "
+        f"and WRITE ONE `{HAGPY} queue --shoal {hag} --slug {role.slug} --active <repo#n:verb> --next <a,b,c> "
         f"[--done <item> --url <evidence>] [--pass <item>:<class>[:suggest=<role>]] [--wait <sub> --holder <who> "
         f"--target <lease:..|job:..|gh-run:..|gh-pr:..|az-build:..>] | --idle`. The write claims the active item, "
         f"records done/passes/posture and your new queue version in one commit. Every pop BACKFILLS next to three "
@@ -150,7 +150,7 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
         f"USER OFFLINE, never wait on the maintainer: record each blocking ask with `queue --ask`, stack PRs "
         f"(gh-stack) or take the next unblocked item; you are woken when they return. When they RETURN (or "
         f"whenever `next` prints ASKS TO RAISE): re-verify every recorded ask, drop the ones that no longer apply "
-        f"(`queue --drop-ask <n> --drop-reason <why>`), build the sets with `{HAGPY} asks --hag {hag} --slug "
+        f"(`queue --drop-ask <n> --drop-reason <why>`), build the sets with `{HAGPY} asks --shoal {hag} --slug "
         f"{role.slug} --question-json` (live PR labels: never describe a PR from memory), and raise EVERY set, "
         f"one question-tool call per set of at most four; remove answered asks with `queue --answered <n>`. "
         f"BEFORE ANY PROMPTED QUESTION (merge asks included): run `next` unpiped (never through head/grep: MAIL "
@@ -177,7 +177,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
     if feats0.get("workwake"):
         return workwake_brief(role, spec)
     wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
-    arm = (f"{HAGPY} ledger-watch --hag {hag} --slug {role.slug} --wake {wake} "
+    arm = (f"{HAGPY} ledger-watch --shoal {hag} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
     how_arm = ("as a background command that re-invokes you when it exits (Claude: persistent "
                "Monitor / run_in_background; a killed background command is a lost wake path — re-arm)"
@@ -188,12 +188,12 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
     if role.fill == "self" and feats.get("digest"):
         fill = (f"FILL: self, via the shared board digest. When your queue is empty and you hold nothing, the "
                 f"watcher delivers your top digest candidates ranked against your working context (`{HAGPY} "
-                f"context show --hag {hag} --slug {role.slug}`), each with score, why-tokens, blockers and a body "
+                f"context show --shoal {hag} --slug {role.slug}`), each with score, why-tokens, blockers and a body "
                 f"excerpt: decide from those, open an issue only when the excerpt is not enough. Record ALL "
-                f"decisions of one wake in one call: `{HAGPY} triage --hag {hag} --slug {role.slug} "
+                f"decisions of one wake in one call: `{HAGPY} triage --shoal {hag} --slug {role.slug} "
                 f"[--claim repo#n:verb] [--pass repo#n:CLASS[:suggest=<role>][:note=..]]...` with CLASS one of "
                 f"out-of-lane|blocked|needs-maintainer|needs-hardware|duplicate-or-stale; name `suggest=` "
-                f"whenever you know whose lane it is. Full ranked list: `{HAGPY} digest --hag {hag} --slug "
+                f"whenever you know whose lane it is. Full ranked list: `{HAGPY} digest --shoal {hag} --slug "
                 f"{role.slug}`. user offers ALWAYS outrank board candidates.")
     elif role.fill == "self":
         fill = (f"FILL: self. When your queue is empty and you hold nothing, the watcher offers the top "
@@ -208,7 +208,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
     else:
         fill = "FILL: none. You never claim; you observe."
     relay = ("Nobody relays for you: status is the ledger; the maintainer reads "
-             f"`hag.py show --hag {hag}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
+             f"`shoal show --shoal {hag}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
              "(transition) or acting.")
     return (
         f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode, flattened) in HAG "
@@ -216,7 +216,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
         f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the shared "
         f"orchestration instructions section 'Unified ledger primitive'. ALL traffic is the ledger "
         f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, hags/{hag}/ledger/<writer>.jsonl, "
-        f"one file per writer, append-only) through `{HAGPY}` verbs: `show --hag {hag} --slug {role.slug} "
+        f"one file per writer, append-only) through `{HAGPY}` verbs: `show --shoal {hag} --slug {role.slug} "
         f"[--board]` (your view), `claim --slug {role.slug} --item repo#n:verb --base repo@sha`, "
         f"`done --slug {role.slug} --item .. --url ..`, `release --slug {role.slug} --item .. --kind "
         f"decline|blocked|handoff --reason ..`, `msg --by {role.slug} --to <slug|*|user> --text .. [--ack]` "
@@ -228,7 +228,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
         f"LEDGER-WAKE-TEST arrived. On EVERY wake (this watcher or any CI/lease watch): run `show`, act, "
         f"`transition`, re-arm — the ledger is read only on wakes, never polled by you. CI/lease waits arm "
         f"agent_ci_watch.sh (or a harness Monitor) exactly as before, with your own session id. Register EVERY "
-        f"armed watch for daemon validation: `{HAGPY} watch-register --hag {hag} --slug {role.slug} "
+        f"armed watch for daemon validation: `{HAGPY} watch-register --shoal {hag} --slug {role.slug} "
         f"--kind ci|ledger|lease --target <what> --pid <pid> --session <your-full-session-id> "
         f"[--rescan-min N]` (the daemon pages you if the pid dies or the rescan lapses +50%). Keep a "
         f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
@@ -248,8 +248,8 @@ def h4_disciplines(role: Role, spec: HagSpec) -> str:
         out.append(
             f"JOBS: any local work that would hurt to lose (test suites, GPU renders, A/B runs, anything "
             f"over a few minutes) runs as a job unit, never as a harness background command: `{HAGPY} job run "
-            f"--hag {hag} --slug {role.slug} --name <short> [--memory-high 24G] -- <cmd>` (wrap GPU work in "
-            f"gpu_lease.sh inside <cmd>), then follow it with `{HAGPY} job wait --hag {hag} --slug {role.slug} "
+            f"--shoal {hag} --slug {role.slug} --name <short> [--memory-high 24G] -- <cmd>` (wrap GPU work in "
+            f"gpu_lease.sh inside <cmd>), then follow it with `{HAGPY} job wait --shoal {hag} --slug {role.slug} "
             f"--name <short>` as your background waiter. The job survives your session and any reap; the "
             f"waiter is safe to re-arm and prints one JOB-VERDICT line.")
     out.append(

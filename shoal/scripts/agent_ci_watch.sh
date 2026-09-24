@@ -1,13 +1,11 @@
 #!/bin/bash
-# agent_ci_watch.sh — head-pinned hosted-matrix watch with a self-send wakeup path.
+# agent_ci_watch.sh: head-pinned hosted-matrix watch with a self-send wakeup path.
 #
-# Generalized from the Lane B (jlens-expert-r2) watch proven in the 2026-09-14 r2 generation:
-# conclusion-level polling (leg failures visible, unlike check-rollup watches, which logged nothing
+# Conclusion-level polling (leg failures visible, unlike check-rollup watches, which logged nothing
 # for 45 minutes across two failed legs) plus a wakeup self-send, because a monitor that only writes
 # a log is an orphaned writer no idle session ever re-reads.
 #
-# Pattern reference: shared-orchestration-instructions.md ("Lanes watch their own waits..."), and the
-# runbook's steady-state checks. The wakeup half is what makes this a monitor rather than a log writer.
+# The wakeup half is what makes this a monitor rather than a log writer.
 #
 # Usage:
 #   agent_ci_watch.sh <pr-number> <wanted-head-sha> <own-session-id> <repo-dir> [test]
@@ -31,8 +29,11 @@ LOG=/tmp/mon_${PR}_hosted.log
 
 fire() {
   openchamber session send --session "$SELF" --dir "$DIR" --prompt "MONITOR-FIRED PR-$PR $1: $2" >> "$LOG" 2>&1
-  /home/speediedan/repos/distributed-insight/project_admin/shared_admin_scripts/telemetry/hag_telemetry.py \
-    emit --hag it-mvp-2026-09 --session "$SELF" --ecosystem opencode --type coord_comms \
+  # telemetry is optional: set SHOAL_ID (legacy HAG_ID) to the group id to record the fire
+  local id="${SHOAL_ID:-${HAG_ID:-}}"
+  [ -n "$id" ] || return 0
+  python3 "$(dirname "$(readlink -f "$0")")/../telemetry/hag_telemetry.py" \
+    emit --shoal "$id" --session "$SELF" --ecosystem opencode --type coord_comms \
     --field direction=watch-fire --field peer="PR-$PR" --field note="$1" --field channel=within-ecosystem >/dev/null 2>&1 || true
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight + live health: `hag.py doctor [--spec hag.json]`.
+"""Preflight + live health: `shoal doctor [--spec hag.json]`.
 
 Runs before a launch (no spec: host checks only) and any time after
 (with a spec: adds per-HAG checks). Every check prints one line
@@ -36,7 +36,7 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 from backends import get as get_backend  # noqa: E402
 from heartbeat import age_min, classify  # noqa: E402
-from roles import HAG_DATA_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
+from roles import SHOAL_DATA_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
 
 ENV = config.tool_env()
 TICK_INTERVAL_MIN = {"lanes": 5, "pipeline": 10, "heartbeat": 5,
@@ -109,7 +109,7 @@ def host_checks(d: Doc) -> None:
         except OSError:
             pass
     (d.ok if pat else d.warn)("AZURE_DEVOPS_EXT_PAT", "resolvable" if pat else "unset (pipeline watcher will refuse to judge)")
-    for name, root in (("HAG_DATA_ROOT", HAG_DATA_ROOT),):
+    for name, root in (("SHOAL_DATA_ROOT", SHOAL_DATA_ROOT),):
         if os.path.isdir(root) and os.access(root, os.W_OK):
             d.ok(name, root)
         elif not os.path.isdir(root):
@@ -192,7 +192,7 @@ def provider_failures(session_ids: list[str], hours: float = 24) -> dict:
 
 
 def tools_skew_note(armed_utc: str) -> str:
-    """Non-empty when the watch was armed before the newest hag/ tool commit:
+    """Non-empty when the watch was armed before the newest shoal/ tool commit:
     the running process executes pre-fix code (measured 2026-09-21: a holder
     gate fixed after arming left a live watcher silently not offering)."""
     try:
@@ -219,7 +219,7 @@ def timer_state(hag: str) -> dict[str, str]:
     r = run(["systemctl", "--user", "list-timers", "--all", "--no-pager", "--no-legend"], timeout=30)
     out = {}
     for line in r.stdout.splitlines():
-        m = re.search(rf"(hag-{re.escape(hag)}-([\w.-]+?)\.timer)", line)
+        m = re.search(rf"((?:shoal|hag)-{re.escape(hag)}-([\w.-]+?)\.timer)", line)
         if m:
             head = line.split(m.group(1))[0].strip()
             # columns are NEXT LEFT LAST PASSED: a real weekday timestamp in
@@ -239,7 +239,7 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
     for r in spec.roles:
         if r.doc and not os.path.isabs(r.doc):
             d.warn(f"doc path {r.slug}", f"relative role doc {r.doc!r} resolves against the caller's cwd; "
-                                         f"fix with `hag.py spec absolutize-docs --spec {spec_path} --base DIR`")
+                                         f"fix with `shoal spec absolutize-docs --spec {spec_path} --base DIR`")
         if not r.doc or not os.path.exists(r.doc):
             d.fail(f"doc {r.slug}", f"missing: {r.doc}")
             continue
@@ -269,7 +269,7 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
                 d.ok(f"tick {job}", f"{age:.0f}m ago")
         timers = timer_state(spec.hag)
         if not timers:
-            d.fail("systemd timers", f"none installed for {spec.hag} (hag.py install-systemd --enable)")
+            d.fail("systemd timers", f"none installed for {spec.hag} (shoal install-systemd --enable)")
         else:
             inactive = [k for k, v in timers.items() if v != "scheduled"]
             (d.fail if inactive else d.ok)("systemd timers", f"{len(timers)} installed; inactive: {inactive}" if inactive else f"{sorted(timers)} scheduled")
@@ -306,7 +306,7 @@ def matcher_checks(d: Doc, spec: HagSpec) -> None:
     act = (st.get("active") or {}).get("model")
     if not act:
         d.warn("matcher", f"{mode}: no model has answered yet (configured {c.get('model')}); "
-                          f"`hag.py digest --hag {spec.hag} --refresh` runs it")
+                          f"`shoal digest --shoal {spec.hag} --refresh` runs it")
         return
     tier = matcher.tier_of(st["active"])
     pinned = "" if act == c.get("model") else f" (FALLBACK: configured {c.get('model')} did not answer)"
@@ -325,7 +325,7 @@ def ledger_checks(d: Doc, spec: HagSpec) -> None:
         return
     root = spec.ledger_dir
     if not os.path.isdir(os.path.join(root, ".git")):
-        d.fail("ledger clone", f"{root} is not a git clone (hag.py ledger-init --spec ...)")
+        d.fail("ledger clone", f"{root} is not a git clone (shoal ledger-init --spec ...)")
         return
     d.ok("ledger clone", root)
     try:
@@ -336,12 +336,12 @@ def ledger_checks(d: Doc, spec: HagSpec) -> None:
         d.fail("ledger remote", str(exc))
     led = Ledger(spec.hag, root=root)
     if not led.exists():
-        d.fail("ledger dir", f"{led.ldir} absent (hag.py ledger-init --spec ...)")
+        d.fail("ledger dir", f"{led.ldir} absent (shoal ledger-init --spec ...)")
         return
     n = unpushed(root)
     if n:
         r = git(root, "log", "-1", "--format=%ct", "origin/HEAD..HEAD", check=False)
-        (d.warn)("ledger unpushed", f"{n} local commit(s) not on the remote (hag.py sync --hag {spec.hag})")
+        (d.warn)("ledger unpushed", f"{n} local commit(s) not on the remote (shoal sync --shoal {spec.hag})")
     else:
         d.ok("ledger unpushed", "none")
     view = View(led, spec)

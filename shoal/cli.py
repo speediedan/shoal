@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hag.py — scripted HAG management (start, generation restart, watchers,
+"""shoal: scripted SHOAL group management (start, generation restart, watchers,
 state, health, reports). Stdlib only by design (systemd-safe, no venv).
 Runbook §1 has the operator sequence; the readme is the human map.
 
@@ -56,6 +56,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+from ledger import SYSTEM_WRITER  # noqa: E402
+import config  # noqa: E402
 
 from backends import ClaudeBackend, UnsupportedError, get as get_backend  # noqa: E402
 from briefs import brief_for  # noqa: E402
@@ -69,7 +71,7 @@ import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
-from roles import (HAG_DATA_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
+from roles import (SHOAL_DATA_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
@@ -207,7 +209,7 @@ def stage_retire(spec: HagSpec, old_sessions: list[str],
 def persist_spec(spec: HagSpec, path: str, note: str = "") -> None:
     """Save the spec; when the path lives under the ledger clone it is the
     canonical copy, so commit+push (remote agents read it). A spec outside
-    the clone (tests, a pinned $HAG_SPEC) saves plain."""
+    the clone (tests, a pinned $SHOAL_SPEC) saves plain."""
     spec.save(path)
     try:
         root = spec.ledger_dir
@@ -352,7 +354,7 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
                 consumers_launched.append(role)
     if not dry_run:
         spec.record_generation(run_pin())
-        hag_emit(spec.hag, "hag.py", "script", "generation",
+        hag_emit(spec.hag, "shoal", "script", "generation",
                  event="started", gen=spec.display_gen,
                  incarnation=str(spec.incarnation),
                  note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session))
@@ -360,7 +362,7 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
             from ledger import Ledger
             led = Ledger(spec.hag, root=spec.ledger_dir)
             led.pull()
-            led.append("hag.py", "system", event="generation-started", gen=spec.display_gen,
+            led.append(SYSTEM_WRITER, "system", event="generation-started", gen=spec.display_gen,
                        note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session), _push=False)
             led.snapshot_spec(spec.snapshot())
         except Exception as exc:  # noqa: BLE001
@@ -413,7 +415,7 @@ def cmd_start(args: argparse.Namespace) -> int:
               "dir": args.ledger_dir or DEFAULT_LEDGER["dir"]}
     if not ledger["repo"] and not os.path.isdir(os.path.join(ledger["dir"], ".git")):
         print(f"start: no ledger repo and no clone at {ledger['dir']}: pass --ledger-repo URL (or set "
-              "`ledger_repo` in the host config / HAG_LEDGER_REPO)")
+              "`ledger_repo` in the host config / SHOAL_LEDGER_REPO)")
         return 1
     spec = HagSpec(hag=hag, dir=args.dir, incarnation=0, roles=roles,
                    repos=list(args.repo or []), ledger=ledger, sources=sources)
@@ -637,12 +639,12 @@ def cmd_retire(a: argparse.Namespace) -> int:
         return 0
     spec.retired_utc = utcnow_iso()
     persist_spec(spec, a.spec, note="retire")
-    hag_emit(spec.hag, "hag.py", "script", "generation", event="retired", gen=spec.display_gen,
+    hag_emit(spec.hag, "shoal", "script", "generation", event="retired", gen=spec.display_gen,
              incarnation=str(spec.incarnation), note=a.note or "")
     print(f"retired {spec.hag} gen {spec.display_gen} at {spec.retired_utc} (sessions untouched; retire-by-neglect)")
     if a.uninstall_units:
         cmd_uninstall_systemd(spec.hag)
-    print("next: `hag.py report --spec <spec> --gen <gen>` writes the incarnation report; "
+    print("next: `shoal report --spec <spec> --gen <gen>` writes the incarnation report; "
           "review it in hag_system_reviews.md before the next protocol change.")
     return 0
 
@@ -721,7 +723,7 @@ def cmd_status(spec: HagSpec) -> int:
         v = View(led, spec)
         print(f"  ledger: {led.ldir} events={len(led.events())} contested={len(v.contested)} "
               f"violations={len(v.violations)} unpushed={unpushed(led.root)} "
-              f"(`hag.py show --hag {spec.hag}` for the table)")
+              f"(`shoal show --shoal {spec.hag}` for the table)")
         for r in spec.roles:
             sc = _ledger_watch.load_sidecar(_ledger_watch.sidecar_path(spec.hag, r.slug))
             if sc:
@@ -749,7 +751,7 @@ def cmd_status(spec: HagSpec) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="hag.py",
+    ap = argparse.ArgumentParser(prog="shoal",
                                  description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -849,14 +851,14 @@ def main(argv: list[str] | None = None) -> int:
     _upgrade.add_parser(sub)
 
     p = sub.add_parser("watch", help="systemd-timer watchers that fire into the ledger")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("mode", choices=("lanes", "pipeline"))
     p.add_argument("args", nargs="*",
                    help="lanes: ledger:<hag> <dir> <lane...> [--test] | pipeline: ledger:<hag> <dir> [org] [proj]")
     p.set_defaults(func=lambda a: cmd_watch(a))
 
     p = sub.add_parser("heartbeat", help="stall daemon over hb + wait ticks")
-    p.add_argument("--hag", default="")
+    config.add_id_arg(p, default="")
     p.add_argument("--spec", default="")
     p.add_argument("--threshold-min", type=float, default=60)
     p.add_argument("--refire-min", type=float, default=60)
@@ -882,7 +884,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_sync_models)
 
     p = sub.add_parser("watch-register", help="record one armed per-session monitor for daemon validation")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
     p.add_argument("--kind", required=True, choices=("ci", "ledger", "lease"))
     p.add_argument("--target", required=True, help="what the watch waits on (PR#, build, queue)")
@@ -909,7 +911,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("uninstall-systemd",
                        help="disable + remove a retired HAG's watcher units")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.hag, dry_run=a.dry_run))
 
@@ -959,20 +961,20 @@ def cmd_watch(a: argparse.Namespace) -> int:
         return 1
     if a.mode == "lanes":
         if len(a.args) < 3:
-            print("usage: hag.py watch --hag ID lanes ledger:<hag> <dir> <lane...> [--test]")
+            print("usage: shoal watch --shoal ID lanes ledger:<hag> <dir> <lane...> [--test]")
             return 1
         test = "--test" in a.args
         lanes = [x for x in a.args[2:] if x != "--test"]
         return cmd_lanes(a.hag, a.args[0], a.args[1], lanes, test=test)
     if len(a.args) < 2:
-        print("usage: hag.py watch --hag ID pipeline ledger:<hag> <dir> [org] [proj]")
+        print("usage: shoal watch --shoal ID pipeline ledger:<hag> <dir> [org] [proj]")
         return 1
     import config
     org = a.args[2] if len(a.args) > 2 else config.azure_org()
     proj = a.args[3] if len(a.args) > 3 else config.azure_project()
     if not org or not proj:
         print("pipeline watch needs an Azure org and project: pass them, or set azure_org and "
-              "azure_project in the host config (HAG_AZURE_ORG, HAG_AZURE_PROJECT)")
+              "azure_project in the host config (SHOAL_AZURE_ORG, SHOAL_AZURE_PROJECT)")
         return 1
     return cmd_pipeline(a.hag, a.args[0], a.args[1], org, proj)
 

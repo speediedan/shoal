@@ -7,9 +7,9 @@ do not count; failure modes §19/§21) and joins each one to:
   - the host PSI events `psi_watch` logged in the 30 s before it (count, MemAvailable),
   - the harness version that ran the session,
   - the cgroup memory.events oom_kill counters at audit time (kernel ruled in or out).
-New kills are appended once to `$HAG_DATA_ROOT/_instruments/kills.jsonl`.
+New kills are appended once to `$SHOAL_DATA_ROOT/_instruments/kills.jsonl`.
 
-    hag.py kill-audit [--since 2026-09-16] [--no-record]
+    shoal kill-audit [--since 2026-09-16] [--no-record]
 """
 from __future__ import annotations
 
@@ -22,10 +22,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from roles import HAG_DATA_ROOT  # noqa: E402
+from roles import SHOAL_DATA_ROOT  # noqa: E402
 
 PHRASE = "stopped because the system is running low on memory"
-INSTR = os.path.join(HAG_DATA_ROOT, "_instruments")
+INSTR = os.path.join(SHOAL_DATA_ROOT, "_instruments")
 PSI_LOG = os.path.join(INSTR, "psi_events.jsonl")
 KILLS = os.path.join(INSTR, "kills.jsonl")
 SCARCE = "MemAvailable under 10% and under 4 GiB"

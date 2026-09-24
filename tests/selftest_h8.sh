@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # H8 selftest (architecture doc §4.1, §11): semantic matcher (fallback, switch record, cache),
 # shadow vs live ranking, effective priority, the aux lane's minmax + unblocker ranking and
-# AUX header, aux-init, `digest --compare`, `upgrade`. Isolated: scratch spec dir and HAG_DATA_ROOT,
+# AUX header, aux-init, `digest --compare`, `upgrade`. Isolated: scratch spec dir and SHOAL_DATA_ROOT,
 # a local bare ledger remote, synthetic board items (and a board fixture behind every board
 # read), a fake model behind the `command` backend, synthetic start docs and a scratch working
 # dir and host config, so no network, no board read, no model call and no design-repo read.
@@ -9,13 +9,13 @@ set -uo pipefail
 TESTD="$(cd "$(dirname "$0")" && pwd)"
 HAGD="$(cd "$TESTD/../shoal" && pwd)"
 . "$TESTD/selftest_lib.sh"
-S="${1:-${TMPDIR:-/tmp}/hag-h8-selftest-$$}"
+S="${1:-${TMPDIR:-/tmp}/shoal-h8-selftest-$$}"
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
 hag_test_setup "$S"
 ROOT="$S/root"
 HAGID=h8selftest; SPEC="$ROOT/$HAGID/hag.json"; A="$S/cloneA"
-export HAG_SPEC="$SPEC"
-H="python3 $HAGD/hag.py"; export HAGD PYTHONPATH="$HAGD"
+export SHOAL_SPEC="$SPEC"
+H="python3 $HAGD/cli.py"; export HAGD PYTHONPATH="$HAGD"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 600 <<<"$out")"; }
 
@@ -60,7 +60,7 @@ cat > "$SPEC" <<JSON
  ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-22T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
 JSON
 $H ledger-init --spec "$SPEC" >/dev/null
-$H queue --hag $HAGID --spec "$SPEC" --slug tl --active interpretune#1:fix --no-sync >/dev/null \
+$H queue --shoal $HAGID --spec "$SPEC" --slug tl --active interpretune#1:fix --no-sync >/dev/null \
   || fail "tl queue write failed"
 
 cat > "$S/items.py" <<'PY'
@@ -151,14 +151,14 @@ assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leak
 PY
 
 echo "== 4 candidates, next AUX header, compare"
-check "BOARD interpretune#5:fix" $H digest --hag $HAGID --spec "$SPEC" --slug hag-aux --no-sync
-check "aux:max-fit=0" $H digest --hag $HAGID --spec "$SPEC" --slug hag-aux --semantic --no-sync
-OUT=$($H next --hag $HAGID --spec "$SPEC" --slug hag-aux --peek --no-sync 2>&1)
+check "BOARD interpretune#5:fix" $H digest --shoal $HAGID --spec "$SPEC" --slug hag-aux --no-sync
+check "aux:max-fit=0" $H digest --shoal $HAGID --spec "$SPEC" --slug hag-aux --semantic --no-sync
+OUT=$($H next --shoal $HAGID --spec "$SPEC" --slug hag-aux --peek --no-sync 2>&1)
 grep -q "AUX: you are the residual lane. Stay out of: tl (Upgrades interpretune to TL4); jl (J-lens support)" <<<"$OUT" \
   || fail "AUX header :: $OUT"
 grep -q "Parked lanes whose work is yours meanwhile: up" <<<"$OUT" || fail "parked lane not named :: $OUT"
 grep -q "BOARD interpretune#5:fix" <<<"$OUT" || fail "aux next lacks the unblocker :: $OUT"
-check "SWITCH BAR:" $H digest --hag $HAGID --spec "$SPEC" --compare --no-sync
+check "SWITCH BAR:" $H digest --shoal $HAGID --spec "$SPEC" --compare --no-sync
 
 echo "== 5 aux-init / role token / validation"
 python3 - "$SPEC" "$S/spec2.json" <<'PY'
@@ -166,17 +166,17 @@ import json, sys; d = json.load(open(sys.argv[1])); d["roles"] = [r for r in d["
 json.dump(d, open(sys.argv[2], "w"))
 PY
 check "\[dry-run\] aux-init $HAGID: doc $S/data/$HAGID/roles/hag-aux/plan_state.md; role ADD hag-aux" \
-  $H aux-init --hag $HAGID --spec "$S/spec2.json" --dry-run
-check "role ADD hag-aux" $H aux-init --hag $HAGID --spec "$S/spec2.json"
+  $H aux-init --shoal $HAGID --spec "$S/spec2.json" --dry-run
+check "role ADD hag-aux" $H aux-init --shoal $HAGID --spec "$S/spec2.json"
 grep -q "residual lane of HAG \`$HAGID\`" "$S/data/$HAGID/roles/hag-aux/plan_state.md" || fail "aux doc not written"
 python3 - "$S/spec2.json" <<'PY' || fail "aux role not added"
 import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "hag-aux"][0]
 assert r["aux"] is True and r["fill"] == "self", r
 PY
-check "\[dry-run\] aux-launch $HAGID: hag-aux (hag-aux-r1) opencode" $H aux-launch --hag $HAGID --spec "$S/spec2.json" --dry-run
+check "\[dry-run\] aux-launch $HAGID: hag-aux (hag-aux-r1) opencode" $H aux-launch --shoal $HAGID --spec "$S/spec2.json" --dry-run
 (cd "$HAGD" && python3 -c "
-import hag
-r = hag.parse_role('x,opencode,x,/d.md,aux,fill=assigned')
+import cli
+r = cli.parse_role('x,opencode,x,/d.md,aux,fill=assigned')
 assert r.aux and r.fill == 'self', r
 from roles import Role
 assert Role(slug='y', ecosystem='claude', title='y', doc='/d', fill='assigned', aux=True).validate()
@@ -231,7 +231,7 @@ notes4 = []
 r4 = matcher.resolve(spec, c2, st3, {}, notes4)
 assert matcher.tier_of(r4) == "free" and any("free-tier recheck" in n for n in notes4), (r4, notes4)
 # no Go route and no key: the Zen tier is skipped, never probed
-c5 = dict(c, go_fallbacks=[], paid_fallback={"model": "m", "key_env": "HAG_TEST_KEY"})
+c5 = dict(c, go_fallbacks=[], paid_fallback={"model": "m", "key_env": "SHOAL_TEST_KEY"})
 assert matcher.resolve(spec, c5, {}, {}, []) is None
 PY
 

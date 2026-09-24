@@ -17,8 +17,8 @@ then a generic default):
                      live here, never in version control.
   ledger.dir     the ledger repo's local clone (config `ledger_dir`):
                      hags/<hag>/{hag.json (THE canonical live spec, mutated by
-                     hag.py with commit+push),ledger/}. Remote agents read this.
-  HAG_SPEC       optional pin: the path of one HAG's spec (<dir named for the hag>/hag.json).
+                     shoal with commit+push),ledger/}. Remote agents read this.
+  SHOAL_SPEC       optional pin: the path of one HAG's spec (<dir named for the hag>/hag.json).
                      Tests and operators use it to resolve a spec outside the ledger clone.
 
 A spec also records its generation history (`generations`): one entry per
@@ -43,7 +43,7 @@ FILL_MODES = ("self", "assigned", "none")
 # resolved once per process: environment, then the host config file, then a generic default
 DEFAULT_LEDGER = {"repo": config.ledger_repo(), "dir": config.ledger_dir()}
 
-HAG_DATA_ROOT = config.data_root()
+SHOAL_DATA_ROOT = config.data_root()
 DEFAULT_REPOS = config.default_repos()
 
 
@@ -53,11 +53,11 @@ def utcnow_iso() -> str:
 
 def home_dir(hag: str) -> str:
     """Local per-hag home: briefs/, reports/, telemetry/ (unversioned)."""
-    return os.path.join(HAG_DATA_ROOT, hag)
+    return os.path.join(SHOAL_DATA_ROOT, hag)
 
 
 def data_dir(hag: str) -> str:
-    return os.path.join(HAG_DATA_ROOT, hag)
+    return os.path.join(SHOAL_DATA_ROOT, hag)
 
 
 def telemetry_dir(hag: str) -> str:
@@ -66,7 +66,7 @@ def telemetry_dir(hag: str) -> str:
 
 def contexts_dir(hag: str) -> str:
     """Per-HAG orchestration state: one editable working-context file per role,
-    `<slug>.json`, loaded into the spec by `hag.py context set|load` (architecture §4)."""
+    `<slug>.json`, loaded into the spec by `shoal context set|load` (architecture §4)."""
     return os.path.join(data_dir(hag), "contexts")
 
 
@@ -104,7 +104,7 @@ class Role:
         # it (or `*`); none: never claims (an observer role, e.g. the relay).
     scope: dict = dataclasses.field(default_factory=dict)  # DEPRECATED hard self-fill
         # filter {"repos", "labels_any", "labels_none"}; read only to derive `context`
-        # when a spec predates it (`hag.py context migrate` converts and removes it).
+        # when a spec predates it (`shoal context migrate` converts and removes it).
     context: dict = dataclasses.field(default_factory=dict)  # working context
         # (architecture doc §4.2): {"brief": str, "affinity": {"repos": {r: w},
         # "labels": {l: w}, "keywords": {k: w}, "paths": {glob: w}},
@@ -196,7 +196,7 @@ class HagSpec:
         # the HAG works (reconcile ground truth); DEFAULT_REPOS when empty.
     generations: list[dict] = dataclasses.field(default_factory=list)
         # [{gen, started_utc, ended_utc, sessions{slug:id}, run{}}], oldest first
-    retired_utc: str = ""  # set by `hag.py retire`; a retired HAG launches nothing
+    retired_utc: str = ""  # set by `shoal retire`; a retired HAG launches nothing
     ledger: dict = dataclasses.field(default_factory=dict)  # {"repo": url, "dir": clone}
         # required: the ledger is the only transport
     sources: list[dict] = dataclasses.field(default_factory=list)  # priority tables
@@ -208,7 +208,7 @@ class HagSpec:
         # health quorum timers replacing heartbeat; "relay" the Claude wake relay role;
         # "matcher" the semantic board matcher (architecture §4.1).
     tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "repo", "prev", "upgraded_utc",
-        # "changed"}: the hag/ tooling commit this HAG was last upgraded to (`hag.py upgrade`);
+        # "changed"}: the shoal/ tooling commit this HAG was last upgraded to (`shoal upgrade`);
         # `repo` names the repository that sha belongs to (origin URL, else toplevel dir name)
 
     def validate(self) -> list[str]:
@@ -342,10 +342,10 @@ class HagSpec:
 
 
 def default_spec_path(hag: str) -> str:
-    """The canonical live spec: `$HAG_SPEC` when it pins this hag (its directory is named
+    """The canonical live spec: `$SHOAL_SPEC` when it pins this hag (its directory is named
     for the hag), else the ledger clone's `hags/<hag>/hag.json`. A missing spec fails by
     name when loaded; there is no fallback location (the pre-ledger control plane is gone)."""
-    pin = os.environ.get("HAG_SPEC", "")
+    pin = config.env("SPEC")
     if pin and os.path.basename(os.path.dirname(os.path.abspath(pin))) == hag:
         return pin
     ledger_root = config.ledger_dir()

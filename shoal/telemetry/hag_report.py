@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Per-incarnation HAG report (Markdown + HTML, stdlib only). Spec-driven.
 
-  hag.py report --spec hag.json [--gen rN | --hours N | --since ISO --until ISO]
+  shoal report --spec hag.json [--gen rN | --hours N | --since ISO --until ISO]
                 [--out-md F] [--out-html F] [--gpu] [--coord-transcript]
 
 Window: --gen reads the generation record in the spec (started_utc ..
 ended_utc-or-now); --hours is a rolling window; --since/--until explicit.
-Default output: <HAG_DATA_ROOT>/<hag>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
+Default output: <SHOAL_DATA_ROOT>/<hag>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
 (the per-hag local home; editable review artifact carrying the VERDICT).
 HTML is a pure function of the .md: pass --out-html to render one, otherwise
 skipped (regenerate anytime; nothing reads it programmatically).
 (versioned, small, cited from hag_system_reviews.md) and the same stem .html
-under <HAG_DATA_ROOT>/<hag>/reports/ (bulk).
+under <SHOAL_DATA_ROOT>/<hag>/reports/ (bulk).
 
 Sections: header + protocol pins, outcomes, time-in-state per session,
 transition quality (valid/aliased/invalid), wait discipline (stale waits),
@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
-from roles import HAG_DATA_ROOT, HagSpec, home_dir  # noqa: E402
+from roles import SHOAL_DATA_ROOT, HagSpec, home_dir  # noqa: E402
 import config  # noqa: E402
 
 LOCAL = config.tzinfo()
@@ -610,7 +610,7 @@ def recovery_sections(evs, w0, w1):
     L.append("")
     L.append("## Host memory pressure and harness reaps (psi_watch + kill-audit)")
     L.append(f"- host PSI trigger fires in window: {'unavailable' if psi_n < 0 else psi_n}"
-             f" · genuine harness reaps: {len(kills)} (run `hag.py kill-audit` first to record new ones)")
+             f" · genuine harness reaps: {len(kills)} (run `shoal kill-audit` first to record new ones)")
     if kills:
         L.append(table(["ts", "session", "harness", "psi context", "command"], kills[-15:]))
     return L
@@ -798,11 +798,11 @@ def sibling_truth(hag):
     events marked reconciled=true count; best-effort, never fatal."""
     out = []
     try:
-        names = sorted(os.listdir(HAG_DATA_ROOT))
+        names = sorted(os.listdir(SHOAL_DATA_ROOT))
     except OSError:
         return out
     for h in names:
-        d = os.path.join(HAG_DATA_ROOT, h, "telemetry")
+        d = os.path.join(SHOAL_DATA_ROOT, h, "telemetry")
         if h == hag or not os.path.isdir(d):
             continue
         try:
@@ -816,7 +816,7 @@ def sibling_truth(hag):
 def drop_ledger_twins(local, ledger_evs, resolve, tol_s=5):
     """Drop a ledger-derived `state` event (session_transition via=ledger) when
     the same role has a local telemetry transition with the same to_state and
-    waiting sub within tol_s. `hag.py transition` writes both, the ledger one
+    waiting sub within tol_s. `shoal transition` writes both, the ledger one
     landing 1-2 s later, so an exact-timestamp match never deduped them. Each
     local transition absorbs at most one twin. Returns (kept, dropped_ts)."""
     idx = {}

@@ -2,31 +2,34 @@
 #
 # Every suite calls `hag_test_setup "$S"` right after creating its scratch dir. It makes the
 # run independent of this host and of the network:
-#   - HAG_CONFIG points at a scratch host config, so the package's own config/host.toml
+#   - SHOAL_CONFIG points at a scratch host config, so the package's own config/host.toml
 #     (data root, ledger clone, tool PATH, lease provider, cli) is never read;
 #   - every other config variable is unset, so nothing leaks in from the caller's shell;
 #   - WORK is a scratch git repository standing in for the spec's working dir;
 #   - DOCS holds synthetic plan_state docs (with `## Current state` and `## grants-needed`),
 #     written by hag_doc, so no design-repo document is read;
-#   - hag_board_fixture writes a synthetic board and exports HAG_BOARD_FIXTURE, so no
+#   - hag_board_fixture writes a synthetic board and exports SHOAL_BOARD_FIXTURE, so no
 #     board read reaches GitHub;
-#   - HAG_FAKE_SESSIONS answers session-liveness probes without a harness CLI.
+#   - SHOAL_FAKE_SESSIONS answers session-liveness probes without a harness CLI.
 # `doctor`'s host preflight still calls `openchamber status` and `gh auth status` by design:
 # probing those tools is what it is for (selftest_hermetic.sh lists them as justified).
 # have_systemd says whether systemd --user job units can run here; sections that need them
-# print `SKIP <reason>` otherwise (and always under HAG_TEST_NO_SYSTEMD=1).
+# print `SKIP <reason>` otherwise (and always under SHOAL_TEST_NO_SYSTEMD=1).
 
 hag_test_setup() {
   local s=$1
-  unset HAG_LEDGER_DIR HAG_LEDGER_REPO HAG_TOOL_PATH HAG_CLI HAG_LEASE_CMD GPU_LEASE_CMD \
-        HAG_PSI_OUT HAG_BOARD_FIXTURE
+  local v
+  for v in LEDGER_DIR LEDGER_REPO TOOL_PATH CLI LEASE_CMD PSI_OUT BOARD_FIXTURE SPEC CONFIG DATA_ROOT; do
+    unset "SHOAL_$v" "HAG_$v"   # the legacy HAG_* names are honoured as fallbacks, so clear both
+  done
+  unset GPU_LEASE_CMD
   mkdir -p "$s/data"
   printf 'data_root = "%s"\nledger_dir = "%s"\n' "$s/data" "$s/no-ledger-clone" > "$s/host.toml"
-  export HAG_CONFIG="$s/host.toml"
-  export HAG_DATA_ROOT="$s/data"
+  export SHOAL_CONFIG="$s/host.toml"
+  export SHOAL_DATA_ROOT="$s/data"
   # session-liveness probes answer from an empty world (no harness knows the synthetic
   # session ids anyway), so no `claude agents` / `openchamber session status` call is made
-  export HAG_FAKE_SESSIONS='{"claude": [], "opencode": {}}'
+  export SHOAL_FAKE_SESSIONS='{"claude": [], "opencode": {}}'
   WORK="$s/work"
   mkdir -p "$WORK"
   git init -q "$WORK"
@@ -63,14 +66,14 @@ EOF
 # hag_board_fixture PATH < JSON: write a synthetic board (a JSON list of items, board order)
 hag_board_fixture() {
   cat > "$1"
-  export HAG_BOARD_FIXTURE="$1"
+  export SHOAL_BOARD_FIXTURE="$1"
 }
 
 have_systemd() {
-  [ "${HAG_TEST_NO_SYSTEMD:-0}" != 1 ] && systemctl --user show-environment >/dev/null 2>&1
+  [ "${SHOAL_TEST_NO_SYSTEMD:-${HAG_TEST_NO_SYSTEMD:-0}}" != 1 ] && systemctl --user show-environment >/dev/null 2>&1
 }
 
 skip_reason() {
-  if [ "${HAG_TEST_NO_SYSTEMD:-0}" = 1 ]; then echo "HAG_TEST_NO_SYSTEMD=1"
+  if [ "${SHOAL_TEST_NO_SYSTEMD:-${HAG_TEST_NO_SYSTEMD:-0}}" = 1 ]; then echo "SHOAL_TEST_NO_SYSTEMD=1"
   else echo "systemctl --user show-environment failed (no systemd --user session)"; fi
 }

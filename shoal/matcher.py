@@ -5,7 +5,7 @@ A model scores every open board item 0-3 against every lane's declared brief, an
 classifies it (workable | needs-maintainer | blocked | parked), in place of affinity
 weights. Opt-in per HAG with `features.matcher` (absent: the digest behaves exactly as
 before). `live: false` is shadow mode: the semantic ranking is written beside the live
-digest for `hag.py digest --compare`; `live: true` makes it the ranking roles read.
+digest for `shoal digest --compare`; `live: true` makes it the ranking roles read.
 
 Transport, measured 2026-09-23:
   - Zen free models refuse direct API calls (`FreeTierError: OpenCode's free tier can
@@ -15,14 +15,14 @@ Transport, measured 2026-09-23:
     so the prompt is always an attached file (`-f <absolute path>`);
   - every run's session is deleted afterwards, so the store does not fill up.
 The direct OpenAI-compatible API is only the optional paid fallback, keyed by
-`HAG_MATCHER_API_KEY` in `hag/.env` (gitignored; created by the maintainer).
+`SHOAL_MATCHER_API_KEY` in `shoal/.env` (gitignored; created by the maintainer).
 
 Models rotate. Resolution is tiered, cheapest first:
   free  the model that last worked, the configured model and fallbacks, then free models
         discovered from `opencode models opencode` cross-checked against the Zen pricing table;
   go    the OpenCode Go subscription (`go_fallbacks`, opencode's stored login): the first
         PAID tier, a flat monthly fee with usage caps;
-  zen   the Zen balance (`paid_fallback`, pay per token, key in hag/.env).
+  zen   the Zen balance (`paid_fallback`, pay per token, key in shoal/.env).
 While a paid tier is active the free tier is re-probed every `free_recheck_min`. A switch is
 warned on stderr, recorded as a ledger `system` event, and paged at most once a day.
 
@@ -48,6 +48,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from ledger import SYSTEM_WRITER  # noqa: E402
 
 from roles import HagSpec, data_dir  # noqa: E402
 
@@ -64,7 +65,7 @@ DEFAULTS = {
     "discover_free": True,
     # paid tiers, tried only after every free route: the OpenCode Go subscription first (flat
     # monthly fee with usage caps; opencode's stored `opencode-go` login, no key file), then the
-    # Zen balance (pay per token; `paid_fallback`, keyed from hag/.env)
+    # Zen balance (pay per token; `paid_fallback`, keyed from shoal/.env)
     # measured 2026-09-23: both answer in ~5 s and neither trains on prompts (Go privacy table);
     # opencode-go/deepseek-v4-flash needs the workspace's Global-regions setting and, through
     # `opencode run`, hangs silently instead of erroring, so it is not a default
@@ -106,7 +107,7 @@ def mdir(hag: str) -> str:
 
 
 def load_env(path: str = ENV_FILE) -> dict[str, str]:
-    """KEY=VALUE lines from the gitignored hag/.env; os.environ wins over the file."""
+    """KEY=VALUE lines from the gitignored shoal/.env; os.environ wins over the file."""
     out: dict[str, str] = {}
     try:
         with open(path) as fh:
@@ -118,7 +119,10 @@ def load_env(path: str = ENV_FILE) -> dict[str, str]:
                 out[k.strip()] = v.strip().strip("'\"")
     except OSError:
         pass
-    out.update({k: v for k, v in os.environ.items() if k.startswith("HAG_")})
+    out.update({k: v for k, v in os.environ.items() if k.startswith(("SHOAL_", "HAG_"))})
+    # the legacy key name still works: SHOAL_MATCHER_API_KEY falls back to HAG_MATCHER_API_KEY
+    if not out.get("SHOAL_MATCHER_API_KEY") and out.get("HAG_MATCHER_API_KEY"):
+        out["SHOAL_MATCHER_API_KEY"] = out["HAG_MATCHER_API_KEY"]
     return out
 
 
@@ -177,7 +181,7 @@ def call_opencode(model: str, prompt: str, workdir: str, timeout: float) -> str:
     pf = os.path.abspath(os.path.join(workdir, "prompt.md"))
     with open(pf, "w") as fh:
         fh.write(prompt)
-    title = f"hag-matcher-{int(time.time() * 1000)}"
+    title = f"shoal-matcher-{int(time.time() * 1000)}"
     argv = [opencode_bin(), "run", "--pure", "--dir", os.path.abspath(workdir), "-m", model, "--format", "json",
             "--title", title, "-f", pf, "--", INSTRUCTION]
     ids: set[str] = set()
@@ -224,7 +228,7 @@ def call_openai(base_url: str, model: str, key: str, prompt: str, timeout: float
     body = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}],
                        "temperature": 0}).encode()
     req = urllib.request.Request(base_url.rstrip("/") + "/chat/completions", data=body, headers={
-        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "hag-matcher/1"})
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "shoal-matcher/1"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.load(r)
@@ -263,7 +267,7 @@ def save_state(hag: str, st: dict) -> None:
 
 def pricing_free_names(url: str = PRICING_URL, timeout: float = 30) -> set[str]:
     """Normalized names of the Zen pricing rows whose Input column reads `Free`."""
-    req = urllib.request.Request(url, headers={"User-Agent": "hag-matcher/1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "shoal-matcher/1"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         t = r.read().decode("utf-8", "replace")
     i = t.lower().find('id="pricing"')
@@ -343,10 +347,10 @@ def candidates(c: dict, st: dict, env: dict, warn, stage: str, recheck: bool = F
             add(dict(m, tier="go") if isinstance(m, dict) else {"backend": "opencode-run", "model": m, "tier": "go"})
     elif stage == "zen":
         pf = c.get("paid_fallback") or None
-        if pf and env.get(pf.get("key_env", "HAG_MATCHER_API_KEY")):
+        if pf and env.get(pf.get("key_env", "SHOAL_MATCHER_API_KEY")):
             add({"backend": pf.get("backend", "openai-compat"), "model": pf["model"], "tier": "zen",
                  "base_url": pf.get("base_url", "https://opencode.ai/zen/v1"),
-                 "key_env": pf.get("key_env", "HAG_MATCHER_API_KEY")})
+                 "key_env": pf.get("key_env", "SHOAL_MATCHER_API_KEY")})
     return out
 
 
@@ -354,7 +358,7 @@ def call(route: dict, prompt: str, hag: str, timeout: float, env: dict) -> str:
     if route["backend"] == "opencode-run":
         return call_opencode(route["model"], prompt, os.path.join(mdir(hag), "run"), timeout)
     if route["backend"] == "openai-compat":
-        key = env.get(route.get("key_env", "HAG_MATCHER_API_KEY"), "")
+        key = env.get(route.get("key_env", "SHOAL_MATCHER_API_KEY"), "")
         if not key:
             raise Unavailable(f"{route['model']}: no {route.get('key_env')} in {ENV_FILE}")
         return call_openai(route["base_url"], route["model"], key, prompt, timeout)
@@ -407,7 +411,7 @@ def announce_switch(spec: HagSpec, prev: dict, new: dict, notes: list[str], st: 
     notes.append(text)
     try:
         from ledger import Ledger
-        Ledger(spec.hag, root=spec.ledger_dir).append("hag.py", "system", kind="matcher-model",
+        Ledger(spec.hag, root=spec.ledger_dir).append(SYSTEM_WRITER, "system", kind="matcher-model",
                                                       old=prev.get("model"), new=new["model"], text=text)
     except Exception as exc:  # noqa: BLE001
         notes.append(f"(ledger system event failed: {exc})")

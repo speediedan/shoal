@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""`hag.py upgrade`: roll hag/ tooling and feature flags into a LIVE HAG (architecture doc §11).
+"""`shoal upgrade`: roll shoal/ tooling and feature flags into a LIVE HAG (architecture doc §11).
 
-  hag.py upgrade --spec S [--enable a.b] [--disable a.b] [--set a.b=JSON] [--rearm lazy|now]
+  shoal upgrade --spec S [--enable a.b] [--disable a.b] [--set a.b=JSON] [--rearm lazy|now]
                  [--skip-selftests] [--allow-dirty] [--dry-run]
 
 Every change has one rollout class, and this command says which apply:
@@ -16,7 +16,7 @@ Every change has one rollout class, and this command says which apply:
   restart  a spec change a live session depends on (a model change, a role's ecosystem):
            never done here; the command names it and stops short.
 
-Order: refuse a dirty hag/ tree, run both selftests, diff hag/ since the spec's recorded
+Order: refuse a dirty shoal/ tree, run both selftests, diff shoal/ since the spec's recorded
 `tooling.sha`, classify, apply feature edits, record the new sha with a ledger `system`
 event, then re-arm per `--rearm`. `--dry-run` prints the whole plan and changes nothing
 (selftests still run: they are isolated).
@@ -33,6 +33,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS_DIR = os.path.join(os.path.dirname(HERE), "tests")
 sys.path.insert(0, HERE)
+import config  # noqa: E402
 
 from roles import HagSpec, find_spec  # noqa: E402
 
@@ -200,7 +201,7 @@ def cmd_upgrade(a) -> int:
     if cls["brief"]:
         print("brief: brief text changed; lanes read it at their next restart (`next`/`queue` carry rules now)")
     if a.restart_note:
-        print(f"restart NEEDED (declared): {a.restart_note}; run `hag.py restart --spec {path} --only ...` "
+        print(f"restart NEEDED (declared): {a.restart_note}; run `shoal restart --spec {path} --only ...` "
               f"at a pause boundary")
     else:
         print("restart: none needed (no declared spec change a live session depends on)")
@@ -218,12 +219,12 @@ def cmd_upgrade(a) -> int:
     spec.tooling = {"sha": sha, "repo": repo_id(), "prev": recorded, "upgraded_utc": now_iso(),
                     "changed": sorted({os.path.basename(f) for f in files}),
                     "features_changed": changes}
-    from hag import persist_spec
+    from cli import persist_spec
     persist_spec(spec, path, note=f"upgrade tooling {recorded or '-'}..{sha}" + (f"; {', '.join(changes)}" if changes else ""))
     try:
         from ledger import Ledger
         Ledger(spec.hag, root=spec.ledger_dir).append(
-            "hag.py", "system", kind="upgrade", old=recorded, new=sha, features=changes,
+            "shoal", "system", kind="upgrade", old=recorded, new=sha, features=changes,
             text=f"tooling upgraded {recorded or '-'} -> {sha}" + (f"; features {', '.join(changes)}" if changes else ""))
     except Exception as exc:  # noqa: BLE001
         print(f"(ledger system event failed: {exc})")
@@ -236,16 +237,16 @@ def cmd_upgrade(a) -> int:
             print(f"woke {slug} to re-arm -> {ch}")
     print(f"upgraded {spec.hag} to tooling {sha}")
     if any(c.startswith("matcher") for c in changes):
-        print(f"matcher: the digest timer applies it within 10 minutes; `hag.py digest --hag {spec.hag} --refresh` "
+        print(f"matcher: the digest timer applies it within 10 minutes; `shoal digest --shoal {spec.hag} --refresh` "
               f"applies it now")
     return 0
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("upgrade", help="roll hag/ tooling and feature flags into a live HAG (classes: live, "
+    p = sub.add_parser("upgrade", help="roll shoal/ tooling and feature flags into a live HAG (classes: live, "
                                        "re-arm, brief, restart)")
     p.add_argument("--spec", default="")
-    p.add_argument("--hag", default="")
+    config.add_id_arg(p, default="")
     p.add_argument("--enable", action="append", default=[], metavar="FEATURE.PATH",
                    help="set a feature path true, e.g. matcher.live (repeatable)")
     p.add_argument("--disable", action="append", default=[], metavar="FEATURE.PATH")

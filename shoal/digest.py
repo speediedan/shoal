@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Shared board digest, batch triage, and working context (architecture doc §4).
 
-One board read per HAG, not one per self-filling watcher: `hag.py digest --refresh`
+One board read per HAG, not one per self-filling watcher: `shoal digest --refresh`
 (a systemd timer when the spec opts in with `features.digest`) fetches the priority
 table ONCE, with body excerpts, blocking relations and linked PRs, scores every open
 item against every self-filling role's working context, and writes
-`$HAG_DATA_ROOT/<hag>/board_digest.json`. A role's ledger-watch then reads that file
+`$SHOAL_DATA_ROOT/<hag>/board_digest.json`. A role's ledger-watch then reads that file
 instead of GitHub, and a board wake carries enough (excerpt, score, why tokens) to
 claim or pass without opening each issue.
 
@@ -26,7 +26,7 @@ whose best fit to any other ACTIVE role is lowest (minmax), unblockers first. Wi
 `board_digest.semantic.json` for `digest --compare`; without `features.matcher` nothing
 here changes.
 
-`hag.py triage` records a role's decisions in one go: each claim keeps the
+`shoal triage` records a role's decisions in one go: each claim keeps the
 first-landed-wins check of `claim`; all passes land as ONE ledger commit with a
 reason class from a fixed vocabulary, so routing and reports can count them.
 """
@@ -43,6 +43,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+import config  # noqa: E402
 
 from roles import HagSpec, contexts_dir, data_dir, find_spec, scope_to_context  # noqa: E402
 
@@ -103,7 +104,7 @@ def _short(repo: str) -> str:
 def fetch_board(owner: str, number: int) -> list[dict]:
     """All board items in board order, with the fields the digest needs."""
     from sources import board_fixture, gh_graphql
-    fixture = board_fixture()  # HAG_BOARD_FIXTURE (tests): no board read
+    fixture = board_fixture()  # SHOAL_BOARD_FIXTURE (tests): no board read
     if fixture is not None:
         return fixture
     items: list[dict] = []
@@ -502,7 +503,7 @@ def cmd_digest(a) -> int:
         docmem = load_semantic(spec.hag) if a.semantic else load(spec.hag, max_age_min=1e9)
         if docmem is None:
             print(f"no {'semantic ' if a.semantic else ''}digest for {spec.hag}; run "
-                  f"`hag.py digest --hag {spec.hag} --refresh`")
+                  f"`shoal digest --shoal {spec.hag} --refresh`")
             return 1
     if a.slug:
         rows = (docmem.get("roles") or {}).get(a.slug)
@@ -599,7 +600,7 @@ def cmd_compare(a, spec: HagSpec, view) -> int:
         print(f"  {slug}: claims-in-top keyword={d['keyword'][0]} semantic={d['semantic'][0]}; "
               f"declines-in-top keyword={d['keyword'][1]} semantic={d['semantic'][1]}")
     print("SWITCH BAR: " + ("MET (semantic recall >= keyword and leakage <= keyword): "
-                            "`hag.py upgrade --spec <spec> --enable matcher.live`" if r["bar_met"] else
+                            "`shoal upgrade --spec <spec> --enable matcher.live`" if r["bar_met"] else
                             "NOT MET (keep shadow; see the per-lane lines)"))
     return 0 if r["bar_met"] else 3
 
@@ -659,7 +660,7 @@ def cmd_triage(a) -> int:
             pushed = sync_push(led.root) if led.sync else True
             print(f"passed {len(evs)} item(s) in one commit: "
                   + ", ".join(f"{e['item']}({e['cls']})" for e in evs)
-                  + ("" if pushed else " (push pending: `hag.py sync`)"))
+                  + ("" if pushed else " (push pending: `shoal sync`)"))
     return rc
 
 
@@ -737,7 +738,7 @@ def cmd_context(a) -> int:
         for s in changed:
             print(f"  {s}: {json.dumps(spec.role(s).context)}")
         return 0
-    from hag import persist_spec
+    from cli import persist_spec
     persist_spec(spec, path, note=f"context {a.action} {','.join(changed)}")
     print(f"context {a.action}: {changed}")
     return 0
@@ -745,7 +746,7 @@ def cmd_context(a) -> int:
 
 def add_parsers(sub) -> None:
     p = sub.add_parser("digest", help="shared board digest: refresh once per HAG, rank per role")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--refresh", action="store_true", help="fetch the board once and rewrite the digest")
     p.add_argument("--slug", default="", help="print this role's ranked candidates")
@@ -763,7 +764,7 @@ def add_parsers(sub) -> None:
     p.set_defaults(func=cmd_digest)
 
     p = sub.add_parser("triage", help="batch claim/pass for one role (passes land as ONE commit)")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", required=True)
     p.add_argument("--claim", action="append", help="ITEM[:verb] (repeatable; first-landed-wins each)")
@@ -779,7 +780,7 @@ def add_parsers(sub) -> None:
     p.add_argument("action", choices=["show", "set", "load", "export", "migrate"],
                    help="load: every <data-root>/<hag>/contexts/<slug>.json into the spec; "
                         "export: the spec's (or scope-derived) contexts to those files")
-    p.add_argument("--hag", required=True)
+    config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="")
     p.add_argument("--file", default="", help="context JSON for `set` (default <data-root>/<hag>/contexts/<slug>.json)")

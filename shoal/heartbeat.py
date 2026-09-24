@@ -2,7 +2,7 @@
 """Heartbeat stall daemon (proposal §5, v1).
 
 Contract (sessions are briefed on it): every row-state change goes through
-`hag.py transition`, which touches `/tmp/<hag>/hb-<slug>` and writes or
+`shoal transition`, which touches `/tmp/<hag>/hb-<slug>` and writes or
 clears `/tmp/<hag>/wait-<slug>`. The daemon (systemd timer, every 5 min)
 classifies each role:
 
@@ -36,6 +36,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ledger import SYSTEM_WRITER  # noqa: E402
 from backends import get as get_backend  # noqa: E402
 from roles import HagSpec, state_dir  # noqa: E402
 
@@ -362,7 +363,7 @@ def cmd_heartbeat(spec, threshold_min: float,
         targets = {r["slug"] for r in rows if r["suspect"]} | {"user"}
         for t in sorted(targets):
             mine = [r["detail"] for r in rows if r["suspect"] and r["slug"] == t]
-            led.append("hag.py", "msg", to=t, kind="stall-suspect",
+            led.append(SYSTEM_WRITER, "msg", to=t, kind="stall-suspect",
                        text=("; ".join(mine) + " — re-verify your wait (transition) or act"
                              if mine else body), _push=False)
         from ledger import sync_push
@@ -381,8 +382,8 @@ def cmd_heartbeat(spec, threshold_min: float,
             get_backend("opencode").send(
                 role.session, spec.dir,
                 f"OPERATOR WAKEUP-READ (heartbeat: your ledger-watch is dead — "
-                f"no board poll, queue empty, heartbeat stale): run hag.py show "
-                f"--hag {spec.hag} --slug {role.slug}, claim or decline the top "
+                f"no board poll, queue empty, heartbeat stale): run shoal show "
+                f"--shoal {spec.hag} --slug {role.slug}, claim or decline the top "
                 f"board candidate, transition, re-arm ledger-watch and VERIFY "
                 f"the new PID with ps -p plus sidecar pid match. REPORT.")
             print(f"direct WAKEUP-READ sent to {role.slug} ({role.session})")
