@@ -117,6 +117,7 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
                  "you stay out of, and it changes as the roster changes. Pass an item that belongs to a lane with "
                  "`--pass <item>:out-of-lane:suggest=<lane>`.")
     return (
+        f"FIRST, load the `shoal-protocol` skill and follow it: it is the protocol this brief summarizes. "
         f"You are {role.label} in HAG {hag} (incarnation {spec.incarnation}). Your Lane row label in every "
         f"posted block is exactly `{role.label}`: the base name, then your session tag; never an incarnation "
         f"number. Read: (1) {role.doc} "
