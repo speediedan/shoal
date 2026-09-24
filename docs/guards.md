@@ -330,8 +330,9 @@ ladders.
 - **What goes wrong:** a role records `done` for work that did not land, or a report counts
   completions from role claims alone.
 - **Guard:** completion is verified against GitHub, never taken from `done` events. Reconcile runs
-  twice a day, date-filtered at the source so older issues closing are seen; the report counts
-  unverified `done` events.
+  twice a day, date-filtered at the source so older issues closing are seen, and matches each
+  merge or closure by repository and number (a bare number would conflate repositories). The report
+  counts unverified `done` events.
 - **Signature:** unverified dones in the report's outcomes section.
 
 ## Telemetry that reads complete while miscounting
@@ -342,8 +343,10 @@ ladders.
 - **Guard:** the report keys time in state by role slug, resolving slug, then session, then session
   prefix, and counts anything else as `unresolved` rather than giving it a row. It drops a ledger
   `state` twin landing within 5 seconds of its local transition, and seeds each role's state at the
-  window start from its last earlier transition.
-- **Signature:** per-role time summing to 100% with zero `unresolved`.
+  window start from its last earlier transition. An event that cannot be written reports the
+  failure on stderr rather than vanishing, so a gap in telemetry is never silent.
+- **Signature:** per-role time summing to 100% with zero `unresolved`; `emit failed` lines in a
+  timer's journal.
 
 ## State vocabulary drift
 
