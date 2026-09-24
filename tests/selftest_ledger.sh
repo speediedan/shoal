@@ -11,8 +11,9 @@
 # hermetic: scratch host config, synthetic start docs, scratch working dir.
 #   usage: selftest_ledger.sh [scratch-dir]
 set -eu
-HAGD="$(cd "$(dirname "$0")" && pwd)"
-. "$HAGD/selftest_lib.sh"
+TESTD="$(cd "$(dirname "$0")" && pwd)"
+HAGD="$(cd "$TESTD/../shoal" && pwd)"
+. "$TESTD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/hag-selftest-$$}"
 rm -rf "$S"; mkdir -p "$S/root" "$S/data" "$S/remote"
 hag_test_setup "$S"

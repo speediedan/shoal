@@ -8,8 +8,9 @@
 # lease providers. Job-unit sections need systemd --user and print SKIP without it.
 #   selftest_h4.sh [SCRATCH_DIR]
 set -eu
-HAGD="$(cd "$(dirname "$0")" && pwd)"
-. "$HAGD/selftest_lib.sh"
+TESTD="$(cd "$(dirname "$0")" && pwd)"
+HAGD="$(cd "$TESTD/../shoal" && pwd)"
+. "$TESTD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/hag-h4-selftest-$$}"
 # background watchers this test starts must never outlive it (a stray one shares the
 # sidecar and silently swallows the next run's wakes)

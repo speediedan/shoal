@@ -3,7 +3,7 @@
 
 Every setting resolves in the same order: an environment variable, then the host
 config file, then a generic default that works on any host. The host config file is
-`$HAG_CONFIG` when set, else `<package dir>/config/host.toml` (gitignored; see
+`$HAG_CONFIG` when set, else `<repository root>/config/host.toml` (gitignored; see
 `config/host.example.toml`). TOML is read with `tomllib` (Python 3.11+) or `tomli`;
 when neither is importable the file is skipped with one warning on stderr.
 
@@ -33,12 +33,13 @@ import shutil
 import sys
 
 PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR = os.path.dirname(PKG_DIR)
 _CACHE: dict[str, dict] = {}
 _WARNED: set[str] = set()
 
 
 def config_path() -> str:
-    return os.environ.get("HAG_CONFIG") or os.path.join(PKG_DIR, "config", "host.toml")
+    return os.environ.get("HAG_CONFIG") or os.path.join(REPO_DIR, "config", "host.toml")
 
 
 def _warn(key: str, msg: str) -> None:

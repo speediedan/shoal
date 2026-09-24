@@ -12,7 +12,7 @@
 # leak (a code path that reached for the network or a harness).
 # Exit: the suite's rc, or 3 when it passed but a stub was called.
 set -u
-HAGD="$(cd "$(dirname "$0")" && pwd)"
+TESTD="$(cd "$(dirname "$0")" && pwd)"
 SUITE="${1:?usage: selftest_hermetic.sh SUITE [args...]}"; shift
 STUBS="$(mktemp -d "${TMPDIR:-/tmp}/hag-stubs-XXXXXX")"
 CALLS="$STUBS/calls.log"
@@ -27,7 +27,7 @@ EOF
   chmod +x "$STUBS/$t"
 done
 LOG="$STUBS/suite.log"
-PATH="$STUBS:$PATH" HAG_TEST_NO_SYSTEMD=1 "$HAGD/$SUITE" "$@" 2>&1 | tee "$LOG"
+PATH="$STUBS:$PATH" HAG_TEST_NO_SYSTEMD=1 "$TESTD/$SUITE" "$@" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
 out_hits=$(grep -c "network tool called" "$LOG" || true)
 hits=$(grep -c "network tool called" "$CALLS" || true)

@@ -6,8 +6,9 @@
 # read), a fake model behind the `command` backend, synthetic start docs and a scratch working
 # dir and host config, so no network, no board read, no model call and no design-repo read.
 set -uo pipefail
-HAGD="$(cd "$(dirname "$0")" && pwd)"
-. "$HAGD/selftest_lib.sh"
+TESTD="$(cd "$(dirname "$0")" && pwd)"
+HAGD="$(cd "$TESTD/../shoal" && pwd)"
+. "$TESTD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/hag-h8-selftest-$$}"
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
 hag_test_setup "$S"

@@ -31,6 +31,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TESTS_DIR = os.path.join(os.path.dirname(HERE), "tests")
 sys.path.insert(0, HERE)
 
 from roles import HagSpec, find_spec  # noqa: E402
@@ -143,7 +144,7 @@ def stale_watchers(spec: HagSpec, since_iso: str) -> list[tuple[str, str]]:
 
 def run_selftests() -> tuple[bool, str]:
     for t in SELFTESTS:
-        r = subprocess.run(["bash", os.path.join(HERE, t)], capture_output=True, text=True, timeout=1800)
+        r = subprocess.run(["bash", os.path.join(TESTS_DIR, t)], capture_output=True, text=True, timeout=1800)
         if r.returncode != 0:
             return False, f"{t} FAILED: {(r.stdout + r.stderr).strip()[-600:]}"
     return True, "selftests passed: " + ", ".join(SELFTESTS)

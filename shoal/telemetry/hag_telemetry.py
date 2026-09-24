@@ -35,6 +35,7 @@ import subprocess
 import sys
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_DIR = os.path.dirname(PKG_DIR)
 sys.path.insert(0, PKG_DIR)
 import config  # noqa: E402
 
@@ -42,7 +43,7 @@ SCHEMA_V = "v2"  # v2 (2026-09-20): ledger_* event types + channel=ledger; v1 ev
 SERVER = config.server()
 PDT = config.tzinfo()  # local wall clock for ts_pdt (historical field name)
 HAG_DATA_ROOT = config.data_root()
-# the protocol skill ships inside the package; its sha is the protocol pin
+# the protocol skill ships in the repository (path relative to its root); its sha is the protocol pin
 PROTOCOL_SKILL = "plugins/shoal-skills/skills/shoal-protocol/SKILL.md"
 
 TYPES = {
@@ -106,14 +107,14 @@ def _toplevel():
     return _TOP[0]
 
 
-def _sha(rel):
-    """Blob sha of a package file (path relative to the package dir) at HEAD of the
+def _sha(rel, base=PKG_DIR):
+    """Blob sha of a file (path relative to `base`, the package dir by default) at HEAD of the
     repository the package lives in, `+dirty` when modified; wherever that checkout is."""
     try:
         top = _toplevel()
         if not top:
             return "untracked"
-        path = os.path.relpath(os.path.join(PKG_DIR, rel), top)
+        path = os.path.relpath(os.path.join(base, rel), top)
         r = subprocess.run(["git", "rev-parse", f"HEAD:{path}"],
                            capture_output=True, text=True, cwd=top, timeout=10)
         if r.returncode != 0:
@@ -129,7 +130,7 @@ def _sha(rel):
 
 def run_pin():
     return {
-        "protocol_sha": _sha(PROTOCOL_SKILL),
+        "protocol_sha": _sha(PROTOCOL_SKILL, REPO_DIR),
         "scripts_sha": "+".join(_sha(f)[:12] for f in SCRIPT_FILES),
         "schema_v": SCHEMA_V,
     }
