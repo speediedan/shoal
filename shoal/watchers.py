@@ -32,10 +32,11 @@ try:
     from hag_telemetry import emit as _telemetry_emit  # noqa: E402
 except Exception:  # pragma: no cover
     _telemetry_emit = None
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config  # noqa: E402
 
-TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
-             "/home/speediedan/.bun/bin:/usr/bin:/bin")
-_ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+TOOL_PATH = config.tool_path()
+_ENV = config.tool_env()
 
 
 def utcnow() -> str:

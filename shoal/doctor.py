@@ -31,12 +31,14 @@ import sqlite3
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from backends import TOOL_PATH, get as get_backend  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import config  # noqa: E402
+from backends import get as get_backend  # noqa: E402
 from heartbeat import age_min, classify  # noqa: E402
 from roles import HAG_DATA_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
 
-ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+ENV = config.tool_env()
 TICK_INTERVAL_MIN = {"lanes": 5, "pipeline": 10, "heartbeat": 5,
                      "reconcile": 24 * 60, "weekly-report": 7 * 24 * 60}
 
@@ -81,6 +83,8 @@ def run(argv, timeout=30, env=None):
 def host_checks(d: Doc) -> None:
     v = sys.version_info
     (d.ok if v >= (3, 10) else d.fail)("python", f"{sys.executable} {v.major}.{v.minor}")
+    cfg = config.summary()
+    d.ok("config", f"{cfg['config_file']}; lease_cmd={cfg['lease_cmd'] or '(none)'}; cli={cfg['cli']}")
     for tool in ("openchamber", "claude", "gh", "az", "git", "systemctl"):
         p = shutil.which(tool, path=ENV["PATH"])
         (d.ok if p else d.fail)(f"tool {tool}", p or "not found on tool PATH")
@@ -113,7 +117,8 @@ def host_checks(d: Doc) -> None:
         else:
             d.fail(name, f"{root} not writable")
     try:
-        r = run(["loginctl", "show-user", os.environ.get("USER", "speediedan"), "-p", "Linger"])
+        import getpass
+        r = run(["loginctl", "show-user", os.environ.get("USER") or getpass.getuser(), "-p", "Linger"])
         (d.ok if "Linger=yes" in r.stdout else d.warn)("linger", r.stdout.strip() or "unknown (timers die at logout)")
     except Exception as exc:  # noqa: BLE001
         d.warn("linger", str(exc))
@@ -191,10 +196,13 @@ def tools_skew_note(armed_utc: str) -> str:
     the running process executes pre-fix code (measured 2026-09-21: a holder
     gate fixed after arming left a live watcher silently not offering)."""
     try:
+        top = subprocess.run(["git", "-C", HERE, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        rel = os.path.relpath(HERE, top) if top else ""
         out = subprocess.run(["git", "log", "-1", "--format=%ci", "--",
-                              "project_admin/shared_admin_scripts/hag/"],
+                              (rel + "/") if rel and rel != "." else "."],
                              capture_output=True, text=True, timeout=30,
-                             cwd="/home/speediedan/repos/distributed-insight").stdout.strip()
+                             cwd=top or HERE).stdout.strip()
         tools_ts = datetime.datetime.strptime(out[:19], "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=datetime.timezone.utc)
         armed = datetime.datetime.strptime(armed_utc, "%Y-%m-%dT%H:%M:%SZ").replace(
@@ -228,6 +236,9 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
     if spec.retired_utc:
         d.warn("spec retired", f"retired_utc={spec.retired_utc}; launches refuse this spec")
     for r in spec.roles:
+        if r.doc and not os.path.isabs(r.doc):
+            d.warn(f"doc path {r.slug}", f"relative role doc {r.doc!r} resolves against the caller's cwd; "
+                                         f"fix with `hag.py spec absolutize-docs --spec {spec_path} --base DIR`")
         if not r.doc or not os.path.exists(r.doc):
             d.fail(f"doc {r.slug}", f"missing: {r.doc}")
             continue

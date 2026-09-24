@@ -56,6 +56,34 @@ def rel_hag() -> str:
     return os.path.relpath(HERE, top)
 
 
+def repo_id() -> str:
+    """Identity of the repository the package runs from: its `origin` URL, else the
+    toplevel directory's name. Recorded as `tooling.repo` so a sha from another
+    repository is never diffed against this one."""
+    url = git("remote", "get-url", "origin")
+    if url:
+        return url
+    top = git("rev-parse", "--show-toplevel")
+    return os.path.basename(top) if top else ""
+
+
+def usable_sha(tooling: dict) -> tuple[str, str]:
+    """(recorded sha usable as a diff base or "", why not). A sha recorded against another
+    repository, or one this repository does not have, counts as none recorded."""
+    prev = (tooling or {}).get("sha", "")
+    if not prev:
+        return "", ""
+    rec_repo = (tooling or {}).get("repo", "")
+    cur = repo_id()
+    if rec_repo and cur and rec_repo != cur:
+        return "", f"recorded sha {prev} is from {rec_repo}, not {cur}"
+    r = subprocess.run(["git", "cat-file", "-e", f"{prev}^{{commit}}"], capture_output=True, text=True,
+                       timeout=60, cwd=HERE)
+    if r.returncode != 0:
+        return "", f"recorded sha {prev} is not a commit in this repository"
+    return prev, ""
+
+
 def classify(files: list[str]) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {"live": [], "re-arm (ledger-watch)": [], "re-arm (relay-watch)": [], "brief": []}
     for f in files:
@@ -132,7 +160,10 @@ def cmd_upgrade(a) -> int:
               f"(the recorded sha must name the code that runs)\n{dirty}")
         if not a.dry_run:
             return 1
-    prev = (spec.tooling or {}).get("sha", "")
+    recorded = (spec.tooling or {}).get("sha", "")
+    prev, unusable = usable_sha(spec.tooling)
+    if unusable:
+        print(f"note: {unusable}; treating it as none recorded")
     if prev:
         files = [f for f in git("diff", "--name-only", f"{prev}..HEAD", "--", ".").splitlines() if f]
         since = git("log", "-1", "--format=%cI", f"{prev}..HEAD", "--",
@@ -183,16 +214,16 @@ def cmd_upgrade(a) -> int:
         print("[dry-run] nothing written")
         return 0
     spec.features = new_features
-    spec.tooling = {"sha": sha, "prev": prev, "upgraded_utc": now_iso(),
+    spec.tooling = {"sha": sha, "repo": repo_id(), "prev": recorded, "upgraded_utc": now_iso(),
                     "changed": sorted({os.path.basename(f) for f in files}),
                     "features_changed": changes}
     from hag import persist_spec
-    persist_spec(spec, path, note=f"upgrade tooling {prev or '-'}..{sha}" + (f"; {', '.join(changes)}" if changes else ""))
+    persist_spec(spec, path, note=f"upgrade tooling {recorded or '-'}..{sha}" + (f"; {', '.join(changes)}" if changes else ""))
     try:
         from ledger import Ledger
         Ledger(spec.hag, root=spec.ledger_dir).append(
-            "hag.py", "system", kind="upgrade", old=prev, new=sha, features=changes,
-            text=f"tooling upgraded {prev or '-'} -> {sha}" + (f"; features {', '.join(changes)}" if changes else ""))
+            "hag.py", "system", kind="upgrade", old=recorded, new=sha, features=changes,
+            text=f"tooling upgraded {recorded or '-'} -> {sha}" + (f"; features {', '.join(changes)}" if changes else ""))
     except Exception as exc:  # noqa: BLE001
         print(f"(ledger system event failed: {exc})")
     if a.rearm == "now":

@@ -43,11 +43,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 
+import config  # noqa: E402
+import providers  # noqa: E402
 from roles import HagSpec, find_spec, roles_dir, state_dir  # noqa: E402
 
-TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
-             "/home/speediedan/.bun/bin:/usr/bin:/bin:/usr/local/bin")
-_ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+TOOL_PATH = config.tool_path()
+_ENV = config.tool_env()
 PEER_STALE_MIN = 15
 LADDERS = {
     "unacked-work": [(10, "wake"), (30, "wake"), (60, "page")],
@@ -206,62 +207,9 @@ def page_user(spec: HagSpec, text: str, state: dict, dry_run: bool = False) -> s
 # ---- wait-target heuristics ------------------------------------------------------
 
 def target_pending(target: str, slug: str, hag: str = "") -> tuple[bool | None, str]:
-    """(True pending | False resolved/invalid | None unknown, detail) for a wait target."""
-    if not target:
-        return None, "no target"
-    kind, _, rest = target.partition(":")
-    try:
-        if kind == "job":
-            # `job:<name>` is the name given to `job run`; the unit is hag-<hag>-<slug>-<name>.
-            # Querying the bare name asked systemd about a unit that never exists, which
-            # reads `inactive` and marked every live job wait resolved (2026-09-23, #t401).
-            import jobs
-            unit = rest if rest.startswith("hag-") or not hag else jobs.unit_name(hag, slug, rest)
-            st = jobs.unit_state(unit)
-            active = st.get("ActiveState", "")
-            if active in ("active", "activating", "deactivating", "reloading"):
-                return True, f"unit {unit} {active}"
-            rc_file = jobs.paths(hag, unit)["rc"] if hag else ""
-            if rc_file and os.path.exists(rc_file):
-                with open(rc_file) as fh:
-                    return False, f"unit {unit} exited rc={fh.read().strip()}"
-            if st.get("LoadState") == "not-found":
-                return None, f"unit {unit} not found and no rc file (unknown, not resolved)"
-            return False, f"unit {unit} {active or 'gone'}"
-        if kind == "lease":
-            lease = os.path.join(os.path.dirname(HERE), "gpu_lease.sh")
-            r = subprocess.run([lease, "--status"], capture_output=True, text=True, timeout=30, env=_ENV)
-            txt = r.stdout + r.stderr
-            mine = slug in txt
-            key_line = next((ln for ln in txt.splitlines() if rest and rest in ln), "")
-            if r.returncode != 0 and not txt:
-                return None, "lease status unavailable"
-            return (mine or bool(key_line and re.search(r"held|queue|wait", key_line, re.I))), \
-                (short_line(key_line) or ("role in lease queue" if mine else "role not in lease holders/queue"))
-        if kind == "gh-run":
-            repo, _, rid = rest.rpartition(":")
-            r = subprocess.run(["gh", "run", "view", rid, "--repo", repo, "--json", "status,conclusion"],
-                               capture_output=True, text=True, timeout=30, env=_ENV)
-            d = json.loads(r.stdout or "{}")
-            return d.get("status") not in ("completed",), f"run {d.get('status')}/{d.get('conclusion')}"
-        if kind == "gh-pr":
-            repo, _, n = rest.partition("#")
-            r = subprocess.run(["gh", "pr", "checks", n, "--repo", repo, "--json", "bucket"],
-                               capture_output=True, text=True, timeout=30, env=_ENV)
-            b = [c.get("bucket") for c in json.loads(r.stdout or "[]")]
-            if not b:
-                return None, "no checks reported (never green on empty)"
-            return "pending" in b, f"checks {sorted(set(b))}"
-        if kind == "az-build":
-            r = subprocess.run(["az", "pipelines", "build", "show", "--id", rest, "--query", "status", "-o", "tsv"],
-                               capture_output=True, text=True, timeout=60, env=_ENV)
-            st = r.stdout.strip()
-            if not st:
-                return None, "az build status unavailable"
-            return st in ("notStarted", "inProgress", "postponed"), f"build {st}"
-    except Exception as exc:  # noqa: BLE001
-        return None, f"check failed: {str(exc)[:80]}"
-    return None, "free-text target (validity wake only)"
+    """(True pending | False resolved | None unknown, detail) for a wait target: a lookup in the
+    provider registry (providers.py, docs/providers.md)."""
+    return providers.resolve(target, slug, hag)
 
 
 def short_line(s: str, n: int = 90) -> str:
@@ -273,10 +221,16 @@ def short_line(s: str, n: int = 90) -> str:
 def claude_busy() -> dict[str, str]:
     """sessionId -> 'busy'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
     try:
-        r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
+        from backends import fake_sessions
+        fake = fake_sessions()  # HAG_FAKE_SESSIONS (tests): no harness call
+        if fake is not None:
+            rows = list(fake.get("claude") or [])
+        else:
+            r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
+            rows = json.loads(r.stdout or "[]")
         # a session blocked on a question to the maintainer is never "between turns"
         return {str(e.get("sessionId", "")): ("blocked" if e.get("state") == "blocked" else str(e.get("status", "")))
-                for e in json.loads(r.stdout or "[]")}
+                for e in rows}
     except Exception:
         return {}
 
@@ -340,7 +294,7 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
             if pending is False:
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
                             "detail": f"wait target {target} no longer pending ({why})", "first_seen": True})
-            if sub in CI_WAITS or target.split(":", 1)[0] in ("lease", "job", "gh-run", "gh-pr", "az-build"):
+            if sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds():
                 a = age_min(boundary)
                 if validity > 0 and a is not None and a >= validity:
                     out.append({"slug": slug, "condition": "wait-validity", "key": f"validity:{boundary}",
@@ -559,7 +513,7 @@ the relay-queue cursor under `/tmp/{hag}/`.
 
 ## Loop
 
-1. Run `python3 {hagpy} relay-watch --hag {hag}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
+1. Run `{cli} relay-watch --hag {hag}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
 2. When it exits it prints one `RELAY-WAKE to=<session name> session=<id> :: <text>` line per
    wake. For each, call SendMessage with to=<session name> and the text verbatim. Add the `[ref]`
    from ListAgents only when two sessions share the name, choosing the one whose session id
@@ -576,7 +530,7 @@ re-arm.
 
 ## Running monitors
 
-- relay-watch: `python3 {hagpy} relay-watch --hag {hag}` (pid in `/tmp/{hag}/relay-watch.pid`)
+- relay-watch: `{cli} relay-watch --hag {hag}` (pid in `/tmp/{hag}/relay-watch.pid`)
 
 ## grants-needed
 
@@ -593,7 +547,7 @@ def cmd_relay_init(a) -> int:
     path = a.spec or find_spec(a.hag)
     spec = HagSpec.load(path)
     doc = relay_doc_path(spec.hag)
-    text = RELAY_DOC.format(hag=spec.hag, hagpy=os.path.join(HERE, "hag.py"))
+    text = RELAY_DOC.format(hag=spec.hag, cli=config.cli())
     have = spec.role(RELAY_SLUG) is not None
     plan = (f"relay-init {spec.hag}: doc {doc}"
             + ("" if a.doc_only else f"; role {'present' if have else 'ADD'} ({RELAY_MODEL}, fill=none); features.relay=true"))

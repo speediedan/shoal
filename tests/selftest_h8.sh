@@ -2,13 +2,16 @@
 # H8 selftest (architecture doc §4.1, §11): semantic matcher (fallback, switch record, cache),
 # shadow vs live ranking, effective priority, the aux lane's minmax + unblocker ranking and
 # AUX header, aux-init, `digest --compare`, `upgrade`. Isolated: scratch spec dir and HAG_DATA_ROOT,
-# a local bare ledger remote, synthetic board items, and a fake model behind the `command`
-# backend, so no network, no board read and no model call.
+# a local bare ledger remote, synthetic board items (and a board fixture behind every board
+# read), a fake model behind the `command` backend, synthetic start docs and a scratch working
+# dir and host config, so no network, no board read, no model call and no design-repo read.
 set -uo pipefail
 HAGD="$(cd "$(dirname "$0")" && pwd)"
+. "$HAGD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/hag-h8-selftest-$$}"
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
-export HAG_DATA_ROOT="$S/data"; ROOT="$S/root"
+hag_test_setup "$S"
+ROOT="$S/root"
 HAGID=h8selftest; SPEC="$ROOT/$HAGID/hag.json"; A="$S/cloneA"
 export HAG_SPEC="$SPEC"
 H="python3 $HAGD/hag.py"; export HAGD PYTHONPATH="$HAGD"
@@ -18,7 +21,7 @@ check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
 mkdir -p "$ROOT/$HAGID"
-DOC=/home/speediedan/repos/distributed-insight/project_admin/interpretune/design/ie_integration_hub/ie_integration_hub_plan_state.md
+DOC=$(hag_doc h8role)
 
 # fake models: `good` scores by keyword and counts its calls; `bad` is a rotated-out model
 cat > "$S/good.py" <<'PY'
@@ -39,12 +42,12 @@ printf 'import sys\nsys.stderr.write("Upstream request failed: Model is unavaila
 GOOD="python3 $S/good.py $S/calls"; BAD="python3 $S/bad.py"
 
 cat > "$SPEC" <<JSON
-{"hag":"$HAGID","dir":"/home/speediedan/repos/interpretune","incarnation":0,"repos":["speediedan/interpretune"],
+{"hag":"$HAGID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
  "ledger":{"repo":"$S/remote/q.git","dir":"$A"},
  "features":{"digest":true,"workwake":true,
    "matcher":{"backend":"command","model":"$BAD","fallbacks":[{"backend":"command","model":"$GOOD"}],
               "discover_free":false,"live":false}},
- "sources":[{"kind":"github-project","owner":"speediedan","number":2}],
+ "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
   {"slug":"tl","ecosystem":"claude","title":"tl","doc":"$DOC","fill":"self","session":"aaaa1111",
    "context":{"brief":"Upgrades interpretune to TL4.","affinity":{"keywords":{"hygiene":3.0}},"never":{}}},
@@ -70,6 +73,8 @@ def items():
             it(3, "comment hygiene sweep"), it(4, "docs wide tables"), it(5, "small fix the migration lane waits on"),
             it(6, "upstream filing for a parked lane"), it(7, "BLOCKED on a release")]
 PY
+# the same synthetic items behind every board read the CLI makes (no GitHub read)
+(cd "$S" && python3 -c "import json, items; print(json.dumps(items.items()))") | hag_board_fixture "$S/board.json"
 
 echo "== 1 matcher: rotated-out model falls back, shadow keeps the live ranking, aux reads semantic"
 python3 - "$SPEC" "$S" <<'PY' || fail "shadow build"
@@ -184,12 +189,21 @@ python3 - "$SPEC" "$A" <<'PY' || fail "upgrade did not record"
 import json, os, sys
 d = json.load(open(sys.argv[1]))
 assert d["features"]["matcher"]["live"] is True and d["tooling"]["sha"], d.get("tooling")
+assert d["tooling"].get("repo"), "tooling.repo not recorded"
 evs = [json.loads(l) for fn in os.listdir(os.path.join(sys.argv[2], "hags", d["hag"], "ledger"))
        for l in open(os.path.join(sys.argv[2], "hags", d["hag"], "ledger", fn)) if l.strip()]
 assert any(e.get("type") == "system" and e.get("kind") == "upgrade" for e in evs)
 PY
 check "tooling $(python3 -c "import json;print(json.load(open('$SPEC'))['tooling']['sha'])") ->" \
   $H upgrade --spec "$SPEC" --skip-selftests --allow-dirty --dry-run
+# a sha recorded against another repository, or one this repository lacks, is "none recorded"
+python3 -c "import json; d=json.load(open('$SPEC')); d['tooling']['repo']='git@example.invalid:other/tools.git'; json.dump(d, open('$S/spec-otherrepo.json','w'))"
+python3 -c "import json; d=json.load(open('$SPEC')); d['tooling']['sha']='0123456789ab'; json.dump(d, open('$S/spec-badsha.json','w'))"
+check "is from git@example.invalid:other/tools.git.*treating it as none recorded" \
+  $H upgrade --spec "$S/spec-otherrepo.json" --skip-selftests --allow-dirty --dry-run
+check "tooling (none recorded) ->" $H upgrade --spec "$S/spec-otherrepo.json" --skip-selftests --allow-dirty --dry-run
+check "0123456789ab is not a commit in this repository; treating it as none recorded" \
+  $H upgrade --spec "$S/spec-badsha.json" --skip-selftests --allow-dirty --dry-run
 
 echo "== 7 tiers: free first, then the Go subscription, then the Zen balance; paid tiers recheck free"
 python3 - "$SPEC" "$GOOD" "$BAD" <<'PY' || fail "tiers"

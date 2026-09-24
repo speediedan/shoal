@@ -10,11 +10,12 @@ other roles; a role hands its own claim to a peer with `release --kind
 handoff --to <role>`. Specs written before the change may still carry
 `coordinator`, `can_fill_others` or `queue` keys: they load and are ignored.
 
-Two roots (both overridable by environment for tests and other hosts):
-  HAG_DATA_ROOT  per-hag local home (unversioned bulk): <root>/<hag>/{briefs/,
+Two roots (resolved by config.py: environment, then the host config file,
+then a generic default):
+  data_root      per-hag local home (unversioned bulk): <root>/<hag>/{briefs/,
                      reports/,telemetry/}. Briefs, report .md twins and events
                      live here, never in version control.
-  HAG_LEDGER / ledger.dir (git repo speediedan/hag-queues):
+  ledger.dir     the ledger repo's local clone (config `ledger_dir`):
                      hags/<hag>/{hag.json (THE canonical live spec, mutated by
                      hag.py with commit+push),ledger/}. Remote agents read this.
   HAG_SPEC       optional pin: the path of one HAG's spec (<dir named for the hag>/hag.json).
@@ -32,15 +33,18 @@ import datetime
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config  # noqa: E402
 
 ECOSYSTEMS = ("opencode", "claude", "codex")
 FILL_MODES = ("self", "assigned", "none")
-DEFAULT_LEDGER = {"repo": "git@github.com:speediedan/hag-queues.git",
-                  "dir": os.path.expanduser("~/repos/hag-queues")}
+# resolved once per process: environment, then the host config file, then a generic default
+DEFAULT_LEDGER = {"repo": config.ledger_repo(), "dir": config.ledger_dir()}
 
-HAG_DATA_ROOT = os.environ.get(
-    "HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags")
-DEFAULT_REPOS = ["speediedan/interpretune", "speediedan/it-interp-engine-adapter"]
+HAG_DATA_ROOT = config.data_root()
+DEFAULT_REPOS = config.default_repos()
 
 
 def utcnow_iso() -> str:
@@ -203,8 +207,9 @@ class HagSpec:
         # wakes + the next/queue loop; "health" (true or {"validity_wake_min": 90}) the
         # health quorum timers replacing heartbeat; "relay" the Claude wake relay role;
         # "matcher" the semantic board matcher (architecture §4.1).
-    tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "prev", "upgraded_utc",
-        # "changed"}: the hag/ tooling commit this HAG was last upgraded to (`hag.py upgrade`)
+    tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "repo", "prev", "upgraded_utc",
+        # "changed"}: the hag/ tooling commit this HAG was last upgraded to (`hag.py upgrade`);
+        # `repo` names the repository that sha belongs to (origin URL, else toplevel dir name)
 
     def validate(self) -> list[str]:
         errs = []
@@ -343,7 +348,7 @@ def default_spec_path(hag: str) -> str:
     pin = os.environ.get("HAG_SPEC", "")
     if pin and os.path.basename(os.path.dirname(os.path.abspath(pin))) == hag:
         return pin
-    ledger_root = os.environ.get("HAG_LEDGER_DIR", DEFAULT_LEDGER["dir"])
+    ledger_root = config.ledger_dir()
     return os.path.join(ledger_root, "hags", hag, "hag.json")
 
 

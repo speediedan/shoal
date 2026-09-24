@@ -3,10 +3,13 @@
 # digest, batch triage, digest-driven ledger-watch wake, exit verdicts, job units, the work loop
 # (next/queue), work-only wakes, the health quorum, user-offline mode and the Claude relay.
 # Touches nothing live: a bare local remote, the spec and HAG_DATA_ROOT under a scratch dir,
-# hag id h4selftest (state in /tmp/h4selftest). Reads the real GitHub board (read-only).
+# hag id h4selftest (state in /tmp/h4selftest). Hermetic: a synthetic board fixture (no
+# GitHub read), synthetic start docs, a scratch working dir, a scratch host config, stub
+# lease providers. Job-unit sections need systemd --user and print SKIP without it.
 #   selftest_h4.sh [SCRATCH_DIR]
 set -eu
 HAGD="$(cd "$(dirname "$0")" && pwd)"
+. "$HAGD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/hag-h4-selftest-$$}"
 # background watchers this test starts must never outlive it (a stray one shares the
 # sidecar and silently swallows the next run's wakes)
@@ -14,7 +17,8 @@ cleanup() { pkill -f -- 'hag.py (ledger-watch|relay-watch) --hag h4selftest' 2>/
 trap cleanup EXIT
 cleanup
 rm -rf "$S" /tmp/h4selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
-export HAG_DATA_ROOT="$S/data"; ROOT="$S/root"
+hag_test_setup "$S"
+ROOT="$S/root"
 HAGID=h4selftest; SPEC="$ROOT/$HAGID/hag.json"; A="$S/cloneA"
 export HAG_SPEC="$SPEC"
 H="python3 $HAGD/hag.py"
@@ -25,14 +29,26 @@ rc_of() { "$@" >/dev/null 2>&1 && echo 0 || echo $?; }
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
 mkdir -p "$ROOT/$HAGID"
-DOCS=/home/speediedan/repos/distributed-insight/project_admin/interpretune/design
+# synthetic board: TL4 migration items (tl's label), upstream items (up's keywords), one item
+# `up` must never see, general work
+hag_board_fixture "$S/board.json" <<'JSON'
+[{"repo":"speediedan/interpretune","number":8001,"title":"Remove the TL3 bridge shims","labels":["tl-4-migration"]},
+ {"repo":"speediedan/interpretune","number":8002,"title":"Port HookedTransformer hooks to TL4","labels":["tl-4-migration"],"excerpt":"HookedTransformer hook names changed"},
+ {"repo":"speediedan/interpretune","number":8003,"title":"TL4 config migration","labels":["tl-4-migration"]},
+ {"repo":"speediedan/interpretune","number":8004,"title":"TL4 docs refresh","labels":["tl-4-migration"]},
+ {"repo":"speediedan/interpretune","number":8005,"title":"File the upstream SAELens report","excerpt":"upstream SAELens issue draft"},
+ {"repo":"speediedan/interpretune","number":8006,"title":"Maintainer release checklist","labels":["maintainer-only"]},
+ {"repo":"speediedan/interpretune","number":8007,"title":"General cleanup"},
+ {"repo":"speediedan/interpretune","number":8008,"title":"Upstream TransformerLens padding report","excerpt":"upstream TransformerLens"}]
+JSON
+DOC_TL=$(hag_doc tl); DOC_UP=$(hag_doc up)
 cat > "$SPEC" <<JSON
-{"hag":"$HAGID","dir":"/home/speediedan/repos/interpretune","incarnation":0,"repos":["speediedan/interpretune"],
+{"hag":"$HAGID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
  "ledger":{"repo":"$S/remote/q.git","dir":"$A"}, "features":{"digest":true},
- "sources":[{"kind":"github-project","owner":"speediedan","number":2}],
+ "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
-  {"slug":"tl","ecosystem":"claude","title":"tl","doc":"$DOCS/ie_integration_hub/handoffs/it-architect.md","fill":"self","session":"aaaa1111","scope":{"labels_any":["tl-4-migration"]}},
-  {"slug":"up","ecosystem":"claude","title":"up","doc":"$DOCS/ie_integration_hub/ie_integration_hub_plan_state.md","fill":"self","session":"bbbb2222"}
+  {"slug":"tl","ecosystem":"claude","title":"tl","doc":"$DOC_TL","fill":"self","session":"aaaa1111","scope":{"labels_any":["tl-4-migration"]}},
+  {"slug":"up","ecosystem":"claude","title":"up","doc":"$DOC_UP","fill":"self","session":"bbbb2222"}
  ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-22T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
 JSON
 $H ledger-init --spec "$SPEC" >/dev/null
@@ -101,6 +117,9 @@ grep -q "^exit=.* WAKE " /tmp/$HAGID/ledger-watch-tl.state || fail "sidecar lack
 
 echo "== 6 job units: success, failure exit code, external kill, idempotent waiter"
 check "\[dry-run\] systemd-run --user --unit hag-$HAGID-tl-ok" $H job run --hag $HAGID --slug tl --name ok --dry-run -- true
+if ! have_systemd; then
+  echo "SKIP 6 job units (live): $(skip_reason)"
+else
 check "JOB-STARTED" $H job run --hag $HAGID --slug tl --name ok --memory-high 1G -- bash -c 'echo job-ok-output; sleep 2'
 check "JOB-ALREADY-RUNNING" $H job run --hag $HAGID --slug tl --name ok -- true
 check "result=success exit=0" $H job wait --hag $HAGID --slug tl --name ok --poll 1
@@ -120,6 +139,47 @@ for t in ('job:ok-long','job:ok','job:never'): print(t, health.target_pending(t,
 grep -q "job:ok-long True" <<<"$TP" && grep -q "job:ok False" <<<"$TP" && grep -q "job:never None" <<<"$TP" \
   || fail "job wait target misread: $TP"
 check "result=success exit=0" $H job wait --hag $HAGID --slug tl --name ok-long --poll 1
+fi
+
+echo "== 6b wait-target providers: lease contract (held/queued pending, free resolved, failures unknown)"
+cat > "$S/lease_stub.sh" <<'SH'
+#!/bin/sh
+# a lease provider meeting docs/providers.md; LEASE_STUB selects the answer
+[ "$1 $2" = "--status --json" ] || { echo "unexpected argv: $*" >&2; exit 2; }
+case "${LEASE_STUB:-free}" in
+  held)   echo '{"leases":[{"key":"gpu","held":true,"holder":"ci-1","pid":7,"since":"2026-09-24T00:00:00Z","cmd":"x","container":false}],"queue":[]}' ;;
+  queued) echo '{"leases":[{"key":"gpu","held":false}],"queue":[{"key":"gpu","waiter":"tl","since":"2026-09-24T00:00:00Z"}]}' ;;
+  free)   echo '{"leases":[{"key":"gpu","held":false},{"key":"cpu-heavy","held":true,"holder":"other"}],"queue":[]}' ;;
+  badjson) echo 'lease table: gpu held' ;;
+  fail)   echo '{"leases":[]}'; exit 4 ;;
+esac
+SH
+chmod +x "$S/lease_stub.sh"
+PV=$(cd "$HAGD" && env HAG_LEASE_CMD="$S/lease_stub.sh" python3 -c "
+import os, providers
+def r(t, mode=None, **env):
+    if mode: os.environ['LEASE_STUB'] = mode
+    return providers.resolve(t, 'tl', '$HAGID')[0]
+print('held', r('lease:gpu', 'held'))
+print('queued', r('lease:gpu', 'queued'))
+print('free', r('lease:gpu', 'free'))
+print('other-key-held', r('lease:cpu-heavy', 'free'))
+print('unknown-key', r('lease:tpu', 'free'))
+print('badjson', r('lease:gpu', 'badjson'))
+print('fail', r('lease:gpu', 'fail'))
+print('nokind', providers.resolve('carrier-pigeon:x', 'tl', '$HAGID'))
+print('empty', providers.resolve('', 'tl', '$HAGID')[0])
+")
+PV_NOCMD=$(cd "$HAGD" && env -u HAG_LEASE_CMD -u GPU_LEASE_CMD python3 -c "
+import providers; print(providers.resolve('lease:gpu', 'tl', 'x'))")
+for want in "held True" "queued True" "free False" "other-key-held True" "unknown-key None" "badjson None" \
+            "fail None" "nokind (None, 'no provider for carrier-pigeon')" "empty None"; do
+  grep -qxF "$want" <<<"$PV" || fail "provider answer '$want' missing :: $PV"
+done
+grep -q "(None, 'no lease provider configured" <<<"$PV_NOCMD" || fail "no lease_cmd must read unknown :: $PV_NOCMD"
+PV_GPU=$(cd "$HAGD" && env -u HAG_LEASE_CMD GPU_LEASE_CMD="$S/lease_stub.sh" LEASE_STUB=held python3 -c "
+import providers; print(providers.resolve('lease:gpu', 'tl', 'x')[0])")
+[ "$PV_GPU" = True ] || fail "GPU_LEASE_CMD fallback not honoured :: $PV_GPU"
 
 echo "== 7 work loop: next reads, queue writes ONE commit (claim + posture + version)"
 python3 - "$SPEC" <<'PY'
@@ -146,10 +206,18 @@ N1=$(git -C "$A" rev-list --count HEAD); [ $((N1 - N0)) = 1 ] || fail "queue mad
 check "CLAIM-REFUSED" $H queue --hag $HAGID --spec "$SPEC" --slug tl --active $I1:fix --no-sync
 check "QUEUE v1 .*active=$I1" $H next --hag $HAGID --spec "$SPEC" --slug up --no-sync
 check "up queue v2: active=$I2 next=$I3 posture=active.*done=\['$I1:fix'\]" $H queue --hag $HAGID --spec "$SPEC" --slug up --done $I1:fix --url https://example.invalid/pr/1 --active $I2 --next $I3 --no-sync
-$H job run --hag $HAGID --slug up --name gate1 -- true >/dev/null   # a finished job: its wait is resolved
-check "result=success exit=0" $H job wait --hag $HAGID --slug up --name gate1 --poll 1
-check "posture=waiting/remote-ci" $H queue --hag $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder "gate 1" --target job:gate1 --no-sync
-grep -q '"target": "job:gate1"' /tmp/$HAGID/wait-up || fail "wait proof lacks target"
+if have_systemd; then
+  $H job run --hag $HAGID --slug up --name gate1 -- true >/dev/null   # a finished job: its wait is resolved
+  check "result=success exit=0" $H job wait --hag $HAGID --slug up --name gate1 --poll 1
+  WT_TARGET=job:gate1
+else
+  # no job units here: a free lease (stub provider) is the resolved target instead
+  echo "SKIP 7 job-unit wait target: $(skip_reason); using lease:gpu on the stub provider"
+  export HAG_LEASE_CMD="$S/lease_stub.sh" LEASE_STUB=free
+  WT_TARGET=lease:gpu
+fi
+check "posture=waiting/remote-ci" $H queue --hag $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder "gate 1" --target $WT_TARGET --no-sync
+grep -q "\"target\": \"$WT_TARGET\"" /tmp/$HAGID/wait-up || fail "wait proof lacks target"
 [ "$(rc_of $H queue --hag $HAGID --spec "$SPEC" --slug up --next a,b,c,d --no-sync)" = 1 ] || fail "4 next items accepted"
 
 echo "== 8 wakes are work-only: busy roles are not woken by offers or peer mail"
@@ -269,7 +337,8 @@ unset HAG_FAKE_PR
 [ "$(rc_of $H queue --hag $HAGID --spec "$SPEC" --slug tl --asks-clear --no-sync)" = 1 ] || fail "blind --asks-clear accepted"
 check "asks=4" $H queue --hag $HAGID --spec "$SPEC" --slug tl --answered 1 --answered 2 --no-sync
 check "asks=0" $H queue --hag $HAGID --spec "$SPEC" --slug tl --asks-clear --drop-reason "selftest cleanup" --no-sync
-unset HAG_FAKE_REF_STATE
+# later sections still read ref states (asks naming #9301): answer them offline, never from GitHub
+export HAG_FAKE_REF_STATE='{"speediedan/interpretune#9301": "OPEN"}'
 check "user deferred pages -> page" $H health --spec "$SPEC" --instance a --dry-run
 
 echo "== 12 wait discipline: asks, blockers, rescan caps, expiry and blocking wakes, labels, peek"

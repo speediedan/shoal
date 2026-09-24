@@ -15,9 +15,10 @@ Analysis windows are free (--hours N covers the last N hours across day
 boundaries); rotation stays daily.
 
 Every event carries ts_utc, ts_pdt (America/Los_Angeles wall clock), hag, server
-(speediedl default), session, ecosystem, and a `run` pin {instructions_sha, runbook_sha,
-scripts_sha, schema_v} resolved best-effort from the live checkout (`dirty` markers when
-uncommitted). Emit never fails the caller: wrap it in `|| true` from shell.
+(speediedl default), session, ecosystem, and a `run` pin {protocol_sha, scripts_sha,
+schema_v} resolved best-effort from the checkout the package runs from, relative to that
+repository's own toplevel (`dirty` markers when uncommitted; events before 2026-09-24 carry
+the legacy {instructions_sha, runbook_sha} pair instead of protocol_sha). Emit never fails the caller: wrap it in `|| true` from shell.
 
 Vocabulary: invalid values are recorded verbatim and counted at analysis time
 (never coerced). A small ALIASES map handles measured systematic drift
@@ -39,10 +40,15 @@ try:
 except Exception:  # pragma: no cover
     PDT = None
 
+PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PKG_DIR)
+import config  # noqa: E402
+
 SCHEMA_V = "v2"  # v2 (2026-09-20): ledger_* event types + channel=ledger; v1 events still load
-REPO = "/home/speediedan/repos/distributed-insight"
 SERVER = "speediedl"
-HAG_DATA_ROOT = os.environ.get("HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags")
+HAG_DATA_ROOT = config.data_root()
+# the protocol skill ships inside the package; its sha is the protocol pin
+PROTOCOL_SKILL = "plugins/shoal-skills/skills/shoal-protocol/SKILL.md"
 
 TYPES = {
     "session_transition": ["from_state", "to_state"],
@@ -87,19 +93,39 @@ ALIASES = {
 SCRIPT_FILES = ("hag.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
                 "heartbeat.py", "systemd.py", "state.py", "doctor.py",
                 "ledger.py", "ledger_cli.py", "ledger_watch.py", "sources.py",
-                "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
+                "config.py", "providers.py", "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
                 "telemetry/hag_report.py")
 
 
-def _sha(path):
+_TOP: list = []
+
+
+def _toplevel():
+    """The toplevel of the git repository holding this package ("" outside git)."""
+    if not _TOP:
+        try:
+            _TOP.append(subprocess.run(["git", "-C", PKG_DIR, "rev-parse", "--show-toplevel"],
+                                       capture_output=True, text=True, timeout=10).stdout.strip())
+        except Exception:
+            _TOP.append("")
+    return _TOP[0]
+
+
+def _sha(rel):
+    """Blob sha of a package file (path relative to the package dir) at HEAD of the
+    repository the package lives in, `+dirty` when modified; wherever that checkout is."""
     try:
+        top = _toplevel()
+        if not top:
+            return "untracked"
+        path = os.path.relpath(os.path.join(PKG_DIR, rel), top)
         r = subprocess.run(["git", "rev-parse", f"HEAD:{path}"],
-                           capture_output=True, text=True, cwd=REPO, timeout=10)
+                           capture_output=True, text=True, cwd=top, timeout=10)
         if r.returncode != 0:
             return "untracked"
         head = r.stdout.strip()
         dirty = subprocess.run(["git", "status", "--porcelain", "--", path],
-                               capture_output=True, text=True, cwd=REPO,
+                               capture_output=True, text=True, cwd=top,
                                timeout=10).stdout.strip()
         return (head or "unknown") + ("+dirty" if dirty else "")
     except Exception:
@@ -108,11 +134,8 @@ def _sha(path):
 
 def run_pin():
     return {
-        "instructions_sha": _sha(".agents/instructions/shared-orchestration-instructions.md"),
-        "runbook_sha": _sha(".agents/agent_coordination_runbook.md"),
-        "scripts_sha": "+".join(
-            _sha(f"project_admin/shared_admin_scripts/hag/{f}")[:12]
-            for f in SCRIPT_FILES),
+        "protocol_sha": _sha(PROTOCOL_SKILL),
+        "scripts_sha": "+".join(_sha(f)[:12] for f in SCRIPT_FILES),
         "schema_v": SCHEMA_V,
     }
 

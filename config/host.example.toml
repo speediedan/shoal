@@ -1,0 +1,33 @@
+# Host configuration for this package. Copy to config/host.toml (gitignored) or point
+# $HAG_CONFIG at your copy. Every key is optional: an environment variable wins over the
+# file, and a missing key falls back to a generic default (see config.py).
+
+# Per-HAG local home (briefs, reports, telemetry). Env: HAG_DATA_ROOT.
+# Default: $XDG_DATA_HOME/hag, else ~/.local/share/hag
+# data_root = "/path/to/bulk/storage/hags"
+
+# Local clone of the ledger (queue) repository. Env: HAG_LEDGER_DIR. Default: <data_root>/ledger
+# ledger_dir = "/path/to/ledger-clone"
+
+# Remote of the ledger repository. Env: HAG_LEDGER_REPO. Default: "" (then `start` and
+# `ledger-init` require --ledger-repo explicitly)
+# ledger_repo = "git@github.com:<owner>/<ledger-repo>.git"
+
+# PATH put ahead of the inherited PATH for every tool call and in generated systemd units
+# (a systemd --user PATH lacks node/bun installs). Env: HAG_TOOL_PATH. Default: the current PATH
+# tool_path = "/path/to/node/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Resource lease provider (docs/providers.md): must answer `<cmd> --status --json`.
+# Env: HAG_LEASE_CMD, then GPU_LEASE_CMD. Default: "" (lease waits resolve as unknown)
+# lease_cmd = "/path/to/lease_provider.sh"
+
+# Repositories a HAG works when its spec names none (reconcile ground truth). Default: []
+# default_repos = ["<owner>/<repo>", "<owner>/<other-repo>"]
+
+# Command line that runs hag.py, as printed in briefs, role docs and systemd units.
+# Env: HAG_CLI. Default: python3 <absolute path of this package>/hag.py
+# cli = "python3 /path/to/hag/hag.py"
+
+# Host memory-pressure event log written by psi_watch.py. Env: HAG_PSI_OUT.
+# Default: <data_root>/_instruments/psi_events.jsonl
+# psi_out = "/path/to/psi_events.jsonl"

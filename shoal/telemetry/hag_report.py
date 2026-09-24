@@ -47,6 +47,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
 from roles import HAG_DATA_ROOT, HagSpec, home_dir  # noqa: E402
+import config  # noqa: E402
 
 try:
     from zoneinfo import ZoneInfo
@@ -55,9 +56,8 @@ except Exception:  # pragma: no cover
     LOCAL = None
 
 SUBS = ["local-ci", "remote-ci", "user-auth", "user-design", "session-blocked", "queue-empty"]
-TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
-             "/home/speediedan/.bun/bin:/usr/bin:/bin")
-ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+TOOL_PATH = config.tool_path()
+ENV = config.tool_env()
 
 
 def parse_ts(s):
@@ -589,7 +589,7 @@ def recovery_sections(evs, w0, w1):
     if rows:
         L.append(table(["role", "wakes", "done", "queue versions", "wakes per done item"], rows))
     L.append(table(["tier", "count"], sorted(tiers.items())) if tiers else "_no health-quorum actions_")
-    instr = os.path.join(os.environ.get("HAG_DATA_ROOT", "/mnt/cache_extended/speediedan/hags"), "_instruments")
+    instr = os.path.join(config.data_root(), "_instruments")
     psi_n, kills = 0, []
     try:
         with open(os.path.join(instr, "psi_events.jsonl")) as fh:
@@ -630,11 +630,14 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         if e.get("channel") == "ledger" and not r:
             ledger_folded += 1  # ledger-derived (as_telemetry): carries no run pin
             continue
-        k = (r.get("instructions_sha", "?")[:10], r.get("runbook_sha", "?")[:10], r.get("scripts_sha", "?")[:26], r.get("schema_v", "?"))
+        # `protocol_sha` pins the package's protocol skill; pre-2026-09-24 events pinned the
+        # admin repo's shared instructions + runbook instead (read as legacy)
+        k = ((r.get("protocol_sha") or r.get("instructions_sha", "?"))[:10], r.get("runbook_sha", "-")[:10],
+             r.get("scripts_sha", "?")[:26], r.get("schema_v", "?"))
         pins[k] = pins.get(k, 0) + 1
     L.append("")
-    L.append("## Protocol pins seen (instructions / runbook / scripts / schema → events)")
-    L.append(table(["instructions", "runbook", "scripts", "schema", "events"],
+    L.append("## Protocol pins seen (protocol or legacy instructions / legacy runbook / scripts / schema → events)")
+    L.append(table(["protocol", "runbook", "scripts", "schema", "events"],
                    [(*k, n) for k, n in sorted(pins.items(), key=lambda x: -x[1])]))
     L.append(f"- ledger-folded events (no run pin, excluded above): {ledger_folded}")
     L.append("")

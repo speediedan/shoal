@@ -32,9 +32,12 @@ import sys
 import time
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config  # noqa: E402
+
 TRIGGER = b"some 150000 2000000\0"  # byte-identical to the harness runtime's trigger
 CG_ROOT = "/sys/fs/cgroup"
-DEFAULT_OUT = "/mnt/cache_extended/speediedan/hags/_instruments/psi_events.jsonl"
+DEFAULT_OUT = config.psi_out()
 VMSTAT_KEYS = ("allocstall_normal", "allocstall_movable", "pgscan_direct", "pgsteal_direct",
                "pgscan_kswapd", "workingset_refault_file", "workingset_refault_anon",
                "pswpin", "pswpout")

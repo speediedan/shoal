@@ -31,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 
+import config  # noqa: E402
 from roles import data_dir, state_dir  # noqa: E402
 
 # Environment a job inherits (systemd-run --user starts from the manager's env, not the
@@ -137,7 +138,7 @@ def cmd_run(a) -> int:
     _emit(a.hag, a.slug, "job-start", f"{unit} {' '.join(cmd)[:120]}")
     print(f"JOB-STARTED {unit} log={p['log']}\n"
           f"follow with (background command, re-arm freely): "
-          f"python3 {os.path.join(HERE, 'hag.py')} job wait --hag {a.hag} --slug {a.slug} --name {a.name}")
+          f"{config.cli()} job wait --hag {a.hag} --slug {a.slug} --name {a.name}")
     return 0
 
 

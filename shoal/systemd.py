@@ -28,10 +28,14 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HAGPY = os.path.join(HERE, "hag.py")
+sys.path.insert(0, HERE)
+import config  # noqa: E402
+
+# units run the configured cli (config `cli`), so units written from any checkout point
+# at the one the host config names
+_CLI_EXE, HAGPY = config.cli_exec()
 UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
-TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
-             "/home/speediedan/.bun/bin:/usr/local/bin:/usr/bin:/bin")
+TOOL_PATH = config.tool_path()
 
 
 def unit_name(hag: str, job: str, ext: str) -> str:
@@ -41,12 +45,14 @@ def unit_name(hag: str, job: str, ext: str) -> str:
 
 def service_unit(description: str, repo_dir: str, argv: list[str],
                  exe: str = "") -> str:
-    python = sys.executable
-    exe = exe or HAGPY
+    if exe:  # a sibling python script (reconcile)
+        head = f"{sys.executable} {exe}"
+    else:
+        head = f"{_CLI_EXE} {HAGPY}".rstrip()
     return (f"[Unit]\nDescription={description}\n"
             f"[Service]\nType=oneshot\nWorkingDirectory={repo_dir}\n"
             f"Environment=PATH={TOOL_PATH}\n"
-            f"ExecStart={python} {exe} {' '.join(argv)}\n"
+            f"ExecStart={head} {' '.join(argv)}\n"
             f"StandardOutput=journal\nStandardError=journal\n")
 
 
@@ -84,7 +90,7 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
                      ["digest", "--hag", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))
     jobs.append(("reconcile", f"HAG {spec.hag} reconcile (twice daily)",
                  ["--hag", spec.hag, "--spec", spec_path], "04,16:07",
-                 os.path.join(HERE, "telemetry", "hag-reconcile.py")))
+                 os.path.join(config.cli_pkg_dir(), "telemetry", "hag-reconcile.py")))
     jobs.append(("weekly-report", f"HAG {spec.hag} weekly report",
                  ["report", "--spec", spec_path, "--hours", "168"], "Mon 05:11", ""))
     return jobs
@@ -103,7 +109,7 @@ def cmd_install(spec, spec_path: str,
         svc = service_unit(desc, spec.dir, argv, exe)
         sn, tn = unit_name(spec.hag, job, "service"), unit_name(spec.hag, job, "timer")
         if dry_run:
-            print(f"[dry-run] {sn} + {tn} ({cal}): {os.path.basename(exe or HAGPY)} {' '.join(argv)[:90]}")
+            print(f"[dry-run] {sn} + {tn} ({cal}): {os.path.basename(exe or HAGPY or _CLI_EXE)} {' '.join(argv)[:90]}")
             continue
         with open(os.path.join(UNIT_DIR, sn), "w") as fh:
             fh.write(svc)

@@ -5,7 +5,7 @@ ledger with one file per writer (readme 5.j, established 2026-09-20).
 Every piece of agent traffic — tasking (offer/withdraw), work ownership
 (claim/release/done), row state (state), and messages (msg) — is one JSON
 line appended to `hags/<hag>/ledger/<writer>.jsonl` in the queue repo
-(`speediedan/hag-queues`, cloned at HAG_LEDGER_DIR). One writer per file
+(config `ledger_repo`, cloned at config `ledger_dir`). One writer per file
 means `git pull --rebase` never conflicts; append-only means history is the
 audit trail; JSONL means every reader (agent, watcher, report, human via
 `hag.py show`) parses the same grammar. Direct session sends between peers
@@ -49,11 +49,15 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_LEDGER_REPO = "git@github.com:speediedan/hag-queues.git"
-LEDGER_DIR = os.environ.get("HAG_LEDGER_DIR", os.path.expanduser("~/repos/hag-queues"))
+sys.path.insert(0, HERE)
+import config  # noqa: E402
+
+DEFAULT_LEDGER_REPO = config.ledger_repo()
+LEDGER_DIR = config.ledger_dir()
 GIT_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get("PATH", ""),
                GIT_TERMINAL_PROMPT="0")
 
@@ -145,6 +149,9 @@ def ensure_clone(root: str = LEDGER_DIR, remote: str = DEFAULT_LEDGER_REPO,
     """Clone the queue repo if absent. Returns the root."""
     if os.path.isdir(os.path.join(root, ".git")):
         return root
+    if not remote:
+        raise LedgerError(f"no ledger clone at {root} and no ledger repo to clone: pass --ledger-repo "
+                          "or set `ledger_repo` in the host config (HAG_LEDGER_REPO)")
     os.makedirs(os.path.dirname(root), exist_ok=True)
     r = subprocess.run(["git", "clone", "--quiet", remote, root], capture_output=True,
                        text=True, timeout=120, env=GIT_ENV)

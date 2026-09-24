@@ -68,9 +68,35 @@ def gh_graphql(query: str, **vars) -> dict:
     return json.loads(r.stdout)
 
 
+def board_fixture() -> list[dict] | None:
+    """Test hook: `HAG_BOARD_FIXTURE=<path to a JSON list of items>` replaces every board read
+    (this module and digest.fetch_board) with those items, in file order. Each item needs at
+    least `repo` and `number`; the other board fields get neutral defaults. None when unset."""
+    path = os.environ.get("HAG_BOARD_FIXTURE", "")
+    if not path:
+        return None
+    with open(path) as fh:
+        raw = json.load(fh)
+    items = []
+    for d in raw:
+        repo = d.get("repo", "")
+        short = repo.split("/", 1)[1] if "/" in repo else repo
+        it = {"item": f"{short}#{d['number']}", "repo": repo, "number": d["number"], "kind": "issue",
+              "title": "", "state": "OPEN", "status": "", "labels": [], "milestone": "", "assignees": [],
+              "url": "", "draft": False, "project_item_id": "", "updated": "", "excerpt": "",
+              "blocked_by": [], "parent": "", "sub_issues": 0, "linked_prs": []}
+        it.update(d)
+        it["pos"] = len(items) + 1
+        items.append(it)
+    return items
+
+
 def github_project_items(owner: str, number: int, ttl_s: float = 120) -> list[dict]:
     """Board items in board order: [{pos, item, repo, number, kind, title,
     state, status, labels, url, draft}]. Cached per process for ttl_s."""
+    fixture = board_fixture()
+    if fixture is not None:
+        return fixture
     ck = f"{owner}/{number}"
     now = time.time()
     if ck in _CACHE and now - _CACHE[ck][0] < ttl_s:
@@ -170,6 +196,9 @@ def parse_source(spec: str) -> dict:
 
 if __name__ == "__main__":
     import sys
-    owner, number = (sys.argv[1:3] + ["speediedan", "2"])[:2]
+    if len(sys.argv) < 3:
+        print("usage: sources.py OWNER PROJECT_NUMBER")
+        sys.exit(2)
+    owner, number = sys.argv[1:3]
     for it in github_project_items(owner, int(number)):
         print(f"{it['pos']:3d} {it['item']:<28} {it['state']:<6} {it['status']:<10} {it['title'][:60]}")

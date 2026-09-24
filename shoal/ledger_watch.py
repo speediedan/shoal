@@ -36,10 +36,10 @@ sys.path.insert(0, os.path.join(HERE, "telemetry"))
 
 from ledger import Ledger, View, fmt_item, item_key, short  # noqa: E402
 from roles import HagSpec, find_spec, state_dir  # noqa: E402
+import config  # noqa: E402
 
-TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
-             "/home/speediedan/.bun/bin:/usr/bin:/bin")
-_ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+TOOL_PATH = config.tool_path()
+_ENV = config.tool_env()
 DELIVERED_CAP = 400
 
 

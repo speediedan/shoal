@@ -15,9 +15,10 @@ from __future__ import annotations
 import os
 import re
 
+import config
 from roles import HagSpec, Role
 
-HAGPY = "python3 /home/speediedan/repos/distributed-insight/project_admin/shared_admin_scripts/hag/hag.py"
+HAGPY = config.cli()  # the command line every brief tells a session to run
 
 
 def extract_grants(doc: str) -> list[str]:

@@ -31,7 +31,7 @@ sys.path.insert(0, HERE)
 from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, fmt_item,  # noqa: E402
                     item_key, lint, render_all, render_role, split_item,
                     sync_pull, sync_push, unpushed)
-from roles import HagSpec, find_spec, state_dir  # noqa: E402
+from roles import DEFAULT_LEDGER, HagSpec, find_spec, state_dir  # noqa: E402
 
 
 def _spec(a) -> HagSpec | None:
@@ -335,9 +335,15 @@ def cmd_sync(a) -> int:
 def cmd_ledger_init(a) -> int:
     spec = HagSpec.load(a.spec)
     if not spec.ledger:
-        spec.ledger = {"repo": a.repo or "git@github.com:speediedan/hag-queues.git",
-                       "dir": a.ledger_dir or os.path.expanduser("~/repos/hag-queues")}
+        spec.ledger = {"repo": a.repo or DEFAULT_LEDGER["repo"],
+                       "dir": a.ledger_dir or DEFAULT_LEDGER["dir"]}
+    elif a.repo and not spec.ledger.get("repo"):
+        spec.ledger["repo"] = a.repo
     root = a.ledger_dir or spec.ledger_dir
+    if not spec.ledger.get("repo") and not os.path.isdir(os.path.join(root, ".git")):
+        print(f"ledger-init: no ledger repo and no clone at {root}: pass --ledger-repo URL (or set "
+              "`ledger_repo` in the host config / HAG_LEDGER_REPO)")
+        return 1
     if a.dry_run:
         print(f"[dry-run] ledger for {spec.hag}: clone {spec.ledger.get('repo')} at {root}, "
               f"create hags/{spec.hag}/ledger/, snapshot spec, write ledger into {a.spec}")
@@ -472,7 +478,8 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
 
     p = sub.add_parser("ledger-init", help="create hags/<hag>/ in the queue repo")
     p.add_argument("--spec", required=True)
-    p.add_argument("--repo", default="", help="queue repo url (default speediedan/hag-queues)")
+    p.add_argument("--ledger-repo", "--repo", dest="repo", default="",
+                   help="ledger repo url (default: config `ledger_repo`; required when that is empty)")
     p.add_argument("--ledger-dir", default="")
     p.add_argument("--force", action="store_true", help="re-snapshot the spec into an existing ledger")
     p.add_argument("--no-sync", action="store_true")

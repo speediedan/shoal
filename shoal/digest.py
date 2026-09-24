@@ -102,7 +102,10 @@ def _short(repo: str) -> str:
 
 def fetch_board(owner: str, number: int) -> list[dict]:
     """All board items in board order, with the fields the digest needs."""
-    from sources import gh_graphql
+    from sources import board_fixture, gh_graphql
+    fixture = board_fixture()  # HAG_BOARD_FIXTURE (tests): no board read
+    if fixture is not None:
+        return fixture
     items: list[dict] = []
     after, scope = None, None
     while True:

@@ -26,8 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 from hag_telemetry import append_event, build_event, resolve_dir, legacy_dirs  # noqa: E402
+import config  # noqa: E402
 
-DEFAULT_REPOS = ["speediedan/interpretune", "speediedan/it-interp-engine-adapter"]
+DEFAULT_REPOS = config.default_repos()
 GH_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
 
 

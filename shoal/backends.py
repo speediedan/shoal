@@ -21,11 +21,25 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
-TOOL_PATH = ("/home/speediedan/.nvm/versions/node/v24.13.0/bin:"
-             "/home/speediedan/.bun/bin:/usr/bin:/bin")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config  # noqa: E402
 
-_ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
+TOOL_PATH = config.tool_path()
+
+_ENV = config.tool_env()
+
+
+def fake_sessions() -> dict | None:
+    """Test hook (same family as HAG_FAKE_PR / HAG_FAKE_REF_STATE): HAG_FAKE_SESSIONS=
+    '{"claude": [<claude agents --json rows>], "opencode": {"<session id>": "<status line>"}}'
+    answers every session-liveness probe without calling a harness CLI. None when unset."""
+    raw = os.environ.get("HAG_FAKE_SESSIONS", "")
+    if not raw:
+        return None
+    import json as _json
+    return _json.loads(raw)
 
 
 class UnsupportedError(RuntimeError):
@@ -115,6 +129,9 @@ class OpenChamberBackend(Backend):
         return _run(*argv).stdout
 
     def status(self, session_id: str, repo_dir: str) -> str:
+        fake = fake_sessions()
+        if fake is not None:
+            return str((fake.get("opencode") or {}).get(session_id, ""))
         r = _run("openchamber", "session", "status", "--session", session_id,
                  "--dir", repo_dir)
         return (r.stdout + r.stderr).strip().splitlines()[0] \
@@ -223,6 +240,9 @@ class ClaudeBackend(Backend):
 
     def _agents(self) -> list:
         import json as _json
+        fake = fake_sessions()
+        if fake is not None:
+            return list(fake.get("claude") or [])
         b = shutil.which("claude") or "claude"
         r = subprocess.run([b, "agents", "--json"], capture_output=True,
                            text=True, timeout=30, env=_ENV)
