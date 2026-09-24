@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """HAG role/spec model.
 
-Flattened by default (readme 5.k, 2026-09-20): a HAG is a set of roles that
-all speak the same ledger primitive (ledger.py). Per role, `fill` says where
-its work comes from — `self` (it pops the priority table in `sources` when
-its queue is empty) or `assigned` (it works only what `user` or a filler
-offers it) — and `can_fill_others` is the elevated permission a
-coordinator-class role holds to offer work to other roles. The legacy
-`coordinator` flag still exists as "the role that also receives the
-watcher fires and holds the tasking authority"; it implies
-`can_fill_others`. A spec with no coordinator flag is the default
-flattened shape; setting the flag on one role is the coordinated shape.
-Same machinery either way — one spec edit.
+Flattened only (2026-09-24, extraction plan D7): a HAG is a set of roles that
+all speak the same ledger primitive (ledger.py). There is no coordinator role.
+Per role, `fill` says where its work comes from: `self` (it pops the priority
+table in `sources` when its queue is empty), `assigned` (it works only what
+`user` offers it) or `none` (it never claims). Only `user` offers work to
+other roles; a role hands its own claim to a peer with `release --kind
+handoff --to <role>`. Specs written before the change may still carry
+`coordinator`, `can_fill_others` or `queue` keys: they load and are ignored.
 
 Two roots (both overridable by environment for tests and other hosts):
   HAG_DATA_ROOT  per-hag local home (unversioned bulk): <root>/<hag>/{briefs/,
@@ -83,7 +80,7 @@ def state_dir(hag: str) -> str:
 
 @dataclasses.dataclass
 class Role:
-    slug: str                # stable identity (queue files, sidecars, heartbeats, telemetry)
+    slug: str                # stable identity (ledger file, sidecars, heartbeats, telemetry)
     ecosystem: str = "opencode"  # opencode | claude | codex
     title: str = ""              # session title stem (sequence suffix appended)
     seq: int = 1                 # per-role session sequence; session tag is {slug}-r{seq}.
@@ -92,8 +89,6 @@ class Role:
     doc: str = ""                # absolute path to THE start document (plan_state.md;
         # mission + current state + grants-needed + next). One doc per role;
         # handoffs/ dirs hold the immutable restart record, never the start doc.
-    queue: str = ""              # absolute queue file (consumer roles)
-    coordinator: bool = False    # exactly one role carries this pre-flattening
     session: str = ""            # live session id once started
     model: str = ""              # native model id ("" = harness default)
     effort: str = ""             # agent-neutral pace/depth knob ("" = default);
@@ -102,8 +97,7 @@ class Role:
         # from the doc's grants-needed section at brief time, never CLI.
     fill: str = "self"           # self | assigned | none. self: pops the priority
         # table when its queue is empty; assigned: works only offers addressed to
-        # it (or `*`); none: never claims (a pure filler/observer role).
-    can_fill_others: bool = False  # may `offer` to other roles (coordinator-class)
+        # it (or `*`); none: never claims (an observer role, e.g. the relay).
     scope: dict = dataclasses.field(default_factory=dict)  # DEPRECATED hard self-fill
         # filter {"repos", "labels_any", "labels_none"}; read only to derive `context`
         # when a spec predates it (`hag.py context migrate` converts and removes it).
@@ -136,10 +130,6 @@ class Role:
         return errs
 
     @property
-    def fills_others(self) -> bool:
-        return bool(self.can_fill_others or self.coordinator)
-
-    @property
     def tag(self) -> str:
         """Session tag: {slug}-r{seq}. Stable slug, rolling sequence."""
         return f"{self.slug}-r{self.seq}"
@@ -154,10 +144,12 @@ class Role:
 
     @staticmethod
     def from_dict(d: dict) -> "Role":
+        # unknown keys are dropped, so a pre-flattening spec (`coordinator`,
+        # `can_fill_others`, `queue`) still loads
         known = {f.name for f in dataclasses.fields(Role)}
         d = dict(d)
         if "fill" not in d:
-            # pre-2026-09-20 spec: consumers were coordinator-filled, so `assigned`
+            # pre-2026-09-20 spec: consumers were assigned their work, so `assigned`
             d["fill"] = "assigned"
         if d.get("scope") is None:
             d["scope"] = {}
@@ -202,7 +194,7 @@ class HagSpec:
         # [{gen, started_utc, ended_utc, sessions{slug:id}, run{}}], oldest first
     retired_utc: str = ""  # set by `hag.py retire`; a retired HAG launches nothing
     ledger: dict = dataclasses.field(default_factory=dict)  # {"repo": url, "dir": clone}
-        # empty = legacy QUEUE/STATUS queue files (pre-2026-09-20 HAGs)
+        # required: the ledger is the only transport
     sources: list[dict] = dataclasses.field(default_factory=list)  # priority tables
         # for self-filling roles: [{"kind": "github-project", "owner", "number", ...}]
     features: dict = dataclasses.field(default_factory=dict)  # per-HAG opt-ins so new
@@ -222,15 +214,14 @@ class HagSpec:
             errs.append("spec missing dir")
         if not self.roles:
             errs.append("spec has no roles")
-        coords = [r.slug for r in self.roles if r.coordinator]
-        if len(coords) > 1:
-            errs.append(f"multiple coordinator roles: {coords}")
-        if self.ledger and not self.ledger.get("dir"):
+        if not self.ledger:
+            errs.append("spec has no `ledger` (the pre-ledger queue-file transport is removed)")
+        elif not self.ledger.get("dir"):
             errs.append("ledger set without a clone dir")
         for s in self.sources:
             if s.get("kind") != "github-project" or not s.get("owner") or not s.get("number"):
                 errs.append(f"bad source {s} (want kind=github-project, owner, number)")
-        if not self.sources and any(r.fill == "self" for r in self.roles) and self.ledger:
+        if not self.sources and any(r.fill == "self" for r in self.roles):
             errs.append("self-filling roles but no `sources` (priority table) in the spec")
         slugs = [r.slug for r in self.roles]
         if len(set(slugs)) != len(slugs):
@@ -248,33 +239,12 @@ class HagSpec:
         return f"r{self.incarnation + 1}"
 
     @property
-    def coordinator(self) -> Role | None:
-        for r in self.roles:
-            if r.coordinator:
-                return r
-        return None
-
-    @property
-    def flattened(self) -> bool:
-        """True when no role carries the coordinator flag (5.k shape)."""
-        return self.coordinator is None
-
-    @property
     def effective_repos(self) -> list[str]:
         return list(self.repos) if self.repos else list(DEFAULT_REPOS)
 
     @property
-    def ledger_mode(self) -> bool:
-        """True when this HAG communicates over the ledger (5.j); False = legacy queue files."""
-        return bool(self.ledger)
-
-    @property
     def ledger_dir(self) -> str:
         return (self.ledger or {}).get("dir") or DEFAULT_LEDGER["dir"]
-
-    @property
-    def fillers(self) -> list["Role"]:
-        return [r for r in self.roles if r.fills_others]
 
     def role(self, slug: str) -> Role | None:
         for r in self.roles:

@@ -15,14 +15,14 @@ under <HAG_DATA_ROOT>/<hag>/reports/ (bulk).
 
 Sections: header + protocol pins, outcomes, time-in-state per session,
 transition quality (valid/aliased/invalid), wait discipline (stale waits),
-watch events + stall recovery latency, coordinator comms, queue-file
-history (git), optional GPU pool share, failure-mode signatures (mapped to
+watch events + stall recovery latency, watcher comms (`coord_comms`
+events), queue telemetry, optional GPU pool share, failure-mode signatures (mapped to
 hag_failure_modes.md section numbers), and a VERDICT block the reviewer
 fills (protocol proposal or explicit no-change — the rule from
 hag_system_reviews.md). Every number is computed from events; a missing
 instrument prints as `unobserved`, never as zero.
 
-Ledger mode (2026-09-20): the HAG ledger is folded in (ledger.as_telemetry)
+The HAG ledger (2026-09-20) is folded in (ledger.as_telemetry)
 and three sections are added — Ledger economics (offers by source, claims
 and self-fill share, releases by kind, done verified against reconcile,
 offer→claim and claim→done latencies), Wake efficiency (ledger-wake
@@ -289,33 +289,6 @@ def queue_summary(evs):
         disp[e.get("disposition") or "?"] = disp.get(e.get("disposition") or "?", 0) + 1
     xeco = [e for e in evs if e.get("type") == "xeco_transition"]
     return adds, rems, disp, xeco
-
-
-def queue_git_history(repo, qpath, w0, w1):
-    rel = os.path.relpath(qpath, repo)
-    out = sh(["git", "-C", repo, "log", "--format=%H|%aI|%s", "--", rel], timeout=60)
-    rows = []
-    for line in out.splitlines():
-        parts = line.split("|", 2)
-        if len(parts) < 3:
-            continue
-        h, ts, msg = parts
-        try:
-            t = datetime.datetime.fromisoformat(ts).astimezone(datetime.timezone.utc)
-        except Exception:
-            continue
-        if not (w0 <= t <= w1):
-            continue
-        content = sh(["git", "-C", repo, "show", f"{h}:{rel}"], timeout=30)
-        st = ac = up = ""
-        m = re.search(r"## STATUS(.*?)(?:\n## |\Z)", content, re.S)
-        if m:
-            sec = m.group(1)
-            g = lambda k: (re.search(rf"^- {k}:\s*(.+)$", sec, re.M) or [None, ""])[1]  # noqa: E731
-            st, ac, up = (g("state") or "")[:40], (g("active-issue") or "")[:60], (g("updated-utc") or "")[:20]
-        nq = len(re.findall(r"^\d+\.\s+\*\*", content, re.M))
-        rows.append((fmt(t), h[:8], msg[:70], nq, st, ac, up))
-    return sorted(rows)
 
 
 def outcomes(evs):
@@ -666,15 +639,12 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append(f"- ledger-folded events (no run pin, excluded above): {ledger_folded}")
     L.append("")
     L.append("## Roles")
-    L.append(table(["role (tag)", "ecosystem", "coord", "fill", "model", "effort", "session", "server", "queue"],
-                   [(r.label, r.ecosystem, "yes" if r.coordinator else "",
-                     getattr(r, "fill", "assigned") + ("+fills" if getattr(r, "fills_others", False) else ""),
+    L.append(table(["role (tag)", "ecosystem", "fill", "model", "effort", "session", "server"],
+                   [(r.label, r.ecosystem, getattr(r, "fill", "assigned"),
                      r.model or "(default)", r.effort or "(default)",
-                     r.session or "(none)", getattr(r, "server", "") or "local",
-                     os.path.basename(r.queue) if r.queue else ("ledger" if spec.ledger_mode else "")) for r in spec.roles]))
-    if spec.ledger_mode:
-        srcs = ", ".join(f"{x.get('kind', '?')}:{x.get('owner', '?')}/{x.get('number', '?')}" for x in spec.sources) or "none"
-        L.append(f"- mode: ledger ({spec.ledger.get('repo', '')}), {'flattened' if spec.flattened else 'coordinated'}; sources: {srcs}")
+                     r.session or "(none)", getattr(r, "server", "") or "local") for r in spec.roles]))
+    srcs = ", ".join(f"{x.get('kind', '?')}:{x.get('owner', '?')}/{x.get('number', '?')}" for x in spec.sources) or "none"
+    L.append(f"- mode: ledger ({spec.ledger.get('repo', '')}), flattened; sources: {srcs}")
     merged, closed, recon = outcomes(evs)
     L.append("")
     L.append("## Outcomes (GitHub ground truth via reconcile events)")
@@ -734,7 +704,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.extend(recovery_sections(evs, w0, w1))
     dirs, gauges = coord_summary(evs)
     L.append("")
-    L.append("## Coordinator comms (direction/peer counts)")
+    L.append("## Watcher comms (coord_comms events: direction/peer counts)")
     L.append(table(["direction/peer", "count"], sorted(dirs.items())) if dirs else "_no coord_comms events_")
     if gauges:
         L.append(table(["ts", "gpu depth", "unapproved", "local gpu jobs", "board open"], gauges[-12:]))
@@ -742,59 +712,50 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append("")
     L.append("## Queues (telemetry)")
     L.append(f"- queue_add: {len(adds)} · queue_remove: {len(rems)} · dispositions: {disp or '{}'} · xeco transitions: {len(xeco)}")
-    for r in spec.roles:
-        if not r.queue or not os.path.exists(r.queue):
-            continue
-        hist = queue_git_history(opts.repo, r.queue, w0, w1)
+    ec = ledger_economics(evs, w1, truth=getattr(opts, "truth", None))
+    L.append("")
+    L.append("## Ledger economics (offers, claims, completions)")
+    L.append(f"- offers: {len(ec['offers'])} by src {ec['by_src'] or '{}'} · withdrawn: {len(ec['wds'])} · "
+             f"claims: {len(ec['claims'])} by src {ec['claim_src'] or '{}'} · releases: {ec['rel_kind'] or '{}'} · "
+             f"done: {len(ec['dones'])} (verified against GitHub via reconcile, repo+number, any reconcile run: {ec['verified']})")
+    if ec["per_role"]:
+        L.append(table(["role", "offered to", "claimed", "self-filled", "done", "declined",
+                        "offer→claim median", "claim→done median"],
+                       [(slug, v["offered"], v["claimed"], v["self"], v["done"], v["declined"],
+                         dur(sorted(ec["lat_oc"].get(slug, []))[len(ec["lat_oc"].get(slug, [])) // 2]) if ec["lat_oc"].get(slug) else "—",
+                         dur(sorted(ec["lat_cd"].get(slug, []))[len(ec["lat_cd"].get(slug, [])) // 2]) if ec["lat_cd"].get(slug) else "—")
+                        for slug, v in sorted(ec["per_role"].items())]))
+    else:
+        L.append("_no ledger offers/claims in window_")
+    wakes, wrows, wper = wake_efficiency(evs, w1)
+    L.append("")
+    L.append("## Wake efficiency (ledger-wake → first action by the woken role)")
+    if wper:
+        L.append(table(["role", "wakes", "wasted (no action ≤30m)", "wake→action median"],
+                       [(slug, p["wakes"], p["wasted"], dur(sorted(p["lat"])[len(p["lat"]) // 2]) if p["lat"] else "—")
+                        for slug, p in sorted(wper.items())]))
+        L.append(table(["ts", "role", "reason", "n", "first action", ""], wrows[-20:]))
+    else:
+        L.append("_no ledger-wake events: watchers never fired (or never emitted) — unobserved_")
+    msgs, by_kind, by_to, acks, unacked = message_stats(evs)
+    L.append("")
+    L.append("## Messages (ledger msg)")
+    L.append(f"- msgs: {len(msgs)} by kind {by_kind or '{}'} · by target {by_to or '{}'} · "
+             f"ack latency median {dur(sorted(acks)[len(acks) // 2]) if acks else '—'} · unacked ack-requests: {unacked}")
+    if getattr(opts, "view_lint", None):
         L.append("")
-        L.append(f"### Queue file history: {os.path.basename(r.queue)} ({len(hist)} commits in window)")
-        L.append(table(["ts", "commit", "subject", "QUEUE items", "state", "active-issue", "updated-utc"], hist[-25:]))
-    if spec.ledger_mode:
-        ec = ledger_economics(evs, w1, truth=getattr(opts, "truth", None))
-        L.append("")
-        L.append("## Ledger economics (offers, claims, completions)")
-        L.append(f"- offers: {len(ec['offers'])} by src {ec['by_src'] or '{}'} · withdrawn: {len(ec['wds'])} · "
-                 f"claims: {len(ec['claims'])} by src {ec['claim_src'] or '{}'} · releases: {ec['rel_kind'] or '{}'} · "
-                 f"done: {len(ec['dones'])} (verified against GitHub via reconcile, repo+number, any reconcile run: {ec['verified']})")
-        if ec["per_role"]:
-            L.append(table(["role", "offered to", "claimed", "self-filled", "done", "declined",
-                            "offer→claim median", "claim→done median"],
-                           [(slug, v["offered"], v["claimed"], v["self"], v["done"], v["declined"],
-                             dur(sorted(ec["lat_oc"].get(slug, []))[len(ec["lat_oc"].get(slug, [])) // 2]) if ec["lat_oc"].get(slug) else "—",
-                             dur(sorted(ec["lat_cd"].get(slug, []))[len(ec["lat_cd"].get(slug, [])) // 2]) if ec["lat_cd"].get(slug) else "—")
-                            for slug, v in sorted(ec["per_role"].items())]))
-        else:
-            L.append("_no ledger offers/claims in window_")
-        wakes, wrows, wper = wake_efficiency(evs, w1)
-        L.append("")
-        L.append("## Wake efficiency (ledger-wake → first action by the woken role)")
-        if wper:
-            L.append(table(["role", "wakes", "wasted (no action ≤30m)", "wake→action median"],
-                           [(slug, p["wakes"], p["wasted"], dur(sorted(p["lat"])[len(p["lat"]) // 2]) if p["lat"] else "—")
-                            for slug, p in sorted(wper.items())]))
-            L.append(table(["ts", "role", "reason", "n", "first action", ""], wrows[-20:]))
-        else:
-            L.append("_no ledger-wake events: watchers never fired (or never emitted) — unobserved_")
-        msgs, by_kind, by_to, acks, unacked = message_stats(evs)
-        L.append("")
-        L.append("## Messages (ledger msg)")
-        L.append(f"- msgs: {len(msgs)} by kind {by_kind or '{}'} · by target {by_to or '{}'} · "
-                 f"ack latency median {dur(sorted(acks)[len(acks) // 2]) if acks else '—'} · unacked ack-requests: {unacked}")
-        if getattr(opts, "view_lint", None):
-            L.append("")
-            L.append("## Ledger lint (live)")
-            for code, msg in opts.view_lint[:20]:
-                L.append(f"- {code} {msg}")
+        L.append("## Ledger lint (live)")
+        for code, msg in opts.view_lint[:20]:
+            L.append(f"- {code} {msg}")
     if opts.gpu:
         g = gpu_share(w0, w1)
         L.append("")
         L.append("## GPU pool (gated pipeline, completed builds)")
         L.append("_az query failed_" if g is None else f"- builds overlapping: {g[0]} · union-busy {dur(g[1])} = {g[2]:.1f}% of window")
     sig = signatures(evs, stale, q, recov)
-    if spec.ledger_mode:
-        _w, _r, wper2 = wake_efficiency(evs, w1)
-        _m, _k, by_to2, _a, _u = message_stats(evs)
-        sig += ledger_signatures(evs, wper2, by_to2, getattr(opts, "view_lint", []) or [])
+    _w, _r, wper2 = wake_efficiency(evs, w1)
+    _m, _k, by_to2, _a, _u = message_stats(evs)
+    sig += ledger_signatures(evs, wper2, by_to2, getattr(opts, "view_lint", []) or [])
     L.append("")
     L.append("## Failure-mode signatures (hag_failure_modes.md)")
     L.append(table(["signature", "count"], sig))
@@ -811,18 +772,17 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         hints.append("no reconcile ran: outcomes unverified; check the reconcile timer tick")
     if not any(r[5] for r in rows):
         hints.append("no transitions recorded: the transition primitive was not used; brief it or the incarnation is unmeasurable")
-    if spec.ledger_mode:
-        _w, _r, wper3 = wake_efficiency(evs, w1)
-        tw = sum(p["wakes"] for p in wper3.values())
-        ww = sum(p["wasted"] for p in wper3.values())
-        if tw and ww / tw > 0.3:
-            hints.append(f"wasted wakes {ww}/{tw} (>30%): tighten actionable rules or raise --interval")
-        if not tw:
-            hints.append("no ledger-wake events: watchers unarmed or wake telemetry not written")
-        for code, msg in (getattr(opts, "view_lint", []) or []):
-            if code == "E2":
-                hints.append("contested claim(s) live: a loser must release kind=lost-race")
-                break
+    _w, _r, wper3 = wake_efficiency(evs, w1)
+    tw = sum(p["wakes"] for p in wper3.values())
+    ww = sum(p["wasted"] for p in wper3.values())
+    if tw and ww / tw > 0.3:
+        hints.append(f"wasted wakes {ww}/{tw} (>30%): tighten actionable rules or raise --interval")
+    if not tw:
+        hints.append("no ledger-wake events: watchers unarmed or wake telemetry not written")
+    for code, msg in (getattr(opts, "view_lint", []) or []):
+        if code == "E2":
+            hints.append("contested claim(s) live: a loser must release kind=lost-race")
+            break
     L.append("- auto-hints: " + ("; ".join(hints) if hints else "none"))
     L.append("- PROPOSAL / NO-CHANGE: _fill in_")
     L.append("- next incarnation measured against: _fill in_")
@@ -910,19 +870,18 @@ def cmd_report(a: argparse.Namespace) -> int:
     resolve = role_resolver(spec)
     a.view_lint = []
     a.twins_dropped = []
-    if spec.ledger_mode:
-        try:
-            from ledger import Ledger, View, as_telemetry, lint as ledger_lint
-            led = Ledger(spec.hag, root=spec.ledger_dir)
-            if led.exists():
-                if not a.no_pull:
-                    led.pull()
-                folded, a.twins_dropped = drop_ledger_twins(upto, as_telemetry(led, spec, None, w1), resolve)
-                upto.extend(folded)
-                upto.sort(key=lambda e: e["ts_utc"])
-                a.view_lint = ledger_lint(View(led, spec))
-        except Exception as exc:  # noqa: BLE001
-            print(f"WARN: ledger not folded in: {exc}")
+    try:
+        from ledger import Ledger, View, as_telemetry, lint as ledger_lint
+        led = Ledger(spec.hag, root=spec.ledger_dir)
+        if led.exists():
+            if not a.no_pull:
+                led.pull()
+            folded, a.twins_dropped = drop_ledger_twins(upto, as_telemetry(led, spec, None, w1), resolve)
+            upto.extend(folded)
+            upto.sort(key=lambda e: e["ts_utc"])
+            a.view_lint = ledger_lint(View(led, spec))
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARN: ledger not folded in: {exc}")
     evs = [e for e in upto if parse_ts(e["ts_utc"]) >= w0]
     a.seed = seed_states([e for e in upto if parse_ts(e["ts_utc"]) < w0], resolve)
     # twins dropped inside the window only (the pre-window ones affect seeding, not counts)
@@ -956,7 +915,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--out-md", default="")
     p.add_argument("--out-html", default="")
     p.add_argument("--dir", default=None, help="telemetry dir override")
-    p.add_argument("--repo", default="/home/speediedan/repos/distributed-insight")
     p.add_argument("--gpu", action="store_true", help="add gated-pool busy share via az")
     p.add_argument("--no-pull", action="store_true", help="do not pull the ledger first")
     p.add_argument("--dry-run", action="store_true", help="print the markdown, write nothing")

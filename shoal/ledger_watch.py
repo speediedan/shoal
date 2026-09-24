@@ -85,7 +85,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     """[(event id, one-line description)] for everything that needs slug now.
 
     With spec `features.workwake` (architecture doc §3.3) only WORK wakes the role: an
-    offer while it is idle (or a `--now` offer from user / can_fill_others), a change to
+    offer while it is idle (or a `--now` offer from user), a change to
     its ACTIVE item, board candidates when idle with nothing queued, or a health wake
     request. Msgs are mail (read by `hag.py next`), except a `user` msg sent `--wake`."""
     out = []
@@ -96,8 +96,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
         out.append(w)
     for o in view.queue(slug):
         if workwake and not idle:
-            now_ok = o.get("now") and (o["by"] in ("user", "hag.py")
-                                       or view.perms.roles.get(o["by"], {}).get("can_fill_others"))
+            now_ok = o.get("now") and o["by"] in ("user", "hag.py")
             if not now_ok:
                 continue  # folds in at the role's next boundary
         out.append((o["id"], f"OFFER {fmt_item(o)} to={o['to']} prio={o.get('prio', 50)} by={o['by']}"

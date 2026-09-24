@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Brief builders: the exact first prompt each started session gets.
 
-Ledger mode (2026-09-20) uses ONE brief for every role (`ledger_brief`);
-the coordinator/lane/consumer briefs below are the legacy shapes kept for
-specs without a ledger.
-
-One function per addressee. Every brief points at the role's single start
+ONE brief shape for every role (`ledger_brief`, 2026-09-20; flattened only
+since 2026-09-24), with the work-loop variant (`workwake_brief`) under
+features.workwake and the relay's own brief for `hag-relay`. Every brief points at the role's single start
 document (plan_state.md) plus the shared instructions; grants-needed items
 are extracted from that document at brief time, so the doc is the only place
 grants are configured. Model/effort ride along as launch config. Every brief
@@ -79,64 +77,6 @@ def state_block(role: Role, spec: HagSpec) -> str:
         f"without a transition is the stall.")
 
 
-def coordinator_brief(role: Role, spec: HagSpec) -> str:
-    mode = "direct-relay" if not spec.flattened else "shared-channel"
-    return (
-        f"You are {role.title} ({spec.display_gen}, {mode}) in HAG {spec.hag}. Read: (1) {role.doc} "
-        f"(your plan_state start doc: mission, current state, grants-needed, "
-        f"next), (2) shared-orchestration-instructions.md incl. Direct "
-        f"session relay + Telemetry mapping. You coordinate only. "
-        f"Registry arrives next; address lanes ONLY by session ID; number "
-        f"every INSTRUCT; send-confirmation is the only delivery signal. "
-        f"Watcher fires (QUEUE-WATCH, LANES-WATCH, PIPELINE-WATCH, STALL-SUSPECT) arrive "
-        f"as user turns from systemd timers; transcribe lane transitions you learn of via "
-        f"`transition --slug <lane> --session <id>` when a lane forgets.")
-
-
-def lane_brief(role: Role, spec: HagSpec, coord_id: str = "") -> str:
-    if spec.flattened or not coord_id:
-        return (
-            f"You are {role.slug} ({spec.display_gen}, shared-channel, flattened — no "
-            f"coordinator) in HAG {spec.hag}. Read: (1) {role.doc} (your plan_state start doc), "
-            f"(2) shared-orchestration-instructions.md incl. queue + decline + "
-            f"telemetry sections. Your queue file is {role.queue or '(none)'}: "
-            f"claim eligible items first-claim-wins, report completions to the "
-            f"shared channel with the item id + base + links. Contested claims "
-            f"go to agent vote per the proposal §5 mechanism. Authorizations "
-            f"do not transfer: obtain your own first-person.")
-    return (
-        f"You are {role.slug} ({spec.display_gen}) in HAG {spec.hag}. Read: (1) {role.doc} "
-        f"(your plan_state start doc), "
-        f"(2) shared-orchestration-instructions.md incl. "
-        f"Direct session relay. Coordinator is {coord_id} (same dir). Report "
-        f"DIRECTLY via: openchamber session send --session {coord_id} --dir "
-        f"{spec.dir} --prompt 'LANE-REPORT <ack-n>: ...'. Ack every "
-        f"LANE-INSTRUCT number. CI/lease waits arm agent_ci_watch.sh with a self-send "
-        f"(dry-run MONITOR-TEST first). Authorizations do not transfer: obtain your "
-        f"own first-person.")
-
-
-def consumer_brief(role: Role, spec: HagSpec) -> str:
-    sidecar = f"/tmp/{spec.hag}/hag-watch-{spec.hag}-{role.slug}.state"
-    return (
-        f"You are {role.slug} in HAG {spec.hag} ({spec.display_gen}). Read: "
-        f"(1) {role.doc} (your plan_state start doc — convert to the "
-        f"plan_state cadence from here on: keep mission/current/decisions/"
-        f"next current, grants-needed maintained), (2) {role.queue}, "
-        f"(3) the shared orchestration instructions (queue + decline + "
-        f"telemetry sections). Rules: QUEUE is coordinator-owned, read-only "
-        f"for you; STATUS is yours (state, active-issue+base, "
-        f"waiting-on+holder, updated-utc, last-done with links (max 3), declined: "
-        f"lines as needed); commit STATUS edits alone (never with QUEUE lines). "
-        f"Self-watch: write {sidecar} with lines "
-        f"`session_id=<your full session id>`, `queue_file={role.queue}`, `queue_hash=`, "
-        f"`consumed=`, `declined=`; then run in the background "
-        f"`{HAGPY} queue-watch --sidecar {sidecar} --interval 600` — it exits (waking you) "
-        f"only on unseen eligible items; re-arm after each wake; add consumed ids to the "
-        f"sidecar. Grants are first-person: ask the maintainer directly with "
-        f"decline/hold options. Confirm with QUEUE item count, sidecar echoed, loop alive.")
-
-
 def relay_brief(role: Role, spec: HagSpec) -> str:
     """The Claude wake relay (architecture doc §6): not a worker; one waiter, one tool."""
     hag = spec.hag
@@ -175,8 +115,6 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
                  "lane's brief covers, unblockers of their work first; `next` prints an AUX line naming the lanes "
                  "you stay out of, and it changes as the roster changes. Pass an item that belongs to a lane with "
                  "`--pass <item>:out-of-lane:suggest=<lane>`.")
-    fills = (" You hold can_fill_others: you may `offer` work to other roles (`--now` interrupts a busy role; "
-             "use it only when the work cannot wait for their next boundary)." if role.fills_others else "")
     return (
         f"You are {role.label} in HAG {hag} (incarnation {spec.incarnation}). Your Lane row label in every "
         f"posted block is exactly `{role.label}`: the base name, then your session tag; never an incarnation "
@@ -184,7 +122,7 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
         f"(your plan_state start doc: mission, current state, decisions, grants-needed, next; keep it current), "
         f"(2) the shared orchestration instructions sections 'Unified ledger primitive' and 'Watcher placement, "
         f"kills and recovery'. Your job is to work through a QUEUE: one active item and up to three next items, "
-        f"declared by you in the ledger. {fill}{fills} "
+        f"declared by you in the ledger. {fill} "
         f"AT EVERY BOUNDARY (a wake, or finishing/blocking an item) do exactly two things: READ `{HAGPY} next "
         f"--hag {hag} --slug {role.slug}` (queue, offers, candidates with scores and excerpts, mail, waits, watcher) "
         f"and WRITE ONE `{HAGPY} queue --hag {hag} --slug {role.slug} --active <repo#n:verb> --next <a,b,c> "
@@ -255,28 +193,25 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
                 f"[--claim repo#n:verb] [--pass repo#n:CLASS[:suggest=<role>][:note=..]]...` with CLASS one of "
                 f"out-of-lane|blocked|needs-maintainer|needs-hardware|duplicate-or-stale; name `suggest=` "
                 f"whenever you know whose lane it is. Full ranked list: `{HAGPY} digest --hag {hag} --slug "
-                f"{role.slug}`. user/filler offers ALWAYS outrank board candidates.")
+                f"{role.slug}`. user offers ALWAYS outrank board candidates.")
     elif role.fill == "self":
         fill = (f"FILL: self. When your queue is empty and you hold nothing, the watcher offers the top "
                 f"board candidates (priority table in board order, minus what the ledger shows taken or "
                 f"declined by you). Claim the top one that fits your lane (`claim`), or decline it with a "
                 f"reason (`release --kind decline --reason .. --retry ..`) so it never re-wakes you; "
-                f"user/filler offers ALWAYS outrank board candidates.")
+                f"user offers ALWAYS outrank board candidates.")
     elif role.fill == "assigned":
         fill = ("FILL: assigned. You work only offers addressed to you or to `*`; you never pop the board. "
                 "An empty queue is `transition --to waiting --sub queue-empty --holder user` plus one "
                 "`msg --to user` naming the next item you would take, then wait for the watcher.")
     else:
-        fill = "FILL: none. You never claim; you fill and observe."
-    fills = ("" if not role.fills_others else
-             " You hold can_fill_others: you may `offer` items to other roles and `withdraw` them; a "
-             "seeded queue at start is your duty (an empty queue is a verdict, never an omission).")
-    coord = ("" if not spec.flattened else
-             "There is NO coordinator: nobody relays for you. Status is the ledger; the maintainer reads "
+        fill = "FILL: none. You never claim; you observe."
+    relay = ("Nobody relays for you: status is the ledger; the maintainer reads "
              f"`hag.py show --hag {hag}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
              "(transition) or acting.")
     return (
-        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode"        f"{', flattened' if spec.flattened else ''}) in HAG {hag}. Read: (1) {role.doc} (your plan_state "
+        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode, flattened) in HAG "
+        f"{hag}. Read: (1) {role.doc} (your plan_state "
         f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the shared "
         f"orchestration instructions section 'Unified ledger primitive'. ALL traffic is the ledger "
         f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, hags/{hag}/ledger/<writer>.jsonl, "
@@ -285,7 +220,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
         f"`done --slug {role.slug} --item .. --url ..`, `release --slug {role.slug} --item .. --kind "
         f"decline|blocked|handoff --reason ..`, `msg --by {role.slug} --to <slug|*|user> --text .. [--ack]` "
         f"(answer an ack request with `--re <id> --kind ack`). No direct session sends to peers, ever. "
-        f"{fill}{fills} {coord} "
+        f"{fill} {relay} "
         f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}. It wakes you ONLY for offers "
         f"to you, msgs to you or `*`, a lost/contested claim, a withdrawal, or board candidates when "
         f"self-filling; each event wakes at most once. Run it once with `--test` first and confirm "
@@ -323,15 +258,8 @@ def h4_disciplines(role: Role, spec: HagSpec) -> str:
     return " ".join(out) + " "
 
 
-def brief_for(role: Role, spec: HagSpec, coord_id: str = "") -> str:
-    if spec.ledger_mode:
-        body = ledger_brief(role, spec)
-    elif role.coordinator:
-        body = coordinator_brief(role, spec)
-    elif role.ecosystem == "opencode":
-        body = lane_brief(role, spec, coord_id)
-    else:
-        body = consumer_brief(role, spec)
+def brief_for(role: Role, spec: HagSpec) -> str:
+    body = ledger_brief(role, spec)
     return body + launch_config(role) + state_block(role, spec) + grants_block(role)
 
 

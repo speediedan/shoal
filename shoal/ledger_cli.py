@@ -11,11 +11,12 @@ the maintainer use. Each is one command, one event, one commit, one push.
   show      --hag H [--slug S] [--board] [--json]                the status table / one role's view
   fill      --hag H --slug S [--limit N] [--claim-top]           board candidates for a self-filler
   sync      --hag H                                              pull + push pending ledger commits
-  ledger-init  --spec hag.json [--from-queue FILE:SLUG ...]      create hags/<hag>/ in the queue repo
+  ledger-init  --spec hag.json                                  create hags/<hag>/ in the queue repo
   ledger-lint  --hag H                                           permission violations, contested claims
 
 `--by` defaults to `user` for offer/withdraw/msg when run by a human; roles
-pass their own slug. A role that is not in the spec is refused as a writer.
+pass their own slug to `msg`. A role that is not in the spec is refused as a
+writer, and only `user` (or `hag.py`) may offer or withdraw (flattened only).
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, fmt_item,  # noqa: E402
-                    item_key, lint, migrate_queue_file, render_all, render_role, split_item,
+                    item_key, lint, render_all, render_role, split_item,
                     sync_pull, sync_push, unpushed)
 from roles import HagSpec, find_spec, state_dir  # noqa: E402
 
@@ -55,7 +56,7 @@ def _ledger(a, spec: HagSpec | None) -> Ledger:
 
 def _writer(a, spec: HagSpec | None, attr: str = "by", default: str = "user") -> str:
     by = getattr(a, attr, "") or default
-    if spec is not None and by not in ("user", "hag.py", "migration") and spec.role(by) is None:
+    if spec is not None and by not in ("user", "hag.py") and spec.role(by) is None:
         raise LedgerError(f"writer {by!r} is not a role in {spec.hag} ({[r.slug for r in spec.roles]})")
     return by
 
@@ -78,8 +79,8 @@ def cmd_offer(a) -> int:
     led.pull()
     view = View(led, spec)
     if not view.perms.may_offer(by, a.to):
-        print(f"ERROR: {by} may not offer to {a.to} (fill=self lets a role offer to itself; "
-              f"can_fill_others lets it offer to others; user may offer anywhere)")
+        print(f"ERROR: {by} may not offer to {a.to} (only user offers work; a role hands its own "
+              f"claim to a peer with `release --kind handoff --to <role>`)")
         return 1
     key = item_key(a.item)
     if key in view.done:
@@ -93,7 +94,7 @@ def cmd_offer(a) -> int:
         print(f"[dry-run] offer {a.item} to {a.to} by {by} prio={a.prio} base={a.base or '-'}")
         return 0
     ev = led.append(by, "offer", to=a.to, item=a.item, base=a.base, prio=int(a.prio),
-                    note=a.note, src=a.src or ("user" if by == "user" else "coordinator" if by != a.to else "self"), now=(True if getattr(a, "now", False) else None))
+                    note=a.note, src=a.src or by, now=(True if getattr(a, "now", False) else None))
     print(f"offered {fmt_item(ev)} to {a.to} by {by} [{ev['id']}]" + ("" if led.sync else " (local only)"))
     return 0
 
@@ -113,7 +114,7 @@ def cmd_withdraw(a) -> int:
         return 1
     for o in targets:
         if not view.perms.may_withdraw(by, o):
-            print(f"ERROR: {by} may not withdraw {o['id']} (offered by {o['by']})")
+            print(f"ERROR: {by} may not withdraw {o['id']} (offered by {o['by']}; only user withdraws)")
             return 1
     if a.dry_run:
         print(f"[dry-run] withdraw {key} ({len(targets)} offer(s)) by {by}")
@@ -339,13 +340,7 @@ def cmd_ledger_init(a) -> int:
     root = a.ledger_dir or spec.ledger_dir
     if a.dry_run:
         print(f"[dry-run] ledger for {spec.hag}: clone {spec.ledger.get('repo')} at {root}, "
-              f"create hags/{spec.hag}/ledger/, snapshot spec, migrate {a.from_queue or 'nothing'}, "
-              f"write ledger into {a.spec}")
-        for fq in a.from_queue or []:
-            path, _, slug = fq.rpartition(":")
-            led = Ledger(spec.hag, root=root, sync=False)
-            for ev in migrate_queue_file(led, path, slug, dry_run=True):
-                print(f"  [dry-run] {ev['type']} {ev.get('item')} -> {ev.get('to', ev.get('by'))}")
+              f"create hags/{spec.hag}/ledger/, snapshot spec, write ledger into {a.spec}")
         return 0
     ensure_clone(root, spec.ledger["repo"])
     led = Ledger(spec.hag, root=root, sync=not a.no_sync)
@@ -355,10 +350,6 @@ def cmd_ledger_init(a) -> int:
         led.pull()
         led.init(spec.snapshot(), note=f"init from {a.spec}")
         print(f"initialized {led.ldir}")
-    for fq in a.from_queue or []:
-        path, _, slug = fq.rpartition(":")
-        n = len(migrate_queue_file(led, path, slug))
-        print(f"migrated {path} -> {n} events for {slug}")
     if a.force:
         led.snapshot_spec(spec.snapshot(), push=not a.no_sync)
     if led.sync:
@@ -399,16 +390,16 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         if by:
             p.add_argument("--by", default="user", help="writer: user (default) or a role slug")
 
-    p = sub.add_parser("offer", help="put work on a role's queue (user or a filler role)")
+    p = sub.add_parser("offer", help="put work on a role's queue (user only)")
     common(p, by=True)
     p.add_argument("--to", required=True, help="role slug or * (pool)")
     p.add_argument("--item", required=True, help="repo#n:verb")
     p.add_argument("--base", default="", help="repo@sha the item is valid against")
     p.add_argument("--prio", type=int, default=DEFAULT_PRIO, help="lower runs sooner (default 50)")
     p.add_argument("--note", default="")
-    p.add_argument("--src", default="", help="user|coordinator|self|board|migration|peer")
+    p.add_argument("--src", default="", help="user|board|peer (default: the writer)")
     p.add_argument("--now", action="store_true",
-                   help="wake the target even while it is busy (honoured for user / can_fill_others only)")
+                   help="wake the target even while it is busy (honoured for user offers)")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_offer)
 
@@ -479,11 +470,10 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     common(p)
     p.set_defaults(func=cmd_sync)
 
-    p = sub.add_parser("ledger-init", help="create hags/<hag>/ in the queue repo (+ migrate legacy queues)")
+    p = sub.add_parser("ledger-init", help="create hags/<hag>/ in the queue repo")
     p.add_argument("--spec", required=True)
     p.add_argument("--repo", default="", help="queue repo url (default speediedan/hag-queues)")
     p.add_argument("--ledger-dir", default="")
-    p.add_argument("--from-queue", action="append", default=[], help="FILE:SLUG legacy QUEUE/STATUS file to migrate")
     p.add_argument("--force", action="store_true", help="re-snapshot the spec into an existing ledger")
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--dry-run", action="store_true")

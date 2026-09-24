@@ -21,11 +21,14 @@ Grammar (every line: ts, by, type, id; the rest per type):
   msg      to text [kind re ack]               to=slug|*|user; kind=info|ack|ask|instruct|
                                                stall-suspect|server-respawned|starved|hold
   state    state [sub holder rescan_utc monitor note session host]   row state
-  system   event [note]                        ledger-init|migrated|generation-*
+  system   event [note]                        ledger-init|generation-*
 
 Permissions (checked at read time, so a bad line is flagged and ignored,
-never silently honored): `user` may offer/withdraw anywhere; a role may
-offer to itself (self-fill) and to others only with `can_fill_others`; a
+never silently honored): only `user` (and the `hag.py` system writer) may
+offer or withdraw; an offer or withdraw written by a role is a violation
+(flattened only, 2026-09-24). A role self-fills by
+claiming board items, and hands its own claim to a peer with `release
+--kind handoff --to <role>` (an implicit offer the recipient may claim). A
 role with fill=assigned may claim only offers addressed to it or `*`;
 anyone may msg anyone. Claims: the claim that LANDED on the remote first
 wins — `claim()` checks before and after its push and a loser records
@@ -59,7 +62,7 @@ QUEUE_NEXT_MAX = 3  # a role's declared queue: one active item + at most this ma
 RELEASE_KINDS = ("decline", "lost-race", "blocked", "handoff")
 MSG_KINDS = ("info", "ack", "ask", "instruct", "stall-suspect", "server-respawned",
              "starved", "hold", "wake-test", "health")
-OFFER_SRC = ("user", "coordinator", "self", "board", "migration", "peer")
+OFFER_SRC = ("user", "board", "peer")
 VERB_RE = re.compile(r":(fix|review|scope|design|verify|triage|merge|doc|test|release|investigate)$")
 DEFAULT_PRIO = 50
 
@@ -350,6 +353,9 @@ class Ledger:
 
 # ---- permissions -------------------------------------------------------------
 
+OFFER_WRITERS = ("user", "hag.py")  # the only writers that may offer or withdraw
+
+
 class Perms:
     """Resolved from the HAG spec; `user` and `hag.py` are implicit writers."""
 
@@ -357,26 +363,18 @@ class Perms:
         self.roles = {}
         if spec is not None:
             for r in spec.roles:
-                self.roles[r.slug] = {"fill": getattr(r, "fill", "assigned"),
-                                      "can_fill_others": bool(getattr(r, "can_fill_others", False)
-                                                              or getattr(r, "coordinator", False))}
+                self.roles[r.slug] = {"fill": getattr(r, "fill", "assigned")}
 
     def is_role(self, by: str) -> bool:
         return by in self.roles
 
     def may_offer(self, by: str, to: str) -> bool:
-        if by in ("user", "hag.py", "migration"):
-            return True
-        if by == to:
-            return self.roles.get(by, {}).get("fill", "assigned") == "self"
-        return bool(self.roles.get(by, {}).get("can_fill_others"))
+        """Only `user` (and the `hag.py` system writer) puts work on a queue; a role-written
+        offer is a violation. Peer transfer is `release --kind handoff --to`, never an offer."""
+        return by in OFFER_WRITERS
 
     def may_withdraw(self, by: str, offer: dict | None) -> bool:
-        if by in ("user", "hag.py"):
-            return True
-        if offer is not None and offer.get("by") == by:
-            return True
-        return bool(self.roles.get(by, {}).get("can_fill_others"))
+        return by in OFFER_WRITERS
 
     def may_claim(self, by: str, addressed_to: str | None, src: str) -> bool:
         """addressed_to: the offer's `to` (slug, `*`) or None when no offer exists
@@ -389,8 +387,8 @@ class Perms:
         if addressed_to in (by, "*"):
             return True
         if addressed_to is None:
-            return role.get("fill") == "self" or role.get("can_fill_others", False)
-        return role.get("can_fill_others", False)
+            return role.get("fill") == "self"
+        return False
 
 
 # ---- projection --------------------------------------------------------------
@@ -703,7 +701,7 @@ def render_role(view: View, slug: str, candidates: list[dict] | None = None,
 
 
 def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] | None = None) -> str:
-    """The status table the coordinator used to type by hand: one row per role."""
+    """The status table: one row per role."""
     L = [f"# HAG {view.ledger.hag} — ledger view at {iso()}", ""]
     L.append("| role | fill | state | active | next (max 3) | last event |")
     L.append("| --- | --- | --- | --- | --- | --- |")
@@ -729,7 +727,7 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
         if len(nxt) < 3 and candidates_for is not None:
             for c in (candidates_for(r.slug) or [])[:3 - len(nxt)]:
                 nxt.append(c["item"] + " (board)")
-        fill = getattr(r, "fill", "assigned") + ("+fills" if getattr(r, "can_fill_others", False) or r.coordinator else "")
+        fill = getattr(r, "fill", "assigned")
         last = view.last_by.get(r.slug, "never")
         if hb_ages and r.slug in hb_ages and hb_ages[r.slug] is not None:
             last += f" (hb {hb_ages[r.slug]:.0f}m)"
@@ -792,46 +790,6 @@ def lint(view: View) -> list[tuple[str, str]]:
             if age_h > 72:
                 out.append(("W5", f"offer {fmt_item(o)} to {o['to']} open {age_h:.0f}h (stale base? withdraw or re-offer)"))
     return out
-
-
-# ---- migration from the legacy QUEUE/STATUS file ------------------------------
-
-def migrate_queue_file(ledger: Ledger, path: str, slug: str, by: str = "migration",
-                       dry_run: bool = False) -> list[dict]:
-    """QUEUE items -> offer(to=slug); STATUS last-done -> done(by=slug);
-    declined lines -> release(kind=decline, by=slug)."""
-    text = open(path).read()
-    qi, si = text.find("## QUEUE"), text.find("## STATUS")
-    queue = text[qi:si] if 0 <= qi < si else ""
-    status = text[si:] if si >= 0 else ""
-    out = []
-    for m in re.finditer(r"^\d+\.\s+\*\*(.+?)\*\*\s*(?:\(base\s+([^)]+)\))?[:\s]*(.*)$", queue, flags=re.M):
-        item, base, note = m.group(1).strip(), (m.group(2) or "").strip(), m.group(3).strip()
-        out.append(dict(by=by, type="offer", to=slug, item=item, base=base, note=short(note, 200),
-                        src="migration", prio=DEFAULT_PRIO))
-    m = re.search(r"^- last-done:(.*)$", status, flags=re.M)
-    if m:
-        for part in m.group(1).split(";"):
-            mm = re.match(r"\s*(\S+#\d+:\w+)\s+(?:kind=(\w+)\s+)?(\S+Z)?\s*(https?://\S+)?", part)
-            if mm:
-                out.append(dict(by=slug, type="done", item=mm.group(1), kind=mm.group(2) or "",
-                                url=mm.group(4) or "", note="migrated from STATUS last-done"
-                                + (f" at {mm.group(3)}" if mm.group(3) else "")))
-    for m in re.finditer(r"^\s*-\s*declined:\s*-?\s*(\S+#\d+:\w+):\s*(.*)$", status, flags=re.M):
-        reason, _, retry = m.group(2).partition("; retry when ")
-        out.append(dict(by=slug, type="release", item=m.group(1), kind="decline",
-                        reason=short(reason, 200), retry=short(retry, 100)))
-    if dry_run:
-        return out
-    written = []
-    for ev in out:
-        by, typ = ev.pop("by"), ev.pop("type")
-        written.append(ledger.append(by, typ, _commit=True, _push=False, **ev))
-    ledger.append("hag.py", "system", event="migrated", note=f"{os.path.basename(path)} -> {len(written)} events",
-                  _commit=True, _push=False)
-    if ledger.sync:
-        sync_push(ledger.root)
-    return written
 
 
 # ---- telemetry bridge --------------------------------------------------------

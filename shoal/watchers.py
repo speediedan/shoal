@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""Coordinator-side watchers (port of watch-coordination.sh): poll state, hash
-it, and on change `session send` the owning session — a monitor that only
-writes a log is an orphaned writer no idle session ever re-reads.
+"""systemd-timer watchers (port of watch-coordination.sh): poll state, hash
+it, and on change fire into the ledger — a monitor that only writes a log
+is an orphaned writer no idle session ever re-reads.
 
-Modes: queue | lanes | pipeline. Invariants preserved from the shell version:
+Modes: lanes | pipeline. Invariants preserved from the shell version:
 explicit tool PATH (cron's is bare), validate-before-hash (empty snapshot is
 ERROR, never baseline), one heartbeat line per run, poisoned state files
 deleted never trusted, state in /tmp/<hag>/ (never committed).
 
-Test mode (test/--test) sends *-WATCH-TEST to the notify session and exits 0;
-REQUIRED once per notify session before trusting the path.
+Test mode (--test) fires *-WATCH-TEST (a ledger `wake-test` msg) and exits 0.
 
-Ledger mode (2026-09-20): when the target argument is `ledger:<hag>` the
-fire is a ledger `msg` instead of a session send — lanes SERVER-RESPAWNED
-goes to `*` (every role re-verifies), pipeline STARVED goes to the roles
-whose ledger state is waiting/remote-ci (else fillers, else user). The
-`queue` mode (STATUS-section hash of a legacy queue file) is legacy only:
-in ledger mode every role runs its own `ledger-watch`.
+The target argument is `ledger:<hag>` (flattened only, 2026-09-24; the
+session-addressed fires and the legacy `queue` mode are removed): lanes
+SERVER-RESPAWNED goes to `*` (every role re-verifies), pipeline STARVED goes
+to the roles whose ledger state is waiting/remote-ci (else user). With spec
+`features.health` both route through the health wake adapters instead.
 """
 from __future__ import annotations
 
@@ -119,29 +117,23 @@ def ledger_fire(hag: str, to: list[str], kind: str, text: str) -> bool:
 
 
 def fire(target: str, repo_dir: str, tag: str, summary: str) -> bool:
-    """Session send; returns False (and logs) when dispatch fails. Send
-    confirmation is the only delivery signal — a failed send must never be
-    logged as a fire. target `ledger:<hag>` routes to the ledger instead."""
-    if target.startswith("ledger:"):
-        hag = target[len("ledger:"):]
-        kind = {"LANES-WATCH": "server-respawned", "PIPELINE-WATCH": "starved"}.get(tag.split("-TEST")[0], "info")
-        routed = _health_route(hag, kind, f"{tag}: {summary}") if not tag.endswith("-TEST") else None
-        if routed is not None:
-            return routed
-        to = ["*"]
-        if kind == "starved":
-            to = starved_targets(hag)
-        if tag.endswith("-TEST"):
-            kind = "wake-test"
-        return ledger_fire(hag, to, kind, f"{tag}: {summary}")
-    r = subprocess.run(["openchamber", "session", "send", "--session", target,
-                        "--dir", repo_dir, "--prompt", f"{tag}: {summary}"],
-                       capture_output=True, text=True, timeout=60, env=_ENV)
-    if r.returncode != 0:
-        print(f"{utcnow()} ERROR: {tag} send to {target} failed rc={r.returncode}: "
-              f"{(r.stdout + r.stderr).strip()[-200:]}")
+    """Fire into the ledger (target `ledger:<hag>`); returns False (and logs)
+    when dispatch fails — a failed fire must never be logged as a fire."""
+    if not target.startswith("ledger:"):
+        print(f"{utcnow()} ERROR: {tag}: target {target!r} is not ledger:<hag> "
+              "(session-addressed fires were removed 2026-09-24)")
         return False
-    return True
+    hag = target[len("ledger:"):]
+    kind = {"LANES-WATCH": "server-respawned", "PIPELINE-WATCH": "starved"}.get(tag.split("-TEST")[0], "info")
+    routed = _health_route(hag, kind, f"{tag}: {summary}") if not tag.endswith("-TEST") else None
+    if routed is not None:
+        return routed
+    to = ["*"]
+    if kind == "starved":
+        to = starved_targets(hag)
+    if tag.endswith("-TEST"):
+        kind = "wake-test"
+    return ledger_fire(hag, to, kind, f"{tag}: {summary}")
 
 
 def _health_route(hag: str, kind: str, text: str) -> bool | None:
@@ -168,7 +160,7 @@ def _health_route(hag: str, kind: str, text: str) -> bool | None:
 
 
 def starved_targets(hag: str) -> list[str]:
-    """Roles whose ledger state is waiting on remote CI, else fillers, else user."""
+    """Roles whose ledger state is waiting on remote CI, else user."""
     try:
         from ledger import Ledger, View
         from roles import HagSpec, find_spec
@@ -177,9 +169,7 @@ def starved_targets(hag: str) -> list[str]:
         waiting = [s for s, st in v.states.items()
                    if st.get("state") == "waiting" and st.get("sub") == "remote-ci"]
         if waiting:
-            return sorted(set(waiting) | {r.slug for r in spec.fillers})
-        if spec.fillers:
-            return [r.slug for r in spec.fillers]
+            return sorted(set(waiting))
     except Exception:
         pass
     return ["user"]
@@ -195,60 +185,6 @@ def health(sdir: str) -> None:
 
 def md5(s: str) -> str:
     return hashlib.md5(s.encode()).hexdigest()
-
-
-STATUS_RE = re.compile(r"^- (state|active-issue|base|waiting-on|updated-utc|last-done):")
-
-
-def status_snapshot(queue_file: str) -> str:
-    """Provenance: STATUS section lines only (same shape as the shell awk)."""
-    lines, in_status = [], False
-    with open(queue_file) as fh:
-        for line in fh:
-            if line.startswith("## STATUS"):
-                in_status = True
-            if in_status and STATUS_RE.match(line):
-                lines.append(line.rstrip("\n"))
-    return "\n".join(lines)
-
-
-def cmd_queue(hag: str, queue_file: str, target: str, repo_dir: str,
-              test: bool = False) -> int:
-    sdir = state_dir(hag)
-    tick(hag, "queue")
-    health(sdir)
-    if not os.path.isfile(queue_file):
-        log(sdir, f"ERROR: queue file {queue_file} missing.")
-        return 2
-    if test:
-        fire(target, repo_dir, "QUEUE-WATCH-TEST",
-             f"dry-run wakeup proof for {os.path.basename(queue_file)}; "
-             "confirm arrival in-transcript")
-        print(f"test sent; confirm QUEUE-WATCH-TEST arrived in session {target}, then arm cron")
-        return 0
-    snap = status_snapshot(queue_file)
-    if not snap.strip():
-        log(sdir, f"ERROR: STATUS section empty in {queue_file}; refusing to snapshot.")
-        return 2
-    cur = md5(snap)
-    state = os.path.join(sdir, f"queue-{md5(queue_file)}.state")
-    last = open(state).read().strip() if os.path.exists(state) else "none"
-    if cur != last:
-        with open(state, "w") as fh:
-            fh.write(cur)
-        if last == "none":
-            print(f"{utcnow()} queue baseline established for {queue_file}")
-            return 0
-        detail = snap.replace("\n", ";")
-        hag_emit(hag, target, "opencode", "coord_comms", direction="watch-fire",
-                 peer="queue", note=f"STATUS changed {os.path.basename(queue_file)}",
-                 channel="within-ecosystem")
-        fire(target, repo_dir, "QUEUE-WATCH",
-             f"STATUS changed in {os.path.basename(queue_file)}: {detail}")
-        log(sdir, f"QUEUE-WATCH fired for {queue_file}")
-    else:
-        print(f"{utcnow()} queue ok no-change {os.path.basename(queue_file)}")
-    return 0
 
 
 def lane_snapshot(lane: str, repo_dir: str) -> str:
@@ -287,7 +223,7 @@ def cmd_lanes(hag: str, target: str, repo_dir: str, lanes: list[str],
     if test:
         fire(target, repo_dir, "LANES-WATCH-TEST",
              f"dry-run wakeup proof for {len(lanes)} lane(s); confirm arrival in-transcript")
-        print(f"test sent; confirm LANES-WATCH-TEST arrived in session {target}, then arm cron")
+        print(f"test fired to {target}; confirm the wake-test msg in `hag.py show`, then arm the timer")
         return 0
     snap = "\n".join(lane_snapshot(l, repo_dir) for l in lanes)
     snap += f"\nserver_pid={server_pid()}"
@@ -320,14 +256,8 @@ def cmd_lanes(hag: str, target: str, repo_dir: str, lanes: list[str],
         if last == "none":
             print(f"{utcnow()} lanes baseline established for {target}")
             return 0
-        detail = snap.replace("\n", ";")
-        if target.startswith("ledger:"):
-            print(f"{utcnow()} lanes state moved (ledger mode: transitions travel in the ledger, no fire)")
-            return 0
-        hag_emit(hag, target, "opencode", "coord_comms", direction="watch-fire",
-                 peer="lanes", note="lane state transition", channel="within-ecosystem")
-        fire(target, repo_dir, "LANES-WATCH", f"lane state transition: {detail}")
-        log(sdir, f"LANES-WATCH fired: {detail}")
+        print(f"{utcnow()} lanes state moved (ledger mode: transitions travel in the ledger, no fire)")
+        return 0
     else:
         print(f"{utcnow()} lanes ok no-change -> {target}")
     return 0

@@ -6,15 +6,12 @@ in the unit (systemd's user PATH lacks openchamber, claude, node), no manual
 cron. Regenerate per HAG generation (session ids change); stale units for a
 retired HAG are removed by `uninstall-systemd --hag <old-id>`.
 
-Ledger mode (2026-09-20): no queue-<file> jobs (every role runs its own
-`ledger-watch`); lanes/pipeline/heartbeat notify through the ledger
-(`ledger:<hag>` target) so they need no coordinator session id. Legacy
-(no ledger in the spec) keeps the coordinator-addressed shape below.
+Every role runs its own `ledger-watch`; lanes/pipeline/heartbeat notify
+through the ledger (`ledger:<hag>` target), so no unit needs a session id.
 
 Units land in ~/.config/systemd/user/ as hag-<hag>-<job>.{service,timer}.
 `install-systemd --enable` runs daemon-reload + `enable --now` on every
 timer it wrote, so a launch is one command. Jobs:
-  queue-<file>   every :0/10   STATUS change -> QUEUE-WATCH to the coordinator
   lanes          every :0/5    lane transitions + SERVER-RESPAWNED
   pipeline       every :0/10   depth-zero starvation -> PIPELINE-WATCH
   heartbeat      every :0/5    STALL-SUSPECT (deduped) unless a wait is proven (without features.health)
@@ -59,35 +56,19 @@ def timer_unit(description: str, on_calendar: str) -> str:
             f"[Install]\nWantedBy=timers.target\n")
 
 
-def jobs_for(spec, spec_path: str, coord_id: str) -> list[tuple[str, str, list[str], str, str]]:
+def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]:
     """(job, description, argv, OnCalendar, exe)."""
     lanes = [r.session for r in spec.roles
-             if not r.coordinator and r.ecosystem == "opencode" and r.session]
-    consumer_q = [r.queue for r in spec.roles if r.queue]
+             if r.ecosystem == "opencode" and r.session]
     jobs = []
-    if spec.ledger_mode:
-        target = f"ledger:{spec.hag}"
-        if lanes:
-            jobs.append(("lanes", f"HAG {spec.hag} lanes watch (server respawn -> ledger)",
-                         ["watch", "--hag", spec.hag, "lanes", target, spec.dir] + lanes,
-                         "*:0/5", ""))
-        jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch (starvation -> ledger)",
-                     ["watch", "--hag", spec.hag, "pipeline", target, spec.dir],
-                     "*:0/10", ""))
-        coord_id = ""  # heartbeat delivers through the ledger
-    elif coord_id:
-        for q in consumer_q:
-            jobs.append((f"queue-{os.path.basename(q).replace('.md', '')}",
-                         f"HAG {spec.hag} queue watch {os.path.basename(q)}",
-                         ["watch", "--hag", spec.hag, "queue", q, coord_id, spec.dir],
-                         "*:0/10", ""))
-        if lanes:
-            jobs.append(("lanes", f"HAG {spec.hag} lanes watch",
-                         ["watch", "--hag", spec.hag, "lanes", coord_id, spec.dir] + lanes,
-                         "*:0/5", ""))
-        jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch",
-                     ["watch", "--hag", spec.hag, "pipeline", coord_id, spec.dir],
-                     "*:0/10", ""))
+    target = f"ledger:{spec.hag}"
+    if lanes:
+        jobs.append(("lanes", f"HAG {spec.hag} lanes watch (server respawn -> ledger)",
+                     ["watch", "--hag", spec.hag, "lanes", target, spec.dir] + lanes,
+                     "*:0/5", ""))
+    jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch (starvation -> ledger)",
+                 ["watch", "--hag", spec.hag, "pipeline", target, spec.dir],
+                 "*:0/10", ""))
     if (getattr(spec, "features", {}) or {}).get("health"):
         # the health quorum: two identical, offset instances (architecture doc §6)
         jobs.append(("health-a", f"HAG {spec.hag} health quorum (a)",
@@ -96,8 +77,7 @@ def jobs_for(spec, spec_path: str, coord_id: str) -> list[tuple[str, str, list[s
                      ["health", "--spec", spec_path, "--instance", "b"], "*:2/5", ""))
     else:
         jobs.append(("heartbeat", f"HAG {spec.hag} stall daemon",
-                     ["heartbeat", "--spec", spec_path, "--threshold-min", "60"]
-                     + (["--notify", coord_id] if coord_id else []),
+                     ["heartbeat", "--spec", spec_path, "--threshold-min", "60"],
                      "*:0/5", ""))
     if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
         jobs.append(("digest", f"HAG {spec.hag} board digest (one board read per HAG)",
@@ -110,19 +90,16 @@ def jobs_for(spec, spec_path: str, coord_id: str) -> list[tuple[str, str, list[s
     return jobs
 
 
-def cmd_install(spec, spec_path: str, coord_id: str,
+def cmd_install(spec, spec_path: str,
                 dry_run: bool = False, enable: bool = False) -> int:
     from roles import HagSpec
     assert isinstance(spec, HagSpec)
-    if not coord_id and not spec.flattened and not spec.ledger_mode:
-        print("need a coordinator session id (--coord-id, or a spec saved after a live start)")
-        return 1
     if not any(r.session for r in spec.roles):
         print("spec has no live session ids — run start/restart live first (ids are saved back)")
         return 1
     os.makedirs(UNIT_DIR, exist_ok=True)
     timers = []
-    for job, desc, argv, cal, exe in jobs_for(spec, spec_path, coord_id):
+    for job, desc, argv, cal, exe in jobs_for(spec, spec_path):
         svc = service_unit(desc, spec.dir, argv, exe)
         sn, tn = unit_name(spec.hag, job, "service"), unit_name(spec.hag, job, "timer")
         if dry_run:

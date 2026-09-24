@@ -11,14 +11,13 @@ reachable, AZURE_DEVOPS_EXT_PAT resolvable, gh auth, HAG roots writable,
 linger enabled, legacy HAG cron lines (the measured silent-failure mode),
 stale systemd units pointing at missing files.
 
-HAG checks: spec valid; start docs present with required sections; queue
-files lint clean; live session ids present + reachable; heartbeat/wait
-posture per role; watcher ticks vs 3x interval; systemd timers present and
-active for this HAG; sidecars bound to the recorded consumer session id;
-telemetry dir writable + last event age; reconcile tick age. Ledger mode
-(2026-09-20): clone present with a reachable remote, no unpushed commits
-older than an hour, lint clean (no violations, no contested claims), and
-one ledger-watch sidecar per role bound to its session with a live pid.
+HAG checks: spec valid; start docs present with required sections; live
+session ids present + reachable; heartbeat/wait posture per role; watcher
+ticks vs 3x interval; systemd timers present and active for this HAG;
+telemetry dir writable + last event age; reconcile tick age. Ledger: clone
+present with a reachable remote, no unpushed commits older than an hour,
+lint clean (no violations, no contested claims), and one ledger-watch
+sidecar per role bound to its session with a live pid.
 """
 from __future__ import annotations
 
@@ -38,7 +37,7 @@ from heartbeat import age_min, classify  # noqa: E402
 from roles import HAG_DATA_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
 
 ENV = dict(os.environ, PATH=TOOL_PATH + ":" + os.environ.get("PATH", ""))
-TICK_INTERVAL_MIN = {"queue": 10, "lanes": 5, "pipeline": 10, "heartbeat": 5,
+TICK_INTERVAL_MIN = {"lanes": 5, "pipeline": 10, "heartbeat": 5,
                      "reconcile": 24 * 60, "weekly-report": 7 * 24 * 60}
 
 
@@ -48,8 +47,6 @@ def tick_jobs(spec) -> dict:
     feats = (getattr(spec, "features", {}) or {}) if spec is not None else {}
     jobs = dict(TICK_INTERVAL_MIN)
     jobs["reconcile"] = 12 * 60
-    if getattr(spec, "ledger_mode", False):
-        jobs.pop("queue", None)
     if feats.get("health"):
         jobs.pop("heartbeat", None)
         jobs["health-a"] = 5
@@ -237,13 +234,6 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
         text = open(r.doc).read().lower()
         missing = [s for s in ("grants-needed", "current state") if s not in text]
         (d.ok if not missing else d.fail)(f"doc {r.slug}", os.path.basename(r.doc) if not missing else f"missing sections {missing}")
-    qfiles = [r.queue for r in spec.roles if r.queue]
-    if qfiles:
-        from lint import lint_file
-        for q in qfiles:
-            f = lint_file(q, 24)
-            errs = [f"{c} {m}" for c, m in f if c.startswith("E")]
-            (d.ok if not errs else d.fail)(f"queue {os.path.basename(q)}", "lint clean" if not errs else "; ".join(errs)[:200])
     live = [r for r in spec.roles if r.session]
     if not live:
         d.warn("sessions", "no live session ids recorded (pre-launch, or start ran --dry-run)")
@@ -271,22 +261,8 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
         else:
             inactive = [k for k, v in timers.items() if v != "scheduled"]
             (d.fail if inactive else d.ok)("systemd timers", f"{len(timers)} installed; inactive: {inactive}" if inactive else f"{sorted(timers)} scheduled")
-        for r in spec.roles:
-            if not r.queue:
-                continue
-            sc = os.path.join(state_dir(spec.hag), f"hag-watch-{spec.hag}-{r.slug}.state")
-            if not os.path.exists(sc):
-                d.warn(f"sidecar {r.slug}", f"{sc} absent (consumer self-watch not armed)")
-                continue
-            sid = ""
-            for line in open(sc):
-                if line.startswith("session_id="):
-                    sid = line.split("=", 1)[1].strip()
-            bound = sid and r.session and (sid.startswith(r.session) or r.session.startswith(sid))
-            (d.ok if bound else d.warn)(f"sidecar {r.slug}", f"bound to {sid or '(none)'}" + ("" if bound else f" != spec {r.session or '(none)'}"))
-    if spec.ledger_mode:
-        ledger_checks(d, spec)
-        matcher_checks(d, spec)
+    ledger_checks(d, spec)
+    matcher_checks(d, spec)
     tdir = telemetry_dir(spec.hag)
     if os.path.isdir(tdir):
         files = sorted(glob.glob(os.path.join(tdir, "events-*.jsonl")))

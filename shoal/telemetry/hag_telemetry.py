@@ -85,8 +85,7 @@ ALIASES = {
 }
 
 SCRIPT_FILES = ("hag.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
-                "queue_watch.py", "heartbeat.py", "queue_section.py", "systemd.py",
-                "state.py", "doctor.py", "lint.py",
+                "heartbeat.py", "systemd.py", "state.py", "doctor.py",
                 "ledger.py", "ledger_cli.py", "ledger_watch.py", "sources.py",
                 "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
                 "telemetry/hag_report.py")

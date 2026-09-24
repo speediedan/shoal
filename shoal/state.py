@@ -12,9 +12,9 @@ command cannot be half-done.
       --holder "gate 1290 (approved, queued)" --rescan-min 30 [--monitor ...]
   hag.py transition --hag H --slug S --to idle|paused|offline
 
-Ledger mode (2026-09-20): the same command also appends a `state` event to
-the HAG ledger (ledger.py), so every peer and every host sees the row state
-without a coordinator transcribing it; `--no-ledger` skips that (tests).
+The same command also appends a `state` event to the HAG ledger (ledger.py,
+2026-09-20), so every peer and every host sees the row state without anyone
+transcribing it; `--no-ledger` skips that (tests).
 
 Wait files (`/tmp/<hag>/wait-<slug>`, JSON) are the lane-side wait proof
 the v0 heartbeat daemon lacked: a wait is covered while it is unexpired
@@ -237,7 +237,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
         append_event(resolve_dir(a.dir, hag), ev)
     # 4. ledger (cross-host, cross-ecosystem visibility)
     ledger_line = ""
-    if spec.ledger_mode and not a.no_ledger and not a.dry_run:
+    if not a.no_ledger and not a.dry_run:
         try:
             from ledger import Ledger
             led = Ledger(hag, root=a.ledger_dir or spec.ledger_dir)

@@ -323,7 +323,7 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
         for o in view.queue(slug):
             if o["ts"] < boundary:  # strictly older: a same-second offer cannot have been seen
                 continue
-            now_ok = o.get("now") and (o["by"] in ("user", "hag.py") or view.perms.roles.get(o["by"], {}).get("can_fill_others"))
+            now_ok = o.get("now") and o["by"] in ("user", "hag.py")
             if idle or now_ok:
                 out.append({"slug": slug, "condition": "unacked-work", "key": f"offer:{o['id']}", "since": o["ts"],
                             "detail": f"offer {o.get('item')} by {o['by']} not acknowledged"})

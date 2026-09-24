@@ -8,8 +8,6 @@ classifies each role:
 
   fresh       heartbeat within threshold                          -> quiet
   covered     stale heartbeat, but an UNEXPIRED wait file exists  -> quiet
-  covered*    consumer role whose queue STATUS names a waiting-on holder
-              (legacy coverage for consumers that only edit STATUS) -> quiet
   stale-wait  wait file past its rescan_utc (failure-modes §2)    -> SUSPECT
   stale       heartbeat past threshold, no wait                   -> SUSPECT
   never       no heartbeat file at all                            -> SUSPECT
@@ -21,13 +19,13 @@ or after --refire-min (default 60). Every run ticks /tmp/<hag>/tick-heartbeat
 so `status`/`doctor` can see the daemon itself is alive (a watcher that
 never runs is the failure mode the v0 reconcile demonstrated).
 
-Delivery (ledger mode, 2026-09-20): one ledger `msg kind=stall-suspect`
-to EACH suspect role (its own watcher wakes it to re-verify its wait or
-transition — self-recovery without a coordinator) plus one to every
-filler/coordinator role and to `user`. Legacy (no ledger): session send to
-the coordinator, or channel.md when flattened. Telemetry watch_event
-either way. Ledger `state` events count as freshness for roles on other
-hosts (no /tmp heartbeat reaches across hosts).
+Delivery (2026-09-20): one ledger `msg kind=stall-suspect` to EACH suspect
+role (its own watcher wakes it to re-verify its wait or transition:
+self-recovery) plus one to `user`, and a telemetry watch_event. Ledger
+`state` events count as freshness for roles on other hosts (no /tmp
+heartbeat reaches across hosts). Specs with `features.health` run the
+health quorum (health.py) instead of this daemon; `doctor` still uses
+`classify` for its per-role posture lines.
 """
 from __future__ import annotations
 
@@ -35,12 +33,11 @@ import datetime
 import hashlib
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backends import get as get_backend  # noqa: E402
-from roles import HagSpec, data_dir, state_dir  # noqa: E402
+from roles import HagSpec, state_dir  # noqa: E402
 
 HB_PREFIX = "hb-"
 
@@ -73,50 +70,6 @@ def age_min(path: str) -> float | None:
                 - os.path.getmtime(path)) / 60
     except OSError:
         return None
-
-
-def status_updated_min(queue_file: str) -> float | None:
-    """Minutes since the consumer's STATUS updated-utc (None if unparseable).
-
-    A consumer that writes STATUS is alive by definition — a fresh STATUS
-    covers a stale heartbeat the same way a verified wait does. (Learned
-    2026-09-19: it-architect wrote STATUS at 23:14Z with a 16:12Z heartbeat
-    and read as a stall; it was healthy and polling.)
-    """
-    try:
-        text = open(queue_file).read()
-        status = text[text.index("## STATUS"):]
-    except Exception:
-        return None
-    m = re.search(r"^- updated-utc:\s*(\S+)", status, flags=re.M)
-    if not m:
-        return None
-    raw = m.group(1).strip()
-    try:
-        if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$", raw):
-            ts = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%MZ")
-        else:
-            ts = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
-        ts = ts.replace(tzinfo=datetime.timezone.utc)
-    except ValueError:
-        return None
-    return (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
-
-
-def status_wait_cover(queue_file: str) -> str | None:
-    """Return the covering wait reason if STATUS shows a verified wait."""
-    try:
-        text = open(queue_file).read()
-        status = text[text.index("## STATUS"):]
-    except Exception:
-        return None
-    state = re.search(r"^- state:\s*(\S+)", status, flags=re.M)
-    holder = re.search(r"^- waiting-on:\s*(.+)", status, flags=re.M)
-    if holder and holder.group(1).strip().lower() not in ("", "none", "-"):
-        return holder.group(1).strip()
-    if state and state.group(1).strip() == "waiting" and holder:
-        return holder.group(1).strip() or "waiting (no holder named)"
-    return None
 
 
 def watch_dead(hag: str, slug: str) -> bool:
@@ -258,25 +211,24 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
     ledger_age: dict[str, float] = {}
     last_state: dict[str, tuple[str, str]] = {}  # slug -> (state, ts) of last state event
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    if spec.ledger_mode:
-        try:
-            from ledger import Ledger, View
-            led = Ledger(spec.hag, root=spec.ledger_dir)
-            if led.exists():
-                led.pull()
-                v = View(led, spec)
-                now = datetime.datetime.now(datetime.timezone.utc)
-                for slug, ts in v.last_by.items():
-                    try:
-                        t = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-                        ledger_age[slug] = (now - t).total_seconds() / 60
-                    except ValueError:
-                        pass
-                for slug, ev in v.states.items():
-                    if isinstance(ev, dict) and ev.get("state"):
-                        last_state[slug] = (ev["state"], ev.get("ts", ""))
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        from ledger import Ledger, View
+        led = Ledger(spec.hag, root=spec.ledger_dir)
+        if led.exists():
+            led.pull()
+            v = View(led, spec)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            for slug, ts in v.last_by.items():
+                try:
+                    t = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+                    ledger_age[slug] = (now - t).total_seconds() / 60
+                except ValueError:
+                    pass
+            for slug, ev in v.states.items():
+                if isinstance(ev, dict) and ev.get("state"):
+                    last_state[slug] = (ev["state"], ev.get("ts", ""))
+    except Exception:  # noqa: BLE001
+        pass
     for role in spec.roles:
         age = age_min(hb_path(spec.hag, role.slug))
         la = ledger_age.get(role.slug)
@@ -304,7 +256,7 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                               f"(holder: {w.get('holder')}, sub: {w.get('sub')}) — re-verify, never extend")
         else:
             stale_active = None
-            if spec.ledger_mode and wstate != "covered":
+            if wstate != "covered":
                 stale_active = _stale_active(spec, role, last_state,
                                              threshold_min, now_utc)
             if stale_active is not None:
@@ -316,46 +268,33 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
                            detail=f"stale {age:.0f}m but wait proven until {w.get('rescan_utc')} "
                                   f"(holder: {w.get('holder')})")
             else:
-                cover = status_wait_cover(role.queue) if role.queue else None
-                if cover:
-                    row.update(klass="covered*", suspect=False,
-                               detail=f"stale {age:.0f}m but STATUS waiting-on: {cover}")
-                else:
-                    smin = status_updated_min(role.queue) if role.queue else None
-                    if smin is not None and smin <= threshold_min:
-                        row.update(klass="covered*", suspect=False,
-                                    detail=f"stale {age:.0f}m but STATUS written "
-                                           f"{smin:.0f}m ago (alive, no wait declared)")
+                deaf = (getattr(role, "fill", "") == "self"
+                        and watch_dead(spec.hag, role.slug))
+                if deaf:
+                    row.update(klass="idle-deaf", suspect=True,
+                                detail=f"IDLE with empty queue and dead ledger-watch "
+                                       f"(fill=self, no board poll since "
+                                       f"{_watch_last_tick(spec.hag, role.slug)}): "
+                                       f"WAKEUP-READ needed — show, claim/decline, re-arm")
+                    rows.append(row)
+                    continue
+                if role.session:
+                    q = quota_paused(role, spec.dir)
+                    if q:
+                        row.update(klass="quota-paused", suspect=False,
+                                    detail=f"provider quota exhausted (reset: {q}) — not a stall, "
+                                           f"not evictable;suppress pages until reset")
                         rows.append(row)
                         continue
-                    deaf = (spec.ledger_mode
-                            and getattr(role, "fill", "") == "self"
-                            and watch_dead(spec.hag, role.slug))
-                    if deaf:
-                        row.update(klass="idle-deaf", suspect=True,
-                                    detail=f"IDLE with empty queue and dead ledger-watch "
-                                           f"(fill=self, no board poll since "
-                                           f"{_watch_last_tick(spec.hag, role.slug)}): "
-                                           f"WAKEUP-READ needed — show, claim/decline, re-arm")
-                        rows.append(row)
-                        continue
-                    if role.session:
-                        q = quota_paused(role, spec.dir)
-                        if q:
-                            row.update(klass="quota-paused", suspect=False,
-                                        detail=f"provider quota exhausted (reset: {q}) — not a stall, "
-                                               f"not evictable;suppress pages until reset")
-                            rows.append(row)
-                            continue
-                    extra = ""
-                    if role.ecosystem == "opencode" and role.session:
-                        try:
-                            extra = get_backend("opencode").status(role.session, spec.dir)
-                        except Exception as exc:  # noqa: BLE001
-                            extra = f"status query failed: {exc}"
-                    row.update(klass="stale", suspect=True,
-                                detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
-                                       + (f" [{extra}]" if extra else ""))
+                extra = ""
+                if role.ecosystem == "opencode" and role.session:
+                    try:
+                        extra = get_backend("opencode").status(role.session, spec.dir)
+                    except Exception as exc:  # noqa: BLE001
+                        extra = f"status query failed: {exc}"
+                row.update(klass="stale", suspect=True,
+                            detail=f"STALE {age:.0f}m > {threshold_min:.0f}m, no wait proven"
+                                   + (f" [{extra}]" if extra else ""))
         rows.append(row)
     for row in rows:
         if row["suspect"] or row.get("klass") == "quota-paused":
@@ -370,7 +309,7 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
     return rows
 
 
-def cmd_heartbeat(spec, threshold_min: float, notify: str = "",
+def cmd_heartbeat(spec, threshold_min: float,
                   dry_run: bool = False, refire_min: float = 60) -> int:
     assert isinstance(spec, HagSpec)
     from watchers import hag_emit
@@ -409,60 +348,44 @@ def cmd_heartbeat(spec, threshold_min: float, notify: str = "",
     if dry_run:
         print("[dry-run] would fire + record")
         return 0
-    hag_emit(spec.hag, notify or "heartbeat", "script", "watch_event",
+    hag_emit(spec.hag, "heartbeat", "script", "watch_event",
              kind="stall-suspect", note="; ".join(suspects),
              tier=("T3" if any(r.get("klass") == "idle-deaf" and getattr(spec.role(r["slug"]), "ecosystem", "")
                                == "claude" for r in rows) else "T2"),
-             channel="within-ecosystem" if spec.coordinator else "shared-channel")
+             channel="shared-channel")
     with open(sfile, "w") as fh:
         json.dump({"key": key, "fired_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ")}, fh)
-    if spec.ledger_mode:
+    try:
+        from ledger import Ledger
+        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led.pull()
+        targets = {r["slug"] for r in rows if r["suspect"]} | {"user"}
+        for t in sorted(targets):
+            mine = [r["detail"] for r in rows if r["suspect"] and r["slug"] == t]
+            led.append("hag.py", "msg", to=t, kind="stall-suspect",
+                       text=("; ".join(mine) + " — re-verify your wait (transition) or act"
+                             if mine else body), _push=False)
+        from ledger import sync_push
+        sync_push(led.root)
+        print(f"ledger: stall-suspect msgs to {sorted(targets)}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"ERROR: ledger delivery failed: {exc}")
+        return 2
+    for r in rows:
+        if r.get("klass") != "idle-deaf":
+            continue
+        role = spec.role(r["slug"])
+        if role is None or role.ecosystem != "opencode" or not role.session:
+            continue
         try:
-            from ledger import Ledger
-            led = Ledger(spec.hag, root=spec.ledger_dir)
-            led.pull()
-            targets = {r["slug"] for r in rows if r["suspect"]} | {r.slug for r in spec.fillers} | {"user"}
-            for t in sorted(targets):
-                mine = [r["detail"] for r in rows if r["suspect"] and r["slug"] == t]
-                led.append("hag.py", "msg", to=t, kind="stall-suspect",
-                           text=("; ".join(mine) + " — re-verify your wait (transition) or act"
-                                 if mine else body), _push=False)
-            from ledger import sync_push
-            sync_push(led.root)
-            print(f"ledger: stall-suspect msgs to {sorted(targets)}")
+            get_backend("opencode").send(
+                role.session, spec.dir,
+                f"OPERATOR WAKEUP-READ (heartbeat: your ledger-watch is dead — "
+                f"no board poll, queue empty, heartbeat stale): run hag.py show "
+                f"--hag {spec.hag} --slug {role.slug}, claim or decline the top "
+                f"board candidate, transition, re-arm ledger-watch and VERIFY "
+                f"the new PID with ps -p plus sidecar pid match. REPORT.")
+            print(f"direct WAKEUP-READ sent to {role.slug} ({role.session})")
         except Exception as exc:  # noqa: BLE001
-            print(f"ERROR: ledger delivery failed: {exc}")
-            return 2
-        for r in rows:
-            if r.get("klass") != "idle-deaf":
-                continue
-            role = spec.role(r["slug"])
-            if role is None or role.ecosystem != "opencode" or not role.session:
-                continue
-            try:
-                get_backend("opencode").send(
-                    role.session, spec.dir,
-                    f"OPERATOR WAKEUP-READ (heartbeat: your ledger-watch is dead — "
-                    f"no board poll, queue empty, heartbeat stale): run hag.py show "
-                    f"--hag {spec.hag} --slug {role.slug}, claim or decline the top "
-                    f"board candidate, transition, re-arm ledger-watch and VERIFY "
-                    f"the new PID with ps -p plus sidecar pid match. REPORT.")
-                print(f"direct WAKEUP-READ sent to {role.slug} ({role.session})")
-            except Exception as exc:  # noqa: BLE001
-                print(f"ERROR: WAKEUP-READ send to {role.slug} failed: {exc}")
-        return 0
-    coord = spec.coordinator
-    target = notify or (coord.session if coord else "")
-    if coord and target:
-        try:
-            get_backend("opencode").send(target, spec.dir, body)
-        except Exception as exc:  # noqa: BLE001
-            print(f"ERROR: send to {target} failed: {exc}")
-            return 2
-    else:
-        chan = os.path.join(data_dir(spec.hag), "channel.md")
-        os.makedirs(os.path.dirname(chan), exist_ok=True)
-        with open(chan, "a") as fh:
-            fh.write(f"\n## {now:%Y-%m-%dT%H:%M:%SZ} {body}\n")
-        print(f"flattened: appended to {chan}")
+            print(f"ERROR: WAKEUP-READ send to {role.slug} failed: {exc}")
     return 0
