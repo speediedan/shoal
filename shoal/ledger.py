@@ -101,13 +101,13 @@ def split_item(item: str) -> tuple[str, str]:
 
 def item_key(item: str) -> str:
     """Canonical matching key: lower-case, owner stripped when it is the
-    default owner, verb dropped. 'speediedan/interpretune#600:fix' ->
-    'interpretune#600'."""
+    configured default owner, verb dropped. '<owner>/<repo>#600:fix' ->
+    '<repo>#600' when <owner> is the default owner."""
     key, _ = split_item(item)
     key = key.strip().lower()
     if "/" in key and "#" in key:
         owner, rest = key.split("/", 1)
-        if owner == "speediedan":
+        if owner and owner == config.default_owner():
             key = rest
     return key
 

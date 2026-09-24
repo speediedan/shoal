@@ -49,11 +49,7 @@ from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  #
 from roles import HAG_DATA_ROOT, HagSpec, home_dir  # noqa: E402
 import config  # noqa: E402
 
-try:
-    from zoneinfo import ZoneInfo
-    LOCAL = ZoneInfo("America/Los_Angeles")
-except Exception:  # pragma: no cover
-    LOCAL = None
+LOCAL = config.tzinfo()
 
 SUBS = ["local-ci", "remote-ci", "user-auth", "user-design", "session-blocked", "queue-empty"]
 TOOL_PATH = config.tool_path()
@@ -298,7 +294,10 @@ def outcomes(evs):
     return merged, closed, recon
 
 
-def gpu_share(w0, w1, org="https://dev.azure.com/speediedan", proj="interpretune"):
+def gpu_share(w0, w1, org="", proj=""):
+    org, proj = org or config.azure_org(), proj or config.azure_project()
+    if not org or not proj:
+        return None
     env = dict(ENV)
     if not env.get("AZURE_DEVOPS_EXT_PAT"):
         try:

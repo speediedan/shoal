@@ -14,8 +14,8 @@ read as a legacy fallback only (events from before 2026-09-17 live there).
 Analysis windows are free (--hours N covers the last N hours across day
 boundaries); rotation stays daily.
 
-Every event carries ts_utc, ts_pdt (America/Los_Angeles wall clock), hag, server
-(speediedl default), session, ecosystem, and a `run` pin {protocol_sha, scripts_sha,
+Every event carries ts_utc, ts_pdt (the configured local wall clock; the field name
+is historical), hag, server (the configured host name), session, ecosystem, and a `run` pin {protocol_sha, scripts_sha,
 schema_v} resolved best-effort from the checkout the package runs from, relative to that
 repository's own toplevel (`dirty` markers when uncommitted; events before 2026-09-24 carry
 the legacy {instructions_sha, runbook_sha} pair instead of protocol_sha). Emit never fails the caller: wrap it in `|| true` from shell.
@@ -34,18 +34,13 @@ import os
 import subprocess
 import sys
 
-try:
-    from zoneinfo import ZoneInfo
-    PDT = ZoneInfo("America/Los_Angeles")
-except Exception:  # pragma: no cover
-    PDT = None
-
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PKG_DIR)
 import config  # noqa: E402
 
 SCHEMA_V = "v2"  # v2 (2026-09-20): ledger_* event types + channel=ledger; v1 events still load
-SERVER = "speediedl"
+SERVER = config.server()
+PDT = config.tzinfo()  # local wall clock for ts_pdt (historical field name)
 HAG_DATA_ROOT = config.data_root()
 # the protocol skill ships inside the package; its sha is the protocol pin
 PROTOCOL_SKILL = "plugins/shoal-skills/skills/shoal-protocol/SKILL.md"

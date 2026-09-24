@@ -31,3 +31,19 @@
 # Host memory-pressure event log written by psi_watch.py. Env: HAG_PSI_OUT.
 # Default: <data_root>/_instruments/psi_events.jsonl
 # psi_out = "/path/to/psi_events.jsonl"
+
+# Host name recorded on every telemetry event. Env: HAG_SERVER. Default: this host's name
+# server = "<hostname>"
+
+# IANA time zone for local wall-clock display in telemetry and reports. Env: HAG_TZ.
+# Default: $TZ or /etc/timezone when it is an IANA name, else UTC
+# timezone = "Area/City"
+
+# GitHub owner stripped from item keys (<owner>/<repo>#<n> -> <repo>#<n>). Env: HAG_DEFAULT_OWNER.
+# Default: "" (every owner kept)
+# default_owner = "<owner>"
+
+# Azure Pipelines org URL and project, for the pipeline sensor and the report's GPU share.
+# Env: HAG_AZURE_ORG, HAG_AZURE_PROJECT. Default: "" (those features are off)
+# azure_org = "https://dev.azure.com/<org>"
+# azure_project = "<project>"

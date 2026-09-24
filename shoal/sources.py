@@ -9,8 +9,8 @@ state and repository come back in one call (`gh project item-list` omits
 state, and a closed issue left on the board is the measured hygiene gap).
 
 Spec shape (hag.json `sources`):
-  [{"kind": "github-project", "owner": "speediedan", "number": 2,
-    "repos": ["speediedan/interpretune", ...],      # optional filter
+  [{"kind": "github-project", "owner": "<owner>", "number": <project number>,
+    "repos": ["<owner>/<repo>", ...],               # optional filter
     "skip_status": ["Done"]}]                        # optional
 
 Per-role `scope` narrows further: {"repos": [...], "labels_any": [...],

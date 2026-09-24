@@ -967,8 +967,13 @@ def cmd_watch(a: argparse.Namespace) -> int:
     if len(a.args) < 2:
         print("usage: hag.py watch --hag ID pipeline ledger:<hag> <dir> [org] [proj]")
         return 1
-    org = a.args[2] if len(a.args) > 2 else "https://dev.azure.com/speediedan"
-    proj = a.args[3] if len(a.args) > 3 else "interpretune"
+    import config
+    org = a.args[2] if len(a.args) > 2 else config.azure_org()
+    proj = a.args[3] if len(a.args) > 3 else config.azure_project()
+    if not org or not proj:
+        print("pipeline watch needs an Azure org and project: pass them, or set azure_org and "
+              "azure_project in the host config (HAG_AZURE_ORG, HAG_AZURE_PROJECT)")
+        return 1
     return cmd_pipeline(a.hag, a.args[0], a.args[1], org, proj)
 
 

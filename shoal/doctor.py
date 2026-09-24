@@ -199,18 +199,19 @@ def tools_skew_note(armed_utc: str) -> str:
         top = subprocess.run(["git", "-C", HERE, "rev-parse", "--show-toplevel"],
                              capture_output=True, text=True, timeout=30).stdout.strip()
         rel = os.path.relpath(HERE, top) if top else ""
-        out = subprocess.run(["git", "log", "-1", "--format=%ci", "--",
+        out = subprocess.run(["git", "log", "-1", "--format=%cI", "--",
                               (rel + "/") if rel and rel != "." else "."],
                              capture_output=True, text=True, timeout=30,
                              cwd=top or HERE).stdout.strip()
-        tools_ts = datetime.datetime.strptime(out[:19], "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=datetime.timezone.utc)
+        # %cI is strict ISO 8601 with the committer's offset; %ci parsed as UTC was off by it
+        tools_ts = datetime.datetime.fromisoformat(out).astimezone(datetime.timezone.utc)
         armed = datetime.datetime.strptime(armed_utc, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=datetime.timezone.utc)
     except Exception:
         return ""
     if armed < tools_ts:
-        return f"armed {armed_utc} predates tool update {out[:16]}Z — kill + re-arm"
+        return (f"armed {armed_utc} predates tool update "
+                f"{tools_ts.strftime('%Y-%m-%dT%H:%MZ')}: kill + re-arm")
     return ""
 
 

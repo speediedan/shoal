@@ -16,6 +16,11 @@ when neither is importable the file is skipped with one warning on stderr.
   default_repos  (none)                          [] (a spec's own `repos` still wins)
   cli            HAG_CLI                         python3 <this package>/hag.py
   psi_out        HAG_PSI_OUT                     <data_root>/_instruments/psi_events.jsonl
+  server         HAG_SERVER                      this host's name
+  timezone       HAG_TZ                          $TZ or /etc/timezone when it is an IANA name, else UTC
+  default_owner  HAG_DEFAULT_OWNER               "" (item keys keep every owner)
+  azure_org      HAG_AZURE_ORG                   "" (Azure pipeline sensors and GPU share need it)
+  azure_project  HAG_AZURE_PROJECT               ""
 
 An empty environment variable counts as unset. Values are read at call time, so a test
 that exports a variable before importing a module sees it.
@@ -152,6 +157,50 @@ def cli_pkg_dir() -> str:
 def psi_out() -> str:
     return _path(_get("psi_out", ("HAG_PSI_OUT",),
                       lambda: os.path.join(data_root(), "_instruments", "psi_events.jsonl")))
+
+
+def server() -> str:
+    import socket
+    return str(_get("server", ("HAG_SERVER",), socket.gethostname))
+
+
+def timezone() -> str:
+    """IANA zone for local wall-clock display (telemetry `ts_pdt`, report times)."""
+    def dflt():
+        for cand in (os.environ.get("TZ", ""),):
+            if "/" in cand:
+                return cand.lstrip(":")
+        try:
+            with open("/etc/timezone") as fh:
+                v = fh.read().strip()
+            if "/" in v:
+                return v
+        except OSError:
+            pass
+        return "UTC"
+    return str(_get("timezone", ("HAG_TZ",), dflt))
+
+
+def tzinfo():
+    """A tzinfo for `timezone()`, or None when zoneinfo cannot resolve it."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(timezone())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def default_owner() -> str:
+    """The owner stripped from item keys (`<owner>/<repo>#<n>` -> `<repo>#<n>`)."""
+    return str(_get("default_owner", ("HAG_DEFAULT_OWNER",), "")).lower()
+
+
+def azure_org() -> str:
+    return str(_get("azure_org", ("HAG_AZURE_ORG",), ""))
+
+
+def azure_project() -> str:
+    return str(_get("azure_project", ("HAG_AZURE_PROJECT",), ""))
 
 
 def summary() -> dict:
