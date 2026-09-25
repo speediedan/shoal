@@ -200,11 +200,11 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p))
 d["features"]={"digest":True,"jobs":True,"workwake":True,"health":{"validity_wake_min":90}}
 json.dump(d,open(p,"w"),indent=1)
 PY
-check "\[dry-run\] relay-init $HAGID: doc $S/data/$HAGID/roles/hag-relay/plan_state.md; role ADD" $H relay-init --shoal $HAGID --spec "$SPEC" --dry-run
+check "\[dry-run\] relay-init $HAGID: doc $S/data/$HAGID/roles/wake-relay/plan_state.md; role ADD" $H relay-init --shoal $HAGID --spec "$SPEC" --dry-run
 check "role ADD" $H relay-init --shoal $HAGID --spec "$SPEC"
-grep -qi "current state" "$S/data/$HAGID/roles/hag-relay/plan_state.md" || fail "relay doc lacks the current-state section restart verifies"
+grep -qi "current state" "$S/data/$HAGID/roles/wake-relay/plan_state.md" || fail "relay doc lacks the current-state section restart verifies"
 python3 - "$SPEC" <<'PY' || fail "relay-init did not add the role / feature"
-import json,sys; d=json.load(open(sys.argv[1])); r=[x for x in d["roles"] if x["slug"]=="hag-relay"]
+import json,sys; d=json.load(open(sys.argv[1])); r=[x for x in d["roles"] if x["slug"]=="wake-relay"]
 assert r and r[0]["fill"]=="none" and d["features"].get("relay") is True, (r, d["features"])
 r[0]["session"]="rrrr3333"; json.dump(d,open(sys.argv[1],"w"),indent=1)
 PY
@@ -287,7 +287,7 @@ echo "== 10 Claude relay: dead watcher -> relay queue -> relay-watch exits with 
 setsid $H relay-watch --shoal $HAGID --interval 1 >"$S/relay.log" 2>&1 &
 RW=$!
 for i in $(seq 1 30); do [ "$(cat /tmp/$HAGID/relay-watch.pid 2>/dev/null)" = "$RW" ] && break; sleep 0.5; done
-python3 - "$HAGD" "$SPEC" <<'PY' | grep -q "^relay$" || fail "request_wake did not choose the relay"
+python3 - "$HAGD" "$SPEC" <<'PY' | grep -q "^wake-relay$" || fail "request_wake did not choose the wake relay"
 import sys; sys.path.insert(0,sys.argv[1])
 from roles import HagSpec; from health import request_wake
 print(request_wake(HagSpec.load(sys.argv[2]), "tl", "relay test", "watcher-dead"))
@@ -296,7 +296,7 @@ sleep 3; grep -q "RELAY-WAKE to=tl-r1" "$S/relay.log" || fail "relay-watch did n
 grep -q "VERDICT RELAY-DELIVER 1" "$S/relay.log" || fail "relay-watch verdict missing"
 kill $RW 2>/dev/null || true
 sleep 1
-check "hag-relay relay-dead step1:page" env SHOAL_HEALTH_SHIFT_MIN=11 $H health --spec "$SPEC" --instance a --dry-run
+check "wake-relay relay-dead step1:page" env SHOAL_HEALTH_SHIFT_MIN=11 $H health --spec "$SPEC" --instance a --dry-run
 check "VERDICT RELAY-MAX-HOURS" timeout 30 $H relay-watch --shoal $HAGID --interval 1 --max-hours 0.0005
 
 echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"

@@ -57,7 +57,7 @@ JSON
 echo "== 1 ledger-init (dry-run, live); a pre-flattening spec (can_fill_others/coordinator/queue keys) loads"
 expect 0 $H ledger-init --spec "$SPEC" --dry-run >/dev/null
 expect 0 $H ledger-init --spec "$SPEC" >/dev/null
-[ -d "$A/hags/t1hag/ledger" ] || fail "ledger dir missing after init"
+[ -d "$A/shoals/t1hag/ledger" ] || fail "ledger dir missing after init"
 expect 0 $H offer --shoal t1hag --to alpha --item interpretune#372:fix --base interpretune@3ac6fdf9 --note "phase 1 only" >/dev/null
 check "interpretune#372:fix" $H show --shoal t1hag --slug alpha
 echo "== 2 offers + permissions"
@@ -95,7 +95,7 @@ expect 0 $H release --shoal t1hag --slug beta --item interpretune#554 --kind dec
 check "interpretune#554:scope" $H show --shoal t1hag --slug alpha     # re-opened for others
 check "declined: interpretune#554" $H show --shoal t1hag --slug beta  # never re-offered to beta
 expect 0 $H msg --shoal t1hag --by user --to alpha --text "review adapter#39 next" --kind instruct --ack >/dev/null
-MID=$(python3 -c "import json;[print(json.loads(l)['id']) for l in open('$A/hags/t1hag/ledger/user.jsonl') if '\"msg\"' in l]" | tail -1)
+MID=$(python3 -c "import json;[print(json.loads(l)['id']) for l in open('$A/shoals/t1hag/ledger/user.jsonl') if '\"msg\"' in l]" | tail -1)
 expect 0 $H msg --shoal t1hag --by alpha --to user --text ack --kind ack --re "$MID" >/dev/null
 expect 0 $H msg --shoal t1hag --by beta --to user --text "need merge grant #602" --kind ask --ledger-dir "$B" >/dev/null
 check "msgs to user" $H show --shoal t1hag
@@ -193,5 +193,31 @@ PY2
   || fail "HAG_DATA_ROOT fallback not honoured"
 [ "$(SHOAL_DATA_ROOT="$S/new-root" HAG_DATA_ROOT="$S/legacy-root" python3 -c "import sys; sys.path.insert(0, '$HAGD'); import config; print(config.data_root())")" = "$S/new-root" ] \
   || fail "SHOAL_DATA_ROOT does not win over HAG_DATA_ROOT"
+echo "== layout: shoals/ for new groups, legacy hags/ + hag.json still read; next_max; wake relay slugs"
+python3 - "$HAGD" "$S/layout" <<'PY3' || fail "layout / next_max / wake relay checks"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from layout import group_dir, spec_path, is_legacy
+root = sys.argv[2]
+os.makedirs(os.path.join(root, "hags", "old1"))
+open(os.path.join(root, "hags", "old1", "hag.json"), "w").write("{}")
+assert group_dir(root, "old1").endswith("hags/old1") and spec_path(root, "old1").endswith("hags/old1/hag.json")
+assert is_legacy(root, "old1")
+assert group_dir(root, "new1").endswith("shoals/new1") and spec_path(root, "new1").endswith("shoals/new1/shoal.json")
+assert not is_legacy(root, "new1")
+from ledger import queue_next_max, QUEUE_NEXT_MAX
+class S:  # a stand-in spec
+    def __init__(self, f): self.features = f
+assert queue_next_max(S({"workwake": True})) == QUEUE_NEXT_MAX == 3
+assert queue_next_max(S({"workwake": {"next_max": 5}})) == 5
+assert queue_next_max(S({"workwake": {"next_max": "x"}})) == 3
+from roles import Role, is_wake_relay
+assert is_wake_relay(Role(slug="wake-relay", ecosystem="claude", title="", doc="", fill="none"))
+assert is_wake_relay(Role(slug="hag-relay", ecosystem="claude", title="", doc="", fill="none"))
+assert not is_wake_relay(Role(slug="wake-relay", ecosystem="claude", title="", doc="", fill="self"))
+from digest import has_affinity
+assert not has_affinity({"affinity": {}}) and has_affinity({"affinity": {"repos": {"a/b": 1}}})
+print("layout ok")
+PY3
 rm -rf /tmp/t1hag
 echo "SELFTEST PASS ($S)"

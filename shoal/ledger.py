@@ -4,7 +4,7 @@ ledger with one file per writer (readme 5.j, established 2026-09-20).
 
 Every piece of agent traffic — tasking (offer/withdraw), work ownership
 (claim/release/done), row state (state), and messages (msg) — is one JSON
-line appended to `hags/<hag>/ledger/<writer>.jsonl` in the queue repo
+line appended to `shoals/<id>/ledger/<writer>.jsonl` in the ledger repo
 (config `ledger_repo`, cloned at config `ledger_dir`). One writer per file
 means `git pull --rebase` never conflicts; append-only means history is the
 audit trail; JSONL means every reader (agent, watcher, report, human via
@@ -62,7 +62,18 @@ GIT_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get
                GIT_TERMINAL_PROMPT="0")
 
 TYPES = ("offer", "withdraw", "claim", "release", "done", "msg", "state", "system", "queue")
-QUEUE_NEXT_MAX = 3  # a role's declared queue: one active item + at most this many next
+QUEUE_NEXT_MAX = 3  # default length of a role's `next` list (one active item + up to N next)
+
+
+def queue_next_max(spec=None) -> int:
+    """How many next items a role declares: `features.workwake.next_max` in the spec
+    (`workwake` may be `true` or an object), else QUEUE_NEXT_MAX."""
+    ww = (getattr(spec, "features", None) or {}).get("workwake") if spec is not None else None
+    raw = ww.get("next_max") if isinstance(ww, dict) else None
+    try:
+        return max(1, int(raw)) if raw is not None else QUEUE_NEXT_MAX
+    except (TypeError, ValueError):
+        return QUEUE_NEXT_MAX
 RELEASE_KINDS = ("decline", "lost-race", "blocked", "handoff")
 MSG_KINDS = ("info", "ack", "ask", "instruct", "stall-suspect", "server-respawned",
              "starved", "hold", "wake-test", "health")
@@ -216,7 +227,8 @@ class Ledger:
         self.hag = hag
         self.root = root or LEDGER_DIR
         self.sync = sync and has_remote(self.root) if os.path.isdir(self.root) else sync
-        self.dir = os.path.join(self.root, "hags", hag)
+        from layout import group_dir
+        self.dir = group_dir(self.root, hag)
         self.ldir = os.path.join(self.dir, "ledger")
         self._events: list[dict] | None = None
 
@@ -235,7 +247,8 @@ class Ledger:
             open(keep, "a").close()
         paths = [keep]
         if spec_snapshot is not None:
-            sp = os.path.join(self.dir, "hag.json")
+            from layout import spec_file
+            sp = spec_file(self.dir)
             with open(sp, "w") as fh:
                 json.dump(spec_snapshot, fh, indent=2)
                 fh.write("\n")
@@ -248,9 +261,10 @@ class Ledger:
         return self.append(SYSTEM_WRITER, "system", event="ledger-init", note=note, _commit=True)["id"]
 
     def snapshot_spec(self, spec_dict: dict, push: bool = True) -> None:
-        """Refresh hags/<hag>/hag.json (the copy remote agents read)."""
+        """Refresh the group's spec copy in the ledger (the copy remote agents read)."""
+        from layout import spec_file
         os.makedirs(self.dir, exist_ok=True)
-        p = os.path.join(self.dir, "hag.json")
+        p = spec_file(self.dir)
         with open(p, "w") as fh:
             json.dump(spec_dict, fh, indent=2)
             fh.write("\n")
@@ -713,8 +727,10 @@ def render_role(view: View, slug: str, candidates: list[dict] | None = None,
 
 def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] | None = None) -> str:
     """The status table: one row per role."""
-    L = [f"# HAG {view.ledger.hag} — ledger view at {iso()}", ""]
-    L.append("| role | fill | state | active | next (max 3) | last event |")
+    from roles import is_wake_relay as _is_wake_relay
+    n_next = queue_next_max(spec)
+    L = [f"# shoal {view.ledger.hag}: ledger view at {iso()}", ""]
+    L.append(f"| role | fill | state | active | next (max {n_next}) | last event |")
     L.append("| --- | --- | --- | --- | --- | --- |")
     for r in spec.roles:
         st = view.role_state(r.slug)
@@ -728,10 +744,10 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
         qv = view.current_queue(r.slug)
         if qv is not None:  # the role's declared queue is the truth when it exists
             act = qv.get("active") or "—"
-            nxt = list(qv.get("next") or [])[:3]
+            nxt = list(qv.get("next") or [])[:n_next]
         else:
             act = ", ".join(fmt_item(c) + (" CONTESTED" if c.get("contested") else "") for c in view.active(r.slug)) or "—"
-            nxt = [fmt_item(o) for o in view.queue(r.slug)[:3]]
+            nxt = [fmt_item(o) for o in view.queue(r.slug)[:n_next]]
         held = view.held_unscheduled(r.slug)
         if held:
             act += f" (+held-unscheduled {', '.join(held)})"
@@ -744,7 +760,7 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
             last += f" (hb {hb_ages[r.slug]:.0f}m)"
         if not r.session:
             state = "parked (no session)"
-        elif getattr(r, "fill", "") == "none" and r.slug == "hag-relay":
+        elif _is_wake_relay(r):
             # the relay writes no state events (a stale one may predate this session), so its
             # row is its waiter's liveness
             try:

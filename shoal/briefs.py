@@ -3,7 +3,7 @@
 
 ONE brief shape for every role (`ledger_brief`, 2026-09-20; flattened only
 since 2026-09-24), with the work-loop variant (`workwake_brief`) under
-features.workwake and the relay's own brief for `hag-relay`. Every brief points at the role's single start
+features.workwake and the wake relay's own brief (the `wake-relay` role; legacy `hag-relay`). Every brief points at the role's single start
 document (plan_state.md) plus the shared instructions; grants-needed items
 are extracted from that document at brief time, so the doc is the only place
 grants are configured. Model/effort ride along as launch config. Every brief
@@ -16,7 +16,9 @@ import os
 import re
 
 import config
-from roles import HagSpec, Role
+from layout import group_dir
+from ledger import queue_next_max
+from roles import HagSpec, Role, is_wake_relay
 
 HAGPY = config.cli()  # the command line every brief tells a session to run
 
@@ -82,7 +84,7 @@ def relay_brief(role: Role, spec: HagSpec) -> str:
     """The Claude wake relay (architecture doc §6): not a worker; one waiter, one tool."""
     hag = spec.hag
     return (
-        f"You are {role.slug} ({role.tag}) in HAG {hag}: the wake relay for Claude roles whose own watcher "
+        f"You are {role.slug} ({role.tag}) in shoal {hag}: the wake relay for Claude roles whose own watcher "
         f"is dead. You do no project work, claim nothing, and message nobody on your own initiative. "
         f"LOOP: run `{HAGPY} relay-watch --shoal {hag}` with the Bash tool and run_in_background=true, on exactly "
         f"that command: no trailing `&`, no nohup, and NEVER the Monitor tool (a Monitor expires every 5-30 min and "
@@ -118,19 +120,19 @@ def workwake_brief(role: Role, spec: HagSpec) -> str:
                  "`--pass <item>:out-of-lane:suggest=<lane>`.")
     return (
         f"FIRST, load the `shoal-protocol` skill and follow it: it is the protocol this brief summarizes. "
-        f"You are {role.label} in HAG {hag} (incarnation {spec.incarnation}). Your Lane row label in every "
+        f"You are {role.label} in shoal {hag} (incarnation {spec.incarnation}). Your Lane row label in every "
         f"posted block is exactly `{role.label}`: the base name, then your session tag; never an incarnation "
         f"number. Read: (1) {role.doc} "
         f"(your plan_state start doc: mission, current state, decisions, grants-needed, next; keep it current), "
-        f"(2) the shared orchestration instructions sections 'Unified ledger primitive' and 'Watcher placement, "
-        f"kills and recovery'. Your job is to work through a QUEUE: one active item and up to three next items, "
+        f"(2) the shoal-protocol skill's references `ledger.md`, `work-loop.md` and "
+        f"`watchers-and-waits.md`. Your job is to work through a QUEUE: one active item and up to {queue_next_max(spec)} next items, "
         f"declared by you in the ledger. {fill} "
         f"AT EVERY BOUNDARY (a wake, or finishing/blocking an item) do exactly two things: READ `{HAGPY} next "
         f"--shoal {hag} --slug {role.slug}` (queue, offers, candidates with scores and excerpts, mail, waits, watcher) "
         f"and WRITE ONE `{HAGPY} queue --shoal {hag} --slug {role.slug} --active <repo#n:verb> --next <a,b,c> "
         f"[--done <item> --url <evidence>] [--pass <item>:<class>[:suggest=<role>]] [--wait <sub> --holder <who> "
         f"--target <lease:..|job:..|gh-run:..|gh-pr:..|az-build:..>] | --idle`. The write claims the active item, "
-        f"records done/passes/posture and your new queue version in one commit. Every pop BACKFILLS next to three "
+        f"records done/passes/posture and your new queue version in one commit. Every pop BACKFILLS next to {queue_next_max(spec)} "
         f"(or give --reason why fewer). Then keep working the active item in the SAME turn. EVERY TURN ENDS IN A "
         f"SLEEP POSTURE: the last write of a turn is `queue --wait ..` (waiter armed first) or `queue --idle`, and the "
         f"Lane row you post says that posture, never `active`. If you stop while your posture is still active, the "
@@ -173,7 +175,7 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
     ecosystem. Differences are data: fill mode, permissions, wake adapter."""
     hag = spec.hag
     feats0 = getattr(spec, "features", {}) or {}
-    if role.slug == "hag-relay":
+    if is_wake_relay(role):
         return relay_brief(role, spec)
     if feats0.get("workwake"):
         return workwake_brief(role, spec)
@@ -212,11 +214,11 @@ def ledger_brief(role: Role, spec: HagSpec) -> str:
              f"`shoal show --shoal {hag}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
              "(transition) or acting.")
     return (
-        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode, flattened) in HAG "
+        f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode, flattened) in shoal "
         f"{hag}. Read: (1) {role.doc} (your plan_state "
-        f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the shared "
-        f"orchestration instructions section 'Unified ledger primitive'. ALL traffic is the ledger "
-        f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, hags/{hag}/ledger/<writer>.jsonl, "
+        f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the "
+        f"shoal-protocol skill's reference `ledger.md`. ALL traffic is the ledger "
+        f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, {os.path.relpath(group_dir(spec.ledger_dir, hag), spec.ledger_dir)}/ledger/<writer>.jsonl, "
         f"one file per writer, append-only) through `{HAGPY}` verbs: `show --shoal {hag} --slug {role.slug} "
         f"[--board]` (your view), `claim --slug {role.slug} --item repo#n:verb --base repo@sha`, "
         f"`done --slug {role.slug} --item .. --url ..`, `release --slug {role.slug} --item .. --kind "

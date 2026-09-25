@@ -328,6 +328,13 @@ def ledger_checks(d: Doc, spec: HagSpec) -> None:
         d.fail("ledger clone", f"{root} is not a git clone (shoal ledger-init --spec ...)")
         return
     d.ok("ledger clone", root)
+    from layout import group_dir, is_legacy, spec_file
+    gdir = group_dir(root, spec.hag)
+    if is_legacy(root, spec.hag):
+        d.warn("ledger layout", f"legacy {os.path.relpath(spec_file(gdir), root)}: read as a fallback; "
+                                f"migrate to shoals/{spec.hag}/shoal.json at the next full restart")
+    else:
+        d.ok("ledger layout", os.path.relpath(spec_file(gdir), root))
     try:
         r = git(root, "ls-remote", "--exit-code", "--heads", "origin", timeout=30, check=False)
         (d.ok if r.returncode == 0 else d.fail)("ledger remote", "reachable" if r.returncode == 0

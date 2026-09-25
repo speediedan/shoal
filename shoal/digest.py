@@ -9,13 +9,15 @@ item against every self-filling role's working context, and writes
 instead of GitHub, and a board wake carries enough (excerpt, score, why tokens) to
 claim or pass without opening each issue.
 
-Scoring (soft, never a gate except `never`):
-  score = sum of affinity weights matched (repo, labels, keywords in title+body,
-          path prefixes in body) + routing bonus (+2 when another role's decline
+Keyword ranking (the fallback when `features.matcher` is off or in shadow mode; soft, never a
+gate except `never`):
+  score = sum of the role's optional affinity weights matched (repo, labels, keywords in
+          title+body, path prefixes in body) + routing bonus (+2 when another role's decline
           suggested this role) - 1 when an open blocker exists
   rank  = score - board_pos / N          (board order breaks ties among equal fits)
-An item matching a role's `never` list is excluded for that role. An item every
-self-filling role has passed on is listed under `unowned`.
+A role with no affinity weights ranks by board order alone. An item matching a role's
+`never` list is excluded for that role. An item every self-filling role has passed on is
+listed under `unowned`.
 
 Semantic mode (`features.matcher`, architecture §4.1; matcher.py): a model scores every
 item 0-3 against every lane's brief. Lanes rank by fit, then EFFECTIVE board position:
@@ -160,6 +162,12 @@ def fetch_board(owner: str, number: int) -> list[dict]:
 def _match_repo(item: dict, pattern: str) -> bool:
     p = pattern.lower()
     return any(fnmatch.fnmatch(x, p) for x in (item["repo"].lower(), _short(item["repo"]).lower()))
+
+
+def has_affinity(ctx: dict) -> bool:
+    """True when a working context carries any affinity weight (repos, labels, keywords, paths)."""
+    aff = (ctx or {}).get("affinity") or {}
+    return any(aff.get(k) for k in ("repos", "labels", "keywords", "paths"))
 
 
 def score_item(item: dict, ctx: dict, routed: bool = False) -> tuple[float | None, list[str]]:
@@ -356,6 +364,9 @@ def build(spec: HagSpec, view=None, items: list[dict] | None = None, no_model: b
     roles: dict[str, list[dict]] = {}
     for r in ([] if live else fillers):
         ctx = r.working_context()
+        # affinity weights are optional: a role with none ranks by board order alone, and every
+        # item counts as a fit (no weak-candidate withholding for a role that expressed no weights)
+        weighted = has_affinity(ctx)
         ranked = []
         for it in items:
             key = item_key(it["item"])
@@ -366,7 +377,8 @@ def build(spec: HagSpec, view=None, items: list[dict] | None = None, no_model: b
                 continue
             ranked.append({"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix",
                            "pos": it["pos"], "score": round(sc, 2),
-                           "rank": round(sc - it["pos"] / n, 3), "why": why})
+                           "rank": round(sc - it["pos"] / n, 3), "why": why,
+                           **({} if weighted else {"strong": True})})
         ranked.sort(key=lambda x: -x["rank"])
         roles[r.slug] = ranked[:15]
     unowned = []

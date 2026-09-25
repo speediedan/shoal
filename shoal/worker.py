@@ -35,7 +35,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 import config  # noqa: E402
 
-from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, Ledger, LedgerError, View, fmt_item,  # noqa: E402
+from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, queue_next_max, Ledger, LedgerError, View, fmt_item,  # noqa: E402
                     item_key, short, split_item, sync_push)
 from roles import HagSpec, find_spec, state_dir  # noqa: E402
 
@@ -357,7 +357,7 @@ def cmd_next(a) -> int:
             out.append(aux_header(spec, slug))
         except Exception as exc:  # noqa: BLE001
             out.append(f"AUX: (header unavailable: {short(str(exc), 100)})")
-    short_by = QUEUE_NEXT_MAX - len(nxt) - (0 if active else 1)
+    short_by = queue_next_max(spec) - len(nxt) - (0 if active else 1)
     if short_by > 0:
         excl = {item_key(x) for x in [active] + nxt if x} | {item_key(o["item"]) for o in offers}
         for c in candidates_for(spec, view, slug, excl, limit=max(short_by, 3)):
@@ -407,8 +407,9 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     prev = view.current_queue(slug) or {}
     active = "" if a.idle else (a.active or (prev.get("active") or ""))
     nxt = _items(a.next) if a.next is not None else [x for x in (prev.get("next") or [])]
-    if len(nxt) > QUEUE_NEXT_MAX:
-        print(f"ERROR: at most {QUEUE_NEXT_MAX} next items (got {len(nxt)})")
+    n_next = queue_next_max(spec)
+    if len(nxt) > n_next:
+        print(f"ERROR: at most {n_next} next items (got {len(nxt)}; the group's `features.workwake.next_max`)")
         return 1
     if active and item_key(active) in {item_key(x) for x in nxt}:
         print("ERROR: the active item is also listed in --next")
@@ -501,7 +502,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             print(f"note: HELD-UNSCHEDULED {h}: you hold its claim but neither active nor next lists it; "
                   f"schedule it, or release it (`release --kind handoff|blocked`) so another role can take it")
     posture = "waiting" if a.wait else ("idle" if not active else "active")
-    reason = a.reason or ("" if len(nxt) >= QUEUE_NEXT_MAX else "no further eligible items")
+    reason = a.reason or ("" if len(nxt) >= n_next else "no further eligible items")
     version = int(prev.get("version", 0)) + 1
     plan = (f"{slug} queue v{version}: active={active or '-'} next={','.join(nxt) or '-'} posture={posture}"
             + (f"/{a.wait}" if a.wait else "") + f" claims={claims or '-'} done={a.done or '-'} "
@@ -627,7 +628,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--slug", required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--active", default="", help="the item worked now, repo#n:verb (claimed if not held)")
-    p.add_argument("--next", default=None, help=f"comma list, at most {QUEUE_NEXT_MAX}; omit to keep the previous")
+    p.add_argument("--next", default=None, help=f"comma list, at most the group's next_max (default {QUEUE_NEXT_MAX}); omit to keep the previous")
     p.add_argument("--idle", action="store_true", help="no active item (new work may wake you)")
     p.add_argument("--done", action="append", help="repo#n:verb completed at this boundary (repeatable)")
     p.add_argument("--url", default="", help="evidence URL for --done")
