@@ -131,6 +131,19 @@ def feature_edits(features: dict, a) -> tuple[dict, list[str]]:
     return new, changes
 
 
+def rearm_since(prev: str, files: list[str], cwd: str = HERE) -> str:
+    """Commit time (ISO) of the newest change since `prev` to code a running watcher executes,
+    or "". `files` are repo-root paths (`git diff --name-only`), while this runs inside the
+    package, so the pathspecs carry `:(top)`: without it nothing matched, the time came back
+    empty, and upgrade reported no stale watcher while doctor flagged them (STALE-CODE)."""
+    rearm = [f":(top){f}" for f in files if os.path.basename(f) in REARM_LEDGER | REARM_RELAY]
+    if not rearm:
+        return ""
+    r = subprocess.run(["git", "log", "-1", "--format=%cI", f"{prev}..HEAD", "--", *rearm],
+                       capture_output=True, text=True, timeout=60, cwd=cwd)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def stale_watchers(spec: HagSpec, since_iso: str) -> list[tuple[str, str]]:
     """(slug, pid) of alive ledger-watch processes armed before `since_iso`."""
     from ledger_watch import load_sidecar, sidecar_path
@@ -168,8 +181,7 @@ def cmd_upgrade(a) -> int:
         print(f"note: {unusable}; treating it as none recorded")
     if prev:
         files = [f for f in git("diff", "--name-only", f"{prev}..HEAD", "--", ".").splitlines() if f]
-        since = git("log", "-1", "--format=%cI", f"{prev}..HEAD", "--",
-                    *[f for f in files if os.path.basename(f) in REARM_LEDGER | REARM_RELAY]) or ""
+        since = rearm_since(prev, files)
     else:
         files = [f for f in git("ls-files", "--", ".").splitlines() if f.endswith((".py", ".sh"))]
         since = git("log", "-1", "--format=%cI", "--", ".")

@@ -197,6 +197,23 @@ assert any(e.get("type") == "system" and e.get("kind") == "upgrade" for e in evs
 PY
 check "tooling $(python3 -c "import json;print(json.load(open('$SPEC'))['tooling']['sha'])") ->" \
   $H upgrade --spec "$SPEC" --skip-selftests --allow-dirty --dry-run
+# the re-arm time is found from inside the package (repo-root paths need `:(top)` pathspecs)
+python3 - "$HAGD" "$S/rearm-repo" <<'PY' || fail "rearm_since found no re-arm change"
+import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from upgrade import rearm_since
+repo = sys.argv[2]; pkg = os.path.join(repo, "pkg"); os.makedirs(pkg)
+def g(*a):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True,
+                          capture_output=True, text=True).stdout.strip()
+g("init", "-q"); open(os.path.join(pkg, "ledger.py"), "w").write("a\n"); g("add", "."); g("commit", "-qm", "one")
+prev = g("rev-parse", "HEAD")
+open(os.path.join(pkg, "ledger.py"), "w").write("b\n"); g("commit", "-qam", "two")
+files = g("diff", "--name-only", f"{prev}..HEAD").splitlines()
+assert files == ["pkg/ledger.py"], files
+assert rearm_since(prev, files, cwd=pkg), "empty re-arm time from inside the package"
+assert rearm_since(prev, ["pkg/other.py"], cwd=pkg) == ""
+PY
 # a sha recorded against another repository, or one this repository lacks, is "none recorded"
 python3 -c "import json; d=json.load(open('$SPEC')); d['tooling']['repo']='git@example.invalid:other/tools.git'; json.dump(d, open('$S/spec-otherrepo.json','w'))"
 python3 -c "import json; d=json.load(open('$SPEC')); d['tooling']['sha']='0123456789ab'; json.dump(d, open('$S/spec-badsha.json','w'))"
