@@ -16,7 +16,7 @@ then a generic default):
                      reports/,telemetry/}. Briefs, report .md twins and events
                      live here, never in version control.
   ledger.dir     the ledger repo's local clone (config `ledger_dir`):
-                     hags/<hag>/{hag.json (THE canonical live spec, mutated by
+                     shoals/<id>/{shoal.json (THE canonical live spec, mutated by
                      shoal with commit+push),ledger/}. Remote agents read this.
   SHOAL_SPEC       optional pin: the path of one HAG's spec (<dir named for the hag>/hag.json).
                      Tests and operators use it to resolve a spec outside the ledger clone.
