@@ -25,10 +25,10 @@ fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 expect() { local rc=$1 got=0; shift; "$@" && got=0 || got=$?; [ "$got" = "$rc" ] || fail "rc=$got (want $rc): $*"; }
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in output of: $* :: $out"; }
 
-git init -q --bare "$S/remote/hag-queues.git"
-git clone -q "$S/remote/hag-queues.git" "$A" 2>/dev/null
+git init -q --bare "$S/remote/ledgers.git"
+git clone -q "$S/remote/ledgers.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
-git clone -q "$S/remote/hag-queues.git" "$B" 2>/dev/null
+git clone -q "$S/remote/ledgers.git" "$B" 2>/dev/null
 mkdir -p "$ROOT/t1hag"
 # synthetic board, board order = priority: open interpretune items, one out of alpha's scope,
 # one closed, one in a skipped status
@@ -46,7 +46,7 @@ JSON
 DOC_A=$(hag_doc alpha); DOC_B=$(hag_doc beta); DOC_O=$(hag_doc observer)
 cat > "$SPEC" <<JSON
 {"hag":"t1hag","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
- "ledger":{"repo":"$S/remote/hag-queues.git","dir":"$A"},
+ "ledger":{"repo":"$S/remote/ledgers.git","dir":"$A"},
  "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
   {"slug":"alpha","ecosystem":"claude","title":"alpha","doc":"$DOC_A","fill":"self","session":"aaaa1111","scope":{"repos":["speediedan/interpretune"]}},
@@ -148,7 +148,7 @@ check "pass --ledger-repo" $H start --name t --dir "$WORK" --role "a,claude,a,$D
 expect 1 $H start --name t --dir "$WORK" --role "a,claude,a,$DOC_A" --dry-run >/dev/null
 python3 -c "import json,sys; d=json.load(open('$SPEC')); d.pop('ledger'); d['hag']='t2hag'; json.dump(d, open('$S/noledger.json','w'))"
 check "pass --ledger-repo" $H ledger-init --spec "$S/noledger.json" --dry-run
-check "\[dry-run\] ledger for t2hag: clone $S/remote/hag-queues.git" $H ledger-init --spec "$S/noledger.json" --ledger-repo "$S/remote/hag-queues.git" --dry-run
+check "\[dry-run\] ledger for t2hag: clone $S/remote/ledgers.git" $H ledger-init --spec "$S/noledger.json" --ledger-repo "$S/remote/ledgers.git" --dry-run
 mkdir -p "$S/rel/t1hag"
 python3 -c "
 import json; d=json.load(open('$SPEC'))
