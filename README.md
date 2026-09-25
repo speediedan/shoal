@@ -36,6 +36,9 @@ Further reading:
 - [`docs/architecture.md`](docs/architecture.md): the components and how they fit.
 - [`docs/providers.md`](docs/providers.md): the host contracts (resource leases, wait targets,
   board source, harness adapters) and how to supply your own.
+- [`docs/limitations.md`](docs/limitations.md): what the current design does not handle yet (ledger
+  growth, multi-host joining, one repository for every group, git's scaling ceiling), with the
+  measurement that would trigger each refactor.
 - [`plugins/shoal-skills/skills/shoal-protocol/SKILL.md`](plugins/shoal-skills/skills/shoal-protocol/SKILL.md):
   the protocol every role session follows.
 - [`plugins/shoal-skills/skills/shoal-operator/SKILL.md`](plugins/shoal-skills/skills/shoal-operator/SKILL.md):

@@ -299,3 +299,8 @@ A spec's `features` object switches components on per group: `workwake`, `health
 (`validity_wake_min`, `page`), `continuation` (`after_min`), `waitdiscipline` (`rescan_cap_min`),
 `relay`, `jobs`, `digest`, and `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`,
 `go_fallbacks`, `paid_fallback`, `private_repos`). An absent flag leaves the component off.
+
+## 12. Known limitations
+
+What this design does not handle yet, and the measurement that would trigger each change, is in
+[`limitations.md`](limitations.md).
