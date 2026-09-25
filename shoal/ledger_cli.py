@@ -11,7 +11,7 @@ the maintainer use. Each is one command, one event, one commit, one push.
   show      --shoal H [--slug S] [--board] [--json]                the status table / one role's view
   fill      --shoal H --slug S [--limit N] [--claim-top]           board candidates for a self-filler
   sync      --shoal H                                              pull + push pending ledger commits
-  ledger-init  --spec hag.json                                  create hags/<hag>/ in the queue repo
+  ledger-init  --spec <spec>                                    create shoals/<id>/ in the ledger repo
   ledger-lint  --shoal H                                           permission violations, contested claims
 
 `--by` defaults to `user` for offer/withdraw/msg when run by a human; roles
@@ -348,7 +348,7 @@ def cmd_ledger_init(a) -> int:
         return 1
     if a.dry_run:
         print(f"[dry-run] ledger for {spec.hag}: clone {spec.ledger.get('repo')} at {root}, "
-              f"create hags/{spec.hag}/ledger/, snapshot spec, write ledger into {a.spec}")
+              f"create shoals/{spec.hag}/ledger/, snapshot spec, write ledger into {a.spec}")
         return 0
     ensure_clone(root, spec.ledger["repo"])
     led = Ledger(spec.hag, root=root, sync=not a.no_sync)
@@ -478,7 +478,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     common(p)
     p.set_defaults(func=cmd_sync)
 
-    p = sub.add_parser("ledger-init", help="create hags/<hag>/ in the queue repo")
+    p = sub.add_parser("ledger-init", help="create shoals/<id>/ in the ledger repo")
     p.add_argument("--spec", required=True)
     p.add_argument("--ledger-repo", "--repo", dest="repo", default="",
                    help="ledger repo url (default: config `ledger_repo`; required when that is empty)")

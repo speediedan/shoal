@@ -27,7 +27,7 @@ Post it after every completed turn. It describes the posture you are sleeping in
 activity, which goes in your prose and the ledger:
 
 ```markdown
-| | status | next (max 3) |
+| | status | next (max N) |
 | --- | --- | --- |
 | **Lane** · `<slug> (<slug>-r<N>)` | waiting (remote CI: <what>; watchers <pids>) | [<repo>#<n>](...):fix, ... |
 | **Pipelines** | <gate ids and their states> · lease: <posture> | (none) |
@@ -38,7 +38,7 @@ activity, which goes in your prose and the ledger:
 - **Three rows, always.** A renamed row that swallows the others hides gate posture and work
   location at once.
 - **Every item is a link with a verb:** `:fix` or `:review`.
-- **`next` shows three items,** or an explicit `(queue empty: deliberate)`.
+- **`next` shows the group's `next_max` items (default 3),** or an explicit `(queue empty: deliberate)`.
 - **The Worktrees row names every tree you read or write,** your active one first.
 - **A worktree leaves the row only after** its branch merged and `git worktree prune` confirmed
   the removal.

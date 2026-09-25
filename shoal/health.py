@@ -22,10 +22,11 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   stale-active       posture active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
 
-Wake adapters, one per ecosystem: opencode -> `openchamber session send`; Claude with a
-live ledger-watch -> a wake request file the watcher delivers (/tmp/<hag>/wake-<slug>);
-Claude with a dead watcher -> the relay queue (/tmp/<hag>/relay-queue), drained by a small
-Claude relay session through the harness's cross-session message. In user-offline mode,
+Wakes go through direct session wake (backends.Backend.wake), one implementation per
+ecosystem: opencode -> a send to the session; Claude with a live ledger-watch -> a wake
+request file the watcher delivers (/tmp/<id>/wake-<slug>); Claude with a dead watcher -> the
+wake relay queue (/tmp/<id>/relay-queue), drained by a small Claude session through the
+harness's cross-session message. In user-offline mode,
 maintainer pages are deferred and delivered as one summary when the maintainer is back.
 """
 from __future__ import annotations
@@ -46,7 +47,8 @@ from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
-from roles import HagSpec, find_spec, roles_dir, state_dir  # noqa: E402
+from roles import (WAKE_RELAY_SLUG, HagSpec, find_spec, is_wake_relay, roles_dir, state_dir,  # noqa: E402
+                   wake_relay_role)
 
 TOOL_PATH = config.tool_path()
 _ENV = config.tool_env()
@@ -141,37 +143,18 @@ def wake_text(spec: HagSpec, slug: str, reason: str, condition: str = "") -> str
 
 
 def request_wake(spec: HagSpec, slug: str, reason: str, condition: str = "", dry_run: bool = False) -> str:
-    """Wake one role through its ecosystem's designated adapter; returns the channel used."""
+    """Wake one role through its ecosystem's direct session wake (backends.Backend.wake);
+    returns the channel used."""
     role = spec.role(slug)
     if role is None:
         return "no-such-role"
     text = wake_text(spec, slug, reason, condition)
-    if role.ecosystem == "opencode":
-        if dry_run:
-            return "opencode-send (dry-run)"
-        from backends import get as get_backend
-        try:
-            get_backend("opencode").send(role.session, spec.dir, text)
-            return "opencode-send"
-        except Exception as exc:  # noqa: BLE001
-            return f"opencode-send FAILED ({str(exc)[:80]})"
-    alive, _ = watcher_alive(spec.hag, slug)
-    if alive:
-        if not dry_run:
-            os.makedirs(state_dir(spec.hag), exist_ok=True)
-            with open(wake_path(spec.hag, slug), "a") as fh:
-                fh.write(json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
-        return "wake-file" + (" (dry-run)" if dry_run else "")
-    relay = next((r for r in spec.roles if getattr(r, "fill", "") == "none" and r.slug == "hag-relay"), None)
-    if relay is None or not (spec.features or {}).get("relay"):
-        return "no-adapter (claude watcher dead, relay disabled)"
-    if not relay_alive(spec.hag):
-        return "no-adapter (claude watcher dead, relay waiter dead)"
-    if not dry_run:
-        with open(relay_queue_path(spec.hag), "a") as fh:
-            fh.write(json.dumps({"ts": iso(), "to": role.tag, "slug": slug, "session": role.session,
-                                 "condition": condition, "text": text}) + "\n")
-    return "relay" + (" (dry-run)" if dry_run else "")
+    from backends import get as get_backend
+    try:
+        backend = get_backend(role.ecosystem)
+    except Exception as exc:  # noqa: BLE001
+        return f"no-adapter ({str(exc)[:80]})"
+    return backend.wake(spec, role, text, condition=condition, dry_run=dry_run)
 
 
 def relay_alive(hag: str) -> bool:
@@ -262,7 +245,7 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
     cfg = health_cfg(spec)
     validity = float(cfg.get("validity_wake_min", 90))
     for role in spec.roles:
-        if getattr(role, "fill", "") == "none" and role.slug == "hag-relay":
+        if is_wake_relay(role):
             continue
         if not role.session:
             continue
@@ -379,14 +362,14 @@ def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
     led.pull()
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
-    relay = spec.role(RELAY_SLUG)
+    relay = wake_relay_role(spec)
     if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.hag):
         # the relay has no adapter of its own: its death is a page, never a wake
         tk = os.path.join(sdir, "tick-relay-watch")
         since = open(tk).read().strip() if os.path.exists(tk) else iso()
-        conds.append({"slug": RELAY_SLUG, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
+        conds.append({"slug": relay.slug, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
                       "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
-                                f"have no wake path; relaunch with `shoal restart --spec <spec> --only hag-relay`"})
+                                f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.hag}`"})
     ladders = state.setdefault("ladders", {})
     live_keys = set()
     for c in conds:
@@ -494,11 +477,12 @@ def cmd_relay_watch(a) -> int:
         time.sleep(a.interval)
 
 
-RELAY_SLUG = "hag-relay"
+RELAY_SLUG = WAKE_RELAY_SLUG  # the slug new groups get; legacy groups keep `hag-relay`
 RELAY_MODEL = "claude-haiku-4-5-20251001"
-RELAY_DOC = """# hag-relay plan_state ({hag})
+RELAY_DOC = """# {slug} plan_state ({hag})
 
-- role: `hag-relay` (infrastructure, not a worker; `fill=none`), model haiku
+- role: `{slug}` (infrastructure, not a worker; `fill=none`): the Claude implementation of direct
+  session wake, model haiku
 - generated by `shoal relay-init`; lives in the HAG's data directory, not the design repo
 - design: `.agents/hag_architecture.md` §6 (wake adapters)
 
@@ -539,17 +523,19 @@ re-arm.
 """
 
 
-def relay_doc_path(hag: str) -> str:
-    return os.path.join(roles_dir(hag), RELAY_SLUG, "plan_state.md")
+def relay_doc_path(hag: str, slug: str = "") -> str:
+    return os.path.join(roles_dir(hag), slug or RELAY_SLUG, "plan_state.md")
 
 
 def cmd_relay_init(a) -> int:
     """Generate the relay's start doc in the HAG data dir; add the role + features.relay to the spec."""
     path = a.spec or find_spec(a.hag)
     spec = HagSpec.load(path)
-    doc = relay_doc_path(spec.hag)
-    text = RELAY_DOC.format(hag=spec.hag, cli=config.cli())
-    have = spec.role(RELAY_SLUG) is not None
+    existing = wake_relay_role(spec)
+    slug = existing.slug if existing is not None else RELAY_SLUG
+    doc = relay_doc_path(spec.hag, slug)
+    text = RELAY_DOC.format(hag=spec.hag, cli=config.cli(), slug=slug)
+    have = existing is not None
     plan = (f"relay-init {spec.hag}: doc {doc}"
             + ("" if a.doc_only else f"; role {'present' if have else 'ADD'} ({RELAY_MODEL}, fill=none); features.relay=true"))
     if a.dry_run:
@@ -564,7 +550,7 @@ def cmd_relay_init(a) -> int:
             spec.roles.append(Role(slug=RELAY_SLUG, ecosystem="claude", title=RELAY_SLUG, doc=doc,
                                    fill="none", model=RELAY_MODEL, seq=1))
         else:
-            spec.role(RELAY_SLUG).doc = doc
+            existing.doc = doc
         spec.features = dict(spec.features or {}, relay=True)
         from cli import persist_spec
         persist_spec(spec, path, note="relay-init")
@@ -578,9 +564,9 @@ def cmd_relay_launch(a) -> int:
     once relay-watch is proven running."""
     path = a.spec or find_spec(a.hag)
     spec = HagSpec.load(path)
-    role = spec.role(RELAY_SLUG)
+    role = wake_relay_role(spec)
     if role is None:
-        print(f"ERROR: no {RELAY_SLUG} role in {spec.hag}: run `shoal relay-init --shoal {spec.hag}` first")
+        print(f"ERROR: no wake relay role in {spec.hag}: run `shoal relay-init --shoal {spec.hag}` first")
         return 1
     if relay_alive(spec.hag) and not a.force:
         print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.hag), 'relay-watch.pid')).read().strip()}); "
@@ -625,13 +611,13 @@ def add_parsers(sub) -> None:
     p.add_argument("--instance", choices=["a", "b"], default="a")
     p.add_argument("--dry-run", action="store_true", help="evaluate and print actions; wake and page nobody")
     p.set_defaults(func=cmd_health)
-    p = sub.add_parser("relay-init", help="generate the hag-relay start doc (data dir) and add the role to the spec")
+    p = sub.add_parser("relay-init", help="generate the wake relay start doc (data dir) and add the role to the spec")
     config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--doc-only", action="store_true", help="write the start doc only; leave the spec alone")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_relay_init)
-    p = sub.add_parser("relay-launch", help="(re)launch the hag-relay session alone (no restart, no incarnation bump)")
+    p = sub.add_parser("relay-launch", help="(re)launch the wake relay session alone (no restart, no incarnation bump)")
     config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--force", action="store_true")

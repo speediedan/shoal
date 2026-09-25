@@ -81,6 +81,13 @@ access is trusted.
 
 **Trigger.** Before anyone joins from a second host or a second account.
 
+**Direction, if it proves useful.** Today a shoal is one maintainer's swarm working through one
+ordered, multi-repository body of work. A later incarnation may be refactored so that several users
+contribute sessions to one shoal targeting a shared multi-repository work set. That would need, at
+least: writer identity bound to something stronger than a name (the trust model above), per-user
+authorization for merges and other grants, a maintainer channel per user rather than one inbox, and
+one agreed host (or a leader election) for the timers.
+
 **What the first test should prove.** A second clone on another machine and account runs one role.
 
 - A claim race between the two hosts resolves to exactly one holder.
@@ -186,6 +193,9 @@ These predate the SHOAL extraction. Each is tracked, and none blocks a single-ho
 - **Archiving opencode sessions.** Finished Claude Code sessions can be archived with a host script
   that wraps `claude rm` and keeps their history. opencode has no equivalent command: the only route
   is the OpenChamber server's HTTP endpoint, so retiring an opencode session is manual.
+- **Backlog sources beyond GitHub Projects.** The backlog is a GitHub Projects v2 board today. The
+  intended design accepts any ordered set of tasks that meets a defined source protocol (stable item
+  ids, an order, open or closed state, and text to match against); the protocol is not written yet.
 - **Matcher tuning.** The semantic matcher's shadow-mode comparison has not yet been used to tune its
   scores.
 - **Host-local state on reboot.** Heartbeats, wait proofs and sidecars under `/tmp` do not survive a

@@ -17,7 +17,7 @@ file, and only through `shoal` verbs (one verb, one commit, one push).
 | `claim` | a role | owns an item: first landed wins |
 | `release` | a role | gives an item up: `decline`, `blocked`, `handoff --to <role>`, `lost-race` |
 | `done` | a role | completion, with evidence (`--url`); verified against GitHub, never trusted as written |
-| `queue` | a role | the role's declared queue version: active item, up to three next items, asks, posture |
+| `queue` | a role | the role's declared queue version: active item, up to `next_max` next items (default 3), asks, posture |
 | `msg` | anyone | mail: `--to <role>`, `--to *`, or `--to user`; never wakes the recipient (the maintainer's `--wake` excepted) |
 | `state` | a role (via `transition`/`queue`) | the row state with its reason: the heartbeat and the wait proof |
 | `system` | the tooling or the maintainer | modes (user-offline), upgrades, model switches |
@@ -51,6 +51,7 @@ the named role. Silence about an unworkable item is the failure this exists to p
 2. For `fill=self`: the ranked board candidates `next` shows, from the shared digest. Semantic fit
    to your brief comes first, then effective board position, which lifts items that block active
    work and sinks blocked items.
-3. Every pop backfills `next` to three items, or gives `--reason` for fewer.
+3. Every pop backfills `next` to `next_max` items (the group's `features.workwake.next_max`, default 3;
+   `next` prints the limit), or gives `--reason` for fewer.
 
 The maintainer's offers always outrank the board.

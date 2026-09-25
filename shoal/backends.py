@@ -65,6 +65,12 @@ class Backend:
     def status(self, session_id: str, repo_dir: str) -> str:
         raise NotImplementedError
 
+    def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
+        """Direct session wake: put `text` in front of `role`'s session so its next turn starts
+        on it. One interface, one implementation per ecosystem; the health quorum and the
+        sensors wake roles only through this. Returns the channel used, or `no-adapter (..)`."""
+        return f"no-adapter ({self.ecosystem} has no session wake)"
+
     def live_model(self, session_id: str, repo_dir: str) -> str:
         return ""
 
@@ -90,6 +96,16 @@ def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 class OpenChamberBackend(Backend):
     ecosystem = "opencode"
+
+    def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
+        """opencode: a direct send to the session, whether or not its watcher is alive."""
+        if dry_run:
+            return "opencode-send (dry-run)"
+        try:
+            self.send(role.session, spec.dir, text)
+            return "opencode-send"
+        except Exception as exc:  # noqa: BLE001
+            return f"opencode-send FAILED ({str(exc)[:80]})"
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
@@ -202,12 +218,38 @@ class ClaudeBackend(Backend):
     traffic travels ONLY in the queue file — that is the channel, and the
     reason sends are refused rather than approximated. The health quorum's
     Claude wake adapter is therefore not here: it is a wake-request file the
-    role's own ledger-watch delivers, else the `hag-relay` session's
-    cross-session message (health.request_wake; architecture doc §6). The
+    role's own ledger-watch delivers, else the wake relay session's
+    cross-session message (`wake` below; architecture doc §7). The
     relay is launched by create() like every lane, so it shares their
     permission mode, which cross-session delivery requires.
     """
     ecosystem = "claude"
+
+    def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
+        """Claude: a headless send would fork the session, so a wake goes through the role's own
+        ledger-watch (a wake-request file it delivers by exiting) while that watcher is alive,
+        else through the wake relay: a small Claude session whose single waiter drains a queue
+        and delivers each wake as a cross-session message."""
+        import json as _json
+        import os as _os
+        from health import iso, relay_alive, relay_queue_path, state_dir, wake_path, watcher_alive
+        from roles import wake_relay_role
+        alive, _ = watcher_alive(spec.hag, role.slug)
+        if alive:
+            if not dry_run:
+                _os.makedirs(state_dir(spec.hag), exist_ok=True)
+                with open(wake_path(spec.hag, role.slug), "a") as fh:
+                    fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
+            return "wake-file" + (" (dry-run)" if dry_run else "")
+        if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
+            return "no-adapter (claude watcher dead, wake relay disabled)"
+        if not relay_alive(spec.hag):
+            return "no-adapter (claude watcher dead, wake relay waiter dead)"
+        if not dry_run:
+            with open(relay_queue_path(spec.hag), "a") as fh:
+                fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": role.session,
+                                      "condition": condition, "text": text}) + "\n")
+        return "wake-relay" + (" (dry-run)" if dry_run else "")
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",

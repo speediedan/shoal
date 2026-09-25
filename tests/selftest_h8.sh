@@ -191,8 +191,8 @@ import json, os, sys
 d = json.load(open(sys.argv[1]))
 assert d["features"]["matcher"]["live"] is True and d["tooling"]["sha"], d.get("tooling")
 assert d["tooling"].get("repo"), "tooling.repo not recorded"
-evs = [json.loads(l) for fn in os.listdir(os.path.join(sys.argv[2], "hags", d["hag"], "ledger"))
-       for l in open(os.path.join(sys.argv[2], "hags", d["hag"], "ledger", fn)) if l.strip()]
+evs = [json.loads(l) for fn in os.listdir(os.path.join(sys.argv[2], "shoals", d["hag"], "ledger"))
+       for l in open(os.path.join(sys.argv[2], "shoals", d["hag"], "ledger", fn)) if l.strip()]
 assert any(e.get("type") == "system" and e.get("kind") == "upgrade" for e in evs)
 PY
 check "tooling $(python3 -c "import json;print(json.load(open('$SPEC'))['tooling']['sha'])") ->" \

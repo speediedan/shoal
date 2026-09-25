@@ -47,6 +47,7 @@ The hermetic run must report zero unjustified network tool calls.
 - **No em dashes in prose.** Use a colon, a comma pair, parentheses, or a full stop.
 - **Compatibility.** Existing groups carry legacy names: `--hag` (a hidden alias of `--shoal`),
   `HAG_*` environment variables (fallbacks for `SHOAL_*`), the `hag.py` ledger system writer,
-  `hags/<id>/` and `hag.json` in the ledger repository, `/tmp/<id>/` state, and the `hag-relay` and
-  `hag-aux` role slugs. Keep reading all of them.
+  `hags/<id>/` and `hag.json` in the ledger repository (new groups use `shoals/<id>/` and `shoal.json`;
+  see `shoal/layout.py`), `/tmp/<id>/` state, and the `hag-relay` (now `wake-relay`) and `hag-aux` role
+  slugs. Keep reading all of them.
 - **Docs follow code.** A change to a component updates `docs/architecture.md` in the same commit.

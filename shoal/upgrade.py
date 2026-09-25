@@ -35,7 +35,7 @@ TESTS_DIR = os.path.join(os.path.dirname(HERE), "tests")
 sys.path.insert(0, HERE)
 import config  # noqa: E402
 
-from roles import HagSpec, find_spec  # noqa: E402
+from roles import HagSpec, find_spec, is_wake_relay  # noqa: E402
 
 REARM_LEDGER = {"ledger_watch.py", "ledger.py", "roles.py", "digest.py", "sources.py", "watchers.py",
                 "heartbeat.py"}
@@ -180,7 +180,7 @@ def cmd_upgrade(a) -> int:
     cls = classify(files)
     new_features, changes = feature_edits(spec.features, a)
     stale = stale_watchers(spec, since_utc) if (cls["re-arm (ledger-watch)"] and since_utc) else []
-    relay_stale = bool(cls["re-arm (relay-watch)"]) and any(r.slug == "hag-relay" for r in spec.roles)
+    relay_stale = bool(cls["re-arm (relay-watch)"]) and any(is_wake_relay(r) for r in spec.roles)
     print(f"# upgrade {spec.hag}: tooling {prev or '(none recorded)'} -> {sha}"
           + (" (dirty tree)" if dirty else ""))
     print(f"changed under {hagdir}: {len(files)} file(s)"

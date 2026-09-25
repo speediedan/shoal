@@ -7,16 +7,45 @@ This is a map of the components as the code implements them now. Commands are in
 [`guards.md`](guards.md). When this document and the code disagree, the code wins and this
 document is wrong: fix it in the same change.
 
+## Design drivers
+
+Every mechanism below exists to serve one of these, in this order.
+
+1. **Minimize cross-session communication and session wake-ups.** A wake is a model forward pass
+   over a long context, so it is the dominant cost of running a group. Communication is therefore
+   asynchronous and indirect:
+   - sessions leave traces in a shared ledger instead of messaging each other;
+   - a session is woken only when there is work for it, and mail never wakes it;
+   - each boundary is one read and one write;
+   - the health timers spend no model tokens unless they have to wake someone.
+2. **Retain contextual efficiency.** Work is routed to the role whose accumulated context already
+   fits it, so each session spends its context on one coherent area instead of re-learning a
+   different one per item.
+3. **Stay neutral across harnesses and models.** The ledger, the backlog and a small set of CLI
+   verbs are the only shared surface. Anything specific to one agent ecosystem sits behind one
+   interface, with one implementation per ecosystem.
+4. **Recover without a coordinator.** No session holds the plan. Stalls, dead watchers and stale
+   waits are detected from ledger and host evidence, and repaired by the timers.
+
+**Scope today.** The design supports a swarm of sessions working efficiently through an ordered,
+multi-repository body of work for **one maintainer**. Depending on how useful that proves, a future
+incarnation may be refactored to accommodate shoals to which **several users contribute sessions**
+while targeting one shared multi-repository work set; what that would need is in
+[`limitations.md`](limitations.md).
+
 ## 1. Shape
 
-A SHOAL group is a set of **roles**. Each role is held by one live session in any supported agent
-harness (Claude Code and opencode today; Codex is planned), and the roles cooperate only through
-**one append-only event ledger** and **one priority-ordered backlog**. Nobody coordinates: there is
-no coordinator role, no queue file per role and no direct relay between sessions. Each session reads
-the traces the others left, acts, and writes one event per decision (stigmergy).
+A SHOAL group is a set of **semantically aligned roles**. A role is a stable area of expertise,
+described by a short brief, that work is routed to so its context stays efficient. Each role is
+held today by one live session in any supported agent harness (Claude Code and opencode today;
+Codex is planned). The mapping is 1:1 for now, but it need not stay so: a future version could let
+several sessions share one role's contextual expertise. The roles cooperate only through **one
+append-only event ledger** and **one priority-ordered backlog**. Nobody coordinates: there is no
+coordinator role, no queue file per role and no direct messaging between sessions. Each session
+reads the traces the others left, acts, and writes one event per decision (stigmergy).
 
-- **Each role owns its queue**: one active item and at most three next items, declared by the role
-  itself as `queue` events in its own ledger file.
+- **Each role owns its queue**: one active item and up to N next items (`features.workwake.next_max`,
+  default 3), declared by the role itself as `queue` events in its own ledger file.
 - **A session wakes only for work**: new work while it is idle, a change to its active item, the
   resolution of a wait it armed, or an intervention from the health quorum.
 - **Per boundary a role makes one read (`shoal next`) and one write (`shoal queue`)**, then keeps
@@ -24,8 +53,11 @@ the traces the others left, acts, and writes one event per decision (stigmergy).
 - **The health quorum** is a pair of timers that use no model tokens unless they wake someone.
 - **Telemetry** records every posture change and every wake; reports are built from it.
 
-An item is `<repo>#<n>:<verb>`, with verb `fix` or `review`. The backlog is a GitHub Projects v2
-board; its order is the priority, and SHOAL never reorders it.
+An item is `<repo>#<n>:<verb>`, with verb `fix` or `review`. The backlog is currently a GitHub
+Projects v2 board; its order is the priority, and SHOAL never reorders it. The board is one source
+implementation (`shoal/sources.py`). A planned design step is to accept any ordered set of tasks
+that meets a defined source protocol (stable item ids, an order, open or closed state, and a body
+to match against), so a group can work from other trackers or a plain file.
 
 ## 2. Components
 
@@ -33,14 +65,15 @@ board; its order is the priority, and SHOAL never reorders it.
 | --- | --- | --- | --- |
 | CLI | `shoal/cli.py` (`shoal`) | always | every verb; subcommands are defined by the modules below |
 | host config | `shoal/config.py`, `config/host.toml` | always | every host-specific value (section 8) |
-| spec | `hags/<id>/hag.json` in the ledger repository (`shoal/roles.py`) | always | roles, sources, repos, `features`, generation history |
-| ledger | `hags/<id>/ledger/<writer>.jsonl` (`shoal/ledger.py`, `shoal/ledger_cli.py`) | always | all traffic between roles; one writer per file |
+| spec | `shoals/<id>/shoal.json` in the ledger repository (`shoal/roles.py`, `shoal/layout.py`) | always | roles, sources, repos, `features`, generation history |
+| ledger | `shoals/<id>/ledger/<writer>.jsonl` (`shoal/ledger.py`, `shoal/ledger_cli.py`) | always | all traffic between roles; one writer per file |
 | role start doc | each role's `plan_state.md` | always | mission, current state, `grants-needed` |
 | briefs | `shoal/briefs.py` | always | the first prompt of every session, identical in shape for every role |
 | work loop | `shoal/worker.py` (`next`, `queue`, `asks`, `offline`) | `workwake` | one read and one write per boundary |
 | session watcher | `shoal/ledger_watch.py` (`ledger-watch`) | always (work-only waking with `workwake`) | wakes its own session |
 | health quorum | `shoal/health.py` (`health`, timers `health-a` and `health-b`) | `health` | detect and recover stalled roles, dead watchers, stale waits |
-| Claude wake relay | role `hag-relay`, `relay-init`, `relay-launch`, `relay-watch` | `relay` | wake a Claude role whose own watcher is dead |
+| session wake | `Backend.wake` in `shoal/backends.py`, one implementation per harness | always | put a wake in front of one role's session (section 7) |
+| wake relay | role `wake-relay` (`fill=none`), `relay-init`, `relay-launch`, `relay-watch` | `relay` | the Claude implementation's path when a role's own watcher is dead |
 | job units | `shoal/jobs.py` (`job run`, `wait`, `status`, `stop`) | always (brief guidance with `jobs`) | long local work outside the harness |
 | board digest | `shoal/digest.py`, `shoal/sources.py` (`digest`, `triage`, `context`) | `digest` | one board read per group, ranked per role |
 | semantic matcher | `shoal/matcher.py`, run by the digest | `matcher` (`live: false` is shadow) | a model scores items against each lane's brief |
@@ -59,9 +92,11 @@ board; its order is the priority, and SHOAL never reorders it.
 **Where state lives.**
 
 - **Ledger repository** (a git repository every host clones, `ledger_repo` / `ledger_dir`): the
-  spec and the ledger, under `hags/<id>/`.
+  spec and the ledger, under `shoals/<id>/`. A group created before the rename lives at
+  `hags/<id>/` with `hag.json`; that layout is read as a fallback until the group is migrated, and
+  `doctor` warns while it is in use.
 - **Data root** (`data_root`, never committed), per group under `<data_root>/<id>/`: `contexts/`,
-  `roles/<slug>/plan_state.md` (generated start docs for the relay and the residual lane),
+  `roles/<slug>/plan_state.md` (generated start docs for the wake relay and the residual lane),
   `matcher/`, `briefs/`, `telemetry/`, `reports/`, `jobs/`, `board_digest.json` and, in shadow
   mode, `board_digest.semantic.json`.
 - **Scratch** in `/tmp/<id>/`: heartbeats, wait proofs, watcher sidecars, timer ticks, wake
@@ -94,7 +129,7 @@ generation holds it.
 
 ## 4. The work loop and wakes
 
-**The queue stream.** A role's latest `queue` event (`active`, `next` of at most three, `asks`,
+**The queue stream.** A role's latest `queue` event (`active`, `next` of up to `next_max`, `asks`,
 `reason`, `posture`) is its queue and its posture. The maintainer influences it with `offer`
 (`--prio`, and `--now` to interrupt a busy role) and `withdraw`.
 
@@ -106,8 +141,8 @@ generation holds it.
 - `shoal queue` writes one ledger commit: `done`, claims (the active item is claimed if not held),
   passes with a reason class and an optional `suggest=<role>`, asks, the posture, and the new
   queue version. Heartbeat, wait proof and telemetry are written locally in the same call.
-- Every pop backfills `next` to three, from offers by priority and then digest candidates, or
-  records why fewer.
+- Every pop backfills `next` to `next_max` (default 3), from offers by priority and then digest
+  candidates, or records why fewer.
 
 **Every turn ends in a sleep posture:** `queue --wait <sub> --holder <who> --target <kind:ref>`
 with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. With
@@ -145,10 +180,10 @@ with its reasons and a rank that lets board order break ties. A pass with `sugge
 the item for that role; a role never sees an item it passed on; items every self-filling role
 passed are listed once as unowned. Watchers and `next` read the digest, never GitHub.
 
-**Working context** replaces a hard scope filter. Each role's spec `context` holds a `brief` (two
-to four sentences), soft `affinity` weights (repos, labels, keywords, paths) and `never`, the only
-hard exclusion. Contexts are edited as files in `<data_root>/<id>/contexts/<slug>.json` and loaded
-with `context load` or `context set`.
+**Working context.** Each role's spec `context` holds a `brief` (two to four sentences, the input
+to the semantic matcher), optional `affinity` weights, and `never`, the only hard exclusion.
+Contexts are edited as files in `<data_root>/<id>/contexts/<slug>.json` and loaded with
+`context load` or `context set`.
 
 **The semantic matcher** (`matcher`) scores every open item 0 to 3 against each lane's brief and
 classes it `workable`, `needs-maintainer`, `blocked` or `parked`. Results are cached per item
@@ -160,6 +195,11 @@ recorded as a ledger `system` event and paged at most once a day. With `live: fa
 ranking is written beside the live digest and `digest --compare` measures it against the ledger's
 own history; `upgrade --enable matcher.live` switches without a restart. `private_repos:
 "withhold"` keeps private-repository items out of model calls.
+
+**Keyword ranking, the fallback.** While the matcher is off, or in shadow mode, the live digest
+ranks by the role's optional affinity weights (repos, labels, keywords, path prefixes), with board
+order breaking ties. A role with no weights ranks by board order alone. With the matcher live,
+affinity weights are not used.
 
 **Effective priority** (with the matcher) is the order the digest ranks by: an item that blocks an
 active role's work is lifted above it, an item named by a peer's `--blocked-on` wait goes to the
@@ -179,7 +219,7 @@ work only offers to them or to `*`; `fill=none` roles never claim.
 | `ledger-watch` | an in-session background command (Claude: `--wake exit`; opencode: `--wake send:<own id>`) | its own session, for work only | sidecar pid; health `watcher-dead` |
 | wait waiter (CI, lease, job) | an in-session background command, head-pinned, with verdict lines | its own session | a missing verdict; health `wait-resolved`, `wait-validity` |
 | job unit and `job wait` | a `systemd-run --user` transient unit with a `MemoryHigh` cap | its own session, through the waiter | `JOB-VERDICT` line; unit state |
-| `relay-watch` | the relay session's single background command | the relay session | its pid file; health `relay-dead` page |
+| `relay-watch` | the wake relay session's single background command | the wake relay session | its pid file; health `relay-dead` page |
 | `health-a`, `health-b` | systemd user timers | roles (through adapters), the maintainer | each checks the other's tick |
 | lanes, pipeline, digest, reconcile, weekly report | systemd user timers | the health adapters (sensor fires) | `/tmp/<id>/tick-<job>` older than three intervals |
 
@@ -212,17 +252,23 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
-| `relay-dead` (`relay`) | the relay's waiter is gone | page 10, then every 6 hours |
+| `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.
 
-**Wake adapters** (`health.request_wake`):
+**Direct session wake.** Every wake the quorum or a sensor decides goes through one interface,
+`Backend.wake(spec, role, text)` in `shoal/backends.py`, which returns the channel it used. Each
+harness implements it in its own way:
 
 | harness | watcher alive | watcher dead |
 | --- | --- | --- |
 | opencode | a direct send to the session | the same |
-| Claude Code | a wake-request file `/tmp/<id>/wake-<slug>`, delivered by the role's own `ledger-watch` and acknowledged by its next `queue` write | the relay: `relay-watch` exits with wake lines, and the relay session delivers each as a cross-session message |
+| Claude Code | a wake-request file `/tmp/<id>/wake-<slug>`, delivered by the role's own `ledger-watch` and acknowledged by its next `queue` write | the wake relay: `relay-watch` exits with wake lines, and the `wake-relay` session delivers each as a cross-session message |
+
+Claude needs the relay because a headless send to a running Claude session forks it instead of
+waking it. A harness with no implementation returns `no-adapter`, and the condition escalates to a
+page. Adding a harness means adding its `wake`, not changing the quorum.
 
 **Pages.** A page is always a ledger `msg` to `user`. With `features.health.page =
 "gh-issue:<owner/repo>#<n>"` it is also a comment on that issue (the inbox), which reaches the
@@ -261,7 +307,7 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 | --- | --- | --- |
 | start a session | `claude --bg` with the brief | a server session, the brief as its first prompt |
 | wake own session from its watcher | the background command exits (task notification) | a send to its own session id |
-| health wake | wake-request file, else the relay | a send |
+| session wake (`Backend.wake`) | wake-request file, else the wake relay | a send |
 | liveness, between turns | `claude agents --json` | the server's session status |
 
 ## 9. Telemetry and reports
@@ -295,10 +341,11 @@ the new sha with a ledger `system` event, and re-arms per `--rearm`.
 
 ## 11. Feature flags
 
-A spec's `features` object switches components on per group: `workwake`, `health`
-(`validity_wake_min`, `page`), `continuation` (`after_min`), `waitdiscipline` (`rescan_cap_min`),
-`relay`, `jobs`, `digest`, and `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`,
-`go_fallbacks`, `paid_fallback`, `private_repos`). An absent flag leaves the component off.
+A spec's `features` object switches components on per group: `workwake` (`true`, or an object
+with `next_max`), `health` (`validity_wake_min`, `page`), `continuation` (`after_min`),
+`waitdiscipline` (`rescan_cap_min`), `relay` (the Claude wake relay), `jobs`, `digest`, and
+`matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
+`private_repos`). An absent flag leaves the component off.
 
 ## 12. Known limitations
 

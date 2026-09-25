@@ -48,7 +48,7 @@ readers fold the files into a projection. The human-readable form is `shoal show
 ## A role's queue is an event stream only that role writes
 
 **Decision.** A role declares its queue as `queue` events in its own ledger file: one active item,
-up to three next items, recorded asks and its posture. The latest version is the role's queue.
+up to N next items (`features.workwake.next_max`, default 3), recorded asks and its posture. The latest version is the role's queue.
 Others influence it only by offering or withdrawing work.
 
 **Why.** A queue anyone could write has several writers, which reopens the lost-write and

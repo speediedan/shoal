@@ -40,6 +40,11 @@ import config  # noqa: E402
 
 ECOSYSTEMS = ("opencode", "claude", "codex")
 FILL_MODES = ("self", "assigned", "none")
+
+# The helper session behind the Claude implementation of direct session wake (backends.py
+# `wake`). Groups created before the rename call it `hag-relay`; both are recognised.
+WAKE_RELAY_SLUG = "wake-relay"
+LEGACY_WAKE_RELAY_SLUGS = ("hag-relay",)
 # resolved once per process: environment, then the host config file, then a generic default
 DEFAULT_LEDGER = {"repo": config.ledger_repo(), "dir": config.ledger_dir()}
 
@@ -72,7 +77,7 @@ def contexts_dir(hag: str) -> str:
 
 def roles_dir(hag: str) -> str:
     """Per-HAG orchestration state: generated start docs for infrastructure roles
-    (e.g. `roles/hag-relay/plan_state.md`); worker roles keep their plan_state in the
+    (e.g. `roles/wake-relay/plan_state.md`); worker roles keep their plan_state in the
     design repo, where their mission lives."""
     return os.path.join(data_dir(hag), "roles")
 
@@ -341,15 +346,27 @@ class HagSpec:
             return HagSpec.from_dict(json.load(fh))
 
 
+def is_wake_relay(role) -> bool:
+    """True for the wake relay role (current or legacy slug; always `fill=none`)."""
+    return (role is not None and getattr(role, "fill", "") == "none"
+            and role.slug in (WAKE_RELAY_SLUG,) + LEGACY_WAKE_RELAY_SLUGS)
+
+
+def wake_relay_role(spec) -> "Role | None":
+    return next((r for r in spec.roles if is_wake_relay(r)), None)
+
+
 def default_spec_path(hag: str) -> str:
     """The canonical live spec: `$SHOAL_SPEC` when it pins this hag (its directory is named
-    for the hag), else the ledger clone's `hags/<hag>/hag.json`. A missing spec fails by
+    for the group), else the ledger clone's `shoals/<id>/shoal.json` (legacy `hags/<id>/hag.json`
+    is read when only it exists; see layout.py). A missing spec fails by
     name when loaded; there is no fallback location (the pre-ledger control plane is gone)."""
     pin = config.env("SPEC")
     if pin and os.path.basename(os.path.dirname(os.path.abspath(pin))) == hag:
         return pin
     ledger_root = config.ledger_dir()
-    return os.path.join(ledger_root, "hags", hag, "hag.json")
+    from layout import spec_path
+    return spec_path(ledger_root, hag)
 
 
 def find_spec(hag: str, explicit: str = "") -> str:

@@ -32,7 +32,7 @@ Subcommands:
                 sync | ledger-init | ledger-lint | ledger-watch (ledger_cli.py,
                 ledger_watch.py): the unified primitive, 2026-09-20.
 
-Flattened and ledger-only (2026-09-24): `start` creates hags/<hag>/ in the
+Flattened and ledger-only (2026-09-24): `start` creates shoals/<id>/ in the
 queue repo, every role gets the same brief and arms the same `ledger-watch`,
 there is no coordinator role, `user` is the only writer that offers work to
 other roles, and roles with `fill=self` pop the priority table (`--source
@@ -71,7 +71,7 @@ import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
-from roles import (SHOAL_DATA_ROOT, HagSpec, Role, default_spec_path,  # noqa: E402
+from roles import (SHOAL_DATA_ROOT, HagSpec, Role, default_spec_path, is_wake_relay,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
@@ -243,7 +243,7 @@ def verify_consumer(spec: HagSpec, role: Role, cap_s: int = 600) -> bool:
     hb = hb_path(spec.hag, role.slug)
     t0 = time.time()
     while time.time() - t0 < cap_s:
-        if role.slug == "hag-relay":  # the relay has no ledger-watch: its effect is a live relay-watch
+        if is_wake_relay(role):  # the relay has no ledger-watch: its effect is a live relay-watch
             from health import relay_alive
             if relay_alive(spec.hag):
                 print(f"RELAY LOOP ALIVE: {role.slug} relay-watch running")
@@ -423,11 +423,12 @@ def cmd_start(args: argparse.Namespace) -> int:
     if errs:
         print("spec invalid:", *errs, sep="\n  ")
         return 1
-    spec_path = os.path.join(spec.ledger_dir, "hags", hag, "hag.json")
+    from layout import GROUPS_DIR, SPEC_FILE
+    spec_path = os.path.join(spec.ledger_dir, GROUPS_DIR, hag, SPEC_FILE)
     if args.dry_run:
         print(f"[dry-run] new HAG {hag} (home: {home}; canonical spec: {spec_path})")
         print(f"[dry-run] spec: {spec.to_dict()}")
-        print(f"[dry-run] ledger: {spec.ledger['repo']} at {spec.ledger_dir}/hags/{hag}/ledger/ "
+        print(f"[dry-run] ledger: {spec.ledger['repo']} at {spec.ledger_dir}/{GROUPS_DIR}/{hag}/ledger/ "
               f"(init + spec snapshot); sources: {spec.sources or 'none'}; "
               f"fill: {[(r.slug, r.fill) for r in roles]}")
         rc = stage_handoffs(spec, True) or stage_sync_plans(spec, True)
@@ -698,7 +699,7 @@ def cmd_status(spec: HagSpec) -> int:
           + (f" RETIRED {spec.retired_utc}" if spec.retired_utc else ""))
     if not spec.generations:
         print("  note: no generation history — snapshot copy? canonical spec lives at "
-              "the ledger clone's hags/<hag>/hag.json")
+              "the ledger clone's shoals/<id>/shoal.json")
     g = spec.current_generation()
     if g:
         print(f"  generation {g.get('gen')}: started {g.get('started_utc')} ended {g.get('ended_utc') or '(open)'}")
