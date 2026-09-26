@@ -394,6 +394,9 @@ def cmd_next(a) -> int:
         pass
     out.append("# END EVERY TURN IN A SLEEP POSTURE: the last write of a turn is `queue --wait ..` (waiter armed) or "
                "`queue --idle`; `active` means you are still working. A turn that stops while active is woken to continue.")
+    out.append(f"# THEN POST YOUR STATUS BLOCK (three rows: Lane `{me.label if me else slug}` with the posture you sleep "
+               f"in, Pipelines, Worktrees; next shows up to {queue_next_max(spec)} linked items with verbs): "
+               f"shoal-protocol references/status-and-states.md")
     out.append(f"# then ONE write: shoal queue --shoal {spec.hag} --slug {slug} --active .. --next .. "
                f"[--done .. --url ..] [--claim ..] [--pass ..] [--wait ..|--idle]")
     print("\n".join(out))

@@ -274,5 +274,18 @@ assert "no provider" in normalize("bogus:1")[1]
 assert normalize("lease:gpu") == ("lease:gpu", "")
 print("targets ok")
 PY3
+echo "== skills: stale user-scope copies are reported, then synced"
+python3 - "$HAGD" <<'PY3' || fail "skill copy sync"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import config, skills
+homes = config.skill_homes()
+assert homes and all("skillhomes" in h for h in homes), homes  # isolated from the real homes
+assert len(skills.stale()) == len(homes) * len(skills.names())
+assert len(skills.sync()) == len(homes) * len(skills.names()) and skills.stale() == []
+p = os.path.join(homes[0], "shoal-protocol", "SKILL.md"); open(p, "a").write("\nlocal edit\n")
+assert skills.stale() == [os.path.join(homes[0], "shoal-protocol")]
+print("skills ok")
+PY3
 rm -rf /tmp/t1hag
 echo "SELFTEST PASS ($S)"

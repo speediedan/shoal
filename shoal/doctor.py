@@ -85,6 +85,13 @@ def host_checks(d: Doc) -> None:
     (d.ok if v >= (3, 10) else d.fail)("python", f"{sys.executable} {v.major}.{v.minor}")
     cfg = config.summary()
     d.ok("config", f"{cfg['config_file']}; lease_cmd={cfg['lease_cmd'] or '(none)'}; cli={cfg['cli']}")
+    try:
+        import skills as _skills
+        st = _skills.stale()
+        (d.warn if st else d.ok)("skill copies", (f"stale: {', '.join(st)} (shoal upgrade syncs them)" if st else
+                                               f"current in {len(config.skill_homes())} home(s)"))
+    except Exception as exc:  # noqa: BLE001
+        d.warn("skill copies", f"check failed: {exc}")
     for tool in ("openchamber", "claude", "gh", "az", "git", "systemctl"):
         p = shutil.which(tool, path=ENV["PATH"])
         (d.ok if p else d.fail)(f"tool {tool}", p or "not found on tool PATH")

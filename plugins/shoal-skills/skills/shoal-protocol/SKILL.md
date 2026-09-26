@@ -36,6 +36,19 @@ per decision. That is stigmergy: coordination through the traces each agent leav
 5. **Your watcher is your ears.** Arm `shoal ledger-watch` as instructed in your brief, prove its pid
    every time you re-arm, and treat a `killed` notification as a wake. Details:
    `references/watchers-and-waits.md`.
+6. **Every completed turn ends with your status block**, posted after the last `queue` write. It
+   is the maintainer's only per-lane view, and a turn without one reads as a stall. Three rows,
+   always; the Lane row states the posture you sleep in (never `active` once you stop):
+
+   ```markdown
+   | | status | next (max N) |
+   | --- | --- | --- |
+   | **Lane** · `<slug> (<slug>-r<N>)` | waiting (<reason>; watchers <pids>) | [<repo>#<n>](<url>):fix, ... |
+   | **Pipelines** | <gate ids and states> · lease: <posture> | (none) |
+   | **Worktrees** | `<path>` (<branch>, clean/dirty) | (retire only after merge + prune) |
+   ```
+
+   Rules and examples: `references/status-and-states.md`.
 
 ## References
 
