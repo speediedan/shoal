@@ -259,5 +259,20 @@ assert parse_bg_id("backgrounded · \x1b[36mcdb29a7f\x1b[39m · role-r1").group(
 assert parse_bg_id("backgrounded · abc123 · role-r1").group(1) == "abc123"
 assert parse_bg_id("error: no session") is None
 PY3
+echo "== wait targets: normalization and validation"
+SHOAL_DEFAULT_OWNER=acme python3 - "$HAGD" <<'PY3' || fail "wait target normalization"
+import sys
+sys.path.insert(0, sys.argv[1])
+from providers import normalize
+assert normalize("gh-pr:interpretune:637") == ("gh-pr:acme/interpretune#637", ""), normalize("gh-pr:interpretune:637")
+assert normalize("gh-pr:acme/interpretune#637")[0] == "gh-pr:acme/interpretune#637"
+assert normalize("gh-issue:decoderesearch/interp-engine#28")[0] == "gh-issue:decoderesearch/interp-engine#28"
+assert normalize("gh-pr:no-number-here")[1], "unparseable gh-pr accepted"
+assert normalize("gh-run:acme/x:12345") == ("gh-run:acme/x:12345", "")
+assert normalize("gh-run:12345")[1], "gh-run without a repo accepted"
+assert "no provider" in normalize("bogus:1")[1]
+assert normalize("lease:gpu") == ("lease:gpu", "")
+print("targets ok")
+PY3
 rm -rf /tmp/t1hag
 echo "SELFTEST PASS ($S)"

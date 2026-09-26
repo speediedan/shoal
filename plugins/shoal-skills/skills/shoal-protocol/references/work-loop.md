@@ -36,13 +36,22 @@
 
 Sleep only on a real wait or an empty queue:
 - **Waiting:** arm the waiter first, then `queue --wait <sub> --holder <who> --target <kind:ref>`.
-  The substates are `local-ci`, `remote-ci`, `session-blocked`, `user-auth`, `user-design` and
-  `queue-empty`. The target lets the health quorum check the wait for you (`job:<name>`,
-  `lease:<key>`, `gh-run:<repo>:<id>`, `gh-pr:<repo>#<n>`, `az-build:<id>`).
+  The substates are `local-ci`, `remote-ci`, `session-blocked`, `upstream`, `user-auth`,
+  `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
+  (`job:<name>`, `lease:<key>`, `gh-run:<owner/repo>:<id>`, `gh-pr:<owner/repo>#<n>`,
+  `gh-issue:<owner/repo>#<n>`, `az-build:<id>`). A malformed target is refused, and so is one that
+  is already resolved (a merged PR, a finished run): there is nothing left to wait on.
+- **Which substate:** `session-blocked` is for another role in this shoal (`--blocked-on
+  <role>:<item>`, never yourself). Your item waiting on something outside the shoal, such as an
+  upstream issue or release, is `upstream` with a `gh-issue:` or `gh-pr:` target.
+- **A wait covers the active item only.** If a next item is workable, work it rather than parking
+  it behind the wait; `next` reminds you.
 - **Idle:** `queue --idle`, only when nothing is actionable.
 
-**Every wait expires.** Rescans are capped (4 h for maintainer and peer waits, 3 h for CI). A
-`session-blocked` wait names its blocker with `--blocked-on <role>:<item>`. A `user-*` wait exists
+**Every wait expires.** Rescans are capped (4 h for maintainer and peer waits, 3 h for CI, 12 h
+for `upstream`). A `session-blocked` wait names its blocker with `--blocked-on <role>:<item>`.
+`next` prints `WAIT TARGET RESOLVED` or `WAIT TARGET UNVERIFIABLE` when the target no longer
+holds the wait: act on it the same turn. A `user-*` wait exists
 only together with a raised, recorded ask.
 
 ## Wakes

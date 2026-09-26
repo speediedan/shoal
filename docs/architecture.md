@@ -165,10 +165,16 @@ and delivers the deferred pages as one summary.
 **Wait discipline** (`waitdiscipline`), enforced by `queue --wait` and `transition`:
 
 - a `user-auth`, `user-design` or `user-feedback` wait is refused unless the queue records the ask;
-- a `session-blocked` wait is refused without `--blocked-on <role>[:<repo#n>]`, and the blocker
-  sees `BLOCKING` in its `next`;
-- rescans are capped per substate (maintainer and peer waits 240 minutes, CI 180, `queue-empty`
-  360; overridable with `rescan_cap_min` in the spec);
+- a `session-blocked` wait is refused without `--blocked-on <role>[:<repo#n>]` naming another
+  role, and the blocker sees `BLOCKING` in its `next`. A wait on something outside the shoal is
+  `upstream`, which needs a checkable target (`gh-issue:` or `gh-pr:`) and gets no periodic
+  validity wakes: the quorum wakes the role when the target resolves;
+- every wait target is normalized (`repo#n` or `repo:n` becomes `owner/repo#n`) and checked when
+  written: a malformed target is refused, because nothing could ever check it, and so is one that
+  is already resolved. `next` flags a target that has since resolved or cannot be checked, and
+  notes when next items are parked behind a wait that covers only the active item;
+- rescans are capped per substate (maintainer and peer waits 240 minutes, CI 180, `upstream` 720,
+  `queue-empty` 360; overridable with `rescan_cap_min` in the spec);
 - held claims in neither the active nor the next list are flagged `HELD-UNSCHEDULED`.
 
 ## 5. Work selection
@@ -246,7 +252,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | --- | --- | --- |
 | `unacked-work` | an offer or wake request to an idle role, or a `--now` offer, newer than its last queue version | wake 10, wake 30, page 60 |
 | `wait-resolved` | a checkable wait target is no longer pending | wake 15, page 60 |
-| `wait-validity` | any CI, lease or job wait, every `validity_wake_min` (default 90) | wake, wake, page, one interval apart |
+| `wait-validity` | any CI, lease or job wait (not `upstream`), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns | wake 10, page 40 |
 | `turn-ended-active` (`continuation`) | posture `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |

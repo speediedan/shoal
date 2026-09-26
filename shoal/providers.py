@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -46,10 +47,48 @@ def kinds() -> tuple[str, ...]:
     return tuple(REGISTRY)
 
 
+def _repo_num(ref: str) -> tuple[str, str] | None:
+    """(owner/repo, number) from `owner/repo#n`, `repo#n`, `owner/repo:n` or `repo:n`; a bare
+    repo takes the configured default owner. None when unparseable."""
+    m = re.fullmatch(r"(?:([\w.-]+)/)?([\w.-]+)[#:](\d+)", (ref or "").strip())
+    if not m:
+        return None
+    owner = m.group(1) or config.default_owner()
+    return (f"{owner}/{m.group(2)}", m.group(3)) if owner else None
+
+
+def normalize(target: str) -> tuple[str, str]:
+    """(canonical target, error). Loose GitHub refs become `<kind>:<owner/repo>#<n>`; an unknown
+    kind or an unparseable ref is an error, because a wait nobody can check never resolves and
+    never escalates (measured 2026-09-26: `gh-pr:interpretune:637`, a PR merged the evening
+    before, held a lane in `remote-ci` for a day while every check read "unknown")."""
+    if not target:
+        return "", ""
+    kind, _, ref = target.partition(":")
+    if kind not in REGISTRY:
+        return target, f"no provider for {kind} (known: {', '.join(kinds())})"
+    if kind in ("gh-pr", "gh-issue"):
+        rn = _repo_num(ref)
+        if rn is None:
+            return target, (f"{kind} target {ref!r} is not <owner/repo>#<n> (or <repo>#<n> with a "
+                            f"configured default owner)")
+        return f"{kind}:{rn[0]}#{rn[1]}", ""
+    if kind == "gh-run":
+        repo, _, rid = ref.rpartition(":")
+        if not repo or not rid.isdigit():
+            return target, f"gh-run target {ref!r} is not <owner/repo>:<run id>"
+    return target, ""
+
+
 def resolve(target: str, slug: str, hag: str = "") -> Result:
     """(True pending | False resolved | None unknown, detail) for a `<kind>:<ref>` wait target."""
     if not target:
         return None, "no target"
+    if target.partition(":")[0] not in REGISTRY:
+        return None, f"no provider for {target.partition(':')[0]}"
+    target, err = normalize(target)
+    if err:
+        return None, err
     kind, _, ref = target.partition(":")
     fn = REGISTRY.get(kind)
     if fn is None:
@@ -132,12 +171,33 @@ def gh_run(ref: str, slug: str, hag: str) -> Result:
 
 @register("gh-pr")
 def gh_pr(ref: str, slug: str, hag: str) -> Result:
-    repo, _, n = ref.partition("#")
+    rn = _repo_num(ref)
+    if rn is None:
+        return None, f"unparseable gh-pr ref {ref!r}"
+    repo, n = rn
+    st = json.loads(_run(["gh", "pr", "view", n, "--repo", repo, "--json", "state"]).stdout or "{}").get("state")
+    if not st:
+        return None, "gh pr state unavailable"
+    if st != "OPEN":  # a merged or closed PR has nothing left to wait on
+        return False, f"PR {st.lower()}"
     r = _run(["gh", "pr", "checks", n, "--repo", repo, "--json", "bucket"])
     b = [c.get("bucket") for c in json.loads(r.stdout or "[]")]
     if not b:
         return None, "no checks reported (never green on empty)"
     return "pending" in b, f"checks {sorted(set(b))}"
+
+
+@register("gh-issue")
+def gh_issue(ref: str, slug: str, hag: str) -> Result:
+    """An upstream or peer issue: pending while open, resolved once closed."""
+    rn = _repo_num(ref)
+    if rn is None:
+        return None, f"unparseable gh-issue ref {ref!r}"
+    repo, n = rn
+    st = json.loads(_run(["gh", "issue", "view", n, "--repo", repo, "--json", "state"]).stdout or "{}").get("state")
+    if not st:
+        return None, "gh issue state unavailable"
+    return st == "OPEN", f"issue {st.lower()}"
 
 
 @register("az-build")

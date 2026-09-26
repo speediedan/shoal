@@ -368,6 +368,20 @@ def cmd_next(a) -> int:
         if w:
             out.append(f"WAIT {ws}: {w.get('sub')} holder={w.get('holder')} target={w.get('target') or '-'} "
                        f"rescan={w.get('rescan_utc')}")
+            if w.get("target"):
+                import providers
+                pending, why = providers.resolve(w["target"], slug, spec.hag)
+                if pending is False:
+                    out.append(f"WAIT TARGET RESOLVED ({why}): this wait holds nothing any more; pivot to the "
+                               f"next item, or re-wait on a target that is pending")
+                elif pending is None:
+                    out.append(f"WAIT TARGET UNVERIFIABLE ({why}): re-declare it in a checkable form "
+                               f"(gh-pr:<owner/repo>#<n>, gh-issue:<owner/repo>#<n>, gh-run:<owner/repo>:<id>, "
+                               f"az-build:<id>, lease:<key>, job:<name>)")
+            if nxt and w.get("sub") not in ("user-auth", "user-design", "user-feedback"):
+                out.append(f"NOTE: this wait covers the active item only; {', '.join(nxt)} are not blocked by it "
+                           f"unless recorded. Work one now (`queue --active <item>`) rather than parking it behind "
+                           f"this wait, or record its own blocker")
     except Exception:
         pass
     try:
@@ -495,6 +509,12 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             print(f"note: {n}")
         if refusal:
             print(f"ERROR: {refusal} (nothing written)")
+            return 3
+        a.target, tnotes, trefusal = _st.check_target(a.wait, a.target or "", slug, spec.hag)
+        for n in tnotes:
+            print(f"note: {n}")
+        if trefusal:
+            print(f"ERROR: {trefusal} (nothing written)")
             return 3
     planned = {item_key(x) for x in [active] + nxt if x} | {item_key(c) for c in claims}
     for h in view.held_unscheduled(slug):
@@ -637,7 +657,8 @@ def add_parsers(sub) -> None:
     p.add_argument("--pass", dest="pass_", action="append", help="ITEM:CLASS[:suggest=ROLE][:note=TEXT]")
     p.add_argument("--wait", default="", help="waiting substate: local-ci|remote-ci|session-blocked|user-auth|...")
     p.add_argument("--holder", default="")
-    p.add_argument("--target", default="", help="lease:<key>|job:<unit>|gh-run:<repo>:<id>|gh-pr:<repo>#<n>|az-build:<id>")
+    p.add_argument("--target", default="", help="lease:<key>|job:<name>|gh-run:<owner/repo>:<id>|gh-pr:<owner/repo>#<n>|gh-issue:<owner/repo>#<n>|"
+                        "az-build:<id>; malformed or already-resolved targets are refused")
     p.add_argument("--rescan-min", type=float, default=90)
     p.add_argument("--blocked-on", default="", help="session-blocked waits: the blocking role[:repo#n]")
     p.add_argument("--monitor", default="")
