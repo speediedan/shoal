@@ -219,5 +219,37 @@ from digest import has_affinity
 assert not has_affinity({"affinity": {}}) and has_affinity({"affinity": {"repos": {"a/b": 1}}})
 print("layout ok")
 PY3
+echo "== opencode store: v1 and v2 layouts (provider-error scan, quota check)"
+python3 - "$HAGD" "$S/ocstore" <<'PY3' || fail "opencode store layout handling"
+import os, sqlite3, sys, time
+sys.path.insert(0, sys.argv[1])
+root = sys.argv[2]; os.makedirs(root, exist_ok=True)
+now = int(time.time() * 1000)
+err = '{"role":"assistant","error":{"message":"Upstream request failed: reasoning encrypted_content was not issued to this caller"}}'
+quota = '{"role":"assistant","error":{"message":"insufficient_quota: resets tomorrow 09:00."}}'
+def v1(p):
+    c = sqlite3.connect(p); c.execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT)")
+    c.execute("INSERT INTO message VALUES ('m1','ses_a',?,?,?)", (now, now, err)); c.commit(); c.close()
+def v2(p):
+    v1(p)  # the 1.x tables stay after migration and stop growing
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE session_v2 (id TEXT)")
+    c.execute("CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT)")
+    rows = [("n1", "ses_a", "assistant", err), ("n2", "ses_a", "assistant", err), ("n3", "ses_a", "user", err),
+            ("n4", "ses_b", "assistant", quota)]
+    for i, sid, typ, d in rows:
+        c.execute("INSERT INTO session_message VALUES (?,?,?,1,?,?,?)", (i, sid, typ, now, now, d))
+    c.commit(); c.close()
+import doctor, opencode_store
+from backends import OpenChamberBackend
+for name, build, want_store, want_total in (("v1.db", v1, "v1", 1), ("v2.db", v2, "v2", 2)):
+    p = os.path.join(root, name); build(p); os.environ["OPENCODE_DB"] = p
+    out = doctor.provider_failures(["ses_a"], hours=1)
+    assert out["store"] == want_store and out["total"] == want_total, (name, out)
+os.environ["OPENCODE_DB"] = os.path.join(root, "v2.db")
+assert "tomorrow" in OpenChamberBackend().quota_paused("ses_b"), "v2 quota row not found"
+assert OpenChamberBackend().quota_paused("ses_a") == ""
+print("opencode store ok")
+PY3
 rm -rf /tmp/t1hag
 echo "SELFTEST PASS ($S)"
