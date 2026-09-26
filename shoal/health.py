@@ -278,10 +278,15 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
             if pending is False:
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
                             "detail": f"wait target {target} no longer pending ({why})", "first_seen": True})
-            if sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds():
+            # `upstream` waits resolve through their target (wait-resolved), not a periodic re-verify.
+            # The ladder is keyed by the target, so re-declaring the same wait keeps escalating: keyed
+            # by the boundary, every rewrite restarted it at step 1 and it never paged (measured
+            # 2026-09-26: five wakes in a day on a wait whose PR had merged, no page).
+            if sub != "upstream" and (sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds()):
                 a = age_min(boundary)
                 if validity > 0 and a is not None and a >= validity:
-                    out.append({"slug": slug, "condition": "wait-validity", "key": f"validity:{boundary}",
+                    out.append({"slug": slug, "condition": "wait-validity",
+                                "key": f"validity:{target}" if target else f"validity:{boundary}",
                                 "since": boundary, "detail": f"waiting {a:.0f}m on {sub} ({target or 'no target'}; "
                                 f"heuristic: {why}); re-verify the wait is still valid"})
         # watcher

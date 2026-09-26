@@ -104,7 +104,8 @@ def clear_wait(hag: str, slug: str) -> bool:
 # nobody was answering and sat 14 h without a prompt reaching the maintainer).
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
 RESCAN_CAP_MIN = {"user-auth": 240, "user-design": 240, "user-feedback": 240,
-                  "session-blocked": 240, "queue-empty": 360, "local-ci": 180, "remote-ci": 180}
+                  "session-blocked": 240, "queue-empty": 360, "local-ci": 180, "remote-ci": 180,
+                  "upstream": 720}
 
 
 def wait_discipline(spec) -> dict | None:
@@ -134,11 +135,39 @@ def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
                                    f"this turn, then record it: `shoal queue --slug {slug} --ask \"<question>\"`")
     if sub == "session-blocked":
         who = (blocked_on or "").split(":", 1)[0]
+        if who == slug:  # measured 2026-09-26: a lane named itself to pass this check
+            return rescan_min, notes, ("a session-blocked wait names ANOTHER role in this shoal; your own item "
+                                       "waiting on something outside it (an upstream issue or release) is "
+                                       "`--wait upstream --target gh-issue:<owner/repo>#<n>`, which the health "
+                                       "quorum resolves when it closes")
         if not who or spec.role(who) is None:
             return rescan_min, notes, ("a session-blocked wait names the blocking role (and item): "
                                        "--blocked-on <role>[:<repo#n>] so the blocker sees it in `next` "
                                        "and the health quorum can follow the chain")
     return rescan_min, notes, ""
+
+
+def check_target(sub: str, target: str, slug: str, hag: str = "") -> tuple[str, list[str], str]:
+    """(canonical target, notes, refusal) for a wait target. A malformed target is refused (nothing
+    could ever check it), and so is one already resolved (there is nothing left to wait on)."""
+    import providers
+    if not target:
+        if sub == "upstream":
+            return "", [], ("an upstream wait needs a checkable target: --target gh-issue:<owner/repo>#<n> "
+                            "(or gh-pr:, gh-run:) so the quorum wakes you when it resolves")
+        return "", [], ""
+    canon, err = providers.normalize(target)
+    if err:
+        return target, [], f"wait target refused: {err}"
+    pending, why = providers.resolve(canon, slug, hag)
+    if pending is False:
+        return canon, [], (f"wait target {canon} is already resolved ({why}): nothing is left to wait on. "
+                           f"Take the next item (`queue --active <item>`) or name a target that is pending")
+    notes = [f"target normalized to {canon}"] if canon != target else []
+    if pending is None:
+        notes.append(f"target {canon} cannot be checked now ({why}); the quorum will keep asking you to "
+                     f"re-verify this wait")
+    return canon, notes, ""
 
 
 def current_asks(spec, slug: str) -> list[str]:
@@ -210,6 +239,13 @@ def cmd_transition(a: argparse.Namespace) -> int:
             print(f"note: {n}")
         if refusal:
             print(f"ERROR: {refusal} (nothing written)")
+            return 3
+    if a.to == "waiting":
+        a.target, tnotes, trefusal = check_target(sub, getattr(a, "target", "") or "", a.slug, hag)
+        for n in tnotes:
+            print(f"note: {n}")
+        if trefusal:
+            print(f"ERROR: {trefusal} (nothing written)")
             return 3
     # 1. heartbeat
     hb = hb_touch(hag, a.slug)

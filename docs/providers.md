@@ -45,10 +45,13 @@ can resolve it without the role. Each kind resolves to `pending`, `resolved` or 
 | `job` | the name given to `shoal job run --name` | the job unit's state: active is pending, an exit-code file is resolved, and a missing unit with no exit file is unknown | core (needs a `systemd --user` host) |
 | `lease` | a lease key | the lease provider above | core |
 | `gh-run` | `<owner/repo>:<run id>` | `gh run view` | core (needs `gh`) |
-| `gh-pr` | `<owner/repo>#<n>` | `gh pr checks`: any pending check is pending; an empty check list is unknown, never resolved | core (needs `gh`) |
+| `gh-pr` | `<owner/repo>#<n>` | `gh pr view`: a merged or closed PR is resolved; for an open one, `gh pr checks`: any pending check is pending, and an empty check list is unknown, never resolved | core (needs `gh`) |
+| `gh-issue` | `<owner/repo>#<n>` | `gh issue view`: open is pending, closed is resolved (for `upstream` waits) | core (needs `gh`) |
 | `az-build` | an Azure Pipelines build id | `az pipelines build show` | optional (needs `az`) |
 
-Any other kind is accepted and covered by the periodic validity check only.
+GitHub refs may be written `repo#n` or `repo:n` and take the configured `default_owner`; they are
+stored in the canonical `owner/repo#n` form. An unknown kind or an unparseable ref is refused when
+the wait is written, and so is a target that is already resolved.
 
 ## Board source
 

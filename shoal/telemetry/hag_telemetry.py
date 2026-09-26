@@ -72,7 +72,7 @@ TYPES = {
 
 VALID_STATES = {"active", "waiting", "idle", "paused", "offline"}
 VALID_SUB = {"local-ci", "remote-ci", "user-auth", "user-design", "session-blocked",
-             "queue-empty"}
+             "queue-empty", "upstream"}
 # NOTE (2026-09-15): `monitor-armed` was removed. Every real wait already has a precise
 # substate: CI waits (however watched) are local-ci/remote-ci with the watch named in the
 # `monitor` field; awaiting refill is queue-empty; awaiting a session is session-blocked.

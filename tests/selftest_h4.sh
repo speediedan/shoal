@@ -219,18 +219,30 @@ N1=$(git -C "$A" rev-list --count HEAD); [ $((N1 - N0)) = 1 ] || fail "queue mad
 check "CLAIM-REFUSED" $H queue --shoal $HAGID --spec "$SPEC" --slug tl --active $I1:fix --no-sync
 check "QUEUE v1 .*active=$I1" $H next --shoal $HAGID --spec "$SPEC" --slug up --no-sync
 check "up queue v2: active=$I2 next=$I3 posture=active.*done=\['$I1:fix'\]" $H queue --shoal $HAGID --spec "$SPEC" --slug up --done $I1:fix --url https://example.invalid/pr/1 --active $I2 --next $I3 --no-sync
+# the wait is written while its target is pending, then the target resolves (a resolved target
+# is refused at write time: there is nothing left to wait on)
+export SHOAL_LEASE_CMD="$S/lease_stub.sh" LEASE_STUB=free
+[ "$(rc_of $H queue --shoal $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder x --target lease:gpu --no-sync)" = 3 ] \
+  || fail "a wait on an already-resolved target was accepted"
+check "already resolved" $H queue --shoal $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder x --target lease:gpu --no-sync
+check "wait target refused: gh-pr target" $H queue --shoal $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder x --target gh-pr:no-number-here --no-sync
 if have_systemd; then
-  $H job run --shoal $HAGID --slug up --name gate1 -- true >/dev/null   # a finished job: its wait is resolved
-  check "result=success exit=0" $H job wait --shoal $HAGID --slug up --name gate1 --poll 1
+  $H job run --shoal $HAGID --slug up --name gate1 -- sleep 6 >/dev/null   # running now: pending
   WT_TARGET=job:gate1
 else
-  # no job units here: a free lease (stub provider) is the resolved target instead
   echo "SKIP 7 job-unit wait target: $(skip_reason); using lease:gpu on the stub provider"
-  export SHOAL_LEASE_CMD="$S/lease_stub.sh" LEASE_STUB=free
+  export LEASE_STUB=held
   WT_TARGET=lease:gpu
 fi
 check "posture=waiting/remote-ci" $H queue --shoal $HAGID --spec "$SPEC" --slug up --wait remote-ci --holder "gate 1" --target $WT_TARGET --no-sync
 grep -q "\"target\": \"$WT_TARGET\"" /tmp/$HAGID/wait-up || fail "wait proof lacks target"
+check "NOTE: this wait covers the active item only" $H next --shoal $HAGID --spec "$SPEC" --slug up --peek --no-sync
+if have_systemd; then
+  check "result=success exit=0" $H job wait --shoal $HAGID --slug up --name gate1 --poll 1   # now resolved
+else
+  export LEASE_STUB=free
+fi
+check "WAIT TARGET RESOLVED" $H next --shoal $HAGID --spec "$SPEC" --slug up --peek --no-sync
 [ "$(rc_of $H queue --shoal $HAGID --spec "$SPEC" --slug up --next a,b,c,d --no-sync)" = 1 ] || fail "4 next items accepted"
 
 echo "== 8 wakes are work-only: busy roles are not woken by offers or peer mail"
@@ -370,6 +382,10 @@ import json,sys,datetime as d; w=json.load(open(sys.argv[1]))
 f=lambda s: d.datetime.strptime(s,"%Y-%m-%dT%H:%M:%SZ"); assert (f(w["rescan_utc"])-f(w["since_utc"])).total_seconds()<=240*60+5, w
 PY
 [ "$(rc_of $H transition --shoal $HAGID --spec "$SPEC" --slug tl --to waiting --sub session-blocked --holder "up")" = 3 ] || fail "session-blocked accepted without --blocked-on"
+[ "$(rc_of $H queue --shoal $HAGID --spec "$SPEC" --slug tl --wait session-blocked --holder self --blocked-on tl:x#1 --no-sync)" = 3 ] \
+  || fail "a session-blocked wait naming the lane itself was accepted"
+[ "$(rc_of $H queue --shoal $HAGID --spec "$SPEC" --slug tl --wait upstream --holder "engine release" --no-sync)" = 3 ] \
+  || fail "an upstream wait without a target was accepted"
 check "posture=waiting/session-blocked" $H queue --shoal $HAGID --spec "$SPEC" --slug tl --wait session-blocked --holder "up #9301" \
    --blocked-on up:interpretune#9301 --no-sync
 check "BLOCKING tl since .* on interpretune#9301 -- NOT in your queue" $H next --shoal $HAGID --spec "$SPEC" --slug up --no-sync --peek
