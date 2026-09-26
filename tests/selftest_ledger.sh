@@ -251,5 +251,13 @@ assert "tomorrow" in OpenChamberBackend().quota_paused("ses_b"), "v2 quota row n
 assert OpenChamberBackend().quota_paused("ses_a") == ""
 print("opencode store ok")
 PY3
+python3 - "$HAGD" <<'PY3' || fail "claude --bg id not parsed through colour codes"
+import sys
+sys.path.insert(0, sys.argv[1])
+from backends import parse_bg_id
+assert parse_bg_id("backgrounded · \x1b[36mcdb29a7f\x1b[39m · role-r1").group(1) == "cdb29a7f"
+assert parse_bg_id("backgrounded · abc123 · role-r1").group(1) == "abc123"
+assert parse_bg_id("error: no session") is None
+PY3
 rm -rf /tmp/t1hag
 echo "SELFTEST PASS ($S)"

@@ -204,6 +204,17 @@ class OpenChamberBackend(Backend):
         return reset or "reset time unknown"
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def parse_bg_id(text: str) -> "re.Match[str] | None":
+    """The session id from `claude --bg` output. The CLI colours its output when the
+    environment forces colour (FORCE_COLOR), so escape codes are stripped first: without
+    that, a live session was reported as a failed launch and never recorded in the spec."""
+    m = re.search(r"backgrounded\s+[·.]\s*([0-9a-f]+)", ANSI_RE.sub("", text))
+    return m if m else None
+
+
 class ClaudeBackend(Backend):
     """Native `claude` binary. Launched headless via `claude --bg`.
 
@@ -267,7 +278,7 @@ class ClaudeBackend(Backend):
         argv += [brief]
         r = subprocess.run(argv, capture_output=True, text=True, timeout=120,
                            cwd=repo_dir, env=_ENV)
-        m = re.search(r"backgrounded\s+[·.]\s*([0-9a-f]+)", r.stdout + r.stderr)
+        m = parse_bg_id(r.stdout + r.stderr)
         if not m:
             raise RuntimeError(f"claude --bg failed for {title!r}: "
                                f"{(r.stdout + r.stderr).strip()[-500:]}")
