@@ -205,7 +205,7 @@ def tools_skew_note(armed_utc: str) -> str:
                              capture_output=True, text=True, timeout=30,
                              cwd=top or HERE).stdout.strip()
         # %cI is strict ISO 8601 with the committer's offset; %ci parsed as UTC was off by it
-        tools_ts = datetime.datetime.fromisoformat(out).astimezone(datetime.timezone.utc)
+        tools_ts = datetime.datetime.fromisoformat(out.replace("Z", "+00:00")).astimezone(datetime.timezone.utc)
         armed = datetime.datetime.strptime(armed_utc, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=datetime.timezone.utc)
     except Exception:

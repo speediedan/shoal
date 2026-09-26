@@ -187,7 +187,7 @@ def cmd_upgrade(a) -> int:
         since = git("log", "-1", "--format=%cI", "--", ".")
     since_utc = ""
     if since:
-        since_utc = datetime.datetime.fromisoformat(since).astimezone(datetime.timezone.utc).strftime(
+        since_utc = datetime.datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
     cls = classify(files)
     new_features, changes = feature_edits(spec.features, a)
