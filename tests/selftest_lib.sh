@@ -27,6 +27,8 @@ hag_test_setup() {
   printf 'data_root = "%s"\nledger_dir = "%s"\n' "$s/data" "$s/no-ledger-clone" > "$s/host.toml"
   export SHOAL_CONFIG="$s/host.toml"
   export SHOAL_DATA_ROOT="$s/data"
+  # never touch the real harness skill homes: upgrade syncs skills into these
+  export SHOAL_SKILL_HOMES="$s/skillhomes/a:$s/skillhomes/b"; mkdir -p "$s/skillhomes/a" "$s/skillhomes/b"
   # session-liveness probes answer from an empty world (no harness knows the synthetic
   # session ids anyway), so no `claude agents` / `openchamber session status` call is made
   export SHOAL_FAKE_SESSIONS='{"claude": [], "opencode": {}}'

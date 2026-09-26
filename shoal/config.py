@@ -195,6 +195,17 @@ def psi_out() -> str:
                       lambda: os.path.join(data_root(), "_instruments", "psi_events.jsonl")))
 
 
+def skill_homes() -> list[str]:
+    """Harness skill homes that receive this package's skills: `skill_homes` in the host config,
+    else the standard homes that exist (Claude Code, the neutral ~/.agents, opencode)."""
+    v = _get("skill_homes", names("SKILL_HOMES"), None)
+    if v:
+        homes = v if isinstance(v, list) else str(v).split(os.pathsep)
+        return [os.path.expanduser(h) for h in homes]
+    std = ["~/.claude/skills", "~/.agents/skills", "~/.config/opencode/skills"]
+    return [p for p in (os.path.expanduser(h) for h in std) if os.path.isdir(p)]
+
+
 def server() -> str:
     import socket
     return str(_get("server", names("SERVER"), socket.gethostname))

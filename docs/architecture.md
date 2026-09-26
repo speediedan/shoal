@@ -303,6 +303,7 @@ generic default. Each `SHOAL_*` variable also honours its legacy `HAG_*` name.
 | `timezone` | `SHOAL_TZ` | `$TZ` or `/etc/timezone`, else UTC |
 | `default_owner` | `SHOAL_DEFAULT_OWNER` | none |
 | `azure_org`, `azure_project` | `SHOAL_AZURE_ORG`, `SHOAL_AZURE_PROJECT` | none (the pipeline sensor needs them) |
+| `skill_homes` | `SHOAL_SKILL_HOMES` (path-separated) | the existing standard homes: `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills` |
 
 `doctor` prints every resolved value. The providers (resource leases, wait targets, the board
 source, harness adapters) and their contracts are in [`providers.md`](providers.md).
@@ -343,7 +344,10 @@ changes anything:
 
 The command refuses a dirty package tree, runs the three selftests, diffs the package against the
 spec's recorded `tooling.sha`, applies `--enable`, `--disable` and `--set` feature edits, records
-the new sha with a ledger `system` event, and re-arms per `--rearm`.
+the new sha with a ledger `system` event, and re-arms per `--rearm`. It also syncs the user-scope
+copies of the package's skills into every `skill_homes` entry: sessions load `shoal-protocol` from
+those copies, so a merged protocol change otherwise never reaches them. `doctor` warns while any
+copy is stale.
 
 ## 11. Feature flags
 

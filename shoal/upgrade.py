@@ -224,9 +224,16 @@ def cmd_upgrade(a) -> int:
         print(msg)
         if not ok:
             return 2
+    import skills as _skills
+    stale_skills = _skills.stale()
+    if stale_skills:
+        print(f"skills: {len(stale_skills)} user-scope cop{'y' if len(stale_skills) == 1 else 'ies'} stale "
+              f"({', '.join(stale_skills)}); sessions load them at start, so the next restart picks them up")
     if a.dry_run:
         print("[dry-run] nothing written")
         return 0
+    if stale_skills:
+        print(f"skills: synced {len(_skills.sync())} cop{'y' if len(stale_skills) == 1 else 'ies'}")
     spec.features = new_features
     spec.tooling = {"sha": sha, "repo": repo_id(), "prev": recorded, "upgraded_utc": now_iso(),
                     "changed": sorted({os.path.basename(f) for f in files}),
