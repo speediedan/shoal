@@ -175,23 +175,23 @@ class OpenChamberBackend(Backend):
         hard-exhaustion signatures (PROVISIONAL patterns — no live opencode
         quota event has been seen on this host to calibrate against; transient
         429 rate-limits deliberately excluded, they self-resolve). Storage
-        layout is v1-bound; re-validate on opencode v2."""
-        import sqlite3 as _sqlite3
+        layout is read through opencode_store (v1 `message`, v2 `session_message`)."""
         try:
-            db = os.path.join(os.path.expanduser("~"), ".local", "share",
-                              "opencode", "opencode.db")
+            from opencode_store import connect_ro, db_path, message_source
+            db = db_path()
             if not os.path.isfile(db):
                 return ""
-            con = _sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=20)
+            con = connect_ro(db)
             try:
+                _, table, extra = message_source(con)
                 cutoff = (datetime.datetime.now(datetime.timezone.utc).timestamp()
                           - 6 * 3600) * 1000
                 rows = con.execute(
-                    "SELECT data FROM message WHERE session_id=? AND "
+                    f"SELECT data FROM {table} WHERE session_id=? AND "
                     "time_created >= ? AND (data LIKE '%insufficient_quota%' OR "
                     "data LIKE '%insufficient credits%' OR data LIKE "
                     "'%quota exceeded%' OR data LIKE '%out of credits%' OR "
-                    "data LIKE '%payment required%') ORDER BY time_created DESC "
+                    f"data LIKE '%payment required%'){extra} ORDER BY time_created DESC "
                     "LIMIT 3", (session_id, cutoff)).fetchall()
             finally:
                 con.close()

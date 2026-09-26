@@ -153,22 +153,23 @@ def provider_failures(session_ids: list[str], hours: float = 24) -> dict:
     rejected with "not issued to this caller"): those failures land as error
     message rows, never as assistant output, so heartbeat/watcher checks read
     them as a quiet world. Returns counts + a sample; never raises.
-    Storage layout is version-sensitive (v1: opencode.db message/data) —
-    re-validate after any opencode major upgrade.
+    The store layout (v1 `message`, v2 `session_message`) is read through
+    opencode_store, so the scan follows an opencode 2.x upgrade.
     """
     out: dict = {"total": 0, "by_session": {}, "last_utc": "",
-                 "last_hour": False, "sample": ""}
+                 "last_hour": False, "sample": "", "store": ""}
     try:
-        db = os.path.join(os.path.expanduser("~"), ".local", "share",
-                          "opencode", "opencode.db")
+        from opencode_store import connect_ro, db_path, message_source
+        db = db_path()
         if not os.path.isfile(db) or not session_ids:
             return out
         cutoff_ms = (datetime.datetime.now(datetime.timezone.utc).timestamp()
                      - hours * 3600) * 1000
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=20)
+        con = connect_ro(db)
         try:
-            q = (f"SELECT session_id, time_created, substr(data, 1, 300) FROM message "
-                 f"WHERE time_created >= ? AND data LIKE '%was not issued to this caller%'")
+            out["store"], table, extra = message_source(con)
+            q = (f"SELECT session_id, time_created, substr(data, 1, 300) FROM {table} "
+                 f"WHERE time_created >= ? AND data LIKE '%was not issued to this caller%'{extra}")
             for sid, ts, head in con.execute(q, (cutoff_ms,)):
                 if sid not in session_ids and not any(
                         sid.startswith(s[:8]) or s.startswith(sid[:8])
@@ -284,6 +285,9 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
         d.warn("telemetry", f"{tdir} absent (created on first emit)")
     if live:
         fails = provider_failures([r.session for r in live if r.session], hours=24)
+        if fails["store"]:
+            d.ok("opencode store", f"{fails['store']} layout (provider-error scan reads "
+                                   f"{'session_message' if fails['store'] == 'v2' else 'message'})")
         if fails["total"]:
             recent = fails["last_utc"] or "unknown"
             (d.fail if fails["last_hour"] else d.warn)(
