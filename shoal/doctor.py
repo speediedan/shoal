@@ -311,8 +311,9 @@ def matcher_checks(d: Doc, spec: HagSpec) -> None:
         return
     st = matcher.load_state(spec.hag)
     mode = "live" if c.get("live") else "shadow"
-    if c.get("backend") == "opencode-run" and not os.path.exists(matcher.opencode_bin()):
-        d.fail("matcher", f"{mode}: opencode not found at {matcher.opencode_bin()}")
+    if c.get("backend") == "opencode-run" and not os.path.exists(matcher.openchamber_bin()):
+        d.fail("matcher", f"{mode}: openchamber not found at {matcher.openchamber_bin()} (model calls go "
+                          f"through the OpenChamber-managed server)")
         return
     act = (st.get("active") or {}).get("model")
     if not act:
