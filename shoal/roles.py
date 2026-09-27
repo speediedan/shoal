@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""HAG role/spec model.
+"""shoal role/spec model.
 
-Flattened only (2026-09-24, extraction plan D7): a HAG is a set of roles that
+Flattened only (2026-09-24, extraction plan D7): a shoal is a set of roles that
 all speak the same ledger primitive (ledger.py). There is no coordinator role.
 Per role, `fill` says where its work comes from: `self` (it pops the priority
 table in `sources` when its queue is empty), `assigned` (it works only what
@@ -12,13 +12,13 @@ handoff --to <role>`. Specs written before the change may still carry
 
 Two roots (resolved by config.py: environment, then the host config file,
 then a generic default):
-  data_root      per-hag local home (unversioned bulk): <root>/<hag>/{briefs/,
+  data_root      per-shoal local home (unversioned bulk): <root>/<hag>/{briefs/,
                      reports/,telemetry/}. Briefs, report .md twins and events
                      live here, never in version control.
   ledger.dir     the ledger repo's local clone (config `ledger_dir`):
                      shoals/<id>/{shoal.json (THE canonical live spec, mutated by
                      shoal with commit+push),ledger/}. Remote agents read this.
-  SHOAL_SPEC       optional pin: the path of one HAG's spec (<dir named for the hag>/hag.json).
+  SHOAL_SPEC       optional pin: the path of one shoal's spec (<dir named for the hag>/hag.json).
                      Tests and operators use it to resolve a spec outside the ledger clone.
 
 A spec also records its generation history (`generations`): one entry per
@@ -57,7 +57,7 @@ def utcnow_iso() -> str:
 
 
 def home_dir(hag: str) -> str:
-    """Local per-hag home: briefs/, reports/, telemetry/ (unversioned)."""
+    """Local per-shoal home: briefs/, reports/, telemetry/ (unversioned)."""
     return os.path.join(SHOAL_DATA_ROOT, hag)
 
 
@@ -70,13 +70,13 @@ def telemetry_dir(hag: str) -> str:
 
 
 def contexts_dir(hag: str) -> str:
-    """Per-HAG orchestration state: one editable working-context file per role,
+    """Per-shoal orchestration state: one editable working-context file per role,
     `<slug>.json`, loaded into the spec by `shoal context set|load` (architecture §4)."""
     return os.path.join(data_dir(hag), "contexts")
 
 
 def roles_dir(hag: str) -> str:
-    """Per-HAG orchestration state: generated start docs for infrastructure roles
+    """Per-shoal orchestration state: generated start docs for infrastructure roles
     (e.g. `roles/wake-relay/plan_state.md`); worker roles keep their plan_state in the
     design repo, where their mission lives."""
     return os.path.join(data_dir(hag), "roles")
@@ -189,31 +189,31 @@ def scope_to_context(scope: dict | None) -> dict:
 
 
 @dataclasses.dataclass
-class HagSpec:
+class ShoalSpec:
     hag: str
     dir: str = ""   # repo dir sessions run in
     gen: str = ""   # legacy display string ("r1"); kept for old specs, else derived
-    incarnation: int = 0  # 0-indexed HAG incarnation: THE telemetry counter.
+    incarnation: int = 0  # 0-indexed shoal incarnation: THE telemetry counter.
         # Bumped on every restart that creates sessions (full or partial).
         # Display string is r{incarnation+1}, so --gen is unnecessary.
     roles: list[Role] = dataclasses.field(default_factory=list)
     repos: list[str] = dataclasses.field(default_factory=list)  # GitHub repos
-        # the HAG works (reconcile ground truth); DEFAULT_REPOS when empty.
+        # the shoal works (reconcile ground truth); DEFAULT_REPOS when empty.
     generations: list[dict] = dataclasses.field(default_factory=list)
         # [{gen, started_utc, ended_utc, sessions{slug:id}, run{}}], oldest first
-    retired_utc: str = ""  # set by `shoal retire`; a retired HAG launches nothing
+    retired_utc: str = ""  # set by `shoal retire`; a retired shoal launches nothing
     ledger: dict = dataclasses.field(default_factory=dict)  # {"repo": url, "dir": clone}
         # required: the ledger is the only transport
     sources: list[dict] = dataclasses.field(default_factory=list)  # priority tables
         # for self-filling roles: [{"kind": "github-project", "owner", "number", ...}]
-    features: dict = dataclasses.field(default_factory=dict)  # per-HAG opt-ins so new
+    features: dict = dataclasses.field(default_factory=dict)  # per-shoal opt-ins so new
         # behaviour lands at a restart, never under running sessions (architecture doc):
         # "digest" board digest; "jobs" job-unit brief discipline; "workwake" work-only
         # wakes + the next/queue loop; "health" (true or {"validity_wake_min": 90}) the
         # health quorum timers replacing heartbeat; "relay" the Claude wake relay role;
         # "matcher" the semantic board matcher (architecture §4.1).
     tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "repo", "prev", "upgraded_utc",
-        # "changed"}: the shoal/ tooling commit this HAG was last upgraded to (`shoal upgrade`);
+        # "changed"}: the shoal/ tooling commit this shoal was last upgraded to (`shoal upgrade`);
         # `repo` names the repository that sha belongs to (origin URL, else toplevel dir name)
 
     def validate(self) -> list[str]:
@@ -313,14 +313,14 @@ class HagSpec:
         return d
 
     @staticmethod
-    def from_dict(d: dict) -> "HagSpec":
+    def from_dict(d: dict) -> "ShoalSpec":
         gen = d.get("gen", "") or ""
         if "incarnation" in d:
             inc = int(d.get("incarnation") or 0)
         else:
             m = re.match(r"r(\d+)$", gen)
             inc = int(m.group(1)) - 1 if m else 0
-        return HagSpec(hag=d.get("hag", ""), dir=d.get("dir", ""),
+        return ShoalSpec(hag=d.get("hag", ""), dir=d.get("dir", ""),
                        gen="" if "incarnation" in d else gen,
                        incarnation=inc,
                        roles=[Role.from_dict(r) for r in d.get("roles", [])],
@@ -341,9 +341,9 @@ class HagSpec:
         os.replace(tmp, path)
 
     @staticmethod
-    def load(path: str) -> "HagSpec":
+    def load(path: str) -> "ShoalSpec":
         with open(path) as fh:
-            return HagSpec.from_dict(json.load(fh))
+            return ShoalSpec.from_dict(json.load(fh))
 
 
 def is_wake_relay(role) -> bool:

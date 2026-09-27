@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HAG telemetry collector/analyzer (schema v1, stdlib only).
+"""shoal telemetry collector/analyzer (schema v1, stdlib only).
 
 Usage:
   hag_telemetry.py emit --shoal ID --session S --ecosystem E --type T [--field k=v ...]
@@ -266,7 +266,7 @@ def report(args):
         since = _parse_ts(args.since) if args.since else None
         until = _parse_ts(args.until) if args.until else now
     evs = load(args.dir, args.hag, since, until)
-    print(f"# HAG {args.hag} report")
+    print(f"# shoal {args.hag} report")
     print(f"window: {since} .. {until} ({len(evs)} events, schema {SCHEMA_V})")
     if not evs:
         print("no events in window.")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The unified HAG communication primitive: a git-versioned, append-only event
+"""The unified shoal communication primitive: a git-versioned, append-only event
 ledger with one file per writer (readme 5.j, established 2026-09-20).
 
 Every piece of agent traffic — tasking (offer/withdraw), work ownership
@@ -382,7 +382,7 @@ OFFER_WRITERS = ("user",) + SYSTEM_WRITERS  # the only writers that may offer or
 
 
 class Perms:
-    """Resolved from the HAG spec; `user` and `shoal` are implicit writers."""
+    """Resolved from the shoal spec; `user` and `shoal` are implicit writers."""
 
     def __init__(self, spec=None):
         self.roles = {}

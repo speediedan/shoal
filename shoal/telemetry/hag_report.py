@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-incarnation HAG report (Markdown + HTML, stdlib only). Spec-driven.
+"""Per-incarnation shoal report (Markdown + HTML, stdlib only). Spec-driven.
 
   shoal report --spec hag.json [--gen rN | --hours N | --since ISO --until ISO]
                 [--out-md F] [--out-html F] [--gpu] [--coord-transcript]
@@ -7,7 +7,7 @@
 Window: --gen reads the generation record in the spec (started_utc ..
 ended_utc-or-now); --hours is a rolling window; --since/--until explicit.
 Default output: <SHOAL_DATA_ROOT>/<hag>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
-(the per-hag local home; editable review artifact carrying the VERDICT).
+(the per-shoal local home; editable review artifact carrying the VERDICT).
 HTML is a pure function of the .md: pass --out-html to render one, otherwise
 skipped (regenerate anytime; nothing reads it programmatically).
 (versioned, small, cited from hag_system_reviews.md) and the same stem .html
@@ -22,7 +22,7 @@ fills (protocol proposal or explicit no-change — the rule from
 hag_system_reviews.md). Every number is computed from events; a missing
 instrument prints as `unobserved`, never as zero.
 
-The HAG ledger (2026-09-20) is folded in (ledger.as_telemetry)
+The shoal ledger (2026-09-20) is folded in (ledger.as_telemetry)
 and three sections are added — Ledger economics (offers by source, claims
 and self-fill share, releases by kind, done verified against reconcile,
 offer→claim and claim→done latencies), Wake efficiency (ledger-wake
@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
-from roles import SHOAL_DATA_ROOT, HagSpec, home_dir  # noqa: E402
+from roles import SHOAL_DATA_ROOT, ShoalSpec, home_dir  # noqa: E402
 import config  # noqa: E402
 
 LOCAL = config.tzinfo()
@@ -619,7 +619,7 @@ def recovery_sections(evs, w0, w1):
 def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L = []
     tot = (w1 - w0).total_seconds()
-    L.append(f"# HAG {spec.hag} incarnation report ({gen_label})")
+    L.append(f"# shoal {spec.hag} incarnation report ({gen_label})")
     L.append("")
     L.append(f"- window: {fmt(w0)} .. {fmt(w1)} UTC ({local(w0)} .. {local(w1)}), duration {dur(tot)}")
     L.append(f"- events: {len(evs)} · generated {fmt(datetime.datetime.now(datetime.timezone.utc))} by hag_report.py · spec {spec_path}")
@@ -792,9 +792,9 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
 
 
 def sibling_truth(hag):
-    """GitHub ground truth written by OTHER HAGs' reconcile runs. A merge or
-    close is a fact about GitHub, not about the HAG whose timer happened to see
-    it (the r5 HAG's dones were reconciled by its successor's timer). Only
+    """GitHub ground truth written by OTHER shoals' reconcile runs. A merge or
+    close is a fact about GitHub, not about the shoal whose timer happened to see
+    it (the r5 shoal's dones were reconciled by its successor's timer). Only
     events marked reconciled=true count; best-effort, never fatal."""
     out = []
     try:
@@ -845,7 +845,7 @@ def drop_ledger_twins(local, ledger_evs, resolve, tol_s=5):
 
 
 def cmd_report(a: argparse.Namespace) -> int:
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     now = datetime.datetime.now(datetime.timezone.utc)
     gen_label = a.gen or spec.display_gen or "window"
     if a.since or a.until:
@@ -902,7 +902,7 @@ def cmd_report(a: argparse.Namespace) -> int:
     if out_html:
         os.makedirs(os.path.dirname(out_html), exist_ok=True)
         with open(out_html, "w") as fh:
-            fh.write(md_to_html(md, f"HAG {spec.hag} {gen_label}"))
+            fh.write(md_to_html(md, f"shoal {spec.hag} {gen_label}"))
     print(f"wrote {out_md}" + (f"\nwrote {out_html}" if out_html else "") + f" ({len(evs)} events)")
     return 0
 

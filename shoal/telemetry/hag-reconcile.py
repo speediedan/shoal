@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Nightly GitHub reconciliation for HAG telemetry (stdlib + `gh` CLI only).
+"""Nightly GitHub reconciliation for shoal telemetry (stdlib + `gh` CLI only).
 
 Emits issue_closed / pr_opened / pr_merged for recently-updated items in the
 participating repos, skipping events already in the log (idempotent by
 type+number), then one `reconcile` marker event with the count. Ground truth
 the lane-reported events are checked against.
 
-Repos come from the HAG spec (`repos` in hag.json, default list when empty);
+Repos come from the shoal spec (`repos` in hag.json, default list when empty);
 --repo overrides. --dry-run prints what would be emitted and writes nothing.
 Each run touches /tmp/<hag>/tick-reconcile so `shoal status` / `doctor` can
 tell a reconcile that never ran from one that ran and found nothing (the v0

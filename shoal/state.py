@@ -12,7 +12,7 @@ command cannot be half-done.
       --holder "gate 1290 (approved, queued)" --rescan-min 30 [--monitor ...]
   shoal transition --shoal H --slug S --to idle|paused|offline
 
-The same command also appends a `state` event to the HAG ledger (ledger.py,
+The same command also appends a `state` event to the shoal ledger (ledger.py,
 2026-09-20), so every peer and every host sees the row state without anyone
 transcribing it; `--no-ledger` skips that (tests).
 
@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry"))
 import config  # noqa: E402
 
-from roles import HagSpec, find_spec, state_dir  # noqa: E402
+from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
 from heartbeat import touch as hb_touch  # noqa: E402
 
 try:
@@ -209,9 +209,9 @@ def cmd_transition(a: argparse.Namespace) -> int:
     session, eco = a.session, a.ecosystem
     spec_path = find_spec(hag, a.spec)
     try:
-        spec = HagSpec.load(spec_path)
+        spec = ShoalSpec.load(spec_path)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f"ERROR: no readable HAG spec for {hag!r} at {spec_path} ({exc}); "
+        print(f"ERROR: no readable shoal spec for {hag!r} at {spec_path} ({exc}); "
               "refusing to emit an unattributable transition. Pass --spec <hag.json>.",
               file=sys.stderr)
         return 2

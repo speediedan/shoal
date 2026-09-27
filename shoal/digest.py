@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared board digest, batch triage, and working context (architecture doc §4).
 
-One board read per HAG, not one per self-filling watcher: `shoal digest --refresh`
+One board read per shoal, not one per self-filling watcher: `shoal digest --refresh`
 (a systemd timer when the spec opts in with `features.digest`) fetches the priority
 table ONCE, with body excerpts, blocking relations and linked PRs, scores every open
 item against every self-filling role's working context, and writes
@@ -47,7 +47,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 import config  # noqa: E402
 
-from roles import HagSpec, contexts_dir, data_dir, find_spec, scope_to_context  # noqa: E402
+from roles import ShoalSpec, contexts_dir, data_dir, find_spec, scope_to_context  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
 EXCERPT_CHARS = 600
@@ -227,12 +227,12 @@ def _never(item: dict, ctx: dict) -> bool:
             or bool(set(never.get("labels") or []) & set(item["labels"])))
 
 
-def active_lanes(spec: HagSpec, lanes: list[str]) -> list[str]:
+def active_lanes(spec: ShoalSpec, lanes: list[str]) -> list[str]:
     """Scored roles that hold a session now (a parked role's territory is aux territory)."""
     return [s for s in lanes if (spec.role(s) is not None and spec.role(s).session)]
 
 
-def effective_positions(spec: HagSpec, view, items: list[dict], sem: dict | None) -> tuple[dict, set]:
+def effective_positions(spec: ShoalSpec, view, items: list[dict], sem: dict | None) -> tuple[dict, set]:
     """(item -> effective board position, items lifted as unblockers). The board is never
     reordered; this is the order the digest ranks by."""
     from ledger import item_key
@@ -273,7 +273,7 @@ def effective_positions(spec: HagSpec, view, items: list[dict], sem: dict | None
     return eff, unblock
 
 
-def semantic_roles(spec: HagSpec, view, items: list[dict], sem: dict, eff: dict, unblock: set,
+def semantic_roles(spec: ShoalSpec, view, items: list[dict], sem: dict, eff: dict, unblock: set,
                    taken: set, declined: dict) -> dict[str, list[dict]]:
     """Per self-filling role: lanes by fit then effective position; aux roles by minmax."""
     from ledger import item_key
@@ -317,7 +317,7 @@ def semantic_roles(spec: HagSpec, view, items: list[dict], sem: dict, eff: dict,
     return out
 
 
-def build(spec: HagSpec, view=None, items: list[dict] | None = None, no_model: bool = False) -> dict:
+def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model: bool = False) -> dict:
     """The digest document: eligible items, per-role ranked candidates, unowned. With
     features.matcher in shadow mode the semantic document rides along under `shadow`."""
     from ledger import item_key
@@ -412,7 +412,7 @@ def _write_json(path: str, doc: dict) -> None:
     os.replace(tmp, path)
 
 
-def write(spec: HagSpec, doc: dict) -> str:
+def write(spec: ShoalSpec, doc: dict) -> str:
     doc = dict(doc)
     shadow = doc.pop("shadow", None)
     if shadow is not None:
@@ -463,7 +463,7 @@ def fmt_candidate(c: dict, excerpt: int = 220) -> str:
 # ---- CLI -------------------------------------------------------------------
 
 def _spec_view(a, need_view: bool = True):
-    spec = HagSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
+    spec = ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
     view = None
     if need_view:
         from ledger import Ledger, View
@@ -544,7 +544,7 @@ def load_semantic(hag: str) -> dict | None:
         return None
 
 
-def compare(spec: HagSpec, view, k: int = 10, n_claims: int = 80) -> dict:
+def compare(spec: ShoalSpec, view, k: int = 10, n_claims: int = 80) -> dict:
     """Switch bar (H8 proposal §2.5): per self-filling lane, over the whole board (no taken
     filter), how often the lane's recent claims sat in its top k, and how often its recorded
     out-of-lane declines did, semantic vs keyword. Items since closed are skipped."""
@@ -596,7 +596,7 @@ def compare(spec: HagSpec, view, k: int = 10, n_claims: int = 80) -> dict:
     return res
 
 
-def cmd_compare(a, spec: HagSpec, view) -> int:
+def cmd_compare(a, spec: ShoalSpec, view) -> int:
     try:
         r = compare(spec, view, k=a.k)
     except RuntimeError as exc:
@@ -678,7 +678,7 @@ def cmd_triage(a) -> int:
 
 def cmd_context(a) -> int:
     path = find_spec(a.hag, getattr(a, "spec", ""))
-    spec = HagSpec.load(path)
+    spec = ShoalSpec.load(path)
     targets = [spec.role(a.slug)] if a.slug else list(spec.roles)
     if a.slug and targets[0] is None:
         print(f"ERROR: {a.slug} is not a role in {spec.hag}")
@@ -757,7 +757,7 @@ def cmd_context(a) -> int:
 
 
 def add_parsers(sub) -> None:
-    p = sub.add_parser("digest", help="shared board digest: refresh once per HAG, rank per role")
+    p = sub.add_parser("digest", help="shared board digest: refresh once per shoal, rank per role")
     config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--refresh", action="store_true", help="fetch the board once and rewrite the digest")

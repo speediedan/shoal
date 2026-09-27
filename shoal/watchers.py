@@ -105,8 +105,8 @@ def log(sdir: str, msg: str) -> None:
 def ledger_fire(hag: str, to: list[str], kind: str, text: str) -> bool:
     try:
         from ledger import Ledger, sync_push
-        from roles import HagSpec, find_spec
-        spec = HagSpec.load(find_spec(hag))
+        from roles import ShoalSpec, find_spec
+        spec = ShoalSpec.load(find_spec(hag))
         led = Ledger(hag, root=spec.ledger_dir)
         led.pull()
         for t in to:
@@ -144,8 +144,8 @@ def _health_route(hag: str, kind: str, text: str) -> bool | None:
     starvation -> roles waiting on remote CI; server respawn -> every opencode role.
     None = feature off (caller falls back to the ledger msg)."""
     try:
-        from roles import HagSpec, find_spec
-        spec = HagSpec.load(find_spec(hag))
+        from roles import ShoalSpec, find_spec
+        spec = ShoalSpec.load(find_spec(hag))
         if not (spec.features or {}).get("health") or kind not in ("starved", "server-respawned"):
             return None
         from health import request_wake
@@ -165,8 +165,8 @@ def starved_targets(hag: str) -> list[str]:
     """Roles whose ledger state is waiting on remote CI, else user."""
     try:
         from ledger import Ledger, View
-        from roles import HagSpec, find_spec
-        spec = HagSpec.load(find_spec(hag))
+        from roles import ShoalSpec, find_spec
+        spec = ShoalSpec.load(find_spec(hag))
         v = View(Ledger(hag, root=spec.ledger_dir), spec)
         waiting = [s for s, st in v.states.items()
                    if st.get("state") == "waiting" and st.get("sub") == "remote-ci"]

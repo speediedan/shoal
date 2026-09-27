@@ -38,7 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ledger import SYSTEM_WRITER  # noqa: E402
 from backends import get as get_backend  # noqa: E402
-from roles import HagSpec, state_dir  # noqa: E402
+from roles import ShoalSpec, state_dir  # noqa: E402
 
 HB_PREFIX = "hb-"
 
@@ -192,7 +192,7 @@ def _stale_active(spec, role, last_state: dict, threshold_min: float,
             f"or idle, or resume work. [{cli.strip()[:80]}]")
 
 
-def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
+def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
     """One row per role: {slug, klass, age_min, detail, suspect: bool}.
 
     Single paging criterion: a role pages IFF it is quiet (no ledger write
@@ -312,7 +312,7 @@ def classify(spec: HagSpec, threshold_min: float) -> list[dict]:
 
 def cmd_heartbeat(spec, threshold_min: float,
                   dry_run: bool = False, refire_min: float = 60) -> int:
-    assert isinstance(spec, HagSpec)
+    assert isinstance(spec, ShoalSpec)
     from watchers import hag_emit
     tick(spec.hag, "heartbeat")
     rows = classify(spec, threshold_min)

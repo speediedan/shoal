@@ -37,7 +37,7 @@ import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, queue_next_max, Ledger, LedgerError, View, fmt_item,  # noqa: E402
                     item_key, short, split_item, sync_push)
-from roles import HagSpec, find_spec, state_dir  # noqa: E402
+from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
 
@@ -47,7 +47,7 @@ def now_iso() -> str:
 
 
 def _load(a, pull: bool = True):
-    spec = HagSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
+    spec = ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
     led = Ledger(spec.hag, root=getattr(a, "ledger_dir", "") or spec.ledger_dir or None,
                  sync=not getattr(a, "no_sync", False))
     if not led.exists():
@@ -82,7 +82,7 @@ RETURN_PROTOCOL = (
 
 
 def ask_refs(ask: str, default_repo: str, known: dict[str, str] | None = None) -> list[str]:
-    """`owner/repo#n` for every issue/PR reference in an ask. `#n` alone means the HAG's first
+    """`owner/repo#n` for every issue/PR reference in an ask. `#n` alone means the shoal's first
     repo; a bare `Repo#n` resolves through `known` (repo name -> owner/repo) and is skipped when
     unknown, never guessed."""
     out = []
@@ -99,7 +99,7 @@ def ask_refs(ask: str, default_repo: str, known: dict[str, str] | None = None) -
     return out
 
 
-def known_repos(spec: HagSpec) -> dict[str, str]:
+def known_repos(spec: ShoalSpec) -> dict[str, str]:
     """Repo name -> owner/repo from the spec and the board digest's items."""
     out = {r.split("/", 1)[-1]: r for r in spec.effective_repos if "/" in r}
     try:
@@ -137,7 +137,7 @@ def ref_state(ref: str) -> str:
     return _REF_STATE[ref]
 
 
-def ask_hint(spec: HagSpec, view: View, ask: str) -> str:
+def ask_hint(spec: ShoalSpec, view: View, ask: str) -> str:
     """` (LIKELY STALE: ...)` when an item the ask names is merged, closed or done; else ``."""
     default = (spec.effective_repos or ["speediedan/interpretune"])[0]
     why = []
@@ -188,7 +188,7 @@ def pr_live(ref: str) -> dict:
         return {}
 
 
-def question_sets(spec: HagSpec, view: View, slug: str) -> dict:
+def question_sets(spec: ShoalSpec, view: View, slug: str) -> dict:
     """The role's recorded asks as prompted question sets: at most ASKS_PER_SET questions per set, each
     labelled from LIVE PR data (title, state, head, checks), never from the model's memory (measured
     2026-09-24: a hand-written merge question described another PR, and the grant merged the wrong
@@ -253,7 +253,7 @@ def cmd_asks(a) -> int:
     return 0
 
 
-def candidates_for(spec: HagSpec, view: View, slug: str, exclude: set[str], limit: int) -> list[str]:
+def candidates_for(spec: ShoalSpec, view: View, slug: str, exclude: set[str], limit: int) -> list[str]:
     taken = view.taken() | view.offered_open() | exclude
     declined = set(view.declined(slug))
     try:
@@ -283,7 +283,7 @@ def cmd_next(a) -> int:
         print(f"ERROR: {slug} is not a role in {spec.hag}")
         return 1
     me = spec.role(slug)
-    out = [f"# next for {me.label} in HAG {spec.hag} (incarnation {spec.incarnation}) at {now_iso()}",
+    out = [f"# next for {me.label} in shoal {spec.hag} (incarnation {spec.incarnation}) at {now_iso()}",
            f"IDENTITY: your Lane row label is `{me.label}` (base name, then your session tag; never the "
            f"incarnation number)"]
     banner = offline_banner(view)
