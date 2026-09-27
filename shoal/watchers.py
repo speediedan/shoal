@@ -285,16 +285,21 @@ def cmd_pipeline(hag: str, target: str, repo_dir: str, org: str,
         return 2
 
     def builds(status: str) -> str | None:
+        # every build in the status, newest first: the list comes back oldest first, so a
+        # `--top` window fills with stale builds and hides new gates from both the hash and the
+        # fire text (measured 2026-09-27: ten pending main builds from 09-22..09-25 hid three
+        # new gates, one of them 29 hours old, and the sensor never fired for any of them)
         r = subprocess.run(
             ["az", "pipelines", "build", "list", "--organization", org,
-             "--project", proj, "--status", status, "--top",
-             "5" if status == "inProgress" else "10",
+             "--project", proj, "--status", status,
              "--query", "[].id" if status == "inProgress"
              else "[].{id:id,branch:sourceBranch}", "-o", "tsv"],
             capture_output=True, text=True, timeout=120, env=env)
         if r.returncode != 0:
             return None
-        return r.stdout.replace("\n", "," if status == "inProgress" else ";").strip()
+        rows = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+        rows.sort(key=lambda ln: int(ln.split()[0]) if ln.split()[0].isdigit() else 0, reverse=True)
+        return ("," if status == "inProgress" else ";").join(rows)
 
     running, queued = builds("inProgress"), builds("notStarted")
     if running is None or queued is None:
@@ -314,8 +319,9 @@ def cmd_pipeline(hag: str, target: str, repo_dir: str, org: str,
                      peer="pipeline", note="depth-zero-with-queued",
                      channel="within-ecosystem")
             fire(target, repo_dir, "PIPELINE-WATCH",
-                 f"STARVED: 0 running, queued: {queued} — scan approvals + "
-                 "preconditions, release or hold-with-condition")
+                 f"STARVED: 0 running, {queued.count(';') + 1} queued (newest first): {queued}; scan "
+                 "approvals and preconditions, release or hold-with-condition; a superseded build is "
+                 "declined, not held")
             log(sdir, f"PIPELINE-WATCH STARVED fired: {queued}")
         else:
             print(f"{utcnow()} pipeline state changed (running/queued set moved)")
