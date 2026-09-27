@@ -287,5 +287,29 @@ p = os.path.join(homes[0], "shoal-protocol", "SKILL.md"); open(p, "a").write("\n
 assert skills.stale() == [os.path.join(homes[0], "shoal-protocol")]
 print("skills ok")
 PY3
+echo "== matcher transport: model calls go through openchamber, never the opencode CLI"
+mkdir -p "$S/ocstub"
+cat > "$S/ocstub/openchamber" <<'SH'
+#!/bin/sh
+case "$1 $2" in
+  "session create") echo '{"status":"ok","sessionId":"ses_stub1"}' ;;
+  "session send")   echo '{"status":"ok","sessionId":"ses_stub1","lastAssistantMessage":{"text":"{\"ok\": true}"}}' ;;
+  *) echo "unexpected: $*" >&2; exit 2 ;;
+esac
+SH
+printf '#!/bin/sh\necho CALLED >> "%s/opencode-called"; exit 9\n' "$S" > "$S/ocstub/opencode"
+chmod +x "$S/ocstub/openchamber" "$S/ocstub/opencode"
+PATH="$S/ocstub:$PATH" python3 - "$HAGD" "$S/mrun" <<'PY3' || fail "matcher openchamber transport"
+import sys
+sys.path.insert(0, sys.argv[1])
+import matcher
+assert matcher.openchamber_bin().endswith("ocstub/openchamber"), matcher.openchamber_bin()
+assert matcher.call_opencode("opencode/x-free", "{}", sys.argv[2], 30) == '{"ok": true}'
+big = "x" * (matcher.PROMPT_INLINE_MAX + 1)
+assert matcher.call_opencode("opencode/x-free", big, sys.argv[2], 30) == '{"ok": true}'
+assert open(sys.argv[2] + "/prompt.md").read() == big, "long prompt not written to the session dir"
+print("transport ok")
+PY3
+[ ! -f "$S/opencode-called" ] || fail "the matcher invoked the opencode CLI"
 rm -rf /tmp/t1hag
 echo "SELFTEST PASS ($S)"

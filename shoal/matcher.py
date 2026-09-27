@@ -39,7 +39,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -160,68 +159,64 @@ def _classify(text: str) -> type[RuntimeError]:
     return Unavailable
 
 
-def _delete_sessions(ids: set[str], title: str) -> None:
-    exe = opencode_bin()
-    try:
-        r = subprocess.run([exe, "session", "list", "--format", "json", "-n", "50"],
-                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-        for s in json.loads(r.stdout or "[]"):
-            if s.get("title") == title:
-                ids.add(s.get("id", ""))
-    except Exception:  # noqa: BLE001
-        pass
-    for sid in filter(None, ids):
-        subprocess.run([exe, "session", "delete", sid], capture_output=True, text=True, timeout=60,
-                       stdin=subprocess.DEVNULL)
+def openchamber_bin() -> str:
+    # systemd timer units carry a bare PATH: search the configured tool PATH too
+    import config
+    return (shutil.which("openchamber") or shutil.which("openchamber", path=config.tool_env()["PATH"])
+            or os.path.expanduser("~/.bun/bin/openchamber"))
+
+
+PROMPT_INLINE_MAX = 100_000  # Linux caps one argv string at 128 KiB
 
 
 def call_opencode(model: str, prompt: str, workdir: str, timeout: float) -> str:
-    """One `opencode run` with the prompt attached; returns the reply text."""
+    """One model call through the OpenChamber-managed opencode server; returns the reply text.
+
+    opencode 2's own CLI (`opencode run`, `models`, `session`) starts a second server on the same
+    store, and that server's startup recovery aborts the steps other sessions have in flight
+    ("Step interrupted", then "The server restarted while you were working"). Measured
+    2026-09-27: every digest run interrupted the one lane mid-step, six times in an hour. So the
+    matcher never starts its own server: it creates a session on the server OpenChamber runs and
+    sends the prompt there (`openchamber session create/send --wait --last-assistant --json`)."""
     os.makedirs(workdir, exist_ok=True)
-    pf = os.path.abspath(os.path.join(workdir, "prompt.md"))
-    with open(pf, "w") as fh:
-        fh.write(prompt)
+    workdir = os.path.abspath(workdir)
+    oc = openchamber_bin()
     title = f"shoal-matcher-{int(time.time() * 1000)}"
-    argv = [opencode_bin(), "run", "--pure", "--dir", os.path.abspath(workdir), "-m", model, "--format", "json",
-            "--title", title, "-f", pf, "--", INSTRUCTION]
-    ids: set[str] = set()
-    try:
+
+    def run(argv, t):
         try:
-            # own process group: a hung run is killed whole, so a leftover child cannot hold
-            # opencode's store and stall the next run (measured: a hung Go run did)
-            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=workdir,
-                                    stdin=subprocess.DEVNULL, start_new_session=True)
-        except OSError as exc:
-            raise Unavailable(f"opencode not runnable: {exc}") from exc
-        try:
-            out, err = proc.communicate(timeout=timeout)
+            return subprocess.run(argv, capture_output=True, text=True, timeout=t, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired as exc:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
-            proc.communicate()
-            raise Transient(f"{model}: timed out after {timeout:g}s") from exc
-        p = subprocess.CompletedProcess(argv, proc.returncode, out, err)
-        text, errs = [], []
-        for line in p.stdout.splitlines():
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            ids.add(e.get("sessionID", ""))
-            if e.get("type") == "text":
-                text.append((e.get("part") or {}).get("text", ""))
-            elif e.get("type") == "error":
-                d = (e.get("error") or {}).get("data") or {}
-                errs.append(f"{(e.get('error') or {}).get('name', 'error')}: {d.get('message', '')}"[:200])
-        if errs:
-            raise _classify(" ".join(errs))(f"{model}: {errs[0]}")
-        if p.returncode != 0 and not text:
-            raise _classify(p.stderr)(f"{model}: rc={p.returncode} {p.stderr.strip()[-200:]}")
-        return "".join(text)
-    finally:
-        _delete_sessions(ids, title)
+            raise Transient(f"{model}: timed out after {t:g}s") from exc
+        except OSError as exc:
+            raise Unavailable(f"openchamber not runnable: {exc}") from exc
+
+    r = run([oc, "session", "create", "--dir", workdir, "--title", title, "--json"], 60)
+    try:
+        sid = json.loads(r.stdout)["sessionId"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise _classify(r.stderr or r.stdout)(f"{model}: session create failed: "
+                                              f"{(r.stderr or r.stdout).strip()[-200:]}") from exc
+    if len(prompt) <= PROMPT_INLINE_MAX:
+        message = f"{INSTRUCTION}\n\n{prompt}"
+    else:  # too long for one argv string: the session reads it from its own directory
+        with open(os.path.join(workdir, "prompt.md"), "w") as fh:
+            fh.write(prompt)
+        message = f"{INSTRUCTION}\n\nThe input is in the file prompt.md in your working directory: read it first."
+    r = run([oc, "session", "send", "--session", sid, "--dir", workdir, "--model", model, "--wait",
+             "--timeout", str(max(30, int(timeout))), "--last-assistant", "--json", "--prompt", message],
+            timeout + 30)
+    try:
+        d = json.loads(r.stdout)
+    except ValueError as exc:
+        raise _classify(r.stderr or r.stdout)(f"{model}: rc={r.returncode} "
+                                              f"{(r.stderr or r.stdout).strip()[-200:]}") from exc
+    last = d.get("lastAssistantMessage") or {}
+    text = last.get("text") or ""
+    if d.get("status") != "ok" or not text:
+        why = json.dumps(last.get("error") or d.get("error") or d.get("sessionStatus") or d)[:200]
+        raise _classify(why)(f"{model}: no reply ({why})")
+    return text
 
 
 def call_openai(base_url: str, model: str, key: str, prompt: str, timeout: float) -> str:
@@ -281,21 +276,14 @@ def pricing_free_names(url: str = PRICING_URL, timeout: float = 30) -> set[str]:
 
 
 def discover_free(warn) -> list[str]:
-    """Free Zen models reachable through opencode: `opencode models opencode` ids that the
-    pricing table lists as free (ids ending -free alone when the page cannot be read)."""
-    try:
-        r = subprocess.run([opencode_bin(), "models", "opencode"], capture_output=True, text=True, timeout=120,
-                           stdin=subprocess.DEVNULL)
-        ids = [ln.strip() for ln in r.stdout.splitlines() if ln.strip().startswith("opencode/")]
-    except Exception as exc:  # noqa: BLE001
-        warn(f"model discovery failed: `opencode models` ({exc})")
-        return []
+    """Free Zen models: the pricing table's free rows, as `opencode/<id>`. The opencode CLI is not
+    asked (`opencode models` would start a second server on the live store; see call_opencode)."""
     try:
         free = pricing_free_names()
     except Exception as exc:  # noqa: BLE001
-        warn(f"pricing page unreadable ({exc}); discovery falls back to ids ending in -free")
-        return [m for m in ids if m.endswith("-free")]
-    return [m for m in ids if m.split("/", 1)[1] in free]
+        warn(f"model discovery failed: pricing page unreadable ({exc})")
+        return []
+    return sorted(f"opencode/{n}" for n in free)
 
 
 TIERS = ("free", "go", "zen")
