@@ -5,7 +5,7 @@ Runbook §1 has the operator sequence; the readme is the human map.
 
 Subcommands:
   doctor        preflight (host) + live health (with --spec). Read-only.
-  start         mint a new HAG (id, dirs, ledger, hag.json), launch its first
+  start         mint a new shoal (id, dirs, ledger, hag.json), launch its first
                 generation, save live ids + generation record back, verify
                 loops. Roles: SLUG,ECO,TITLE,DOC[,aux][,fill=..][,model=M]
                 [,effort=E] (DOC = the single plan_state.md; grants come from
@@ -26,7 +26,7 @@ Subcommands:
   heartbeat     stall daemon over /tmp/<hag>/hb-* + wait-* (timer */5; specs
                 with features.health run the health quorum instead).
   brief         print/write one role's first prompt (restart uses this).
-  install-systemd / uninstall-systemd   watcher units per HAG generation.
+  install-systemd / uninstall-systemd   watcher units per shoal generation.
   spec absolutize-docs   rewrite relative role docs to absolute paths under --base.
   ledger verbs  offer | withdraw | claim | release | done | msg | show | fill |
                 sync | ledger-init | ledger-lint | ledger-watch (ledger_cli.py,
@@ -71,7 +71,7 @@ import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
-from roles import (SHOAL_DATA_ROOT, HagSpec, Role, default_spec_path, is_wake_relay,  # noqa: E402
+from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, is_wake_relay,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
@@ -135,16 +135,16 @@ def parse_role(spec: str) -> Role:
                 aux=aux)
 
 
-def load_spec(args: argparse.Namespace) -> HagSpec:
+def load_spec(args: argparse.Namespace) -> ShoalSpec:
     if not getattr(args, "spec", ""):
         print("restart needs --spec <hag.json> (legacy coord/lane flags removed 2026-09-19)")
         sys.exit(1)
-    return HagSpec.load(args.spec)
+    return ShoalSpec.load(args.spec)
 
 
 # ---- stages ---------------------------------------------------------------
 
-def stage_handoffs(spec: HagSpec, dry_run: bool) -> int:
+def stage_handoffs(spec: ShoalSpec, dry_run: bool) -> int:
     print("=== 0a. start docs (one plan_state.md per role; sessions keep them current)")
     print("each role's doc verifies: presence + plan header:")
     rc = 0
@@ -167,7 +167,7 @@ def stage_handoffs(spec: HagSpec, dry_run: bool) -> int:
     return rc
 
 
-def stage_sync_plans(spec: HagSpec, dry_run: bool) -> int:
+def stage_sync_plans(spec: ShoalSpec, dry_run: bool) -> int:
     print("=== 0b. start-doc sections (grants-needed + current state present)")
     rc = 0
     for role in spec.roles:
@@ -190,7 +190,7 @@ def stage_sync_plans(spec: HagSpec, dry_run: bool) -> int:
     return rc
 
 
-def stage_retire(spec: HagSpec, old_sessions: list[str],
+def stage_retire(spec: ShoalSpec, old_sessions: list[str],
                  dry_run: bool) -> int:
     print("=== 0c. retire (verify silent; record, don't delete)")
     print("no archive API exists in either ecosystem; old sessions retire by neglect after verification.")
@@ -206,7 +206,7 @@ def stage_retire(spec: HagSpec, old_sessions: list[str],
     return 0
 
 
-def persist_spec(spec: HagSpec, path: str, note: str = "") -> None:
+def persist_spec(spec: ShoalSpec, path: str, note: str = "") -> None:
     """Save the spec; when the path lives under the ledger clone it is the
     canonical copy, so commit+push (remote agents read it). A spec outside
     the clone (tests, a pinned $SHOAL_SPEC) saves plain."""
@@ -226,7 +226,7 @@ def persist_spec(spec: HagSpec, path: str, note: str = "") -> None:
         print(f"spec committed + pushed in {root}")
 
 
-def write_brief(spec: HagSpec, role: Role) -> str:
+def write_brief(spec: ShoalSpec, role: Role) -> str:
     d = os.path.join(home_dir(spec.hag), "briefs")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f"{role.tag}.md")
@@ -235,7 +235,7 @@ def write_brief(spec: HagSpec, role: Role) -> str:
     return path
 
 
-def verify_consumer(spec: HagSpec, role: Role, cap_s: int = 600) -> bool:
+def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600) -> bool:
     """Effect-verification for a launched role: it writes a ledger state, its
     ledger-watch sidecar appears (bound to a session id), or its heartbeat
     ticks within the cap."""
@@ -280,7 +280,7 @@ def verify_consumer(spec: HagSpec, role: Role, cap_s: int = 600) -> bool:
     return False
 
 
-def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, str],
+def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, str],
                   defer_consumers: bool, probe_claude: bool,
                   dry_run: bool, verify_consumers: bool = True,
                   only: list[str] | None = None) -> int:
@@ -390,13 +390,13 @@ def stage_restart(spec: HagSpec, old_sessions: list[str], launched: dict[str, st
 
 # ---- start ----------------------------------------------------------------
 
-def mint_hag_id(name: str) -> str:
+def mint_shoal_id(name: str) -> str:
     """<name>-YYYYMMDD-HHMMSS in the LOCAL timezone of creation (readme §1)."""
     return f"{name}-{datetime.datetime.now().astimezone().strftime('%Y%m%d-%H%M%S')}"
 
 
 def cmd_start(args: argparse.Namespace) -> int:
-    hag = mint_hag_id(args.name)
+    hag = mint_shoal_id(args.name)
     home = home_dir(hag)
     roles = [parse_role(r) for r in args.role]
     if getattr(args, "aux", ""):  # the residual lane (architecture §4.1)
@@ -417,7 +417,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(f"start: no ledger repo and no clone at {ledger['dir']}: pass --ledger-repo URL (or set "
               "`ledger_repo` in the host config / SHOAL_LEDGER_REPO)")
         return 1
-    spec = HagSpec(hag=hag, dir=args.dir, incarnation=0, roles=roles,
+    spec = ShoalSpec(hag=hag, dir=args.dir, incarnation=0, roles=roles,
                    repos=list(args.repo or []), ledger=ledger, sources=sources)
     errs = spec.validate()
     if errs:
@@ -426,7 +426,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     from layout import GROUPS_DIR, SPEC_FILE
     spec_path = os.path.join(spec.ledger_dir, GROUPS_DIR, hag, SPEC_FILE)
     if args.dry_run:
-        print(f"[dry-run] new HAG {hag} (home: {home}; canonical spec: {spec_path})")
+        print(f"[dry-run] new shoal {hag} (home: {home}; canonical spec: {spec_path})")
         print(f"[dry-run] spec: {spec.to_dict()}")
         print(f"[dry-run] ledger: {spec.ledger['repo']} at {spec.ledger_dir}/{GROUPS_DIR}/{hag}/ledger/ "
               f"(init + spec snapshot); sources: {spec.sources or 'none'}; "
@@ -451,7 +451,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"FAIL: ledger init: {exc}")
         return 4
-    print(f"new HAG {hag} (home: {home}; spec: {spec_path}; telemetry: {os.path.join(home, 'telemetry')})")
+    print(f"new shoal {hag} (home: {home}; spec: {spec_path}; telemetry: {os.path.join(home, 'telemetry')})")
     args.spec = spec_path
     args.hag = hag
     args.stages = "handoffs,restart"
@@ -460,7 +460,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     rc = cmd_restart(args)
     if rc in (0, 3) and args.enable_watchers:
         print("=== 6. watchers (systemd user units)")
-        spec = HagSpec.load(spec_path)
+        spec = ShoalSpec.load(spec_path)
         cmd_install_systemd(spec, spec_path, dry_run=False, enable=True)
     return rc
 
@@ -469,9 +469,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return run_restart(load_spec(args), args)
 
 
-def run_restart(spec: HagSpec, args: argparse.Namespace) -> int:
+def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
     if spec.retired_utc and not getattr(args, "force", False):
-        print(f"spec is retired ({spec.retired_utc}); start a fresh HAG or pass --force")
+        print(f"spec is retired ({spec.retired_utc}); start a fresh shoal or pass --force")
         return 1
     errs = spec.validate()
     if errs:
@@ -525,7 +525,7 @@ def run_restart(spec: HagSpec, args: argparse.Namespace) -> int:
     if want(stages, "restart") and not dry:
         # every session-creating restart opens a new incarnation (full or
         # partial): close the open record, bump, clear replaced sessions.
-        prev = HagSpec.load(args.spec)
+        prev = ShoalSpec.load(args.spec)
         if only is None:
             prev.close_generation()
             spec.generations = prev.generations
@@ -572,7 +572,7 @@ def run_restart(spec: HagSpec, args: argparse.Namespace) -> int:
 def old_sessions_for_roles(path: str, only: list[str] | None) -> list[str]:
     """Sessions the restart stage will replace (retire-stage verification set)."""
     try:
-        old = HagSpec.load(path)
+        old = ShoalSpec.load(path)
     except Exception:
         return []
     return [r.session for r in old.roles
@@ -581,7 +581,7 @@ def old_sessions_for_roles(path: str, only: list[str] | None) -> list[str]:
 
 def old_sessions_from_spec(path: str, gen: str) -> list[str]:
     try:
-        old = HagSpec.load(path)
+        old = ShoalSpec.load(path)
     except Exception:
         return []
     if old.display_gen == gen:
@@ -590,14 +590,14 @@ def old_sessions_from_spec(path: str, gen: str) -> list[str]:
 
 
 def cmd_add_role(a: argparse.Namespace) -> int:
-    """Extend a live HAG with new roles (no restart of existing sessions).
+    """Extend a live shoal with new roles (no restart of existing sessions).
 
     New slugs are gated (handoffs + sync-plans over the whole spec, so the new
     docs must pass), then launched exactly like a partial restart with
     --only=new-slugs. Incarnation bumps; untouched roles keep sessions+seqs;
     the ledger spec snapshot refreshes inside stage_restart.
     """
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     if spec.retired_utc and not getattr(a, "force", False):
         print(f"spec is retired ({spec.retired_utc}); pass --force")
         return 1
@@ -631,7 +631,7 @@ def cmd_add_role(a: argparse.Namespace) -> int:
 
 
 def cmd_retire(a: argparse.Namespace) -> int:
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     g = spec.close_generation()
     if a.dry_run:
         print(f"[dry-run] close generation {spec.display_gen} ({'open' if g else 'already closed/absent'}), "
@@ -667,7 +667,7 @@ def cmd_sync_models(a: argparse.Namespace) -> int:
     claude/codex roles: model unexposed by the backend — reported, kept;
     correct with --set-model on restart/add-role or by editing the spec.
     """
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     changed = False
     for r in spec.roles:
         if not r.session:
@@ -693,8 +693,8 @@ def cmd_sync_models(a: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(spec: HagSpec) -> int:
-    print(f"HAG {spec.hag} incarnation={spec.incarnation} ({spec.display_gen}) dir={spec.dir} "
+def cmd_status(spec: ShoalSpec) -> int:
+    print(f"shoal {spec.hag} incarnation={spec.incarnation} ({spec.display_gen}) dir={spec.dir} "
           "mode=flattened"
           + (f" RETIRED {spec.retired_utc}" if spec.retired_utc else ""))
     if not spec.generations:
@@ -758,7 +758,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _doctor.add_parser(sub)
 
-    p = sub.add_parser("start", help="mint a new HAG and start its first generation")
+    p = sub.add_parser("start", help="mint a new shoal and start its first generation")
     p.add_argument("--name", required=True)
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
                    help="also start the hag-aux residual lane (needs features.matcher)")
@@ -767,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="SLUG,ECO,TITLE,DOC[,aux][,fill=self|assigned|none]"
                         "[,scope=repo|repo][,server=H][,model=M][,effort=E][,seq=N] (repeatable)")
     p.add_argument("--repo", action="append", default=[],
-                   help="GitHub repo owner/name the HAG works (reconcile ground truth; repeatable)")
+                   help="GitHub repo owner/name the shoal works (reconcile ground truth; repeatable)")
     p.add_argument("--source", action="append", default=[],
                    help="priority table for self-fill: github-project:OWNER/NUMBER[:repo|repo] (repeatable)")
     p.add_argument("--ledger-repo", "--ledger", dest="ledger", default="",
@@ -812,10 +812,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=lambda a: cmd_restart(a))
 
-    p = sub.add_parser("add-role", help="extend a live HAG with new roles (existing sessions untouched)")
+    p = sub.add_parser("add-role", help="extend a live shoal with new roles (existing sessions untouched)")
     p.add_argument("--spec", required=True, help="hag.json path")
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
-                   help="also add the hag-aux residual lane (needs features.matcher); on a running HAG "
+                   help="also add the hag-aux residual lane (needs features.matcher); on a running shoal "
                         "prefer `aux-init` + `aux-launch`, which do not bump the incarnation")
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,scope=R][,model=M][,effort=E][,seq=N] (repeatable)")
@@ -877,7 +877,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("status", help="restart preconditions + live posture at a glance")
     p.add_argument("--spec", required=True)
-    p.set_defaults(func=lambda a: cmd_status(HagSpec.load(a.spec)))
+    p.set_defaults(func=lambda a: cmd_status(ShoalSpec.load(a.spec)))
 
     p = sub.add_parser("sync-models", help="reconcile recorded role models against live sessions")
     p.add_argument("--spec", required=True)
@@ -911,7 +911,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_install_cli)
 
     p = sub.add_parser("uninstall-systemd",
-                       help="disable + remove a retired HAG's watcher units")
+                       help="disable + remove a retired shoal's watcher units")
     config.add_id_arg(p, required=True)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.hag, dry_run=a.dry_run))
@@ -923,7 +923,7 @@ def main(argv: list[str] | None = None) -> int:
 def cmd_spec_absolutize_docs(a: argparse.Namespace) -> int:
     """Rewrite every relative `role.doc` to os.path.join(BASE, doc), normalized, and persist the
     spec through the usual path (commit + push when it lives in the ledger clone)."""
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     base = os.path.abspath(os.path.expanduser(a.base))
     changed = []
     for r in spec.roles:
@@ -947,7 +947,7 @@ def cmd_spec_absolutize_docs(a: argparse.Namespace) -> int:
 
 def cmd_install_cli(a: argparse.Namespace) -> int:
     try:
-        spec = HagSpec.load(a.spec)
+        spec = ShoalSpec.load(a.spec)
     except OSError as exc:
         print(f"cannot read spec {a.spec}: {exc}")
         return 1
@@ -984,13 +984,13 @@ def cmd_heartbeat_cli(a: argparse.Namespace) -> int:
     if a.touch:
         print(hb_touch(a.hag, a.touch))
         return 0
-    spec = HagSpec.load(a.spec) if a.spec else HagSpec(hag=a.hag, dir=a.dir)
+    spec = ShoalSpec.load(a.spec) if a.spec else ShoalSpec(hag=a.hag, dir=a.dir)
     return cmd_heartbeat(spec, a.threshold_min,
                          dry_run=a.dry_run, refire_min=a.refire_min)
 
 
 def cmd_brief(a: argparse.Namespace) -> int:
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     role = spec.role(a.slug)
     if role is None:
         print(f"no role {a.slug} in {a.spec}")

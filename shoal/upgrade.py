@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`shoal upgrade`: roll shoal/ tooling and feature flags into a LIVE HAG (architecture doc §11).
+"""`shoal upgrade`: roll shoal/ tooling and feature flags into a LIVE shoal (architecture doc §11).
 
   shoal upgrade --spec S [--enable a.b] [--disable a.b] [--set a.b=JSON] [--rearm lazy|now]
                  [--skip-selftests] [--allow-dirty] [--dry-run]
@@ -35,7 +35,7 @@ TESTS_DIR = os.path.join(os.path.dirname(HERE), "tests")
 sys.path.insert(0, HERE)
 import config  # noqa: E402
 
-from roles import HagSpec, find_spec, is_wake_relay  # noqa: E402
+from roles import ShoalSpec, find_spec, is_wake_relay  # noqa: E402
 
 REARM_LEDGER = {"ledger_watch.py", "ledger.py", "roles.py", "digest.py", "sources.py", "watchers.py",
                 "heartbeat.py"}
@@ -53,7 +53,7 @@ def git(*argv: str) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def rel_hag() -> str:
+def rel_pkg() -> str:
     top = git("rev-parse", "--show-toplevel")
     return os.path.relpath(HERE, top)
 
@@ -144,7 +144,7 @@ def rearm_since(prev: str, files: list[str], cwd: str = HERE) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def stale_watchers(spec: HagSpec, since_iso: str) -> list[tuple[str, str]]:
+def stale_watchers(spec: ShoalSpec, since_iso: str) -> list[tuple[str, str]]:
     """(slug, pid) of alive ledger-watch processes armed before `since_iso`."""
     from ledger_watch import load_sidecar, sidecar_path
     out = []
@@ -166,12 +166,12 @@ def run_selftests() -> tuple[bool, str]:
 
 def cmd_upgrade(a) -> int:
     path = a.spec or find_spec(a.hag)
-    spec = HagSpec.load(path)
-    hagdir = rel_hag()
+    spec = ShoalSpec.load(path)
+    pkgdir = rel_pkg()
     sha = git("rev-parse", "--short=12", "HEAD")
     dirty = git("status", "--porcelain", "--", ".")
     if dirty and not a.allow_dirty:
-        print(f"{'WARNING' if a.dry_run else 'ERROR'}: uncommitted changes under {hagdir}: commit first "
+        print(f"{'WARNING' if a.dry_run else 'ERROR'}: uncommitted changes under {pkgdir}: commit first "
               f"(the recorded sha must name the code that runs)\n{dirty}")
         if not a.dry_run:
             return 1
@@ -195,7 +195,7 @@ def cmd_upgrade(a) -> int:
     relay_stale = bool(cls["re-arm (relay-watch)"]) and any(is_wake_relay(r) for r in spec.roles)
     print(f"# upgrade {spec.hag}: tooling {prev or '(none recorded)'} -> {sha}"
           + (" (dirty tree)" if dirty else ""))
-    print(f"changed under {hagdir}: {len(files)} file(s)"
+    print(f"changed under {pkgdir}: {len(files)} file(s)"
           + ("" if prev else " (no recorded sha: every module treated as changed)"))
     for k, v in cls.items():
         if v:
@@ -262,7 +262,7 @@ def cmd_upgrade(a) -> int:
 
 
 def add_parser(sub) -> None:
-    p = sub.add_parser("upgrade", help="roll shoal/ tooling and feature flags into a live HAG (classes: live, "
+    p = sub.add_parser("upgrade", help="roll shoal/ tooling and feature flags into a live shoal (classes: live, "
                                        "re-arm, brief, restart)")
     p.add_argument("--spec", default="")
     config.add_id_arg(p, default="")

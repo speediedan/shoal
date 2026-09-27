@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HAG health quorum (architecture doc §6): watchers of the watchers, no model tokens.
+"""shoal health quorum (architecture doc §6): watchers of the watchers, no model tokens.
 
     shoal health --spec <hag.json> --instance a|b [--dry-run]     # what the two timers run
     shoal relay-watch --shoal H                                     # the Claude relay's one waiter
@@ -47,7 +47,7 @@ from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
-from roles import (WAKE_RELAY_SLUG, HagSpec, find_spec, is_wake_relay, roles_dir, state_dir,  # noqa: E402
+from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, is_wake_relay, roles_dir, state_dir,  # noqa: E402
                    wake_relay_role)
 
 TOOL_PATH = config.tool_path()
@@ -90,7 +90,7 @@ def age_min(ts: str) -> float | None:
     return None if t is None else (utcnow() - t).total_seconds() / 60
 
 
-def continuation_cfg(spec: HagSpec) -> dict | None:
+def continuation_cfg(spec: ShoalSpec) -> dict | None:
     """features.continuation: true or {"after_min": N}; None when off."""
     c = (spec.features or {}).get("continuation")
     if not c:
@@ -98,7 +98,7 @@ def continuation_cfg(spec: HagSpec) -> dict | None:
     return c if isinstance(c, dict) else {}
 
 
-def health_cfg(spec: HagSpec) -> dict:
+def health_cfg(spec: ShoalSpec) -> dict:
     h = (spec.features or {}).get("health")
     return h if isinstance(h, dict) else {}
 
@@ -125,9 +125,9 @@ def relay_queue_path(hag: str) -> str:
     return os.path.join(state_dir(hag), "relay-queue")
 
 
-def wake_text(spec: HagSpec, slug: str, reason: str, condition: str = "") -> str:
-    """The text of a HAG wake, prefixed with the offline banner while the maintainer is away."""
-    text = (f"HAG-WAKE {slug}@{spec.hag} [{condition or 'request'}]: {reason} || run "
+def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "") -> str:
+    """The text of a shoal wake, prefixed with the offline banner while the maintainer is away."""
+    text = (f"SHOAL-WAKE {slug}@{spec.hag} [{condition or 'request'}]: {reason} || run "
             f"`shoal next --shoal {spec.hag} --slug {slug}`, act, write ONE `shoal queue`, re-arm your watcher.")
     # every wake carries the offline state, because a role that skips `next` never sees the banner
     # (measured 2026-09-24: a lane raised a blocking merge question 3 h into an offline window)
@@ -142,7 +142,7 @@ def wake_text(spec: HagSpec, slug: str, reason: str, condition: str = "") -> str
     return text
 
 
-def request_wake(spec: HagSpec, slug: str, reason: str, condition: str = "", dry_run: bool = False) -> str:
+def request_wake(spec: ShoalSpec, slug: str, reason: str, condition: str = "", dry_run: bool = False) -> str:
     """Wake one role through its ecosystem's direct session wake (backends.Backend.wake);
     returns the channel used."""
     role = spec.role(slug)
@@ -167,7 +167,7 @@ def relay_alive(hag: str) -> bool:
         return False
 
 
-def page_user(spec: HagSpec, text: str, state: dict, dry_run: bool = False) -> str:
+def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) -> str:
     """A maintainer page is one ledger msg to `user`; deferred while the maintainer is offline."""
     from ledger import Ledger, View
     led = Ledger(spec.hag, root=spec.ledger_dir)
@@ -182,7 +182,7 @@ def page_user(spec: HagSpec, text: str, state: dict, dry_run: bool = False) -> s
     if channel.startswith("gh-issue:"):  # a place the maintainer is notified, not only the ledger
         repo, _, num = channel[len("gh-issue:"):].partition("#")
         r = subprocess.run(["gh", "issue", "comment", num, "--repo", repo, "--body",
-                            f"**HAG {spec.hag} page** ({iso()}): {text[:1500]}"],
+                            f"**shoal {spec.hag} page** ({iso()}): {text[:1500]}"],
                            capture_output=True, text=True, timeout=60, env=_ENV)
         return "page+gh-issue" if r.returncode == 0 else f"page (gh-issue FAILED rc={r.returncode})"
     return "page"
@@ -238,7 +238,7 @@ def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | 
 
 # ---- the policy -----------------------------------------------------------------
 
-def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
+def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     """[{slug, condition, key, since, detail}] for every live condition instance."""
     from state import read_wait
     out = []
@@ -337,7 +337,7 @@ def evaluate(spec: HagSpec, view, cbusy: dict[str, str]) -> list[dict]:
     return out
 
 
-def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
+def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
     from ledger import Ledger, View
     sdir = state_dir(spec.hag)
     os.makedirs(sdir, exist_ok=True)
@@ -444,7 +444,7 @@ def run(spec: HagSpec, instance: str, dry_run: bool = False) -> int:
 
 
 def cmd_health(a) -> int:
-    spec = HagSpec.load(a.spec or find_spec(a.hag))
+    spec = ShoalSpec.load(a.spec or find_spec(a.hag))
     return run(spec, a.instance, dry_run=a.dry_run)
 
 
@@ -488,7 +488,7 @@ RELAY_DOC = """# {slug} plan_state ({hag})
 
 - role: `{slug}` (infrastructure, not a worker; `fill=none`): the Claude implementation of direct
   session wake, model haiku
-- generated by `shoal relay-init`; lives in the HAG's data directory, not the design repo
+- generated by `shoal relay-init`; lives in the shoal's data directory, not the design repo
 - design: `.agents/hag_architecture.md` §6 (wake adapters)
 
 ## Mission
@@ -533,9 +533,9 @@ def relay_doc_path(hag: str, slug: str = "") -> str:
 
 
 def cmd_relay_init(a) -> int:
-    """Generate the relay's start doc in the HAG data dir; add the role + features.relay to the spec."""
+    """Generate the relay's start doc in the shoal data dir; add the role + features.relay to the spec."""
     path = a.spec or find_spec(a.hag)
-    spec = HagSpec.load(path)
+    spec = ShoalSpec.load(path)
     existing = wake_relay_role(spec)
     slug = existing.slug if existing is not None else RELAY_SLUG
     doc = relay_doc_path(spec.hag, slug)
@@ -568,7 +568,7 @@ def cmd_relay_launch(a) -> int:
     bumps (new tag), the new session id is recorded in the spec, and the launch counts only
     once relay-watch is proven running."""
     path = a.spec or find_spec(a.hag)
-    spec = HagSpec.load(path)
+    spec = ShoalSpec.load(path)
     role = wake_relay_role(spec)
     if role is None:
         print(f"ERROR: no wake relay role in {spec.hag}: run `shoal relay-init --shoal {spec.hag}` first")

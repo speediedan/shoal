@@ -69,7 +69,7 @@ cat > "$S/up_ctx.json" <<'JSON'
 JSON
 $H context set --shoal $HAGID --spec "$SPEC" --slug up --file "$S/up_ctx.json" >/dev/null
 check '"upstream": 2.0' $H context show --shoal $HAGID --spec "$SPEC" --slug up
-# contexts are per-HAG orchestration state in the data dir: export, edit there, load back
+# contexts are per-shoal orchestration state in the data dir: export, edit there, load back
 check "wrote $S/data/$HAGID/contexts/tl.json" $H context export --shoal $HAGID --spec "$SPEC"
 python3 - "$S/data/$HAGID/contexts/tl.json" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["affinity"].setdefault("keywords",{})["HookedTransformer"]=2.5; json.dump(d,open(p,"w"))
@@ -251,8 +251,8 @@ $H offer --shoal $HAGID --spec "$SPEC" --to tl --item interpretune#9201:fix --no
 $H msg --shoal $HAGID --spec "$SPEC" --by up --to tl --text "peer chatter" --no-sync >/dev/null
 python3 - "$HAGD" "$SPEC" "$A" <<'PY' || fail "busy-role gating wrong"
 import sys; sys.path.insert(0,sys.argv[1])
-from roles import HagSpec; from ledger import Ledger, View; from ledger_watch import actionable
-s=HagSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
+from roles import ShoalSpec; from ledger import Ledger, View; from ledger_watch import actionable
+s=ShoalSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
 acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
 assert not any(d.startswith(("OFFER","MSG","BOARD")) for d in acts), acts
 PY
@@ -260,8 +260,8 @@ $H offer --shoal $HAGID --spec "$SPEC" --to tl --item interpretune#9202:fix --no
 $H msg --shoal $HAGID --spec "$SPEC" --by user --to tl --text "maintainer ping" --wake --no-sync >/dev/null
 python3 - "$HAGD" "$SPEC" "$A" <<'PY' || fail "--now offer / user --wake msg did not wake the busy role"
 import sys; sys.path.insert(0,sys.argv[1])
-from roles import HagSpec; from ledger import Ledger, View; from ledger_watch import actionable
-s=HagSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
+from roles import ShoalSpec; from ledger import Ledger, View; from ledger_watch import actionable
+s=ShoalSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
 acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
 assert any("9202" in d and "NOW" in d for d in acts) and any("maintainer ping" in d for d in acts), acts
 assert not any("9201" in d or "peer chatter" in d for d in acts), acts
@@ -269,8 +269,8 @@ PY
 $H queue --shoal $HAGID --spec "$SPEC" --slug tl --idle --next "" --no-sync >/dev/null
 python3 - "$HAGD" "$SPEC" "$A" <<'PY' || fail "idle role not woken by a plain offer"
 import sys; sys.path.insert(0,sys.argv[1])
-from roles import HagSpec; from ledger import Ledger, View; from ledger_watch import actionable
-s=HagSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
+from roles import ShoalSpec; from ledger import Ledger, View; from ledger_watch import actionable
+s=ShoalSpec.load(sys.argv[2]); v=View(Ledger(s.hag,root=sys.argv[3],sync=False),s)
 acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
 assert any("9201" in d for d in acts) and not any("peer chatter" in d for d in acts), acts
 PY
@@ -301,8 +301,8 @@ RW=$!
 for i in $(seq 1 30); do [ "$(cat /tmp/$HAGID/relay-watch.pid 2>/dev/null)" = "$RW" ] && break; sleep 0.5; done
 python3 - "$HAGD" "$SPEC" <<'PY' | grep -q "^wake-relay$" || fail "request_wake did not choose the wake relay"
 import sys; sys.path.insert(0,sys.argv[1])
-from roles import HagSpec; from health import request_wake
-print(request_wake(HagSpec.load(sys.argv[2]), "tl", "relay test", "watcher-dead"))
+from roles import ShoalSpec; from health import request_wake
+print(request_wake(ShoalSpec.load(sys.argv[2]), "tl", "relay test", "watcher-dead"))
 PY
 sleep 3; grep -q "RELAY-WAKE to=tl-r1" "$S/relay.log" || fail "relay-watch did not deliver :: $(cat $S/relay.log)"
 grep -q "VERDICT RELAY-DELIVER 1" "$S/relay.log" || fail "relay-watch verdict missing"
@@ -323,8 +323,8 @@ grep -q "END-OF-MAINTAINER-TEXT" <<<"$OUT" || fail "maintainer mail was shortene
 ML=$(grep -n "^MAIL " <<<"$OUT" | cut -d: -f1); QL=$(grep -n "^QUEUE v" <<<"$OUT" | cut -d: -f1)
 [ -n "$ML" ] && [ "$ML" -lt "$QL" ] || fail "MAIL must print before QUEUE (a piped next consumed mail unseen) :: $OUT"
 (cd "$HAGD" && python3 -c "
-import health; from roles import HagSpec
-t = health.wake_text(HagSpec.load('$SPEC'), 'tl', 'probe', 'x')
+import health; from roles import ShoalSpec
+t = health.wake_text(ShoalSpec.load('$SPEC'), 'tl', 'probe', 'x')
 assert t.startswith('USER OFFLINE since') and 'raise NO prompted question' in t, t
 ") || fail "a wake sent while offline must carry the offline banner"
 [ "$(rc_of $H asks --shoal $HAGID --spec "$SPEC" --slug tl --no-sync)" = 3 ] || fail "asks printed question sets while offline"

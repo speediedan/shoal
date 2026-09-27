@@ -11,7 +11,7 @@ re-brief. `next` prints an AUX header naming the lanes it stays out of.
   shoal aux-init   --shoal H [--ecosystem opencode] [--model M] [--effort E] [--doc-only] [--dry-run]
   shoal aux-launch --shoal H [--dry-run] [--force] [--verify-s 600]
 
-`aux-init` writes the start doc to the HAG data dir and adds the role; `aux-launch` starts
+`aux-init` writes the start doc to the shoal data dir and adds the role; `aux-launch` starts
 its session alone (no restart, no incarnation bump) and counts only once the role's
 ledger-watch is proven alive. `start --aux` and `add-role --aux` do the same at creation.
 Needs `features.matcher`: without the fit matrix the aux ranking is board order only.
@@ -26,7 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
 
-from roles import HagSpec, Role, find_spec, roles_dir  # noqa: E402
+from roles import ShoalSpec, Role, find_spec, roles_dir  # noqa: E402
 
 AUX_SLUG = "hag-aux"
 AUX_ECOSYSTEM = "opencode"
@@ -37,7 +37,7 @@ AUX_DOC = """# {slug}: plan_state (start doc)
 
 ## Mission
 
-You are the residual lane of HAG `{hag}`. You work the board items that no other active
+You are the residual lane of shoal `{hag}`. You work the board items that no other active
 lane's brief covers: hygiene, tests, docs, small features and unblockers that would
 otherwise sit unowned. You never compete with a lane for its own work.
 
@@ -103,7 +103,7 @@ def parse_aux_arg(val: str) -> tuple[str, str]:
     return eco or AUX_ECOSYSTEM, model or (AUX_MODEL if (eco or AUX_ECOSYSTEM) == "opencode" else "")
 
 
-def header(spec: HagSpec, slug: str) -> str:
+def header(spec: ShoalSpec, slug: str) -> str:
     """The AUX line in `next`: the lanes this role stays out of, from the live roster."""
     import matcher
     from digest import active_lanes
@@ -124,7 +124,7 @@ def header(spec: HagSpec, slug: str) -> str:
 
 def cmd_aux_init(a) -> int:
     path = a.spec or find_spec(a.hag)
-    spec = HagSpec.load(path)
+    spec = ShoalSpec.load(path)
     slug = a.slug or AUX_SLUG
     doc = aux_doc_path(spec.hag, slug)
     have = spec.role(slug)
@@ -160,7 +160,7 @@ def cmd_aux_launch(a) -> int:
     previous session existed. Counts once the role's ledger-watch is alive."""
     from health import watcher_alive
     path = a.spec or find_spec(a.hag)
-    spec = HagSpec.load(path)
+    spec = ShoalSpec.load(path)
     slug = a.slug or AUX_SLUG
     role = spec.role(slug)
     if role is None or not getattr(role, "aux", False):

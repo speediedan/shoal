@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(HERE, "telemetry"))
 from ledger import OFFER_WRITERS  # noqa: E402
 
 from ledger import Ledger, View, fmt_item, item_key, short  # noqa: E402
-from roles import HagSpec, find_spec, state_dir  # noqa: E402
+from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
 import config  # noqa: E402
 
 TOOL_PATH = config.tool_path()
@@ -190,7 +190,7 @@ def cmd_ledger_watch(a) -> int:
     except Exception:
         pass
     try:
-        spec = HagSpec.load(find_spec(hag, a.spec))
+        spec = ShoalSpec.load(find_spec(hag, a.spec))
     except OSError:
         spec = None
     role = spec.role(slug) if spec else None

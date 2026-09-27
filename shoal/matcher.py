@@ -3,7 +3,7 @@
 
 A model scores every open board item 0-3 against every lane's declared brief, and
 classifies it (workable | needs-maintainer | blocked | parked), in place of affinity
-weights. Opt-in per HAG with `features.matcher` (absent: the digest behaves exactly as
+weights. Opt-in per shoal with `features.matcher` (absent: the digest behaves exactly as
 before). `live: false` is shadow mode: the semantic ranking is written beside the live
 digest for `shoal digest --compare`; `live: true` makes it the ranking roles read.
 
@@ -49,7 +49,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from ledger import SYSTEM_WRITER  # noqa: E402
 
-from roles import HagSpec, data_dir  # noqa: E402
+from roles import ShoalSpec, data_dir  # noqa: E402
 
 ENV_FILE = os.path.join(HERE, ".env")
 PRICING_URL = "https://opencode.ai/docs/zen/"
@@ -93,8 +93,8 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def config(spec: HagSpec) -> dict | None:
-    """The merged matcher config, or None when the HAG has not opted in."""
+def config(spec: ShoalSpec) -> dict | None:
+    """The merged matcher config, or None when the shoal has not opted in."""
     m = (spec.features or {}).get("matcher")
     if not m:
         return None
@@ -144,7 +144,7 @@ def item_hash(it: dict) -> str:
               ",".join(it.get("blocked_by") or []), it.get("status", ""))
 
 
-def lanes(spec: HagSpec) -> dict[str, str]:
+def lanes(spec: ShoalSpec) -> dict[str, str]:
     """Roles scored by the matcher: workers with a declared brief, never the aux lane."""
     out = {}
     for r in spec.roles:
@@ -364,7 +364,7 @@ def call(route: dict, prompt: str, hag: str, timeout: float, env: dict) -> str:
     raise Unavailable(f"unknown matcher backend {route['backend']!r}")
 
 
-def resolve(spec: HagSpec, c: dict, st: dict, env: dict, notes: list[str]) -> dict | None:
+def resolve(spec: ShoalSpec, c: dict, st: dict, env: dict, notes: list[str]) -> dict | None:
     """The first route that answers the probe, cheapest tier first; records a switch. None
     when nothing answers."""
     tried: set[str] = set()
@@ -395,7 +395,7 @@ def resolve(spec: HagSpec, c: dict, st: dict, env: dict, notes: list[str]) -> di
     return None
 
 
-def announce_switch(spec: HagSpec, prev: dict, new: dict, notes: list[str], st: dict) -> None:
+def announce_switch(spec: ShoalSpec, prev: dict, new: dict, notes: list[str], st: dict) -> None:
     paid = {"go": " (PAID: the Go subscription's monthly usage)", "zen": " (PAID: the Zen balance)"}
     text = (f"matcher model switched: {prev.get('model')} ({tier_of(prev)} tier) -> {new['model']} "
             f"({tier_of(new)} tier){paid.get(tier_of(new), '')}. Free models are re-probed every "
@@ -509,7 +509,7 @@ def repo_private(repo: str, cache: dict) -> bool:
     return vis[repo] != "PUBLIC"
 
 
-def score(spec: HagSpec, items: list[dict], suggest: dict[str, set[str]] | None = None,
+def score(spec: ShoalSpec, items: list[dict], suggest: dict[str, set[str]] | None = None,
           no_call: bool = False) -> dict:
     """Fit matrix for the board: {item: {fits, class, blocker, why, model, ts, stale}} plus a
     run summary. Only new or changed items (or items missing a lane's current brief) cost a

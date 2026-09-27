@@ -153,14 +153,14 @@ mkdir -p "$S/rel/t1hag"
 python3 -c "
 import json; d=json.load(open('$SPEC'))
 d['roles'][0]['doc']='alpha_plan_state.md'; d['roles'][1]['doc']='./sub/../beta_plan_state.md'
-for r in d['roles']: r['session']=''   # no live sessions: hag_checks probes no harness
+for r in d['roles']: r['session']=''   # no live sessions: group_checks probes no harness
 json.dump(d, open('$S/rel/t1hag/hag.json','w'))"
 python3 - "$HAGD" "$S/rel/t1hag/hag.json" > "$S/doctor-rel.out" 2>&1 <<'PY' || true
 import sys; sys.path.insert(0, sys.argv[1])
 import doctor
-from roles import HagSpec
+from roles import ShoalSpec
 d = doctor.Doc()
-doctor.hag_checks(d, HagSpec.load(sys.argv[2]), sys.argv[2], 60)
+doctor.group_checks(d, ShoalSpec.load(sys.argv[2]), sys.argv[2], 60)
 PY
 grep -q "WARN doc path alpha: relative role doc 'alpha_plan_state.md'" "$S/doctor-rel.out" || fail "doctor did not warn on a relative doc :: $(cat "$S/doctor-rel.out")"
 check "\[dry-run\] alpha: alpha_plan_state.md -> $DOCS/alpha_plan_state.md" $H spec absolutize-docs --spec "$S/rel/t1hag/hag.json" --base "$DOCS" --dry-run
@@ -178,12 +178,12 @@ if $H ledger-lint --help | grep -q -- "--hag"; then fail "--hag alias shows in h
 python3 - "$HAGD" "$SPEC" "$A" <<'PY2' || fail "legacy or current system-writer offer not honoured"
 import sys; sys.path.insert(0, sys.argv[1])
 from ledger import Ledger, View, SYSTEM_WRITER
-from roles import HagSpec
+from roles import ShoalSpec
 assert SYSTEM_WRITER == "shoal", SYSTEM_WRITER
 led = Ledger("t1hag", root=sys.argv[3])
 led.append("hag.py", "offer", to="alpha", item="interpretune#778:fix", base="interpretune@3ac6fdf9", prio=1)
 led.append(SYSTEM_WRITER, "offer", to="alpha", item="interpretune#779:fix", base="interpretune@3ac6fdf9", prio=1)
-v = View(Ledger("t1hag", root=sys.argv[3]), HagSpec.load(sys.argv[2]))
+v = View(Ledger("t1hag", root=sys.argv[3]), ShoalSpec.load(sys.argv[2]))
 items = {o["item"].split(":")[0] for o in v.offers.values() if o["status"] == "open"}
 assert {"interpretune#778", "interpretune#779"} <= items, items
 bad = [x for x in v.violations if "#778" in str(x) or "#779" in str(x)]

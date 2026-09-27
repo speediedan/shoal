@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""systemd --user units for HAG watchers (replaces the cron lines).
+"""systemd --user units for shoal watchers (replaces the cron lines).
 
 One-shot services + Persistent timers, journal logging, explicit tool PATH
 in the unit (systemd's user PATH lacks openchamber, claude, node), no manual
-cron. Regenerate per HAG generation (session ids change); stale units for a
-retired HAG are removed by `uninstall-systemd --shoal <old-id>`.
+cron. Regenerate per shoal generation (session ids change); stale units for a
+retired shoal are removed by `uninstall-systemd --shoal <old-id>`.
 
 Every role runs its own `ledger-watch`; lanes/pipeline/heartbeat notify
 through the ledger (`ledger:<hag>` target), so no unit needs a session id.
@@ -16,7 +16,7 @@ timer it wrote, so a launch is one command. Jobs:
   pipeline       every :0/10   depth-zero starvation -> PIPELINE-WATCH
   heartbeat      every :0/5    STALL-SUSPECT (deduped) unless a wait is proven (without features.health)
   health-a/-b    :0/5, :2/5    health quorum (features.health): policy ladder, per-ecosystem wakes
-  digest         every :3/10   one board read per HAG -> board_digest.json (features.digest)
+  digest         every :3/10   one board read per shoal -> board_digest.json (features.digest)
   reconcile      04,16:07      GitHub ground truth into telemetry
   weekly-report  Mon 05:11     rolling 168h report (md + html) for the review
 """
@@ -33,7 +33,7 @@ import config  # noqa: E402
 
 # units run the configured cli (config `cli`), so units written from any checkout point
 # at the one the host config names
-_CLI_EXE, HAGPY = config.cli_exec()
+_CLI_EXE, SHOAL_CLI = config.cli_exec()
 UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
 TOOL_PATH = config.tool_path()
 
@@ -48,7 +48,7 @@ def service_unit(description: str, repo_dir: str, argv: list[str],
     if exe:  # a sibling python script (reconcile)
         head = f"{sys.executable} {exe}"
     else:
-        head = f"{_CLI_EXE} {HAGPY}".rstrip()
+        head = f"{_CLI_EXE} {SHOAL_CLI}".rstrip()
     return (f"[Unit]\nDescription={description}\n"
             f"[Service]\nType=oneshot\nWorkingDirectory={repo_dir}\n"
             f"Environment=PATH={TOOL_PATH}\n"
@@ -69,37 +69,37 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
     jobs = []
     target = f"ledger:{spec.hag}"
     if lanes:
-        jobs.append(("lanes", f"HAG {spec.hag} lanes watch (server respawn -> ledger)",
+        jobs.append(("lanes", f"shoal {spec.hag} lanes watch (server respawn -> ledger)",
                      ["watch", "--shoal", spec.hag, "lanes", target, spec.dir] + lanes,
                      "*:0/5", ""))
-    jobs.append(("pipeline", f"HAG {spec.hag} pipeline watch (starvation -> ledger)",
+    jobs.append(("pipeline", f"shoal {spec.hag} pipeline watch (starvation -> ledger)",
                  ["watch", "--shoal", spec.hag, "pipeline", target, spec.dir],
                  "*:0/10", ""))
     if (getattr(spec, "features", {}) or {}).get("health"):
         # the health quorum: two identical, offset instances (architecture doc §6)
-        jobs.append(("health-a", f"HAG {spec.hag} health quorum (a)",
+        jobs.append(("health-a", f"shoal {spec.hag} health quorum (a)",
                      ["health", "--spec", spec_path, "--instance", "a"], "*:0/5", ""))
-        jobs.append(("health-b", f"HAG {spec.hag} health quorum (b)",
+        jobs.append(("health-b", f"shoal {spec.hag} health quorum (b)",
                      ["health", "--spec", spec_path, "--instance", "b"], "*:2/5", ""))
     else:
-        jobs.append(("heartbeat", f"HAG {spec.hag} stall daemon",
+        jobs.append(("heartbeat", f"shoal {spec.hag} stall daemon",
                      ["heartbeat", "--spec", spec_path, "--threshold-min", "60"],
                      "*:0/5", ""))
     if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
-        jobs.append(("digest", f"HAG {spec.hag} board digest (one board read per HAG)",
+        jobs.append(("digest", f"shoal {spec.hag} board digest (one board read per shoal)",
                      ["digest", "--shoal", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))
-    jobs.append(("reconcile", f"HAG {spec.hag} reconcile (twice daily)",
+    jobs.append(("reconcile", f"shoal {spec.hag} reconcile (twice daily)",
                  ["--shoal", spec.hag, "--spec", spec_path], "04,16:07",
                  os.path.join(config.cli_pkg_dir(), "telemetry", "hag-reconcile.py")))
-    jobs.append(("weekly-report", f"HAG {spec.hag} weekly report",
+    jobs.append(("weekly-report", f"shoal {spec.hag} weekly report",
                  ["report", "--spec", spec_path, "--hours", "168"], "Mon 05:11", ""))
     return jobs
 
 
 def cmd_install(spec, spec_path: str,
                 dry_run: bool = False, enable: bool = False) -> int:
-    from roles import HagSpec
-    assert isinstance(spec, HagSpec)
+    from roles import ShoalSpec
+    assert isinstance(spec, ShoalSpec)
     if not any(r.session for r in spec.roles):
         print("spec has no live session ids — run start/restart live first (ids are saved back)")
         return 1
@@ -109,7 +109,7 @@ def cmd_install(spec, spec_path: str,
         svc = service_unit(desc, spec.dir, argv, exe)
         sn, tn = unit_name(spec.hag, job, "service"), unit_name(spec.hag, job, "timer")
         if dry_run:
-            print(f"[dry-run] {sn} + {tn} ({cal}): {os.path.basename(exe or HAGPY or _CLI_EXE)} {' '.join(argv)[:90]}")
+            print(f"[dry-run] {sn} + {tn} ({cal}): {os.path.basename(exe or SHOAL_CLI or _CLI_EXE)} {' '.join(argv)[:90]}")
             continue
         with open(os.path.join(UNIT_DIR, sn), "w") as fh:
             fh.write(svc)

@@ -47,7 +47,7 @@ hag_doc() {
 
 ## Mission
 
-Synthetic role \`$1\` for the HAG selftests.
+Synthetic role \`$1\` for the shoal selftests.
 
 ## Current state
 

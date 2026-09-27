@@ -2,18 +2,18 @@
 """Preflight + live health: `shoal doctor [--spec hag.json]`.
 
 Runs before a launch (no spec: host checks only) and any time after
-(with a spec: adds per-HAG checks). Every check prints one line
+(with a spec: adds per-shoal checks). Every check prints one line
 `OK|WARN|FAIL <name>: <detail>`; exit 1 on any FAIL. Nothing is mutated.
 
 Host checks: python version, tool binaries on the explicit tool PATH
 (openchamber, claude, gh, az, git, systemctl), openchamber server
-reachable, AZURE_DEVOPS_EXT_PAT resolvable, gh auth, HAG roots writable,
-linger enabled, legacy HAG cron lines (the measured silent-failure mode),
+reachable, AZURE_DEVOPS_EXT_PAT resolvable, gh auth, shoal roots writable,
+linger enabled, legacy shoal cron lines (the measured silent-failure mode),
 stale systemd units pointing at missing files.
 
-HAG checks: spec valid; start docs present with required sections; live
+shoal checks: spec valid; start docs present with required sections; live
 session ids present + reachable; heartbeat/wait posture per role; watcher
-ticks vs 3x interval; systemd timers present and active for this HAG;
+ticks vs 3x interval; systemd timers present and active for this shoal;
 telemetry dir writable + last event age; reconcile tick age. Ledger: clone
 present with a reachable remote, no unpushed commits older than an hour,
 lint clean (no violations, no contested claims), and one ledger-watch
@@ -36,7 +36,7 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 from backends import get as get_backend  # noqa: E402
 from heartbeat import age_min, classify  # noqa: E402
-from roles import SHOAL_DATA_ROOT, HagSpec, state_dir, telemetry_dir  # noqa: E402
+from roles import SHOAL_DATA_ROOT, ShoalSpec, state_dir, telemetry_dir  # noqa: E402
 
 ENV = config.tool_env()
 TICK_INTERVAL_MIN = {"lanes": 5, "pipeline": 10, "heartbeat": 5,
@@ -135,11 +135,11 @@ def host_checks(d: Doc) -> None:
                   if not l.startswith("#") and re.search(r"watch-coordination\.sh|hag-reconcile|hag_queue_watch|hag-restart", l)]
         if legacy:
             missing = [l for l in legacy if not os.path.exists((l.split()[5:6] or [""])[0])]
-            (d.fail if missing else d.warn)("legacy HAG cron lines",
+            (d.fail if missing else d.warn)("legacy cron lines",
                                             f"{len(legacy)} line(s); {len(missing)} point at MISSING scripts "
                                             "(silent failure every run — remove with `crontab -e`)")
         else:
-            d.ok("legacy HAG cron lines", "none")
+            d.ok("legacy cron lines", "none")
     except Exception as exc:  # noqa: BLE001
         d.warn("crontab", str(exc))
     unit_dir = os.path.expanduser("~/.config/systemd/user")
@@ -232,13 +232,13 @@ def timer_state(hag: str) -> dict[str, str]:
             head = line.split(m.group(1))[0].strip()
             # columns are NEXT LEFT LAST PASSED: a real weekday timestamp in
             # NEXT means scheduled+waiting; LAST "n/a" only means never fired
-            # yet (reconcile/weekly on a fresh HAG) — not inactive.
+            # yet (reconcile/weekly on a fresh shoal) — not inactive.
             scheduled = bool(re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s", head))
             out[m.group(2)] = "scheduled" if scheduled else "inactive"
     return out
 
 
-def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> None:
+def group_checks(d: Doc, spec: ShoalSpec, spec_path: str, threshold_min: float) -> None:
     errs = spec.validate()
     (d.ok if not errs else d.fail)("spec", f"{spec_path} incarnation={spec.incarnation} ({spec.display_gen}) roles={[r.slug for r in spec.roles]}"
                                    if not errs else "; ".join(errs))
@@ -303,7 +303,7 @@ def hag_checks(d: Doc, spec: HagSpec, spec_path: str, threshold_min: float) -> N
                 f"last {recent} :: {fails['sample'][:160]}")
 
 
-def matcher_checks(d: Doc, spec: HagSpec) -> None:
+def matcher_checks(d: Doc, spec: ShoalSpec) -> None:
     """features.matcher (architecture §4.1): the model that last answered, and freshness."""
     import matcher
     c = matcher.config(spec)
@@ -328,7 +328,7 @@ def matcher_checks(d: Doc, spec: HagSpec) -> None:
                     f"{sum(1 for k in matcher.load_cache(spec.hag) if not k.startswith('_'))} items cached")
 
 
-def ledger_checks(d: Doc, spec: HagSpec) -> None:
+def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
     try:
         from ledger import Ledger, View, git, lint, unpushed
         from ledger_watch import load_sidecar, sidecar_path
@@ -407,12 +407,12 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     if a.spec:
         print("== hag")
         try:
-            spec = HagSpec.load(a.spec)
+            spec = ShoalSpec.load(a.spec)
         except Exception as exc:  # noqa: BLE001
             d.fail("spec", f"{a.spec}: {exc}")
             spec = None
         if spec is not None:
-            hag_checks(d, spec, a.spec, a.threshold_min)
+            group_checks(d, spec, a.spec, a.threshold_min)
     print(f"== doctor: {d.fails} FAIL, {d.warns} WARN")
     return 1 if d.fails else 0
 

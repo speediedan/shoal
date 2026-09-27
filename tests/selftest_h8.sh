@@ -83,9 +83,9 @@ import json, os, sys
 sys.path.insert(0, sys.argv[2])
 from items import items
 import digest, matcher
-from roles import HagSpec
+from roles import ShoalSpec
 from ledger import Ledger, View
-spec = HagSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
 doc = digest.build(spec, view, items=items())
 m = doc["matcher"]
 assert doc["ranking"] == "keyword" and doc["shadow"]["ranking"] == "semantic", doc["ranking"]
@@ -116,9 +116,9 @@ import json, os, sys
 sys.path.insert(0, sys.argv[2])
 from items import items
 import digest, matcher
-from roles import HagSpec
+from roles import ShoalSpec
 from ledger import Ledger, View
-spec = HagSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
 doc = digest.build(spec, view, items=items())
 assert doc["matcher"]["calls"] == 0 and doc["matcher"]["unscored"] == 0, doc["matcher"]
 its = items(); its[2]["title"] = "comment hygiene sweep, rescoped"
@@ -138,16 +138,16 @@ import copy, json, os, sys
 sys.path.insert(0, sys.argv[2])
 from items import items
 import digest
-from roles import HagSpec
+from roles import ShoalSpec
 from ledger import Ledger, View
-spec = HagSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
 live = copy.deepcopy(spec); live.features["matcher"]["live"] = True
 doc = digest.build(live, view, items=items())
 assert doc["ranking"] == "semantic" and "shadow" not in doc and doc["roles"]["tl"] == [], doc["ranking"]
 off = copy.deepcopy(spec); off.features.pop("matcher")
 doc = digest.build(off, view, items=items())
 assert doc["ranking"] == "keyword" and "matcher" not in doc and "shadow" not in doc
-assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leaked into a matcher-less HAG"
+assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leaked into a matcher-less shoal"
 PY
 
 echo "== 4 candidates, next AUX header, compare"
@@ -168,7 +168,7 @@ PY
 check "\[dry-run\] aux-init $HAGID: doc $S/data/$HAGID/roles/hag-aux/plan_state.md; role ADD hag-aux" \
   $H aux-init --shoal $HAGID --spec "$S/spec2.json" --dry-run
 check "role ADD hag-aux" $H aux-init --shoal $HAGID --spec "$S/spec2.json"
-grep -q "residual lane of HAG \`$HAGID\`" "$S/data/$HAGID/roles/hag-aux/plan_state.md" || fail "aux doc not written"
+grep -q "residual lane of shoal \`$HAGID\`" "$S/data/$HAGID/roles/hag-aux/plan_state.md" || fail "aux doc not written"
 python3 - "$S/spec2.json" <<'PY' || fail "aux role not added"
 import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "hag-aux"][0]
 assert r["aux"] is True and r["fill"] == "self", r
@@ -227,8 +227,8 @@ echo "== 7 tiers: free first, then the Go subscription, then the Zen balance; pa
 python3 - "$SPEC" "$GOOD" "$BAD" <<'PY' || fail "tiers"
 import sys
 import matcher
-from roles import HagSpec
-spec = HagSpec.load(sys.argv[1]); good, bad = sys.argv[2], sys.argv[3]
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[1]); good, bad = sys.argv[2], sys.argv[3]
 c = dict(matcher.DEFAULTS, backend="command", model=bad, fallbacks=[], discover_free=False,
          go_fallbacks=[{"backend": "command", "model": good}],
          paid_fallback={"backend": "command", "model": good})

@@ -33,17 +33,17 @@ import config  # noqa: E402
 from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, fmt_item,  # noqa: E402
                     item_key, lint, render_all, render_role, split_item,
                     sync_pull, sync_push, unpushed)
-from roles import DEFAULT_LEDGER, HagSpec, find_spec, state_dir  # noqa: E402
+from roles import DEFAULT_LEDGER, ShoalSpec, find_spec, state_dir  # noqa: E402
 
 
-def _spec(a) -> HagSpec | None:
+def _spec(a) -> ShoalSpec | None:
     try:
-        return HagSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
+        return ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
     except OSError:
         return None
 
 
-def _ledger(a, spec: HagSpec | None) -> Ledger:
+def _ledger(a, spec: ShoalSpec | None) -> Ledger:
     root = getattr(a, "ledger_dir", "") or (spec.ledger_dir if spec else "")
     if spec and spec.ledger and spec.ledger.get("repo") and not os.path.isdir(root):
         ensure_clone(root, spec.ledger["repo"])
@@ -56,7 +56,7 @@ def _ledger(a, spec: HagSpec | None) -> Ledger:
     return led
 
 
-def _writer(a, spec: HagSpec | None, attr: str = "by", default: str = "user") -> str:
+def _writer(a, spec: ShoalSpec | None, attr: str = "by", default: str = "user") -> str:
     by = getattr(a, attr, "") or default
     if spec is not None and by not in OFFER_WRITERS and spec.role(by) is None:
         raise LedgerError(f"writer {by!r} is not a role in {spec.hag} ({[r.slug for r in spec.roles]})")
@@ -239,7 +239,7 @@ def cmd_msg(a) -> int:
     return 0
 
 
-def _candidates(spec: HagSpec | None, view: View, slug: str, limit: int = 3):
+def _candidates(spec: ShoalSpec | None, view: View, slug: str, limit: int = 3):
     if spec is None:
         return []
     role = spec.role(slug)
@@ -335,7 +335,7 @@ def cmd_sync(a) -> int:
 
 @_guard
 def cmd_ledger_init(a) -> int:
-    spec = HagSpec.load(a.spec)
+    spec = ShoalSpec.load(a.spec)
     if not spec.ledger:
         spec.ledger = {"repo": a.repo or DEFAULT_LEDGER["repo"],
                        "dir": a.ledger_dir or DEFAULT_LEDGER["dir"]}

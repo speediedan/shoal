@@ -9,7 +9,7 @@
   it writes the brief file (built from the lane plan_state + queue paths)
   and either launches `claude "<brief>"` when a TTY is present or prints the
   exact launch command and records the consumer as PENDING until the operator
-  confirms with --consumer-launched. "Needs no prompt" after a HAG restart
+  confirms with --consumer-launched. "Needs no prompt" after a shoal restart
   is therefore a spec violation by construction, not a judgment call.
 - CodexBackend: stub. Accepts the role shape, raises NotSupported on every
   operation, so adding the real transport later touches this file only.
@@ -365,7 +365,7 @@ class ClaudeBackend(Backend):
     def probe_turn(model: str = "claude-haiku-4-5-20251001") -> str:
         b = shutil.which("claude") or "claude"
         r = subprocess.run(
-            [b, "-p", "Reply with exactly: HAG-PROBE-OK (connectivity probe, "
+            [b, "-p", "Reply with exactly: SHOAL-PROBE-OK (connectivity probe, "
                       "no action)", "--model", model, "--output-format", "text"],
             capture_output=True, text=True, timeout=300, env=_ENV)
         return (r.stdout + r.stderr).strip()[-200:]
