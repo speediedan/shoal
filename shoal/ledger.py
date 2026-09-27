@@ -634,6 +634,15 @@ class View:
             if st.get("state") == "waiting" and b and b.split(":", 1)[0] == slug and r != slug:
                 out.append({"role": r, "item": b.split(":", 1)[1] if ":" in b else "",
                             "since": st["ts"], "holder": st.get("holder", "")})
+        # next items a peer recorded as blocked on this role (`queue --blocked ITEM=<slug>:<item>`)
+        for r, q in self.queues.items():
+            if r == slug:
+                continue
+            for waiting_item, b in (q.get("next_blocked") or {}).items():
+                b = str(b)
+                if b.split(":", 1)[0] == slug:
+                    out.append({"role": r, "item": b.split(":", 1)[1] if ":" in b else "",
+                                "since": q.get("ts", ""), "holder": f"{r}'s {waiting_item} waits on it"})
         return out
 
     def held_unscheduled(self, slug: str) -> list[str]:
@@ -643,6 +652,24 @@ class View:
             return []
         planned = {item_key(x) for x in [q.get("active") or ""] + list(q.get("next") or []) if x}
         return sorted(item_key(c["item"]) for c in self.active(slug) if item_key(c["item"]) not in planned)
+
+    def freeze(self) -> dict | None:
+        """The live freeze mode event, or None. A freeze is a mode with an explicit end, never mail:
+        measured 2026-09-27, lanes kept honoring a freeze message for a day after it ended."""
+        m = self.modes.get("freeze")
+        return m if m is not None and m.get("state") == "on" else None
+
+    def freeze_lifted(self) -> dict | None:
+        """The freeze-off event when the freeze ended in the last 24 hours, else None."""
+        m = self.modes.get("freeze")
+        if m is None or m.get("state") != "off":
+            return None
+        import datetime as _dt
+        try:
+            ts = _dt.datetime.strptime(m["ts"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+        except (KeyError, ValueError):
+            return None
+        return m if _dt.datetime.now(_dt.timezone.utc) - ts < _dt.timedelta(hours=24) else None
 
     def user_offline(self) -> dict | None:
         """The live user-offline mode event, or None when the maintainer is online."""

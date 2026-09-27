@@ -40,6 +40,13 @@ Before you leave: `shoal offline on --shoal <id> --until "<when>"`. Roles then r
 and keep working, and pages are held. When you return: `shoal offline off --shoal <id>`, then
 answer the question sets each role raises (stale asks are dropped first).
 
+## Freeze for a window
+
+Before a restart or maintenance window: `shoal freeze on --shoal <id> --note "<why>"`. Every role
+is woken to checkpoint and sleep, and `job run` refuses new units. Wait for sleep postures and no
+running job units. Afterwards: `shoal freeze off --shoal <id>`, which wakes every role to resume.
+Never announce a freeze by message alone: a message has no end, and lanes honor it indefinitely.
+
 ## Inbox
 
 Health pages are ledger messages to `user`, and, when the spec sets

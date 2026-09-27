@@ -421,5 +421,42 @@ check "posture=idle" $H queue --shoal $HAGID --spec "$SPEC" --slug tl --idle --n
 OUT=$(env SHOAL_HEALTH_BETWEEN=tl SHOAL_HEALTH_SHIFT_MIN=12 $H health --spec "$SPEC" --instance b --dry-run 2>&1)
 ! grep -q "tl turn-ended-active" <<<"$OUT" || fail "continuation fired after the role wrote a sleep posture :: $OUT"
 
+echo "== 14 parked work: idle needs every next item blocked; blockers carry forward; freeze mode"
+Q="$H queue --shoal $HAGID --spec $SPEC --no-sync"
+check "posture=active" $Q --slug tl --active interpretune#9601:fix --next interpretune#9602,interpretune#9603 --reason test
+[ "$(rc_of $Q --slug tl --idle)" = 3 ] || fail "idle accepted with unblocked next items"
+check "idle with unblocked next items (interpretune#9602, interpretune#9603)" $Q --slug tl --idle
+check "BLOCKER must be another role" $Q --slug tl --idle --blocked interpretune#9602=tl:interpretune#1
+check "ITEM=BLOCKER" $Q --slug tl --idle --blocked interpretune#9602
+check "idle with unblocked next items (interpretune#9603)" $Q --slug tl --idle --blocked interpretune#9602=up:interpretune#9301
+check "posture=idle" $Q --slug tl --idle --blocked interpretune#9602=up:interpretune#9301 --blocked "interpretune#9603=hold:design pending"
+check "BLOCKING tl .* on interpretune#9301" $H next --shoal $HAGID --spec "$SPEC" --slug up --no-sync --peek
+check "NEXT BLOCKED interpretune#9603 <- hold:design pending" $H next --shoal $HAGID --spec "$SPEC" --slug tl --no-sync --peek
+# blockers carry forward to the next write; clearing one re-opens the gate
+check "posture=idle" $Q --slug tl --idle
+[ "$(rc_of $Q --slug tl --idle --blocked interpretune#9603=)" = 3 ] || fail "idle accepted after clearing a blocker"
+# a wait that leaves a next item unblocked is parked work for the quorum (idle is gated at the write)
+check "posture=waiting/remote-ci" env LEASE_STUB=held $Q --slug tl --active interpretune#9601:fix --blocked interpretune#9603= \
+   --wait remote-ci --holder "gate" --target lease:gpu
+rm -f /tmp/$HAGID/health.json
+env LEASE_STUB=held $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
+check "tl parked-work step1:wake" env LEASE_STUB=held SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run
+OUT=$(env LEASE_STUB=held SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "parked-work.*interpretune#9602" <<<"$OUT" || fail "a blocked next item counted as parked :: $OUT"
+# freeze: banner, idle allowed, parked-work suppressed, job run refused; lifted banner after
+check "freeze on (every role woken)" $H freeze on --shoal $HAGID --spec "$SPEC" --note "restart window" --no-sync
+check "freeze already on" $H freeze on --shoal $HAGID --spec "$SPEC" --no-sync
+check "FREEZE ACTIVE since .* (restart window)" $H next --shoal $HAGID --spec "$SPEC" --slug up --no-sync --peek
+OUT=$(env LEASE_STUB=held SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "tl parked-work" <<<"$OUT" || fail "parked-work raised during a freeze :: $OUT"
+[ "$(rc_of $H job run --shoal $HAGID --spec "$SPEC" --slug tl --name frozen --dry-run -- true)" = 5 ] || fail "job run allowed during a freeze"
+check "posture=idle" $Q --slug tl --idle --blocked interpretune#9603=
+check "freeze off (every role woken)" $H freeze off --shoal $HAGID --spec "$SPEC" --no-sync
+OUT=$($H next --shoal $HAGID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
+grep -q "FREEZE LIFTED at" <<<"$OUT" || fail "no lifted banner after freeze off :: $OUT"
+! grep -q "FREEZE ACTIVE" <<<"$OUT" || fail "active banner after freeze off :: $OUT"
+check "\[dry-run\] systemd-run" $H job run --shoal $HAGID --spec "$SPEC" --slug tl --name thawed --dry-run -- true
+check "posture=idle" $Q --slug tl --idle --next ""
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$HAGID
