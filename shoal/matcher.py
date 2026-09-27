@@ -122,6 +122,11 @@ def load_env(path: str = ENV_FILE) -> dict[str, str]:
     # the legacy key name still works: SHOAL_MATCHER_API_KEY falls back to HAG_MATCHER_API_KEY
     if not out.get("SHOAL_MATCHER_API_KEY") and out.get("HAG_MATCHER_API_KEY"):
         out["SHOAL_MATCHER_API_KEY"] = out["HAG_MATCHER_API_KEY"]
+    # ...and a spec written before the rename names the legacy variable in `key_env`, while the
+    # key file now holds only the new name: mirror it back, or the paid tier silently has no key
+    # (measured 2026-09-27: the live spec's key_env was HAG_MATCHER_API_KEY, the .env SHOAL_ only)
+    if not out.get("HAG_MATCHER_API_KEY") and out.get("SHOAL_MATCHER_API_KEY"):
+        out["HAG_MATCHER_API_KEY"] = out["SHOAL_MATCHER_API_KEY"]
     return out
 
 
