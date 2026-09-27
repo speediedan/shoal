@@ -69,7 +69,7 @@ to match against), so a group can work from other trackers or a plain file.
 | ledger | `shoals/<id>/ledger/<writer>.jsonl` (`shoal/ledger.py`, `shoal/ledger_cli.py`) | always | all traffic between roles; one writer per file |
 | role start doc | each role's `plan_state.md` | always | mission, current state, `grants-needed` |
 | briefs | `shoal/briefs.py` | always | the first prompt of every session, identical in shape for every role |
-| work loop | `shoal/worker.py` (`next`, `queue`, `asks`, `offline`) | `workwake` | one read and one write per boundary |
+| work loop | `shoal/worker.py` (`next`, `queue`, `asks`, `offline`, `freeze`) | `workwake` | one read and one write per boundary |
 | session watcher | `shoal/ledger_watch.py` (`ledger-watch`) | always (work-only waking with `workwake`) | wakes its own session |
 | health quorum | `shoal/health.py` (`health`, timers `health-a` and `health-b`) | `health` | detect and recover stalled roles, dead watchers, stale waits |
 | session wake | `Backend.wake` in `shoal/backends.py`, one implementation per harness | always | put a wake in front of one role's session (section 7) |
@@ -145,7 +145,10 @@ generation holds it.
   candidates, or records why fewer.
 
 **Every turn ends in a sleep posture:** `queue --wait <sub> --holder <who> --target <kind:ref>`
-with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. With
+with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. Idle is
+refused while any next item lacks a recorded blocker (`queue --blocked ITEM=<blocker>`, carried
+forward while the item stays in `next`; a role blocker shows its holder `BLOCKING`), because an
+idle role is woken by nothing else. With
 `continuation`, a role whose posture is `active` while its session is proven between turns is
 woken to continue after `after_min` (default 5).
 
@@ -161,6 +164,13 @@ once to pivot, and maintainer pages are deferred. `offline off` prints every rec
 with a likely-stale hint where the named item is merged, closed or done, wakes each role holding
 asks to re-verify, drop or raise them as prompted question sets (at most four questions per set),
 and delivers the deferred pages as one summary.
+
+**Freeze mode.** `freeze on|off` is the same kind of `system` event, for a restart or maintenance
+window. While it is on, `next` prints `FREEZE ACTIVE` (checkpoint, persist the plan_state, push,
+sleep), `job run` refuses to start a unit, idle is allowed with a full queue, and `parked-work` is
+suppressed. For 24 hours after `off`, `next` prints `FREEZE LIFTED`. Both edges wake every role. A
+freeze is a mode rather than mail because a freeze message has no end: measured 2026-09-27, two
+lanes kept honoring one for a day after the window closed, idle on full queues.
 
 **Wait discipline** (`waitdiscipline`), enforced by `queue --wait` and `transition`:
 
@@ -258,6 +268,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
+| `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily

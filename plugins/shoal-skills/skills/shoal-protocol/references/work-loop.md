@@ -10,7 +10,11 @@
    - `--done <item> --url <evidence>`: records completion with the evidence;
    - `--pass <item>:<class>[:suggest=<role>]`: declines an item at the boundary;
    - `--wait <sub> --holder <who> --target <kind:ref> [--rescan-min N] [--blocked-on <role>:<item>]`;
-   - `--idle`: nothing actionable;
+   - `--idle`: nothing actionable (an empty queue, or every next item blocked);
+   - `--blocked ITEM=<blocker>` (repeatable; `ITEM=` clears): why a next item cannot start. The
+     blocker is `<role>:<repo#n>` (that role sees `BLOCKING`), `ask[:<n>]`, `user`,
+     `upstream:<target>`, `lease:<key>` or `hold:<why>`. Recorded blockers carry forward while the
+     item stays in `next`;
    - `--ask "<question>"`, `--answered <n>`, `--drop-ask <n> --drop-reason <why>`: see
      `asks-and-offline.md`.
 3. Keep working the active item in the same turn.
@@ -20,6 +24,9 @@
 | line | action |
 | --- | --- |
 | `MAIL` | read it; act at this boundary (a maintainer message is printed in full) |
+| `FREEZE ACTIVE` | start no job units, local suites or gated builds; checkpoint, persist your plan_state, push, and sleep |
+| `FREEZE LIFTED` | the freeze is over: resume normal work, including anything a freeze message told you to hold |
+| `NEXT BLOCKED` | a next item's recorded blocker: re-check it at each boundary and clear it (`--blocked ITEM=`) once gone |
 | `USER OFFLINE` | never wait on the maintainer; record asks with `queue --ask`; stack work; take unblocked items |
 | `ASKS TO RAISE` | the maintainer is online: follow `asks-and-offline.md` now |
 | `DROPPED ASKS` | disclose each to the maintainer in your next question set |
@@ -46,7 +53,11 @@ Sleep only on a real wait or an empty queue:
   upstream issue or release, is `upstream` with a `gh-issue:` or `gh-pr:` target.
 - **A wait covers the active item only.** If a next item is workable, work it rather than parking
   it behind the wait; `next` reminds you.
-- **Idle:** `queue --idle`, only when nothing is actionable.
+- **Idle:** `queue --idle`, only when nothing is actionable: an empty queue, or every next item
+  with a recorded blocker (`--blocked`). Otherwise the write is refused, and a lane asleep while a
+  next item has no recorded blocker raises the health condition `parked-work`, which wakes it.
+  A GPU or cpu-heavy lease held by someone else is a wait (`--wait local-ci --target lease:<key>`),
+  not a reason to idle.
 
 **Every wait expires.** Rescans are capped (4 h for maintainer and peer waits, 3 h for CI, 12 h
 for `upstream`). A `session-blocked` wait names its blocker with `--blocked-on <role>:<item>`.

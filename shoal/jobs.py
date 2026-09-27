@@ -109,6 +109,17 @@ def cmd_run(a) -> int:
     if not cmd:
         print("ERROR: job run needs a command after --")
         return 1
+    try:  # a freeze (before a restart or maintenance window) starts no new jobs
+        from ledger import Ledger, View
+        from roles import ShoalSpec, find_spec
+        _spec = ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "") or ""))
+        _fz = View(Ledger(a.hag, root=_spec.ledger_dir, sync=False), _spec).freeze()
+    except Exception:  # noqa: BLE001 - no spec/ledger reachable (tests, ad-hoc use): not frozen
+        _fz = None
+    if _fz is not None:
+        print(f"JOB-REFUSED: freeze active since {_fz['ts']} ({_fz.get('note') or 'no note'}); "
+              f"the maintainer lifts it with `shoal freeze off`")
+        return 5
     unit = unit_name(a.hag, a.slug, a.name)
     p = paths(a.hag, unit)
     st = unit_state(unit)
@@ -245,6 +256,7 @@ def add_parsers(sub) -> None:
 
     q = jsub.add_parser("run", help="start CMD as a transient user unit")
     common(q)
+    q.add_argument("--spec", default="", help="the group spec (for the freeze check; found from the id otherwise)")
     q.add_argument("--memory-high", default="24G", help="MemoryHigh cap (throttles, never kills); '' = none")
     q.add_argument("--memory-max", default="", help="MemoryMax (OOM-kills inside the unit only); default none")
     q.add_argument("--cwd", default="")

@@ -13,7 +13,8 @@ Each role row carries exactly one state:
     maintainer is offline) and no other item is actionable without it.
   - A lane with actionable items is not waiting: it takes the next one.
 - **idle:** alive, unblocked, nothing actionable. Idle with a non-empty `next` is a contradiction:
-  start the item or name the blocker.
+  start the item or record its blocker (`queue --blocked ITEM=<blocker>`); the queue refuses
+  `--idle` otherwise.
 - **offline:** the session has ended. Its unfinished work is recorded with the branch, worktree,
   base commit, and what is committed, unpushed and remaining.
 

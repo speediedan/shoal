@@ -57,6 +57,20 @@ def _load(a, pull: bool = True):
     return spec, led, View(led, spec)
 
 
+def freeze_banner(view: View) -> str:
+    m = view.freeze()
+    if m is not None:
+        note = f" ({m['note']})" if m.get("note") else ""
+        return (f"FREEZE ACTIVE since {m['ts']}{note}: start no job units, local suites or gated builds; finish or "
+                f"checkpoint the current step, persist your plan_state, push committed work, and sleep. It lasts "
+                f"until the maintainer lifts it (this banner disappears).")
+    m = view.freeze_lifted()
+    if m is not None:
+        return (f"FREEZE LIFTED at {m['ts']}: resume normal work (job units and gated builds allowed); a freeze "
+                f"binds nothing once lifted, including instructions from mail sent while it was on.")
+    return ""
+
+
 def offline_banner(view: View) -> str:
     m = view.user_offline()
     if m is None:
@@ -286,9 +300,9 @@ def cmd_next(a) -> int:
     out = [f"# next for {me.label} in shoal {spec.hag} (incarnation {spec.incarnation}) at {now_iso()}",
            f"IDENTITY: your Lane row label is `{me.label}` (base name, then your session tag; never the "
            f"incarnation number)"]
-    banner = offline_banner(view)
-    if banner:
-        out.append(banner)
+    for banner in (freeze_banner(view), offline_banner(view)):
+        if banner:
+            out.append(banner)
     # MAIL prints right after the identity and offline lines: a `next` piped through `head` must still
     # show it, because this call marks it read (measured 2026-09-24: a lane's piped `next` consumed a
     # maintainer rules update unseen). Maintainer mail prints in full; peer mail is shortened.
@@ -337,6 +351,8 @@ def cmd_next(a) -> int:
     if held:
         out.append(f"HELD-UNSCHEDULED {', '.join(held)}: you hold these claims but your queue does not list them "
                    f"(schedule them, or release them with --kind handoff|blocked so another role can take them)")
+    for k, v in sorted(((q or {}).get("next_blocked") or {}).items()):
+        out.append(f"NEXT BLOCKED {k} <- {v}")
     for b in view.blocked_by(slug):
         mine = b["item"] and item_key(b["item"]) in {item_key(x) for x in [active] + nxt if x}
         out.append(f"BLOCKING {b['role']} since {b['since']} on {b['item'] or '(item unnamed)'}"
@@ -378,10 +394,12 @@ def cmd_next(a) -> int:
                     out.append(f"WAIT TARGET UNVERIFIABLE ({why}): re-declare it in a checkable form "
                                f"(gh-pr:<owner/repo>#<n>, gh-issue:<owner/repo>#<n>, gh-run:<owner/repo>:<id>, "
                                f"az-build:<id>, lease:<key>, job:<name>)")
-            if nxt and w.get("sub") not in ("user-auth", "user-design", "user-feedback"):
-                out.append(f"NOTE: this wait covers the active item only; {', '.join(nxt)} are not blocked by it "
-                           f"unless recorded. Work one now (`queue --active <item>`) rather than parking it behind "
-                           f"this wait, or record its own blocker")
+            nbk = {item_key(k) for k in ((q or {}).get("next_blocked") or {})}
+            free = [x for x in nxt if item_key(x) not in nbk]
+            if free and w.get("sub") not in ("user-auth", "user-design", "user-feedback"):
+                out.append(f"NOTE: this wait covers the active item only; {', '.join(free)} are not blocked by it. "
+                           f"Work one now (`queue --active <item>`), or record why it cannot start "
+                           f"(`--blocked ITEM=BLOCKER`); the health quorum wakes parked work")
     except Exception:
         pass
     try:
@@ -525,6 +543,34 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             print(f"note: HELD-UNSCHEDULED {h}: you hold its claim but neither active nor next lists it; "
                   f"schedule it, or release it (`release --kind handoff|blocked`) so another role can take it")
     posture = "waiting" if a.wait else ("idle" if not active else "active")
+    # per-item blockers for next items: carried forward while the item stays in next, then
+    # --blocked edits applied. They make a parked item's reason visible (a peer blocker shows the
+    # peer BLOCKING) and are what lets a role sleep with a non-empty next.
+    nb = {item_key(k): v for k, v in (prev.get("next_blocked") or {}).items()}
+    for spec_b in a.blocked or []:
+        item, sep, blocker = spec_b.partition("=")
+        if not sep or not item.strip():
+            print(f"ERROR: --blocked wants ITEM=BLOCKER (got {spec_b!r})")
+            return 3
+        blocker = blocker.strip()
+        who = blocker.split(":", 1)[0]
+        if blocker and who not in ("ask", "user", "upstream", "lease", "hold"):
+            if spec.role(who) is None or who == slug:
+                print(f"ERROR: --blocked {spec_b}: BLOCKER must be another role (<role>:<repo#n>), ask[:..], "
+                      f"upstream:<target>, lease:<key> or hold:<why>")
+                return 3
+        if blocker:
+            nb[item_key(item)] = blocker
+        else:
+            nb.pop(item_key(item), None)
+    nb = {k: v for k, v in nb.items() if k in {item_key(x) for x in nxt}}
+    unblocked = [x for x in nxt if item_key(x) not in nb]
+    if posture == "idle" and unblocked and view.freeze() is None:
+        print(f"ERROR: idle with unblocked next items ({', '.join(unblocked)}): idle is only for an empty queue or "
+              f"one whose every next item has a recorded blocker. Pop one (`--active <item>`), or record why each "
+              f"cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|hold:<why>`); "
+              f"a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle (nothing written)")
+        return 3
     reason = a.reason or ("" if len(nxt) >= n_next else "no further eligible items")
     version = int(prev.get("version", 0)) + 1
     plan = (f"{slug} queue v{version}: active={active or '-'} next={','.join(nxt) or '-'} posture={posture}"
@@ -562,7 +608,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                session=sess, host=os.uname().nodename)
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
                      asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag,
-                     dropped=dropped or None)
+                     dropped=dropped or None, next_blocked=nb or None)
     led.commit_own(slug, f"{spec.hag} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     # 3. first-landed-wins re-check for the claims just made
@@ -586,6 +632,33 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     except OSError:
         pass
     return 4 if lost else 0
+
+
+def cmd_freeze(a) -> int:
+    """`freeze on|off`: a mode event from the maintainer, shown by every role's `next` (FREEZE ACTIVE,
+    then FREEZE LIFTED for a day) and enforced by `job run`. Both edges wake every role with a
+    session (--no-wake to skip): on, so each reaches a checkpoint; off, so each resumes."""
+    try:
+        spec, led, view = _load(a)
+    except (LedgerError, OSError) as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    on = a.state == "on"
+    if on == (view.freeze() is not None):
+        print(f"freeze already {'on' if on else 'off'}; nothing to do")
+        return 0
+    text = (f"FREEZE {'ON' if on else 'LIFTED'}" + (f": {a.note}" if a.note else "")
+            + (". Run `next` for what it binds." if on else ". Resume normal work; run `next`."))
+    if a.dry_run:
+        print(f"[dry-run] freeze {a.state}" + ("" if a.no_wake else "; wake every role with a session") + f" :: {text}")
+        return 0
+    led.append("user", "system", mode="freeze", state=a.state, note=a.note or None, _commit=False)
+    if not a.no_wake:
+        led.append("user", "msg", to="*", kind="info", text=text, wake=True, _commit=False)
+    led.commit_own("user", f"{spec.hag} freeze {a.state}")
+    pushed = sync_push(led.root) if led.sync and not a.no_sync else True
+    print(f"freeze {a.state}" + ("" if a.no_wake else " (every role woken)") + ("" if pushed else " (push pending: `shoal sync`)"))
+    return 0
 
 
 def cmd_offline(a) -> int:
@@ -652,7 +725,12 @@ def add_parsers(sub) -> None:
     p.add_argument("--spec", default="")
     p.add_argument("--active", default="", help="the item worked now, repo#n:verb (claimed if not held)")
     p.add_argument("--next", default=None, help=f"comma list, at most the group's next_max (default {QUEUE_NEXT_MAX}); omit to keep the previous")
-    p.add_argument("--idle", action="store_true", help="no active item (new work may wake you)")
+    p.add_argument("--idle", action="store_true", help="no active item (refused while a next item has no recorded "
+                                                          "blocker: pop it or record it with --blocked)")
+    p.add_argument("--blocked", action="append", default=[],
+                   help="ITEM=BLOCKER for a next item that cannot start yet. BLOCKER is <role>:<repo#n> (a peer; it "
+                        "sees BLOCKING), ask[:<what>] (your raised maintainer ask), upstream:<target>, lease:<key> or "
+                        "hold:<why>; ITEM= (empty) clears it. Recorded blockers persist while the item stays in next")
     p.add_argument("--done", action="append", help="repo#n:verb completed at this boundary (repeatable)")
     p.add_argument("--url", default="", help="evidence URL for --done")
     p.add_argument("--sha", default="")
@@ -688,6 +766,16 @@ def add_parsers(sub) -> None:
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--ledger-dir", default="")
     p.set_defaults(func=cmd_asks)
+
+    p = sub.add_parser("freeze", help="freeze mode for every role (before a restart or maintenance window): on|off")
+    p.add_argument("state", choices=["on", "off"])
+    config.add_id_arg(p, required=True)
+    p.add_argument("--spec", default="")
+    p.add_argument("--note", default="")
+    p.add_argument("--no-wake", action="store_true", help="record the mode without waking every role")
+    p.add_argument("--no-sync", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_freeze)
 
     p = sub.add_parser("offline", help="user-offline mode for every role: on|off")
     p.add_argument("state", choices=["on", "off"])

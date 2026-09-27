@@ -62,6 +62,7 @@ LADDERS = {
     # and a peer's wait on you is work you are woken for
     "wait-expired": [(0, "wake"), (60, "wake"), (120, "page")],
     "blocking-unscheduled": [(30, "wake"), (120, "page")],
+    "parked-work": [(30, "wake"), (90, "wake"), (180, "page")],
     "relay-dead": [(10, "page"), (360, "page")],
 }
 CI_WAITS = ("remote-ci", "local-ci")
@@ -315,6 +316,26 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 "since": b["since"],
                                 "detail": f"{b['role']} has waited on your {b['item']} since {b['since']}, and your queue "
                                           f"does not schedule it: schedule it (active/next) or pass it with a reason"})
+        # parked work: asleep (idle or waiting) while a next item has no recorded blocker. Idle is
+        # never woken by anything else, so without this a role can sit on a full queue forever
+        # (measured 2026-09-27: jlens-expert idle with three next items for two hours; ie-integration
+        # waiting upstream for #44 while #372 and #457 sat behind it unrecorded). Keyed by the items,
+        # so re-declaring the same parked state keeps escalating.
+        # a local-ci wait is exempt: the role's own machine-bound job (under a lease) usually holds the
+        # resources its next items need; remote-ci, upstream, peer and maintainer waits leave it free
+        # a freeze parks everything by design, so it is exempt while on
+        if ((posture == "idle" or (posture == "waiting" and sub != "local-ci")) and getattr(role, "fill", "") != "none"
+                and view.freeze() is None):
+            from ledger import item_key
+            nbk = {item_key(x) for x in (q.get("next_blocked") or {})}
+            free = [x for x in (q.get("next") or []) if item_key(x) not in nbk]
+            if free:
+                out.append({"slug": slug, "condition": "parked-work", "key": f"parked:{','.join(sorted(free))}",
+                            "since": boundary or iso(), "first_seen": True,
+                            "detail": f"{posture} while next items have no recorded blocker ({', '.join(free)}): "
+                                      f"pop one (`queue --active <item>`) or record why each cannot start "
+                                      f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
+                                      f"hold:<why>`); a busy lease is a wait on `lease:<key>`, never idle"})
         # continuation: a turn that ended while the posture says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
         if cont is not None and posture == "active" and between:
