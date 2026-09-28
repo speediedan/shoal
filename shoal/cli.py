@@ -822,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("start", help="mint a new shoal and start its first generation")
     p.add_argument("--name", required=True)
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
-                   help="also start the aux residual lane (needs features.matcher)")
+                   help="also start the shoal-aux residual lane (needs features.matcher)")
     p.add_argument("--dir", required=True)
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,aux][,fill=self|assigned|none]"
@@ -876,7 +876,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("add-role", help="extend a live shoal with new roles (existing sessions untouched)")
     p.add_argument("--spec", required=True, help="shoal.json path")
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
-                   help="also add the aux residual lane (needs features.matcher); on a running shoal "
+                   help="also add the shoal-aux residual lane (needs features.matcher); on a running shoal "
                         "prefer `aux-init` + `aux-launch`, which do not bump the incarnation")
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,scope=R][,model=M][,effort=E][,seq=N] (repeatable)")

@@ -48,5 +48,5 @@ The hermetic run must report zero unjustified network tool calls.
 - **No legacy names.** The pre-rename names are gone and are not read: the group id is `--shoal`
   (dest `sid`), environment variables are `SHOAL_*` only, the system writer is `shoal`, a group lives
   at `shoals/<id>/shoal.json` in the ledger repository (see `shoal/layout.py`), and the default role
-  slugs are `wake-relay` and `aux`.
+  slugs are `wake-relay` and `shoal-aux`.
 - **Docs follow code.** A change to a component updates `docs/architecture.md` in the same commit.
