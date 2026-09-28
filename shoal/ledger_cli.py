@@ -30,7 +30,7 @@ sys.path.insert(0, HERE)
 from ledger import OFFER_WRITERS  # noqa: E402
 import config  # noqa: E402
 
-from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, fmt_item,  # noqa: E402
+from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, ensure_gitignore, fmt_item,  # noqa: E402
                     item_key, lint, render_all, render_role, split_item,
                     sync_pull, sync_push, unpushed)
 from roles import DEFAULT_LEDGER, ShoalSpec, find_spec, state_dir  # noqa: E402
@@ -351,6 +351,9 @@ def cmd_ledger_init(a) -> int:
               f"create shoals/{spec.sid}/ledger/, snapshot spec, write ledger into {a.spec}")
         return 0
     ensure_clone(root, spec.ledger["repo"])
+    added = ensure_gitignore(root)  # also on an existing ledger: a clone made before this rule
+    if added:
+        print(f"{root}/.gitignore: added {', '.join(added)}")
     led = Ledger(spec.sid, root=root, sync=not a.no_sync)
     if led.exists() and not a.force:
         print(f"ledger already exists at {led.ldir} (pass --force to re-snapshot the spec)")

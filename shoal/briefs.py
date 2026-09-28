@@ -18,9 +18,23 @@ import re
 import config
 from layout import group_dir
 from ledger import queue_next_max
-from roles import ShoalSpec, Role, is_wake_relay
+from roles import ShoalSpec, Role, is_wake_relay, state_dir
 
 SHOAL_CLI = config.cli()  # the command line every brief tells a session to run
+
+
+def pid_proof(pidfile: str, sidecar: bool = False) -> str:
+    """How a session proves a watcher pid: two separate commands, never `$(...)`. A relay in
+    manual permission mode combined them as `ps -p $(cat <pidfile>)`, and command substitution
+    always needs the user's approval there (measured 2026-09-28)."""
+    read = (f"`cat {pidfile}` and take the number on its `pid=` line" if sidecar
+            else f"`cat {pidfile}` to read the pid")
+    return (f"prove the pid with TWO separate commands: first {read}, then `ps -p <that number>`; never use "
+            f"$(...) command substitution (it always needs a permission prompt)")
+
+
+def watch_sidecar(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"ledger-watch-{slug}.state")
 
 
 def extract_grants(doc: str) -> list[str]:
@@ -95,7 +109,7 @@ def relay_brief(role: Role, spec: ShoalSpec) -> str:
         f"share the name; prefer the one whose session id starts with <id>), then re-arm relay-watch, then end "
         f"the turn with one line: `relayed N`. Never transition yourself offline and never kill relay-watch; only "
         f"the operator stops the relay. Never add commentary to a relayed message. Keep your context "
-        f"small: no other reading. Confirm arming with the relay-watch pid.")
+        f"small: no other reading. Confirm arming: {pid_proof(os.path.join(state_dir(sid), 'relay-watch.pid'))}.")
 
 
 def workwake_brief(role: Role, spec: ShoalSpec) -> str:
@@ -148,7 +162,7 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
         f"you armed, or a health wake. Mail from other roles never wakes you; read it in `next` and act at the "
         f"boundary. To get another role to DO something, offer it as work; do not message for it. "
         f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}; run it once with `--test` first and "
-        f"confirm the test wake arrived. Re-arm after every wake and prove the pid (ps -p plus sidecar). "
+        f"confirm the test wake arrived. Re-arm after every wake and {pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}. "
         f"USER-OFFLINE: when `next` prints "
         f"USER OFFLINE, never wait on the maintainer: record each blocking ask with `queue --ask`, stack PRs "
         f"(gh-stack) or take the next unblocked item; you are woken when they return. When they RETURN (or "
@@ -237,7 +251,8 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
         f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
         f"first-person: ask the maintainer directly with decline/hold options; authorizations never transfer. "
         f"{h4_disciplines(role, spec)}"
-        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen.")
+        f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen; "
+        f"{pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}.")
 
 
 def h4_disciplines(role: Role, spec: ShoalSpec) -> str:
@@ -257,8 +272,8 @@ def h4_disciplines(role: Role, spec: ShoalSpec) -> str:
             f"waiter is safe to re-arm and prints one JOB-VERDICT line.")
     out.append(
         "A KILL IS A WAKE: a watcher notification with status killed (any reason) is handled exactly like a "
-        "wake: show, act, re-arm, then prove the new pid (ps -p plus sidecar pid) in the same turn. Tally "
-        "kills from notification status only, never from exit counts.")
+        f"wake: show, act, re-arm, then {pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}, in the same "
+        "turn. Tally kills from notification status only, never from exit counts.")
     return " ".join(out) + " "
 
 

@@ -231,6 +231,12 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
     for role in spec.roles:
+        if not role.session:
+            # parked or retired: no session, so no liveness to judge (measured 2026-09-28:
+            # a parked role read idle-deaf off its old sidecar and paged)
+            rows.append({"slug": role.slug, "age_min": None, "wait": None, "klass": "parked",
+                         "suspect": False, "detail": "parked (no session)"})
+            continue
         age = age_min(hb_path(spec.sid, role.slug))
         la = ledger_age.get(role.slug)
         if la is not None and (age is None or la < age):
@@ -298,7 +304,7 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
                                    + (f" [{extra}]" if extra else ""))
         rows.append(row)
     for row in rows:
-        if row["suspect"] or row.get("klass") == "quota-paused":
+        if row["suspect"] or row.get("klass") in ("quota-paused", "parked"):
             continue
         quiet = row["age_min"] is None or row["age_min"] > threshold_min
         if not quiet:
@@ -385,7 +391,9 @@ def cmd_heartbeat(spec, threshold_min: float,
                 f"no board poll, queue empty, heartbeat stale): run shoal show "
                 f"--shoal {spec.sid} --slug {role.slug}, claim or decline the top "
                 f"board candidate, transition, re-arm ledger-watch and VERIFY "
-                f"the new PID with ps -p plus sidecar pid match. REPORT.")
+                f"the new pid with TWO separate commands: first `cat /tmp/{spec.sid}/ledger-watch-"
+                f"{role.slug}.state` (its pid= line), then `ps -p <that number>`; never use $(...) "
+                f"command substitution. REPORT.")
             print(f"direct WAKEUP-READ sent to {role.slug} ({role.session})")
         except Exception as exc:  # noqa: BLE001
             print(f"ERROR: WAKEUP-READ send to {role.slug} failed: {exc}")

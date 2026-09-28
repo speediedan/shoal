@@ -70,7 +70,8 @@ only together with a raised, recorded ask.
 You are woken by new work while you are idle, a change to your active item, a wait you armed, or a
 health wake. Every wake text starts with the offline banner when the maintainer is away. Handle a
 watcher notification with status `killed` exactly like a wake: `next`, act, re-arm, and prove the new
-pid in the same turn.
+pid in the same turn (two separate commands, `cat` the sidecar then `ps -p <that number>`, never
+`$(...)`; see `watchers-and-waits.md`).
 
 ## Work that must survive
 

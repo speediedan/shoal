@@ -92,7 +92,10 @@ to match against), so a group can work from other trackers or a plain file.
 **Where state lives.**
 
 - **Ledger repository** (a git repository every host clones, `ledger_repo` / `ledger_dir`): the
-  spec (`shoal.json`) and the ledger, under `shoals/<id>/`.
+  spec (`shoal.json`) and the ledger, under `shoals/<id>/`. `ledger-init` (on a new or an existing
+  ledger) makes its `.gitignore` name the clone's flock file `.shoal-lock` and `*.tmp`, keeping
+  existing lines and never duplicating one, and commits the change: an untracked lock file makes
+  every rebase, and so every pull, refuse.
 - **Data root** (`data_root`, never committed), per group under `<data_root>/<id>/`: `contexts/`,
   `roles/<slug>/plan_state.md` (generated start docs for the wake relay and the residual lane),
   `matcher/`, `briefs/`, `telemetry/`, `reports/`, `jobs/`, `board_digest.json` and, in shadow
@@ -271,6 +274,16 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.
 
+**Parked roles.** A role with no `session` in the spec (parked or retired) raises no condition, is
+left out of the daily digest, and reads `parked (no session)` in the heartbeat classification;
+`doctor` reports its heartbeat and `ledger-watch` rows as INFO, never WARN or FAIL, whatever a
+leftover sidecar says.
+
+**Timers in `doctor`.** Each `shoal-<id>-*.timer` is judged by its own `ActiveState`: `active`
+(sub-state `waiting`, `running` or `elapsed`) is good, so a timer whose service is activating or
+has just run never reads inactive. An inactive or failed timer is a FAIL; an active but disabled
+one is a WARN.
+
 **Direct session wake.** Every wake the quorum or a sensor decides goes through one interface,
 `Backend.wake(spec, role, text)` in `shoal/backends.py`, which returns the channel it used. Each
 harness implements it in its own way:
@@ -346,7 +359,7 @@ changes anything:
 | class | what | how it arrives |
 | --- | --- | --- |
 | live | code loaded per run or invocation (health, digest, matcher, report, `next`, `queue`, `show`) | the next timer run or command |
-| re-arm | code a running watcher executes (`ledger-watch`, `relay-watch`) | `--rearm lazy` (default): at each role's next wake; `--rearm now`: one wake per stale watcher |
+| re-arm | code a running watcher executes (`ledger-watch`, `relay-watch`) | `--rearm lazy` (default): at each role's next wake; `--rearm now`: one wake per stale `ledger-watch`, and the stale `relay-watch` is killed (see below) |
 | brief | `briefs.py` text | the next restart; `next` and `queue` output carry rule changes now |
 | restart | a spec change a live session depends on (model, harness) | never done by `upgrade`; `restart --only` does it |
 
@@ -356,6 +369,13 @@ the new sha with a ledger `system` event, and re-arms per `--rearm`. It also syn
 copies of the package's skills into every `skill_homes` entry: sessions load `shoal-protocol` from
 those copies, so a merged protocol change otherwise never reaches them. `doctor` warns while any
 copy is stale.
+
+**Relay re-arm.** A `relay-watch` is stale when its pid file (written once at spawn) is older than
+the newest change to code it runs. `--rearm now` kills it: killing a Claude background command wakes
+its session, and the relay's loop re-arms on a kill. The command then waits up to
+`--rearm-verify-s` (default `SHOAL_REARM_VERIFY_S`, else 180 seconds) for a new pid in
+`/tmp/<id>/relay-watch.pid` with a live `relay-watch` behind it, and prints a WARN with the exact
+re-arm line (and the `relay-launch` fallback) when none appears. `--dry-run` only reports it.
 
 `restart --only <slugs>` relaunches a subset. Its start-doc checks fail only on the roles it
 relaunches; a problem in a kept role's doc prints as info. Once any session has launched, the spec

@@ -38,7 +38,8 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    per set), record the ask and a user-auth wait BEFORE the question tool (it blocks your turn), and
    never raise a question while `next` says USER OFFLINE. Details: `references/asks-and-offline.md`.
 5. **Your watcher is your ears.** Arm `shoal ledger-watch` as instructed in your brief, prove its pid
-   every time you re-arm, and treat a `killed` notification as a wake. Details:
+   every time you re-arm (two separate commands: `cat` the sidecar, then `ps -p <that number>`;
+   never `$(...)` command substitution), and treat a `killed` notification as a wake. Details:
    `references/watchers-and-waits.md`.
 6. **Every completed turn ends with your status block**, posted after the last `queue` write. It
    is the maintainer's only per-lane view, and a turn without one reads as a stall. Three rows,

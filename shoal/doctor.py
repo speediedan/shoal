@@ -13,7 +13,8 @@ stale systemd units pointing at missing files.
 
 shoal checks: spec valid; start docs present with required sections; live
 session ids present + reachable; heartbeat/wait posture per role; watcher
-ticks vs 3x interval; systemd timers present and active for this shoal;
+ticks vs 3x interval; systemd timers present and active for this shoal (each
+.timer unit's own ActiveState); parked roles (no session) report INFO;
 telemetry dir writable + last event age; reconcile tick age. Ledger: clone
 present with a reachable remote, no unpushed commits older than an hour,
 lint clean (no violations, no contested claims), and one ledger-watch
@@ -65,6 +66,9 @@ class Doc:
 
     def ok(self, name, detail=""):
         print(f"OK   {name}: {detail}")
+
+    def info(self, name, detail=""):
+        print(f"INFO {name}: {detail}")
 
     def warn(self, name, detail=""):
         self.warns += 1
@@ -210,19 +214,58 @@ def tools_skew_note(armed_utc: str) -> str:
     return ""
 
 
-def timer_state(sid: str) -> dict[str, str]:
-    r = run(["systemctl", "--user", "list-timers", "--all", "--no-pager", "--no-legend"], timeout=30)
-    out = {}
-    for line in r.stdout.splitlines():
-        m = re.search(rf"(shoal-{re.escape(sid)}-([\w.-]+?)\.timer)", line)
-        if m:
-            head = line.split(m.group(1))[0].strip()
-            # columns are NEXT LEFT LAST PASSED: a real weekday timestamp in
-            # NEXT means scheduled+waiting; LAST "n/a" only means never fired
-            # yet (reconcile/weekly on a fresh shoal) — not inactive.
-            scheduled = bool(re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s", head))
-            out[m.group(2)] = "scheduled" if scheduled else "inactive"
+def parse_timer_show(text: str) -> dict[str, dict[str, str]]:
+    """`systemctl show -p Id -p ActiveState -p SubState -p UnitFileState` output (blank-line
+    separated blocks) -> {Id: {ActiveState, SubState, UnitFileState}}."""
+    out: dict[str, dict[str, str]] = {}
+    for block in re.split(r"\n\s*\n", text.strip()):
+        props = dict(ln.split("=", 1) for ln in block.splitlines() if "=" in ln)
+        if props.get("Id"):
+            out[props["Id"]] = props
     return out
+
+
+def timer_state(sid: str) -> dict[str, dict[str, str]]:
+    """{job: {ActiveState, SubState, UnitFileState}} for this shoal's timers, judged from each
+    `.timer` unit's own state. `list-timers` was parsed before, and its NEXT column reads
+    n/a while the timer's service is activating or has just run, so a healthy timer read
+    inactive (measured 2026-09-28: three timers FAIL right after `install-systemd --enable`
+    while `systemctl --user is-active` said active)."""
+    pat = f"shoal-{sid}-*.timer"
+    names: set[str] = set()
+    for argv in (["systemctl", "--user", "list-unit-files", "--no-legend", "--no-pager", pat],
+                 ["systemctl", "--user", "list-units", "--all", "--no-legend", "--no-pager", "--plain", pat]):
+        try:
+            r = run(argv, timeout=30)
+        except Exception:  # noqa: BLE001
+            continue
+        for line in r.stdout.splitlines():
+            tok = line.split()
+            if tok and tok[0].startswith(f"shoal-{sid}-") and tok[0].endswith(".timer"):
+                names.add(tok[0])
+    if not names:
+        return {}
+    r = run(["systemctl", "--user", "show", "-p", "Id", "-p", "ActiveState", "-p", "SubState",
+             "-p", "UnitFileState", *sorted(names)], timeout=30)
+    out = {}
+    for unit, props in parse_timer_show(r.stdout).items():
+        out[unit[len(f"shoal-{sid}-"):-len(".timer")]] = props
+    return out
+
+
+def timer_verdict(timers: dict[str, dict[str, str]]) -> tuple[str, str]:
+    """(ok|warn|fail, detail). A timer is good when its own ActiveState is active (SubState
+    waiting, running or elapsed); a running or just-finished service never makes it read
+    inactive. Inactive or failed is a FAIL; active but disabled is a WARN (it will not come
+    back after a reboot)."""
+    bad = {k: f"{v.get('ActiveState', '?')}/{v.get('SubState', '?')}, {v.get('UnitFileState', '?')}"
+           for k, v in timers.items() if v.get("ActiveState") != "active"}
+    if bad:
+        return "fail", f"{len(timers)} installed; not active: " + "; ".join(f"{k} ({why})" for k, why in sorted(bad.items()))
+    disabled = sorted(k for k, v in timers.items() if v.get("UnitFileState") in ("disabled", "masked"))
+    if disabled:
+        return "warn", f"{len(timers)} active; disabled (gone after a reboot): {disabled}"
+    return "ok", f"{sorted(timers)} active"
 
 
 def group_checks(d: Doc, spec: ShoalSpec, spec_path: str, threshold_min: float) -> None:
@@ -253,6 +296,9 @@ def group_checks(d: Doc, spec: ShoalSpec, spec_path: str, threshold_min: float) 
             d.warn(f"session {r.slug}", f"{r.session}: {exc}")
     if live:
         for row in classify(spec, threshold_min):
+            if row["klass"] == "parked":
+                d.info(f"heartbeat {row['slug']}", row["detail"])
+                continue
             (d.warn if row["suspect"] else d.ok)(f"heartbeat {row['slug']}", f"{row['klass']}: {row['detail']}")
         for job, interval in tick_jobs(spec).items():
             age = age_min(os.path.join(state_dir(spec.sid), f"tick-{job}"))
@@ -266,8 +312,8 @@ def group_checks(d: Doc, spec: ShoalSpec, spec_path: str, threshold_min: float) 
         if not timers:
             d.fail("systemd timers", f"none installed for {spec.sid} (shoal install-systemd --enable)")
         else:
-            inactive = [k for k, v in timers.items() if v != "scheduled"]
-            (d.fail if inactive else d.ok)("systemd timers", f"{len(timers)} installed; inactive: {inactive}" if inactive else f"{sorted(timers)} scheduled")
+            verdict, detail = timer_verdict(timers)
+            {"ok": d.ok, "warn": d.warn, "fail": d.fail}[verdict]("systemd timers", detail)
     ledger_checks(d, spec)
     matcher_checks(d, spec)
     tdir = telemetry_dir(spec.sid)
@@ -352,7 +398,9 @@ def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
     (d.fail if errs else d.ok)("ledger lint", f"{len(led.events())} events; "
                                + ("; ".join(errs)[:200] if errs else f"clean ({len(warns)} warn)"))
     for r in spec.roles:
-        if r.fill == "none" and not r.session:
+        if not r.session:
+            # parked or retired: a leftover sidecar's dead pid is history, not a failure
+            d.info(f"ledger-watch {r.slug}", "parked (no session)")
             continue
         sc = load_sidecar(sidecar_path(spec.sid, r.slug))
         if not sc:

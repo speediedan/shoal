@@ -2,7 +2,7 @@
 """`shoal upgrade`: roll shoal/ tooling and feature flags into a LIVE shoal (architecture doc §11).
 
   shoal upgrade --spec S [--enable a.b] [--disable a.b] [--set a.b=JSON] [--rearm lazy|now]
-                 [--skip-selftests] [--allow-dirty] [--dry-run]
+                 [--rearm-verify-s N] [--skip-selftests] [--allow-dirty] [--dry-run]
 
 Every change has one rollout class, and this command says which apply:
   live     loaded per run or per invocation (health, digest, matcher, report, next, queue):
@@ -10,7 +10,9 @@ Every change has one rollout class, and this command says which apply:
   re-arm   code a RUNNING watcher executes (ledger-watch, relay-watch): the process keeps the
            code it loaded at spawn. `lazy` (default) lets each role pick the new code up at
            its next wake, since every wake ends in a re-arm; `now` wakes each stale watcher's
-           role once to re-arm;
+           role once to re-arm, and kills a relay-watch started before the change (the kill
+           wakes the relay session, which re-arms), then waits up to `--rearm-verify-s` for
+           the new relay-watch pid;
   brief    brief text: lanes see it at their next restart (`next` and `queue` output carry
            rule changes now);
   restart  a spec change a live session depends on (a model change, a role's ecosystem):
@@ -156,6 +158,75 @@ def stale_watchers(spec: ShoalSpec, since_iso: str) -> list[tuple[str, str]]:
     return out
 
 
+def relay_pid_path(sid: str) -> str:
+    from roles import state_dir
+    return os.path.join(state_dir(sid), "relay-watch.pid")
+
+
+def relay_watch_proc(sid: str) -> tuple[str, str]:
+    """(pid, armed_utc) of the running relay-watch, or ("", ""). The pid file is written
+    once at spawn, so its mtime is the arm time."""
+    import health
+    p = relay_pid_path(sid)
+    if not health.relay_alive(sid):
+        return "", ""
+    try:
+        pid = open(p).read().strip()
+        armed = datetime.datetime.fromtimestamp(os.path.getmtime(p), datetime.timezone.utc)
+    except (OSError, ValueError):
+        return "", ""
+    return pid, armed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stale_relay(spec: ShoalSpec, since_iso: str) -> tuple[str, str]:
+    """(pid, armed_utc) of a live relay-watch armed before `since_iso`, else ("", "")."""
+    if not since_iso or not any(is_wake_relay(r) for r in spec.roles):
+        return "", ""
+    pid, armed = relay_watch_proc(spec.sid)
+    return (pid, armed) if pid and armed < since_iso else ("", "")
+
+
+def rearm_verify_s(a) -> float:
+    """How long `--rearm now` waits for the relay to re-arm: the flag, else
+    SHOAL_REARM_VERIFY_S (the suites set a few seconds), else 180."""
+    v = getattr(a, "rearm_verify_s", None)
+    if v is None:
+        v = config.env("REARM_VERIFY_S", "180") or 180
+    return max(0.0, float(v))
+
+
+def rearm_relay(spec: ShoalSpec, pid: str, verify_s: float, poll_s: float = 1.0) -> bool:
+    """Kill the stale relay-watch and prove the re-arm: a new pid in the pid file with a
+    live relay-watch behind it, within `verify_s`. Killing a Claude background command
+    wakes its session, and the relay's loop re-arms on a kill (measured 2026-09-28: a
+    relay announced a restart and ended its turn without re-arming, so the re-arm is
+    verified, never assumed)."""
+    import signal
+    import time
+    import health
+    try:
+        os.kill(int(pid), signal.SIGTERM)
+        print(f"relay-watch: killed pid {pid} (pre-upgrade code); the relay session re-arms on the kill")
+    except (OSError, ValueError) as exc:
+        print(f"relay-watch: kill of pid {pid} failed ({exc})")
+    t0 = time.time()
+    while True:
+        try:
+            cur = open(relay_pid_path(spec.sid)).read().strip()
+        except OSError:
+            cur = ""
+        if cur and cur != pid and health.relay_alive(spec.sid):
+            print(f"relay-watch re-armed: pid {cur}")
+            return True
+        if time.time() - t0 >= verify_s:
+            break
+        time.sleep(poll_s)
+    print(f"WARN relay-watch NOT re-armed within {verify_s:g}s (old pid {pid}): the relay session must run "
+          f"`{config.cli()} relay-watch --shoal {spec.sid}` (Bash tool, run_in_background=true); if it does not, "
+          f"relaunch it with `{config.cli()} relay-launch --shoal {spec.sid}`")
+    return False
+
+
 def run_selftests() -> tuple[bool, str]:
     for t in SELFTESTS:
         r = subprocess.run(["bash", os.path.join(TESTS_DIR, t)], capture_output=True, text=True, timeout=1800)
@@ -192,7 +263,7 @@ def cmd_upgrade(a) -> int:
     cls = classify(files)
     new_features, changes = feature_edits(spec.features, a)
     stale = stale_watchers(spec, since_utc) if (cls["re-arm (ledger-watch)"] and since_utc) else []
-    relay_stale = bool(cls["re-arm (relay-watch)"]) and any(is_wake_relay(r) for r in spec.roles)
+    relay_pid, relay_armed = stale_relay(spec, since_utc) if cls["re-arm (relay-watch)"] else ("", "")
     print(f"# upgrade {spec.sid}: tooling {prev or '(none recorded)'} -> {sha}"
           + (" (dirty tree)" if dirty else ""))
     print(f"changed under {pkgdir}: {len(files)} file(s)"
@@ -208,8 +279,13 @@ def cmd_upgrade(a) -> int:
                  else " -> one wake each now"))
     elif cls["re-arm (ledger-watch)"]:
         print("re-arm: no running ledger-watch predates the change")
-    if relay_stale:
-        print("re-arm: relay-watch re-arms after every relay, so it loads the new code at its next wake")
+    if relay_pid:
+        print(f"re-arm ({a.rearm}): relay-watch armed before {since_utc}: pid {relay_pid} (armed {relay_armed})"
+              + (" -> it loads the new code when it next relays and re-arms" if a.rearm == "lazy"
+                 else " -> killed now; the relay re-arms on the kill, verified for "
+                      f"{rearm_verify_s(a):g}s"))
+    elif cls["re-arm (relay-watch)"] and any(is_wake_relay(r) for r in spec.roles):
+        print("re-arm: no running relay-watch predates the change")
     if cls["brief"]:
         print("brief: brief text changed; lanes read it at their next restart (`next`/`queue` carry rules now)")
     if a.restart_note:
@@ -254,6 +330,8 @@ def cmd_upgrade(a) -> int:
                                                  f"pre-upgrade code; after this boundary re-arm it with the same "
                                                  f"command", condition="upgrade-rearm")
             print(f"woke {slug} to re-arm -> {ch}")
+        if relay_pid:
+            rearm_relay(spec, relay_pid, rearm_verify_s(a))
     print(f"upgraded {spec.sid} to tooling {sha}")
     if any(c.startswith("matcher") for c in changes):
         print(f"matcher: the digest timer applies it within 10 minutes; `shoal digest --shoal {spec.sid} --refresh` "
@@ -272,6 +350,9 @@ def add_parser(sub) -> None:
     p.add_argument("--set", action="append", default=[], metavar="FEATURE.PATH=JSON",
                    help='e.g. matcher={"live": false} or matcher.model="opencode/space-bunny-free"')
     p.add_argument("--rearm", choices=["lazy", "now"], default="lazy")
+    p.add_argument("--rearm-verify-s", type=float, default=None,
+                   help="with --rearm now: seconds to wait for the relay-watch re-arm (default "
+                        "SHOAL_REARM_VERIFY_S, else 180; 0 checks once)")
     p.add_argument("--restart-note", default="", help="declare a change that needs a restart (printed, not done)")
     p.add_argument("--skip-selftests", action="store_true")
     p.add_argument("--allow-dirty", action="store_true")

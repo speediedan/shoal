@@ -248,7 +248,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     for role in spec.roles:
         if is_wake_relay(role):
             continue
-        if not role.session:
+        if not role.session:  # parked or retired: no liveness conditions at all
             continue
         slug = role.slug
         q = view.current_queue(slug) or {}
@@ -429,6 +429,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
     today = iso()[:10]
     waits = []
     for s_, st in view.states.items():
+        if spec.role(s_) is not None and not spec.role(s_).session:
+            continue  # parked: its ask left with its session
         if st.get("state") == "waiting" and st.get("sub") in USER_WAITS:
             asks = (view.current_queue(s_) or {}).get("asks") or []
             role_ = spec.role(s_)
@@ -530,7 +532,8 @@ the relay-queue cursor under `/tmp/{sid}/`.
    from ListAgents only when two sessions share the name, choosing the one whose session id
    starts with <id>.
 3. Re-arm relay-watch (same rule: Bash, run_in_background=true, no `&`, no Monitor) and prove its
-   pid with `cat /tmp/{sid}/relay-watch.pid` plus `ps -p <pid>`.
+   pid with TWO separate commands: first `cat /tmp/{sid}/relay-watch.pid`, then `ps -p <that
+   number>`. Never use $(...) command substitution: it always needs a permission prompt.
 4. End the turn with one line: `relayed N`.
 
 Never transition yourself `offline` and never kill relay-watch: only the operator stops the relay
