@@ -5,12 +5,12 @@ Runbook §1 has the operator sequence; the readme is the human map.
 
 Subcommands:
   doctor        preflight (host) + live health (with --spec). Read-only.
-  start         mint a new shoal (id, dirs, ledger, hag.json), launch its first
+  start         mint a new shoal (id, dirs, ledger, shoal.json), launch its first
                 generation, save live ids + generation record back, verify
                 loops. Roles: SLUG,ECO,TITLE,DOC[,aux][,fill=..][,model=M]
                 [,effort=E] (DOC = the single plan_state.md; grants come from
                 its grants-needed section, never the CLI).
-  restart       staged generation restart from --spec hag.json: handoffs,
+  restart       staged generation restart from --spec shoal.json: handoffs,
                 sync-plans, retire, restart. Every stage honors --dry-run.
                 Non-opencode roles auto-launch (claude --bg) unless
                 --consumer-launched SLUG:ID or --defer-consumers.
@@ -23,7 +23,7 @@ Subcommands:
                 doc; plus ledger, watcher ticks and timers.
   report        per-incarnation report, md (versioned) + html (bulk).
   watch         systemd-timer watchers: lanes | pipeline (fire into the ledger).
-  heartbeat     stall daemon over /tmp/<hag>/hb-* + wait-* (timer */5; specs
+  heartbeat     stall daemon over /tmp/<id>/hb-* + wait-* (timer */5; specs
                 with features.health run the health quorum instead).
   brief         print/write one role's first prompt (restart uses this).
   install-systemd / uninstall-systemd   watcher units per shoal generation.
@@ -75,13 +75,13 @@ from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, is_wake_
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
-from watchers import cmd_lanes, cmd_pipeline, hag_emit  # noqa: E402
+from watchers import cmd_lanes, cmd_pipeline, shoal_emit  # noqa: E402
 import doctor as _doctor  # noqa: E402
 import state as _state  # noqa: E402
-import hag_report as _report  # noqa: E402
+import shoal_report as _report  # noqa: E402
 
 try:
-    from hag_telemetry import run_pin  # noqa: E402
+    from shoal_telemetry import run_pin  # noqa: E402
 except Exception:  # pragma: no cover
     def run_pin():
         return {}
@@ -137,7 +137,7 @@ def parse_role(spec: str) -> Role:
 
 def load_spec(args: argparse.Namespace) -> ShoalSpec:
     if not getattr(args, "spec", ""):
-        print("restart needs --spec <hag.json> (legacy coord/lane flags removed 2026-09-19)")
+        print("restart needs --spec <shoal.json> (legacy coord/lane flags removed 2026-09-19)")
         sys.exit(1)
     return ShoalSpec.load(args.spec)
 
@@ -219,7 +219,7 @@ def persist_spec(spec: ShoalSpec, path: str, note: str = "") -> None:
         from ledger import git as _git
         rel = os.path.relpath(path, root)
         _git(root, "add", "--", rel, check=False)
-        _git(root, "commit", "--quiet", "-m", f"{spec.hag}: spec update{(' ' + note) if note else ''}",
+        _git(root, "commit", "--quiet", "-m", f"{spec.sid}: spec update{(' ' + note) if note else ''}",
              "--", rel, check=False)
         from ledger import sync_push
         sync_push(root)
@@ -227,7 +227,7 @@ def persist_spec(spec: ShoalSpec, path: str, note: str = "") -> None:
 
 
 def write_brief(spec: ShoalSpec, role: Role) -> str:
-    d = os.path.join(home_dir(spec.hag), "briefs")
+    d = os.path.join(home_dir(spec.sid), "briefs")
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, f"{role.tag}.md")
     with open(path, "w") as fh:
@@ -239,20 +239,20 @@ def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600) -> bool:
     """Effect-verification for a launched role: it writes a ledger state, its
     ledger-watch sidecar appears (bound to a session id), or its heartbeat
     ticks within the cap."""
-    sidecar = _ledger_watch.sidecar_path(spec.hag, role.slug)
-    hb = hb_path(spec.hag, role.slug)
+    sidecar = _ledger_watch.sidecar_path(spec.sid, role.slug)
+    hb = hb_path(spec.sid, role.slug)
     t0 = time.time()
     while time.time() - t0 < cap_s:
         if is_wake_relay(role):  # the relay has no ledger-watch: its effect is a live relay-watch
             from health import relay_alive
-            if relay_alive(spec.hag):
+            if relay_alive(spec.sid):
                 print(f"RELAY LOOP ALIVE: {role.slug} relay-watch running")
                 return True
             time.sleep(30)
             continue
         try:
             from ledger import Ledger, View
-            led = Ledger(spec.hag, root=spec.ledger_dir)
+            led = Ledger(spec.sid, root=spec.ledger_dir)
             led.pull()
             st = View(led, spec).states.get(role.slug)
             if st and st["ts"] >= (spec.current_generation() or {}).get("started_utc", ""):
@@ -302,7 +302,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
         try:
             from ledger import Ledger, ensure_clone
             ensure_clone(spec.ledger_dir, spec.ledger.get("repo", ""), quiet=True)
-            led = Ledger(spec.hag, root=spec.ledger_dir)
+            led = Ledger(spec.sid, root=spec.ledger_dir)
             if not led.exists():
                 led.pull()
                 led.init(spec.snapshot(), note=f"init at {'start' if spec.incarnation == 0 else 'restart'}")
@@ -315,7 +315,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
         if role not in targets:
             continue
         be = get_backend(role.ecosystem)
-        brief_path = os.path.join(home_dir(spec.hag), "briefs",
+        brief_path = os.path.join(home_dir(spec.sid), "briefs",
                                   f"{role.tag}.md")
         if not dry_run:
             brief_path = write_brief(spec, role)
@@ -354,13 +354,13 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                 consumers_launched.append(role)
     if not dry_run:
         spec.record_generation(run_pin())
-        hag_emit(spec.hag, "shoal", "script", "generation",
+        shoal_emit(spec.sid, "shoal", "script", "generation",
                  event="started", gen=spec.display_gen,
                  incarnation=str(spec.incarnation),
                  note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session))
         try:
             from ledger import Ledger
-            led = Ledger(spec.hag, root=spec.ledger_dir)
+            led = Ledger(spec.sid, root=spec.ledger_dir)
             led.pull()
             led.append(SYSTEM_WRITER, "system", event="generation-started", gen=spec.display_gen,
                        note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session), _push=False)
@@ -396,14 +396,14 @@ def mint_shoal_id(name: str) -> str:
 
 
 def cmd_start(args: argparse.Namespace) -> int:
-    hag = mint_shoal_id(args.name)
-    home = home_dir(hag)
+    sid = mint_shoal_id(args.name)
+    home = home_dir(sid)
     roles = [parse_role(r) for r in args.role]
     if getattr(args, "aux", ""):  # the residual lane (architecture §4.1)
         eco, model = _aux.parse_aux_arg(args.aux)
-        roles.append(_aux.aux_role(hag, eco, model))
+        roles.append(_aux.aux_role(sid, eco, model))
         if not args.dry_run:
-            _aux.write_doc(hag)
+            _aux.write_doc(sid)
     from sources import parse_source
     try:
         sources = [parse_source(x) for x in (args.source or [])]
@@ -417,18 +417,18 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(f"start: no ledger repo and no clone at {ledger['dir']}: pass --ledger-repo URL (or set "
               "`ledger_repo` in the host config / SHOAL_LEDGER_REPO)")
         return 1
-    spec = ShoalSpec(hag=hag, dir=args.dir, incarnation=0, roles=roles,
+    spec = ShoalSpec(sid=sid, dir=args.dir, incarnation=0, roles=roles,
                    repos=list(args.repo or []), ledger=ledger, sources=sources)
     errs = spec.validate()
     if errs:
         print("spec invalid:", *errs, sep="\n  ")
         return 1
     from layout import GROUPS_DIR, SPEC_FILE
-    spec_path = os.path.join(spec.ledger_dir, GROUPS_DIR, hag, SPEC_FILE)
+    spec_path = os.path.join(spec.ledger_dir, GROUPS_DIR, sid, SPEC_FILE)
     if args.dry_run:
-        print(f"[dry-run] new shoal {hag} (home: {home}; canonical spec: {spec_path})")
+        print(f"[dry-run] new shoal {sid} (home: {home}; canonical spec: {spec_path})")
         print(f"[dry-run] spec: {spec.to_dict()}")
-        print(f"[dry-run] ledger: {spec.ledger['repo']} at {spec.ledger_dir}/{GROUPS_DIR}/{hag}/ledger/ "
+        print(f"[dry-run] ledger: {spec.ledger['repo']} at {spec.ledger_dir}/{GROUPS_DIR}/{sid}/ledger/ "
               f"(init + spec snapshot); sources: {spec.sources or 'none'}; "
               f"fill: {[(r.slug, r.fill) for r in roles]}")
         rc = stage_handoffs(spec, True) or stage_sync_plans(spec, True)
@@ -439,21 +439,21 @@ def cmd_start(args: argparse.Namespace) -> int:
     os.makedirs(os.path.join(home, "briefs"), exist_ok=True)
     os.makedirs(os.path.join(home, "reports"), exist_ok=True)
     os.makedirs(os.path.join(home, "telemetry"), exist_ok=True)
-    os.makedirs(state_dir(hag), exist_ok=True)
+    os.makedirs(state_dir(sid), exist_ok=True)
     from ledger import Ledger, ensure_clone
     try:
         ensure_clone(spec.ledger_dir, spec.ledger["repo"], quiet=True)
-        led = Ledger(hag, root=spec.ledger_dir)
+        led = Ledger(sid, root=spec.ledger_dir)
         led.pull()
-        persist_spec(spec, spec_path, note=f"start {hag}")
-        led.init(None, note=f"start {hag}")
+        persist_spec(spec, spec_path, note=f"start {sid}")
+        led.init(None, note=f"start {sid}")
         print(f"ledger initialized: {led.ldir}")
     except Exception as exc:  # noqa: BLE001
         print(f"FAIL: ledger init: {exc}")
         return 4
-    print(f"new shoal {hag} (home: {home}; spec: {spec_path}; telemetry: {os.path.join(home, 'telemetry')})")
+    print(f"new shoal {sid} (home: {home}; spec: {spec_path}; telemetry: {os.path.join(home, 'telemetry')})")
     args.spec = spec_path
-    args.hag = hag
+    args.sid = sid
     args.stages = "handoffs,restart"
     args.save_spec = spec_path
     args.old_session = []
@@ -604,9 +604,9 @@ def cmd_add_role(a: argparse.Namespace) -> int:
     new_roles = [parse_role(r) for r in (a.role or [])]
     if getattr(a, "aux", ""):  # the residual lane (architecture §4.1); aux-launch avoids the bump
         eco, model = _aux.parse_aux_arg(a.aux)
-        new_roles.append(_aux.aux_role(spec.hag, eco, model))
+        new_roles.append(_aux.aux_role(spec.sid, eco, model))
         if not getattr(a, "dry_run", False):
-            _aux.write_doc(spec.hag)
+            _aux.write_doc(spec.sid)
     if not new_roles:
         print("add-role needs at least one --role")
         return 1
@@ -640,11 +640,11 @@ def cmd_retire(a: argparse.Namespace) -> int:
         return 0
     spec.retired_utc = utcnow_iso()
     persist_spec(spec, a.spec, note="retire")
-    hag_emit(spec.hag, "shoal", "script", "generation", event="retired", gen=spec.display_gen,
+    shoal_emit(spec.sid, "shoal", "script", "generation", event="retired", gen=spec.display_gen,
              incarnation=str(spec.incarnation), note=a.note or "")
-    print(f"retired {spec.hag} gen {spec.display_gen} at {spec.retired_utc} (sessions untouched; retire-by-neglect)")
+    print(f"retired {spec.sid} gen {spec.display_gen} at {spec.retired_utc} (sessions untouched; retire-by-neglect)")
     if a.uninstall_units:
-        cmd_uninstall_systemd(spec.hag)
+        cmd_uninstall_systemd(spec.sid)
     print("next: `shoal report --spec <spec> --gen <gen>` writes the incarnation report; "
           "review it in hag_system_reviews.md before the next protocol change.")
     return 0
@@ -654,7 +654,7 @@ def cmd_retire(a: argparse.Namespace) -> int:
 
 def cmd_watch_register(a: argparse.Namespace) -> int:
     from heartbeat import register_watch
-    print(register_watch(a.hag, a.slug, a.kind, a.target, a.pid,
+    print(register_watch(a.sid, a.slug, a.kind, a.target, a.pid,
                          a.session, a.rescan_min))
     return 0
 
@@ -694,7 +694,7 @@ def cmd_sync_models(a: argparse.Namespace) -> int:
 
 
 def cmd_status(spec: ShoalSpec) -> int:
-    print(f"shoal {spec.hag} incarnation={spec.incarnation} ({spec.display_gen}) dir={spec.dir} "
+    print(f"shoal {spec.sid} incarnation={spec.incarnation} ({spec.display_gen}) dir={spec.dir} "
           "mode=flattened"
           + (f" RETIRED {spec.retired_utc}" if spec.retired_utc else ""))
     if not spec.generations:
@@ -711,22 +711,22 @@ def cmd_status(spec: ShoalSpec) -> int:
                 parts.append(f"state: {get_backend(r.ecosystem).status(r.session, spec.dir)}")
             except Exception as exc:  # noqa: BLE001
                 parts.append(f"state: QUERY-FAILED ({exc})")
-        age = age_min(hb_path(spec.hag, r.slug))
+        age = age_min(hb_path(spec.sid, r.slug))
         parts.append(f"hb={'never' if age is None else f'{age:.0f}m ago'}")
-        ws, w = _state.wait_status(spec.hag, r.slug)
+        ws, w = _state.wait_status(spec.sid, r.slug)
         if ws != "none":
             parts.append(f"wait={ws}:{w.get('sub')} holder={w.get('holder')} rescan={w.get('rescan_utc')}")
         parts.append(f"doc={'ok' if r.doc and os.path.exists(r.doc) else 'MISSING'}")
         print("  " + " | ".join(parts))
     try:
         from ledger import Ledger, View, unpushed
-        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led = Ledger(spec.sid, root=spec.ledger_dir)
         v = View(led, spec)
         print(f"  ledger: {led.ldir} events={len(led.events())} contested={len(v.contested)} "
               f"violations={len(v.violations)} unpushed={unpushed(led.root)} "
-              f"(`shoal show --shoal {spec.hag}` for the table)")
+              f"(`shoal show --shoal {spec.sid}` for the table)")
         for r in spec.roles:
-            sc = _ledger_watch.load_sidecar(_ledger_watch.sidecar_path(spec.hag, r.slug))
+            sc = _ledger_watch.load_sidecar(_ledger_watch.sidecar_path(spec.sid, r.slug))
             if sc:
                 pid = sc.get("pid", "")
                 alive = pid and os.path.exists(f"/proc/{pid}")
@@ -739,11 +739,11 @@ def cmd_status(spec: ShoalSpec) -> int:
         print(f"  ledger: QUERY-FAILED ({exc})")
     ticks = []
     for job, interval in _doctor.tick_jobs(spec).items():
-        a = age_min(os.path.join(state_dir(spec.hag), f"tick-{job}"))
+        a = age_min(os.path.join(state_dir(spec.sid), f"tick-{job}"))
         ticks.append(f"{job}={'never' if a is None else f'{a:.0f}m'}"
                      + ("!" if a is not None and a > 3 * interval else ""))
     print("  watcher ticks: " + " ".join(ticks) + "  (! = older than 3x interval)")
-    timers = _doctor.timer_state(spec.hag)
+    timers = _doctor.timer_state(spec.sid)
     print(f"  systemd timers: {timers or 'none installed'}")
     return 0
 
@@ -761,7 +761,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("start", help="mint a new shoal and start its first generation")
     p.add_argument("--name", required=True)
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
-                   help="also start the hag-aux residual lane (needs features.matcher)")
+                   help="also start the aux residual lane (needs features.matcher)")
     p.add_argument("--dir", required=True)
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,aux][,fill=self|assigned|none]"
@@ -787,7 +787,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=lambda a: cmd_start(a))
 
     p = sub.add_parser("restart", help="staged restart (full or --only subset)")
-    p.add_argument("--spec", required=True, help="hag.json path")
+    p.add_argument("--spec", required=True, help="shoal.json path")
     p.add_argument("--only", default="",
                    help="comma slugs to restart (default: all). Untouched roles keep "
                         "sessions+seqs; restarted roles bump seq; incarnation bumps either way")
@@ -813,9 +813,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=lambda a: cmd_restart(a))
 
     p = sub.add_parser("add-role", help="extend a live shoal with new roles (existing sessions untouched)")
-    p.add_argument("--spec", required=True, help="hag.json path")
+    p.add_argument("--spec", required=True, help="shoal.json path")
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
-                   help="also add the hag-aux residual lane (needs features.matcher); on a running shoal "
+                   help="also add the aux residual lane (needs features.matcher); on a running shoal "
                         "prefer `aux-init` + `aux-launch`, which do not bump the incarnation")
     p.add_argument("--role", action="append", default=[],
                    help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,scope=R][,model=M][,effort=E][,seq=N] (repeatable)")
@@ -855,7 +855,7 @@ def main(argv: list[str] | None = None) -> int:
     config.add_id_arg(p, required=True)
     p.add_argument("mode", choices=("lanes", "pipeline"))
     p.add_argument("args", nargs="*",
-                   help="lanes: ledger:<hag> <dir> <lane...> [--test] | pipeline: ledger:<hag> <dir> [org] [proj]")
+                   help="lanes: ledger:<id> <dir> <lane...> [--test] | pipeline: ledger:<id> <dir> [org] [proj]")
     p.set_defaults(func=lambda a: cmd_watch(a))
 
     p = sub.add_parser("heartbeat", help="stall daemon over hb + wait ticks")
@@ -914,7 +914,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="disable + remove a retired shoal's watcher units")
     config.add_id_arg(p, required=True)
     p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.hag, dry_run=a.dry_run))
+    p.set_defaults(func=lambda a: cmd_uninstall_systemd(a.sid, dry_run=a.dry_run))
 
     args = ap.parse_args(argv)
     return args.func(args)
@@ -957,18 +957,18 @@ def cmd_install_cli(a: argparse.Namespace) -> int:
 
 def cmd_watch(a: argparse.Namespace) -> int:
     if a.args and not a.args[0].startswith("ledger:"):
-        print(f"watch target must be ledger:<hag> (got {a.args[0]!r}); session-addressed fires "
+        print(f"watch target must be ledger:<id> (got {a.args[0]!r}); session-addressed fires "
               "were removed 2026-09-24 (flattened-only)")
         return 1
     if a.mode == "lanes":
         if len(a.args) < 3:
-            print("usage: shoal watch --shoal ID lanes ledger:<hag> <dir> <lane...> [--test]")
+            print("usage: shoal watch --shoal ID lanes ledger:<id> <dir> <lane...> [--test]")
             return 1
         test = "--test" in a.args
         lanes = [x for x in a.args[2:] if x != "--test"]
-        return cmd_lanes(a.hag, a.args[0], a.args[1], lanes, test=test)
+        return cmd_lanes(a.sid, a.args[0], a.args[1], lanes, test=test)
     if len(a.args) < 2:
-        print("usage: shoal watch --shoal ID pipeline ledger:<hag> <dir> [org] [proj]")
+        print("usage: shoal watch --shoal ID pipeline ledger:<id> <dir> [org] [proj]")
         return 1
     import config
     org = a.args[2] if len(a.args) > 2 else config.azure_org()
@@ -977,14 +977,14 @@ def cmd_watch(a: argparse.Namespace) -> int:
         print("pipeline watch needs an Azure org and project: pass them, or set azure_org and "
               "azure_project in the host config (SHOAL_AZURE_ORG, SHOAL_AZURE_PROJECT)")
         return 1
-    return cmd_pipeline(a.hag, a.args[0], a.args[1], org, proj)
+    return cmd_pipeline(a.sid, a.args[0], a.args[1], org, proj)
 
 
 def cmd_heartbeat_cli(a: argparse.Namespace) -> int:
     if a.touch:
-        print(hb_touch(a.hag, a.touch))
+        print(hb_touch(a.sid, a.touch))
         return 0
-    spec = ShoalSpec.load(a.spec) if a.spec else ShoalSpec(hag=a.hag, dir=a.dir)
+    spec = ShoalSpec.load(a.spec) if a.spec else ShoalSpec(sid=a.sid, dir=a.dir)
     return cmd_heartbeat(spec, a.threshold_min,
                          dry_run=a.dry_run, refire_min=a.refire_min)
 

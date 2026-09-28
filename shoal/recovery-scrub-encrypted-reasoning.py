@@ -8,7 +8,7 @@ before writing, deletes ONLY signature/encrypted/item-id keys inside
 reasoning/thinking carriers and provider-metadata subtrees (never message/part
 linkage, text, tool data, todos). Verified on this host: 16968 rows rewritten,
 zero encrypted_content carriers remain in part rows (checked by direct query),
-all three HAG sessions generate again (ACK-PROBE 2026-09-19T19:19Z).
+all three shoal sessions generate again (ACK-PROBE 2026-09-19T19:19Z).
 Storage layout this was validated against: opencode v1
 (~/.local/share/opencode/opencode.db, tables message/part/session). RE-VALIDATE
 after any opencode major upgrade (v2 uses session_v2 / credential table).

@@ -7,9 +7,9 @@ cron. Regenerate per shoal generation (session ids change); stale units for a
 retired shoal are removed by `uninstall-systemd --shoal <old-id>`.
 
 Every role runs its own `ledger-watch`; lanes/pipeline/heartbeat notify
-through the ledger (`ledger:<hag>` target), so no unit needs a session id.
+through the ledger (`ledger:<id>` target), so no unit needs a session id.
 
-Units land in ~/.config/systemd/user/ as shoal-<hag>-<job>.{service,timer}.
+Units land in ~/.config/systemd/user/ as shoal-<id>-<job>.{service,timer}.
 `install-systemd --enable` runs daemon-reload + `enable --now` on every
 timer it wrote, so a launch is one command. Jobs:
   lanes          every :0/5    lane transitions + SERVER-RESPAWNED
@@ -38,8 +38,8 @@ UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
 TOOL_PATH = config.tool_path()
 
 
-def unit_name(hag: str, job: str, ext: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in hag)
+def unit_name(sid: str, job: str, ext: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in sid)
     return f"shoal-{safe}-{job}.{ext}"
 
 
@@ -67,31 +67,31 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
     lanes = [r.session for r in spec.roles
              if r.ecosystem == "opencode" and r.session]
     jobs = []
-    target = f"ledger:{spec.hag}"
+    target = f"ledger:{spec.sid}"
     if lanes:
-        jobs.append(("lanes", f"shoal {spec.hag} lanes watch (server respawn -> ledger)",
-                     ["watch", "--shoal", spec.hag, "lanes", target, spec.dir] + lanes,
+        jobs.append(("lanes", f"shoal {spec.sid} lanes watch (server respawn -> ledger)",
+                     ["watch", "--shoal", spec.sid, "lanes", target, spec.dir] + lanes,
                      "*:0/5", ""))
-    jobs.append(("pipeline", f"shoal {spec.hag} pipeline watch (starvation -> ledger)",
-                 ["watch", "--shoal", spec.hag, "pipeline", target, spec.dir],
+    jobs.append(("pipeline", f"shoal {spec.sid} pipeline watch (starvation -> ledger)",
+                 ["watch", "--shoal", spec.sid, "pipeline", target, spec.dir],
                  "*:0/10", ""))
     if (getattr(spec, "features", {}) or {}).get("health"):
         # the health quorum: two identical, offset instances (architecture doc §6)
-        jobs.append(("health-a", f"shoal {spec.hag} health quorum (a)",
+        jobs.append(("health-a", f"shoal {spec.sid} health quorum (a)",
                      ["health", "--spec", spec_path, "--instance", "a"], "*:0/5", ""))
-        jobs.append(("health-b", f"shoal {spec.hag} health quorum (b)",
+        jobs.append(("health-b", f"shoal {spec.sid} health quorum (b)",
                      ["health", "--spec", spec_path, "--instance", "b"], "*:2/5", ""))
     else:
-        jobs.append(("heartbeat", f"shoal {spec.hag} stall daemon",
+        jobs.append(("heartbeat", f"shoal {spec.sid} stall daemon",
                      ["heartbeat", "--spec", spec_path, "--threshold-min", "60"],
                      "*:0/5", ""))
     if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
-        jobs.append(("digest", f"shoal {spec.hag} board digest (one board read per shoal)",
-                     ["digest", "--shoal", spec.hag, "--spec", spec_path, "--refresh"], "*:3/10", ""))
-    jobs.append(("reconcile", f"shoal {spec.hag} reconcile (twice daily)",
-                 ["--shoal", spec.hag, "--spec", spec_path], "04,16:07",
-                 os.path.join(config.cli_pkg_dir(), "telemetry", "hag-reconcile.py")))
-    jobs.append(("weekly-report", f"shoal {spec.hag} weekly report",
+        jobs.append(("digest", f"shoal {spec.sid} board digest (one board read per shoal)",
+                     ["digest", "--shoal", spec.sid, "--spec", spec_path, "--refresh"], "*:3/10", ""))
+    jobs.append(("reconcile", f"shoal {spec.sid} reconcile (twice daily)",
+                 ["--shoal", spec.sid, "--spec", spec_path], "04,16:07",
+                 os.path.join(config.cli_pkg_dir(), "telemetry", "shoal-reconcile.py")))
+    jobs.append(("weekly-report", f"shoal {spec.sid} weekly report",
                  ["report", "--spec", spec_path, "--hours", "168"], "Mon 05:11", ""))
     return jobs
 
@@ -107,7 +107,7 @@ def cmd_install(spec, spec_path: str,
     timers = []
     for job, desc, argv, cal, exe in jobs_for(spec, spec_path):
         svc = service_unit(desc, spec.dir, argv, exe)
-        sn, tn = unit_name(spec.hag, job, "service"), unit_name(spec.hag, job, "timer")
+        sn, tn = unit_name(spec.sid, job, "service"), unit_name(spec.sid, job, "timer")
         if dry_run:
             print(f"[dry-run] {sn} + {tn} ({cal}): {os.path.basename(exe or SHOAL_CLI or _CLI_EXE)} {' '.join(argv)[:90]}")
             continue
@@ -130,16 +130,14 @@ def cmd_install(spec, spec_path: str,
     else:
         print("enable with:\n  systemctl --user daemon-reload\n"
               "  for t in ~/.config/systemd/user/"
-              f"shoal-{spec.hag}-*.timer; do systemctl --user enable --now "
+              f"shoal-{spec.sid}-*.timer; do systemctl --user enable --now "
               "\"$(basename $t)\"; done\n(or re-run install-systemd --enable)")
     return 0
 
 
-def cmd_uninstall(hag: str, dry_run: bool = False) -> int:
+def cmd_uninstall(sid: str, dry_run: bool = False) -> int:
     removed = []
-    # units installed before the rename carry the legacy `hag-` prefix; remove those too
-    for path in sorted(glob.glob(os.path.join(UNIT_DIR, f"shoal-{hag}-*"))
-                       + glob.glob(os.path.join(UNIT_DIR, f"hag-{hag}-*"))):
+    for path in sorted(glob.glob(os.path.join(UNIT_DIR, f"shoal-{sid}-*"))):
         base = os.path.basename(path)
         if dry_run:
             print(f"[dry-run] disable + remove {base}")
@@ -150,6 +148,6 @@ def cmd_uninstall(hag: str, dry_run: bool = False) -> int:
         os.remove(path)
         removed.append(base)
     if not dry_run:
-        print(f"removed {len(removed)} unit(s) for {hag}: {removed}")
+        print(f"removed {len(removed)} unit(s) for {sid}: {removed}")
         subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
     return 0

@@ -46,27 +46,21 @@ def now_iso() -> str:
 
 
 UNIT_PREFIX = "shoal"
-LEGACY_UNIT_PREFIX = "hag"  # job units started before the rename
 
 
-def unit_name(hag: str, slug: str, name: str, prefix: str = UNIT_PREFIX) -> str:
-    raw = f"{prefix}-{hag}-{slug}-{name}"
+def unit_name(sid: str, slug: str, name: str, prefix: str = UNIT_PREFIX) -> str:
+    raw = f"{prefix}-{sid}-{slug}-{name}"
     return re.sub(r"[^A-Za-z0-9:_.\-]", "-", raw)
 
 
-def find_unit(hag: str, slug: str, name: str) -> str:
-    """The unit a job name refers to: the `shoal-` unit, unless only a legacy `hag-` job of that
-    name was ever recorded here (a job started by the pre-rename tool and still followed)."""
-    unit = unit_name(hag, slug, name)
-    legacy = unit_name(hag, slug, name, LEGACY_UNIT_PREFIX)
-    if not os.path.exists(paths(hag, unit)["meta"]) and os.path.exists(paths(hag, legacy)["meta"]):
-        return legacy
-    return unit
+def find_unit(sid: str, slug: str, name: str) -> str:
+    """The unit a job name refers to."""
+    return unit_name(sid, slug, name)
 
 
-def paths(hag: str, unit: str) -> dict[str, str]:
-    jdir = os.path.join(data_dir(hag), "jobs")
-    sdir = os.path.join(state_dir(hag), "jobs")
+def paths(sid: str, unit: str) -> dict[str, str]:
+    jdir = os.path.join(data_dir(sid), "jobs")
+    sdir = os.path.join(state_dir(sid), "jobs")
     return {"log": os.path.join(jdir, f"{unit}.log"), "rc": os.path.join(sdir, f"{unit}.rc"),
             "meta": os.path.join(sdir, f"{unit}.json"), "jdir": jdir, "sdir": sdir}
 
@@ -84,10 +78,10 @@ def unit_state(unit: str) -> dict[str, str]:
     return d
 
 
-def _emit(hag: str, slug: str, kind: str, note: str) -> None:
+def _emit(sid: str, slug: str, kind: str, note: str) -> None:
     try:
-        from hag_telemetry import append_event, build_event, resolve_dir
-        append_event(resolve_dir(None, hag), build_event(hag, slug, "script", "watch_event",
+        from shoal_telemetry import append_event, build_event, resolve_dir
+        append_event(resolve_dir(None, sid), build_event(sid, slug, "script", "watch_event",
                                                          [f"kind={kind}", f"slug={slug}", f"note={note}"]))
     except Exception as exc:  # noqa: BLE001
         print(f"(telemetry emit failed: {exc})", file=sys.stderr)
@@ -112,19 +106,19 @@ def cmd_run(a) -> int:
     try:  # a freeze (before a restart or maintenance window) starts no new jobs
         from ledger import Ledger, View
         from roles import ShoalSpec, find_spec
-        _spec = ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "") or ""))
-        _fz = View(Ledger(a.hag, root=_spec.ledger_dir, sync=False), _spec).freeze()
+        _spec = ShoalSpec.load(find_spec(a.sid, getattr(a, "spec", "") or ""))
+        _fz = View(Ledger(a.sid, root=_spec.ledger_dir, sync=False), _spec).freeze()
     except Exception:  # noqa: BLE001 - no spec/ledger reachable (tests, ad-hoc use): not frozen
         _fz = None
     if _fz is not None:
         print(f"JOB-REFUSED: freeze active since {_fz['ts']} ({_fz.get('note') or 'no note'}); "
               f"the maintainer lifts it with `shoal freeze off`")
         return 5
-    unit = unit_name(a.hag, a.slug, a.name)
-    p = paths(a.hag, unit)
+    unit = unit_name(a.sid, a.slug, a.name)
+    p = paths(a.sid, unit)
     st = unit_state(unit)
     if st.get("ActiveState") in ("active", "activating", "reloading"):
-        print(f"JOB-ALREADY-RUNNING {unit} (follow it with `shoal job wait --shoal {a.hag} --slug {a.slug} --name {a.name}`)")
+        print(f"JOB-ALREADY-RUNNING {unit} (follow it with `shoal job wait --shoal {a.sid} --slug {a.slug} --name {a.name}`)")
         return 4
     cwd = os.path.abspath(a.cwd or os.getcwd())
     wrapper = ["/bin/bash", "-c", f'"$@"; rc=$?; echo "$rc" > {shlex.quote(p["rc"])}; exit "$rc"', "shoal-job"]
@@ -155,21 +149,21 @@ def cmd_run(a) -> int:
     if r.returncode != 0:
         print(f"ERROR: systemd-run failed rc={r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
         return 2
-    meta = {"unit": unit, "hag": a.hag, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
+    meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
             "started_utc": now_iso(), "log": p["log"], "rc_file": p["rc"],
             "memory_high": a.memory_high, "memory_max": a.memory_max}
     with open(p["meta"], "w") as fh:
         json.dump(meta, fh, indent=1)
-    _emit(a.hag, a.slug, "job-start", f"{unit} {' '.join(cmd)[:120]}")
+    _emit(a.sid, a.slug, "job-start", f"{unit} {' '.join(cmd)[:120]}")
     print(f"JOB-STARTED {unit} log={p['log']}\n"
           f"follow with (background command, re-arm freely): "
-          f"{config.cli()} job wait --shoal {a.hag} --slug {a.slug} --name {a.name}")
+          f"{config.cli()} job wait --shoal {a.sid} --slug {a.slug} --name {a.name}")
     return 0
 
 
 def resolve(a) -> tuple[str, dict[str, str]]:
-    unit = a.unit or find_unit(a.hag, a.slug, a.name)
-    return unit, paths(a.hag, unit)
+    unit = a.unit or find_unit(a.sid, a.slug, a.name)
+    return unit, paths(a.sid, unit)
 
 
 def cmd_wait(a) -> int:
@@ -201,7 +195,7 @@ def cmd_wait(a) -> int:
                            f"(killed outside its command: see `journalctl --user -u {unit}.service`)")
             print(verdict)
             print(f"--- log tail ({p['log']}):\n{tail(p['log'], a.tail)}")
-            _emit(a.hag, a.slug or "?", "job-verdict", verdict[len("JOB-VERDICT "):][:160])
+            _emit(a.sid, a.slug or "?", "job-verdict", verdict[len("JOB-VERDICT "):][:160])
             return 0 if rc == 0 else 1
         if deadline and time.time() > deadline:
             print(f"JOB-VERDICT {unit} TIMEOUT after {a.timeout_min:g} min (job still running; re-arm to keep following)")
@@ -210,7 +204,7 @@ def cmd_wait(a) -> int:
 
 
 def cmd_status(a) -> int:
-    sdir = paths(a.hag, "x")["sdir"]
+    sdir = paths(a.sid, "x")["sdir"]
     try:
         metas = sorted(f for f in os.listdir(sdir) if f.endswith(".json"))
     except OSError:

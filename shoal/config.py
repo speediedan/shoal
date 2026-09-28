@@ -22,8 +22,7 @@ when neither is importable the file is skipped with one warning on stderr.
   azure_org      SHOAL_AZURE_ORG                             "" (Azure pipeline sensors and GPU share need it)
   azure_project  SHOAL_AZURE_PROJECT                         ""
 
-Every `SHOAL_*` variable also honours its legacy `HAG_*` name as a fallback (the SHOAL name
-wins when both are set), and `lease_cmd` falls back further to `GPU_LEASE_CMD`.
+`lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
 An empty environment variable counts as unset. Values are read at call time, so a test
 that exports a variable before importing a module sees it.
@@ -41,16 +40,16 @@ _CACHE: dict[str, dict] = {}
 _WARNED: set[str] = set()
 
 
-ENV_PREFIXES = ("SHOAL_", "HAG_")  # current name first, then the legacy one
+ENV_PREFIXES = ("SHOAL_",)
 
 
 def names(suffix: str) -> tuple[str, ...]:
-    """The environment variable names for one setting: `SHOAL_<suffix>`, then `HAG_<suffix>`."""
+    """The environment variable names for one setting: `SHOAL_<suffix>`."""
     return tuple(p + suffix for p in ENV_PREFIXES)
 
 
 def env(suffix: str, default: str = "") -> str:
-    """`$SHOAL_<suffix>`, else the legacy `$HAG_<suffix>`, else `default` (empty counts as unset)."""
+    """`$SHOAL_<suffix>`, else `default` (empty counts as unset)."""
     for n in names(suffix):
         v = os.environ.get(n, "")
         if v:
@@ -59,13 +58,9 @@ def env(suffix: str, default: str = "") -> str:
 
 
 def add_id_arg(parser, **kw):
-    """`--shoal ID` on an argparse parser, with `--hag` kept as a hidden alias (same dest,
-    `hag`) because existing role documents carry `--hag` re-arm commands. The alias stays in
-    the parser's option map, so it parses; help, usage and errors name `--shoal` only."""
+    """`--shoal ID` on an argparse parser (dest `sid`)."""
     kw.setdefault("metavar", "ID")
-    action = parser.add_argument("--shoal", "--hag", dest="hag", **kw)
-    action.option_strings = ["--shoal"]
-    return action
+    return parser.add_argument("--shoal", dest="sid", **kw)
 
 
 def config_path() -> str:

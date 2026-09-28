@@ -12,13 +12,13 @@ handoff --to <role>`. Specs written before the change may still carry
 
 Two roots (resolved by config.py: environment, then the host config file,
 then a generic default):
-  data_root      per-shoal local home (unversioned bulk): <root>/<hag>/{briefs/,
+  data_root      per-shoal local home (unversioned bulk): <root>/<id>/{briefs/,
                      reports/,telemetry/}. Briefs, report .md twins and events
                      live here, never in version control.
   ledger.dir     the ledger repo's local clone (config `ledger_dir`):
                      shoals/<id>/{shoal.json (THE canonical live spec, mutated by
                      shoal with commit+push),ledger/}. Remote agents read this.
-  SHOAL_SPEC       optional pin: the path of one shoal's spec (<dir named for the hag>/hag.json).
+  SHOAL_SPEC       optional pin: the path of one shoal's spec (<dir named for the shoal>/shoal.json).
                      Tests and operators use it to resolve a spec outside the ledger clone.
 
 A spec also records its generation history (`generations`): one entry per
@@ -42,9 +42,8 @@ ECOSYSTEMS = ("opencode", "claude", "codex")
 FILL_MODES = ("self", "assigned", "none")
 
 # The helper session behind the Claude implementation of direct session wake (backends.py
-# `wake`). Groups created before the rename call it `hag-relay`; both are recognised.
+# `wake`).
 WAKE_RELAY_SLUG = "wake-relay"
-LEGACY_WAKE_RELAY_SLUGS = ("hag-relay",)
 # resolved once per process: environment, then the host config file, then a generic default
 DEFAULT_LEDGER = {"repo": config.ledger_repo(), "dir": config.ledger_dir()}
 
@@ -56,35 +55,35 @@ def utcnow_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def home_dir(hag: str) -> str:
+def home_dir(sid: str) -> str:
     """Local per-shoal home: briefs/, reports/, telemetry/ (unversioned)."""
-    return os.path.join(SHOAL_DATA_ROOT, hag)
+    return os.path.join(SHOAL_DATA_ROOT, sid)
 
 
-def data_dir(hag: str) -> str:
-    return os.path.join(SHOAL_DATA_ROOT, hag)
+def data_dir(sid: str) -> str:
+    return os.path.join(SHOAL_DATA_ROOT, sid)
 
 
-def telemetry_dir(hag: str) -> str:
-    return os.path.join(data_dir(hag), "telemetry")
+def telemetry_dir(sid: str) -> str:
+    return os.path.join(data_dir(sid), "telemetry")
 
 
-def contexts_dir(hag: str) -> str:
+def contexts_dir(sid: str) -> str:
     """Per-shoal orchestration state: one editable working-context file per role,
     `<slug>.json`, loaded into the spec by `shoal context set|load` (architecture §4)."""
-    return os.path.join(data_dir(hag), "contexts")
+    return os.path.join(data_dir(sid), "contexts")
 
 
-def roles_dir(hag: str) -> str:
+def roles_dir(sid: str) -> str:
     """Per-shoal orchestration state: generated start docs for infrastructure roles
     (e.g. `roles/wake-relay/plan_state.md`); worker roles keep their plan_state in the
     design repo, where their mission lives."""
-    return os.path.join(data_dir(hag), "roles")
+    return os.path.join(data_dir(sid), "roles")
 
 
-def state_dir(hag: str) -> str:
+def state_dir(sid: str) -> str:
     """Scratch state (/tmp): sidecars, heartbeats, wait files, watcher ticks."""
-    return os.path.join("/tmp", hag)
+    return os.path.join("/tmp", sid)
 
 
 @dataclasses.dataclass
@@ -94,7 +93,7 @@ class Role:
     title: str = ""              # session title stem (sequence suffix appended)
     seq: int = 1                 # per-role session sequence; session tag is {slug}-r{seq}.
         # Bump ONLY this role's seq on a single-ecosystem restart; other roles keep
-        # their sessions AND their seqs, so hag.json never conflates them.
+        # their sessions AND their seqs, so shoal.json never conflates them.
     doc: str = ""                # absolute path to THE start document (plan_state.md;
         # mission + current state + grants-needed + next). One doc per role;
         # handoffs/ dirs hold the immutable restart record, never the start doc.
@@ -190,7 +189,7 @@ def scope_to_context(scope: dict | None) -> dict:
 
 @dataclasses.dataclass
 class ShoalSpec:
-    hag: str
+    sid: str
     dir: str = ""   # repo dir sessions run in
     gen: str = ""   # legacy display string ("r1"); kept for old specs, else derived
     incarnation: int = 0  # 0-indexed shoal incarnation: THE telemetry counter.
@@ -218,8 +217,8 @@ class ShoalSpec:
 
     def validate(self) -> list[str]:
         errs = []
-        if not self.hag:
-            errs.append("spec missing hag id")
+        if not self.sid:
+            errs.append("spec missing shoal id")
         if not self.dir:
             errs.append("spec missing dir")
         if not self.roles:
@@ -295,7 +294,7 @@ class ShoalSpec:
         return None
 
     def to_dict(self) -> dict:
-        return {"hag": self.hag, "dir": self.dir, "gen": self.display_gen,
+        return {"shoal": self.sid, "dir": self.dir, "gen": self.display_gen,
                 "incarnation": self.incarnation,
                 "repos": self.repos, "retired_utc": self.retired_utc,
                 "ledger": self.ledger, "sources": self.sources, "features": self.features,
@@ -320,7 +319,7 @@ class ShoalSpec:
         else:
             m = re.match(r"r(\d+)$", gen)
             inc = int(m.group(1)) - 1 if m else 0
-        return ShoalSpec(hag=d.get("hag", ""), dir=d.get("dir", ""),
+        return ShoalSpec(sid=d.get("shoal", ""), dir=d.get("dir", ""),
                        gen="" if "incarnation" in d else gen,
                        incarnation=inc,
                        roles=[Role.from_dict(r) for r in d.get("roles", [])],
@@ -347,30 +346,30 @@ class ShoalSpec:
 
 
 def is_wake_relay(role) -> bool:
-    """True for the wake relay role (current or legacy slug; always `fill=none`)."""
+    """True for the wake relay role (slug `wake-relay`; always `fill=none`)."""
     return (role is not None and getattr(role, "fill", "") == "none"
-            and role.slug in (WAKE_RELAY_SLUG,) + LEGACY_WAKE_RELAY_SLUGS)
+            and role.slug == WAKE_RELAY_SLUG)
 
 
 def wake_relay_role(spec) -> "Role | None":
     return next((r for r in spec.roles if is_wake_relay(r)), None)
 
 
-def default_spec_path(hag: str) -> str:
-    """The canonical live spec: `$SHOAL_SPEC` when it pins this hag (its directory is named
-    for the group), else the ledger clone's `shoals/<id>/shoal.json` (legacy `hags/<id>/hag.json`
-    is read when only it exists; see layout.py). A missing spec fails by
+def default_spec_path(sid: str) -> str:
+    """The canonical live spec: `$SHOAL_SPEC` when it pins this shoal (its directory is named
+    for the group), else the ledger clone's `shoals/<id>/shoal.json` (see layout.py). A missing
+    spec fails by
     name when loaded; there is no fallback location (the pre-ledger control plane is gone)."""
     pin = config.env("SPEC")
-    if pin and os.path.basename(os.path.dirname(os.path.abspath(pin))) == hag:
+    if pin and os.path.basename(os.path.dirname(os.path.abspath(pin))) == sid:
         return pin
     ledger_root = config.ledger_dir()
     from layout import spec_path
-    return spec_path(ledger_root, hag)
+    return spec_path(ledger_root, sid)
 
 
-def find_spec(hag: str, explicit: str = "") -> str:
+def find_spec(sid: str, explicit: str = "") -> str:
     """Resolve a spec path: explicit wins, else default_spec_path."""
     if explicit:
         return explicit
-    return default_spec_path(hag)
+    return default_spec_path(sid)

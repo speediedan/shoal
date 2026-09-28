@@ -1,11 +1,10 @@
 # Host configuration for this package. Copy to config/host.toml (gitignored) or point
 # $SHOAL_CONFIG at your copy. Every key is optional: an environment variable wins over the
-# file, and a missing key falls back to a generic default (see shoal/config.py). Each
-# SHOAL_* variable also honours its legacy HAG_* name as a fallback.
+# file, and a missing key falls back to a generic default (see shoal/config.py).
 
-# Per-HAG local home (briefs, reports, telemetry). Env: SHOAL_DATA_ROOT.
+# Per-shoal local home (briefs, reports, telemetry). Env: SHOAL_DATA_ROOT.
 # Default: $XDG_DATA_HOME/shoal, else ~/.local/share/shoal
-# data_root = "/path/to/bulk/storage/hags"
+# data_root = "/path/to/bulk/storage/shoals"
 
 # Local clone of the ledger (queue) repository. Env: SHOAL_LEDGER_DIR. Default: <data_root>/ledger
 # ledger_dir = "/path/to/ledger-clone"
@@ -22,7 +21,7 @@
 # Env: SHOAL_LEASE_CMD, then GPU_LEASE_CMD. Default: "" (lease waits resolve as unknown)
 # lease_cmd = "/path/to/lease_provider.sh"
 
-# Repositories a HAG works when its spec names none (reconcile ground truth). Default: []
+# Repositories a shoal works when its spec names none (reconcile ground truth). Default: []
 # default_repos = ["<owner>/<repo>", "<owner>/<other-repo>"]
 
 # Command line that runs the SHOAL CLI, as printed in briefs, role docs and systemd units.

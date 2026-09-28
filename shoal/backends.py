@@ -245,19 +245,19 @@ class ClaudeBackend(Backend):
         import os as _os
         from health import iso, relay_alive, relay_queue_path, state_dir, wake_path, watcher_alive
         from roles import wake_relay_role
-        alive, _ = watcher_alive(spec.hag, role.slug)
+        alive, _ = watcher_alive(spec.sid, role.slug)
         if alive:
             if not dry_run:
-                _os.makedirs(state_dir(spec.hag), exist_ok=True)
-                with open(wake_path(spec.hag, role.slug), "a") as fh:
+                _os.makedirs(state_dir(spec.sid), exist_ok=True)
+                with open(wake_path(spec.sid, role.slug), "a") as fh:
                     fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
             return "wake-file" + (" (dry-run)" if dry_run else "")
         if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
             return "no-adapter (claude watcher dead, wake relay disabled)"
-        if not relay_alive(spec.hag):
+        if not relay_alive(spec.sid):
             return "no-adapter (claude watcher dead, wake relay waiter dead)"
         if not dry_run:
-            with open(relay_queue_path(spec.hag), "a") as fh:
+            with open(relay_queue_path(spec.sid), "a") as fh:
                 fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": role.session,
                                       "condition": condition, "text": text}) + "\n")
         return "wake-relay" + (" (dry-run)" if dry_run else "")

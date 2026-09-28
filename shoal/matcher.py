@@ -101,8 +101,8 @@ def config(spec: ShoalSpec) -> dict | None:
     return dict(DEFAULTS, **(m if isinstance(m, dict) else {}))
 
 
-def mdir(hag: str) -> str:
-    return os.path.join(data_dir(hag), "matcher")
+def mdir(sid: str) -> str:
+    return os.path.join(data_dir(sid), "matcher")
 
 
 def load_env(path: str = ENV_FILE) -> dict[str, str]:
@@ -118,15 +118,7 @@ def load_env(path: str = ENV_FILE) -> dict[str, str]:
                 out[k.strip()] = v.strip().strip("'\"")
     except OSError:
         pass
-    out.update({k: v for k, v in os.environ.items() if k.startswith(("SHOAL_", "HAG_"))})
-    # the legacy key name still works: SHOAL_MATCHER_API_KEY falls back to HAG_MATCHER_API_KEY
-    if not out.get("SHOAL_MATCHER_API_KEY") and out.get("HAG_MATCHER_API_KEY"):
-        out["SHOAL_MATCHER_API_KEY"] = out["HAG_MATCHER_API_KEY"]
-    # ...and a spec written before the rename names the legacy variable in `key_env`, while the
-    # key file now holds only the new name: mirror it back, or the paid tier silently has no key
-    # (measured 2026-09-27: the live spec's key_env was HAG_MATCHER_API_KEY, the .env SHOAL_ only)
-    if not out.get("HAG_MATCHER_API_KEY") and out.get("SHOAL_MATCHER_API_KEY"):
-        out["HAG_MATCHER_API_KEY"] = out["SHOAL_MATCHER_API_KEY"]
+    out.update({k: v for k, v in os.environ.items() if k.startswith("SHOAL_")})
     return out
 
 
@@ -245,24 +237,24 @@ def call_openai(base_url: str, model: str, key: str, prompt: str, timeout: float
 
 # ---- model resolution ------------------------------------------------------------
 
-def _state_path(hag: str) -> str:
-    return os.path.join(mdir(hag), "state.json")
+def _state_path(sid: str) -> str:
+    return os.path.join(mdir(sid), "state.json")
 
 
-def load_state(hag: str) -> dict:
+def load_state(sid: str) -> dict:
     try:
-        with open(_state_path(hag)) as fh:
+        with open(_state_path(sid)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return {}
 
 
-def save_state(hag: str, st: dict) -> None:
-    os.makedirs(mdir(hag), exist_ok=True)
-    tmp = _state_path(hag) + ".tmp"
+def save_state(sid: str, st: dict) -> None:
+    os.makedirs(mdir(sid), exist_ok=True)
+    tmp = _state_path(sid) + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(st, fh, indent=1)
-    os.replace(tmp, _state_path(hag))
+    os.replace(tmp, _state_path(sid))
 
 
 def pricing_free_names(url: str = PRICING_URL, timeout: float = 30) -> set[str]:
@@ -347,9 +339,9 @@ def candidates(c: dict, st: dict, env: dict, warn, stage: str, recheck: bool = F
     return out
 
 
-def call(route: dict, prompt: str, hag: str, timeout: float, env: dict) -> str:
+def call(route: dict, prompt: str, sid: str, timeout: float, env: dict) -> str:
     if route["backend"] == "opencode-run":
-        return call_opencode(route["model"], prompt, os.path.join(mdir(hag), "run"), timeout)
+        return call_opencode(route["model"], prompt, os.path.join(mdir(sid), "run"), timeout)
     if route["backend"] == "openai-compat":
         key = env.get(route.get("key_env", "SHOAL_MATCHER_API_KEY"), "")
         if not key:
@@ -380,7 +372,7 @@ def resolve(spec: ShoalSpec, c: dict, st: dict, env: dict, notes: list[str]) -> 
                 continue
             tried.add(key)
             try:
-                if "ok" not in call(route, PROBE_PROMPT, spec.hag, c["probe_timeout_s"], env).lower():
+                if "ok" not in call(route, PROBE_PROMPT, spec.sid, c["probe_timeout_s"], env).lower():
                     raise Unavailable(f"{route['model']}: probe reply was not `ok`")
             except (Unavailable, Transient) as exc:
                 notes.append(f"skip {key}: {str(exc)[:160]}")
@@ -404,7 +396,7 @@ def announce_switch(spec: ShoalSpec, prev: dict, new: dict, notes: list[str], st
     notes.append(text)
     try:
         from ledger import Ledger
-        Ledger(spec.hag, root=spec.ledger_dir).append(SYSTEM_WRITER, "system", kind="matcher-model",
+        Ledger(spec.sid, root=spec.ledger_dir).append(SYSTEM_WRITER, "system", kind="matcher-model",
                                                       old=prev.get("model"), new=new["model"], text=text)
     except Exception as exc:  # noqa: BLE001
         notes.append(f"(ledger system event failed: {exc})")
@@ -477,24 +469,24 @@ def parse(text: str, briefs: dict[str, str], wanted: set[str]) -> dict[str, dict
     return out
 
 
-def _cache_path(hag: str) -> str:
-    return os.path.join(mdir(hag), "cache.json")
+def _cache_path(sid: str) -> str:
+    return os.path.join(mdir(sid), "cache.json")
 
 
-def load_cache(hag: str) -> dict:
+def load_cache(sid: str) -> dict:
     try:
-        with open(_cache_path(hag)) as fh:
+        with open(_cache_path(sid)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return {}
 
 
-def save_cache(hag: str, cache: dict) -> None:
-    os.makedirs(mdir(hag), exist_ok=True)
-    tmp = _cache_path(hag) + ".tmp"
+def save_cache(sid: str, cache: dict) -> None:
+    os.makedirs(mdir(sid), exist_ok=True)
+    tmp = _cache_path(sid) + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(cache, fh)
-    os.replace(tmp, _cache_path(hag))
+    os.replace(tmp, _cache_path(sid))
 
 
 def repo_private(repo: str, cache: dict) -> bool:
@@ -517,8 +509,8 @@ def score(spec: ShoalSpec, items: list[dict], suggest: dict[str, set[str]] | Non
     c = config(spec) or dict(DEFAULTS)
     briefs = lanes(spec)
     bh = {s: _h(b) for s, b in briefs.items()}
-    cache = load_cache(spec.hag)
-    st = load_state(spec.hag)
+    cache = load_cache(spec.sid)
+    st = load_state(spec.sid)
     env = load_env()
     notes: list[str] = []
     suggest = suggest or {}
@@ -543,7 +535,7 @@ def score(spec: ShoalSpec, items: list[dict], suggest: dict[str, set[str]] | Non
                 break
             part = todo[i:i + chunk]
             try:
-                got = parse(call(route, build_prompt(briefs, part, suggest), spec.hag, c["timeout_s"], env),
+                got = parse(call(route, build_prompt(briefs, part, suggest), spec.sid, c["timeout_s"], env),
                             briefs, {x["item"] for x in part})
                 calls += 1
             except Unavailable as exc:
@@ -562,10 +554,10 @@ def score(spec: ShoalSpec, items: list[dict], suggest: dict[str, set[str]] | Non
                     cache[x["item"]] = dict(got[x["item"]], h=item_hash(x), bh=dict(bh), model=route["model"], ts=ts)
                 else:
                     failed.append(x["item"])
-        save_state(spec.hag, st)
+        save_state(spec.sid, st)
     elif todo:
         failed = [x["item"] for x in todo]
-    save_cache(spec.hag, cache)
+    save_cache(spec.sid, cache)
     cutoff = (datetime.datetime.now(datetime.timezone.utc)
               - datetime.timedelta(hours=float(c.get("stale_hours") or 24))).strftime("%Y-%m-%dT%H:%M:%SZ")
     fits, unscored = {}, []

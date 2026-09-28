@@ -149,7 +149,7 @@ def stale_watchers(spec: ShoalSpec, since_iso: str) -> list[tuple[str, str]]:
     from ledger_watch import load_sidecar, sidecar_path
     out = []
     for r in spec.roles:
-        sc = load_sidecar(sidecar_path(spec.hag, r.slug))
+        sc = load_sidecar(sidecar_path(spec.sid, r.slug))
         pid = sc.get("pid", "")
         if pid and os.path.exists(f"/proc/{pid}") and sc.get("armed_utc", "") < since_iso:
             out.append((r.slug, pid))
@@ -165,7 +165,7 @@ def run_selftests() -> tuple[bool, str]:
 
 
 def cmd_upgrade(a) -> int:
-    path = a.spec or find_spec(a.hag)
+    path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
     pkgdir = rel_pkg()
     sha = git("rev-parse", "--short=12", "HEAD")
@@ -193,7 +193,7 @@ def cmd_upgrade(a) -> int:
     new_features, changes = feature_edits(spec.features, a)
     stale = stale_watchers(spec, since_utc) if (cls["re-arm (ledger-watch)"] and since_utc) else []
     relay_stale = bool(cls["re-arm (relay-watch)"]) and any(is_wake_relay(r) for r in spec.roles)
-    print(f"# upgrade {spec.hag}: tooling {prev or '(none recorded)'} -> {sha}"
+    print(f"# upgrade {spec.sid}: tooling {prev or '(none recorded)'} -> {sha}"
           + (" (dirty tree)" if dirty else ""))
     print(f"changed under {pkgdir}: {len(files)} file(s)"
           + ("" if prev else " (no recorded sha: every module treated as changed)"))
@@ -242,7 +242,7 @@ def cmd_upgrade(a) -> int:
     persist_spec(spec, path, note=f"upgrade tooling {recorded or '-'}..{sha}" + (f"; {', '.join(changes)}" if changes else ""))
     try:
         from ledger import Ledger
-        Ledger(spec.hag, root=spec.ledger_dir).append(
+        Ledger(spec.sid, root=spec.ledger_dir).append(
             "shoal", "system", kind="upgrade", old=recorded, new=sha, features=changes,
             text=f"tooling upgraded {recorded or '-'} -> {sha}" + (f"; features {', '.join(changes)}" if changes else ""))
     except Exception as exc:  # noqa: BLE001
@@ -254,9 +254,9 @@ def cmd_upgrade(a) -> int:
                                                  f"pre-upgrade code; after this boundary re-arm it with the same "
                                                  f"command", condition="upgrade-rearm")
             print(f"woke {slug} to re-arm -> {ch}")
-    print(f"upgraded {spec.hag} to tooling {sha}")
+    print(f"upgraded {spec.sid} to tooling {sha}")
     if any(c.startswith("matcher") for c in changes):
-        print(f"matcher: the digest timer applies it within 10 minutes; `shoal digest --shoal {spec.hag} --refresh` "
+        print(f"matcher: the digest timer applies it within 10 minutes; `shoal digest --shoal {spec.sid} --refresh` "
               f"applies it now")
     return 0
 

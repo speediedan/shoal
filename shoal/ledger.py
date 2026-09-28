@@ -139,10 +139,10 @@ def git(root: str, *argv: str, timeout: int = 60, check: bool = True) -> subproc
 
 
 class Lock:
-    """flock on <root>/.hag-lock: every mutating git op on the shared clone."""
+    """flock on <root>/.shoal-lock: every mutating git op on the shared clone."""
 
     def __init__(self, root: str):
-        self.path = os.path.join(root, ".hag-lock")
+        self.path = os.path.join(root, ".shoal-lock")
         self.fh = None
 
     def __enter__(self):
@@ -223,12 +223,12 @@ def unpushed(root: str) -> int:
 # ---- the ledger --------------------------------------------------------------
 
 class Ledger:
-    def __init__(self, hag: str, root: str = "", sync: bool = True):
-        self.hag = hag
+    def __init__(self, sid: str, root: str = "", sync: bool = True):
+        self.sid = sid
         self.root = root or LEDGER_DIR
         self.sync = sync and has_remote(self.root) if os.path.isdir(self.root) else sync
         from layout import group_dir
-        self.dir = group_dir(self.root, hag)
+        self.dir = group_dir(self.root, sid)
         self.ldir = os.path.join(self.dir, "ledger")
         self._events: list[dict] | None = None
 
@@ -256,7 +256,7 @@ class Ledger:
         with Lock(self.root):
             rels = [os.path.relpath(p, self.root) for p in paths]
             git(self.root, "add", "--", *rels)
-            git(self.root, "commit", "--quiet", "-m", f"{self.hag}: ledger init (spec snapshot)", "--", *rels,
+            git(self.root, "commit", "--quiet", "-m", f"{self.sid}: ledger init (spec snapshot)", "--", *rels,
                 check=False)
         return self.append(SYSTEM_WRITER, "system", event="ledger-init", note=note, _commit=True)["id"]
 
@@ -270,7 +270,7 @@ class Ledger:
             fh.write("\n")
         with Lock(self.root):
             git(self.root, "add", "--", os.path.relpath(p, self.root))
-            r = git(self.root, "commit", "--quiet", "-m", f"{self.hag}: spec snapshot", check=False)
+            r = git(self.root, "commit", "--quiet", "-m", f"{self.sid}: spec snapshot", check=False)
         if push and self.sync and r.returncode == 0:
             sync_push(self.root)
 
@@ -299,7 +299,7 @@ class Ledger:
             if _commit:
                 rel = os.path.relpath(path, self.root)
                 git(self.root, "add", "--", rel)
-                subject = f"{self.hag} {by} {typ} {ev.get('item') or ev.get('to') or ev.get('event') or ''}".strip()
+                subject = f"{self.sid} {by} {typ} {ev.get('item') or ev.get('to') or ev.get('event') or ''}".strip()
                 git(self.root, "commit", "--quiet", "-m", subject[:72], "--", rel)
         self._events = None
         push = self.sync if _push is None else _push
@@ -374,10 +374,9 @@ class Ledger:
 
 # ---- permissions -------------------------------------------------------------
 
-# The system writer: `shoal` for new events. Ledgers written before the rename carry
-# `hag.py` as the system writer, and both are honoured so existing ledgers read unchanged.
+# The system writer: `shoal`.
 SYSTEM_WRITER = "shoal"
-SYSTEM_WRITERS = ("shoal", "hag.py")
+SYSTEM_WRITERS = (SYSTEM_WRITER,)
 OFFER_WRITERS = ("user",) + SYSTEM_WRITERS  # the only writers that may offer or withdraw
 
 
@@ -756,7 +755,7 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
     """The status table: one row per role."""
     from roles import is_wake_relay as _is_wake_relay
     n_next = queue_next_max(spec)
-    L = [f"# shoal {view.ledger.hag}: ledger view at {iso()}", ""]
+    L = [f"# shoal {view.ledger.sid}: ledger view at {iso()}", ""]
     L.append(f"| role | fill | state | active | next (max {n_next}) | last event |")
     L.append("| --- | --- | --- | --- | --- | --- |")
     for r in spec.roles:
@@ -791,7 +790,7 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
             # the relay writes no state events (a stale one may predate this session), so its
             # row is its waiter's liveness
             try:
-                pid = open(os.path.join("/tmp", view.ledger.hag, "relay-watch.pid")).read().strip()
+                pid = open(os.path.join("/tmp", view.ledger.sid, "relay-watch.pid")).read().strip()
                 with open(f"/proc/{pid}/cmdline", "rb") as fh:
                     state = f"relaying (relay-watch pid {pid})" if b"relay-watch" in fh.read() else "relay-watch DEAD"
             except (OSError, ValueError):
@@ -849,7 +848,7 @@ def lint(view: View) -> list[tuple[str, str]]:
 # ---- telemetry bridge --------------------------------------------------------
 
 def as_telemetry(ledger: Ledger, spec=None, since=None, until=None) -> list[dict]:
-    """Ledger events reshaped into telemetry-schema events so hag_report can
+    """Ledger events reshaped into telemetry-schema events so shoal_report can
     fold them in with the local event log. `state` -> session_transition;
     everything else -> ledger_<type>."""
     eco = {r.slug: r.ecosystem for r in spec.roles} if spec is not None else {}
@@ -865,7 +864,7 @@ def as_telemetry(ledger: Ledger, spec=None, since=None, until=None) -> list[dict
         if until and t > until:
             continue
         by = e.get("by", "?")
-        base = {"ts_utc": e["ts"], "hag": ledger.hag, "session": e.get("session") or sess.get(by, by),
+        base = {"ts_utc": e["ts"], "shoal": ledger.sid, "session": e.get("session") or sess.get(by, by),
                 "ecosystem": eco.get(by, "ledger"), "slug": by, "run": {}, "ledger_id": e.get("id", ""),
                 "channel": "ledger"}
         if e["type"] == "state":

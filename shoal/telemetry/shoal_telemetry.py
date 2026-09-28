@@ -2,20 +2,20 @@
 """shoal telemetry collector/analyzer (schema v1, stdlib only).
 
 Usage:
-  hag_telemetry.py emit --shoal ID --session S --ecosystem E --type T [--field k=v ...]
+  shoal_telemetry.py emit --shoal ID --session S --ecosystem E --type T [--field k=v ...]
       [--dir LOGDIR]            # append one event to today's log (creates dirs)
-  hag_telemetry.py report --shoal ID [--dir LOGDIR] [--hours N | --since ISO --until ISO]
+  shoal_telemetry.py report --shoal ID [--dir LOGDIR] [--hours N | --since ISO --until ISO]
       # human summary over an ARBITRARY window (hours, not just days): time-in-state
       # per session, instruct/report latency, queue latencies, invalid-state counts.
 
-Storage: <SHOAL_DATA_ROOT>/<hag>/telemetry/events-YYYYMMDD.jsonl (UTC day) — the
-bulk tier, never committed. The retired versioned telemetry path, archived at <SHOAL_DATA_ROOT>/<hag>/legacy-di/telemetry/, is
+Storage: <SHOAL_DATA_ROOT>/<id>/telemetry/events-YYYYMMDD.jsonl (UTC day) — the
+bulk tier, never committed. The retired versioned telemetry path, archived at <SHOAL_DATA_ROOT>/<id>/legacy-di/telemetry/, is
 read as a legacy fallback only (events from before 2026-09-17 live there).
 Analysis windows are free (--hours N covers the last N hours across day
 boundaries); rotation stays daily.
 
 Every event carries ts_utc, ts_pdt (the configured local wall clock; the field name
-is historical), hag, server (the configured host name), session, ecosystem, and a `run` pin {protocol_sha, scripts_sha,
+is historical), shoal (the group id), server (the configured host name), session, ecosystem, and a `run` pin {protocol_sha, scripts_sha,
 schema_v} resolved best-effort from the checkout the package runs from, relative to that
 repository's own toplevel (`dirty` markers when uncommitted; events before 2026-09-24 carry
 the legacy {instructions_sha, runbook_sha} pair instead of protocol_sha). Emit never fails the caller: wrap it in `|| true` from shell.
@@ -89,8 +89,8 @@ ALIASES = {
 SCRIPT_FILES = ("cli.py", "roles.py", "backends.py", "briefs.py", "watchers.py",
                 "heartbeat.py", "systemd.py", "state.py", "doctor.py",
                 "ledger.py", "ledger_cli.py", "ledger_watch.py", "sources.py",
-                "config.py", "providers.py", "telemetry/hag_telemetry.py", "telemetry/hag-reconcile.py",
-                "telemetry/hag_report.py")
+                "config.py", "providers.py", "telemetry/shoal_telemetry.py", "telemetry/shoal-reconcile.py",
+                "telemetry/shoal_report.py")
 
 
 _TOP: list = []
@@ -136,17 +136,17 @@ def run_pin():
     }
 
 
-def resolve_dir(d, hag):
+def resolve_dir(d, sid):
     """Event home. Explicit --dir wins; else the data root (created on demand)."""
     if d:
         return d
-    return os.path.join(SHOAL_DATA_ROOT, hag, "telemetry")
+    return os.path.join(SHOAL_DATA_ROOT, sid, "telemetry")
 
 
-def legacy_dirs(hag):
+def legacy_dirs(sid):
     """Pre-2026-09-17 telemetry lived in the retired versioned control plane; archived copies
-    sit under <data root>/<hag>/legacy-di/telemetry."""
-    return [os.path.join(SHOAL_DATA_ROOT, hag, "legacy-di", "telemetry")]
+    sit under <data root>/<id>/legacy-di/telemetry."""
+    return [os.path.join(SHOAL_DATA_ROOT, sid, "legacy-di", "telemetry")]
 
 
 def canonical_sub(value):
@@ -159,13 +159,13 @@ def canonical_sub(value):
     return v, ""
 
 
-def build_event(hag, session, ecosystem, typ, fields):
+def build_event(sid, session, ecosystem, typ, fields):
     now = datetime.datetime.now(datetime.timezone.utc)
     pdt = now.astimezone(PDT).strftime("%H:%M:%S") if PDT else ""
     ev = {
         "ts_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "ts_pdt": pdt,
-        "hag": hag,
+        "shoal": sid,
         "server": config.env("SERVER", SERVER),
         "session": session,
         "ecosystem": ecosystem,
@@ -192,8 +192,8 @@ def append_event(logdir, ev):
 
 
 def emit(args):
-    logdir = resolve_dir(args.dir, args.hag)
-    ev = build_event(args.hag, args.session, args.ecosystem, args.type, args.field)
+    logdir = resolve_dir(args.dir, args.sid)
+    ev = build_event(args.sid, args.session, args.ecosystem, args.type, args.field)
     append_event(logdir, ev)
     print(json.dumps(ev))
     return ev
@@ -204,12 +204,12 @@ def _parse_ts(s):
         tzinfo=datetime.timezone.utc)
 
 
-def load(logdir, hag, since, until):
+def load(logdir, sid, since, until):
     """Events in [since, until] from the event home plus legacy dirs, sorted,
     de-duplicated by (ts, session, type, item-ish key)."""
     evs, seen = [], set()
-    dirs = [logdir] + [d for d in legacy_dirs(hag) if d != logdir]
-    legacy = os.path.join(logdir, hag)
+    dirs = [logdir] + [d for d in legacy_dirs(sid) if d != logdir]
+    legacy = os.path.join(logdir, sid)
     if os.path.isdir(legacy) and legacy != logdir:
         dirs.append(legacy)
     for d in dirs:
@@ -257,7 +257,7 @@ def classify_transition(e):
 
 
 def report(args):
-    args.dir = resolve_dir(args.dir, args.hag)
+    args.dir = resolve_dir(args.dir, args.sid)
     now = datetime.datetime.now(datetime.timezone.utc)
     if args.hours is not None:
         since = now - datetime.timedelta(hours=args.hours)
@@ -265,8 +265,8 @@ def report(args):
     else:
         since = _parse_ts(args.since) if args.since else None
         until = _parse_ts(args.until) if args.until else now
-    evs = load(args.dir, args.hag, since, until)
-    print(f"# shoal {args.hag} report")
+    evs = load(args.dir, args.sid, since, until)
+    print(f"# shoal {args.sid} report")
     print(f"window: {since} .. {until} ({len(evs)} events, schema {SCHEMA_V})")
     if not evs:
         print("no events in window.")

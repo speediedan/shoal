@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Per-incarnation shoal report (Markdown + HTML, stdlib only). Spec-driven.
 
-  shoal report --spec hag.json [--gen rN | --hours N | --since ISO --until ISO]
+  shoal report --spec shoal.json [--gen rN | --hours N | --since ISO --until ISO]
                 [--out-md F] [--out-html F] [--gpu] [--coord-transcript]
 
 Window: --gen reads the generation record in the spec (started_utc ..
 ended_utc-or-now); --hours is a rolling window; --since/--until explicit.
-Default output: <SHOAL_DATA_ROOT>/<hag>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
+Default output: <SHOAL_DATA_ROOT>/<id>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>-<...>.md
 (the per-shoal local home; editable review artifact carrying the VERDICT).
 HTML is a pure function of the .md: pass --out-html to render one, otherwise
 skipped (regenerate anytime; nothing reads it programmatically).
 (versioned, small, cited from hag_system_reviews.md) and the same stem .html
-under <SHOAL_DATA_ROOT>/<hag>/reports/ (bulk).
+under <SHOAL_DATA_ROOT>/<id>/reports/ (bulk).
 
 Sections: header + protocol pins, outcomes, time-in-state per session,
 transition quality (valid/aliased/invalid), wait discipline (stale waits),
@@ -45,7 +45,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
-from hag_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
+from shoal_telemetry import (VALID_SUB, classify_transition, load, resolve_dir)  # noqa: E402
 from roles import SHOAL_DATA_ROOT, ShoalSpec, home_dir  # noqa: E402
 import config  # noqa: E402
 
@@ -619,10 +619,10 @@ def recovery_sections(evs, w0, w1):
 def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L = []
     tot = (w1 - w0).total_seconds()
-    L.append(f"# shoal {spec.hag} incarnation report ({gen_label})")
+    L.append(f"# shoal {spec.sid} incarnation report ({gen_label})")
     L.append("")
     L.append(f"- window: {fmt(w0)} .. {fmt(w1)} UTC ({local(w0)} .. {local(w1)}), duration {dur(tot)}")
-    L.append(f"- events: {len(evs)} · generated {fmt(datetime.datetime.now(datetime.timezone.utc))} by hag_report.py · spec {spec_path}")
+    L.append(f"- events: {len(evs)} · generated {fmt(datetime.datetime.now(datetime.timezone.utc))} by shoal_report.py · spec {spec_path}")
     pins, ledger_folded = {}, 0
     for e in evs:
         r = e.get("run") or {}
@@ -765,7 +765,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L.append("## VERDICT (reviewer fills; a report without one is not a review)")
     hints = []
     if q["aliased"]:
-        hints.append(f"aliased offers {q['aliased']}: promote or retire the alias in hag_telemetry.ALIASES")
+        hints.append(f"aliased offers {q['aliased']}: promote or retire the alias in shoal_telemetry.ALIASES")
     if q["invalid"]:
         hints.append(f"invalid offers {q['invalid']}: brief vocabulary or add an alias")
     if stale:
@@ -791,7 +791,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     return "\n".join(L) + "\n"
 
 
-def sibling_truth(hag):
+def sibling_truth(sid):
     """GitHub ground truth written by OTHER shoals' reconcile runs. A merge or
     close is a fact about GitHub, not about the shoal whose timer happened to see
     it (the r5 shoal's dones were reconciled by its successor's timer). Only
@@ -803,7 +803,7 @@ def sibling_truth(hag):
         return out
     for h in names:
         d = os.path.join(SHOAL_DATA_ROOT, h, "telemetry")
-        if h == hag or not os.path.isdir(d):
+        if h == sid or not os.path.isdir(d):
             continue
         try:
             out += [e for e in load(d, h, None, None)
@@ -865,16 +865,16 @@ def cmd_report(a: argparse.Namespace) -> int:
         w1 = parse_ts(g["ended_utc"]) if g.get("ended_utc") else now
     # Load everything up to w1: the pre-window transitions seed each role's
     # state at w0, and reconcile ground truth from any time verifies dones.
-    everything = load(resolve_dir(a.dir, spec.hag), spec.hag, None, None)
+    everything = load(resolve_dir(a.dir, spec.sid), spec.sid, None, None)
     a.truth = [e for e in everything if e.get("type") in ("pr_merged", "issue_closed")]
-    a.truth += sibling_truth(spec.hag)
+    a.truth += sibling_truth(spec.sid)
     upto = [e for e in everything if parse_ts(e["ts_utc"]) <= w1]
     resolve = role_resolver(spec)
     a.view_lint = []
     a.twins_dropped = []
     try:
         from ledger import Ledger, View, as_telemetry, lint as ledger_lint
-        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led = Ledger(spec.sid, root=spec.ledger_dir)
         if led.exists():
             if not a.no_pull:
                 led.pull()
@@ -890,7 +890,7 @@ def cmd_report(a: argparse.Namespace) -> int:
     a.twins_dropped = sum(1 for t in a.twins_dropped if t >= w0)
     md = build(spec, a.spec, w0, w1, evs, gen_label, a)
     stem = f"incarnation-{gen_label}-{w0.strftime('%Y%m%dT%H%M')}-{w1.strftime('%Y%m%dT%H%M')}"
-    out_md = a.out_md or os.path.join(home_dir(spec.hag), "reports", stem + ".md")
+    out_md = a.out_md or os.path.join(home_dir(spec.sid), "reports", stem + ".md")
     out_html = a.out_html or ""
     if a.dry_run:
         print(md)
@@ -902,7 +902,7 @@ def cmd_report(a: argparse.Namespace) -> int:
     if out_html:
         os.makedirs(os.path.dirname(out_html), exist_ok=True)
         with open(out_html, "w") as fh:
-            fh.write(md_to_html(md, f"shoal {spec.hag} {gen_label}"))
+            fh.write(md_to_html(md, f"shoal {spec.sid} {gen_label}"))
     print(f"wrote {out_md}" + (f"\nwrote {out_html}" if out_html else "") + f" ({len(evs)} events)")
     return 0
 

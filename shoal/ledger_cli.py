@@ -38,7 +38,7 @@ from roles import DEFAULT_LEDGER, ShoalSpec, find_spec, state_dir  # noqa: E402
 
 def _spec(a) -> ShoalSpec | None:
     try:
-        return ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
+        return ShoalSpec.load(find_spec(a.sid, getattr(a, "spec", "")))
     except OSError:
         return None
 
@@ -47,11 +47,11 @@ def _ledger(a, spec: ShoalSpec | None) -> Ledger:
     root = getattr(a, "ledger_dir", "") or (spec.ledger_dir if spec else "")
     if spec and spec.ledger and spec.ledger.get("repo") and not os.path.isdir(root):
         ensure_clone(root, spec.ledger["repo"])
-    led = Ledger(a.hag, root=root or None, sync=not getattr(a, "no_sync", False))
+    led = Ledger(a.sid, root=root or None, sync=not getattr(a, "no_sync", False))
     if not led.exists() and led.sync:
         led.pull()  # a fresh clone on another host: the ledger may simply not be fetched yet
     if not led.exists():
-        raise LedgerError(f"no ledger for {a.hag} at {led.ldir}: run `shoal ledger-init --spec <hag.json>`"
+        raise LedgerError(f"no ledger for {a.sid} at {led.ldir}: run `shoal ledger-init --spec <shoal.json>`"
                           + (" (or `shoal sync` if this clone is behind)" if not led.sync else ""))
     return led
 
@@ -59,7 +59,7 @@ def _ledger(a, spec: ShoalSpec | None) -> Ledger:
 def _writer(a, spec: ShoalSpec | None, attr: str = "by", default: str = "user") -> str:
     by = getattr(a, attr, "") or default
     if spec is not None and by not in OFFER_WRITERS and spec.role(by) is None:
-        raise LedgerError(f"writer {by!r} is not a role in {spec.hag} ({[r.slug for r in spec.roles]})")
+        raise LedgerError(f"writer {by!r} is not a role in {spec.sid} ({[r.slug for r in spec.roles]})")
     return by
 
 
@@ -192,7 +192,7 @@ def cmd_release(a) -> int:
             print("ERROR: --to is only for --kind handoff (hand your own claim to a named role)")
             return 1
         if spec is not None and spec.role(to) is None:
-            print(f"ERROR: --to {to!r} is not a role in {spec.hag}")
+            print(f"ERROR: --to {to!r} is not a role in {spec.sid}")
             return 1
         if not any(item_key(c["item"]) == key for c in view.active(by)):
             print(f"ERROR: {by} holds no live claim on {key}; only the holder can hand it off")
@@ -259,7 +259,7 @@ def cmd_show(a) -> int:
     view = View(led, spec)
     from heartbeat import age_min, hb_path
     if a.json:
-        out = {"hag": a.hag, "roles": {}}
+        out = {"shoal": a.sid, "roles": {}}
         for r in (spec.roles if spec else []):
             out["roles"][r.slug] = {"state": view.role_state(r.slug), "active": view.active(r.slug),
                                     "queue": view.queue(r.slug), "last_done": view.last_done(r.slug)}
@@ -275,12 +275,12 @@ def cmd_show(a) -> int:
             except Exception as exc:  # noqa: BLE001
                 cands = []
                 print(f"(board unavailable: {exc})")
-        print(render_role(view, a.slug, cands, age_min(hb_path(a.hag, a.slug))))
+        print(render_role(view, a.slug, cands, age_min(hb_path(a.sid, a.slug))))
         return 0
     if spec is None:
         print("show --spec needs a spec for the table; give --slug for one role")
         return 1
-    hb = {r.slug: age_min(hb_path(a.hag, r.slug)) for r in spec.roles}
+    hb = {r.slug: age_min(hb_path(a.sid, r.slug)) for r in spec.roles}
     cf = None
     if a.board:
         def cf(slug):  # noqa: E306
@@ -291,7 +291,7 @@ def cmd_show(a) -> int:
     print(render_all(view, spec, cf, hb))
     n = unpushed(led.root)
     if n:
-        print(f"\n(unpushed ledger commits on this host: {n} — `shoal sync --shoal {a.hag}`)")
+        print(f"\n(unpushed ledger commits on this host: {n} — `shoal sync --shoal {a.sid}`)")
     return 0
 
 
@@ -347,11 +347,11 @@ def cmd_ledger_init(a) -> int:
               "`ledger_repo` in the host config / SHOAL_LEDGER_REPO)")
         return 1
     if a.dry_run:
-        print(f"[dry-run] ledger for {spec.hag}: clone {spec.ledger.get('repo')} at {root}, "
-              f"create shoals/{spec.hag}/ledger/, snapshot spec, write ledger into {a.spec}")
+        print(f"[dry-run] ledger for {spec.sid}: clone {spec.ledger.get('repo')} at {root}, "
+              f"create shoals/{spec.sid}/ledger/, snapshot spec, write ledger into {a.spec}")
         return 0
     ensure_clone(root, spec.ledger["repo"])
-    led = Ledger(spec.hag, root=root, sync=not a.no_sync)
+    led = Ledger(spec.sid, root=root, sync=not a.no_sync)
     if led.exists() and not a.force:
         print(f"ledger already exists at {led.ldir} (pass --force to re-snapshot the spec)")
     else:

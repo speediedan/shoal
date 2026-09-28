@@ -47,11 +47,11 @@ def now_iso() -> str:
 
 
 def _load(a, pull: bool = True):
-    spec = ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
-    led = Ledger(spec.hag, root=getattr(a, "ledger_dir", "") or spec.ledger_dir or None,
+    spec = ShoalSpec.load(find_spec(a.sid, getattr(a, "spec", "")))
+    led = Ledger(spec.sid, root=getattr(a, "ledger_dir", "") or spec.ledger_dir or None,
                  sync=not getattr(a, "no_sync", False))
     if not led.exists():
-        raise LedgerError(f"no ledger for {spec.hag} at {led.ldir}")
+        raise LedgerError(f"no ledger for {spec.sid} at {led.ldir}")
     if pull and led.sync:
         led.pull()
     return spec, led, View(led, spec)
@@ -118,7 +118,7 @@ def known_repos(spec: ShoalSpec) -> dict[str, str]:
     out = {r.split("/", 1)[-1]: r for r in spec.effective_repos if "/" in r}
     try:
         from digest import load
-        doc = load(spec.hag, max_age_min=1e9) or {}
+        doc = load(spec.sid, max_age_min=1e9) or {}
         for it in (doc.get("items") or {}).values():
             if "/" in it.get("repo", ""):
                 out.setdefault(it["repo"].split("/", 1)[1], it["repo"])
@@ -273,7 +273,7 @@ def candidates_for(spec: ShoalSpec, view: View, slug: str, exclude: set[str], li
     try:
         if (spec.features or {}).get("digest"):
             from digest import candidates as dc, fmt_candidate
-            got = dc(spec.hag, slug, taken, declined, limit=limit)
+            got = dc(spec.sid, slug, taken, declined, limit=limit)
             if got is not None:
                 return [fmt_candidate(c, excerpt=160) for c in got]
         role = spec.role(slug)
@@ -294,10 +294,10 @@ def cmd_next(a) -> int:
         return 1
     slug = a.slug
     if spec.role(slug) is None:
-        print(f"ERROR: {slug} is not a role in {spec.hag}")
+        print(f"ERROR: {slug} is not a role in {spec.sid}")
         return 1
     me = spec.role(slug)
-    out = [f"# next for {me.label} in shoal {spec.hag} (incarnation {spec.incarnation}) at {now_iso()}",
+    out = [f"# next for {me.label} in shoal {spec.sid} (incarnation {spec.incarnation}) at {now_iso()}",
            f"IDENTITY: your Lane row label is `{me.label}` (base name, then your session tag; never the "
            f"incarnation number)"]
     for banner in (freeze_banner(view), offline_banner(view)):
@@ -306,7 +306,7 @@ def cmd_next(a) -> int:
     # MAIL prints right after the identity and offline lines: a `next` piped through `head` must still
     # show it, because this call marks it read (measured 2026-09-24: a lane's piped `next` consumed a
     # maintainer rules update unseen). Maintainer mail prints in full; peer mail is shortened.
-    marker = os.path.join(state_dir(spec.hag), f"mail-read-{slug}")
+    marker = os.path.join(state_dir(spec.sid), f"mail-read-{slug}")
     try:
         since = open(marker).read().strip()
     except OSError:
@@ -380,13 +380,13 @@ def cmd_next(a) -> int:
             out.append(c)
     try:
         from state import wait_status
-        ws, w = wait_status(spec.hag, slug)
+        ws, w = wait_status(spec.sid, slug)
         if w:
             out.append(f"WAIT {ws}: {w.get('sub')} holder={w.get('holder')} target={w.get('target') or '-'} "
                        f"rescan={w.get('rescan_utc')}")
             if w.get("target"):
                 import providers
-                pending, why = providers.resolve(w["target"], slug, spec.hag)
+                pending, why = providers.resolve(w["target"], slug, spec.sid)
                 if pending is False:
                     out.append(f"WAIT TARGET RESOLVED ({why}): this wait holds nothing any more; pivot to the "
                                f"next item, or re-wait on a target that is pending")
@@ -404,7 +404,7 @@ def cmd_next(a) -> int:
         pass
     try:
         from ledger_watch import load_sidecar, sidecar_path
-        sc = load_sidecar(sidecar_path(spec.hag, slug))
+        sc = load_sidecar(sidecar_path(spec.sid, slug))
         pid = sc.get("pid", "")
         alive = bool(pid) and os.path.exists(f"/proc/{pid}")
         out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}")
@@ -415,7 +415,7 @@ def cmd_next(a) -> int:
     out.append(f"# THEN POST YOUR STATUS BLOCK (three rows: Lane `{me.label if me else slug}` with the posture you sleep "
                f"in, Pipelines, Worktrees; next shows up to {queue_next_max(spec)} linked items with verbs): "
                f"shoal-protocol references/status-and-states.md")
-    out.append(f"# then ONE write: shoal queue --shoal {spec.hag} --slug {slug} --active .. --next .. "
+    out.append(f"# then ONE write: shoal queue --shoal {spec.sid} --slug {slug} --active .. --next .. "
                f"[--done .. --url ..] [--claim ..] [--pass ..] [--wait ..|--idle]")
     print("\n".join(out))
     return 0
@@ -434,7 +434,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     slug = a.slug
     role = spec.role(slug)
     if role is None:
-        print(f"ERROR: {slug} is not a role in {spec.hag}")
+        print(f"ERROR: {slug} is not a role in {spec.sid}")
         return 1
     if a.idle and a.active:
         print("ERROR: --idle and --active are exclusive")
@@ -481,7 +481,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                 rec[k] = v
         for s in filter(None, rec["suggest"].split(",")):
             if spec.role(s) is None:
-                print(f"ERROR: suggest={s!r} is not a role in {spec.hag}")
+                print(f"ERROR: suggest={s!r} is not a role in {spec.sid}")
                 return 1
         passes.append(rec)
     if a.wait and not a.holder:
@@ -531,7 +531,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         if refusal:
             print(f"ERROR: {refusal} (nothing written)")
             return 3
-        a.target, tnotes, trefusal = _st.check_target(a.wait, a.target or "", slug, spec.hag)
+        a.target, tnotes, trefusal = _st.check_target(a.wait, a.target or "", slug, spec.sid)
         for n in tnotes:
             print(f"note: {n}")
         if trefusal:
@@ -582,7 +582,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     # 1. local posture: heartbeat, wait proof, telemetry (the ledger state event rides in the batch)
     import state as _state
     tns = argparse.Namespace(
-        hag=spec.hag, slug=slug, to=posture, sub=a.wait or "", holder=a.holder or "",
+        sid=spec.sid, slug=slug, to=posture, sub=a.wait or "", holder=a.holder or "",
         rescan_min=rescan_min, monitor=a.monitor or "", target=a.target or "", from_state="", asks=asks,
         blocked_on=a.blocked_on or "",
         note=f"queue v{version}", channel="within-ecosystem", session="", ecosystem="", spec=getattr(a, "spec", ""),
@@ -601,7 +601,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     for p in passes:
         led.append(slug, "release", _commit=False, item=item_key(p["item"]), kind="decline", cls=p["cls"],
                    suggest=p["suggest"] or None, reason=p["note"] or p["cls"])
-    w = _state.read_wait(spec.hag, slug) if a.wait else None
+    w = _state.read_wait(spec.sid, slug) if a.wait else None
     led.append(slug, "state", _commit=False, state=posture, sub=a.wait or "", holder=a.holder or "",
                rescan_utc=(w or {}).get("rescan_utc", ""), target=a.target or "", note=f"queue v{version}",
                blocked_on=(a.blocked_on or None) if a.wait else None, tag=role.tag,
@@ -609,7 +609,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
                      asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag,
                      dropped=dropped or None, next_blocked=nb or None)
-    led.commit_own(slug, f"{spec.hag} {slug} queue v{version}")
+    led.commit_own(slug, f"{spec.sid} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     # 3. first-landed-wins re-check for the claims just made
     lost = []
@@ -628,7 +628,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
               "posture: `queue --wait <sub> --holder .. --target ..` (arm the waiter first) or `queue --idle`, or "
               "`--active <next item>` and continue. A turn that ends while active is woken to CONTINUE.")
     try:
-        os.remove(os.path.join(state_dir(spec.hag), f"wake-{slug}"))  # a pending health wake is now answered
+        os.remove(os.path.join(state_dir(spec.sid), f"wake-{slug}"))  # a pending health wake is now answered
     except OSError:
         pass
     return 4 if lost else 0
@@ -655,7 +655,7 @@ def cmd_freeze(a) -> int:
     led.append("user", "system", mode="freeze", state=a.state, note=a.note or None, _commit=False)
     if not a.no_wake:
         led.append("user", "msg", to="*", kind="info", text=text, wake=True, _commit=False)
-    led.commit_own("user", f"{spec.hag} freeze {a.state}")
+    led.commit_own("user", f"{spec.sid} freeze {a.state}")
     pushed = sync_push(led.root) if led.sync and not a.no_sync else True
     print(f"freeze {a.state}" + ("" if a.no_wake else " (every role woken)") + ("" if pushed else " (push pending: `shoal sync`)"))
     return 0
