@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight + live health: `shoal doctor [--spec hag.json]`.
+"""Preflight + live health: `shoal doctor [--spec shoal.json]`.
 
 Runs before a launch (no spec: host checks only) and any time after
 (with a spec: adds per-shoal checks). Every check prints one line
@@ -8,7 +8,7 @@ Runs before a launch (no spec: host checks only) and any time after
 Host checks: python version, tool binaries on the explicit tool PATH
 (openchamber, claude, gh, az, git, systemctl), openchamber server
 reachable, AZURE_DEVOPS_EXT_PAT resolvable, gh auth, shoal roots writable,
-linger enabled, legacy shoal cron lines (the measured silent-failure mode),
+linger enabled,
 stale systemd units pointing at missing files.
 
 shoal checks: spec valid; start docs present with required sections; live
@@ -129,28 +129,15 @@ def host_checks(d: Doc) -> None:
         (d.ok if "Linger=yes" in r.stdout else d.warn)("linger", r.stdout.strip() or "unknown (timers die at logout)")
     except Exception as exc:  # noqa: BLE001
         d.warn("linger", str(exc))
-    try:
-        r = run(["crontab", "-l"])
-        legacy = [l for l in r.stdout.splitlines()
-                  if not l.startswith("#") and re.search(r"watch-coordination\.sh|hag-reconcile|hag_queue_watch|hag-restart", l)]
-        if legacy:
-            missing = [l for l in legacy if not os.path.exists((l.split()[5:6] or [""])[0])]
-            (d.fail if missing else d.warn)("legacy cron lines",
-                                            f"{len(legacy)} line(s); {len(missing)} point at MISSING scripts "
-                                            "(silent failure every run — remove with `crontab -e`)")
-        else:
-            d.ok("legacy cron lines", "none")
-    except Exception as exc:  # noqa: BLE001
-        d.warn("crontab", str(exc))
     unit_dir = os.path.expanduser("~/.config/systemd/user")
     stale = []
-    for svc in glob.glob(os.path.join(unit_dir, "hag-*.service")):
+    for svc in glob.glob(os.path.join(unit_dir, "shoal-*.service")):
         for line in open(svc):
             if line.startswith("ExecStart="):
                 parts = line[len("ExecStart="):].split()
-                if len(parts) > 1 and not os.path.exists(parts[1]):
+                if len(parts) > 1 and parts[1].startswith("/") and not os.path.exists(parts[1]):
                     stale.append(os.path.basename(svc))
-    (d.warn if stale else d.ok)("systemd hag units", f"{len(stale)} unit(s) point at missing scripts: {stale}" if stale else "no stale ExecStart paths")
+    (d.warn if stale else d.ok)("systemd units", f"{len(stale)} unit(s) point at missing scripts: {stale}" if stale else "no stale ExecStart paths")
 
 
 def provider_failures(session_ids: list[str], hours: float = 24) -> dict:
@@ -223,11 +210,11 @@ def tools_skew_note(armed_utc: str) -> str:
     return ""
 
 
-def timer_state(hag: str) -> dict[str, str]:
+def timer_state(sid: str) -> dict[str, str]:
     r = run(["systemctl", "--user", "list-timers", "--all", "--no-pager", "--no-legend"], timeout=30)
     out = {}
     for line in r.stdout.splitlines():
-        m = re.search(rf"((?:shoal|hag)-{re.escape(hag)}-([\w.-]+?)\.timer)", line)
+        m = re.search(rf"(shoal-{re.escape(sid)}-([\w.-]+?)\.timer)", line)
         if m:
             head = line.split(m.group(1))[0].strip()
             # columns are NEXT LEFT LAST PASSED: a real weekday timestamp in
@@ -268,22 +255,22 @@ def group_checks(d: Doc, spec: ShoalSpec, spec_path: str, threshold_min: float) 
         for row in classify(spec, threshold_min):
             (d.warn if row["suspect"] else d.ok)(f"heartbeat {row['slug']}", f"{row['klass']}: {row['detail']}")
         for job, interval in tick_jobs(spec).items():
-            age = age_min(os.path.join(state_dir(spec.hag), f"tick-{job}"))
+            age = age_min(os.path.join(state_dir(spec.sid), f"tick-{job}"))
             if age is None:
                 d.warn(f"tick {job}", "never ran")
             elif age > 3 * interval:
                 d.fail(f"tick {job}", f"{age:.0f}m old > 3x{interval}m: watcher dead, not world quiet")
             else:
                 d.ok(f"tick {job}", f"{age:.0f}m ago")
-        timers = timer_state(spec.hag)
+        timers = timer_state(spec.sid)
         if not timers:
-            d.fail("systemd timers", f"none installed for {spec.hag} (shoal install-systemd --enable)")
+            d.fail("systemd timers", f"none installed for {spec.sid} (shoal install-systemd --enable)")
         else:
             inactive = [k for k, v in timers.items() if v != "scheduled"]
             (d.fail if inactive else d.ok)("systemd timers", f"{len(timers)} installed; inactive: {inactive}" if inactive else f"{sorted(timers)} scheduled")
     ledger_checks(d, spec)
     matcher_checks(d, spec)
-    tdir = telemetry_dir(spec.hag)
+    tdir = telemetry_dir(spec.sid)
     if os.path.isdir(tdir):
         files = sorted(glob.glob(os.path.join(tdir, "events-*.jsonl")))
         last = age_min(files[-1]) if files else None
@@ -309,7 +296,7 @@ def matcher_checks(d: Doc, spec: ShoalSpec) -> None:
     c = matcher.config(spec)
     if c is None:
         return
-    st = matcher.load_state(spec.hag)
+    st = matcher.load_state(spec.sid)
     mode = "live" if c.get("live") else "shadow"
     if c.get("backend") == "opencode-run" and not os.path.exists(matcher.openchamber_bin()):
         d.fail("matcher", f"{mode}: openchamber not found at {matcher.openchamber_bin()} (model calls go "
@@ -318,14 +305,14 @@ def matcher_checks(d: Doc, spec: ShoalSpec) -> None:
     act = (st.get("active") or {}).get("model")
     if not act:
         d.warn("matcher", f"{mode}: no model has answered yet (configured {c.get('model')}); "
-                          f"`shoal digest --shoal {spec.hag} --refresh` runs it")
+                          f"`shoal digest --shoal {spec.sid} --refresh` runs it")
         return
     tier = matcher.tier_of(st["active"])
     pinned = "" if act == c.get("model") else f" (FALLBACK: configured {c.get('model')} did not answer)"
     paid = {"go": "; PAID tier: Go subscription usage", "zen": "; PAID tier: Zen balance"}.get(tier, "")
     (d.warn if paid else d.ok)("matcher", f"{mode}: model {act} ({tier} tier){pinned}{paid}, last answered "
                                           f"{st.get('last_ok', '?')}, "
-                    f"{sum(1 for k in matcher.load_cache(spec.hag) if not k.startswith('_'))} items cached")
+                    f"{sum(1 for k in matcher.load_cache(spec.sid) if not k.startswith('_'))} items cached")
 
 
 def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
@@ -340,27 +327,22 @@ def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
         d.fail("ledger clone", f"{root} is not a git clone (shoal ledger-init --spec ...)")
         return
     d.ok("ledger clone", root)
-    from layout import group_dir, is_legacy, spec_file
-    gdir = group_dir(root, spec.hag)
-    if is_legacy(root, spec.hag):
-        d.warn("ledger layout", f"legacy {os.path.relpath(spec_file(gdir), root)}: read as a fallback; "
-                                f"migrate to shoals/{spec.hag}/shoal.json at the next full restart")
-    else:
-        d.ok("ledger layout", os.path.relpath(spec_file(gdir), root))
+    from layout import spec_path
+    d.ok("ledger layout", os.path.relpath(spec_path(root, spec.sid), root))
     try:
         r = git(root, "ls-remote", "--exit-code", "--heads", "origin", timeout=30, check=False)
         (d.ok if r.returncode == 0 else d.fail)("ledger remote", "reachable" if r.returncode == 0
                                                 else f"unreachable: {(r.stdout + r.stderr).strip()[-120:]}")
     except Exception as exc:  # noqa: BLE001
         d.fail("ledger remote", str(exc))
-    led = Ledger(spec.hag, root=root)
+    led = Ledger(spec.sid, root=root)
     if not led.exists():
         d.fail("ledger dir", f"{led.ldir} absent (shoal ledger-init --spec ...)")
         return
     n = unpushed(root)
     if n:
         r = git(root, "log", "-1", "--format=%ct", "origin/HEAD..HEAD", check=False)
-        (d.warn)("ledger unpushed", f"{n} local commit(s) not on the remote (shoal sync --shoal {spec.hag})")
+        (d.warn)("ledger unpushed", f"{n} local commit(s) not on the remote (shoal sync --shoal {spec.sid})")
     else:
         d.ok("ledger unpushed", "none")
     view = View(led, spec)
@@ -372,7 +354,7 @@ def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
     for r in spec.roles:
         if r.fill == "none" and not r.session:
             continue
-        sc = load_sidecar(sidecar_path(spec.hag, r.slug))
+        sc = load_sidecar(sidecar_path(spec.sid, r.slug))
         if not sc:
             d.warn(f"ledger-watch {r.slug}", "not armed (no sidecar)")
             continue
@@ -405,7 +387,7 @@ def cmd_doctor(a: argparse.Namespace) -> int:
     print("== host")
     host_checks(d)
     if a.spec:
-        print("== hag")
+        print("== shoal")
         try:
             spec = ShoalSpec.load(a.spec)
         except Exception as exc:  # noqa: BLE001

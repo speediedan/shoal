@@ -7,22 +7,22 @@
 # dir and host config, so no network, no board read, no model call and no design-repo read.
 set -uo pipefail
 TESTD="$(cd "$(dirname "$0")" && pwd)"
-HAGD="$(cd "$TESTD/../shoal" && pwd)"
+SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 . "$TESTD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/shoal-h8-selftest-$$}"
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
-hag_test_setup "$S"
+shoal_test_setup "$S"
 ROOT="$S/root"
-HAGID=h8selftest; SPEC="$ROOT/$HAGID/hag.json"; A="$S/cloneA"
+SID=h8selftest; SPEC="$ROOT/shoals/$SID/shoal.json"; A="$S/cloneA"
 export SHOAL_SPEC="$SPEC"
-H="python3 $HAGD/cli.py"; export HAGD PYTHONPATH="$HAGD"
+H="python3 $SHOALD/cli.py"; export SHOALD PYTHONPATH="$SHOALD"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 600 <<<"$out")"; }
 
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
-mkdir -p "$ROOT/$HAGID"
-DOC=$(hag_doc h8role)
+mkdir -p "$ROOT/shoals/$SID"
+DOC=$(shoal_doc h8role)
 
 # fake models: `good` scores by keyword and counts its calls; `bad` is a rotated-out model
 cat > "$S/good.py" <<'PY'
@@ -43,7 +43,7 @@ printf 'import sys\nsys.stderr.write("Upstream request failed: Model is unavaila
 GOOD="python3 $S/good.py $S/calls"; BAD="python3 $S/bad.py"
 
 cat > "$SPEC" <<JSON
-{"hag":"$HAGID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
+{"shoal":"$SID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
  "ledger":{"repo":"$S/remote/q.git","dir":"$A"},
  "features":{"digest":true,"workwake":true,
    "matcher":{"backend":"command","model":"$BAD","fallbacks":[{"backend":"command","model":"$GOOD"}],
@@ -56,11 +56,11 @@ cat > "$SPEC" <<JSON
    "context":{"brief":"J-lens support.","never":{}}},
   {"slug":"up","ecosystem":"claude","title":"up","doc":"$DOC","fill":"self","session":"",
    "context":{"brief":"Files upstream issues.","never":{}}},
-  {"slug":"hag-aux","ecosystem":"opencode","title":"hag-aux","doc":"$DOC","fill":"self","session":"ses_aux","aux":true}
+  {"slug":"aux","ecosystem":"opencode","title":"aux","doc":"$DOC","fill":"self","session":"ses_aux","aux":true}
  ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-22T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
 JSON
 $H ledger-init --spec "$SPEC" >/dev/null
-$H queue --shoal $HAGID --spec "$SPEC" --slug tl --active interpretune#1:fix --no-sync >/dev/null \
+$H queue --shoal $SID --spec "$SPEC" --slug tl --active interpretune#1:fix --no-sync >/dev/null \
   || fail "tl queue write failed"
 
 cat > "$S/items.py" <<'PY'
@@ -75,7 +75,7 @@ def items():
             it(6, "upstream filing for a parked lane"), it(7, "BLOCKED on a release")]
 PY
 # the same synthetic items behind every board read the CLI makes (no GitHub read)
-(cd "$S" && python3 -c "import json, items; print(json.dumps(items.items()))") | hag_board_fixture "$S/board.json"
+(cd "$S" && python3 -c "import json, items; print(json.dumps(items.items()))") | shoal_board_fixture "$S/board.json"
 
 echo "== 1 matcher: rotated-out model falls back, shadow keeps the live ranking, aux reads semantic"
 python3 - "$SPEC" "$S" <<'PY' || fail "shadow build"
@@ -85,7 +85,7 @@ from items import items
 import digest, matcher
 from roles import ShoalSpec
 from ledger import Ledger, View
-spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
 doc = digest.build(spec, view, items=items())
 m = doc["matcher"]
 assert doc["ranking"] == "keyword" and doc["shadow"]["ranking"] == "semantic", doc["ranking"]
@@ -99,14 +99,14 @@ assert sem["items"]["interpretune#5"]["eff_pos"] == 0.5 and sem["items"]["interp
 assert [r["item"] for r in sem["roles"]["jl"]] == ["interpretune#2"], sem["roles"]["jl"]
 assert sem["roles"]["tl"] == [], sem["roles"]["tl"]
 # aux: unblocker first, then minmax over ACTIVE lanes (up is parked, so #6 is aux work); #7 blocked, #2 jl's
-aux = [r["item"] for r in sem["roles"]["hag-aux"]]
-assert aux[0] == "interpretune#5" and "unblocks" in sem["roles"]["hag-aux"][0]["why"], aux
+aux = [r["item"] for r in sem["roles"]["aux"]]
+assert aux[0] == "interpretune#5" and "unblocks" in sem["roles"]["aux"][0]["why"], aux
 assert set(aux) == {"interpretune#5", "interpretune#3", "interpretune#4", "interpretune#6"}, aux
 # in shadow the live doc still carries the keyword ranking for lanes, the semantic one for aux
-assert doc["roles"]["hag-aux"] == sem["roles"]["hag-aux"]
+assert doc["roles"]["aux"] == sem["roles"]["aux"]
 assert any(r["item"] == "interpretune#3" for r in doc["roles"]["tl"]), doc["roles"]["tl"]
 digest.write(spec, doc)
-assert os.path.exists(digest.semantic_path(spec.hag))
+assert os.path.exists(digest.semantic_path(spec.sid))
 PY
 [ "$(wc -l < "$S/calls")" = 1 ] || fail "expected one scoring call"
 
@@ -118,16 +118,16 @@ from items import items
 import digest, matcher
 from roles import ShoalSpec
 from ledger import Ledger, View
-spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
 doc = digest.build(spec, view, items=items())
 assert doc["matcher"]["calls"] == 0 and doc["matcher"]["unscored"] == 0, doc["matcher"]
 its = items(); its[2]["title"] = "comment hygiene sweep, rescoped"
-st = matcher.load_state(spec.hag); st["active"] = {"backend": "command", "model": spec.features["matcher"]["model"]}
-matcher.save_state(spec.hag, st)
+st = matcher.load_state(spec.sid); st["active"] = {"backend": "command", "model": spec.features["matcher"]["model"]}
+matcher.save_state(spec.sid, st)
 doc = digest.build(spec, view, items=its)
 assert doc["matcher"]["calls"] == 1 and doc["matcher"]["scored_now"] == 1, doc["matcher"]
 assert any("matcher model switched" in n for n in doc["matcher"]["notes"]), doc["matcher"]["notes"]
-evs = Ledger(spec.hag, root=spec.ledger_dir, sync=False).events(reload=True)
+evs = Ledger(spec.sid, root=spec.ledger_dir, sync=False).events(reload=True)
 assert any(e.get("type") == "system" and e.get("kind") == "matcher-model" for e in evs), "no switch event"
 assert any(e.get("type") == "msg" and e.get("to") == "user" and "[matcher]" in e.get("text", "") for e in evs), "no page"
 PY
@@ -140,7 +140,7 @@ from items import items
 import digest
 from roles import ShoalSpec
 from ledger import Ledger, View
-spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec)
+spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
 live = copy.deepcopy(spec); live.features["matcher"]["live"] = True
 doc = digest.build(live, view, items=items())
 assert doc["ranking"] == "semantic" and "shadow" not in doc and doc["roles"]["tl"] == [], doc["ranking"]
@@ -151,30 +151,30 @@ assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leak
 PY
 
 echo "== 4 candidates, next AUX header, compare"
-check "BOARD interpretune#5:fix" $H digest --shoal $HAGID --spec "$SPEC" --slug hag-aux --no-sync
-check "aux:max-fit=0" $H digest --shoal $HAGID --spec "$SPEC" --slug hag-aux --semantic --no-sync
-OUT=$($H next --shoal $HAGID --spec "$SPEC" --slug hag-aux --peek --no-sync 2>&1)
+check "BOARD interpretune#5:fix" $H digest --shoal $SID --spec "$SPEC" --slug aux --no-sync
+check "aux:max-fit=0" $H digest --shoal $SID --spec "$SPEC" --slug aux --semantic --no-sync
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug aux --peek --no-sync 2>&1)
 grep -q "AUX: you are the residual lane. Stay out of: tl (Upgrades interpretune to TL4); jl (J-lens support)" <<<"$OUT" \
   || fail "AUX header :: $OUT"
 grep -q "Parked lanes whose work is yours meanwhile: up" <<<"$OUT" || fail "parked lane not named :: $OUT"
 grep -q "BOARD interpretune#5:fix" <<<"$OUT" || fail "aux next lacks the unblocker :: $OUT"
-check "SWITCH BAR:" $H digest --shoal $HAGID --spec "$SPEC" --compare --no-sync
+check "SWITCH BAR:" $H digest --shoal $SID --spec "$SPEC" --compare --no-sync
 
 echo "== 5 aux-init / role token / validation"
 python3 - "$SPEC" "$S/spec2.json" <<'PY'
-import json, sys; d = json.load(open(sys.argv[1])); d["roles"] = [r for r in d["roles"] if r["slug"] != "hag-aux"]
+import json, sys; d = json.load(open(sys.argv[1])); d["roles"] = [r for r in d["roles"] if r["slug"] != "aux"]
 json.dump(d, open(sys.argv[2], "w"))
 PY
-check "\[dry-run\] aux-init $HAGID: doc $S/data/$HAGID/roles/hag-aux/plan_state.md; role ADD hag-aux" \
-  $H aux-init --shoal $HAGID --spec "$S/spec2.json" --dry-run
-check "role ADD hag-aux" $H aux-init --shoal $HAGID --spec "$S/spec2.json"
-grep -q "residual lane of shoal \`$HAGID\`" "$S/data/$HAGID/roles/hag-aux/plan_state.md" || fail "aux doc not written"
+check "\[dry-run\] aux-init $SID: doc $S/data/$SID/roles/aux/plan_state.md; role ADD aux" \
+  $H aux-init --shoal $SID --spec "$S/spec2.json" --dry-run
+check "role ADD aux" $H aux-init --shoal $SID --spec "$S/spec2.json"
+grep -q "residual lane of shoal \`$SID\`" "$S/data/$SID/roles/aux/plan_state.md" || fail "aux doc not written"
 python3 - "$S/spec2.json" <<'PY' || fail "aux role not added"
-import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "hag-aux"][0]
+import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "aux"][0]
 assert r["aux"] is True and r["fill"] == "self", r
 PY
-check "\[dry-run\] aux-launch $HAGID: hag-aux (hag-aux-r1) opencode" $H aux-launch --shoal $HAGID --spec "$S/spec2.json" --dry-run
-(cd "$HAGD" && python3 -c "
+check "\[dry-run\] aux-launch $SID: aux (aux-r1) opencode" $H aux-launch --shoal $SID --spec "$S/spec2.json" --dry-run
+(cd "$SHOALD" && python3 -c "
 import cli
 r = cli.parse_role('x,opencode,x,/d.md,aux,fill=assigned')
 assert r.aux and r.fill == 'self', r
@@ -185,20 +185,20 @@ assert Role(slug='y', ecosystem='claude', title='y', doc='/d', fill='assigned', 
 echo "== 6 upgrade: classes, feature edit, tooling sha, ledger record"
 check "features: matcher.live=true" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty --dry-run
 check "\[dry-run\] nothing written" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty --dry-run
-check "upgraded $HAGID to tooling" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty
+check "upgraded $SID to tooling" $H upgrade --spec "$SPEC" --enable matcher.live --skip-selftests --allow-dirty
 python3 - "$SPEC" "$A" <<'PY' || fail "upgrade did not record"
 import json, os, sys
 d = json.load(open(sys.argv[1]))
 assert d["features"]["matcher"]["live"] is True and d["tooling"]["sha"], d.get("tooling")
 assert d["tooling"].get("repo"), "tooling.repo not recorded"
-evs = [json.loads(l) for fn in os.listdir(os.path.join(sys.argv[2], "shoals", d["hag"], "ledger"))
-       for l in open(os.path.join(sys.argv[2], "shoals", d["hag"], "ledger", fn)) if l.strip()]
+evs = [json.loads(l) for fn in os.listdir(os.path.join(sys.argv[2], "shoals", d["shoal"], "ledger"))
+       for l in open(os.path.join(sys.argv[2], "shoals", d["shoal"], "ledger", fn)) if l.strip()]
 assert any(e.get("type") == "system" and e.get("kind") == "upgrade" for e in evs)
 PY
 check "tooling $(python3 -c "import json;print(json.load(open('$SPEC'))['tooling']['sha'])") ->" \
   $H upgrade --spec "$SPEC" --skip-selftests --allow-dirty --dry-run
 # the re-arm time is found from inside the package (repo-root paths need `:(top)` pathspecs)
-python3 - "$HAGD" "$S/rearm-repo" <<'PY' || fail "rearm_since found no re-arm change"
+python3 - "$SHOALD" "$S/rearm-repo" <<'PY' || fail "rearm_since found no re-arm change"
 import os, subprocess, sys
 sys.path.insert(0, sys.argv[1])
 from upgrade import rearm_since
@@ -253,4 +253,4 @@ assert matcher.resolve(spec, c5, {}, {}, []) is None
 PY
 
 echo "SELFTEST H8 OK ($S)"
-rm -rf /tmp/$HAGID
+rm -rf /tmp/$SID

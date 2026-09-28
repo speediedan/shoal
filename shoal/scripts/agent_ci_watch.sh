@@ -29,10 +29,10 @@ LOG=/tmp/mon_${PR}_hosted.log
 
 fire() {
   openchamber session send --session "$SELF" --dir "$DIR" --prompt "MONITOR-FIRED PR-$PR $1: $2" >> "$LOG" 2>&1
-  # telemetry is optional: set SHOAL_ID (legacy HAG_ID) to the group id to record the fire
-  local id="${SHOAL_ID:-${HAG_ID:-}}"
+  # telemetry is optional: set SHOAL_ID to the group id to record the fire
+  local id="${SHOAL_ID:-}"
   [ -n "$id" ] || return 0
-  python3 "$(dirname "$(readlink -f "$0")")/../telemetry/hag_telemetry.py" \
+  python3 "$(dirname "$(readlink -f "$0")")/../telemetry/shoal_telemetry.py" \
     emit --shoal "$id" --session "$SELF" --ecosystem opencode --type coord_comms \
     --field direction=watch-fire --field peer="PR-$PR" --field note="$1" --field channel=within-ecosystem >/dev/null 2>&1 || true
 }

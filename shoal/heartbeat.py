@@ -2,8 +2,8 @@
 """Heartbeat stall daemon (proposal §5, v1).
 
 Contract (sessions are briefed on it): every row-state change goes through
-`shoal transition`, which touches `/tmp/<hag>/hb-<slug>` and writes or
-clears `/tmp/<hag>/wait-<slug>`. The daemon (systemd timer, every 5 min)
+`shoal transition`, which touches `/tmp/<id>/hb-<slug>` and writes or
+clears `/tmp/<id>/wait-<slug>`. The daemon (systemd timer, every 5 min)
 classifies each role:
 
   fresh       heartbeat within threshold                          -> quiet
@@ -14,8 +14,8 @@ classifies each role:
               (grace: quiet for the first threshold after generation start)
 
 v0 fired the same suspects every 5 minutes. v1 dedupes: the set of suspects
-is hashed into /tmp/<hag>/heartbeat.state and re-fired only when it changes
-or after --refire-min (default 60). Every run ticks /tmp/<hag>/tick-heartbeat
+is hashed into /tmp/<id>/heartbeat.state and re-fired only when it changes
+or after --refire-min (default 60). Every run ticks /tmp/<id>/tick-heartbeat
 so `status`/`doctor` can see the daemon itself is alive (a watcher that
 never runs is the failure mode the v0 reconcile demonstrated).
 
@@ -43,22 +43,22 @@ from roles import ShoalSpec, state_dir  # noqa: E402
 HB_PREFIX = "hb-"
 
 
-def hb_path(hag: str, slug: str) -> str:
-    return os.path.join(state_dir(hag), f"{HB_PREFIX}{slug}")
+def hb_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"{HB_PREFIX}{slug}")
 
 
-def touch(hag: str, slug: str) -> str:
+def touch(sid: str, slug: str) -> str:
     """Session-side tick. Returns the path touched."""
-    p = hb_path(hag, slug)
+    p = hb_path(sid, slug)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a"):
         os.utime(p, None)
     return p
 
 
-def tick(hag: str, job: str) -> str:
-    """Watcher/daemon self-tick: /tmp/<hag>/tick-<job>."""
-    p = os.path.join(state_dir(hag), f"tick-{job}")
+def tick(sid: str, job: str) -> str:
+    """Watcher/daemon self-tick: /tmp/<id>/tick-<job>."""
+    p = os.path.join(state_dir(sid), f"tick-{job}")
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a"):
         os.utime(p, None)
@@ -73,7 +73,7 @@ def age_min(path: str) -> float | None:
         return None
 
 
-def watch_dead(hag: str, slug: str) -> bool:
+def watch_dead(sid: str, slug: str) -> bool:
     """True when the role's ledger-watch sidecar is absent or its pid is gone.
 
     A dead watch is deafness, not quietness: board polls stop, so a fill=self
@@ -83,7 +83,7 @@ def watch_dead(hag: str, slug: str) -> bool:
         from ledger_watch import load_sidecar, sidecar_path
     except Exception:
         return False
-    sc = load_sidecar(sidecar_path(hag, slug))
+    sc = load_sidecar(sidecar_path(sid, slug))
     if not sc:
         return True
     pid = sc.get("pid", "")
@@ -98,16 +98,16 @@ def quota_paused(role, repo_dir: str = "") -> str:
         return ""
 
 
-def watches_path(hag: str, slug: str) -> str:
-    return os.path.join(state_dir(hag), "watches", f"{slug}.json")
+def watches_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), "watches", f"{slug}.json")
 
 
-def register_watch(hag: str, slug: str, kind: str, target: str, pid: str,
+def register_watch(sid: str, slug: str, kind: str, target: str, pid: str,
                    session: str, rescan_min: float = 0) -> str:
     """Record one armed per-session monitor. Sessions call this at arm time
     (alongside the plan_state inventory); the daemon validates liveness and
     the +50% rescan rule against the registry."""
-    p = watches_path(hag, slug)
+    p = watches_path(sid, slug)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     try:
         reg = json.load(open(p))
@@ -124,10 +124,10 @@ def register_watch(hag: str, slug: str, kind: str, target: str, pid: str,
     return p
 
 
-def registry_findings(hag: str, slug: str) -> list[str]:
+def registry_findings(sid: str, slug: str) -> list[str]:
     """Invalid registered watches: dead pid, or rescan exceeded by >50%."""
     try:
-        reg = json.load(open(watches_path(hag, slug)))
+        reg = json.load(open(watches_path(sid, slug)))
     except Exception:
         return []
     out = []
@@ -149,10 +149,10 @@ def registry_findings(hag: str, slug: str) -> list[str]:
     return out
 
 
-def _watch_last_tick(hag: str, slug: str) -> str:
+def _watch_last_tick(sid: str, slug: str) -> str:
     try:
         from ledger_watch import load_sidecar, sidecar_path
-        return load_sidecar(sidecar_path(hag, slug)).get("last_tick", "never")
+        return load_sidecar(sidecar_path(sid, slug)).get("last_tick", "never")
     except Exception:
         return "never"
 
@@ -214,7 +214,7 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     try:
         from ledger import Ledger, View
-        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led = Ledger(spec.sid, root=spec.ledger_dir)
         if led.exists():
             led.pull()
             v = View(led, spec)
@@ -231,11 +231,11 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
     for role in spec.roles:
-        age = age_min(hb_path(spec.hag, role.slug))
+        age = age_min(hb_path(spec.sid, role.slug))
         la = ledger_age.get(role.slug)
         if la is not None and (age is None or la < age):
             age = la  # a ledger write is a heartbeat (works across hosts)
-        wstate, w = wait_status(spec.hag, role.slug)
+        wstate, w = wait_status(spec.sid, role.slug)
         row = {"slug": role.slug, "age_min": age, "wait": w, "detail": ""}
         if age is None:
             if gen_age is not None and gen_age <= threshold_min:
@@ -270,12 +270,12 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
                                   f"(holder: {w.get('holder')})")
             else:
                 deaf = (getattr(role, "fill", "") == "self"
-                        and watch_dead(spec.hag, role.slug))
+                        and watch_dead(spec.sid, role.slug))
                 if deaf:
                     row.update(klass="idle-deaf", suspect=True,
                                 detail=f"IDLE with empty queue and dead ledger-watch "
                                        f"(fill=self, no board poll since "
-                                       f"{_watch_last_tick(spec.hag, role.slug)}): "
+                                       f"{_watch_last_tick(spec.sid, role.slug)}): "
                                        f"WAKEUP-READ needed — show, claim/decline, re-arm")
                     rows.append(row)
                     continue
@@ -303,7 +303,7 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
         quiet = row["age_min"] is None or row["age_min"] > threshold_min
         if not quiet:
             continue
-        findings = registry_findings(spec.hag, row["slug"])
+        findings = registry_findings(spec.sid, row["slug"])
         if findings:
             row.update(klass="watch-invalid", suspect=True,
                        detail="; ".join(findings) + " — re-arm or re-register")
@@ -313,8 +313,8 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
 def cmd_heartbeat(spec, threshold_min: float,
                   dry_run: bool = False, refire_min: float = 60) -> int:
     assert isinstance(spec, ShoalSpec)
-    from watchers import hag_emit
-    tick(spec.hag, "heartbeat")
+    from watchers import shoal_emit
+    tick(spec.sid, "heartbeat")
     rows = classify(spec, threshold_min)
     for r in rows:
         print(f"{r['slug']}: {r['klass']} — {r['detail']}")
@@ -326,7 +326,7 @@ def cmd_heartbeat(spec, threshold_min: float,
     # dedupe: fire on change of the suspect SET (by slug+klass), or after refire_min
     key = hashlib.md5("|".join(sorted(f"{r['slug']}:{r['klass']}" for r in rows
                                        if r["suspect"])).encode()).hexdigest()
-    sfile = os.path.join(state_dir(spec.hag), "heartbeat.state")
+    sfile = os.path.join(state_dir(spec.sid), "heartbeat.state")
     prev = {}
     try:
         prev = json.load(open(sfile))
@@ -349,7 +349,7 @@ def cmd_heartbeat(spec, threshold_min: float,
     if dry_run:
         print("[dry-run] would fire + record")
         return 0
-    hag_emit(spec.hag, "heartbeat", "script", "watch_event",
+    shoal_emit(spec.sid, "heartbeat", "script", "watch_event",
              kind="stall-suspect", note="; ".join(suspects),
              tier=("T3" if any(r.get("klass") == "idle-deaf" and getattr(spec.role(r["slug"]), "ecosystem", "")
                                == "claude" for r in rows) else "T2"),
@@ -358,7 +358,7 @@ def cmd_heartbeat(spec, threshold_min: float,
         json.dump({"key": key, "fired_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ")}, fh)
     try:
         from ledger import Ledger
-        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led = Ledger(spec.sid, root=spec.ledger_dir)
         led.pull()
         targets = {r["slug"] for r in rows if r["suspect"]} | {"user"}
         for t in sorted(targets):
@@ -383,7 +383,7 @@ def cmd_heartbeat(spec, threshold_min: float,
                 role.session, spec.dir,
                 f"OPERATOR WAKEUP-READ (heartbeat: your ledger-watch is dead — "
                 f"no board poll, queue empty, heartbeat stale): run shoal show "
-                f"--shoal {spec.hag} --slug {role.slug}, claim or decline the top "
+                f"--shoal {spec.sid} --slug {role.slug}, claim or decline the top "
                 f"board candidate, transition, re-arm ledger-watch and VERIFY "
                 f"the new PID with ps -p plus sidecar pid match. REPORT.")
             print(f"direct WAKEUP-READ sent to {role.slug} ({role.session})")

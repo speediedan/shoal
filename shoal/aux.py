@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hag-aux: the residual lane (architecture doc §4.1; H8 proposal §3).
+"""aux: the residual lane (architecture doc §4.1; H8 proposal §3).
 
 An ordinary `fill=self` worker whose spec carries `aux: true` and no brief of its own.
 The digest ranks for it the free, workable board items whose best fit to any other
@@ -28,7 +28,7 @@ import config  # noqa: E402
 
 from roles import ShoalSpec, Role, find_spec, roles_dir  # noqa: E402
 
-AUX_SLUG = "hag-aux"
+AUX_SLUG = "aux"
 AUX_ECOSYSTEM = "opencode"
 AUX_MODEL = "opencode-go/muse-spark-1.3-contributor"
 AUX_EFFORT = "high"
@@ -37,7 +37,7 @@ AUX_DOC = """# {slug}: plan_state (start doc)
 
 ## Mission
 
-You are the residual lane of shoal `{hag}`. You work the board items that no other active
+You are the residual lane of shoal `{sid}`. You work the board items that no other active
 lane's brief covers: hygiene, tests, docs, small features and unblockers that would
 otherwise sit unowned. You never compete with a lane for its own work.
 
@@ -66,7 +66,7 @@ otherwise sit unowned. You never compete with a lane for its own work.
 
 ## Running monitors
 
-- ledger-watch: armed per your brief (sidecar `/tmp/{hag}/ledger-watch-{slug}.state`).
+- ledger-watch: armed per your brief (sidecar `/tmp/{sid}/ledger-watch-{slug}.state`).
 
 ## grants-needed
 
@@ -77,23 +77,23 @@ otherwise sit unowned. You never compete with a lane for its own work.
 """
 
 
-def aux_doc_path(hag: str, slug: str = AUX_SLUG) -> str:
-    return os.path.join(roles_dir(hag), slug, "plan_state.md")
+def aux_doc_path(sid: str, slug: str = AUX_SLUG) -> str:
+    return os.path.join(roles_dir(sid), slug, "plan_state.md")
 
 
-def aux_role(hag: str, ecosystem: str = AUX_ECOSYSTEM, model: str = AUX_MODEL, effort: str = AUX_EFFORT,
+def aux_role(sid: str, ecosystem: str = AUX_ECOSYSTEM, model: str = AUX_MODEL, effort: str = AUX_EFFORT,
              slug: str = AUX_SLUG) -> Role:
-    return Role(slug=slug, ecosystem=ecosystem, title=slug, doc=aux_doc_path(hag, slug), fill="self",
+    return Role(slug=slug, ecosystem=ecosystem, title=slug, doc=aux_doc_path(sid, slug), fill="self",
                 model=model, effort=effort, seq=1, aux=True,
                 context={"brief": "", "never": {}})
 
 
-def write_doc(hag: str, slug: str = AUX_SLUG) -> str:
+def write_doc(sid: str, slug: str = AUX_SLUG) -> str:
     from matcher import now_iso
-    path = aux_doc_path(hag, slug)
+    path = aux_doc_path(sid, slug)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
-        fh.write(AUX_DOC.format(slug=slug, hag=hag, created=now_iso()))
+        fh.write(AUX_DOC.format(slug=slug, sid=sid, created=now_iso()))
     return path
 
 
@@ -123,12 +123,12 @@ def header(spec: ShoalSpec, slug: str) -> str:
 
 
 def cmd_aux_init(a) -> int:
-    path = a.spec or find_spec(a.hag)
+    path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
     slug = a.slug or AUX_SLUG
-    doc = aux_doc_path(spec.hag, slug)
+    doc = aux_doc_path(spec.sid, slug)
     have = spec.role(slug)
-    plan = (f"aux-init {spec.hag}: doc {doc}"
+    plan = (f"aux-init {spec.sid}: doc {doc}"
             + ("" if a.doc_only else f"; role {'present' if have else 'ADD'} {slug} ({a.ecosystem}, "
                                      f"model={a.model or '-'}, fill=self, aux)"))
     warn = "" if (spec.features or {}).get("matcher") else \
@@ -139,10 +139,10 @@ def cmd_aux_init(a) -> int:
     if a.dry_run:
         print("[dry-run] " + plan + warn)
         return 0
-    write_doc(spec.hag, slug)
+    write_doc(spec.sid, slug)
     if not a.doc_only:
         if have is None:
-            spec.roles.append(aux_role(spec.hag, a.ecosystem, a.model, a.effort, slug))
+            spec.roles.append(aux_role(spec.sid, a.ecosystem, a.model, a.effort, slug))
         else:
             have.doc = doc
         errs = spec.validate()
@@ -159,21 +159,21 @@ def cmd_aux_launch(a) -> int:
     """Start (or restart) the aux session alone: no incarnation bump; seq bumps when a
     previous session existed. Counts once the role's ledger-watch is alive."""
     from health import watcher_alive
-    path = a.spec or find_spec(a.hag)
+    path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
     slug = a.slug or AUX_SLUG
     role = spec.role(slug)
     if role is None or not getattr(role, "aux", False):
-        print(f"ERROR: no aux role {slug} in {spec.hag}: run `shoal aux-init --shoal {spec.hag}` first")
+        print(f"ERROR: no aux role {slug} in {spec.sid}: run `shoal aux-init --shoal {spec.sid}` first")
         return 1
-    alive, _ = watcher_alive(spec.hag, slug)
+    alive, _ = watcher_alive(spec.sid, slug)
     if alive and not a.force:
         print(f"{slug} ledger-watch already running; nothing to do (--force to launch anyway)")
         return 0
     old = role.session
     if old:
         role.seq += 1
-    plan = (f"aux-launch {spec.hag}: {role.label} {role.ecosystem} model={role.model or '-'} "
+    plan = (f"aux-launch {spec.sid}: {role.label} {role.ecosystem} model={role.model or '-'} "
             f"(previous session {old or '-'}; incarnation unchanged)")
     if a.dry_run:
         print("[dry-run] " + plan)
@@ -187,14 +187,14 @@ def cmd_aux_launch(a) -> int:
     if role.ecosystem == "opencode":
         # opencode create takes no prompt: the brief must be sent, or the new
         # session idles forever with an empty transcript (measured 2026-09-23:
-        # hag-aux-r1 sat promptless until the brief was sent by hand).
+        # the aux lane's r1 session sat promptless until the brief was sent by hand).
         be.send(role.session, spec.dir, brief, model=role.model)
     spec.record_generation()
     persist_spec(spec, path, note=f"aux-launch {role.tag}")
     print(plan + f" -> launched {role.session}")
     t0 = time.time()
     while time.time() - t0 < a.verify_s:
-        alive, why = watcher_alive(spec.hag, slug)
+        alive, why = watcher_alive(spec.sid, slug)
         if alive:
             print(f"AUX LOOP ALIVE: {slug} ledger-watch pid {why.get('pid', '?')}")
             return 0
@@ -205,7 +205,7 @@ def cmd_aux_launch(a) -> int:
 
 
 def add_parsers(sub) -> None:
-    p = sub.add_parser("aux-init", help="write the hag-aux start doc (data dir) and add the aux role to the spec")
+    p = sub.add_parser("aux-init", help="write the aux start doc (data dir) and add the aux role to the spec")
     config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="", help=f"role slug (default {AUX_SLUG})")

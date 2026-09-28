@@ -8,7 +8,7 @@ from the top"). Reading uses `gh api graphql` so the item's open/closed
 state and repository come back in one call (`gh project item-list` omits
 state, and a closed issue left on the board is the measured hygiene gap).
 
-Spec shape (hag.json `sources`):
+Spec shape (shoal.json `sources`):
   [{"kind": "github-project", "owner": "<owner>", "number": <project number>,
     "repos": ["<owner>/<repo>", ...],               # optional filter
     "skip_status": ["Done"]}]                        # optional

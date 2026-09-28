@@ -5,7 +5,7 @@ One board read per shoal, not one per self-filling watcher: `shoal digest --refr
 (a systemd timer when the spec opts in with `features.digest`) fetches the priority
 table ONCE, with body excerpts, blocking relations and linked PRs, scores every open
 item against every self-filling role's working context, and writes
-`$SHOAL_DATA_ROOT/<hag>/board_digest.json`. A role's ledger-watch then reads that file
+`$SHOAL_DATA_ROOT/<id>/board_digest.json`. A role's ledger-watch then reads that file
 instead of GitHub, and a board wake carries enough (excerpt, score, why tokens) to
 claim or pass without opening each issue.
 
@@ -95,8 +95,8 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def digest_path(hag: str) -> str:
-    return os.path.join(data_dir(hag), "board_digest.json")
+def digest_path(sid: str) -> str:
+    return os.path.join(data_dir(sid), "board_digest.json")
 
 
 def _short(repo: str) -> str:
@@ -217,8 +217,8 @@ def _routing(view) -> dict[str, set[str]]:
     return out
 
 
-def semantic_path(hag: str) -> str:
-    return os.path.join(data_dir(hag), "board_digest.semantic.json")
+def semantic_path(sid: str) -> str:
+    return os.path.join(data_dir(sid), "board_digest.semantic.json")
 
 
 def _never(item: dict, ctx: dict) -> bool:
@@ -356,7 +356,7 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
         summary = {k: sem.get(k) for k in ("model", "backend", "calls", "latency_s", "scored_now", "live")}
         summary.update(unscored=len(sem.get("unscored") or []), withheld=len(sem.get("withheld") or []),
                        notes=(sem.get("notes") or [])[-8:], unblockers=sorted(unblock))
-        sem_doc = {"hag": spec.hag, "generated_utc": now_iso(), "sources": src_desc, "ranking": "semantic",
+        sem_doc = {"shoal": spec.sid, "generated_utc": now_iso(), "sources": src_desc, "ranking": "semantic",
                    "n_items": len(items), "items": s_items, "roles": s_roles, "matcher": summary}
     live = bool(mcfg and mcfg.get("live") and sem_doc is not None and (sem_doc["matcher"].get("unscored", 0)
                                                                       < len(items) or not items))
@@ -390,7 +390,7 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
     if live:
         doc = dict(sem_doc, unowned=unowned)
         return doc
-    doc = {"hag": spec.hag, "generated_utc": now_iso(), "sources": src_desc, "ranking": "keyword",
+    doc = {"shoal": spec.sid, "generated_utc": now_iso(), "sources": src_desc, "ranking": "keyword",
            "n_items": len(items), "items": {it["item"]: it for it in items},
            "roles": roles, "unowned": unowned}
     if sem_doc is not None:
@@ -416,15 +416,15 @@ def write(spec: ShoalSpec, doc: dict) -> str:
     doc = dict(doc)
     shadow = doc.pop("shadow", None)
     if shadow is not None:
-        _write_json(semantic_path(spec.hag), shadow)
-    path = digest_path(spec.hag)
+        _write_json(semantic_path(spec.sid), shadow)
+    path = digest_path(spec.sid)
     _write_json(path, doc)
     return path
 
 
-def load(hag: str, max_age_min: float = DIGEST_MAX_AGE_MIN) -> dict | None:
+def load(sid: str, max_age_min: float = DIGEST_MAX_AGE_MIN) -> dict | None:
     """The digest if present and fresh, else None (callers fall back to the board)."""
-    path = digest_path(hag)
+    path = digest_path(sid)
     try:
         if (time.time() - os.path.getmtime(path)) / 60 > max_age_min:
             return None
@@ -434,12 +434,12 @@ def load(hag: str, max_age_min: float = DIGEST_MAX_AGE_MIN) -> dict | None:
         return None
 
 
-def candidates(hag: str, slug: str, taken: set[str], declined: set[str], limit: int = 5,
+def candidates(sid: str, slug: str, taken: set[str], declined: set[str], limit: int = 5,
                min_score: float = DEFAULT_MIN_SCORE) -> list[dict] | None:
     """Ranked digest candidates for one role with excerpts; None when no fresh digest.
     Items under `min_score` are withheld unless nothing clears it (then the top few
     are shown, so an empty queue still sees the best available work)."""
-    doc = load(hag)
+    doc = load(sid)
     if doc is None:
         return None
     from ledger import item_key
@@ -463,11 +463,11 @@ def fmt_candidate(c: dict, excerpt: int = 220) -> str:
 # ---- CLI -------------------------------------------------------------------
 
 def _spec_view(a, need_view: bool = True):
-    spec = ShoalSpec.load(find_spec(a.hag, getattr(a, "spec", "")))
+    spec = ShoalSpec.load(find_spec(a.sid, getattr(a, "spec", "")))
     view = None
     if need_view:
         from ledger import Ledger, View
-        led = Ledger(spec.hag, root=spec.ledger_dir or None, sync=not getattr(a, "no_sync", False))
+        led = Ledger(spec.sid, root=spec.ledger_dir or None, sync=not getattr(a, "no_sync", False))
         if led.exists():
             if led.sync:
                 led.pull()
@@ -482,12 +482,12 @@ def cmd_digest(a) -> int:
     if a.refresh:
         if not a.dry_run:
             from watchers import tick
-            tick(spec.hag, "digest")  # self-tick: an old tick is a dead timer, never a quiet board
+            tick(spec.sid, "digest")  # self-tick: an old tick is a dead timer, never a quiet board
         t0 = time.time()
         doc = build(spec, view, no_model=a.no_model)
         dt = time.time() - t0
         m = doc.get("matcher") or {}
-        summary = (f"digest {spec.hag}: {doc['n_items']} open items, ranking={doc.get('ranking', 'keyword')}"
+        summary = (f"digest {spec.sid}: {doc['n_items']} open items, ranking={doc.get('ranking', 'keyword')}"
                    + (" (semantic in shadow)" if m.get("shadow") else "") + ", "
                    + ", ".join(f"{k}={len(v)}" for k, v in doc["roles"].items())
                    + f", unowned={len(doc['unowned'])} ({dt:.1f}s)"
@@ -500,9 +500,9 @@ def cmd_digest(a) -> int:
         else:
             print(summary + f" -> {write(spec, doc)}")
             try:
-                from hag_telemetry import append_event, build_event, resolve_dir
-                append_event(resolve_dir(None, spec.hag), build_event(
-                    spec.hag, "digest", "script", "watch_event",
+                from shoal_telemetry import append_event, build_event, resolve_dir
+                append_event(resolve_dir(None, spec.sid), build_event(
+                    spec.sid, "digest", "script", "watch_event",
                     ["kind=digest-refresh", f"note={doc['n_items']} items unowned={len(doc['unowned'])}"]))
             except Exception as exc:  # noqa: BLE001
                 print(f"(telemetry emit failed: {exc})", file=sys.stderr)
@@ -512,10 +512,10 @@ def cmd_digest(a) -> int:
         if a.semantic and doc.get("shadow"):
             docmem = doc["shadow"]
     else:
-        docmem = load_semantic(spec.hag) if a.semantic else load(spec.hag, max_age_min=1e9)
+        docmem = load_semantic(spec.sid) if a.semantic else load(spec.sid, max_age_min=1e9)
         if docmem is None:
-            print(f"no {'semantic ' if a.semantic else ''}digest for {spec.hag}; run "
-                  f"`shoal digest --shoal {spec.hag} --refresh`")
+            print(f"no {'semantic ' if a.semantic else ''}digest for {spec.sid}; run "
+                  f"`shoal digest --shoal {spec.sid} --refresh`")
             return 1
     if a.slug:
         rows = (docmem.get("roles") or {}).get(a.slug)
@@ -532,13 +532,13 @@ def cmd_digest(a) -> int:
     return 0
 
 
-def load_semantic(hag: str) -> dict | None:
+def load_semantic(sid: str) -> dict | None:
     """The live digest when it is semantic, else the shadow file."""
-    doc = load(hag, max_age_min=1e9)
+    doc = load(sid, max_age_min=1e9)
     if doc is not None and doc.get("ranking") == "semantic":
         return doc
     try:
-        with open(semantic_path(hag)) as fh:
+        with open(semantic_path(sid)) as fh:
             return json.load(fh)
     except (OSError, ValueError):
         return None
@@ -549,7 +549,7 @@ def compare(spec: ShoalSpec, view, k: int = 10, n_claims: int = 80) -> dict:
     filter), how often the lane's recent claims sat in its top k, and how often its recorded
     out-of-lane declines did, semantic vs keyword. Items since closed are skipped."""
     from ledger import item_key
-    semd = load_semantic(spec.hag)
+    semd = load_semantic(spec.sid)
     if semd is None:
         raise RuntimeError("no semantic digest: enable features.matcher and refresh first")
     items = list((semd.get("items") or {}).values())
@@ -603,7 +603,7 @@ def cmd_compare(a, spec: ShoalSpec, view) -> int:
         print(f"ERROR: {exc}")
         return 1
     m = r["matcher"]
-    print(f"# digest compare {spec.hag}: top-{r['k']} over the whole board; {r['claims']} recent claims and "
+    print(f"# digest compare {spec.sid}: top-{r['k']} over the whole board; {r['claims']} recent claims and "
           f"{r['declines']} out-of-lane declines on items still open; matcher model={m.get('model')} "
           f"calls={m.get('calls')} latency={m.get('latency_s')}s unscored={m.get('unscored')}")
     for mode in ("keyword", "semantic"):
@@ -623,10 +623,10 @@ def cmd_triage(a) -> int:
     import ledger_cli
     spec, view = _spec_view(a)
     if view is None:
-        print(f"ERROR: no ledger for {spec.hag}")
+        print(f"ERROR: no ledger for {spec.sid}")
         return 1
     if spec.role(a.slug) is None:
-        print(f"ERROR: {a.slug} is not a role in {spec.hag}")
+        print(f"ERROR: {a.slug} is not a role in {spec.sid}")
         return 1
     passes = []
     for p in a.pass_ or []:
@@ -642,12 +642,12 @@ def cmd_triage(a) -> int:
                 rec[k] = v
         for s in filter(None, rec["suggest"].split(",")):
             if spec.role(s) is None:
-                print(f"ERROR: suggest={s!r} is not a role in {spec.hag}")
+                print(f"ERROR: suggest={s!r} is not a role in {spec.sid}")
                 return 1
         passes.append(rec)
     rc = 0
     for item in a.claim or []:
-        ns = type("A", (), dict(hag=a.hag, spec=getattr(a, "spec", ""), slug=a.slug, item=item, verb="",
+        ns = type("A", (), dict(sid=a.sid, spec=getattr(a, "spec", ""), slug=a.slug, item=item, verb="",
                                 base=a.base, src="", dry_run=a.dry_run, ledger_dir="",
                                 no_sync=getattr(a, "no_sync", False)))()
         r = ledger_cli.cmd_claim(ns)
@@ -665,7 +665,7 @@ def cmd_triage(a) -> int:
                                       kind="decline", cls=p["cls"], suggest=p["suggest"] or None,
                                       reason=p["note"] or p["cls"], retry=a.retry or None))
             try:
-                led.commit_own(a.slug, f"{spec.hag} {a.slug} triage: {len(evs)} pass")
+                led.commit_own(a.slug, f"{spec.sid} {a.slug} triage: {len(evs)} pass")
             except LedgerError as exc:
                 print(f"ERROR: {exc}")
                 return 1
@@ -677,13 +677,13 @@ def cmd_triage(a) -> int:
 
 
 def cmd_context(a) -> int:
-    path = find_spec(a.hag, getattr(a, "spec", ""))
+    path = find_spec(a.sid, getattr(a, "spec", ""))
     spec = ShoalSpec.load(path)
     targets = [spec.role(a.slug)] if a.slug else list(spec.roles)
     if a.slug and targets[0] is None:
-        print(f"ERROR: {a.slug} is not a role in {spec.hag}")
+        print(f"ERROR: {a.slug} is not a role in {spec.sid}")
         return 1
-    cdir = contexts_dir(spec.hag)
+    cdir = contexts_dir(spec.sid)
     if a.action == "show":
         for r in targets:
             src = "context" if r.context else ("scope (derived)" if r.scope else "none")
@@ -717,7 +717,7 @@ def cmd_context(a) -> int:
 
     if a.action == "set":
         if not a.slug:
-            print("ERROR: context set needs --slug (and --file, default <data-root>/<hag>/contexts/<slug>.json)")
+            print("ERROR: context set needs --slug (and --file, default <data-root>/<id>/contexts/<slug>.json)")
             return 1
         ctx = _read(a.file or os.path.join(cdir, f"{a.slug}.json"))
         if ctx is None:
@@ -790,12 +790,12 @@ def add_parsers(sub) -> None:
 
     p = sub.add_parser("context", help="show / set / load / export / migrate role working contexts (replaces scope)")
     p.add_argument("action", choices=["show", "set", "load", "export", "migrate"],
-                   help="load: every <data-root>/<hag>/contexts/<slug>.json into the spec; "
+                   help="load: every <data-root>/<id>/contexts/<slug>.json into the spec; "
                         "export: the spec's (or scope-derived) contexts to those files")
     config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="")
-    p.add_argument("--file", default="", help="context JSON for `set` (default <data-root>/<hag>/contexts/<slug>.json)")
+    p.add_argument("--file", default="", help="context JSON for `set` (default <data-root>/<id>/contexts/<slug>.json)")
     p.add_argument("--force", action="store_true", help="export: overwrite existing files")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_context)

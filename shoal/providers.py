@@ -3,9 +3,9 @@
 
 A wait target is `<kind>:<ref>`. Each kind has one resolver in REGISTRY,
 
-    resolver(ref, slug, hag) -> (True pending | False resolved | None unknown, detail)
+    resolver(ref, slug, sid) -> (True pending | False resolved | None unknown, detail)
 
-and `resolve(target, slug, hag)` is the only entry point (health.target_pending is a thin
+and `resolve(target, slug, sid)` is the only entry point (health.target_pending is a thin
 alias). Unknown is never resolved: a resolver that cannot tell (tool missing, provider
 failed, invalid output, nothing reported) answers None, and the health quorum then covers the
 wait with its periodic validity check only. A kind with no resolver answers
@@ -80,7 +80,7 @@ def normalize(target: str) -> tuple[str, str]:
     return target, ""
 
 
-def resolve(target: str, slug: str, hag: str = "") -> Result:
+def resolve(target: str, slug: str, sid: str = "") -> Result:
     """(True pending | False resolved | None unknown, detail) for a `<kind>:<ref>` wait target."""
     if not target:
         return None, "no target"
@@ -94,7 +94,7 @@ def resolve(target: str, slug: str, hag: str = "") -> Result:
     if fn is None:
         return None, f"no provider for {kind}"
     try:
-        return fn(ref, slug, hag)
+        return fn(ref, slug, sid)
     except Exception as exc:  # noqa: BLE001 - a provider failure is unknown, never resolved
         return None, f"check failed: {str(exc)[:80]}"
 
@@ -104,18 +104,17 @@ def _run(argv: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
 
 
 @register("job")
-def job(ref: str, slug: str, hag: str) -> Result:
-    # `job:<name>` is the name given to `job run`; the unit is shoal-<hag>-<slug>-<name>
-    # (hag-<hag>-<slug>-<name> for a job started before the rename).
+def job(ref: str, slug: str, sid: str) -> Result:
+    # `job:<name>` is the name given to `job run`; the unit is shoal-<id>-<slug>-<name>.
     # Querying the bare name asked systemd about a unit that never exists, which
     # reads `inactive` and marked every live job wait resolved (2026-09-23, #t401).
     import jobs
-    unit = ref if ref.startswith(("shoal-", "hag-")) or not hag else jobs.find_unit(hag, slug, ref)
+    unit = ref if ref.startswith("shoal-") or not sid else jobs.find_unit(sid, slug, ref)
     st = jobs.unit_state(unit)
     active = st.get("ActiveState", "")
     if active in ("active", "activating", "deactivating", "reloading"):
         return True, f"unit {unit} {active}"
-    rc_file = jobs.paths(hag, unit)["rc"] if hag else ""
+    rc_file = jobs.paths(sid, unit)["rc"] if sid else ""
     if rc_file and os.path.exists(rc_file):
         with open(rc_file) as fh:
             return False, f"unit {unit} exited rc={fh.read().strip()}"
@@ -125,7 +124,7 @@ def job(ref: str, slug: str, hag: str) -> Result:
 
 
 @register("lease")
-def lease(ref: str, slug: str, hag: str) -> Result:
+def lease(ref: str, slug: str, sid: str) -> Result:
     """Pending while the lease named by the ref is held or has a queue entry."""
     cmd = config.lease_cmd()
     if not cmd:
@@ -160,7 +159,7 @@ def lease(ref: str, slug: str, hag: str) -> Result:
 
 
 @register("gh-run")
-def gh_run(ref: str, slug: str, hag: str) -> Result:
+def gh_run(ref: str, slug: str, sid: str) -> Result:
     repo, _, rid = ref.rpartition(":")
     r = _run(["gh", "run", "view", rid, "--repo", repo, "--json", "status,conclusion"])
     d = json.loads(r.stdout or "{}")
@@ -170,7 +169,7 @@ def gh_run(ref: str, slug: str, hag: str) -> Result:
 
 
 @register("gh-pr")
-def gh_pr(ref: str, slug: str, hag: str) -> Result:
+def gh_pr(ref: str, slug: str, sid: str) -> Result:
     rn = _repo_num(ref)
     if rn is None:
         return None, f"unparseable gh-pr ref {ref!r}"
@@ -188,7 +187,7 @@ def gh_pr(ref: str, slug: str, hag: str) -> Result:
 
 
 @register("gh-issue")
-def gh_issue(ref: str, slug: str, hag: str) -> Result:
+def gh_issue(ref: str, slug: str, sid: str) -> Result:
     """An upstream or peer issue: pending while open, resolved once closed."""
     rn = _repo_num(ref)
     if rn is None:
@@ -201,7 +200,7 @@ def gh_issue(ref: str, slug: str, hag: str) -> Result:
 
 
 @register("az-build")
-def az_build(ref: str, slug: str, hag: str) -> Result:
+def az_build(ref: str, slug: str, sid: str) -> Result:
     if not shutil.which("az", path=config.tool_env()["PATH"]):
         return None, "az CLI not on the tool PATH"
     r = _run(["az", "pipelines", "build", "show", "--id", ref, "--query", "status", "-o", "tsv"], timeout=60)

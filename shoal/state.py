@@ -16,7 +16,7 @@ The same command also appends a `state` event to the shoal ledger (ledger.py,
 2026-09-20), so every peer and every host sees the row state without anyone
 transcribing it; `--no-ledger` skips that (tests).
 
-Wait files (`/tmp/<hag>/wait-<slug>`, JSON) are the lane-side wait proof
+Wait files (`/tmp/<id>/wait-<slug>`, JSON) are the lane-side wait proof
 the v0 heartbeat daemon lacked: a wait is covered while it is unexpired
 (now < rescan_utc); past its rescan time it is a STALE WAIT (failure-modes
 §2: re-verify, never extend) and the daemon says so. Transitioning to any
@@ -39,28 +39,28 @@ from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
 from heartbeat import touch as hb_touch  # noqa: E402
 
 try:
-    from hag_telemetry import (VALID_STATES, VALID_SUB, ALIASES, append_event,  # noqa: E402
+    from shoal_telemetry import (VALID_STATES, VALID_SUB, ALIASES, append_event,  # noqa: E402
                                build_event, resolve_dir)
 except Exception:  # pragma: no cover
     VALID_STATES, VALID_SUB, ALIASES = set(), set(), {}
     append_event = build_event = resolve_dir = None
 
 
-def wait_path(hag: str, slug: str) -> str:
-    return os.path.join(state_dir(hag), f"wait-{slug}")
+def wait_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"wait-{slug}")
 
 
-def read_wait(hag: str, slug: str) -> dict | None:
+def read_wait(sid: str, slug: str) -> dict | None:
     try:
-        with open(wait_path(hag, slug)) as fh:
+        with open(wait_path(sid, slug)) as fh:
             return json.load(fh)
     except Exception:
         return None
 
 
-def wait_status(hag: str, slug: str, now: datetime.datetime | None = None) -> tuple[str, dict | None]:
+def wait_status(sid: str, slug: str, now: datetime.datetime | None = None) -> tuple[str, dict | None]:
     """('none' | 'covered' | 'stale', wait) for the slug's wait file."""
-    w = read_wait(hag, slug)
+    w = read_wait(sid, slug)
     if not w:
         return "none", None
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -72,7 +72,7 @@ def wait_status(hag: str, slug: str, now: datetime.datetime | None = None) -> tu
     return ("covered" if now < rescan else "stale"), w
 
 
-def write_wait(hag: str, slug: str, sub: str, holder: str, rescan_min: float,
+def write_wait(sid: str, slug: str, sub: str, holder: str, rescan_min: float,
                monitor: str, note: str, target: str = "") -> dict:
     """`target` is machine-checkable where possible (the health quorum verifies it):
     lease:<key> | job:<unit> | gh-run:<owner/repo>:<run-id> | gh-pr:<owner/repo>#<n> |
@@ -81,7 +81,7 @@ def write_wait(hag: str, slug: str, sub: str, holder: str, rescan_min: float,
     w = {"slug": slug, "sub": sub, "holder": holder, "monitor": monitor, "target": target,
          "note": note, "since_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
          "rescan_utc": (now + datetime.timedelta(minutes=rescan_min)).strftime("%Y-%m-%dT%H:%M:%SZ")}
-    p = wait_path(hag, slug)
+    p = wait_path(sid, slug)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".tmp"
     with open(tmp, "w") as fh:
@@ -90,9 +90,9 @@ def write_wait(hag: str, slug: str, sub: str, holder: str, rescan_min: float,
     return w
 
 
-def clear_wait(hag: str, slug: str) -> bool:
+def clear_wait(sid: str, slug: str) -> bool:
     try:
-        os.remove(wait_path(hag, slug))
+        os.remove(wait_path(sid, slug))
         return True
     except OSError:
         return False
@@ -147,7 +147,7 @@ def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
     return rescan_min, notes, ""
 
 
-def check_target(sub: str, target: str, slug: str, hag: str = "") -> tuple[str, list[str], str]:
+def check_target(sub: str, target: str, slug: str, sid: str = "") -> tuple[str, list[str], str]:
     """(canonical target, notes, refusal) for a wait target. A malformed target is refused (nothing
     could ever check it), and so is one already resolved (there is nothing left to wait on)."""
     import providers
@@ -159,7 +159,7 @@ def check_target(sub: str, target: str, slug: str, hag: str = "") -> tuple[str, 
     canon, err = providers.normalize(target)
     if err:
         return target, [], f"wait target refused: {err}"
-    pending, why = providers.resolve(canon, slug, hag)
+    pending, why = providers.resolve(canon, slug, sid)
     if pending is False:
         return canon, [], (f"wait target {canon} is already resolved ({why}): nothing is left to wait on. "
                            f"Take the next item (`queue --active <item>`) or name a target that is pending")
@@ -173,7 +173,7 @@ def check_target(sub: str, target: str, slug: str, hag: str = "") -> tuple[str, 
 def current_asks(spec, slug: str) -> list[str]:
     try:
         from ledger import Ledger, View
-        led = Ledger(spec.hag, root=spec.ledger_dir)
+        led = Ledger(spec.sid, root=spec.ledger_dir)
         led.pull()
         q = View(led, spec).current_queue(slug) or {}
         return list(q.get("asks") or [])
@@ -182,7 +182,7 @@ def current_asks(spec, slug: str) -> list[str]:
 
 
 def cmd_transition(a: argparse.Namespace) -> int:
-    hag = a.hag
+    sid = a.sid
     if a.to not in VALID_STATES:
         print(f"ERROR: --to must be one of {sorted(VALID_STATES)} (got {a.to!r}); "
               "invalid states are not emitted by this command")
@@ -207,12 +207,12 @@ def cmd_transition(a: argparse.Namespace) -> int:
     # degrade to session=<slug>, eco='?', which produced events no report could
     # attribute to a role; fail loudly instead, before any side effect.
     session, eco = a.session, a.ecosystem
-    spec_path = find_spec(hag, a.spec)
+    spec_path = find_spec(sid, a.spec)
     try:
         spec = ShoalSpec.load(spec_path)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f"ERROR: no readable shoal spec for {hag!r} at {spec_path} ({exc}); "
-              "refusing to emit an unattributable transition. Pass --spec <hag.json>.",
+        print(f"ERROR: no readable shoal spec for {sid!r} at {spec_path} ({exc}); "
+              "refusing to emit an unattributable transition. Pass --spec <shoal.json>.",
               file=sys.stderr)
         return 2
     role = spec.role(a.slug)
@@ -241,21 +241,21 @@ def cmd_transition(a: argparse.Namespace) -> int:
             print(f"ERROR: {refusal} (nothing written)")
             return 3
     if a.to == "waiting":
-        a.target, tnotes, trefusal = check_target(sub, getattr(a, "target", "") or "", a.slug, hag)
+        a.target, tnotes, trefusal = check_target(sub, getattr(a, "target", "") or "", a.slug, sid)
         for n in tnotes:
             print(f"note: {n}")
         if trefusal:
             print(f"ERROR: {trefusal} (nothing written)")
             return 3
     # 1. heartbeat
-    hb = hb_touch(hag, a.slug)
+    hb = hb_touch(sid, a.slug)
     # 2. wait proof
     if a.to == "waiting":
-        w = write_wait(hag, a.slug, sub, a.holder, a.rescan_min, a.monitor, a.note,
+        w = write_wait(sid, a.slug, sub, a.holder, a.rescan_min, a.monitor, a.note,
                        target=getattr(a, "target", "") or "")
         wait_line = f"wait proven until {w['rescan_utc']} (holder: {a.holder})"
     else:
-        wait_line = "wait cleared" if clear_wait(hag, a.slug) else "no wait to clear"
+        wait_line = "wait cleared" if clear_wait(sid, a.slug) else "no wait to clear"
     # 3. telemetry
     if build_event is None:
         print("WARNING: telemetry module unavailable; hb + wait written, no event")
@@ -267,17 +267,17 @@ def cmd_transition(a: argparse.Namespace) -> int:
               "via=shoal transition"]
     if raw:
         fields.append(f"to_sub_raw={raw}")
-    ev = build_event(hag, session, eco, "session_transition", fields)
+    ev = build_event(sid, session, eco, "session_transition", fields)
     if a.dry_run:
         print("[dry-run]", json.dumps(ev))
     else:
-        append_event(resolve_dir(a.dir, hag), ev)
+        append_event(resolve_dir(a.dir, sid), ev)
     # 4. ledger (cross-host, cross-ecosystem visibility)
     ledger_line = ""
     if not a.no_ledger and not a.dry_run:
         try:
             from ledger import Ledger
-            led = Ledger(hag, root=a.ledger_dir or spec.ledger_dir)
+            led = Ledger(sid, root=a.ledger_dir or spec.ledger_dir)
             if led.exists():
                 led.pull()
                 lev = led.append(a.slug, "state", state=a.to, sub=sub, holder=a.holder,

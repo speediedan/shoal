@@ -19,7 +19,7 @@ exits — the session re-arms as its first act after acting:
 Test mode (`--test`) fires the adapter once with LEDGER-WAKE-TEST and
 exits: arming counts only after the test wake is seen in-transcript.
 
-Sidecar: /tmp/<hag>/ledger-watch-<slug>.state (session_id=, pid=,
+Sidecar: /tmp/<id>/ledger-watch-<slug>.state (session_id=, pid=,
 armed_utc=, delivered=<comma ids, capped 400>, fetch_fail=, last_tick=).
 """
 from __future__ import annotations
@@ -44,8 +44,8 @@ _ENV = config.tool_env()
 DELIVERED_CAP = 400
 
 
-def sidecar_path(hag: str, slug: str) -> str:
-    return os.path.join(state_dir(hag), f"ledger-watch-{slug}.state")
+def sidecar_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"ledger-watch-{slug}.state")
 
 
 def load_sidecar(path: str) -> dict[str, str]:
@@ -93,7 +93,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     workwake = bool((getattr(spec, "features", {}) or {}).get("workwake")) if spec is not None else False
     idle = view.is_idle(slug) if workwake else True
     q = view.current_queue(slug) or {}
-    for w in _wake_requests(view.ledger.hag, slug):
+    for w in _wake_requests(view.ledger.sid, slug):
         out.append(w)
     for o in view.queue(slug):
         if workwake and not idle:
@@ -127,7 +127,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
             dig = None
             if (getattr(spec, "features", {}) or {}).get("digest"):
                 from digest import candidates as digest_candidates, fmt_candidate
-                dig = digest_candidates(spec.hag, slug, taken, declined, limit=5)
+                dig = digest_candidates(spec.sid, slug, taken, declined, limit=5)
             if dig is not None:  # shared digest: no GitHub call from this watcher
                 for c in dig:
                     out.append((f"board:{c['item']}", fmt_candidate(c)))
@@ -140,13 +140,13 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     return out
 
 
-def _wake_requests(hag: str, slug: str) -> list[tuple[str, str]]:
-    """Health-quorum wake requests (/tmp/<hag>/wake-<slug>): one delivery per request line.
+def _wake_requests(sid: str, slug: str) -> list[tuple[str, str]]:
+    """Health-quorum wake requests (/tmp/<id>/wake-<slug>): one delivery per request line.
     The file is removed by the role's next `shoal queue` write (the acknowledgement)."""
     import json as _json
     out = []
     try:
-        with open(os.path.join(state_dir(hag), f"wake-{slug}")) as fh:
+        with open(os.path.join(state_dir(sid), f"wake-{slug}")) as fh:
             for line in fh:
                 try:
                     d = _json.loads(line)
@@ -172,30 +172,30 @@ def fire(wake: str, text: str, repo_dir: str) -> bool:
     return True
 
 
-def emit_wake(hag: str, slug: str, session: str, eco: str, reason: str, n: int) -> None:
+def emit_wake(sid: str, slug: str, session: str, eco: str, reason: str, n: int) -> None:
     try:
-        from hag_telemetry import append_event, build_event, resolve_dir
-        ev = build_event(hag, session or slug, eco or "?", "watch_event",
+        from shoal_telemetry import append_event, build_event, resolve_dir
+        ev = build_event(sid, session or slug, eco or "?", "watch_event",
                          [f"kind=ledger-wake", f"slug={slug}", f"note={reason}", f"n={n}",
                           "channel=ledger"])
-        append_event(resolve_dir(None, hag), ev)
+        append_event(resolve_dir(None, sid), ev)
     except Exception:
         pass
 
 
 def cmd_ledger_watch(a) -> int:
-    hag, slug = a.hag, a.slug
+    sid, slug = a.sid, a.slug
     try:
         sys.stdout.reconfigure(line_buffering=True)  # a watcher's output is read through pipes/logs
     except Exception:
         pass
     try:
-        spec = ShoalSpec.load(find_spec(hag, a.spec))
+        spec = ShoalSpec.load(find_spec(sid, a.spec))
     except OSError:
         spec = None
     role = spec.role(slug) if spec else None
     repo_dir = a.dir or (spec.dir if spec else os.getcwd())
-    sc_path = a.sidecar or sidecar_path(hag, slug)
+    sc_path = a.sidecar or sidecar_path(sid, slug)
     sc = load_sidecar(sc_path)
     session = a.session or sc.get("session_id", "") or (role.session if role else "")
     sc.update(session_id=session, pid=str(os.getpid()), armed_utc=now_iso(),
@@ -203,18 +203,18 @@ def cmd_ledger_watch(a) -> int:
     sc.setdefault("delivered", "")
     sc.setdefault("fetch_fail", "0")
     save_sidecar(sc_path, sc)
-    led = Ledger(hag, root=a.ledger_dir or (spec.ledger_dir if spec else None), sync=not a.no_sync)
+    led = Ledger(sid, root=a.ledger_dir or (spec.ledger_dir if spec else None), sync=not a.no_sync)
     if not led.exists() and led.sync:
         led.pull()
     if not led.exists():
-        print(f"ERROR: no ledger for {hag} at {led.ldir} (run `shoal ledger-init`)")
+        print(f"ERROR: no ledger for {sid} at {led.ldir} (run `shoal ledger-init`)")
         return 3
-    label = f"LEDGER-WAKE {slug}@{hag}"
+    label = f"LEDGER-WAKE {slug}@{sid}"
     if a.test:
-        text = (f"LEDGER-WAKE-TEST {slug}@{hag}: dry-run wakeup proof at {now_iso()}; confirm arrival "
+        text = (f"LEDGER-WAKE-TEST {slug}@{sid}: dry-run wakeup proof at {now_iso()}; confirm arrival "
                 f"in-transcript, then arm for real (same command without --test).")
         return 0 if fire(a.wake, text, repo_dir) else 2
-    print(f"{now_iso()} armed: {slug}@{hag} every {a.interval:g}s wake={a.wake} sidecar={sc_path}")
+    print(f"{now_iso()} armed: {slug}@{sid} every {a.interval:g}s wake={a.wake} sidecar={sc_path}")
     fails = int(sc.get("fetch_fail", "0") or 0)
     last_board = 0.0
     first = True
@@ -253,8 +253,8 @@ def cmd_ledger_watch(a) -> int:
         save_sidecar(sc_path, sc)
         reason = ",".join(sorted({d.split()[0] for _, d in new}))
         text = (f"{label} at {now_iso()} ({len(new)} new): " + " | ".join(d for _, d in new)
-                + f" || next: `shoal show --shoal {hag} --slug {slug}`; act (claim/msg/release), transition, re-arm.")
-        emit_wake(hag, slug, session, role.ecosystem if role else "", reason, len(new))
+                + f" || next: `shoal show --shoal {sid} --slug {slug}`; act (claim/msg/release), transition, re-arm.")
+        emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
         fired = fire(a.wake, text, repo_dir)
         if a.wake == "print":
             continue

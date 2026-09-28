@@ -45,9 +45,8 @@ The hermetic run must report zero unjustified network tool calls.
   not add it, and say so in your summary.
 - **DCO.** Every commit is signed off (`git commit -s`).
 - **No em dashes in prose.** Use a colon, a comma pair, parentheses, or a full stop.
-- **Compatibility.** Existing groups carry legacy names: `--hag` (a hidden alias of `--shoal`),
-  `HAG_*` environment variables (fallbacks for `SHOAL_*`), the `hag.py` ledger system writer,
-  `hags/<id>/` and `hag.json` in the ledger repository (new groups use `shoals/<id>/` and `shoal.json`;
-  see `shoal/layout.py`), `/tmp/<id>/` state, and the `hag-relay` (now `wake-relay`) and `hag-aux` role
-  slugs. Keep reading all of them.
+- **No legacy names.** The pre-rename names are gone and are not read: the group id is `--shoal`
+  (dest `sid`), environment variables are `SHOAL_*` only, the system writer is `shoal`, a group lives
+  at `shoals/<id>/shoal.json` in the ledger repository (see `shoal/layout.py`), and the default role
+  slugs are `wake-relay` and `aux`.
 - **Docs follow code.** A change to a component updates `docs/architecture.md` in the same commit.

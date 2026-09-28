@@ -1,14 +1,14 @@
 # selftest_lib.sh: hermetic scratch setup shared by the selftests (sourced, not run).
 #
-# Every suite calls `hag_test_setup "$S"` right after creating its scratch dir. It makes the
+# Every suite calls `shoal_test_setup "$S"` right after creating its scratch dir. It makes the
 # run independent of this host and of the network:
 #   - SHOAL_CONFIG points at a scratch host config, so the package's own config/host.toml
 #     (data root, ledger clone, tool PATH, lease provider, cli) is never read;
 #   - every other config variable is unset, so nothing leaks in from the caller's shell;
 #   - WORK is a scratch git repository standing in for the spec's working dir;
 #   - DOCS holds synthetic plan_state docs (with `## Current state` and `## grants-needed`),
-#     written by hag_doc, so no design-repo document is read;
-#   - hag_board_fixture writes a synthetic board and exports SHOAL_BOARD_FIXTURE, so no
+#     written by shoal_doc, so no design-repo document is read;
+#   - shoal_board_fixture writes a synthetic board and exports SHOAL_BOARD_FIXTURE, so no
 #     board read reaches GitHub;
 #   - SHOAL_FAKE_SESSIONS answers session-liveness probes without a harness CLI.
 # `doctor`'s host preflight still calls `openchamber status` and `gh auth status` by design:
@@ -16,11 +16,11 @@
 # have_systemd says whether systemd --user job units can run here; sections that need them
 # print `SKIP <reason>` otherwise (and always under SHOAL_TEST_NO_SYSTEMD=1).
 
-hag_test_setup() {
+shoal_test_setup() {
   local s=$1
   local v
   for v in LEDGER_DIR LEDGER_REPO TOOL_PATH CLI LEASE_CMD PSI_OUT BOARD_FIXTURE SPEC CONFIG DATA_ROOT; do
-    unset "SHOAL_$v" "HAG_$v"   # the legacy HAG_* names are honoured as fallbacks, so clear both
+    unset "SHOAL_$v"
   done
   unset GPU_LEASE_CMD
   mkdir -p "$s/data"
@@ -39,8 +39,8 @@ hag_test_setup() {
   mkdir -p "$DOCS"
 }
 
-# hag_doc NAME: write a synthetic start doc for role NAME and print its path
-hag_doc() {
+# shoal_doc NAME: write a synthetic start doc for role NAME and print its path
+shoal_doc() {
   local p="$DOCS/$1_plan_state.md"
   cat > "$p" <<EOF
 # $1 live plan_state (selftest)
@@ -65,17 +65,17 @@ EOF
   printf '%s\n' "$p"
 }
 
-# hag_board_fixture PATH < JSON: write a synthetic board (a JSON list of items, board order)
-hag_board_fixture() {
+# shoal_board_fixture PATH < JSON: write a synthetic board (a JSON list of items, board order)
+shoal_board_fixture() {
   cat > "$1"
   export SHOAL_BOARD_FIXTURE="$1"
 }
 
 have_systemd() {
-  [ "${SHOAL_TEST_NO_SYSTEMD:-${HAG_TEST_NO_SYSTEMD:-0}}" != 1 ] && systemctl --user show-environment >/dev/null 2>&1
+  [ "${SHOAL_TEST_NO_SYSTEMD:-0}" != 1 ] && systemctl --user show-environment >/dev/null 2>&1
 }
 
 skip_reason() {
-  if [ "${SHOAL_TEST_NO_SYSTEMD:-${HAG_TEST_NO_SYSTEMD:-0}}" = 1 ]; then echo "SHOAL_TEST_NO_SYSTEMD=1"
+  if [ "${SHOAL_TEST_NO_SYSTEMD:-0}" = 1 ]; then echo "SHOAL_TEST_NO_SYSTEMD=1"
   else echo "systemctl --user show-environment failed (no systemd --user session)"; fi
 }

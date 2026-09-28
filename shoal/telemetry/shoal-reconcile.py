@@ -6,13 +6,13 @@ participating repos, skipping events already in the log (idempotent by
 type+number), then one `reconcile` marker event with the count. Ground truth
 the lane-reported events are checked against.
 
-Repos come from the shoal spec (`repos` in hag.json, default list when empty);
+Repos come from the shoal spec (`repos` in shoal.json, default list when empty);
 --repo overrides. --dry-run prints what would be emitted and writes nothing.
-Each run touches /tmp/<hag>/tick-reconcile so `shoal status` / `doctor` can
+Each run touches /tmp/<id>/tick-reconcile so `shoal status` / `doctor` can
 tell a reconcile that never ran from one that ran and found nothing (the v0
 IndentationError sat undetected for three nights for lack of exactly that).
 
-Usage: hag-reconcile.py --shoal ID [--spec hag.json] [--repo R ...]
+Usage: shoal-reconcile.py --shoal ID [--spec shoal.json] [--repo R ...]
                         [--since-hours N] [--dir LOGDIR] [--dry-run]
 """
 import argparse
@@ -25,16 +25,16 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
-from hag_telemetry import append_event, build_event, resolve_dir, legacy_dirs  # noqa: E402
+from shoal_telemetry import append_event, build_event, resolve_dir, legacy_dirs  # noqa: E402
 import config  # noqa: E402
 
 DEFAULT_REPOS = config.default_repos()
 GH_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get("PATH", ""))
 
 
-def seen(logdir, hag):
+def seen(logdir, sid):
     have = set()
-    for d in [logdir] + legacy_dirs(hag) + [os.path.join(logdir, hag)]:
+    for d in [logdir] + legacy_dirs(sid) + [os.path.join(logdir, sid)]:
         if not os.path.isdir(d):
             continue
         for fn in sorted(os.listdir(d)):
@@ -79,7 +79,7 @@ def repos_for(a):
         return list(a.repo)
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from roles import find_spec
-    spec_path = find_spec(a.hag, a.spec or "")
+    spec_path = find_spec(a.sid, a.spec or "")
     try:
         with open(spec_path) as fh:
             repos = json.load(fh).get("repos") or []
@@ -90,8 +90,8 @@ def repos_for(a):
     return list(DEFAULT_REPOS)
 
 
-def tick(hag):
-    d = os.path.join("/tmp", hag)
+def tick(sid):
+    d = os.path.join("/tmp", sid)
     try:
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, "tick-reconcile")
@@ -110,13 +110,13 @@ def main():
     ap.add_argument("--dir", default=None)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
-    a.dir = resolve_dir(a.dir, a.hag)
+    a.dir = resolve_dir(a.dir, a.sid)
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=a.since_hours)
     # Date-filter at the source: `gh ... list --limit N` returns the newest N
     # by creation, so an old issue closed today fell outside it (measured
     # 2026-09-22: interpretune#421 and #338 closed in window, never reconciled).
     since_day = since.strftime("%Y-%m-%d")
-    have = seen(a.dir, a.hag)
+    have = seen(a.dir, a.sid)
     repos = repos_for(a)
     pending = []
     for repo in repos:
@@ -152,19 +152,19 @@ def main():
                                  f"closed_at={it.get('closedAt','')}", "via_pr=", "unfixed=",
                                  f"title={it['title'][:80]}"]))
     for typ, fields in pending:
-        ev = build_event(a.hag, "reconcile", "script", typ, fields + ["reconciled=true"])
+        ev = build_event(a.sid, "reconcile", "script", typ, fields + ["reconciled=true"])
         if a.dry_run:
             print("[dry-run]", json.dumps(ev))
         else:
             append_event(a.dir, ev)
-    marker = build_event(a.hag, "reconcile", "script", "reconcile",
+    marker = build_event(a.sid, "reconcile", "script", "reconcile",
                          [f"new_events={len(pending)}", f"repos={','.join(repos)}",
                           f"since_hours={a.since_hours:g}"])
     if a.dry_run:
         print("[dry-run]", json.dumps(marker))
     else:
         append_event(a.dir, marker)
-        tick(a.hag)
+        tick(a.sid)
     print(f"reconciled {len(pending)} new events across {len(repos)} repos"
           f"{' (dry-run, nothing written)' if a.dry_run else ''} -> {a.dir}")
     return 0

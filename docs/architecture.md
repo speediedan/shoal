@@ -92,9 +92,7 @@ to match against), so a group can work from other trackers or a plain file.
 **Where state lives.**
 
 - **Ledger repository** (a git repository every host clones, `ledger_repo` / `ledger_dir`): the
-  spec and the ledger, under `shoals/<id>/`. A group created before the rename lives at
-  `hags/<id>/` with `hag.json`; that layout is read as a fallback until the group is migrated, and
-  `doctor` warns while it is in use.
+  spec (`shoal.json`) and the ledger, under `shoals/<id>/`.
 - **Data root** (`data_root`, never committed), per group under `<data_root>/<id>/`: `contexts/`,
   `roles/<slug>/plan_state.md` (generated start docs for the wake relay and the residual lane),
   `matcher/`, `briefs/`, `telemetry/`, `reports/`, `jobs/`, `board_digest.json` and, in shadow
@@ -117,8 +115,7 @@ generation holds it.
 - **Permissions are read-time.** Every projection ignores a line its writer was not allowed to
   write, and `ledger-lint` reports it (E1). Only `user` and the system writer may `offer` or
   `withdraw`; a role-written offer is a violation. A `queue` event outside its role's own file,
-  or a mode change by anyone but `user` or the system writer, is a violation. Ledgers written
-  before the rename carry `hag.py` as the system writer, and it is accepted as such.
+  or a mode change by anyone but `user` or the system writer (`shoal`), is a violation.
 - **Claims are first-landed-wins.** `claim` checks before and after its push; a loser writes
   `release --kind lost-race`.
 - **Declines are data.** `release --kind decline --reason .. --retry <condition>`; the item never
@@ -298,7 +295,7 @@ roles waiting on remote CI, and a harness server respawn wakes every opencode ro
 
 Every host-specific value resolves in one order: an environment variable, then
 `config/host.toml` at the repository root (gitignored; `SHOAL_CONFIG` points elsewhere), then a
-generic default. Each `SHOAL_*` variable also honours its legacy `HAG_*` name.
+generic default.
 
 | key | environment | default |
 | --- | --- | --- |

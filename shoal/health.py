@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """shoal health quorum (architecture doc §6): watchers of the watchers, no model tokens.
 
-    shoal health --spec <hag.json> --instance a|b [--dry-run]     # what the two timers run
+    shoal health --spec <shoal.json> --instance a|b [--dry-run]     # what the two timers run
     shoal relay-watch --shoal H                                     # the Claude relay's one waiter
 
-Two identical systemd timers per host (`shoal-<hag>-health-a` at *:0/5, `-b` at *:2/5) run
+Two identical systemd timers per host (`shoal-<id>-health-a` at *:0/5, `-b` at *:2/5) run
 `health`. They share one state file under an flock, so whichever runs first acts; each run
 self-ticks and checks its peer's tick, and a peer silent past 15 min pages the maintainer
 once. That mutual check is the quorum.
@@ -106,9 +106,9 @@ def health_cfg(spec: ShoalSpec) -> dict:
 
 # ---- wake adapters -------------------------------------------------------------
 
-def watcher_alive(hag: str, slug: str) -> tuple[bool, dict]:
+def watcher_alive(sid: str, slug: str) -> tuple[bool, dict]:
     from ledger_watch import load_sidecar, sidecar_path
-    sc = load_sidecar(sidecar_path(hag, slug))
+    sc = load_sidecar(sidecar_path(sid, slug))
     pid = sc.get("pid", "")
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as fh:
@@ -118,24 +118,24 @@ def watcher_alive(hag: str, slug: str) -> tuple[bool, dict]:
         return False, sc
 
 
-def wake_path(hag: str, slug: str) -> str:
-    return os.path.join(state_dir(hag), f"wake-{slug}")
+def wake_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"wake-{slug}")
 
 
-def relay_queue_path(hag: str) -> str:
-    return os.path.join(state_dir(hag), "relay-queue")
+def relay_queue_path(sid: str) -> str:
+    return os.path.join(state_dir(sid), "relay-queue")
 
 
 def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "") -> str:
     """The text of a shoal wake, prefixed with the offline banner while the maintainer is away."""
-    text = (f"SHOAL-WAKE {slug}@{spec.hag} [{condition or 'request'}]: {reason} || run "
-            f"`shoal next --shoal {spec.hag} --slug {slug}`, act, write ONE `shoal queue`, re-arm your watcher.")
+    text = (f"SHOAL-WAKE {slug}@{spec.sid} [{condition or 'request'}]: {reason} || run "
+            f"`shoal next --shoal {spec.sid} --slug {slug}`, act, write ONE `shoal queue`, re-arm your watcher.")
     # every wake carries the offline state, because a role that skips `next` never sees the banner
     # (measured 2026-09-24: a lane raised a blocking merge question 3 h into an offline window)
     try:
         from ledger import Ledger, View
         from worker import offline_banner
-        banner = offline_banner(View(Ledger(spec.hag, root=spec.ledger_dir, sync=False), spec))
+        banner = offline_banner(View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec))
         if banner:
             text = banner + " || " + text
     except Exception:  # noqa: BLE001 - a wake must never fail on its annotation
@@ -158,8 +158,8 @@ def request_wake(spec: ShoalSpec, slug: str, reason: str, condition: str = "", d
     return backend.wake(spec, role, text, condition=condition, dry_run=dry_run)
 
 
-def relay_alive(hag: str) -> bool:
-    p = os.path.join(state_dir(hag), "relay-watch.pid")
+def relay_alive(sid: str) -> bool:
+    p = os.path.join(state_dir(sid), "relay-watch.pid")
     try:
         pid = open(p).read().strip()
         with open(f"/proc/{pid}/cmdline", "rb") as fh:
@@ -171,7 +171,7 @@ def relay_alive(hag: str) -> bool:
 def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) -> str:
     """A maintainer page is one ledger msg to `user`; deferred while the maintainer is offline."""
     from ledger import Ledger, View
-    led = Ledger(spec.hag, root=spec.ledger_dir)
+    led = Ledger(spec.sid, root=spec.ledger_dir)
     view = View(led, spec)
     if view.user_offline() is not None:
         state.setdefault("deferred_pages", []).append({"ts": iso(), "text": text[:400]})
@@ -183,7 +183,7 @@ def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) ->
     if channel.startswith("gh-issue:"):  # a place the maintainer is notified, not only the ledger
         repo, _, num = channel[len("gh-issue:"):].partition("#")
         r = subprocess.run(["gh", "issue", "comment", num, "--repo", repo, "--body",
-                            f"**shoal {spec.hag} page** ({iso()}): {text[:1500]}"],
+                            f"**shoal {spec.sid} page** ({iso()}): {text[:1500]}"],
                            capture_output=True, text=True, timeout=60, env=_ENV)
         return "page+gh-issue" if r.returncode == 0 else f"page (gh-issue FAILED rc={r.returncode})"
     return "page"
@@ -191,10 +191,10 @@ def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) ->
 
 # ---- wait-target heuristics ------------------------------------------------------
 
-def target_pending(target: str, slug: str, hag: str = "") -> tuple[bool | None, str]:
+def target_pending(target: str, slug: str, sid: str = "") -> tuple[bool | None, str]:
     """(True pending | False resolved | None unknown, detail) for a wait target: a lookup in the
     provider registry (providers.py, docs/providers.md)."""
-    return providers.resolve(target, slug, hag)
+    return providers.resolve(target, slug, sid)
 
 
 def short_line(s: str, n: int = 90) -> str:
@@ -266,16 +266,16 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
             if idle or now_ok:
                 out.append({"slug": slug, "condition": "unacked-work", "key": f"offer:{o['id']}", "since": o["ts"],
                             "detail": f"offer {o.get('item')} by {o['by']} not acknowledged"})
-        wf = wake_path(spec.hag, slug)
+        wf = wake_path(spec.sid, slug)
         if os.path.exists(wf):
             ts = iso(datetime.datetime.fromtimestamp(os.path.getmtime(wf), datetime.timezone.utc))
             out.append({"slug": slug, "condition": "unacked-work", "key": f"wakefile:{ts}", "since": ts,
                         "detail": "health wake request not yet answered by a queue write"})
         # waits
-        w = read_wait(spec.hag, slug) or {}
+        w = read_wait(spec.sid, slug) or {}
         target = w.get("target") or st.get("target", "")
         if posture == "waiting" and sub not in USER_WAITS:
-            pending, why = target_pending(target, slug, spec.hag)
+            pending, why = target_pending(target, slug, spec.sid)
             if pending is False:
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
                             "detail": f"wait target {target} no longer pending ({why})", "first_seen": True})
@@ -291,7 +291,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 "since": boundary, "detail": f"waiting {a:.0f}m on {sub} ({target or 'no target'}; "
                                 f"heuristic: {why}); re-verify the wait is still valid"})
         # watcher
-        alive, sc = watcher_alive(spec.hag, slug)
+        alive, sc = watcher_alive(spec.sid, slug)
         if not alive and posture != "offline" and between is not False:
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")
@@ -360,7 +360,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
 
 def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
     from ledger import Ledger, View
-    sdir = state_dir(spec.hag)
+    sdir = state_dir(spec.sid)
     os.makedirs(sdir, exist_ok=True)
     with open(os.path.join(sdir, f"tick-health-{instance}"), "w") as fh:
         fh.write(iso() + "\n")
@@ -384,18 +384,18 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
         acts.append(("user", "peer-dead", page_user(spec, f"health-{peer} has not ticked for {pa:.0f} min "
                                                      f"(health-{instance} still running)", state, dry_run)))
         state["peer_paged"] = open(pt).read().strip()
-    led = Ledger(spec.hag, root=spec.ledger_dir)
+    led = Ledger(spec.sid, root=spec.ledger_dir)
     led.pull()
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
     relay = wake_relay_role(spec)
-    if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.hag):
+    if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.sid):
         # the relay has no adapter of its own: its death is a page, never a wake
         tk = os.path.join(sdir, "tick-relay-watch")
         since = open(tk).read().strip() if os.path.exists(tk) else iso()
         conds.append({"slug": relay.slug, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
                       "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
-                                f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.hag}`"})
+                                f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.sid}`"})
     ladders = state.setdefault("ladders", {})
     live_keys = set()
     for c in conds:
@@ -454,8 +454,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
         print(f"{iso()} health-{instance}: {slug} {what} -> {ch}")
         if not dry_run:
             try:
-                from watchers import hag_emit
-                hag_emit(spec.hag, "health", "script", "watch_event", kind="health", slug=slug,
+                from watchers import shoal_emit
+                shoal_emit(spec.sid, "health", "script", "watch_event", kind="health", slug=slug,
                          note=f"{what} -> {ch}", tier=("T3" if "page" in what or ch.startswith("page") else "T2"))
             except Exception:
                 pass
@@ -465,18 +465,18 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
 
 
 def cmd_health(a) -> int:
-    spec = ShoalSpec.load(a.spec or find_spec(a.hag))
+    spec = ShoalSpec.load(a.spec or find_spec(a.sid))
     return run(spec, a.instance, dry_run=a.dry_run)
 
 
 def cmd_relay_watch(a) -> int:
     """The Claude relay's single background waiter: exits (waking the relay session) when
     the relay queue holds undelivered wakes, printing them for the relay to send."""
-    sdir = state_dir(a.hag)
+    sdir = state_dir(a.sid)
     os.makedirs(sdir, exist_ok=True)
     with open(os.path.join(sdir, "relay-watch.pid"), "w") as fh:
         fh.write(str(os.getpid()))
-    qp, cp = relay_queue_path(a.hag), os.path.join(sdir, "relay-queue.cursor")
+    qp, cp = relay_queue_path(a.sid), os.path.join(sdir, "relay-queue.cursor")
     tick = os.path.join(sdir, "tick-relay-watch")
     deadline = time.time() + a.max_hours * 3600 if a.max_hours > 0 else None
     print(f"{iso()} relay-watch armed (pid {os.getpid()}; runs until a wake is due"
@@ -503,9 +503,9 @@ def cmd_relay_watch(a) -> int:
         time.sleep(a.interval)
 
 
-RELAY_SLUG = WAKE_RELAY_SLUG  # the slug new groups get; legacy groups keep `hag-relay`
+RELAY_SLUG = WAKE_RELAY_SLUG
 RELAY_MODEL = "claude-haiku-4-5-20251001"
-RELAY_DOC = """# {slug} plan_state ({hag})
+RELAY_DOC = """# {slug} plan_state ({sid})
 
 - role: `{slug}` (infrastructure, not a worker; `fill=none`): the Claude implementation of direct
   session wake, model haiku
@@ -520,17 +520,17 @@ Nothing else: no project work, no claims, no messages of your own.
 ## Current state
 
 Generated at relay-init. The relay holds no work items; its only state is its relay-watch pid and
-the relay-queue cursor under `/tmp/{hag}/`.
+the relay-queue cursor under `/tmp/{sid}/`.
 
 ## Loop
 
-1. Run `{cli} relay-watch --shoal {hag}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
+1. Run `{cli} relay-watch --shoal {sid}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
 2. When it exits it prints one `RELAY-WAKE to=<session name> session=<id> :: <text>` line per
    wake. For each, call SendMessage with to=<session name> and the text verbatim. Add the `[ref]`
    from ListAgents only when two sessions share the name, choosing the one whose session id
    starts with <id>.
 3. Re-arm relay-watch (same rule: Bash, run_in_background=true, no `&`, no Monitor) and prove its
-   pid with `cat /tmp/{hag}/relay-watch.pid` plus `ps -p <pid>`.
+   pid with `cat /tmp/{sid}/relay-watch.pid` plus `ps -p <pid>`.
 4. End the turn with one line: `relayed N`.
 
 Never transition yourself `offline` and never kill relay-watch: only the operator stops the relay
@@ -541,7 +541,7 @@ re-arm.
 
 ## Running monitors
 
-- relay-watch: `{cli} relay-watch --shoal {hag}` (pid in `/tmp/{hag}/relay-watch.pid`)
+- relay-watch: `{cli} relay-watch --shoal {sid}` (pid in `/tmp/{sid}/relay-watch.pid`)
 
 ## grants-needed
 
@@ -549,20 +549,20 @@ re-arm.
 """
 
 
-def relay_doc_path(hag: str, slug: str = "") -> str:
-    return os.path.join(roles_dir(hag), slug or RELAY_SLUG, "plan_state.md")
+def relay_doc_path(sid: str, slug: str = "") -> str:
+    return os.path.join(roles_dir(sid), slug or RELAY_SLUG, "plan_state.md")
 
 
 def cmd_relay_init(a) -> int:
     """Generate the relay's start doc in the shoal data dir; add the role + features.relay to the spec."""
-    path = a.spec or find_spec(a.hag)
+    path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
     existing = wake_relay_role(spec)
     slug = existing.slug if existing is not None else RELAY_SLUG
-    doc = relay_doc_path(spec.hag, slug)
-    text = RELAY_DOC.format(hag=spec.hag, cli=config.cli(), slug=slug)
+    doc = relay_doc_path(spec.sid, slug)
+    text = RELAY_DOC.format(sid=spec.sid, cli=config.cli(), slug=slug)
     have = existing is not None
-    plan = (f"relay-init {spec.hag}: doc {doc}"
+    plan = (f"relay-init {spec.sid}: doc {doc}"
             + ("" if a.doc_only else f"; role {'present' if have else 'ADD'} ({RELAY_MODEL}, fill=none); features.relay=true"))
     if a.dry_run:
         print("[dry-run] " + plan)
@@ -588,14 +588,14 @@ def cmd_relay_launch(a) -> int:
     """(Re)launch the relay session alone: no restart, no incarnation bump. The relay's seq
     bumps (new tag), the new session id is recorded in the spec, and the launch counts only
     once relay-watch is proven running."""
-    path = a.spec or find_spec(a.hag)
+    path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
     role = wake_relay_role(spec)
     if role is None:
-        print(f"ERROR: no wake relay role in {spec.hag}: run `shoal relay-init --shoal {spec.hag}` first")
+        print(f"ERROR: no wake relay role in {spec.sid}: run `shoal relay-init --shoal {spec.sid}` first")
         return 1
-    if relay_alive(spec.hag) and not a.force:
-        print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.hag), 'relay-watch.pid')).read().strip()}); "
+    if relay_alive(spec.sid) and not a.force:
+        print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.sid), 'relay-watch.pid')).read().strip()}); "
               f"nothing to do (--force to launch anyway)")
         return 0
     st = claude_busy().get(next((k for k in claude_busy() if role.session and k.startswith(role.session)), ""), "")
@@ -605,7 +605,7 @@ def cmd_relay_launch(a) -> int:
         return 1
     old = role.session
     role.seq += 1
-    plan = f"relay-launch {spec.hag}: {role.label} model={role.model} (previous session {old or '-'}; incarnation unchanged)"
+    plan = f"relay-launch {spec.sid}: {role.label} model={role.model} (previous session {old or '-'}; incarnation unchanged)"
     if a.dry_run:
         print("[dry-run] " + plan)
         return 0
@@ -619,8 +619,8 @@ def cmd_relay_launch(a) -> int:
     print(plan + f" -> launched {role.session}")
     t0 = time.time()
     while time.time() - t0 < a.verify_s:
-        if relay_alive(spec.hag):
-            pid = open(os.path.join(state_dir(spec.hag), "relay-watch.pid")).read().strip()
+        if relay_alive(spec.sid):
+            pid = open(os.path.join(state_dir(spec.sid), "relay-watch.pid")).read().strip()
             print(f"RELAY LOOP ALIVE: relay-watch pid {pid} (verify it was armed as a Bash background command: "
                   f"`claude logs {role.session}`)")
             return 0
