@@ -10,6 +10,10 @@ Your brief gives the exact `shoal ledger-watch` command. Arm it in the way your 
 **Rules:**
 - **Armed means proven.** Its pid is alive (`ps -p`) and matches the sidecar. Re-arm after every
   wake and prove it in the same turn. A lane that acted on a wake and never re-armed is deaf.
+- **Prove a pid with two separate commands.** First read it: `cat /tmp/<id>/ledger-watch-<slug>.state`
+  (the `pid=` line) or `cat /tmp/<id>/relay-watch.pid`. Then run `ps -p <that number>`. Never use
+  `$(...)` command substitution (`ps -p $(cat ...)`): it always needs a permission prompt in a
+  harness with manual permissions, so the proof stalls on the maintainer.
 - **An exit is not a kill.** `ledger-watch` exits by design on every wake it delivers, and logs a
   verdict line when it does. Tally kills only from notifications with status `killed`
   (`shoal kill-audit`).

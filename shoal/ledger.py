@@ -155,6 +155,37 @@ class Lock:
         self.fh.close()
 
 
+LEDGER_IGNORES = (".shoal-lock", "*.tmp")
+
+
+def ensure_gitignore(root: str) -> list[str]:
+    """Make the ledger repo's `.gitignore` name the lock file and temp files; returns the
+    lines added (none when already present). Existing lines are kept and nothing is
+    duplicated. The change is committed (not pushed) so the tree stays clean: an untracked
+    `.shoal-lock`, or a modified `.gitignore`, makes the next rebase refuse (measured
+    2026-09-28: a hand-made `.gitignore` naming only an older lock name stopped every pull)."""
+    path = os.path.join(root, ".gitignore")
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        text = ""
+    have = {ln.strip() for ln in text.splitlines()}
+    add = [p for p in LEDGER_IGNORES if p not in have]
+    if not add:
+        return []
+    with Lock(root):
+        with open(path, "a") as fh:
+            if text and not text.endswith("\n"):
+                fh.write("\n")
+            fh.write("".join(f"{p}\n" for p in add))
+        if os.path.isdir(os.path.join(root, ".git")):
+            git(root, "add", "--", ".gitignore", check=False)
+            git(root, "commit", "--quiet", "-m", "ledger: ignore the lock file and temp files",
+                "--", ".gitignore", check=False)
+    return add
+
+
 def ensure_clone(root: str = LEDGER_DIR, remote: str = DEFAULT_LEDGER_REPO,
                  quiet: bool = False) -> str:
     """Clone the queue repo if absent. Returns the root."""
@@ -241,6 +272,7 @@ class Ledger:
         return os.path.isdir(self.ldir)
 
     def init(self, spec_snapshot: dict | None = None, note: str = "") -> str:
+        ensure_gitignore(self.root)
         os.makedirs(self.ldir, exist_ok=True)
         keep = os.path.join(self.ldir, ".gitkeep")
         if not os.path.exists(keep):

@@ -528,5 +528,105 @@ grep -q "info (not relaunched, not a failure): INCOMPLETE: $S/up_bad_plan_state.
 grep -q "saved anyway because sessions were launched" "$S/restart.out" || fail "no persisted-anyway message"
 grep -q "ignoring sidecar (stale: bound to the replaced session oldghost)" "$S/restart.out" || fail "stale sidecar not reported"
 
+echo "== 16 parked roles are quiet; timers judged by their own ActiveState; briefs prove pids without \$(...)"
+# a parked role (no session) with a leftover sidecar whose pid is dead: no condition, no FAIL, no idle-deaf
+sleep 0 & DEADPID=$!; wait $DEADPID || true
+DOC_P=$(shoal_doc parked)
+python3 - "$SPEC" "$S/parked.json" "$DOC_P" <<'PY'
+import json,sys; d=json.load(open(sys.argv[1]))
+d["roles"].append({"slug":"parked","ecosystem":"claude","title":"parked","doc":sys.argv[3],"fill":"self","session":""})
+json.dump(d,open(sys.argv[2],"w"),indent=1)
+PY
+printf 'pid=%s\nsession_id=oldparked\narmed_utc=2026-01-01T00:00:00Z\nlast_tick=2026-01-01T00:00:00Z\n' "$DEADPID" > /tmp/$SID/ledger-watch-parked.state
+OUT=$($H doctor --spec "$S/parked.json" 2>&1 || true)
+grep -q "^INFO ledger-watch parked: parked (no session)" <<<"$OUT" || fail "parked ledger-watch not INFO :: $(grep parked <<<"$OUT")"
+grep -q "^INFO heartbeat parked: parked (no session)" <<<"$OUT" || fail "parked heartbeat not INFO :: $(grep parked <<<"$OUT")"
+! grep -E "^(FAIL|WARN) .*parked" <<<"$OUT" || fail "parked role raised a FAIL/WARN"
+SHOAL_HEALTH_BETWEEN=parked python3 - "$SHOALD" "$S/parked.json" <<'PY' || fail "health or heartbeat judged a parked role"
+import sys; sys.path.insert(0, sys.argv[1])
+from roles import ShoalSpec
+from ledger import Ledger, View
+import health, heartbeat
+spec = ShoalSpec.load(sys.argv[2])
+view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+conds = [c for c in health.evaluate(spec, view, {}) if c["slug"] == "parked"]
+assert not conds, conds
+rows = [r for r in heartbeat.classify(spec, 60) if r["slug"] == "parked"]
+assert rows and rows[0]["klass"] == "parked" and not rows[0]["suspect"], rows
+PY
+rm -f /tmp/$SID/ledger-watch-parked.state
+# timers: the .timer unit's own state decides; a running service never reads inactive
+python3 - "$SHOALD" <<'PY' || fail "timer verdicts"
+import sys; sys.path.insert(0, sys.argv[1])
+import doctor
+show = """Id=shoal-x-lanes.timer
+ActiveState=active
+SubState=running
+UnitFileState=enabled
+
+Id=shoal-x-health-a.timer
+ActiveState=active
+SubState=waiting
+UnitFileState=enabled
+"""
+t = {k.split("-", 2)[2][:-6]: v for k, v in doctor.parse_timer_show(show).items()}
+assert set(t) == {"lanes", "health-a"}, t
+assert doctor.timer_verdict(t)[0] == "ok", doctor.timer_verdict(t)
+t["pipeline"] = {"ActiveState": "inactive", "SubState": "dead", "UnitFileState": "disabled"}
+v = doctor.timer_verdict(t); assert v[0] == "fail" and "pipeline (inactive/dead, disabled)" in v[1], v
+t["pipeline"] = {"ActiveState": "failed", "SubState": "failed", "UnitFileState": "enabled"}
+assert doctor.timer_verdict(t)[0] == "fail"
+t["pipeline"] = {"ActiveState": "active", "SubState": "waiting", "UnitFileState": "disabled"}
+assert doctor.timer_verdict(t)[0] == "warn"
+PY
+if ! have_systemd; then
+  echo "SKIP 16 live timer probe: $(skip_reason)"
+else
+  systemd-run --user --quiet --unit "shoal-$SID-busy" --on-active=1s --on-unit-active=1h sleep 20
+  sleep 3   # the service is now running: list-timers reads NEXT n/a, the timer itself is active
+  python3 - "$SHOALD" "$SID" <<'PY' || fail "a timer whose service is running read inactive"
+import sys; sys.path.insert(0, sys.argv[1])
+import doctor
+t = doctor.timer_state(sys.argv[2])
+assert t.get("busy", {}).get("ActiveState") == "active", t
+assert doctor.timer_verdict(t)[0] == "ok", doctor.timer_verdict(t)
+PY
+  systemctl --user stop "shoal-$SID-busy.timer" "shoal-$SID-busy.service" 2>/dev/null || true
+fi
+# pid proof: two separate commands, never command substitution
+for slug in tl wake-relay; do
+  OUT=$($H brief --spec "$SPEC" --slug $slug 2>&1)
+  grep -q "TWO separate commands" <<<"$OUT" || fail "$slug brief lacks the two-command pid proof"
+  grep -q 'never use \$(...) command substitution' <<<"$OUT" || fail "$slug brief lacks the \$(...) ban"
+  ! grep -qE 'ps -p \$\(|ps -p plus sidecar' <<<"$OUT" || fail "$slug brief still combines the pid proof"
+done
+grep -qi 'never use \$(...) command substitution' "$S/data/$SID/roles/wake-relay/plan_state.md" \
+  || fail "relay doc lacks the \$(...) ban"
+
+echo "== 17 upgrade --rearm now: a stale relay-watch is killed and its re-arm verified (or WARNed)"
+RPID=/tmp/$SID/relay-watch.pid
+setsid $H relay-watch --shoal $SID --interval 1 >"$S/relay-u1.log" 2>&1 &
+RW1=$!
+for i in $(seq 1 30); do [ "$(cat $RPID 2>/dev/null)" = "$RW1" ] && break; sleep 0.5; done
+[ "$(cat $RPID 2>/dev/null)" = "$RW1" ] || fail "relay-watch never wrote its pid"
+touch -d "2001-01-01 00:00:00 UTC" $RPID   # armed long before any package change
+python3 -c "import json; d=json.load(open('$SPEC')); d.pop('tooling', None); json.dump(d, open('$SPEC','w'), indent=1)"
+check "relay-watch armed before .*pid $RW1 .*killed now" \
+  $H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty --dry-run
+kill -0 $RW1 2>/dev/null || fail "--dry-run killed the relay-watch"
+# stand-in for the relay session: re-arm once the old waiter dies
+( while kill -0 $RW1 2>/dev/null; do sleep 0.2; done
+  setsid $H relay-watch --shoal $SID --interval 1 >"$S/relay-u2.log" 2>&1 & echo $! > "$S/rw2.pid" ) &
+OUT=$(SHOAL_REARM_VERIFY_S=30 $H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty 2>&1 || true)
+grep -q "relay-watch: killed pid $RW1" <<<"$OUT" || fail "stale relay-watch not killed :: $OUT"
+RW2=$(cat "$S/rw2.pid" 2>/dev/null || true)
+grep -q "relay-watch re-armed: pid $RW2" <<<"$OUT" || fail "re-arm not verified (want pid $RW2) :: $OUT"
+# no re-arm within the window: a WARN with the exact re-arm line
+touch -d "2001-01-01 00:00:00 UTC" $RPID
+python3 -c "import json; d=json.load(open('$SPEC')); d.pop('tooling', None); json.dump(d, open('$SPEC','w'), indent=1)"
+OUT=$(SHOAL_REARM_VERIFY_S=2 $H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty 2>&1 || true)
+grep -q "relay-watch: killed pid $RW2" <<<"$OUT" || fail "second stale relay-watch not killed :: $OUT"
+grep -q "WARN relay-watch NOT re-armed within 2s .*relay-watch --shoal $SID" <<<"$OUT" || fail "no re-arm WARN :: $OUT"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

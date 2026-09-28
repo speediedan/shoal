@@ -162,7 +162,8 @@ ladders.
   candidates, no health wake requests. A later claim that the watcher is "still armed" is made from
   memory.
 - **Guard:** armed means proven: the pid is alive (`ps -p`) and matches the sidecar pid, checked
-  every re-arm in the same turn. `next` prints `WATCH ledger-watch ... NOT RUNNING` when it is not.
+  every re-arm in the same turn, as two separate commands (read the pid, then `ps -p` it; never
+  `$(...)`, which needs a permission prompt under manual permissions). `next` prints `WATCH ledger-watch ... NOT RUNNING` when it is not.
   Health condition `watcher-dead` (pid gone and the session between turns) wakes the role through
   its harness adapter; where the harness's wake path needs the dead watcher, a relay role delivers
   the wake instead. A `killed` notification is itself a wake.

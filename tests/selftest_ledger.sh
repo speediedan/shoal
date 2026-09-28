@@ -58,6 +58,17 @@ echo "== 1 ledger-init (dry-run, live); a pre-flattening spec (can_fill_others/c
 expect 0 $H ledger-init --spec "$SPEC" --dry-run >/dev/null
 expect 0 $H ledger-init --spec "$SPEC" >/dev/null
 [ -d "$A/shoals/t1shoal/ledger" ] || fail "ledger dir missing after init"
+# the ledger repo ignores its lock and temp files, so an untracked lock never blocks a rebase
+[ "$(grep -cxF .shoal-lock "$A/.gitignore")" = 1 ] && [ "$(grep -cxF '*.tmp' "$A/.gitignore")" = 1 ] \
+  || fail "ledger .gitignore lacks .shoal-lock / *.tmp :: $(cat "$A/.gitignore" 2>&1)"
+[ -f "$A/.shoal-lock" ] || fail "no lock file after init (the check below would prove nothing)"
+[ -z "$(git -C "$A" status --porcelain)" ] || fail "ledger clone not clean after init :: $(git -C "$A" status --porcelain)"
+# an existing ledger whose hand-made .gitignore names only an old lock: extended once, lines kept
+printf '.old-lock\n' > "$A/.gitignore"; git -C "$A" commit -qam "hand-made ignore" >/dev/null
+check "added .shoal-lock, \*.tmp" $H ledger-init --spec "$SPEC"
+expect 0 $H ledger-init --spec "$SPEC" >/dev/null
+[ "$(cat "$A/.gitignore")" = "$(printf '.old-lock\n.shoal-lock\n*.tmp')" ] || fail "gitignore not extended idempotently :: $(cat "$A/.gitignore")"
+[ -z "$(git -C "$A" status --porcelain)" ] || fail "ledger clone not clean after re-init :: $(git -C "$A" status --porcelain)"
 expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#372:fix --base interpretune@3ac6fdf9 --note "phase 1 only" >/dev/null
 check "interpretune#372:fix" $H show --shoal t1shoal --slug alpha
 echo "== 2 offers + permissions"
@@ -132,6 +143,8 @@ check "## Wake efficiency" $H report --spec "$SPEC" --gen r1 --dry-run --no-pull
 check "§13 wasted wakes" $H report --spec "$SPEC" --gen r1 --dry-run --no-pull
 check "ledger-watch --shoal t1shoal --slug alpha --wake exit" $H brief --spec "$SPEC" --slug alpha
 check "wake send:" $H brief --spec "$SPEC" --slug beta
+check "prove the pid with TWO separate commands: first .cat /tmp/t1shoal/ledger-watch-alpha.state." $H brief --spec "$SPEC" --slug alpha
+if $H brief --spec "$SPEC" --slug alpha | grep -qE 'ps -p \$\(|ps -p plus sidecar'; then fail "brief combines the pid proof"; fi
 echo "== 8 flattened only: a role-written offer is a projection violation; removed transports are gone"
 expect 0 $H ledger-lint --shoal t1shoal >/dev/null
 python3 -c "import sys; sys.path.insert(0, '$SHOALD'); from ledger import Ledger; Ledger('t1shoal', root='$A').append('beta', 'offer', to='alpha', item='interpretune#777:fix', base='interpretune@3ac6fdf9', prio=1)" >/dev/null
