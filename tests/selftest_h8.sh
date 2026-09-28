@@ -56,7 +56,7 @@ cat > "$SPEC" <<JSON
    "context":{"brief":"J-lens support.","never":{}}},
   {"slug":"up","ecosystem":"claude","title":"up","doc":"$DOC","fill":"self","session":"",
    "context":{"brief":"Files upstream issues.","never":{}}},
-  {"slug":"aux","ecosystem":"opencode","title":"aux","doc":"$DOC","fill":"self","session":"ses_aux","aux":true}
+  {"slug":"shoal-aux","ecosystem":"opencode","title":"shoal-aux","doc":"$DOC","fill":"self","session":"ses_aux","aux":true}
  ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-22T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
 JSON
 $H ledger-init --spec "$SPEC" >/dev/null
@@ -99,11 +99,11 @@ assert sem["items"]["interpretune#5"]["eff_pos"] == 0.5 and sem["items"]["interp
 assert [r["item"] for r in sem["roles"]["jl"]] == ["interpretune#2"], sem["roles"]["jl"]
 assert sem["roles"]["tl"] == [], sem["roles"]["tl"]
 # aux: unblocker first, then minmax over ACTIVE lanes (up is parked, so #6 is aux work); #7 blocked, #2 jl's
-aux = [r["item"] for r in sem["roles"]["aux"]]
-assert aux[0] == "interpretune#5" and "unblocks" in sem["roles"]["aux"][0]["why"], aux
+aux = [r["item"] for r in sem["roles"]["shoal-aux"]]
+assert aux[0] == "interpretune#5" and "unblocks" in sem["roles"]["shoal-aux"][0]["why"], aux
 assert set(aux) == {"interpretune#5", "interpretune#3", "interpretune#4", "interpretune#6"}, aux
 # in shadow the live doc still carries the keyword ranking for lanes, the semantic one for aux
-assert doc["roles"]["aux"] == sem["roles"]["aux"]
+assert doc["roles"]["shoal-aux"] == sem["roles"]["shoal-aux"]
 assert any(r["item"] == "interpretune#3" for r in doc["roles"]["tl"]), doc["roles"]["tl"]
 digest.write(spec, doc)
 assert os.path.exists(digest.semantic_path(spec.sid))
@@ -151,9 +151,9 @@ assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leak
 PY
 
 echo "== 4 candidates, next AUX header, compare"
-check "BOARD interpretune#5:fix" $H digest --shoal $SID --spec "$SPEC" --slug aux --no-sync
-check "aux:max-fit=0" $H digest --shoal $SID --spec "$SPEC" --slug aux --semantic --no-sync
-OUT=$($H next --shoal $SID --spec "$SPEC" --slug aux --peek --no-sync 2>&1)
+check "BOARD interpretune#5:fix" $H digest --shoal $SID --spec "$SPEC" --slug shoal-aux --no-sync
+check "aux:max-fit=0" $H digest --shoal $SID --spec "$SPEC" --slug shoal-aux --semantic --no-sync
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug shoal-aux --peek --no-sync 2>&1)
 grep -q "AUX: you are the residual lane. Stay out of: tl (Upgrades interpretune to TL4); jl (J-lens support)" <<<"$OUT" \
   || fail "AUX header :: $OUT"
 grep -q "Parked lanes whose work is yours meanwhile: up" <<<"$OUT" || fail "parked lane not named :: $OUT"
@@ -162,18 +162,18 @@ check "SWITCH BAR:" $H digest --shoal $SID --spec "$SPEC" --compare --no-sync
 
 echo "== 5 aux-init / role token / validation"
 python3 - "$SPEC" "$S/spec2.json" <<'PY'
-import json, sys; d = json.load(open(sys.argv[1])); d["roles"] = [r for r in d["roles"] if r["slug"] != "aux"]
+import json, sys; d = json.load(open(sys.argv[1])); d["roles"] = [r for r in d["roles"] if r["slug"] != "shoal-aux"]
 json.dump(d, open(sys.argv[2], "w"))
 PY
-check "\[dry-run\] aux-init $SID: doc $S/data/$SID/roles/aux/plan_state.md; role ADD aux" \
+check "\[dry-run\] aux-init $SID: doc $S/data/$SID/roles/shoal-aux/plan_state.md; role ADD shoal-aux" \
   $H aux-init --shoal $SID --spec "$S/spec2.json" --dry-run
-check "role ADD aux" $H aux-init --shoal $SID --spec "$S/spec2.json"
-grep -q "residual lane of shoal \`$SID\`" "$S/data/$SID/roles/aux/plan_state.md" || fail "aux doc not written"
+check "role ADD shoal-aux" $H aux-init --shoal $SID --spec "$S/spec2.json"
+grep -q "residual lane of shoal \`$SID\`" "$S/data/$SID/roles/shoal-aux/plan_state.md" || fail "aux doc not written"
 python3 - "$S/spec2.json" <<'PY' || fail "aux role not added"
-import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "aux"][0]
+import json, sys; r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "shoal-aux"][0]
 assert r["aux"] is True and r["fill"] == "self", r
 PY
-check "\[dry-run\] aux-launch $SID: aux (aux-r1) opencode" $H aux-launch --shoal $SID --spec "$S/spec2.json" --dry-run
+check "\[dry-run\] aux-launch $SID: shoal-aux (shoal-aux-r1) opencode" $H aux-launch --shoal $SID --spec "$S/spec2.json" --dry-run
 (cd "$SHOALD" && python3 -c "
 import cli
 r = cli.parse_role('x,opencode,x,/d.md,aux,fill=assigned')

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""aux: the residual lane (architecture doc §4.1; H8 proposal §3).
+"""shoal-aux: the residual lane (architecture doc §4.1; H8 proposal §3).
 
 An ordinary `fill=self` worker whose spec carries `aux: true` and no brief of its own.
 The digest ranks for it the free, workable board items whose best fit to any other
@@ -28,7 +28,7 @@ import config  # noqa: E402
 
 from roles import ShoalSpec, Role, find_spec, roles_dir  # noqa: E402
 
-AUX_SLUG = "aux"
+AUX_SLUG = "shoal-aux"
 AUX_ECOSYSTEM = "opencode"
 AUX_MODEL = "opencode-go/muse-spark-1.3-contributor"
 AUX_EFFORT = "high"
@@ -205,7 +205,7 @@ def cmd_aux_launch(a) -> int:
 
 
 def add_parsers(sub) -> None:
-    p = sub.add_parser("aux-init", help="write the aux start doc (data dir) and add the aux role to the spec")
+    p = sub.add_parser("aux-init", help="write the shoal-aux start doc (data dir) and add the aux role to the spec")
     config.add_id_arg(p, required=True)
     p.add_argument("--spec", default="")
     p.add_argument("--slug", default="", help=f"role slug (default {AUX_SLUG})")
