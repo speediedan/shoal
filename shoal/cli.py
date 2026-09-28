@@ -144,50 +144,51 @@ def load_spec(args: argparse.Namespace) -> ShoalSpec:
 
 # ---- stages ---------------------------------------------------------------
 
-def stage_handoffs(spec: ShoalSpec, dry_run: bool) -> int:
+def _doc_problem(role: Role, header: bool) -> str:
+    """Why a role's start doc would not brief a new session ("" when it is fine): missing,
+    no plan header (`header`), or missing the grants-needed / current-state sections."""
+    try:
+        text = open(role.doc).read()
+    except OSError:
+        return f"MISSING: {role.doc} ({role.slug} has no start doc)"
+    if header:
+        if not re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan[ _]state|plan[ _]state)",
+                         text, flags=re.M | re.I):
+            return f"INCOMPLETE: {role.doc} (no plan header)"
+        return ""
+    missing = [s for s in ("grants-needed", "current state") if s not in text.lower()]
+    return f"INCOMPLETE: {role.doc} (missing: {', '.join(missing)})" if missing else ""
+
+
+def _check_docs(spec: ShoalSpec, dry_run: bool, header: bool, only: list[str] | None) -> int:
+    """Check every start doc; with `only` (a partial restart) a problem in a role that is not
+    being relaunched is printed as info and never fails the stage (its session keeps running)."""
+    rc = 0
+    for role in spec.roles:
+        if dry_run:
+            print(f"[dry-run] verify {role.doc} (mission, current state, grants-needed, next)" if header
+                  else f"[dry-run] sections in {role.doc}")
+            continue
+        problem = _doc_problem(role, header)
+        if not problem:
+            print(f"ok: {role.doc}")
+        elif only is not None and role.slug not in only:
+            print(f"info (not relaunched, not a failure): {problem}")
+        else:
+            print(problem)
+            rc = 5
+    return rc
+
+
+def stage_handoffs(spec: ShoalSpec, dry_run: bool, only: list[str] | None = None) -> int:
     print("=== 0a. start docs (one plan_state.md per role; sessions keep them current)")
     print("each role's doc verifies: presence + plan header:")
-    rc = 0
-    for role in spec.roles:
-        if dry_run:
-            print(f"[dry-run] verify {role.doc} (mission, current state, grants-needed, next)")
-            continue
-        try:
-            text = open(role.doc).read()
-        except OSError:
-            print(f"MISSING: {role.doc} ({role.slug} has no start doc)")
-            rc = 5
-            continue
-        if re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan[ _]state|plan[ _]state)",
-                     text, flags=re.M | re.I):
-            print(f"ok: {role.doc}")
-        else:
-            print(f"INCOMPLETE: {role.doc} (no plan header)")
-            rc = 5
-    return rc
+    return _check_docs(spec, dry_run, True, only)
 
 
-def stage_sync_plans(spec: ShoalSpec, dry_run: bool) -> int:
+def stage_sync_plans(spec: ShoalSpec, dry_run: bool, only: list[str] | None = None) -> int:
     print("=== 0b. start-doc sections (grants-needed + current state present)")
-    rc = 0
-    for role in spec.roles:
-        if dry_run:
-            print(f"[dry-run] sections in {role.doc}")
-            continue
-        try:
-            text = open(role.doc).read().lower()
-        except OSError:
-            print(f"MISSING: {role.doc}")
-            rc = 5
-            continue
-        missing = [s for s in ("grants-needed", "current state")
-                   if s not in text]
-        if missing:
-            print(f"INCOMPLETE: {role.doc} (missing: {', '.join(missing)})")
-            rc = 5
-        else:
-            print(f"ok: {role.doc}")
-    return rc
+    return _check_docs(spec, dry_run, False, only)
 
 
 def stage_retire(spec: ShoalSpec, old_sessions: list[str],
@@ -235,20 +236,55 @@ def write_brief(spec: ShoalSpec, role: Role) -> str:
     return path
 
 
-def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600) -> bool:
+def _same_session(a: str, b: str) -> bool:
+    """Two ids name one session when either is a prefix of the other (a claude short id
+    against its full uuid)."""
+    return bool(a and b and (a.startswith(b) or b.startswith(a)))
+
+
+def sidecar_verdict(sc: dict, launched: str, old: list[str], since_utc: str,
+                    mtime_utc: str = "") -> tuple[bool, str, str]:
+    """Judge a ledger-watch sidecar for a role just (re)launched as `launched`.
+
+    Returns (alive, adopt, note). A sidecar bound to a replaced session (one of `old`), or
+    armed before the launch (`since_utc`; the file's mtime stands in when it records no
+    `armed_utc`), belongs to the previous session and is not alive. `adopt` is the id to
+    record for the role: the sidecar's id only when it is a longer form of the launched id
+    or the launched id is unknown, else ""."""
+    if not sc:
+        return False, "", "no sidecar"
+    bound = sc.get("session_id", "")
+    armed = sc.get("armed_utc", "") or mtime_utc
+    if bound and launched and _same_session(bound, launched):
+        return True, (bound if len(bound) > len(launched) else ""), f"bound to {bound}"
+    if bound and any(_same_session(bound, o) for o in old):
+        return False, "", f"stale: bound to the replaced session {bound}"
+    if since_utc and armed and armed < since_utc:
+        return False, "", f"stale: armed {armed}, before the launch at {since_utc}"
+    if not launched:
+        return True, bound, f"bound to {bound or '(no id yet)'}"
+    if bound:
+        return True, "", f"bound to {bound} != launched id {launched} (not adopted)"
+    return True, "", "armed after the launch (no id yet)"
+
+
+def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600, old: list[str] | None = None,
+                    since_utc: str = "", poll_s: float = 30) -> bool:
     """Effect-verification for a launched role: it writes a ledger state, its
-    ledger-watch sidecar appears (bound to a session id), or its heartbeat
-    ticks within the cap."""
+    ledger-watch sidecar appears (armed after the launch, not bound to a replaced
+    session), or its heartbeat ticks within the cap."""
     sidecar = _ledger_watch.sidecar_path(spec.sid, role.slug)
     hb = hb_path(spec.sid, role.slug)
+    old = list(old or [])
     t0 = time.time()
+    stale_seen = ""
     while time.time() - t0 < cap_s:
         if is_wake_relay(role):  # the relay has no ledger-watch: its effect is a live relay-watch
             from health import relay_alive
             if relay_alive(spec.sid):
                 print(f"RELAY LOOP ALIVE: {role.slug} relay-watch running")
                 return True
-            time.sleep(30)
+            time.sleep(poll_s)
             continue
         try:
             from ledger import Ledger, View
@@ -261,20 +297,27 @@ def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600) -> bool:
         except Exception:  # noqa: BLE001
             pass
         if os.path.exists(sidecar):
-            sid = ""
-            for line in open(sidecar):
-                if line.startswith("session_id="):
-                    sid = line.split("=", 1)[1].strip()
-            print(f"CONSUMER LOOP ALIVE: {role.slug} sidecar bound to {sid or '(no id yet)'}")
-            if sid and role.session and not (sid.startswith(role.session) or role.session.startswith(sid)):
-                print(f"  note: sidecar session {sid} != launched id {role.session} (adopting sidecar id)")
-                role.session = sid
-            return True
+            try:
+                mtime = datetime.datetime.fromtimestamp(os.path.getmtime(sidecar), datetime.timezone.utc)
+                mtime_utc = mtime.strftime("%Y-%m-%dT%H:%M:%SZ")
+            except OSError:
+                mtime_utc = ""
+            alive, adopt, note = sidecar_verdict(_ledger_watch.load_sidecar(sidecar), role.session, old,
+                                                 since_utc, mtime_utc)
+            if alive:
+                print(f"CONSUMER LOOP ALIVE: {role.slug} sidecar {note}")
+                if adopt and adopt != role.session:
+                    print(f"  note: adopting the sidecar's full id {adopt} for launched id {role.session or '(unknown)'}")
+                    role.session = adopt
+                return True
+            if note != stale_seen:
+                print(f"  {role.slug}: ignoring sidecar ({note}); waiting for the new session's watcher")
+                stale_seen = note
         a = age_min(hb)
         if a is not None and a * 60 < time.time() - t0 + 60:
             print(f"CONSUMER LOOP ALIVE: {role.slug} heartbeat ticked ({a:.0f}m ago)")
             return True
-        time.sleep(30)
+        time.sleep(poll_s)
     print(f"CONSUMER LOOP INCOMPLETE: {role.slug} showed no sidecar/heartbeat in {cap_s // 60} min "
           "— check `claude logs <id>`; grants ask may be pending in-session")
     return False
@@ -283,10 +326,13 @@ def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600) -> bool:
 def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, str],
                   defer_consumers: bool, probe_claude: bool,
                   dry_run: bool, verify_consumers: bool = True,
-                  only: list[str] | None = None) -> int:
+                  only: list[str] | None = None, created: list[str] | None = None) -> int:
     """Create sessions for roles in `only` (default: all roles). Untouched roles
     keep their live session ids AND seqs; restarted roles bump seq by default
-    (explicit --seq wins) so {slug}-r{seq} tags never collide with the retired."""
+    (explicit --seq wins) so {slug}-r{seq} tags never collide with the retired.
+    Every slug whose session was actually created is appended to `created`, so the
+    caller can persist launched ids whatever the rc."""
+    created = created if created is not None else []
     targets = [r for r in spec.roles if only is None or r.slug in only]
     if only is not None:
         unknown = [s for s in only if spec.role(s) is None]
@@ -311,6 +357,8 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
             return 4
     print("=== 2. roles")
     consumers_launched: list[Role] = []
+    launch_utc = utcnow_iso()
+    launch_fail = 0
     for role in spec.roles:
         if role not in targets:
             continue
@@ -326,6 +374,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                 role.session = f"ses_DRYRUN_{role.slug}"
             else:
                 role.session = be.create(f"{role.title}-r{role.seq}", spec.dir)
+                created.append(role.slug)
                 print(f"lane {tag}: {role.session}")
                 be.send(role.session, spec.dir, brief_for(role, spec),
                         model=role.model)
@@ -349,9 +398,13 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                         model=role.model, effort=role.effort)
                 except (UnsupportedError, RuntimeError) as exc:
                     print(f"  FAIL: auto-launch failed: {exc}")
-                    return 4
+                    launch_fail = 4
+                    break
+                created.append(role.slug)
                 print(f"  launched: {role.session} (backend: {be.ecosystem})")
                 consumers_launched.append(role)
+    if launch_fail and not created:
+        return launch_fail
     if not dry_run:
         spec.record_generation(run_pin())
         shoal_emit(spec.sid, "shoal", "script", "generation",
@@ -367,6 +420,9 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
             led.snapshot_spec(spec.snapshot())
         except Exception as exc:  # noqa: BLE001
             print(f"WARN: ledger generation record failed: {exc}")
+    if launch_fail:
+        print(f"FAIL: launch stopped after {created}; their ids and the generation record are kept")
+        return launch_fail
     rc = 0
     print("=== 3. ledger loop test (every launched role writes a ledger state or arms its watcher)")
     for role in spec.roles:
@@ -381,7 +437,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
     if consumers_launched and verify_consumers and not dry_run:
         print("  effect-verification (ledger state / watcher sidecar / heartbeat within 10 min):")
         for role in consumers_launched:
-            if not verify_consumer(spec, role):
+            if not verify_consumer(spec, role, old=old_sessions, since_utc=launch_utc):
                 rc = rc or 3
         spec.record_generation()
     print("DONE. Old generation retires by neglect; live session ids + generation record saved to the spec.")
@@ -550,22 +606,27 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
                     r.session = ""
     rc = 0
     if want(stages, "handoffs"):
-        rc = stage_handoffs(spec, dry) or rc
+        rc = stage_handoffs(spec, dry, only) or rc
     if want(stages, "sync-plans"):
-        rc = stage_sync_plans(spec, dry) or rc
+        rc = stage_sync_plans(spec, dry, only) or rc
     if want(stages, "retire"):
         rc = stage_retire(spec, old, dry) or rc
+    created: list[str] = []
     if want(stages, "restart"):
         rc = stage_restart(spec, old, launched,
                            args.defer_consumers, args.probe_claude, dry,
                            verify_consumers=not getattr(args, "no_verify", False),
-                           only=only) or rc
+                           only=only, created=created) or rc
     else:
         print(f"DONE (stages: {stages}).")
     save_to = getattr(args, "save_spec", "") or (args.spec if want(stages, "restart") else "")
-    if save_to and not dry and rc in (0, 3):
+    # launched ids must never be lost: once a session exists, the spec is saved whatever the rc
+    if save_to and not dry and (rc in (0, 3) or created):
         persist_spec(spec, save_to)
         print(f"spec with live session ids + generation record saved to {save_to}")
+        if rc not in (0, 3):
+            print(f"FAIL rc={rc}: see above; the spec was saved anyway because sessions were launched "
+                  f"({', '.join(f'{s}={spec.role(s).session}' for s in created)})")
     return rc
 
 

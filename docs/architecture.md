@@ -357,6 +357,13 @@ copies of the package's skills into every `skill_homes` entry: sessions load `sh
 those copies, so a merged protocol change otherwise never reaches them. `doctor` warns while any
 copy is stale.
 
+`restart --only <slugs>` relaunches a subset. Its start-doc checks fail only on the roles it
+relaunches; a problem in a kept role's doc prints as info. Once any session has launched, the spec
+(new ids, seqs, incarnation and generation record) is saved whatever the exit code, so a launched
+id is never lost. Effect-verification ignores a `ledger-watch` sidecar bound to a replaced session
+or armed before the launch, and adopts a sidecar's id only when it is a longer form of the launched
+id (a Claude short id against its full uuid) or the launched id is unknown.
+
 ## 11. Feature flags
 
 A spec's `features` object switches components on per group: `workwake` (`true`, or an object

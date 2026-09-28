@@ -453,5 +453,80 @@ grep -q "FREEZE LIFTED at" <<<"$OUT" || fail "no lifted banner after freeze off 
 check "\[dry-run\] systemd-run" $H job run --shoal $SID --spec "$SPEC" --slug tl --name thawed --dry-run -- true
 check "posture=idle" $Q --slug tl --idle --next ""
 
+echo "== 15 restart: --only scopes the doc checks; launched ids always persist; stale sidecars never adopted"
+mkdir -p "$S/restart/shoals/$SID"
+RSPEC="$S/restart/shoals/$SID/shoal.json"
+printf '# up live plan_state (selftest)\n\n## Mission\n\nno required sections\n' > "$S/up_bad_plan_state.md"
+python3 - "$SHOALD" "$SPEC" "$RSPEC" "$S/up_bad_plan_state.md" > "$S/restart.out" 2>&1 <<'PY' || fail "restart persistence / sidecar verdict :: $(tail -30 "$S/restart.out")"
+import argparse, json, os, sys
+sys.path.insert(0, sys.argv[1])
+import cli
+import ledger_watch
+from roles import Role, ShoalSpec
+spec_src, rspec, bad_doc = sys.argv[2:5]
+d = json.load(open(spec_src))
+for r in d["roles"]:
+    if r["slug"] == "up":
+        r["doc"] = bad_doc
+json.dump(d, open(rspec, "w"))
+
+class FakeBackend:  # stands in for the harness: every create returns a fresh id
+    ecosystem = "claude"
+    n = 0
+    def create(self, title, repo_dir, brief="", name="", model="", effort="", **kw):
+        FakeBackend.n += 1
+        return f"fake{FakeBackend.n}-{title}"
+cli.get_backend = lambda eco: FakeBackend()
+
+def restart(only):
+    ns = argparse.Namespace(spec=rspec, stages="handoffs,sync-plans,restart", dry_run=False, only=only,
+                            consumer_launched=[], keep=[], seq=[], set_model=[], old_session=[],
+                            defer_consumers=False, probe_claude=False, no_verify=True, save_spec="",
+                            force=False)
+    return cli.run_restart(ShoalSpec.load(rspec), ns)
+
+inc0 = ShoalSpec.load(rspec).incarnation
+# an unrelated, kept role's incomplete doc does not fail a partial restart
+rc = restart("tl")
+s = ShoalSpec.load(rspec)
+assert rc == 0, rc
+assert s.role("tl").session.startswith("fake") and s.role("up").session == "bbbb2222", s.to_dict()["roles"]
+assert s.incarnation == inc0 + 1, s.incarnation
+# a failing doc check on the relaunched role still persists the session that launched
+rc = restart("up")
+s = ShoalSpec.load(rspec)
+assert rc == 5, rc
+assert s.role("up").session.startswith("fake"), s.role("up").session
+assert s.incarnation == inc0 + 2, s.incarnation
+
+V = cli.sidecar_verdict
+since, before, after = "2026-09-28T12:00:00Z", "2026-09-28T11:00:00Z", "2026-09-28T13:00:00Z"
+assert V({}, "new1", ["old1"], since)[:2] == (False, "")
+assert V({"session_id": "old1-uuid", "armed_utc": after}, "new1", ["old1"], since)[:2] == (False, "")
+assert V({"session_id": "other", "armed_utc": before}, "new1", ["old1"], since)[:2] == (False, "")
+assert V({"session_id": "new1-uuid", "armed_utc": after}, "new1", ["old1"], since)[:2] == (True, "new1-uuid")
+assert V({"session_id": "new1", "armed_utc": after}, "new1-uuid", ["old1"], since)[:2] == (True, "")
+assert V({"session_id": "x", "armed_utc": after}, "", ["old1"], since)[:2] == (True, "x")
+assert V({"session_id": "x", "armed_utc": after}, "new1", ["old1"], since)[:2] == (True, "")
+assert V({"pid": "1"}, "new1", [], since, mtime_utc=before)[0] is False
+
+# verify_consumer end to end: a replaced session's sidecar is ignored, the new one's is adopted
+spec = ShoalSpec.load(rspec)
+path = ledger_watch.sidecar_path(spec.sid, "ghost")
+os.makedirs(os.path.dirname(path), exist_ok=True)
+open(path, "w").write("session_id=oldghost\narmed_utc=2026-01-01T00:00:00Z\n")
+role = Role(slug="ghost", ecosystem="claude", title="ghost", doc="/dev/null", fill="self", session="newghost")
+assert not cli.verify_consumer(spec, role, cap_s=0.3, old=["oldghost"], since_utc=cli.utcnow_iso(), poll_s=0.1)
+assert role.session == "newghost", role.session
+open(path, "w").write(f"session_id=newghost-full-uuid\narmed_utc={cli.utcnow_iso()}\n")
+assert cli.verify_consumer(spec, role, cap_s=5, old=["oldghost"], since_utc="2026-01-02T00:00:00Z", poll_s=0.1)
+assert role.session == "newghost-full-uuid", role.session
+os.remove(path)
+print("restart ok")
+PY
+grep -q "info (not relaunched, not a failure): INCOMPLETE: $S/up_bad_plan_state.md" "$S/restart.out" || fail "kept role's doc problem not reported as info"
+grep -q "saved anyway because sessions were launched" "$S/restart.out" || fail "no persisted-anyway message"
+grep -q "ignoring sidecar (stale: bound to the replaced session oldghost)" "$S/restart.out" || fail "stale sidecar not reported"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
