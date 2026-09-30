@@ -478,3 +478,27 @@ evidence. Only a ground-truth read separates work that landed from work a role b
 
 **Rejected alternatives.**
 - **Trusting `done` events:** measures what roles said, not what landed.
+
+## Blockers are verified, and idle is checked against the board
+
+**Decision.** With `blockers`, a next-item blocker is checked by kind every time it is read: a peer
+blocker clears when its item is done, a provider blocker when the provider says so, a maintainer
+blocker only while an ask is recorded, and a free-text hold expires and must be re-recorded. A stale
+blocker parks nothing. Idle is refused while the board offers strong-fit candidates the role has not
+passed, and a watcher wakes an idle role for candidates when all its next items are blocked.
+
+**Why.** Measured 2026-09-29 on a live group: two lanes idle for 2.5 and 11.5 hours with every next
+item "blocked". Every blocker was stale: a peer dependency whose owner had messaged that it was
+clear, a design question answered two days earlier, and holds citing an offline mode and a lease
+that had both ended. Beside them the digest held 2 and 8 eligible candidates that `next` never
+showed. The idle gate checked that a blocker was recorded, not that it held, and a free-text reason
+is exactly what a model reaches for to end a turn.
+
+**Rejected alternatives.**
+- **Banning `hold:`:** some blockers are real and uncheckable (a design direction nobody has given
+  yet). Expiry keeps them expressible while making them cost a re-verification.
+- **Waking on every stale blocker immediately:** the existing `parked-work` ladder already escalates
+  wake, wake, page; stale blockers join it rather than adding a second ladder.
+- **A scheduled self-check prompt:** costs tokens every cycle on every lane; the checks here run in
+  the token-free quorum and at the role's own boundaries.
+

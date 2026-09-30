@@ -151,7 +151,23 @@ generation holds it.
 with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. Idle is
 refused while any next item lacks a recorded blocker (`queue --blocked ITEM=<blocker>`, carried
 forward while the item stays in `next`; a role blocker shows its holder `BLOCKING`), because an
-idle role is woken by nothing else. With
+idle role is woken by nothing else.
+
+**Verified blockers** (`blockers`, `true` or `{hold_ttl_min, peer_ttl_min, hold_page_min}`, defaults
+240, 720 and 720 minutes). A recorded blocker is checked, not trusted: each carries metadata in the
+queue event (`next_blocked_meta`: `since` it was last recorded, `first` it blocked the item, `n`
+re-records), and `shoal/blockers.py` judges it by kind. `<role>:<repo#n>` clears once that item is
+done; `upstream:<target>` and `lease:<key>` clear when their provider says the target is no longer
+pending; `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
+`hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
+after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
+STALE`, the idle gate and `parked-work` treat its item as free, and recording a blocker that has
+already cleared is refused. Re-recording a blocker is its re-verification. A hold kept past
+`hold_page_min` pages the maintainer once (`hold-long`). With the feature on, `queue --idle` is also
+refused while `next` would offer strong-fit candidates, until each is taken, listed or passed with
+a reason class, and a role's watcher wakes it for board candidates when every next item is blocked,
+not only when `next` is empty. Measured 2026-09-29: two lanes idled 2.5 and 11.5 hours behind
+blockers that were all stale, beside 2 and 8 eligible candidates. With
 `continuation`, a role whose posture is `active` while its session is proven between turns is
 woken to continue after `after_min` (default 5).
 
@@ -271,8 +287,9 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
-| `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
+| `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours |
+| `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | page once |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.

@@ -64,6 +64,7 @@ LADDERS = {
     "blocking-unscheduled": [(30, "wake"), (120, "page")],
     "parked-work": [(30, "wake"), (90, "wake"), (180, "page")],
     "relay-dead": [(10, "page"), (360, "page")],
+    "hold-long": [(0, "page")],
 }
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
@@ -340,15 +341,27 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         if ((posture == "idle" or (posture == "waiting" and sub != "local-ci")) and getattr(role, "fill", "") != "none"
                 and view.freeze() is None):
             from ledger import item_key
-            nbk = {item_key(x) for x in (q.get("next_blocked") or {})}
+            import blockers as _bl
+            stale_nb = _bl.stale(spec, view, slug, q)  # {} unless features.blockers
+            nbk = {item_key(x) for x in (q.get("next_blocked") or {})} - set(stale_nb)
             free = [x for x in (q.get("next") or []) if item_key(x) not in nbk]
             if free:
+                why_stale = "".join(f"; {k} blocker stale ({stale_nb[k]})" for k in sorted(stale_nb))
                 out.append({"slug": slug, "condition": "parked-work", "key": f"parked:{','.join(sorted(free))}",
                             "since": boundary or iso(), "first_seen": True,
-                            "detail": f"{posture} while next items have no recorded blocker ({', '.join(free)}): "
+                            "detail": f"{posture} while next items have no current blocker ({', '.join(free)}"
+                                      f"{why_stale}): "
                                       f"pop one (`queue --active <item>`) or record why each cannot start "
                                       f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
                                       f"hold:<why>`); a busy lease is a wait on `lease:<key>`, never idle"})
+        # long holds (features.blockers): a hold re-recorded past hold_page_min is a question for the
+        # maintainer, raised once per hold; deferred while offline like every page
+        import blockers as _bl
+        for k, b, first, age, n in _bl.long_holds(spec, q):
+            out.append({"slug": slug, "condition": "hold-long", "key": f"hold:{k}:{first}", "since": first,
+                        "detail": f"{k} held since {first} ({age / 60:.1f} h, re-recorded {n}x): {b[:120]}. "
+                                  f"Holds are unverifiable: answer it, offer other work, or tell the role to "
+                                  f"raise it as an ask"})
         # continuation: a turn that ended while the posture says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
         if cont is not None and posture == "active" and between:

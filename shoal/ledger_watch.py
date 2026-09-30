@@ -119,8 +119,14 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     for e in view.ledger.events():
         if e.get("type") == "withdraw" and item_key(e.get("item", "")) in mine:
             out.append((e["id"], f"WITHDRAWN {e.get('item')} by {e['by']}: {short(e.get('reason', ''), 80)}"))
+    # an idle role with only blocked next items is as starved as one with none (features.blockers):
+    # without this, two recorded blockers silenced every board wake (measured 2026-09-29)
+    open_next = list(q.get("next") or [])
+    if (getattr(spec, "features", {}) or {}).get("blockers"):
+        nbk = {item_key(k) for k in (q.get("next_blocked") or {})}
+        open_next = [x for x in open_next if item_key(x) not in nbk]
     if board and role is not None and getattr(role, "fill", "assigned") == "self" and not view.queue(slug) \
-            and (not workwake or (idle and not q.get("next"))):
+            and (not workwake or (idle and not open_next)):
         try:
             taken = view.taken() | view.offered_open()
             declined = set(view.declined(slug))

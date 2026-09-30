@@ -127,6 +127,7 @@ export S=<id> SPEC=<path to the group's spec>
     shoal upgrade --spec $SPEC --dry-run
     shoal upgrade --spec $SPEC --set 'matcher={"live": false}'
     shoal upgrade --spec $SPEC --enable matcher.live
+    shoal upgrade --spec $SPEC --enable blockers --rearm now   # verified blockers; idle checked against the board
     ```
 
 ## Reports

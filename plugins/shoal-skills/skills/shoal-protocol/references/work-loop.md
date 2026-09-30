@@ -14,7 +14,10 @@
    - `--blocked ITEM=<blocker>` (repeatable; `ITEM=` clears): why a next item cannot start. The
      blocker is `<role>:<repo#n>` (that role sees `BLOCKING`), `ask[:<n>]`, `user`,
      `upstream:<target>`, `lease:<key>` or `hold:<why>`. Recorded blockers carry forward while the
-     item stays in `next`;
+     item stays in `next`. Where the group verifies blockers, prefer a checkable one (a peer item,
+     an upstream target, a lease): it clears itself. An `ask` or `user` blocker needs the ask
+     recorded (`--ask`). A `hold` expires and must be re-verified; re-recording it is that check, so
+     re-record only after re-checking what it names;
    - `--ask "<question>"`, `--answered <n>`, `--drop-ask <n> --drop-reason <why>`: see
      `asks-and-offline.md`.
 3. Keep working the active item in the same turn.
@@ -27,6 +30,8 @@
 | `FREEZE ACTIVE` | start no job units, local suites or gated builds; checkpoint, persist your plan_state, push, and sleep |
 | `FREEZE LIFTED` | the freeze is over: resume normal work, including anything a freeze message told you to hold |
 | `NEXT BLOCKED` | a next item's recorded blocker: re-check it at each boundary and clear it (`--blocked ITEM=`) once gone |
+| `BLOCKER STALE` | that blocker has cleared or expired and no longer lets you idle: start the item, or re-check and record what blocks it now |
+| `BOARD` | an eligible candidate: when your next items are all blocked, take one rather than idling behind them, or pass it with a reason |
 | `USER OFFLINE` | never wait on the maintainer; record asks with `queue --ask`; stack work; take unblocked items |
 | `ASKS TO RAISE` | the maintainer is online: follow `asks-and-offline.md` now |
 | `DROPPED ASKS` | disclose each to the maintainer in your next question set |
