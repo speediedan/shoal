@@ -45,7 +45,7 @@ can resolve it without the role. Each kind resolves to `pending`, `resolved` or 
 | `job` | the name given to `shoal job run --name` | the job unit's state: active is pending, an exit-code file is resolved, and a missing unit with no exit file is unknown | core (needs a `systemd --user` host) |
 | `lease` | a lease key | the lease provider above | core |
 | `gh-run` | `<owner/repo>:<run id>` | `gh run view` | core (needs `gh`) |
-| `gh-pr` | `<owner/repo>#<n>` | `gh pr view`: a merged or closed PR is resolved; for an open one, `gh pr checks`: any pending check is pending, and an empty check list is unknown, never resolved | core (needs `gh`) |
+| `gh-pr` | `<owner/repo>#<n>` | `gh pr view`: a merged or closed PR is resolved; for an open one, `gh pr checks`: any pending check is pending, and an empty check list is unknown, never resolved. With upstream semantics (an `upstream` wait or an `upstream:` blocker) an open PR is pending whatever its checks say, because the dependency is the merge, not the CI | core (needs `gh`) |
 | `gh-issue` | `<owner/repo>#<n>` | `gh issue view`: open is pending, closed is resolved (for `upstream` waits) | core (needs `gh`) |
 | `az-build` | an Azure Pipelines build id | `az pipelines build show` | optional (needs `az`) |
 

@@ -275,6 +275,38 @@ assert "no provider" in normalize("bogus:1")[1]
 assert normalize("lease:gpu") == ("lease:gpu", "")
 print("targets ok")
 PY3
+echo "== upstream semantics: an open PR is pending whatever its checks say"
+SHOAL_DEFAULT_OWNER=acme python3 - "$SHOALD" "$S" <<'PY3' || fail "upstream gh-pr semantics"
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+import providers, state
+calls = []
+def fake(state_, buckets):
+    def run(argv, timeout=30):
+        calls.append(argv)
+        out = '{"state": "%s"}' % state_ if "view" in argv else str([{"bucket": b} for b in buckets]).replace("'", '"')
+        return subprocess.CompletedProcess(argv, 0, out, "")
+    return run
+# the measured shape: an upstream PR awaiting review, checks finished (one failing)
+providers._run = fake("OPEN", ["fail", "pass", "skipping"])
+assert providers.resolve("gh-pr:acme/x#7", "r")[0] is False              # a CI wait: checks done
+assert providers.resolve("gh-pr:acme/x#7", "r", upstream=True) == (True, "PR open")
+assert not any("checks" in a for a in calls[-1:]), "upstream semantics read checks"
+canon, notes, refusal = state.check_target("upstream", "gh-pr:acme/x#7", "r")
+assert canon == "gh-pr:acme/x#7" and not refusal, refusal                 # was refused as resolved
+assert state.check_target("remote-ci", "gh-pr:acme/x#7", "r")[2], "a finished CI wait accepted"
+providers._run = fake("MERGED", [])
+assert providers.resolve("gh-pr:acme/x#7", "r", upstream=True) == (False, "PR merged")
+assert "already resolved" in state.check_target("upstream", "gh-pr:acme/x#7", "r")[2]
+import blockers
+providers._run = fake("OPEN", ["pass"])
+class V: done = {}
+spec = type("Spec", (), {"features": {"blockers": True}, "sid": "t"})()
+assert blockers.check(spec, V(), "r", {}, "x#1", "upstream:gh-pr:acme/x#7", None)[0] == "live"
+providers._run = fake("CLOSED", [])
+assert blockers.check(spec, V(), "r", {}, "x#1", "upstream:gh-pr:acme/x#7", None) == ("resolved", "PR closed")
+print("upstream semantics ok")
+PY3
 echo "== skills: stale user-scope copies are reported, then synced"
 python3 - "$SHOALD" <<'PY3' || fail "skill copy sync"
 import os, sys

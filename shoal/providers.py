@@ -80,8 +80,14 @@ def normalize(target: str) -> tuple[str, str]:
     return target, ""
 
 
-def resolve(target: str, slug: str, sid: str = "") -> Result:
-    """(True pending | False resolved | None unknown, detail) for a `<kind>:<ref>` wait target."""
+def resolve(target: str, slug: str, sid: str = "", upstream: bool = False) -> Result:
+    """(True pending | False resolved | None unknown, detail) for a `<kind>:<ref>` wait target.
+    `upstream=True` is the semantics of a dependency outside the shoal (an `upstream` wait or
+    blocker): a `gh-pr` target is pending while the PR is open, whatever its checks say. The
+    default `gh-pr` answer (pending while checks run) is right for a CI wait and wrong for an
+    upstream one: an open PR with finished checks read as resolved, so an upstream wait on it was
+    refused as "already resolved" and a blocker on it could not be recorded (measured 2026-09-30:
+    two upstream PRs awaiting review, one with a failing check)."""
     if not target:
         return None, "no target"
     if target.partition(":")[0] not in REGISTRY:
@@ -90,6 +96,11 @@ def resolve(target: str, slug: str, sid: str = "") -> Result:
     if err:
         return None, err
     kind, _, ref = target.partition(":")
+    if upstream and kind == "gh-pr":
+        try:
+            return pr_open(ref)
+        except Exception as exc:  # noqa: BLE001 - a provider failure is unknown, never resolved
+            return None, f"check failed: {str(exc)[:80]}"
     fn = REGISTRY.get(kind)
     if fn is None:
         return None, f"no provider for {kind}"
@@ -184,6 +195,18 @@ def gh_pr(ref: str, slug: str, sid: str) -> Result:
     if not b:
         return None, "no checks reported (never green on empty)"
     return "pending" in b, f"checks {sorted(set(b))}"
+
+
+def pr_open(ref: str) -> Result:
+    """Pending while the PR is open; resolved once merged or closed (upstream semantics)."""
+    rn = _repo_num(ref)
+    if rn is None:
+        return None, f"unparseable gh-pr ref {ref!r}"
+    repo, n = rn
+    st = json.loads(_run(["gh", "pr", "view", n, "--repo", repo, "--json", "state"]).stdout or "{}").get("state")
+    if not st:
+        return None, "gh pr state unavailable"
+    return st == "OPEN", f"PR {st.lower()}"
 
 
 @register("gh-issue")

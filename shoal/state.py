@@ -159,7 +159,7 @@ def check_target(sub: str, target: str, slug: str, sid: str = "") -> tuple[str, 
     canon, err = providers.normalize(target)
     if err:
         return target, [], f"wait target refused: {err}"
-    pending, why = providers.resolve(canon, slug, sid)
+    pending, why = providers.resolve(canon, slug, sid, upstream=(sub == "upstream"))
     if pending is False:
         return canon, [], (f"wait target {canon} is already resolved ({why}): nothing is left to wait on. "
                            f"Take the next item (`queue --active <item>`) or name a target that is pending")
