@@ -423,7 +423,7 @@ def cmd_next(a) -> int:
                        f"rescan={w.get('rescan_utc')}")
             if w.get("target"):
                 import providers
-                pending, why = providers.resolve(w["target"], slug, spec.sid)
+                pending, why = providers.resolve(w["target"], slug, spec.sid, upstream=(w.get("sub") == "upstream"))
                 if pending is False:
                     out.append(f"WAIT TARGET RESOLVED ({why}): this wait holds nothing any more; pivot to the "
                                f"next item, or re-wait on a target that is pending")

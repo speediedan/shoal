@@ -158,7 +158,7 @@ idle role is woken by nothing else.
 queue event (`next_blocked_meta`: `since` it was last recorded, `first` it blocked the item, `n`
 re-records), and `shoal/blockers.py` judges it by kind. `<role>:<repo#n>` clears once that item is
 done; `upstream:<target>` and `lease:<key>` clear when their provider says the target is no longer
-pending; `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
+pending (an upstream `gh-pr` target stays pending while the PR is open, whatever its checks say); `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
 `hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
 after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
 STALE`, the idle gate and `parked-work` treat its item as free, and recording a blocker that has

@@ -104,7 +104,7 @@ def check(spec, view, slug: str, q: dict, item_k: str, blocker: str, meta: dict 
         target = provider_target(blocker)
         if live and target:
             import providers
-            pending, why = providers.resolve(target, slug, getattr(spec, "sid", ""))
+            pending, why = providers.resolve(target, slug, getattr(spec, "sid", ""), upstream=(k == "upstream"))
             if pending is False:
                 return "resolved", why
         ttl = c["peer_ttl_min"]

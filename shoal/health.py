@@ -192,10 +192,10 @@ def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) ->
 
 # ---- wait-target heuristics ------------------------------------------------------
 
-def target_pending(target: str, slug: str, sid: str = "") -> tuple[bool | None, str]:
+def target_pending(target: str, slug: str, sid: str = "", upstream: bool = False) -> tuple[bool | None, str]:
     """(True pending | False resolved | None unknown, detail) for a wait target: a lookup in the
     provider registry (providers.py, docs/providers.md)."""
-    return providers.resolve(target, slug, sid)
+    return providers.resolve(target, slug, sid, upstream=upstream)
 
 
 def short_line(s: str, n: int = 90) -> str:
@@ -289,7 +289,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         w = read_wait(spec.sid, slug) or {}
         target = w.get("target") or st.get("target", "")
         if posture == "waiting" and sub not in USER_WAITS:
-            pending, why = target_pending(target, slug, spec.sid)
+            pending, why = target_pending(target, slug, spec.sid, upstream=(sub == "upstream"))
             if pending is False:
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
                             "detail": f"wait target {target} no longer pending ({why})", "first_seen": True})
