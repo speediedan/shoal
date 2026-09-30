@@ -203,8 +203,22 @@ def short_line(s: str, n: int = 90) -> str:
 
 # ---- session liveness -------------------------------------------------------------
 
+# `claude agents --json` turn state -> liveness. `status` is not a turn signal: it reads `busy` for as
+# long as any background task runs, and every role keeps its ledger-watch running in the background,
+# so every Claude role read as mid-turn and no between-turns condition could fire for one (measured
+# 2026-09-29: a role ended its turn with posture active and sat 6.6 h unflagged, `state` done,
+# `status` busy). An unknown `state` falls back to `status`, which errs toward "busy".
+CLAUDE_TURN_STATES = {"working": "busy", "blocked": "blocked", "done": "idle"}
+
+
+def claude_liveness(row: dict) -> str:
+    """'busy'|'blocked'|'idle' (or the raw `status` for a row without a known `state`)."""
+    st = str(row.get("state") or "")
+    return CLAUDE_TURN_STATES.get(st) or str(row.get("status", ""))
+
+
 def claude_busy() -> dict[str, str]:
-    """sessionId -> 'busy'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
+    """sessionId -> 'busy'|'blocked'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
     try:
         from backends import fake_sessions
         fake = fake_sessions()  # SHOAL_FAKE_SESSIONS (tests): no harness call
@@ -214,8 +228,7 @@ def claude_busy() -> dict[str, str]:
             r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
             rows = json.loads(r.stdout or "[]")
         # a session blocked on a question to the maintainer is never "between turns"
-        return {str(e.get("sessionId", "")): ("blocked" if e.get("state") == "blocked" else str(e.get("status", "")))
-                for e in rows}
+        return {str(e.get("sessionId", "")): claude_liveness(e) for e in rows}
     except Exception:
         return {}
 

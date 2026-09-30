@@ -286,6 +286,27 @@ def candidates_for(spec: ShoalSpec, view: View, slug: str, exclude: set[str], li
         return [f"(candidates unavailable: {short(str(exc), 100)})"]
 
 
+def candidate_items(spec: ShoalSpec, view: View, slug: str, exclude: set[str], limit: int = 5) -> list[str]:
+    """`repo#n:verb` for the role's eligible, strong-fit candidates (digest, else the board source);
+    [] when there are none or they cannot be read. The same selection `next` prints, minus the
+    weak-fit fallback, so a claim about "no eligible items" can be checked against it."""
+    taken = view.taken() | view.offered_open() | exclude
+    declined = set(view.declined(slug))
+    try:
+        if (spec.features or {}).get("digest"):
+            from digest import candidates as dc
+            got = dc(spec.sid, slug, taken, declined, limit=limit)
+            if got is not None:
+                return [f"{c['item']}:{c['verb']}" for c in got if not c.get("weak")]
+        role = spec.role(slug)
+        if role is None or role.fill != "self":
+            return []
+        from sources import candidates
+        return [f"{c['item']}:{c['verb']}" for c in candidates(spec.sources, role.scope, taken, declined, limit=limit)]
+    except Exception:  # noqa: BLE001 - a candidate read never blocks a queue write
+        return []
+
+
 def cmd_next(a) -> int:
     try:
         spec, led, view = _load(a)
@@ -317,8 +338,9 @@ def cmd_next(a) -> int:
         with open(marker, "w") as fh:
             fh.write(max([since] + [m["ts"] for m in mail]) + "\n")
     if mail:
-        out.append(f"MAIL {len(mail)} unread since your last `next` (read it now; this call marked it read; "
-                   f"mail never wakes you):")
+        out.append(f"MAIL {len(mail)} unread since your last `next` (read it now; "
+                   + ("--peek: left unread for the role; " if getattr(a, "peek", False) else "this call marked it read; ")
+                   + "mail never wakes you):")
         for m in mail[-5:]:
             text = m.get("text", "") if m.get("by") == "user" else short(m.get("text", ""), 300)
             out.append(f"  {m['ts']} {m['by']}->{m['to']} [{m.get('kind', 'info')}] {text}")
@@ -373,7 +395,13 @@ def cmd_next(a) -> int:
             out.append(aux_header(spec, slug))
         except Exception as exc:  # noqa: BLE001
             out.append(f"AUX: (header unavailable: {short(str(exc), 100)})")
-    short_by = queue_next_max(spec) - len(nxt) - (0 if active else 1)
+    # slots candidates may fill: next items with a recorded blocker hold no slot, and a role with no
+    # active item has one more (it pops a next item or takes a candidate). Counting blocked items and
+    # subtracting for an idle role hid every candidate from a role idle behind two blocked items
+    # (measured 2026-09-29: two idle lanes, 2 of 3 next items each, all blocked, 2 and 8 digest
+    # candidates each, none shown).
+    nbk_q = {item_key(k) for k in ((q or {}).get("next_blocked") or {})}
+    short_by = queue_next_max(spec) - len([x for x in nxt if item_key(x) not in nbk_q]) + (0 if active else 1)
     if short_by > 0:
         excl = {item_key(x) for x in [active] + nxt if x} | {item_key(o["item"]) for o in offers}
         for c in candidates_for(spec, view, slug, excl, limit=max(short_by, 3)):
@@ -571,7 +599,14 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
               f"cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|hold:<why>`); "
               f"a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle (nothing written)")
         return 3
-    reason = a.reason or ("" if len(nxt) >= n_next else "no further eligible items")
+    reason = a.reason
+    if not reason and len(nxt) < n_next:
+        # the default reason is a claim about the board: check it rather than assert it (measured
+        # 2026-09-29: two idle lanes carried "no further eligible items" beside 2 and 8 candidates)
+        excl = {item_key(x) for x in [active] + nxt if x} | {item_key(p["item"]) for p in passes}
+        cands = candidate_items(spec, view, slug, excl) if role.fill == "self" else []
+        reason = (f"short queue: {len(cands)} eligible candidate(s) not taken ({', '.join(cands[:3])})"
+                  if cands else "no further eligible items")
     version = int(prev.get("version", 0)) + 1
     plan = (f"{slug} queue v{version}: active={active or '-'} next={','.join(nxt) or '-'} posture={posture}"
             + (f"/{a.wait}" if a.wait else "") + f" claims={claims or '-'} done={a.done or '-'} "
