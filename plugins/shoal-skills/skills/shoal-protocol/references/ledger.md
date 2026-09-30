@@ -52,6 +52,7 @@ the named role. Silence about an unworkable item is the failure this exists to p
    to your brief comes first, then effective board position, which lifts items that block active
    work and sinks blocked items.
 3. Every pop backfills `next` to `next_max` items (the group's `features.workwake.next_max`, default 3;
-   `next` prints the limit), or gives `--reason` for fewer.
+   `next` prints the limit), or gives `--reason` for fewer. A blocked next item fills no slot: when
+   `next` shows candidates beside blocked items, take one rather than idling behind the blockers.
 
 The maintainer's offers always outrank the board.

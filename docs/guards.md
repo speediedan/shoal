@@ -87,7 +87,9 @@ ladders.
 - **Guard:** health condition `turn-ended-active` (feature `continuation`): posture `active` and the
   session proven between turns for `after_min` (default 5 minutes) produces a CONTINUE wake, a
   second wake, then a page. A session blocked on a question to the maintainer is not between turns
-  and never triggers it. Without `continuation`, `stale-active` catches the same posture after 90
+  and never triggers it. For Claude, "between turns" is the session's turn `state` (`done`), never
+  its `status`: `status` reads `busy` while the role's own background `ledger-watch` runs, which
+  hid a role that ended its turn while `active` for 6.6 hours (measured 2026-09-29). Without `continuation`, `stale-active` catches the same posture after 90
   minutes. `queue` prints the closing rule whenever it writes `active`, and `next` prints it at
   every boundary: the last write of a turn is `queue --wait ...`, `queue --idle`, or `queue
   --active` followed by more work in the same turn.

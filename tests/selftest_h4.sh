@@ -628,5 +628,44 @@ OUT=$(SHOAL_REARM_VERIFY_S=2 $H upgrade --spec "$SPEC" --rearm now --skip-selfte
 grep -q "relay-watch: killed pid $RW2" <<<"$OUT" || fail "second stale relay-watch not killed :: $OUT"
 grep -q "WARN relay-watch NOT re-armed within 2s .*relay-watch --shoal $SID" <<<"$OUT" || fail "no re-arm WARN :: $OUT"
 
+echo "== 18 liveness from turn state; candidates shown to a role idle behind blocked next items"
+# Claude: `status` reads busy while any background task (the role's own ledge-watch) runs, so only
+# `state` says whether a turn is in progress (done = between turns)
+Q="$H queue --shoal $SID --spec $SPEC --no-sync"
+check "posture=active" $Q --slug tl --active interpretune#9801:fix --next "" --reason test
+rm -f /tmp/$SID/health.json
+FS_DONE='{"claude":[{"sessionId":"aaaa1111-0000","status":"busy","state":"done"}],"opencode":{}}'
+FS_WORK='{"claude":[{"sessionId":"aaaa1111-0000","status":"busy","state":"working"}],"opencode":{}}'
+FS_OLD='{"claude":[{"sessionId":"aaaa1111-0000","status":"idle"}],"opencode":{}}'
+env SHOAL_FAKE_SESSIONS="$FS_DONE" $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
+check "tl turn-ended-active step1:wake" env SHOAL_FAKE_SESSIONS="$FS_DONE" SHOAL_HEALTH_SHIFT_MIN=6 $H health --spec "$SPEC" --instance b --dry-run
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_WORK" SHOAL_HEALTH_SHIFT_MIN=6 $H health --spec "$SPEC" --instance b --dry-run 2>&1)
+! grep -q "tl turn-ended-active" <<<"$OUT" || fail "continuation fired for a session whose state is working :: $OUT"
+check "tl turn-ended-active step1:wake" env SHOAL_FAKE_SESSIONS="$FS_OLD" SHOAL_HEALTH_SHIFT_MIN=6 $H health --spec "$SPEC" --instance b --dry-run
+python3 - "$SHOALD" <<'PY2' || fail "claude_liveness mapping"
+import sys; sys.path.insert(0, sys.argv[1]); from health import claude_liveness as L
+assert L({"status": "busy", "state": "done"}) == "idle"
+assert L({"status": "busy", "state": "working"}) == "busy"
+assert L({"status": "idle", "state": "blocked"}) == "blocked"
+assert L({"status": "busy", "state": "mystery"}) == "busy"   # unknown state: the raw status decides
+assert L({"status": "idle"}) == "idle"
+PY2
+# hidden candidates: two blocked next items and no active item used to leave no slot for a candidate
+check "posture=idle" $Q --slug tl --idle --next interpretune#9802,interpretune#9803 \
+  --blocked "interpretune#9802=hold:x" --blocked "interpretune#9803=up:interpretune#9301"
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
+grep -q "^BOARD interpretune#80" <<<"$OUT" || fail "no candidates for a role idle behind blocked next items :: $OUT"
+grep -q "short queue: [1-9][0-9]* eligible candidate" <<<"$(tail -1 $A/shoals/$SID/ledger/tl.jsonl)" \
+  || fail "default reason claims no eligible items beside candidates :: $(tail -1 $A/shoals/$SID/ledger/tl.jsonl)"
+# three unblocked next items and an active one: the queue is full, no candidates
+check "posture=active" $Q --slug tl --active interpretune#9801:fix \
+  --next interpretune#9802,interpretune#9803,interpretune#9804 --blocked "interpretune#9802=" --blocked "interpretune#9803="
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
+! grep -q "^BOARD " <<<"$OUT" || fail "candidates shown for a full queue :: $OUT"
+# --peek never claims to have marked mail read
+$H msg --shoal $SID --spec "$SPEC" --by up --to tl --text "peek probe" --no-sync >/dev/null
+check "left unread for the role" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
+check "posture=idle" $Q --slug tl --idle --next ""
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

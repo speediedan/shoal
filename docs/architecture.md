@@ -142,7 +142,10 @@ generation holds it.
   passes with a reason class and an optional `suggest=<role>`, asks, the posture, and the new
   queue version. Heartbeat, wait proof and telemetry are written locally in the same call.
 - Every pop backfills `next` to `next_max` (default 3), from offers by priority and then digest
-  candidates, or records why fewer.
+  candidates, or records why fewer. `next` shows candidates whenever the queue has an open slot: a
+  next item with a recorded blocker holds no slot, and a role with no active item has one more.
+  Without `--reason`, a short queue's default reason is checked against the candidates (`short
+  queue: N eligible candidate(s) not taken` when there are any).
 
 **Every turn ends in a sleep posture:** `queue --wait <sub> --holder <who> --target <kind:ref>`
 with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. Idle is
@@ -336,7 +339,7 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 | start a session | `claude --bg` with the brief | a server session, the brief as its first prompt |
 | wake own session from its watcher | the background command exits (task notification) | a send to its own session id |
 | session wake (`Backend.wake`) | wake-request file, else the wake relay | a send |
-| liveness, between turns | `claude agents --json` | the server's session status |
+| liveness, between turns | `claude agents --json` turn `state` (`done` between turns, `working` mid-turn, `blocked` on a question); never `status`, which reads `busy` while any background task (the role's own `ledger-watch`) runs | the server's session status |
 
 ## 9. Telemetry and reports
 
