@@ -373,8 +373,16 @@ def cmd_next(a) -> int:
     if held:
         out.append(f"HELD-UNSCHEDULED {', '.join(held)}: you hold these claims but your queue does not list them "
                    f"(schedule them, or release them with --kind handoff|blocked so another role can take them)")
+    try:
+        import blockers as _bl
+        stale_nb = _bl.stale(spec, view, slug, q or {})
+    except Exception:  # noqa: BLE001 - a blocker check never breaks `next`
+        stale_nb = {}
     for k, v in sorted(((q or {}).get("next_blocked") or {}).items()):
         out.append(f"NEXT BLOCKED {k} <- {v}")
+        if k in stale_nb:
+            out.append(f"BLOCKER STALE {k} <- {v} ({stale_nb[k]}): start the item, or re-verify the blocker and "
+                       f"record it again (`--blocked {k}=<blocker>`); a stale blocker does not let you idle")
     for b in view.blocked_by(slug):
         mine = b["item"] and item_key(b["item"]) in {item_key(x) for x in [active] + nxt if x}
         out.append(f"BLOCKING {b['role']} since {b['since']} on {b['item'] or '(item unnamed)'}"
@@ -401,6 +409,7 @@ def cmd_next(a) -> int:
     # (measured 2026-09-29: two idle lanes, 2 of 3 next items each, all blocked, 2 and 8 digest
     # candidates each, none shown).
     nbk_q = {item_key(k) for k in ((q or {}).get("next_blocked") or {})}
+    nbk_q -= set(stale_nb)
     short_by = queue_next_max(spec) - len([x for x in nxt if item_key(x) not in nbk_q]) + (0 if active else 1)
     if short_by > 0:
         excl = {item_key(x) for x in [active] + nxt if x} | {item_key(o["item"]) for o in offers}
@@ -575,6 +584,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     # --blocked edits applied. They make a parked item's reason visible (a peer blocker shows the
     # peer BLOCKING) and are what lets a role sleep with a non-empty next.
     nb = {item_key(k): v for k, v in (prev.get("next_blocked") or {}).items()}
+    recorded: set[str] = set()
     for spec_b in a.blocked or []:
         item, sep, blocker = spec_b.partition("=")
         if not sep or not item.strip():
@@ -589,16 +599,54 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                 return 3
         if blocker:
             nb[item_key(item)] = blocker
+            recorded.add(item_key(item))
         else:
             nb.pop(item_key(item), None)
+            recorded.discard(item_key(item))
     nb = {k: v for k, v in nb.items() if k in {item_key(x) for x in nxt}}
-    unblocked = [x for x in nxt if item_key(x) not in nb]
+    # verified blockers (features.blockers): a blocker recorded now must hold now, and one carried
+    # forward that has resolved or expired no longer parks its item
+    import blockers as _bl
+    bcfg = _bl.cfg(spec)
+    nb_meta = _bl.next_meta(prev, nb, recorded, now_iso()) if bcfg is not None else {}
+    stale_nb: dict[str, str] = {}
+    if bcfg is not None:
+        for k, b in nb.items():
+            if _bl.kind(b) == "ask" and not asks:
+                print(f"ERROR: --blocked {k}={b}: a maintainer blocker needs its ask recorded in this queue "
+                      f"(`--ask \"<one first-person question>\"`); a blocker nobody was asked about is not a "
+                      f"blocker (nothing written)")
+                return 3
+        cq = dict(prev, asks=asks, next_blocked=nb, next_blocked_meta=nb_meta)
+        for k, b in nb.items():
+            st_b, why_b = _bl.check(spec, view, slug, cq, k, b, nb_meta.get(k))
+            if st_b == "resolved" and k in recorded:
+                print(f"ERROR: --blocked {k}={b}: that blocker has already cleared ({why_b}): start the item, or "
+                      f"record what actually blocks it now (nothing written)")
+                return 3
+            if st_b in ("resolved", "expired") and k not in recorded:
+                stale_nb[k] = f"{st_b}: {why_b}"
+    unblocked = [x for x in nxt if item_key(x) not in nb or item_key(x) in stale_nb]
     if posture == "idle" and unblocked and view.freeze() is None:
+        stale_txt = "".join(f"; {k} <- {nb[k]} is stale ({stale_nb[k]}), re-verify it or start the item"
+                            for k in sorted(stale_nb))
         print(f"ERROR: idle with unblocked next items ({', '.join(unblocked)}): idle is only for an empty queue or "
-              f"one whose every next item has a recorded blocker. Pop one (`--active <item>`), or record why each "
-              f"cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|hold:<why>`); "
-              f"a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle (nothing written)")
+              f"one whose every next item has a recorded blocker{stale_txt}. Pop one (`--active <item>`), or record "
+              f"why each cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
+              f"hold:<why>`); a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle "
+              f"(nothing written)")
         return 3
+    if bcfg is not None and posture == "idle" and view.freeze() is None and role.fill == "self":
+        # a short queue is not a reason to idle while the board offers eligible work (measured
+        # 2026-09-29: two lanes idle 2.5 h and 11.5 h beside 2 and 8 eligible candidates)
+        excl = {item_key(x) for x in nxt} | {item_key(p["item"]) for p in passes}
+        cands = candidate_items(spec, view, slug, excl)
+        if cands:
+            print(f"ERROR: idle while the board offers eligible items ({', '.join(cands)}): take one "
+                  f"(`--active <item>`), list it in `--next`, or pass each with its reason "
+                  f"(`--pass ITEM:CLASS[:suggest=ROLE][:note=TEXT]`, CLASS in {', '.join(PASS_CLASSES)}) "
+                  f"(nothing written)")
+            return 3
     reason = a.reason
     if not reason and len(nxt) < n_next:
         # the default reason is a claim about the board: check it rather than assert it (measured
@@ -643,7 +691,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                session=sess, host=os.uname().nodename)
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
                      asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag,
-                     dropped=dropped or None, next_blocked=nb or None)
+                     dropped=dropped or None, next_blocked=nb or None, next_blocked_meta=nb_meta or None)
     led.commit_own(slug, f"{spec.sid} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     # 3. first-landed-wins re-check for the claims just made

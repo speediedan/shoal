@@ -667,5 +667,66 @@ $H msg --shoal $SID --spec "$SPEC" --by up --to tl --text "peek probe" --no-sync
 check "left unread for the role" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
 check "posture=idle" $Q --slug tl --idle --next ""
 
+echo "== 19 verified blockers (features.blockers): stale holds and cleared blockers stop parking work"
+Q="$H queue --shoal $SID --spec $SPEC --no-sync"
+NX="$H next --shoal $SID --spec $SPEC --no-sync --peek"
+export LEASE_STUB=free
+# before the feature: up idles behind a hold with board candidates, and the watcher stays silent
+check "posture=idle" $Q --slug up --idle --next interpretune#9901 --blocked "interpretune#9901=hold:before"
+check "posture=active" $Q --slug up --active interpretune#9301:fix --next ""
+check "done=\['interpretune#9301:fix'\]" $Q --slug up --done interpretune#9301:fix --url https://example.invalid/pr/2 \
+  --idle --next interpretune#9901 --blocked "interpretune#9901=hold:before"
+WATCH_BOARD='import sys; sys.path.insert(0, sys.argv[1]); from roles import ShoalSpec; from ledger import Ledger, View
+from ledger_watch import actionable
+spec = ShoalSpec.load(sys.argv[2]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+print(sum(1 for i, _ in actionable(view, "up", spec.role("up"), spec, board=True) if i.startswith("board:")))'
+[ "$(python3 -c "$WATCH_BOARD" "$SHOALD" "$SPEC")" = 0 ] || fail "board wake for a role with next items, feature off"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p))
+d["features"]["blockers"]={"hold_ttl_min":60,"peer_ttl_min":120,"hold_page_min":180}; json.dump(d,open(p,"w"),indent=1)
+PY2
+[ "$(python3 -c "$WATCH_BOARD" "$SHOALD" "$SPEC")" -gt 0 ] || fail "no board wake for an idle role whose next items are all blocked"
+# idle is refused while strong candidates exist, until each is passed with a reason
+OUT=$($Q --slug tl --idle --next interpretune#9902,interpretune#9903 --blocked "interpretune#9902=hold:design" \
+  --blocked "interpretune#9903=up:interpretune#9301" 2>&1 || true)
+grep -q "already cleared (interpretune#9301 done by up" <<<"$OUT" || fail "a peer blocker on a done item was accepted :: $OUT"
+check "a maintainer blocker needs its ask recorded" $Q --slug tl --idle --next interpretune#9902 --blocked "interpretune#9902=ask:scope"
+OUT=$($Q --slug tl --idle --next interpretune#9902 --blocked "interpretune#9902=hold:design" 2>&1 || true)
+grep -q "idle while the board offers eligible items" <<<"$OUT" || fail "idle accepted beside strong candidates :: $OUT"
+for i in 1 2 3 4; do
+  C=$(grep -o "eligible items ([^)]*)" <<<"$OUT" | sed 's/eligible items (//; s/)//; s/, / /g')
+  [ -n "$C" ] || break
+  P=""; for c in $C; do P="$P --pass ${c%%:*}:out-of-lane:note=selftest"; done
+  OUT=$($Q --slug tl --idle --next interpretune#9902 --blocked "interpretune#9902=hold:design" $P 2>&1 || true)
+done
+grep -q "posture=idle" <<<"$OUT" || fail "idle still refused after passing every candidate :: $OUT"
+# a hold expires after hold_ttl_min: next names it, idle is refused, parked-work wakes
+OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $NX --slug tl 2>&1)
+grep -q "BLOCKER STALE interpretune#9902 <- hold:design (expired" <<<"$OUT" || fail "expired hold not named :: $OUT"
+OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle 2>&1 || true)
+grep -q "interpretune#9902 <- hold:design is stale (expired" <<<"$OUT" || fail "idle accepted behind an expired hold :: $OUT"
+rm -f /tmp/$SID/health.json
+env SHOAL_HEALTH_SHIFT_MIN=61 $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
+check "tl parked-work step1:wake" env SHOAL_HEALTH_SHIFT_MIN=92 $H health --spec "$SPEC" --instance a --dry-run
+# re-recording is the re-verification; a hold kept past hold_page_min pages the maintainer once
+check "posture=idle" env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle --blocked "interpretune#9902=hold:design still"
+python3 - "$A/shoals/$SID/ledger/tl.jsonl" <<'PY2' || fail "blocker metadata not carried"
+import json,sys; q=[json.loads(l) for l in open(sys.argv[1]) if '"type":"queue"' in l][-1]
+m=q["next_blocked_meta"]["interpretune#9902"]; assert m["n"] == 1 and m["first"] <= m["since"], m
+PY2
+OUT=$(env SHOAL_HEALTH_SHIFT_MIN=62 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "tl hold-long" <<<"$OUT" || fail "hold-long paged before hold_page_min :: $OUT"
+check "tl hold-long step1:page" env SHOAL_HEALTH_SHIFT_MIN=181 $H health --spec "$SPEC" --instance a --dry-run
+# checkable blockers: a free lease has cleared (refused when recorded); a held one parks the item
+check "already cleared (lease gpu free" $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
+check "posture=idle" env LEASE_STUB=held $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
+OUT=$($NX --slug tl 2>&1)
+grep -q "BLOCKER STALE interpretune#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT" || fail "cleared lease blocker not named :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+check "posture=idle" $Q --slug tl --idle --next ""
+check "posture=idle" $Q --slug up --idle --next ""
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
