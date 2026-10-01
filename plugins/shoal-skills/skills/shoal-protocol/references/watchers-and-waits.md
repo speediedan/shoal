@@ -30,7 +30,17 @@ or a lease waiter. Each has one of two shapes:
 - **foreground**, for short waits: a blocking poll inside the turn.
 
 A detached process that only writes a log is not a watcher, because an idle session never reads
-the log.
+the log. That includes `setsid nohup shoal job wait ... &` in a harness whose background commands
+do not report back: it finishes, writes its verdict to a file, and wakes nobody.
+
+**Write the wait in one `queue` call, with a checkable target** (`--wait local-ci --holder "job
+<name>" --target job:<name>`). Do not follow it with a separate `shoal transition`: re-declaring a
+wait without `--target` used to erase the target, and nothing could then tell the wait had ended.
+Where the group sets `waittargets`, a CI wait without a target is refused, and your ledger watcher
+also wakes you when a `job:` or `lease:` target resolves, as a backstop for a waiter that failed.
+
+**A finished item leaves `next`.** Record it `--done` and drop it from `--next` in the same write; it
+is never parked behind a hold. `queue` refuses a finished item in `next`.
 
 **Waiter predicates must be total:**
 - Watch terminal states at the level jobs actually fail at (matrix legs, steps), not only a

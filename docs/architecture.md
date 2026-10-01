@@ -163,7 +163,7 @@ pending (an upstream `gh-pr` target stays pending while the PR is open, whatever
 after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
 STALE`, the idle gate and `parked-work` treat its item as free, and recording a blocker that has
 already cleared is refused. Re-recording a blocker is its re-verification. A hold kept past
-`hold_page_min` pages the maintainer once (`hold-long`). With the feature on, `queue --idle` is also
+`hold_page_min` wakes the role to convert it, then pages the maintainer 240 minutes later if it still stands (`hold-long`). With the feature on, `queue --idle` is also
 refused while `next` would offer strong-fit candidates, until each is taken, listed or passed with
 a reason class, and a role's watcher wakes it for board candidates when every next item is blocked,
 not only when `next` is empty. Measured 2026-09-29: two lanes idled 2.5 and 11.5 hours behind
@@ -202,6 +202,12 @@ lanes kept honoring one for a day after the window closed, idle on full queues.
   written: a malformed target is refused, because nothing could ever check it, and so is one that
   is already resolved. `next` flags a target that has since resolved or cannot be checked, and
   notes when next items are parked behind a wait that covers only the active item;
+- a `transition` that re-declares the current wait without `--target` keeps its target;
+- with `waittargets`, a `local-ci` or `remote-ci` wait needs a checkable target, and the role's
+  `ledger-watch` wakes it when a `job:` or `lease:` target resolves. The wake comes on the second
+  tick that sees the target resolved, so a session's own waiter acts first. Measured 2026-10-01: a
+  detached job waiter reached no session, and the role slept for an hour past its job's end;
+- `queue` refuses a finished item in `next` (`done` by any role), and `next` names it `GONE`;
 - rescans are capped per substate (maintainer and peer waits 240 minutes, CI 180, `upstream` 720,
   `queue-empty` 360; overridable with `rescan_cap_min` in the spec);
 - held claims in neither the active nor the next list are flagged `HELD-UNSCHEDULED`.
@@ -289,7 +295,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours |
-| `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | page once |
+| `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.

@@ -147,14 +147,30 @@ def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
     return rescan_min, notes, ""
 
 
-def check_target(sub: str, target: str, slug: str, sid: str = "") -> tuple[str, list[str], str]:
+CI_SUBS = ("local-ci", "remote-ci")
+
+
+def wait_targets(spec) -> bool:
+    """features.waittargets: CI waits need a checkable target, and a role's ledger-watch wakes it
+    when that target resolves (architecture doc §3.5)."""
+    return bool((getattr(spec, "features", None) or {}).get("waittargets"))
+
+
+def check_target(sub: str, target: str, slug: str, sid: str = "",
+                 require_ci: bool = False) -> tuple[str, list[str], str]:
     """(canonical target, notes, refusal) for a wait target. A malformed target is refused (nothing
-    could ever check it), and so is one already resolved (there is nothing left to wait on)."""
+    could ever check it), and so is one already resolved (there is nothing left to wait on). With
+    `require_ci` a CI wait without a target is refused too: nothing can tell when it ends (measured
+    2026-10-01: a job finished 27 s into a target-less local-ci wait and the role slept on)."""
     import providers
     if not target:
         if sub == "upstream":
             return "", [], ("an upstream wait needs a checkable target: --target gh-issue:<owner/repo>#<n> "
                             "(or gh-pr:, gh-run:) so the quorum wakes you when it resolves")
+        if require_ci and sub in CI_SUBS:
+            return "", [], (f"a {sub} wait needs a checkable target: --target job:<name> (a `job run` unit), "
+                            f"lease:<key>, az-build:<id>, gh-run:<owner/repo>:<id> or gh-pr:<owner/repo>#<n>, "
+                            f"so the role is woken when it ends")
         return "", [], ""
     canon, err = providers.normalize(target)
     if err:
@@ -240,8 +256,17 @@ def cmd_transition(a: argparse.Namespace) -> int:
         if refusal:
             print(f"ERROR: {refusal} (nothing written)")
             return 3
+    if a.to == "waiting" and not (getattr(a, "target", "") or ""):
+        # re-declaring the same wait without --target keeps its target: a `transition` run right
+        # after `queue --wait .. --target ..` rewrote the proof with an empty target, so nothing
+        # could see the wait resolve (measured 2026-10-01)
+        prev_w = read_wait(sid, a.slug) or {}
+        if prev_w.get("sub") == sub and prev_w.get("target"):
+            a.target = prev_w["target"]
+            print(f"note: target {a.target} carried forward from the current {sub} wait")
     if a.to == "waiting":
-        a.target, tnotes, trefusal = check_target(sub, getattr(a, "target", "") or "", a.slug, sid)
+        a.target, tnotes, trefusal = check_target(sub, getattr(a, "target", "") or "", a.slug, sid,
+                                                  require_ci=wait_targets(spec))
         for n in tnotes:
             print(f"note: {n}")
         if trefusal:
