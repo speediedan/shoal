@@ -82,6 +82,9 @@ def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_RESOLVED_SEEN: set[str] = set()  # wait keys seen resolved on an earlier tick (the waittargets grace)
+
+
 def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str, str]]:
     """[(event id, one-line description)] for everything that needs slug now.
 
@@ -119,6 +122,28 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
     for e in view.ledger.events():
         if e.get("type") == "withdraw" and item_key(e.get("item", "")) in mine:
             out.append((e["id"], f"WITHDRAWN {e.get('item')} by {e['by']}: {short(e.get('reason', ''), 80)}"))
+    # features.waittargets: a role waiting on a local target (a `job run` unit or a lease) is woken
+    # when it resolves, whoever armed the waiter. A detached `job wait` reaches no session (measured
+    # 2026-10-01: a job ended 27 s into a wait and the role slept on). Emitted on the second tick
+    # that sees it resolved, so a session's own waiter acts first and replaces the wait.
+    if (getattr(spec, "features", {}) or {}).get("waittargets"):
+        try:
+            from state import read_wait
+            w = read_wait(view.ledger.sid, slug) or {}
+            target = w.get("target") or ""
+            if w.get("sub") in ("local-ci", "remote-ci") and target.split(":", 1)[0] in ("job", "lease"):
+                import providers
+                pending, why = providers.resolve(target, slug, view.ledger.sid)
+                key = f"waitdone:{w.get('since_utc', '')}:{target}"
+                if pending is False:
+                    if key in _RESOLVED_SEEN:
+                        out.append((key, f"WAIT RESOLVED {target} ({why}): your {w.get('sub')} wait holds "
+                                         f"nothing now; run `next`, act on the result, write one `queue`"))
+                    _RESOLVED_SEEN.add(key)
+                else:
+                    _RESOLVED_SEEN.discard(key)
+        except Exception as exc:  # noqa: BLE001 - a wait check never breaks (or wakes) the watcher
+            print(f"{now_iso()} wait-check error: {short(str(exc), 120)}", file=sys.stderr)
     # an idle role with only blocked next items is as starved as one with none (features.blockers):
     # without this, two recorded blockers silenced every board wake (measured 2026-09-29)
     open_next = list(q.get("next") or [])

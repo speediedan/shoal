@@ -64,7 +64,7 @@ LADDERS = {
     "blocking-unscheduled": [(30, "wake"), (120, "page")],
     "parked-work": [(30, "wake"), (90, "wake"), (180, "page")],
     "relay-dead": [(10, "page"), (360, "page")],
-    "hold-long": [(0, "page")],
+    "hold-long": [(0, "wake"), (240, "page")],
 }
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
@@ -359,9 +359,11 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         import blockers as _bl
         for k, b, first, age, n in _bl.long_holds(spec, q):
             out.append({"slug": slug, "condition": "hold-long", "key": f"hold:{k}:{first}", "since": first,
+                        "first_seen": True,  # the ladder runs from this sighting: wake now, page 240 min later
                         "detail": f"{k} held since {first} ({age / 60:.1f} h, re-recorded {n}x): {b[:120]}. "
-                                  f"Holds are unverifiable: answer it, offer other work, or tell the role to "
-                                  f"raise it as an ask"})
+                                  f"A hold this old is a question: record it as an ask (`queue --ask`) or name "
+                                  f"a checkable blocker (`<role>:<repo#n>`, `upstream:<target>`); a hold still "
+                                  f"standing 4 h after this wake pages the maintainer"})
         # continuation: a turn that ended while the posture says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
         if cont is not None and posture == "active" and between:

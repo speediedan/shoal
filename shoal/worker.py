@@ -363,8 +363,9 @@ def cmd_next(a) -> int:
     for it in ([active] if active else []) + nxt:
         key = item_key(it)
         w = view.winner(key)
-        if key in view.done and view.done[key]["by"] != slug:
-            out.append(f"GONE {it}: done by {view.done[key]['by']} {view.done[key]['ts']} (drop it)")
+        if key in view.done:
+            out.append(f"GONE {it}: done by {view.done[key]['by']} {view.done[key]['ts']} (drop it from "
+                       f"your queue; `queue` refuses a finished item in next)")
         elif w is not None and w["by"] != slug:
             out.append(f"TAKEN {it}: claimed by {w['by']} {w['ts']}"
                        + (" (you lost the race on your ACTIVE item: release kind=lost-race)" if it == active else " (drop it)"))
@@ -486,6 +487,14 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     if active and item_key(active) in {item_key(x) for x in nxt}:
         print("ERROR: the active item is also listed in --next")
         return 1
+    # a finished item is dropped, never parked: kept in next it reads as pending work, and a role
+    # held two such items behind invented holds for 4 h (measured 2026-10-01)
+    done_next = [f"{x} (done {view.done[item_key(x)]['ts']} by {view.done[item_key(x)]['by']})"
+                 for x in nxt if item_key(x) in view.done]
+    if done_next:
+        print(f"ERROR: --next lists finished items: {', '.join(done_next)}. Drop them from --next "
+              f"(nothing written)")
+        return 3
     # claims: explicit ones plus the active item when the role does not hold it yet
     claims = list(a.claim or [])
     if active and not any(item_key(c["item"]) == item_key(active) for c in view.active(slug)) \
@@ -568,7 +577,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         if refusal:
             print(f"ERROR: {refusal} (nothing written)")
             return 3
-        a.target, tnotes, trefusal = _st.check_target(a.wait, a.target or "", slug, spec.sid)
+        a.target, tnotes, trefusal = _st.check_target(a.wait, a.target or "", slug, spec.sid,
+                                                      require_ci=_st.wait_targets(spec))
         for n in tnotes:
             print(f"note: {n}")
         if trefusal:

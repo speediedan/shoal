@@ -716,7 +716,13 @@ m=q["next_blocked_meta"]["interpretune#9902"]; assert m["n"] == 1 and m["first"]
 PY2
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=62 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "tl hold-long" <<<"$OUT" || fail "hold-long paged before hold_page_min :: $OUT"
-check "tl hold-long step1:page" env SHOAL_HEALTH_SHIFT_MIN=181 $H health --spec "$SPEC" --instance a --dry-run
+# hold-long wakes the role first, and pages only if the hold still stands 240 min after that wake
+rm -f /tmp/$SID/health.json
+check "tl hold-long step1:wake" env SHOAL_HEALTH_SHIFT_MIN=181 $H health --spec "$SPEC" --instance a
+OUT=$(env SHOAL_HEALTH_SHIFT_MIN=300 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "tl hold-long step2:page" <<<"$OUT" || fail "hold-long paged before its wake had 240 min :: $OUT"
+check "tl hold-long step2:page" env SHOAL_HEALTH_SHIFT_MIN=422 $H health --spec "$SPEC" --instance a --dry-run
+rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl
 # checkable blockers: a free lease has cleared (refused when recorded); a held one parks the item
 check "already cleared (lease gpu free" $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
 check "posture=idle" env LEASE_STUB=held $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
@@ -727,6 +733,42 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blocker
 PY2
 check "posture=idle" $Q --slug tl --idle --next ""
 check "posture=idle" $Q --slug up --idle --next ""
+
+echo "== 20 waits keep their targets; CI waits need one (waittargets); finished items leave next"
+Q="$H queue --shoal $SID --spec $SPEC --no-sync"
+export LEASE_STUB=held
+check "posture=waiting/local-ci" $Q --slug tl --active interpretune#9951:fix --next "" --wait local-ci \
+  --holder "job j1" --target lease:gpu
+# a transition re-declaring the same wait without --target keeps it (it used to blank it)
+check "target lease:gpu carried forward" $H transition --shoal $SID --spec "$SPEC" --slug tl --to waiting \
+  --sub local-ci --holder "job j1" --monitor "waiter 1" --no-ledger
+python3 -c "import json; w=json.load(open('/tmp/$SID/wait-tl')); assert w['target']=='lease:gpu', w" \
+  || fail "transition blanked the wait target"
+# before waittargets a target-less CI wait is accepted; with it, refused
+check "posture=waiting/local-ci" $Q --slug tl --wait local-ci --holder "job j2"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["waittargets"]=True; json.dump(d,open(p,"w"),indent=1)
+PY2
+check "a local-ci wait needs a checkable target" $Q --slug tl --wait local-ci --holder "job j3"
+check "posture=waiting/local-ci" $Q --slug tl --wait local-ci --holder "job j3" --target lease:gpu
+# the watcher wakes the role once its local target resolves, on the second tick that sees it
+WATCH_WAIT='import os, sys; sys.path.insert(0, sys.argv[1]); from roles import ShoalSpec; from ledger import Ledger, View
+import ledger_watch as lw
+spec = ShoalSpec.load(sys.argv[2]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+for tick in (1, 2):
+    got = [d for i, d in lw.actionable(view, "tl", spec.role("tl"), spec, board=False) if i.startswith("waitdone:")]
+    print(tick, len(got), got[0][:40] if got else "")'
+OUT=$(LEASE_STUB=held python3 -c "$WATCH_WAIT" "$SHOALD" "$SPEC")
+grep -q "^2 0" <<<"$OUT" || fail "watcher woke on a pending wait target :: $OUT"
+OUT=$(LEASE_STUB=free python3 -c "$WATCH_WAIT" "$SHOALD" "$SPEC")
+grep -q "^1 0" <<<"$OUT" && grep -q "^2 1 WAIT RESOLVED lease:gpu" <<<"$OUT" || fail "no grace-then-wake on a resolved wait :: $OUT"
+# a finished item cannot sit in next (the role recorded it done, or a peer did)
+check "lists finished items: interpretune#9301" $Q --slug tl --active interpretune#9951:fix --next interpretune#9301
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("waittargets",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+export LEASE_STUB=free
+check "posture=idle" $Q --slug tl --idle --next ""
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
