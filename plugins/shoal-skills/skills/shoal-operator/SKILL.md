@@ -55,6 +55,12 @@ page: read `shoal show --shoal <id>` and the named role's `shoal next --shoal <i
 --peek`, then act (offer, withdraw, `msg --wake`, restart the role) or record why not. A page that
 repeats means the ladder ran out: the role could not recover by itself.
 
+## Health review
+
+On a schedule, after an upgrade, or when pages repeat, run the review in `shoal-health-review`. It
+proves each role's posture, restarts stalled roles, and feeds every failure mode back into shoal
+and into the review itself.
+
 ## Steering
 
 Give work with `offer` (`--now` only when it cannot wait), take it back with `withdraw`, and
