@@ -43,6 +43,8 @@ Further reading:
   the protocol every role session follows.
 - [`plugins/shoal-skills/skills/shoal-operator/SKILL.md`](plugins/shoal-skills/skills/shoal-operator/SKILL.md):
   the operator's duties.
+- [`plugins/shoal-skills/skills/shoal-health-review/SKILL.md`](plugins/shoal-skills/skills/shoal-health-review/SKILL.md):
+  the operator's periodic health review, with its per-posture checks and failure-mode catalog.
 
 ## Tests
 
