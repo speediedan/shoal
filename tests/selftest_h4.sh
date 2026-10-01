@@ -770,5 +770,15 @@ PY2
 export LEASE_STUB=free
 check "posture=idle" $Q --slug tl --idle --next ""
 
+echo "== 21 health-review fm_report: runs on a group's own streams, no host values"
+FMR="$TESTD/../plugins/shoal-skills/skills/shoal-health-review/scripts/fm_report.py"
+OUT=$(SHOAL_DATA_ROOT="$S/data" python3 "$FMR" --spec "$SPEC" --days 2 2>&1) || fail "fm_report failed :: $OUT"
+grep -q "^metric .*trend" <<<"$OUT" || fail "fm_report printed no metric table :: $OUT"
+grep -q "FM9:hold_renewals" <<<"$OUT" || fail "fm_report missed the hold renewals this suite wrote :: $OUT"
+SHOAL_DATA_ROOT="$S/data" python3 "$FMR" --spec "$SPEC" --json | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'counts' in d and 'hours' in d" \
+  || fail "fm_report --json"
+OUT=$(env -u SHOAL_DATA_ROOT python3 "$FMR" --spec "$SPEC" 2>&1 || true)
+grep -q "no data root" <<<"$OUT" || fail "fm_report ran without a data root :: $OUT"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

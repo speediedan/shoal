@@ -74,23 +74,65 @@ For every INVALID role, decide where the defect lives, and fix it there in the s
 | the defect is in | fix |
 | --- | --- |
 | the lane's behavior under a correct protocol | shoal-protocol wording, at the point the lane reads it (`next` output, the skill reference) |
-| a shoal mechanism (a check that is missing, wrong or bypassable) | a shoal PR that reproduces the measured shape in a hermetic test that fails before the fix; new behavior behind a spec feature |
+| a shoal mechanism (a check that is missing, wrong or bypassable) | a shoal PR that reproduces the measured shape in a hermetic test that fails before the fix, preferring the simplifications below; new behavior behind a spec feature with a retirement condition |
 | this review (it missed something, or flagged a false positive) | this skill: a new or corrected check in `references/checks.md` |
 
-Then add or update the entry in `references/failure-modes.md` (signature, detection, fix, status)
-**in the same PR**. That catalog is what makes the next review faster than this one.
+Then add or update the entry in `references/failure-modes.md` (signature, detection, metric, fix,
+status) **in the same PR**. That catalog is what makes the next review faster than this one.
+
+### Prefer fewer primitives to more flags
+
+Each failure invites a new flag, a new health condition or a new wait substate. Resist that. Every
+one added is another thing a lane can misuse and another thing the next review must check. Before
+proposing a fix, try these in order:
+
+1. **Remove or unify a primitive.** Two ways to write the same state (a `queue` wait and a separate
+   `transition`) produced a blanked target 117 times in 8 days. Can the state have one writer and
+   one shape?
+2. **Make the invalid state unwritable.** A refusal at write time, or carrying a value forward,
+   removes the state. A detector only notices it after the cost is paid.
+3. **Let the system resolve what it can check.** A wait on a checkable target needs no rescan timer,
+   validity wake or holder text. Those exist for waits nobody can check, and in one measured week
+   they were most of the quorum's wakes.
+4. **Only then add a detector or a flag.** Give any new feature flag a retirement condition, such
+   as "folded into the default after two clean weeks, or removed". Track the flag count.
+
+Measure the design itself. The number of flags, health conditions, wait substates and blocker kinds
+should stay level or fall. If each review adds one, the design is accreting, not converging. Say
+so in the report, and propose the simplification rather than the next patch.
 
 A check graduates as it proves itself: from this skill's checklist, to a deterministic report the
 CLI prints, to a health condition with a ladder. Each step moves work from the reviewer's tokens
 into code. Prefer proposing the next graduation over repeating a manual check a third time.
 
-## 5. Report
+## 5. Measure (optional, at least weekly)
+
+Quantify every failure mode in the catalog, so that the question "is shoal getting more reliable"
+has a numeric answer.
+
+1. Run `scripts/fm_report.py --spec <spec> --data-root <data root> --days 7`. It prints per-day
+   counts and hours for each FM id, plus wakes and pages by condition, with a trend column (the later
+   half of the window against the earlier half).
+2. Compare with the previous review's numbers, which the operator log keeps.
+3. A failure mode found without a metric gets one in the same cycle. Prefer a derivation from
+   streams shoal already writes; add a new event only when nothing existing can carry it.
+   `references/metrics.md` maps each FM to its metric and lists the known gaps.
+4. **The escalation rule.** Expect the frequency of known failure modes, and the total pages and
+   wakes per active lane-hour, to fall from one review to the next as their fixes land.
+   - A fixed failure mode whose metric does not fall means the fix missed.
+   - A total that does not fall over two or three reviews, while new failure modes keep appearing,
+     means patching is not converging. That calls for an architectural or approach change, not
+     another fix. Write it up as such, with the numbers, in the report.
+
+## 6. Report
 
 One table per review: role, posture, verdict, evidence, action taken, effect observed. Follow it
 with:
 - the failure modes found (catalog ids, new ones marked);
 - the shoal or skill changes proposed or opened;
-- the pages and wakes the quorum spent since the last review.
+- the pages and wakes the quorum spent since the last review;
+- with step 5, the FM table, the trend per failure mode, and the design-size count (flags,
+  conditions, substates).
 
 Record the review in the operator workstream's log, and leave nothing in the reviewer's memory
 alone.
