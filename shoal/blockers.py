@@ -55,6 +55,33 @@ def kind(blocker: str) -> str:
     return "role" if ":" in (blocker or "") else "hold"
 
 
+def takeable(spec, view, blocker: str) -> str:
+    """"" when the role a `<role>:<repo#n>` blocker names can take that item, else why not.
+
+    A `fill=assigned` or `fill=none` role works only items offered or handed to it, so blocking on
+    one that holds no offer, handoff or claim for the item records a wait nothing can end. Measured
+    2026-10-08 (FM-4, third occurrence): a lane told by the maintainer to delegate seven items to an
+    assigned reviewer sent the reviewer mail, marked its asks answered and blocked three items on
+    it; mail neither wakes the reviewer nor lets it claim, and nothing moved until the operator
+    offered the items. A `fill=self` role can claim board items itself, so it is not checked."""
+    from ledger import item_key
+    who, _, item = (blocker or "").partition(":")
+    r = spec.role(who) if who else None
+    if r is None or not item or getattr(r, "fill", "") == "self":
+        return ""
+    k = item_key(item)
+    if any(c.get("_live") and c.get("by") == who for c in view.claims.get(k, [])):
+        return ""
+    if any(o.get("status") in ("open", "claimed") and o.get("to") in (who, "*") for o in view.by_item.get(k, [])):
+        return ""
+    return (f"{who} is fill={r.fill}: it works only items offered or handed to it, and it holds no offer, "
+            f"handoff or claim for {k}, so nothing would ever end this wait. If you hold {k}, hand it over "
+            f"(`shoal release --item {k} --kind handoff --to {who}`; claim it first if you have not); if it "
+            f"is the maintainer's to give, record an ask for a user offer (`--blocked {k}=ask:..` with "
+            f"`--ask`). Block on the item {who} actually holds when that differs (a PR rather than its issue). "
+            f"Mail to {who} does neither: a peer msg does not wake it and gives it nothing to claim")
+
+
 def _now() -> datetime.datetime:
     from health import utcnow  # the shared clock (SHOAL_HEALTH_SHIFT_MIN moves it in tests)
     return utcnow()

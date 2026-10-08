@@ -162,7 +162,8 @@ pending (an upstream `gh-pr` target stays pending while the PR is open, whatever
 `hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
 after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
 STALE`, the idle gate and `parked-work` treat its item as free, and recording a blocker that has
-already cleared is refused. Re-recording a blocker is its re-verification. A hold kept past
+already cleared is refused. So is a `<role>:<repo#n>` blocker naming a `fill=assigned` or `fill=none`
+role that holds no offer, handoff or claim for the item: nothing could ever end that wait (FM-4). Re-recording a blocker is its re-verification. A hold kept past
 `hold_page_min` wakes the role to convert it, then pages the maintainer 240 minutes later if it still stands (`hold-long`). With the feature on, `queue --idle` is also
 refused while `next` would offer strong-fit candidates, until each is taken, listed or passed with
 a reason class, and a role's watcher wakes it for board candidates when every next item is blocked,

@@ -629,6 +629,11 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                 return 3
         cq = dict(prev, asks=asks, next_blocked=nb, next_blocked_meta=nb_meta)
         for k, b in nb.items():
+            if k in recorded and _bl.kind(b) == "role":
+                why_t = _bl.takeable(spec, view, b)
+                if why_t:
+                    print(f"ERROR: --blocked {k}={b}: {why_t} (nothing written)")
+                    return 3
             st_b, why_b = _bl.check(spec, view, slug, cq, k, b, nb_meta.get(k))
             if st_b == "resolved" and k in recorded:
                 print(f"ERROR: --blocked {k}={b}: that blocker has already cleared ({why_b}): start the item, or "

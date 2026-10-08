@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from ledger import OFFER_WRITERS  # noqa: E402
+from ledger import OFFER_WRITERS, SYSTEM_WRITERS  # noqa: E402
 import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, Ledger, LedgerError, View, ensure_clone, ensure_gitignore, fmt_item,  # noqa: E402
@@ -236,6 +237,14 @@ def cmd_msg(a) -> int:
     ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re, ack=(True if a.ack else None),
                     wake=(True if getattr(a, "wake", False) else None))
     print(f"msg {by}->{a.to} [{a.kind}] [{ev['id']}]")
+    target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") else None
+    if target is not None and by not in ("user",) + SYSTEM_WRITERS and re.search(r"#\d+", a.text or ""):
+        # FM-4 (measured 2026-10-08): a lane delegated seven items to an assigned reviewer by mail
+        print(f"note: this is mail. {a.to} reads it at its next `next`; it is not woken by it"
+              + (" (workwake)" if (spec.features or {}).get("workwake") else "")
+              + (f", and as fill={target.fill} it can take only items offered or handed to it" if target.fill != "self" else "")
+              + f". To pass an item you hold: `release --item <repo#n> --kind handoff --to {a.to}` (wakes it, and it "
+              f"may claim). An item you do not hold needs a user offer: record an ask.")
     return 0
 
 

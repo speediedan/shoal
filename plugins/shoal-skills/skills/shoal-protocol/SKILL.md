@@ -33,7 +33,10 @@ per decision. That is stigmergy: coordination through the traces each agent leav
 3. **Only work wakes you.** New work while idle, a change to your active item, a wait you armed, or
    a health wake. Mail never wakes you; read it at the boundary. To get a peer to do something, the
    maintainer offers it as work, or you hand your claim over with `release --kind handoff --to
-   <role>`.
+   <role>`. A maintainer answer that delegates your items to a peer is carried out the same way
+   (claim each item, then hand it over), never by mail, and the ask is not done until the handoff
+   or the maintainer's offer is in the ledger. `queue` refuses a blocker on a role that cannot
+   take the item.
 4. **The session that needs an authorization asks for it, first-person, as a prompted question.**
    Build the question sets with `shoal asks --question-json` (live PR labels, at most four questions
    per set), record the ask and a user-auth wait BEFORE the question tool (it blocks your turn), and

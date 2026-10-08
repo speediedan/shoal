@@ -34,8 +34,18 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 - **Detection:** the role's harness question history.
 - **Fix:** the operator makes the offer. Proposed: a pass suggesting an offer-only role becomes a
   pending offer the maintainer confirms in one step.
-- **Metric:** none yet (see metrics.md, gaps)
-- **Status:** open.
+- **Third occurrence (2026-10-08), with a mechanism fix.** The maintainer answered seven merge asks
+  with "delegate to the assigned reviewer, authorized to change, validate and merge". The lane sent
+  the reviewer mail (a first copy to the wrong role), dropped all seven asks as answered and blocked
+  three items on the reviewer. Mail does not wake a role under `workwake`, and a `fill=assigned`
+  role cannot claim from mail, so nothing moved until the operator offered the seven items. Fix
+  (shoal): `queue --blocked ITEM=<role>:<repo#n>` refuses a role that is `fill=assigned` or `none`
+  and holds no offer, handoff or claim for that item (the refusal names handoff and ask as the two
+  routes), and `msg` from a role naming an item prints that it is mail. The skill's work loop says
+  a delegating answer is carried out by handoff.
+- **Metric:** none yet (see metrics.md, gaps). The refusal makes the durable form unwritable; the
+  remaining form (an ask dropped with no blocker at all) still needs the answered-ask record.
+- **Status:** durable form fixed 2026-10-08; the pass-with-`suggest=` form open.
 
 ## FM-5: upstream PR read as resolved when its checks finish (2026-09-30)
 - **Signature:** an `upstream:gh-pr:` blocker or `upstream` wait on an open, unmerged PR reads

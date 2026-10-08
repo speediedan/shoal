@@ -819,5 +819,32 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].po
 PY2
 rm -f /tmp/$SID/health.json
 
+echo "== 23 a peer blocker must name a role that can take the item (FM-4); peer mail says it is mail"
+Q="$H queue --shoal $SID --spec $SPEC --no-sync"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["blockers"]=True
+[r.update(fill="assigned") for r in d["roles"] if r["slug"]=="up"]; json.dump(d,open(p,"w"),indent=1)
+PY2
+# measured shape: work delegated to an assigned role by mail, then blocked on it with no offer
+check "note: this is mail. up reads it" $H msg --shoal $SID --spec "$SPEC" --by tl --to up --no-sync \
+  --text "please review and merge interpretune#9971"
+check "up is fill=assigned: it works only items offered or handed to it" $Q --slug tl --active interpretune#9970:fix \
+  --next interpretune#9971 --blocked "interpretune#9971=up:interpretune#9971"
+OUT=$($H msg --shoal $SID --spec "$SPEC" --by tl --to up --no-sync --text "no item named here" 2>&1)
+! grep -q "note: this is mail" <<<"$OUT" || fail "mail note printed for a msg naming no item :: $OUT"
+# once the maintainer offers it, the same blocker is accepted
+check "offered interpretune#9971:review to up" $H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9971:review --no-sync
+check "posture=active" $Q --slug tl --active interpretune#9970:fix --next interpretune#9971 --blocked "interpretune#9971=up:interpretune#9971"
+# a fill=self peer can claim board items itself: not checked
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); [r.update(fill="self") for r in d["roles"] if r["slug"]=="up"]
+json.dump(d,open(p,"w"),indent=1)
+PY2
+check "posture=active" $Q --slug tl --active interpretune#9970:fix --next interpretune#9972 --blocked "interpretune#9972=up:interpretune#9972"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+check "posture=idle" $Q --slug tl --idle --next ""
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
