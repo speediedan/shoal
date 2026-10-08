@@ -257,6 +257,32 @@ def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | 
     return None
 
 
+# ---- shared predicates (the quorum's evaluate() and the operator UI's read model) -----------
+
+def watcher_dead(alive: bool, posture: str, between: bool | None) -> bool:
+    """A role's ledger-watch counts as dead when it is not running, the role is not offline, and the
+    session is not known to be mid-turn (a session mid-turn arms its watcher at the turn's end).
+    `between` is session_between_turns(): True between turns, False mid-turn or on a question,
+    None unknown (unknown counts, as a missing watcher on an unknown session is the failure)."""
+    return not alive and posture != "offline" and between is not False
+
+
+def parked_free(spec: ShoalSpec, view, role, q: dict, posture: str, sub: str,
+                live: bool = True) -> tuple[list[str], dict[str, str]]:
+    """(next items with no current blocker, {item: why its blocker is stale}) for a role asleep on
+    work: idle, or waiting on anything but its own local-ci job (which usually holds the resources
+    its next items need). Empty for an observer role (fill=none) and while a freeze is on. `live`
+    lets blocker checks call providers (the quorum); the UI passes False to stay off the network."""
+    if not ((posture == "idle" or (posture == "waiting" and sub != "local-ci"))
+            and getattr(role, "fill", "") != "none" and view.freeze() is None):
+        return [], {}
+    from ledger import item_key
+    import blockers as _bl
+    stale_nb = _bl.stale(spec, view, role.slug, q, live=live)  # {} unless features.blockers
+    nbk = {item_key(x) for x in (q.get("next_blocked") or {})} - set(stale_nb)
+    return [x for x in (q.get("next") or []) if item_key(x) not in nbk], stale_nb
+
+
 # ---- the policy -----------------------------------------------------------------
 
 def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
@@ -312,7 +338,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 f"heuristic: {why}); re-verify the wait is still valid"})
         # watcher
         alive, sc = watcher_alive(spec.sid, slug)
-        if not alive and posture != "offline" and between is not False:
+        if watcher_dead(alive, posture, between):
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")
             if ex:
@@ -349,22 +375,16 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # a local-ci wait is exempt: the role's own machine-bound job (under a lease) usually holds the
         # resources its next items need; remote-ci, upstream, peer and maintainer waits leave it free
         # a freeze parks everything by design, so it is exempt while on
-        if ((posture == "idle" or (posture == "waiting" and sub != "local-ci")) and getattr(role, "fill", "") != "none"
-                and view.freeze() is None):
-            from ledger import item_key
-            import blockers as _bl
-            stale_nb = _bl.stale(spec, view, slug, q)  # {} unless features.blockers
-            nbk = {item_key(x) for x in (q.get("next_blocked") or {})} - set(stale_nb)
-            free = [x for x in (q.get("next") or []) if item_key(x) not in nbk]
-            if free:
-                why_stale = "".join(f"; {k} blocker stale ({stale_nb[k]})" for k in sorted(stale_nb))
-                out.append({"slug": slug, "condition": "parked-work", "key": f"parked:{','.join(sorted(free))}",
-                            "since": boundary or iso(), "first_seen": True,
-                            "detail": f"{posture} while next items have no current blocker ({', '.join(free)}"
-                                      f"{why_stale}): "
-                                      f"pop one (`queue --active <item>`) or record why each cannot start "
-                                      f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
-                                      f"hold:<why>`); a busy lease is a wait on `lease:<key>`, never idle"})
+        free, stale_nb = parked_free(spec, view, role, q, posture, sub)
+        if free:
+            why_stale = "".join(f"; {k} blocker stale ({stale_nb[k]})" for k in sorted(stale_nb))
+            out.append({"slug": slug, "condition": "parked-work", "key": f"parked:{','.join(sorted(free))}",
+                        "since": boundary or iso(), "first_seen": True,
+                        "detail": f"{posture} while next items have no current blocker ({', '.join(free)}"
+                                  f"{why_stale}): "
+                                  f"pop one (`queue --active <item>`) or record why each cannot start "
+                                  f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
+                                  f"hold:<why>`); a busy lease is a wait on `lease:<key>`, never idle"})
         # long holds (features.blockers): a hold re-recorded past hold_page_min is a question for the
         # maintainer, raised once per hold; deferred while offline like every page
         import blockers as _bl

@@ -122,6 +122,10 @@ def claude_session(rows: list[dict], session: str) -> dict | None:
     return None
 
 
+# session_state() -> health.session_between_turns() semantics: True between turns, False mid-turn
+# or on a question, None unknown
+BETWEEN = {"idle": True, "working": False, "blocked": False}
+
 CLAUDE_STATE = {"working": "working", "busy": "working", "running": "working", "blocked": "blocked",
                 "waiting": "blocked", "idle": "idle", "done": "dead", "stopped": "dead"}
 
@@ -175,9 +179,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     q = view.current_queue(slug) or {}
     st = view.role_state(slug) or {}
     idle = view.is_idle(slug)
-    posture = st.get("state") or ("idle" if idle else "active")
-    if posture == "waiting":
-        posture = "wait"
+    # `hposture` is the ledger's word (health's predicates take it); `posture` is the contract's
+    hposture = st.get("state") or ("idle" if idle else "active")
+    posture = "wait" if hposture == "waiting" else hposture
     boundary = max(q.get("ts", ""), st.get("ts", ""))
     sub = st.get("sub", "")
     nb = q.get("next_blocked") or {}
@@ -207,17 +211,19 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             reasons.append("dead-worker")
         if sess == "blocked":
             reasons.append("blocked-on-question")
-        # a session mid-turn (or on a question) has no watcher by design: it arms at the turn's end
-        if not remote and not alive and posture != "offline" and not is_wake_relay(role) and sess in ("idle", "unknown"):
+        # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
+        # turn's end, and a dead worker is reported as dead-worker instead
+        if not remote and not is_wake_relay(role) and sess != "dead" and \
+                _h.watcher_dead(alive, hposture, BETWEEN.get(sess)):
             reasons.append("watcher-dead")
         for x in q.get("next") or []:
             b = next((v for kk, v in nb.items() if item_key(kk) == item_key(x)), "")
             if b and _bl.kind(b) == "role" and _bl.takeable(spec, view, b):
                 reasons.append("blocker-role-cannot-take")
                 break
-        free = [n["item"] for n in nxt if not n["blocker"] or n["stale"]]
-        if free and getattr(role, "fill", "") != "none" and view.freeze() is None and (
-                posture == "idle" or (posture == "wait" and sub != "local-ci")):
+        # the quorum's own predicate, with blocker checks kept off the network (live=False)
+        free, _ = _h.parked_free(spec, view, role, q, hposture, sub, live=False)
+        if free:
             reasons.append("parked-work")
         if asks or sub in USER_WAITS:
             reasons.append("waiting-on-you")

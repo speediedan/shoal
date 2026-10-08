@@ -444,7 +444,9 @@ and the contract are in [`ui.md`](ui.md).
   OpenChamber status, the watcher sidecar). Rows carry posture, active and next items with
   blockers, asks, offers, liveness and `can_progress` with reasons: `dead-worker`,
   `blocked-on-question`, `watcher-dead`, `blocker-role-cannot-take`, `parked-work` and
-  `waiting-on-you`. `--conditions` adds the quorum's own `evaluate()` output, cached five minutes
+  `waiting-on-you`. `watcher-dead` and `parked-work` call the quorum's own predicates
+  (`health.watcher_dead`, `health.parked_free`), so the two never drift; the UI checks blockers
+  without provider calls. `--conditions` adds the quorum's own `evaluate()` output, cached five minutes
   per shoal. It never pulls (unless `--pull`), commits or marks mail read.
 - **Viewer** (`shoal/ui/ui_view.py`, `Backend.view_argv`): `view <shoal> <role>` runs the
   harness's own client on the live session (`claude attach`; the opencode TUI as a client of
