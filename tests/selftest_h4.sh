@@ -850,6 +850,9 @@ python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)
 PY2
 check "posture=idle" $Q --slug tl --idle --next ""
+# a user --wake msg to a role whose watcher is dead goes through the wake adapter (no watcher runs here)
+check "wake via no-adapter (claude watcher dead, wake relay waiter dead) (tl's ledger-watch is not running)" \
+  $H msg --shoal $SID --spec "$SPEC" --to tl --wake --text "operator wake" --no-sync
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
