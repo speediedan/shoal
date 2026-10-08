@@ -26,11 +26,11 @@ The modules import each other flat: each one puts its own directory on `sys.path
 
 ## Test
 
-Run all three suites normally and hermetically before committing:
+Run all four suites normally and hermetically before committing:
 
 ```bash
-for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh; do bash tests/$t; done
-for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh; do bash tests/selftest_hermetic.sh $t; done
+for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh selftest_ui.sh; do bash tests/$t; done
+for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh selftest_ui.sh; do bash tests/selftest_hermetic.sh $t; done
 ```
 
 The hermetic run must report zero unjustified network tool calls.

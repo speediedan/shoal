@@ -1,0 +1,12 @@
+#!/bin/sh
+# shoal-ui: run THIS checkout's shoal CLI (the plugin lives at <repo>/plugins/shoal-herdr), so the
+# plugin, its panes and the feeder all run the code that `git pull` + `shoal upgrade` rolled out.
+# Interpreter: SHOAL_PYTHON, else the one the installed `shoal` entry point uses (it carries the TOML
+# reader on Python 3.10), else python3. Herdr starts plugins with argv (no shell), hence this file.
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)"
+PY="${SHOAL_PYTHON:-}"
+if [ -z "$PY" ] && command -v shoal >/dev/null 2>&1; then
+    PY="$(head -n 1 "$(command -v shoal)" | sed -n 's/^#!\([^ ]*\).*/\1/p')"
+    [ -x "$PY" ] || PY=""
+fi
+exec "${PY:-python3}" "$ROOT/shoal/cli.py" "$@"

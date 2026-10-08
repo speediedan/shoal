@@ -56,6 +56,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+sys.path.insert(0, os.path.join(HERE, "ui"))
 from ledger import SYSTEM_WRITER  # noqa: E402
 import config  # noqa: E402
 
@@ -79,6 +80,10 @@ from watchers import cmd_lanes, cmd_pipeline, shoal_emit  # noqa: E402
 import doctor as _doctor  # noqa: E402
 import state as _state  # noqa: E402
 import shoal_report as _report  # noqa: E402
+try:  # the operator UI must never take the protocol CLI down with it (timers run this file)
+    import ui_cli as _ui  # noqa: E402
+except Exception as _ui_exc:  # noqa: BLE001
+    _ui = None
 
 try:
     from shoal_telemetry import run_pin  # noqa: E402
@@ -911,6 +916,8 @@ def main(argv: list[str] | None = None) -> int:
     _kill_audit.add_parser(sub)
     _aux.add_parsers(sub)
     _upgrade.add_parser(sub)
+    if _ui is not None:
+        _ui.add_parsers(sub)
 
     p = sub.add_parser("watch", help="systemd-timer watchers that fire into the ledger")
     config.add_id_arg(p, required=True)

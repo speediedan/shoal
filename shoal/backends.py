@@ -71,6 +71,14 @@ class Backend:
         sensors wake roles only through this. Returns the channel used, or `no-adapter (..)`."""
         return f"no-adapter ({self.ecosystem} has no session wake)"
 
+    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+        """(argv, extra env) of the harness's own interactive client for an EXISTING session, for an
+        operator to watch or answer it (`shoal view`, the UI adapters). Never creates, resumes or
+        messages a session: viewing is not a wake, and a resume of a running Claude session forks it.
+        Extra env may carry a credential the client needs; the caller passes it to the client process
+        only and never prints it."""
+        raise UnsupportedError(f"{self.ecosystem}: no viewer client")
+
     def live_model(self, session_id: str, repo_dir: str) -> str:
         return ""
 
@@ -87,6 +95,26 @@ class Backend:
         a relaunched session inherits the RECORDED model, so a drifted record
         relaunches the wrong model."""
         return ""
+
+
+def opencode_server() -> tuple[str, str]:
+    """(port, pid) of the opencode server listening on loopback (OpenChamber's), or ("", "").
+    SHOAL_FAKE_OPENCODE_SERVER='<port>:<pid>' answers it in tests."""
+    fake = config.env("FAKE_OPENCODE_SERVER")
+    if fake:
+        port, _, pid = fake.partition(":")
+        return port, pid
+    try:
+        r = subprocess.run(["ss", "-tlnpH"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+    for line in r.stdout.splitlines():
+        if "opencode" in line and "127.0.0.1:" in line:
+            m = re.search(r"127\.0\.0\.1:(\d+)", line)
+            p = re.search(r"pid=(\d+)", line)
+            if m and p:
+                return m.group(1), p.group(1)
+    return "", ""
 
 
 def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -106,6 +134,28 @@ class OpenChamberBackend(Backend):
             return "opencode-send"
         except Exception as exc:  # noqa: BLE001
             return f"opencode-send FAILED ({str(exc)[:80]})"
+
+    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+        """The stock opencode TUI as a CLIENT of OpenChamber's running server (`--server URL
+        --session ID`): no second server, so the one-writer store rule holds. The server's password is
+        OPENCODE_SERVER_PASSWORD in that server process's own environment (same uid); the password in
+        opencode's service.json is NOT accepted by the live server (measured 2026-10-01)."""
+        port, pid = opencode_server()
+        if not port:
+            raise UnsupportedError("no opencode server listening on loopback (OpenChamber down? never start one here)")
+        pw = ""
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as fh:
+                for kv in fh.read().split(b"\0"):
+                    if kv.startswith(b"OPENCODE_SERVER_PASSWORD="):
+                        pw = kv.split(b"=", 1)[1].decode()
+        except OSError:
+            pass
+        if not pw:
+            raise UnsupportedError(f"no server password in the environment of opencode server pid {pid}")
+        b = shutil.which("opencode") or os.path.expanduser("~/.opencode/bin/opencode")
+        argv = [b, "--server", f"http://127.0.0.1:{port}"] + (["--session", session_id] if session_id else [])
+        return argv, {"OPENCODE_PASSWORD": pw}
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
@@ -368,6 +418,12 @@ class ClaudeBackend(Backend):
                     or str(e.get("id", "")) == session_id:
                 return f"{e.get('name', '?')} state:{e.get('state', '?')}"
         return "not-listed (retired or unknown id)"
+
+    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+        """`claude attach <id>`: the live background session in this terminal, ownership unchanged.
+        Detaching (or closing the terminal) leaves the session running. Attach is exclusive: a second
+        attach fails while another terminal holds it."""
+        return [shutil.which("claude") or "claude", "attach", session_id], {}
 
     @staticmethod
     def launch_command(brief_file: str) -> str:
