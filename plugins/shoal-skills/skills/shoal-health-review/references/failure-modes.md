@@ -112,6 +112,26 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 - **Metric:** none (a probe-error event is proposed)
 - **Status:** open.
 
+## FM-14: background service restart reaps every Claude worker (2026-10-02)
+- **Signature:** every Claude role and the wake relay stop together. `claude agents --json` stops
+  listing them, and `--all` lists them `stopped` (detail "ended while the background service was
+  off") with no `pid`. relay-dead pages, and every watcher-dead wake reports `no-adapter`.
+- **Detection:** `~/.claude/daemon.log` holds `upgrade self-respawn failed to spawn` followed by
+  `adopt: ... dead=N`; each job's `exit-cause` reads `ptyhost_orphan_watchdog`. A milder cousin:
+  the service retires a session idle at its prompt for 8 h (`bg retire <id>: idle-prompt`).
+- **Measured:** 2026-10-02T21:27Z, 5 workers reaped, the relay among them. Six days of relay-dead
+  pages and 18 pathless wakes followed until the maintainer re-attached the sessions by hand.
+- **Fix:** `features.health.revive` (shoal). The quorum relaunches a dead relay before paging,
+  ahead of the role wakes it will carry, and respawns a role whose worker is gone
+  (`claude respawn`, conversation kept) before queueing its wake for the relay. No new condition:
+  the existing watcher-dead and relay-dead ladders gain the repair step. To keep a role down, park
+  it or mark it `offline`; with revive on, a role that merely has a dead session is revived.
+  Retire the flag (fold it into the default) after two clean weeks on a shoal that runs it.
+- **Metric:** `FM14:wakes_no_path` (the failure), `FM14:respawns` and `FM14:relay_relaunches`
+  (the repair firing).
+- **Status:** fixed in shoal. Left off in the shoal that hit it, by decision (a role there is held down
+  by a dead session); on for the next shoal.
+
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
 the unit ended. The durations came from runners yielding to CI and from lease queueing. Check the

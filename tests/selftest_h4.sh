@@ -780,5 +780,44 @@ SHOAL_DATA_ROOT="$S/data" python3 "$FMR" --spec "$SPEC" --json | python3 -c "imp
 OUT=$(env -u SHOAL_DATA_ROOT python3 "$FMR" --spec "$SPEC" 2>&1 || true)
 grep -q "no data root" <<<"$OUT" || fail "fm_report ran without a data root :: $OUT"
 
+echo "== 22 revive (features.health.revive): dead Claude workers are respawned and a dead relay relaunched"
+# the measured shape (2026-10-02): the background service reaped every worker, so `claude agents
+# --json --all` lists the role and the relay with no pid, and both waiters are gone
+rm -f /tmp/$SID/health.json /tmp/$SID/relay-watch.pid /tmp/$SID/wake-tl /tmp/$SID/ledger-watch-tl.state
+FS_REAPED='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"","state":"stopped"},{"id":"rrrr3333","sessionId":"rrrr3333-0000","status":"","state":"stopped"}],"opencode":{}}'
+HV="$H health --spec $SPEC --instance a --dry-run"
+# watcher-dead's ladder runs from its first sighting; seed that sighting rather than run a real
+# first pass (which, with revive on, would launch a real relay session)
+SEED_TL='import datetime, json, sys; now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"ladders": {"tl|watcher-dead|pid:none": {"since": now, "step": 0}}}, open(sys.argv[1], "w"))'
+python3 -c "$SEED_TL" /tmp/$SID/health.json
+# negative control, feature off: the relay only pages and the role's wake has no adapter
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "wake-relay relay-dead step1:page" <<<"$OUT" || fail "relay-dead did not page with revive off :: $OUT"
+grep -q "tl watcher-dead step1:wake -> no-adapter (claude watcher dead, wake relay waiter dead)" <<<"$OUT" \
+  || fail "control: a reaped role should have no wake path with revive off :: $OUT"
+! grep -q "respawned\|relaunch" <<<"$OUT" || fail "revive acted while off :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"].get("health")
+d["features"]["health"]=dict(h if isinstance(h,dict) else {}, revive=True); json.dump(d,open(p,"w"),indent=1)
+PY2
+python3 -c "$SEED_TL" /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "wake-relay relay-dead step1:relaunch -> relay-launch rc=0: \[dry-run\] relay-launch $SID" <<<"$OUT" \
+  || fail "dead relay not relaunched first :: $OUT"
+grep -q "tl watcher-dead step1:wake -> wake-relay (queued; relay down, relaunch pending) (dry-run); respawned aaaa1111 (dry-run)" <<<"$OUT" \
+  || fail "reaped role not respawned and queued for the relaunching relay :: $OUT"
+[ "$(grep -n 'relay-dead' <<<"$OUT" | head -1 | cut -d: -f1)" -lt "$(grep -n 'tl watcher-dead' <<<"$OUT" | head -1 | cut -d: -f1)" ] \
+  || fail "relay relaunch must precede the role wakes it will carry :: $OUT"
+# a live worker (pid present) is never respawned
+FS_LIVE='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":4242}],"opencode":{}}'
+python3 -c "$SEED_TL" /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_LIVE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+! grep -q "respawned aaaa1111" <<<"$OUT" || fail "respawned a session whose worker is alive :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("revive",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+rm -f /tmp/$SID/health.json
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

@@ -205,6 +205,9 @@ class OpenChamberBackend(Backend):
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+REVIVED_NOTE = ("Your session was respawned: its worker process had died (the Claude background service "
+                "restarted or retired it), so every background command it ran, your ledger-watch included, "
+                "is gone. Run `next`, re-arm your watcher, then act on this wake: ")
 
 
 def parse_bg_id(text: str) -> "re.Match[str] | None":
@@ -243,24 +246,38 @@ class ClaudeBackend(Backend):
         and delivers each wake as a cross-session message."""
         import json as _json
         import os as _os
-        from health import iso, relay_alive, relay_queue_path, state_dir, wake_path, watcher_alive
+        from health import health_cfg, iso, relay_alive, relay_queue_path, state_dir, wake_path, watcher_alive
         from roles import wake_relay_role
+        # features.health.revive: a session whose worker process is gone (the background service
+        # restarted under it, or retired it idle) is respawned before it is woken. Its background
+        # commands died with it, so an orphaned ledger-watch cannot deliver: the wake goes by relay.
+        revive = bool(health_cfg(spec).get("revive"))
+        revived = ""
+        if revive and role.session and self.session_dead(role.session):
+            revived = f"; respawned {role.session[:8]} ({self.respawn(role.session, dry_run)})"
+            text = REVIVED_NOTE + text
         alive, _ = watcher_alive(spec.sid, role.slug)
-        if alive:
+        if alive and not revived:
             if not dry_run:
                 _os.makedirs(state_dir(spec.sid), exist_ok=True)
                 with open(wake_path(spec.sid, role.slug), "a") as fh:
                     fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
             return "wake-file" + (" (dry-run)" if dry_run else "")
         if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
-            return "no-adapter (claude watcher dead, wake relay disabled)"
+            return "no-adapter (claude watcher dead, wake relay disabled)" + revived
+        pending = ""
         if not relay_alive(spec.sid):
-            return "no-adapter (claude watcher dead, wake relay waiter dead)"
+            if not revive:
+                return "no-adapter (claude watcher dead, wake relay waiter dead)"
+            # the quorum relaunches a dead relay (relay-dead), and relay-watch resumes from its
+            # cursor, so a wake queued now is delivered once the relay is back; if it never comes
+            # back, this condition's own page step still fires
+            pending = " (queued; relay down, relaunch pending)"
         if not dry_run:
             with open(relay_queue_path(spec.sid), "a") as fh:
                 fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": role.session,
                                       "condition": condition, "text": text}) + "\n")
-        return "wake-relay" + (" (dry-run)" if dry_run else "")
+        return "wake-relay" + pending + (" (dry-run)" if dry_run else "") + revived
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
@@ -291,18 +308,49 @@ class ClaudeBackend(Backend):
             "copy when the session is running, so sends would fork consumers. "
             "Coordinator-to-consumer traffic goes in the queue file ONLY.")
 
-    def _agents(self) -> list:
+    def _agents(self, include_stopped: bool = False) -> list:
         import json as _json
         fake = fake_sessions()
         if fake is not None:
             return list(fake.get("claude") or [])
         b = shutil.which("claude") or "claude"
-        r = subprocess.run([b, "agents", "--json"], capture_output=True,
-                           text=True, timeout=30, env=_ENV)
+        r = subprocess.run([b, "agents", "--json"] + (["--all"] if include_stopped else []),
+                           capture_output=True, text=True, timeout=30, env=_ENV)
         try:
             return _json.loads(r.stdout) if r.returncode == 0 else []
         except Exception:
             return []
+
+    def _row(self, session_id: str, include_stopped: bool = False) -> dict | None:
+        for e in self._agents(include_stopped):
+            sid = str(e.get("sessionId", ""))
+            if sid == session_id or sid.startswith(session_id) or str(e.get("id", "")) == session_id[:8]:
+                return e
+        return None
+
+    def session_dead(self, session_id: str) -> bool | None:
+        """True when the session is listed but has no worker process. Plain `claude agents --json`
+        omits such a session entirely, so its absence there reads as "unknown", not "dead";
+        `--all` lists it with no `pid` (measured 2026-10-08: after a failed background-service
+        self-respawn every worker was reaped and listed `state: stopped` with no pid; `claude stop`
+        leaves `state: done` with no pid). None when the session is not listed at all."""
+        e = self._row(session_id, include_stopped=True)
+        return None if e is None else not e.get("pid")
+
+    def respawn(self, session_id: str, dry_run: bool = False) -> str:
+        """`claude respawn <id>`: a new worker on the same conversation (verified 2026-10-08 on a
+        stopped session: pid back, conversation kept). The session idles at its prompt until
+        woken, so the caller still delivers a wake."""
+        if dry_run:
+            return "dry-run"
+        if fake_sessions() is not None:
+            return "fake"
+        e = self._row(session_id, include_stopped=True) or {}
+        b = shutil.which("claude") or "claude"
+        r = subprocess.run([b, "respawn", str(e.get("id") or session_id[:8])], capture_output=True,
+                           text=True, timeout=120, env=_ENV)
+        out = ANSI_RE.sub("", r.stdout + r.stderr).strip().splitlines()
+        return (out[-1] if out else "respawned") if r.returncode == 0 else f"FAILED rc={r.returncode}: {out[-1] if out else ''}"
 
     def messages(self, session_id: str, repo_dir: str, limit: int = 20,
                  role: str = "") -> str:
@@ -362,7 +410,7 @@ class ClaudeBackend(Backend):
         return f"{len(socks)} socket(s) in /run/user/{uid}/cc-socks/"
 
     @staticmethod
-    def probe_turn(model: str = "claude-haiku-4-5-20251001") -> str:
+    def probe_turn(model: str = "claude-haiku-5-5") -> str:
         b = shutil.which("claude") or "claude"
         r = subprocess.run(
             [b, "-p", "Reply with exactly: SHOAL-PROBE-OK (connectivity probe, "

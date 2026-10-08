@@ -294,7 +294,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
-| `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours |
+| `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours; with `health.revive`: relaunch at sighting, page 15, then every 6 hours |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
@@ -318,6 +318,15 @@ harness implements it in its own way:
 | --- | --- | --- |
 | opencode | a direct send to the session | the same |
 | Claude Code | a wake-request file `/tmp/<id>/wake-<slug>`, delivered by the role's own `ledger-watch` and acknowledged by its next `queue` write | the wake relay: `relay-watch` exits with wake lines, and the `wake-relay` session delivers each as a cross-session message |
+
+With `health.revive`, a Claude role whose worker process is gone is respawned first: `claude agents
+--json --all` lists it with no `pid` (plain `--json` omits it), and `claude respawn` starts a new
+worker on the same conversation. Its background commands died with the old worker, so the wake goes
+by relay even if an orphaned `ledger-watch` survives. A wake queued while the relay is down is kept
+(the quorum relaunches the relay first, and `relay-watch` resumes from its cursor), and the
+condition's page step still fires if nothing answers. This covers the Claude background service
+restarting under its workers or retiring an idle one (failure mode FM-14). To keep a role down
+under `revive`, park it or mark it `offline`: a dead session alone is revived.
 
 Claude needs the relay because a headless send to a running Claude session forks it instead of
 waking it. A harness with no implementation returns `no-adapter`, and the condition escalates to a
@@ -413,8 +422,8 @@ id (a Claude short id against its full uuid) or the launched id is unknown.
 ## 11. Feature flags
 
 A spec's `features` object switches components on per group: `workwake` (`true`, or an object
-with `next_max`), `health` (`validity_wake_min`, `page`), `continuation` (`after_min`),
-`waitdiscipline` (`rescan_cap_min`), `relay` (the Claude wake relay), `jobs`, `digest`, and
+with `next_max`), `health` (`validity_wake_min`, `page`, `revive`), `continuation` (`after_min`),
+`waitdiscipline` (`rescan_cap_min`), `relay` (the Claude wake relay; `health.revive` repairs dead Claude workers and a dead relay), `jobs`, `digest`, and
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
 `private_repos`). An absent flag leaves the component off.
 

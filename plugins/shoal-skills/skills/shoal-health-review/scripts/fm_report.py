@@ -119,16 +119,24 @@ def main():
     H = collections.Counter()            # (day, metric) -> seconds
 
     # --- health ladder actions (telemetry watch_event kind=health) -> wakes/pages per condition
-    rx = re.compile(r"^(\S+) step(\d+):(wake|page) -> ")
+    rx = re.compile(r"^(\S+) step(\d+):(wake|page|relaunch) -> ")
     for e in tel:
         if e.get("type") != "watch_event" or not inw(e["_t"]):
             continue
         if e.get("kind") == "health":
-            m = rx.match(e.get("note", ""))
+            note = e.get("note", "")
+            m = rx.match(note)
             if m:
                 C[(day(e["_t"]), f"{m.group(3)}:{m.group(1)}")] += 1
                 if m.group(3) == "page":
                     C[(day(e["_t"]), "pages:total")] += 1
+                # FM-14: a wake that found no path (dead watcher and dead relay), and the revive repairs
+                if m.group(3) == "wake" and " -> no-adapter" in note:
+                    C[(day(e["_t"]), "FM14:wakes_no_path")] += 1
+                if "; respawned " in note:
+                    C[(day(e["_t"]), "FM14:respawns")] += 1
+                if m.group(3) == "relaunch":
+                    C[(day(e["_t"]), "FM14:relay_relaunches")] += 1
             elif "page" in e.get("note", ""):
                 C[(day(e["_t"]), "pages:total")] += 1
                 C[(day(e["_t"]), "page:user-waits-digest")] += 1

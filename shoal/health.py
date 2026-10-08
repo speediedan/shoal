@@ -26,7 +26,9 @@ Wakes go through direct session wake (backends.Backend.wake), one implementation
 ecosystem: opencode -> a send to the session; Claude with a live ledger-watch -> a wake
 request file the watcher delivers (/tmp/<id>/wake-<slug>); Claude with a dead watcher -> the
 wake relay queue (/tmp/<id>/relay-queue), drained by a small Claude session through the
-harness's cross-session message. In user-offline mode,
+harness's cross-session message. With features.health.revive a dead Claude worker is respawned
+before its wake, and a dead relay is relaunched before anyone is paged (relay-dead: relaunch at
+sighting, page 15, page 360). In user-offline mode,
 maintainer pages are deferred and delivered as one summary when the maintainer is back.
 """
 from __future__ import annotations
@@ -66,6 +68,10 @@ LADDERS = {
     "relay-dead": [(10, "page"), (360, "page")],
     "hold-long": [(0, "wake"), (240, "page")],
 }
+# features.health.revive: a dead relay is relaunched before anyone is paged. Measured 2026-10-02: the
+# Claude background service failed its own upgrade respawn and reaped every worker, the relay among
+# them; relay-dead paged for six days while every wake it would have carried went nowhere.
+REVIVE_RELAY_LADDER = [(0, "relaunch"), (15, "page"), (360, "page")]
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
 
@@ -386,7 +392,25 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     return out
 
 
-def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
+def relaunch_relay(spec: ShoalSpec, spec_path: str, dry_run: bool = False) -> str:
+    """features.health.revive: `relay-launch` from the quorum, without its blocking verification
+    (the next run sees relay-watch alive, or the ladder's page step fires). A relay session still
+    mid-turn is left alone: relay-launch refuses it, and that refusal is the channel reported."""
+    import argparse
+    import contextlib
+    import io
+    buf = io.StringIO()
+    a = argparse.Namespace(spec=spec_path, sid=spec.sid, force=False, verify_s=0, dry_run=dry_run)
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = cmd_relay_launch(a)
+    except Exception as exc:  # a failed launch must not stop the quorum run
+        return f"relay-launch FAILED: {exc}"
+    last = (buf.getvalue().strip().splitlines() or [""])[-1]
+    return f"relay-launch rc={rc}: {last[:160]}"
+
+
+def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = "") -> int:
     from ledger import Ledger, View
     sdir = state_dir(spec.sid)
     os.makedirs(sdir, exist_ok=True)
@@ -417,13 +441,16 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
     relay = wake_relay_role(spec)
+    revive = bool(health_cfg(spec).get("revive"))
     if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.sid):
-        # the relay has no adapter of its own: its death is a page, never a wake
+        # the relay has no wake adapter of its own: its death is a page, or (revive) a relaunch first.
+        # Evaluated ahead of the roles, so a relaunch is under way before this run queues their wakes.
         tk = os.path.join(sdir, "tick-relay-watch")
         since = open(tk).read().strip() if os.path.exists(tk) else iso()
-        conds.append({"slug": relay.slug, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
-                      "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
-                                f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.sid}`"})
+        conds.insert(0, {"slug": relay.slug, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
+                         "first_seen": revive,  # revive: the ladder runs from this sighting (relaunch now, page 15 later)
+                         "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
+                                   f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.sid}`"})
     ladders = state.setdefault("ladders", {})
     live_keys = set()
     for c in conds:
@@ -437,11 +464,15 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
         elif c["condition"] == "turn-ended-active":
             m = float((continuation_cfg(spec) or {}).get("after_min", 5))
             steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
+        elif c["condition"] == "relay-dead" and revive:
+            steps = REVIVE_RELAY_LADDER
         else:
             steps = LADDERS[c["condition"]]
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:
             at, action = steps[lad["step"]]
-            if action == "wake":
+            if action == "relaunch":
+                ch = relaunch_relay(spec, spec_path, dry_run)
+            elif action == "wake":
                 ch = request_wake(spec, c["slug"], c["detail"], c["condition"], dry_run)
                 if ch.startswith("no-adapter"):
                     ch += "; " + page_user(spec, f"{c['slug']}: {c['detail']} (and no wake adapter: {ch})", state, dry_run)
@@ -495,8 +526,9 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False) -> int:
 
 
 def cmd_health(a) -> int:
-    spec = ShoalSpec.load(a.spec or find_spec(a.sid))
-    return run(spec, a.instance, dry_run=a.dry_run)
+    path = a.spec or find_spec(a.sid)
+    spec = ShoalSpec.load(path)
+    return run(spec, a.instance, dry_run=a.dry_run, spec_path=path)
 
 
 def cmd_relay_watch(a) -> int:
@@ -534,7 +566,10 @@ def cmd_relay_watch(a) -> int:
 
 
 RELAY_SLUG = WAKE_RELAY_SLUG
-RELAY_MODEL = "claude-haiku-4-5-20251001"
+# The cheapest model that runs unattended: Haiku 4.5 reports "auto mode unavailable for this model",
+# so a relay on it stops at its first permission prompt; Haiku 5.5 runs in auto mode (both measured
+# 2026-10-08 with `claude --bg`). The `haiku` alias still resolves to 4.5, so the id is explicit.
+RELAY_MODEL = "claude-haiku-5-5"
 RELAY_DOC = """# {slug} plan_state ({sid})
 
 - role: `{slug}` (infrastructure, not a worker; `fill=none`): the Claude implementation of direct
@@ -648,6 +683,9 @@ def cmd_relay_launch(a) -> int:
     spec.record_generation()
     persist_spec(spec, path, note=f"relay-launch {role.tag}")
     print(plan + f" -> launched {role.session}")
+    if a.verify_s <= 0:
+        print(f"RELAY LAUNCHED {role.session}: relay-watch not verified here (the health quorum checks it next run)")
+        return 0
     t0 = time.time()
     while time.time() - t0 < a.verify_s:
         if relay_alive(spec.sid):

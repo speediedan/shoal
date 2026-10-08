@@ -129,6 +129,7 @@ export S=<id> SPEC=<path to the group's spec>
     shoal upgrade --spec $SPEC --enable matcher.live
     shoal upgrade --spec $SPEC --enable blockers --rearm now   # verified blockers; idle checked against the board
     shoal upgrade --spec $SPEC --enable waittargets --rearm now   # CI waits need a target; watchers wake on job/lease ends
+    shoal upgrade --spec $SPEC --enable health.revive              # respawn dead Claude workers, relaunch a dead relay (FM-14)
     ```
 
 ## Reports
