@@ -36,7 +36,9 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    <role>`. A maintainer answer that delegates your items to a peer is carried out the same way
    (claim each item, then hand it over), never by mail, and the ask is not done until the handoff
    or the maintainer's offer is in the ledger. `queue` refuses a blocker on a role that cannot
-   take the item.
+   take the item. Never drive another session's terminal (no multiplexer command that types into a
+   pane or prompts an agent, such as `herdr pane send-text` or `herdr agent prompt`): every wake goes
+   through shoal, or the health quorum and the failure-mode metrics never see it.
 4. **The session that needs an authorization asks for it, first-person, as a prompted question.**
    Build the question sets with `shoal asks --question-json` (live PR labels, at most four questions
    per set), record the ask and a user-auth wait BEFORE the question tool (it blocks your turn), and

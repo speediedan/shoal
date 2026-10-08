@@ -56,6 +56,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+sys.path.insert(0, os.path.join(HERE, "ui"))
 from ledger import SYSTEM_WRITER  # noqa: E402
 import config  # noqa: E402
 
@@ -79,6 +80,28 @@ from watchers import cmd_lanes, cmd_pipeline, shoal_emit  # noqa: E402
 import doctor as _doctor  # noqa: E402
 import state as _state  # noqa: E402
 import shoal_report as _report  # noqa: E402
+try:  # the operator UI must never take the protocol CLI down with it (timers run this file)
+    import ui_cli as _ui  # noqa: E402
+    _ui_err = ""
+except Exception as _exc:  # noqa: BLE001
+    _ui, _ui_err = None, f"{type(_exc).__name__}: {_exc}"
+
+
+def _ui_parsers(sub) -> None:
+    """Register `ui` and `view`; on any failure, stubs that name the cause (never a broken CLI)."""
+    global _ui_err
+    if _ui is not None:
+        try:
+            _ui.add_parsers(sub)
+            return
+        except Exception as exc:  # noqa: BLE001
+            _ui_err = f"{type(exc).__name__}: {exc}"
+    for name in ("ui", "view"):
+        if name in sub.choices:
+            continue
+        p = sub.add_parser(name, help="operator UI (unavailable: see `shoal ui`)")
+        p.add_argument("rest", nargs="*")
+        p.set_defaults(func=lambda a: (print(f"shoal ui is unavailable: {_ui_err}"), 1)[1])
 
 try:
     from shoal_telemetry import run_pin  # noqa: E402
@@ -911,6 +934,7 @@ def main(argv: list[str] | None = None) -> int:
     _kill_audit.add_parser(sub)
     _aux.add_parsers(sub)
     _upgrade.add_parser(sub)
+    _ui_parsers(sub)
 
     p = sub.add_parser("watch", help="systemd-timer watchers that fire into the ledger")
     config.add_id_arg(p, required=True)

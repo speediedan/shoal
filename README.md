@@ -49,7 +49,7 @@ Further reading:
 ## Tests
 
 ```bash
-for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh; do bash tests/selftest_hermetic.sh $t; done
+for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh selftest_ui.sh; do bash tests/selftest_hermetic.sh $t; done
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md).

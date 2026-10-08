@@ -42,6 +42,32 @@ export S=<id> SPEC=<path to the group's spec>
     shoal digest --shoal $S --compare
     ```
 
+## Operator UI (Herdr; details in [`ui.md`](ui.md))
+
+- Everything above as one read-only document for every shoal on the host, or one line:
+
+    ```bash
+    shoal ui status [--shoal $S] [--conditions] [--json]
+    shoal ui line
+    ```
+
+- Watch or answer one role in its own harness client (never a resume, never a wake; detach to
+  leave it running), or any standalone session:
+
+    ```bash
+    shoal view $S <role>
+    shoal view --harness claude|opencode --session <id>
+    ```
+
+- The Herdr workspace (once on the lane host; a viewing machine then attaches with
+  `herdr --remote <host> --session shoal --remote-keybindings server`):
+
+    ```bash
+    shoal ui herdr-install            # config block, plugin link, herdr + feeder units, layouts
+    shoal ui doctor                   # restore off, no integrations, schema, units
+    shoal ui open                     # re-apply layouts after adding a role (fills gaps only)
+    ```
+
 ## Give work and steer roles
 
 - Offer an item. The simplest form, then with a note, then every optional flag (`--base` records

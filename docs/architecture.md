@@ -88,6 +88,7 @@ to match against), so a group can work from other trackers or a plain file.
 | timers | `shoal/systemd.py` (`install-systemd`, `uninstall-systemd`) | per spec | systemd `--user` units named `shoal-<id>-<job>` |
 | preflight | `shoal/doctor.py` (`doctor`) | always | host checks, and group checks with `--spec` |
 | state primitive | `shoal/state.py` (`transition`) | always | heartbeat, wait proof and telemetry in one command |
+| operator UI | `shoal/ui/` (`ui status`, `ui line`, `view`, `ui open`, `ui feed`, `ui menu`), `plugins/shoal-herdr/` | run by the operator | a read-only status contract for every shoal on a host, a viewer that never resumes, and the Herdr adapter (section 12) |
 
 **Where state lives.**
 
@@ -101,7 +102,9 @@ to match against), so a group can work from other trackers or a plain file.
   `matcher/`, `briefs/`, `telemetry/`, `reports/`, `jobs/`, `board_digest.json` and, in shadow
   mode, `board_digest.semantic.json`.
 - **Scratch** in `/tmp/<id>/`: heartbeats, wait proofs, watcher sidecars, timer ticks, wake
-  requests.
+  requests, and the UI's cached health conditions (`ui-conditions.json`).
+- **Operator UI state** (per host, never committed): saved standalone sessions in
+  `~/.config/shoal/ui-standalone.json`, UI-originated actions in `<data_root>/ui-actions.jsonl`.
 - **Matcher key** (optional paid fallback only): `SHOAL_MATCHER_API_KEY`, from the environment
   or a gitignored `shoal/.env`.
 
@@ -398,8 +401,9 @@ changes anything:
 | re-arm | code a running watcher executes (`ledger-watch`, `relay-watch`) | `--rearm lazy` (default): at each role's next wake; `--rearm now`: one wake per stale `ledger-watch`, and the stale `relay-watch` is killed (see below) |
 | brief | `briefs.py` text | the next restart; `next` and `queue` output carry rule changes now |
 | restart | a spec change a live session depends on (model, harness) | never done by `upgrade`; `restart --only` does it |
+| ui | the operator UI's feeder (`shoal-ui-feed`) | restarted on any module change (it keeps the protocol modules loaded); it only reads, so no session is woken |
 
-The command refuses a dirty package tree, runs the three selftests, diffs the package against the
+The command refuses a dirty package tree, runs the four selftests, diffs the package against the
 spec's recorded `tooling.sha`, applies `--enable`, `--disable` and `--set` feature edits, records
 the new sha with a ledger `system` event, and re-arms per `--rearm`. It also syncs the user-scope
 copies of the package's skills into every `skill_homes` entry: sessions load `shoal-protocol` from
@@ -428,7 +432,39 @@ with `next_max`), `health` (`validity_wake_min`, `page`, `revive`), `continuatio
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
 `private_repos`). An absent flag leaves the component off.
 
-## 12. Known limitations
+## 12. Operator UI
+
+The UI is an operator's window onto the groups on one host. It is read-only except for explicit
+operator verbs, it never wakes a role as a side effect of viewing, and it owns no session. Details
+and the contract are in [`ui.md`](ui.md).
+
+- **Read model** (`shoal/ui/ui_status.py`): `ui status` builds one versioned document (`v: 1`,
+  additive) for every non-retired shoal under the ledger clone. Each role row is folded by
+  `ledger.View` and probed the way the health quorum probes it (`claude agents --json --all`, the
+  OpenChamber status, the watcher sidecar). Rows carry posture, active and next items with
+  blockers, asks, offers, liveness and `can_progress` with reasons: `dead-worker`,
+  `blocked-on-question`, `watcher-dead`, `blocker-role-cannot-take`, `parked-work` and
+  `waiting-on-you`. `--conditions` adds the quorum's own `evaluate()` output, cached five minutes
+  per shoal. It never pulls (unless `--pull`), commits or marks mail read.
+- **Viewer** (`shoal/ui/ui_view.py`, `Backend.view_argv`): `view <shoal> <role>` runs the
+  harness's own client on the live session (`claude attach`; the opencode TUI as a client of
+  OpenChamber's server). It strips `HERDR_*` and `ZELLIJ*` from the client's environment and
+  refuses a dead or unlisted session. `--stub` is a role card that attaches only on Enter.
+- **Herdr adapter** (`shoal/ui/ui_herdr.py`, `plugins/shoal-herdr/`):
+  - Layout: one workspace per shoal (an overview tab and a roles tab of cards) and a `standalone`
+    workspace for non-shoal sessions. `ui open` is idempotent and re-applies a whole tab with
+    `layout.apply`; it never types into a pane.
+  - Feeder: the `shoal-ui-feed` unit reports each role pane's state (`pane.report_agent`, source
+    `shoal`) and tokens (`pane.report_metadata`, with a TTL, so a dead feeder shows no data rather
+    than stale data).
+  - Actions: plugin actions open popups that run shoal verbs after a `--dry-run` preview and a
+    confirm, and log them to `ui-actions.jsonl`.
+  - The adapter never calls `pane.send_*`, `agent.prompt` or `pane.close`, and the UI selftest
+    enforces this.
+- **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
+  module change. No session is woken.
+
+## 13. Known limitations
 
 What this design does not handle yet, and the measurement that would trigger each change, is in
 [`limitations.md`](limitations.md).

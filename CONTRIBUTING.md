@@ -25,13 +25,13 @@ and pass an explicit message at merge time. The person who signs off is responsi
 
 ## Run the tests
 
-The three suites build scratch git repositories, a synthetic board and a scratch host
+The four suites build scratch git repositories, a synthetic board and a scratch host
 configuration, so they never touch a real group. Run each through the hermetic wrapper, which puts
 failing stubs for `gh`, `az`, `opencode`, `openchamber` and `claude` first on `PATH` and skips the
 sections that need a `systemd --user` session:
 
 ```bash
-for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh; do bash tests/selftest_hermetic.sh $t; done
+for t in selftest_ledger.sh selftest_h4.sh selftest_h8.sh selftest_ui.sh; do bash tests/selftest_hermetic.sh $t; done
 ```
 
 A suite exits non-zero on failure, and the wrapper exits 3 when a suite passed but reached for a

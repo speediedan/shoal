@@ -1,0 +1,108 @@
+# shoal's Herdr adapter (docs/ui.md). Every command runs `bin/shoal-ui`, i.e. this checkout's shoal
+# CLI; nothing here types into a pane, and every write is a shoal CLI verb behind a confirm.
+id = "shoal.herdr"
+name = "shoal"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Shoal groups in Herdr: role cards, live role state, asks, actions, metrics"
+platforms = ["linux", "macos"]
+
+[[startup]]
+# after a Herdr server (re)start: put the shoal workspaces and role cards back (fills gaps only)
+command = ["bin/shoal-ui", "ui", "open"]
+
+[[actions]]
+id = "menu"
+title = "shoal: action palette"
+command = ["bin/shoal-ui", "ui", "pane-open", "menu"]
+
+[[actions]]
+id = "asks"
+title = "shoal: asks"
+command = ["bin/shoal-ui", "ui", "pane-open", "asks"]
+
+[[actions]]
+id = "next"
+title = "shoal: next --peek (focused role)"
+command = ["bin/shoal-ui", "ui", "pane-open", "next"]
+
+[[actions]]
+id = "msg"
+title = "shoal: message a role"
+command = ["bin/shoal-ui", "ui", "pane-open", "msg"]
+
+[[actions]]
+id = "status"
+title = "shoal: status"
+command = ["bin/shoal-ui", "ui", "pane-open", "status"]
+
+[[actions]]
+id = "pick"
+title = "shoal: open a standalone session"
+command = ["bin/shoal-ui", "ui", "pane-open", "pick"]
+
+[[actions]]
+id = "metrics"
+title = "shoal: metrics"
+command = ["bin/shoal-ui", "ui", "pane-open", "metrics"]
+
+[[actions]]
+id = "open"
+title = "shoal: re-apply layouts"
+command = ["bin/shoal-ui", "ui", "open"]
+
+[[panes]]
+id = "menu"
+title = "shoal"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["bin/shoal-ui", "ui", "menu"]
+
+[[panes]]
+id = "asks"
+title = "shoal asks"
+placement = "popup"
+width = "85%"
+height = "80%"
+command = ["bin/shoal-ui", "ui", "act", "asks", "--pause"]
+
+[[panes]]
+id = "next"
+title = "shoal next"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["bin/shoal-ui", "ui", "act", "next"]
+
+[[panes]]
+id = "msg"
+title = "shoal msg"
+placement = "popup"
+width = "80%"
+height = "60%"
+command = ["bin/shoal-ui", "ui", "act", "msg", "--pause"]
+
+[[panes]]
+id = "status"
+title = "shoal status"
+placement = "popup"
+width = "95%"
+height = "90%"
+command = ["bin/shoal-ui", "ui", "act", "status"]
+
+[[panes]]
+id = "pick"
+title = "shoal standalone"
+placement = "popup"
+width = "90%"
+height = "80%"
+command = ["bin/shoal-ui", "ui", "pick"]
+
+[[panes]]
+id = "metrics"
+title = "shoal metrics"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["bin/shoal-ui", "ui", "metrics", "--pause"]

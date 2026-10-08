@@ -16,9 +16,12 @@ Every change has one rollout class, and this command says which apply:
   brief    brief text: lanes see it at their next restart (`next` and `queue` output carry
            rule changes now);
   restart  a spec change a live session depends on (a model change, a role's ecosystem):
-           never done here; the command names it and stops short.
+           never done here; the command names it and stops short;
+  ui       the operator UI's long-running feeder (`shoal-ui-feed`, docs/ui.md) keeps the code it
+           loaded (ledger, health, blockers, roles, backends, ui): on any module change it is
+           restarted, which wakes no session (it only reads).
 
-Order: refuse a dirty shoal/ tree, run both selftests, diff shoal/ since the spec's recorded
+Order: refuse a dirty shoal/ tree, run the selftests, diff shoal/ since the spec's recorded
 `tooling.sha`, classify, apply feature edits, record the new sha with a ledger `system`
 event, then re-arm per `--rearm`. `--dry-run` prints the whole plan and changes nothing
 (selftests still run: they are isolated).
@@ -43,7 +46,7 @@ REARM_LEDGER = {"ledger_watch.py", "ledger.py", "roles.py", "digest.py", "source
                 "heartbeat.py"}
 REARM_RELAY = {"health.py", "ledger.py", "roles.py"}
 BRIEF = {"briefs.py"}
-SELFTESTS = ("selftest_ledger.sh", "selftest_h4.sh", "selftest_h8.sh")
+SELFTESTS = ("selftest_ledger.sh", "selftest_h4.sh", "selftest_h8.sh", "selftest_ui.sh")
 
 
 def now_iso() -> str:
@@ -88,10 +91,16 @@ def usable_sha(tooling: dict) -> tuple[str, str]:
     return prev, ""
 
 
+UI_FEED_UNIT = "shoal-ui-feed.service"
+
+
 def classify(files: list[str]) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {"live": [], "re-arm (ledger-watch)": [], "re-arm (relay-watch)": [], "brief": []}
+    out: dict[str, list[str]] = {"live": [], "re-arm (ledger-watch)": [], "re-arm (relay-watch)": [], "brief": [],
+                                 "ui (restart shoal-ui-feed)": []}
     for f in files:
         b = os.path.basename(f)
+        if b.endswith(".py"):  # the feeder keeps ledger, health, blockers, roles and backends loaded
+            out["ui (restart shoal-ui-feed)"].append(b)
         if b in BRIEF:
             out["brief"].append(b)
         if b in REARM_LEDGER:
@@ -227,6 +236,23 @@ def rearm_relay(spec: ShoalSpec, pid: str, verify_s: float, poll_s: float = 1.0)
     return False
 
 
+def ui_feed_active() -> bool:
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-active", UI_FEED_UNIT], capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == "active"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def restart_ui_feed() -> str:
+    """The feeder is read-only to shoal and wakes nobody: a restart costs no tokens."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "restart", UI_FEED_UNIT], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"restart FAILED: {exc}"
+    return "restarted" if r.returncode == 0 else f"restart FAILED: {(r.stderr or r.stdout).strip()[-120:]}"
+
+
 def run_selftests() -> tuple[bool, str]:
     for t in SELFTESTS:
         r = subprocess.run(["bash", os.path.join(TESTS_DIR, t)], capture_output=True, text=True, timeout=1800)
@@ -286,6 +312,10 @@ def cmd_upgrade(a) -> int:
                       f"{rearm_verify_s(a):g}s"))
     elif cls["re-arm (relay-watch)"] and any(is_wake_relay(r) for r in spec.roles):
         print("re-arm: no running relay-watch predates the change")
+    ui_restart = bool(cls["ui (restart shoal-ui-feed)"]) and ui_feed_active()
+    if cls["ui (restart shoal-ui-feed)"]:
+        print(f"ui: {UI_FEED_UNIT} " + ("is restarted after the upgrade (reads only; wakes no session)" if ui_restart
+                                         else "is not running here; nothing to restart"))
     if cls["brief"]:
         print("brief: brief text changed; lanes read it at their next restart (`next`/`queue` carry rules now)")
     if a.restart_note:
@@ -332,6 +362,8 @@ def cmd_upgrade(a) -> int:
             print(f"woke {slug} to re-arm -> {ch}")
         if relay_pid:
             rearm_relay(spec, relay_pid, rearm_verify_s(a))
+    if ui_restart:
+        print(f"ui: {UI_FEED_UNIT} {restart_ui_feed()}")
     print(f"upgraded {spec.sid} to tooling {sha}")
     if any(c.startswith("matcher") for c in changes):
         print(f"matcher: the digest timer applies it within 10 minutes; `shoal digest --shoal {spec.sid} --refresh` "
