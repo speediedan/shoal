@@ -100,9 +100,10 @@ def relay_brief(role: Role, spec: ShoalSpec) -> str:
     return (
         f"You are {role.slug} ({role.tag}) in shoal {sid}: the wake relay for Claude roles whose own watcher "
         f"is dead. You do no project work, claim nothing, and message nobody on your own initiative. "
-        f"LOOP: run `{SHOAL_CLI} relay-watch --shoal {sid}` with the Bash tool and run_in_background=true, on exactly "
-        f"that command: no trailing `&`, no nohup, and NEVER the Monitor tool (a Monitor expires every 5-30 min and "
-        f"each expiry costs a turn; a background Bash command never expires and wakes you when it exits). "
+        f"LOOP: run `{SHOAL_CLI} relay-watch --shoal {sid}` with the Bash tool, run_in_background=true and "
+        f"timeout=7200000, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool (a Monitor "
+        f"expires every 5-30 min and each expiry costs a turn; a background Bash command is killed at its timeout, 30 "
+        f"min by default and 2 h at most, so always pass the maximum: a kill is a wake, re-arm). "
         f"When it exits it prints "
         f"`RELAY-WAKE to=<session name> session=<id> :: <text>` lines: for EACH line call SendMessage with "
         f"to=<session name> and message=<text> verbatim (use ListAgents to add the [ref] only when two sessions "
@@ -119,8 +120,10 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
     wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
     arm = (f"{SHOAL_CLI} ledger-watch --shoal {sid} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
-    how_arm = ("with the Bash tool and run_in_background=true (no trailing `&`, never the Monitor tool, which "
-               "expires and costs a turn per expiry): it re-invokes you when it exits"
+    how_arm = ("with the Bash tool, run_in_background=true and timeout=7200000 (the 2 h maximum: the default "
+               "30 min kill costs you a turn every 30 min; no trailing `&`, never the Monitor tool, which expires and "
+               "costs a turn per expiry): it re-invokes you when it exits or is killed at that timeout, and a kill is "
+               "a wake: re-arm"
                if role.ecosystem != "opencode" else
                "setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
                + ".log 2>&1 < /dev/null &`); it self-sends its wake to your session id and exits")
@@ -196,8 +199,9 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
     wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
     arm = (f"{SHOAL_CLI} ledger-watch --shoal {sid} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
-    how_arm = ("as a background command that re-invokes you when it exits (Claude: persistent "
-               "Monitor / run_in_background; a killed background command is a lost wake path — re-arm)"
+    how_arm = ("as a background command that re-invokes you when it exits (Claude: Bash with "
+               "run_in_background=true and timeout=7200000, the 2 h maximum, never a Monitor; a killed background "
+               "command is a wake: re-arm)"
                if role.ecosystem != "opencode" else
                "setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
                + ".log 2>&1 < /dev/null &`); it self-sends LEDGER-WAKE to your session id and exits")

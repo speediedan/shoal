@@ -652,6 +652,11 @@ assert L({"status": "busy", "state": "working"}) == "busy"
 assert L({"status": "idle", "state": "blocked"}) == "blocked"
 assert L({"status": "busy", "state": "mystery"}) == "busy"   # unknown state: the raw status decides
 assert L({"status": "idle"}) == "idle"
+# tempo wins over state: an idle session with a live background watcher reads state=working
+assert L({"status": "busy", "state": "working", "tempo": "idle"}) == "idle"
+assert L({"status": "busy", "state": "working", "tempo": "active"}) == "busy"
+assert L({"status": "busy", "state": "working", "tempo": "blocked"}) == "blocked"
+assert L({"status": "busy", "state": "working", "tempo": "mystery"}) == "busy"   # unknown tempo: state decides
 PY2
 # hidden candidates: two blocked next items and no active item used to leave no slot for a candidate
 check "posture=idle" $Q --slug tl --idle --next interpretune#9802,interpretune#9803 \

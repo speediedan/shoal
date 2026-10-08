@@ -4,7 +4,9 @@
 
 Your brief gives the exact `shoal ledger-watch` command. Arm it in the way your harness supports:
 - a background command that re-invokes you when it exits (Claude Code: the Bash tool with
-  `run_in_background`, never the Monitor tool, which expires);
+  `run_in_background` and `timeout` 7200000, the 2 h maximum, never the Monitor tool, which expires).
+  The default timeout kills it after 30 minutes and every kill costs you a turn; a kill is a wake:
+  re-arm;
 - a detached process that sends its wake to your session id (opencode).
 
 **Rules:**

@@ -216,10 +216,38 @@ def short_line(s: str, n: int = 90) -> str:
 # 2026-09-29: a role ended its turn with posture active and sat 6.6 h unflagged, `state` done,
 # `status` busy). An unknown `state` falls back to `status`, which errs toward "busy".
 CLAUDE_TURN_STATES = {"working": "busy", "blocked": "blocked", "done": "idle"}
+# `state` stopped being a turn signal too (measured 2026-10-08, Claude Code 2.1.286): it reads
+# `working` for as long as a background task runs, so every idle role with a live watcher read as
+# mid-turn and turn-ended-active / stale-active could not fire. The job's own `tempo` (in
+# <claude config dir>/jobs/<id>/state.json) is the turn signal: `active` mid-turn (positive control:
+# a session measured mid-turn), `idle` between turns (6 of 6 idle sessions with live watchers),
+# `blocked` on a question. Used when present; otherwise `state`, then `status`.
+CLAUDE_TEMPO = {"active": "busy", "idle": "idle", "blocked": "blocked"}
+
+
+def claude_job_tempo(row: dict) -> str:
+    """The job's `tempo` ('' when unknown). A row may carry it (tests); else the job state file."""
+    if row.get("tempo"):
+        return str(row["tempo"])
+    from backends import fake_sessions
+    if fake_sessions() is not None:  # tests: never read the host's real job files
+        return ""
+    jid = str(row.get("id") or "")
+    if not jid or not re.fullmatch(r"[0-9a-f]{6,64}", jid):
+        return ""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    try:
+        with open(os.path.join(base, "jobs", jid, "state.json")) as fh:
+            return str(json.load(fh).get("tempo") or "")
+    except (OSError, ValueError):
+        return ""
 
 
 def claude_liveness(row: dict) -> str:
-    """'busy'|'blocked'|'idle' (or the raw `status` for a row without a known `state`)."""
+    """'busy'|'blocked'|'idle' from the job's tempo, else `state`, else the raw `status`."""
+    tempo = CLAUDE_TEMPO.get(claude_job_tempo(row))
+    if tempo:
+        return tempo
     st = str(row.get("state") or "")
     return CLAUDE_TURN_STATES.get(st) or str(row.get("status", ""))
 
@@ -614,12 +642,12 @@ the relay-queue cursor under `/tmp/{sid}/`.
 
 ## Loop
 
-1. Run `{cli} relay-watch --shoal {sid}` as a background command. Arm it with the Bash tool and run_in_background=true, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command has no timeout and wakes you when it exits; a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
+1. Run `{cli} relay-watch --shoal {sid}` as a background command. Arm it with the Bash tool, run_in_background=true and timeout=7200000, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command wakes you when it exits, and is killed at its timeout: 30 min by default, 2 h at most, so always pass the maximum (measured 2026-10-08: without it, an idle lane spent a turn every 30 min re-arming); a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
 2. When it exits it prints one `RELAY-WAKE to=<session name> session=<id> :: <text>` line per
    wake. For each, call SendMessage with to=<session name> and the text verbatim. Add the `[ref]`
    from ListAgents only when two sessions share the name, choosing the one whose session id
    starts with <id>.
-3. Re-arm relay-watch (same rule: Bash, run_in_background=true, no `&`, no Monitor) and prove its
+3. Re-arm relay-watch (same rule: Bash, run_in_background=true, timeout=7200000, no `&`, no Monitor) and prove its
    pid with TWO separate commands: first `cat /tmp/{sid}/relay-watch.pid`, then `ps -p <that
    number>`. Never use $(...) command substitution: it always needs a permission prompt.
 4. End the turn with one line: `relayed N`.

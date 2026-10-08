@@ -11,7 +11,12 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 - **Detection:** `claude agents --json`, where `state` is `done` while `status` is `busy`.
 - **Fix:** liveness maps the turn `state`; `status` reads busy whenever any background task runs.
 - **Metric:** `FM1:active_silent_h`, `wake:turn-ended-active`
-- **Status:** retired.
+- **Status:** reopened 2026-10-08, fixed the same day. On Claude Code 2.1.286 `state` also reads
+  `working` whenever a background task runs, so every idle role with a live watcher read as mid-turn
+  again. The job's `tempo` (`<claude config dir>/jobs/<id>/state.json`) is the turn signal now:
+  `active` mid-turn (positive control), `idle` between turns (6 of 6), `blocked` on a question.
+  Liveness reads `tempo` first. The harness moves this signal without notice: re-measure after
+  each harness upgrade (checks.md).
 
 ## FM-2: candidates hidden behind blocked next items (2026-09-29)
 - **Signature:** an idle role with blocked next items, `next` showing no `BOARD` lines, and a queue
@@ -141,6 +146,20 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   (the repair firing).
 - **Status:** fixed in shoal. Left off in the shoal that hit it, by decision (a role there is held down
   by a dead session); on for the next shoal.
+
+## FM-15: background watcher killed every 30 minutes, a turn each time (2026-10-08)
+- **Signature:** an idle Claude role takes a turn every 30 minutes that only re-arms its watcher;
+  the transcript shows the background task `killed`.
+- **Detection:** a Bash background command's default timeout is 30 minutes (2 h at most with an
+  explicit `timeout`). The briefs never set one, and the relay doc said a background command "has
+  no timeout". Measured on the test shoal: armed 23:14:45Z, killed 23:44:40Z, re-armed by a full
+  turn. jlens-expert stopped re-arming on 10-07 after three kills and declared itself blocked.
+- **Fix:** the briefs, the relay doc and the protocol reference pass `timeout=7200000`. That cuts
+  the cost to one turn per 2 h per idle Claude role (12 a day); the cap itself is the harness's.
+  Lanes pick it up at their next restart or brief reload.
+- **Metric:** none yet: watcher arm-to-exit durations from the sidecars (`armed_utc` to `exit`)
+  would show it; proposed for fm_report.
+- **Status:** mitigated (the 2 h cap remains).
 
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
