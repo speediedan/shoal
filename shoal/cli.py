@@ -707,7 +707,7 @@ def cmd_retire(a: argparse.Namespace) -> int:
     if a.uninstall_units:
         cmd_uninstall_systemd(spec.sid)
     print("next: `shoal report --spec <spec> --gen <gen>` writes the incarnation report; "
-          "review it in hag_system_reviews.md before the next protocol change.")
+          "review it in shoal_system_reviews.md before the next protocol change.")
     return 0
 
 

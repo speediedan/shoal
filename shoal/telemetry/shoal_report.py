@@ -10,16 +10,16 @@ Default output: <SHOAL_DATA_ROOT>/<id>/reports/incarnation-<gen>-<YYYYMMDDTHHMM>
 (the per-shoal local home; editable review artifact carrying the VERDICT).
 HTML is a pure function of the .md: pass --out-html to render one, otherwise
 skipped (regenerate anytime; nothing reads it programmatically).
-(versioned, small, cited from hag_system_reviews.md) and the same stem .html
+(versioned, small, cited from shoal_system_reviews.md) and the same stem .html
 under <SHOAL_DATA_ROOT>/<id>/reports/ (bulk).
 
 Sections: header + protocol pins, outcomes, time-in-state per session,
 transition quality (valid/aliased/invalid), wait discipline (stale waits),
 watch events + stall recovery latency, watcher comms (`coord_comms`
 events), queue telemetry, optional GPU pool share, failure-mode signatures (mapped to
-hag_failure_modes.md section numbers), and a VERDICT block the reviewer
+shoal_failure_modes.md section numbers), and a VERDICT block the reviewer
 fills (protocol proposal or explicit no-change — the rule from
-hag_system_reviews.md). Every number is computed from events; a missing
+shoal_system_reviews.md). Every number is computed from events; a missing
 instrument prints as `unobserved`, never as zero.
 
 The shoal ledger (2026-09-20) is folded in (ledger.as_telemetry)
@@ -454,7 +454,7 @@ def stall_suspect_minutes(evs):
 
 
 def signatures(evs, stale_waits, quality, recov):
-    """Failure-mode signatures (hag_failure_modes.md § numbers) detected from events."""
+    """Failure-mode signatures (shoal_failure_modes.md § numbers) detected from events."""
     def count(pred):
         return sum(1 for e in evs if pred(e))
     sig = [
@@ -759,7 +759,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     _m, _k, by_to2, _a, _u = message_stats(evs)
     sig += ledger_signatures(evs, wper2, by_to2, getattr(opts, "view_lint", []) or [])
     L.append("")
-    L.append("## Failure-mode signatures (hag_failure_modes.md)")
+    L.append("## Failure-mode signatures (shoal_failure_modes.md)")
     L.append(table(["signature", "count"], sig))
     L.append("")
     L.append("## VERDICT (reviewer fills; a report without one is not a review)")

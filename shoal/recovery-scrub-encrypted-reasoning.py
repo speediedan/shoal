@@ -2,7 +2,7 @@
 
 Provenance: https://github.com/hailongcoding/opencode-session-rescue
 File: Fix-EncryptedContent-Portable.bat, v4 session-locator, fetched 2026-09-19.
-SHA256 of the vendored copy is recorded in hag_failure_modes.md §12; re-verify
+SHA256 of the vendored copy is recorded in shoal_failure_modes.md §12; re-verify
 before updating. Reviewed 2026-09-19: stdlib only, backs up DB+WAL+auth.json+storage
 before writing, deletes ONLY signature/encrypted/item-id keys inside
 reasoning/thinking carriers and provider-metadata subtrees (never message/part
