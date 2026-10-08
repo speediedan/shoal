@@ -12,6 +12,9 @@ TESTD="$(cd "$(dirname "$0")" && pwd)"
 SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 . "$TESTD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/shoal-h4-selftest-$$}"
+# one run at a time per host: the shoal id (h4selftest), its /tmp state dir and the watcher cleanup below
+# are fixed, so two concurrent runs (another checkout or worktree, or `upgrade`) clobber each other
+exec 9>"/tmp/shoal-selftest-h4selftest.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another h4selftest run holds the lock" >&2; exit 1; }
 # background watchers this test starts must never outlive it (a stray one shares the
 # sidecar and silently swallows the next run's wakes)
 cleanup() { pkill -f -- '(cli\.py|shoal) (ledger-watch|relay-watch) --shoal h4selftest' 2>/dev/null || true; }

@@ -10,6 +10,9 @@ TESTD="$(cd "$(dirname "$0")" && pwd)"
 SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 . "$TESTD/selftest_lib.sh"
 S="${1:-${TMPDIR:-/tmp}/shoal-h8-selftest-$$}"
+# one run at a time per host: the shoal id (h8selftest), its /tmp state dir and the watcher cleanup below
+# are fixed, so two concurrent runs (another checkout or worktree, or `upgrade`) clobber each other
+exec 9>"/tmp/shoal-selftest-h8selftest.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another h8selftest run holds the lock" >&2; exit 1; }
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
 shoal_test_setup "$S"
 ROOT="$S/root"
