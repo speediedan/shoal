@@ -70,9 +70,37 @@ assert r["far"]["session"] == "remote" and r["far"]["watcher"] == "remote", r["f
 assert r["far"]["can_progress"]["ok"], r["far"]
 print("contract ok")
 PY
+# the read model and the health quorum share their predicates: parked-work and watcher-dead agree
+$H queue --shoal $SID --spec "$SPEC" --slug oc --wait user-feedback --holder maintainer --next example/repo#8:fix --no-sync >/dev/null 2>&1 || fail "park oc"
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "ui reasons drift from health.evaluate"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import health, ui_status
+from ledger import Ledger, View
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+rows = ui_status.claude_rows()
+ev = {(c["slug"], c["condition"]) for c in health.evaluate(spec, view, health.claude_busy())
+      if c["condition"] in ("parked-work", "watcher-dead")}
+ui = set()
+for r in spec.roles:
+    if not r.session or ui_status.is_remote(r):
+        continue
+    row = ui_status.role_row(spec, view, r, rows, ui_status.utcnow())
+    if row["session"] == "dead":
+        continue  # the UI reports dead-worker; the quorum's dead-worker path is revive, not these two
+    ui |= {(r.slug, c) for c in ("parked-work", "watcher-dead") if c in row["can_progress"]["reasons"]}
+ev = {x for x in ev if x[0] not in ("dead", "far")}
+assert ui == ev, (sorted(ui), sorted(ev))
+assert ("oc", "parked-work") in ui, sorted(ui)
+print("predicates agree:", sorted(ui))
+PY2
+HEAD0=$(git -C "$A" rev-parse HEAD); SUM0=$(cat "$A"/shoals/$SID/ledger/*.jsonl | sha256sum)
+$H ui status --shoal $SID --ledger-root "$ROOT" --json >/dev/null || fail "ui status rc (2)"
 [ "$(git -C "$A" rev-parse HEAD)" = "$HEAD0" ] || fail "ui status committed to the ledger"
 [ "$(cat "$A"/shoals/$SID/ledger/*.jsonl | sha256sum)" = "$SUM0" ] || fail "ui status wrote a ledger line"
-check "uiselftest: 2!" $H ui line --shoal $SID --ledger-root "$ROOT"
+check "uiselftest: 3!" $H ui line --shoal $SID --ledger-root "$ROOT"
 check "QUESTION" $H ui status --shoal $SID --ledger-root "$ROOT"
 
 echo "== 2 viewer: argv per harness, never a resume; multiplexer env stripped; dead sessions refused"
