@@ -103,6 +103,26 @@ $H ui status --shoal $SID --ledger-root "$ROOT" --json >/dev/null || fail "ui st
 check "uiselftest: 3!" $H ui line --shoal $SID --ledger-root "$ROOT"
 check "QUESTION" $H ui status --shoal $SID --ledger-root "$ROOT"
 
+# quiet-check classifies what a Claude transcript gained: turns, turn inputs, recaps
+python3 - "$SHOALD" "$S/tx.jsonl" <<'PY2' || fail "transcript classification"
+import json, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status
+p = sys.argv[2]
+open(p, "w").write(json.dumps({"type": "system", "subtype": "turn_duration"}) + "\n")
+off = len(open(p, "rb").read())
+with open(p, "a") as fh:
+    for e in ({"type": "system", "subtype": "away_summary", "content": "recap"},
+              {"type": "user", "message": {"content": [{"type": "text", "text": "wake"}]}},
+              {"type": "user", "message": {"content": [{"type": "tool_result", "content": "x"}]}},
+              {"type": "assistant", "message": {"content": []}},
+              {"type": "system", "subtype": "turn_duration"}):
+        fh.write(json.dumps(e) + "\n")
+t = ui_status.transcript_since(p, off)
+assert t == {"turns": 1, "turn_inputs": 1, "recaps": 1, "other": 2}, t
+print("transcript classes ok")
+PY2
+
 echo "== 2 viewer: argv per harness, never a resume; multiplexer env stripped; dead sessions refused"
 check '"attach", "c1a2b3c4-0000"' $H view $SID cl --spec "$SPEC" --dry-run
 # the opencode viewer reads the server password from the server process's own environment

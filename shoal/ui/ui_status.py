@@ -126,8 +126,17 @@ def claude_session(rows: list[dict], session: str) -> dict | None:
 # or on a question, None unknown
 BETWEEN = {"idle": True, "working": False, "blocked": False}
 
-CLAUDE_STATE = {"working": "working", "busy": "working", "running": "working", "blocked": "blocked",
-                "waiting": "blocked", "idle": "idle", "done": "dead", "stopped": "dead"}
+LIVENESS = {"busy": "working", "blocked": "blocked", "idle": "idle"}
+
+
+def claude_turn(row: dict) -> str:
+    """working | blocked | idle | dead | unknown for one `claude agents --json --all` row. The turn
+    signal is the health quorum's own (`health.claude_liveness`: the job's tempo, then state), never
+    `state` alone, which reads `working` while a background watcher runs. No pid is a dead worker."""
+    import health as _h
+    if not row.get("pid"):
+        return "dead"
+    return LIVENESS.get(_h.claude_liveness(row), "unknown")
 
 
 def is_remote(role) -> bool:
@@ -145,9 +154,7 @@ def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = 
         e = claude_session(rows, role.session)
         if e is None:
             return "unknown"
-        if not e.get("pid"):
-            return "dead"
-        return CLAUDE_STATE.get(str(e.get("state") or ""), "unknown")
+        return claude_turn(e)
     if role.ecosystem == "opencode" and opencode_probe:
         try:
             from backends import get as get_backend
@@ -544,6 +551,7 @@ def quiet_snapshot(ids: list[str] | None = None) -> dict:
             ev = {"harness": r.ecosystem, "ledger_lines": lines, "session": session_state(r, rows, False)}
             if r.ecosystem == "claude":
                 t = _claude_transcript(r.session)
+                ev["transcript"] = t or None
                 ev["transcript_bytes"] = os.path.getsize(t) if t else None
             elif r.ecosystem == "opencode":
                 ev["updated_ms"] = oc.get(r.session)
@@ -551,7 +559,41 @@ def quiet_snapshot(ids: list[str] | None = None) -> dict:
     return snap
 
 
+def transcript_since(path: str, offset: int) -> dict[str, int]:
+    """What a Claude transcript gained after `offset` bytes: completed turns (`turn_duration`),
+    prompts and notifications that start turns (`user` entries that are not tool results), recaps
+    (`away_summary`: a model call Claude Code makes when a client returns, not a turn) and other."""
+    out = {"turns": 0, "turn_inputs": 0, "recaps": 0, "other": 0}
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            chunk = fh.read().decode(errors="replace")
+    except OSError:
+        return out
+    for line in chunk.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        sub = e.get("subtype")
+        if sub == "turn_duration":
+            out["turns"] += 1
+        elif sub == "away_summary":
+            out["recaps"] += 1
+        elif e.get("type") == "user" and not any(
+                isinstance(c, dict) and c.get("type") == "tool_result"
+                for c in ((e.get("message") or {}).get("content") or []) if isinstance(c, dict)):
+            out["turn_inputs"] += 1
+        else:
+            out["other"] += 1
+    return out
+
+
 def cmd_quiet_check(a) -> int:
+    """Compare two snapshots. A Claude role's transcript tail is classified (turns versus recaps),
+    because `claude agents` state reads `working` while a background watcher runs, so the
+    harness state is not an idle signal. Exit 1 when any role took a turn, ran a recap or wrote
+    to its ledger file; a turn that an offer or wake explains is still reported, for review."""
     if a.save:
         snap = quiet_snapshot(a.ids or None)
         with open(a.save, "w") as fh:
@@ -571,17 +613,14 @@ def cmd_quiet_check(a) -> int:
             print(f"  {key:<48} gone")
             continue
         grew = []
-        if (n.get("transcript_bytes") or 0) > (o.get("transcript_bytes") or 0):
-            grew.append(f"transcript +{(n['transcript_bytes'] or 0) - (o['transcript_bytes'] or 0)}B")
+        if n.get("transcript") and (n.get("transcript_bytes") or 0) > (o.get("transcript_bytes") or 0):
+            t = transcript_since(n["transcript"], o.get("transcript_bytes") or 0)
+            grew += [f"{v} {k}" for k, v in t.items() if v]
         if (n.get("updated_ms") or 0) > (o.get("updated_ms") or 0):
             grew.append("opencode session updated")
         if n["ledger_lines"] > o["ledger_lines"]:
             grew.append(f"ledger +{n['ledger_lines'] - o['ledger_lines']}")
-        idle_both = o["session"] in ("idle", "unknown") and n["session"] in ("idle", "unknown")
-        flag = "ACTIVITY" if grew else "quiet"
-        if grew and idle_both:
-            flag = "ACTIVITY (idle before and after: check whether something woke it)"
-            moved += 1
-        print(f"  {key:<48} {o['session']:>8} -> {n['session']:<8} {flag}" + (f": {', '.join(grew)}" if grew else ""))
-    print("quiet-check: " + ("no idle role moved" if not moved else f"{moved} idle role(s) moved: investigate"))
+        moved += bool(grew)
+        print(f"  {key:<48} {'MOVED: ' + ', '.join(grew) if grew else 'quiet'}")
+    print("quiet-check: " + ("nothing moved" if not moved else f"{moved} role(s) moved: review each line"))
     return 1 if moved else 0
