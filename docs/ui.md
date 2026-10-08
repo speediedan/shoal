@@ -8,8 +8,9 @@ places these pieces among the components.
 
 Three rules hold for every piece:
 
-1. **Viewing is never a wake.** Nothing in the UI calls `next` without `--peek`, pulls the ledger by
-   default, commits, or messages a role. A card refresh, a feed tick and an attach cost no tokens.
+1. **Viewing is never a wake.** Nothing that only views calls `next` without `--peek`, pulls the
+   ledger, commits, or messages a role. A card refresh, a feed tick and an attach cost no tokens. A
+   write verb's preview runs that verb's own `--dry-run`, which syncs like the verb itself.
 2. **The UI owns no session.**
    - Panes run the harness's own client on a session that already exists (`claude attach <id>`, or
      the opencode TUI as a client of OpenChamber's running server).

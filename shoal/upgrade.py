@@ -18,7 +18,8 @@ Every change has one rollout class, and this command says which apply:
   restart  a spec change a live session depends on (a model change, a role's ecosystem):
            never done here; the command names it and stops short;
   ui       the operator UI's long-running feeder (`shoal-ui-feed`, docs/ui.md) keeps the code it
-           loaded: when `ui/` changed it is restarted (no session is woken; it only reads).
+           loaded (ledger, health, blockers, roles, backends, ui): on any module change it is
+           restarted, which wakes no session (it only reads).
 
 Order: refuse a dirty shoal/ tree, run the selftests, diff shoal/ since the spec's recorded
 `tooling.sha`, classify, apply feature edits, record the new sha with a ledger `system`
@@ -98,7 +99,7 @@ def classify(files: list[str]) -> dict[str, list[str]]:
                                  "ui (restart shoal-ui-feed)": []}
     for f in files:
         b = os.path.basename(f)
-        if b.startswith("ui_") and b.endswith(".py"):
+        if b.endswith(".py"):  # the feeder keeps ledger, health, blockers, roles and backends loaded
             out["ui (restart shoal-ui-feed)"].append(b)
         if b in BRIEF:
             out["brief"].append(b)
@@ -245,7 +246,10 @@ def ui_feed_active() -> bool:
 
 def restart_ui_feed() -> str:
     """The feeder is read-only to shoal and wakes nobody: a restart costs no tokens."""
-    r = subprocess.run(["systemctl", "--user", "restart", UI_FEED_UNIT], capture_output=True, text=True, timeout=30)
+    try:
+        r = subprocess.run(["systemctl", "--user", "restart", UI_FEED_UNIT], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"restart FAILED: {exc}"
     return "restarted" if r.returncode == 0 else f"restart FAILED: {(r.stderr or r.stdout).strip()[-120:]}"
 
 

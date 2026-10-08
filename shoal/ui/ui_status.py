@@ -126,10 +126,17 @@ CLAUDE_STATE = {"working": "working", "busy": "working", "running": "working", "
                 "waiting": "blocked", "idle": "idle", "done": "dead", "stopped": "dead"}
 
 
+def is_remote(role) -> bool:
+    """A role whose session runs on another host: no local sidecar, no local harness row (as doctor)."""
+    return bool(role.server) and role.server not in (os.uname().nodename, config.server())
+
+
 def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = "") -> str:
-    """working | blocked | idle | dead | unknown | parked (no session)."""
+    """working | blocked | idle | dead | unknown | remote | parked (no session)."""
     if not role.session:
         return "parked"
+    if is_remote(role):
+        return "remote"
     if role.ecosystem == "claude":
         e = claude_session(rows, role.session)
         if e is None:
@@ -183,7 +190,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         k = item_key(x)
         b = next((v for kk, v in nb.items() if item_key(kk) == k), None)
         nxt.append({"item": x, "blocker": b, "stale": k in stale_nb or None})
-    alive, sc = _h.watcher_alive(spec.sid, slug)
+    remote = is_remote(role)
+    alive, sc = (False, {}) if remote else _h.watcher_alive(spec.sid, slug)
     sess = session_state(role, rows, opencode_probe, spec.dir)
     asks = list(q.get("asks") or [])
     mail = [m for m in view.msgs_to(slug, boundary)]
@@ -200,7 +208,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         if sess == "blocked":
             reasons.append("blocked-on-question")
         # a session mid-turn (or on a question) has no watcher by design: it arms at the turn's end
-        if not alive and posture != "offline" and not is_wake_relay(role) and sess in ("idle", "unknown"):
+        if not remote and not alive and posture != "offline" and not is_wake_relay(role) and sess in ("idle", "unknown"):
             reasons.append("watcher-dead")
         for x in q.get("next") or []:
             b = next((v for kk, v in nb.items() if item_key(kk) == item_key(x)), "")
@@ -228,7 +236,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
         "asks": [_short(a, 160) for a in asks],
-        "watcher": "alive" if alive else ("none" if not sc else "dead"),
+        "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
         "heartbeat_age_s": int(hb * 60) if hb is not None else None,
@@ -260,7 +268,8 @@ def conditions(spec: ShoalSpec, view, cache_dir: str, refresh: bool = False) -> 
     path = os.path.join(cache_dir, "ui-conditions.json")
     try:
         cached = json.load(open(path))
-        if not refresh and age_s(cached.get("ts", "")) is not None and age_s(cached["ts"]) < CONDITIONS_TTL_S:
+        a = age_s(cached.get("ts", ""))
+        if not refresh and a is not None and a < CONDITIONS_TTL_S:
             cached["age_s"] = age_s(cached["ts"])
             return cached
     except (OSError, ValueError):
@@ -278,7 +287,7 @@ def conditions(spec: ShoalSpec, view, cache_dir: str, refresh: bool = False) -> 
                             "detail": "relay-watch not running"})
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        tmp = path + ".tmp"
+        tmp = path + f".{os.getpid()}.tmp"
         with open(tmp, "w") as fh:
             json.dump(out, fh)
         os.replace(tmp, path)
@@ -301,7 +310,8 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
     view = View(led, spec)
     roles = [role_row(spec, view, r, rows, now, opencode_probe) for r in spec.roles]
     pages = [m for m in view.msgs if m.get("to") == "user" and m.get("kind") == "health"
-             and (age_s(m.get("ts", ""), now) or 10**9) < PAGE_WINDOW_H * 3600]
+             and (age_s(m.get("ts", ""), now) if age_s(m.get("ts", ""), now) is not None else 10**9)
+             < PAGE_WINDOW_H * 3600]
     off, frz = view.user_offline(), view.freeze()
     has_relay = any(is_wake_relay(r) for r in spec.roles)
     doc = {
@@ -369,7 +379,8 @@ def cached_status(ids: list[str] | None = None, max_age_s: float = CACHE_MAX_AGE
     if not force:
         try:
             d = json.load(open(cache_path()))
-            if d.get("v") == CONTRACT_V and (age_s(d.get("ts", "")) or 10**9) <= max_age_s:
+            a = age_s(d.get("ts", ""))
+            if d.get("v") == CONTRACT_V and a is not None and a <= max_age_s:
                 doc = d
         except (OSError, ValueError):
             pass

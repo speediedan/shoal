@@ -20,6 +20,8 @@ ROOT="$S/root"; SID=uiselftest; SPEC="$ROOT/shoals/$SID/shoal.json"; A="$S/clone
 export SHOAL_SPEC="$SPEC"
 H="python3 $SHOALD/cli.py"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
+BGPIDS=()
+trap 'kill "${BGPIDS[@]}" 2>/dev/null' EXIT
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 800 <<<"$out")"; }
 
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null
@@ -34,7 +36,8 @@ cat > "$SPEC" <<JSON
   {"slug":"cl","ecosystem":"claude","title":"cl","doc":"$DOC","fill":"self","session":"c1a2b3c4-0000"},
   {"slug":"oc","ecosystem":"opencode","title":"oc","doc":"$DOC","fill":"assigned","session":"ses_oc1"},
   {"slug":"dead","ecosystem":"claude","title":"dead","doc":"$DOC","fill":"self","session":"deadbeef-0000"},
-  {"slug":"parked","ecosystem":"claude","title":"parked","doc":"$DOC","fill":"self","session":""}
+  {"slug":"parked","ecosystem":"claude","title":"parked","doc":"$DOC","fill":"self","session":""},
+  {"slug":"far","ecosystem":"claude","title":"far","doc":"$DOC","fill":"self","session":"farfar00","server":"other-host.invalid"}
  ],"generations":[{"gen":"r3","incarnation":2,"started_utc":"2026-10-01T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
 JSON
 $H ledger-init --spec "$SPEC" >/dev/null || fail "ledger-init"
@@ -62,6 +65,9 @@ assert r["parked"]["posture"] == "parked" and r["parked"]["can_progress"]["ok"],
 assert r["oc"]["session"] == "idle" and r["oc"]["offers_open"] == 1, r["oc"]
 assert r["cl"]["view"][-2:] == ["uiselftest", "cl"], r["cl"]["view"]
 assert s["needs_you"] >= 2, s
+# a role on another host has no local sidecar or harness row: never a local stall
+assert r["far"]["session"] == "remote" and r["far"]["watcher"] == "remote", r["far"]
+assert r["far"]["can_progress"]["ok"], r["far"]
 print("contract ok")
 PY
 [ "$(git -C "$A" rev-parse HEAD)" = "$HEAD0" ] || fail "ui status committed to the ledger"
@@ -71,11 +77,10 @@ check "QUESTION" $H ui status --shoal $SID --ledger-root "$ROOT"
 
 echo "== 2 viewer: argv per harness, never a resume; multiplexer env stripped; dead sessions refused"
 check '"attach", "c1a2b3c4-0000"' $H view $SID cl --spec "$SPEC" --dry-run
-sleep 300 & PWPID=$!
 # the opencode viewer reads the server password from the server process's own environment
-env OPENCODE_SERVER_PASSWORD=pw-selftest sleep 300 & SRVPID=$!
+env OPENCODE_SERVER_PASSWORD=pw-selftest sleep 300 & SRVPID=$!; BGPIDS+=("$SRVPID")
 OCV=$(SHOAL_FAKE_OPENCODE_SERVER="4096:$SRVPID" $H view $SID oc --spec "$SPEC" --dry-run)
-kill $PWPID $SRVPID 2>/dev/null
+kill $SRVPID 2>/dev/null
 grep -q -- '"--server", "http://127.0.0.1:4096", "--session", "ses_oc1"' <<<"$OCV" || fail "opencode viewer argv: $OCV"
 grep -q OPENCODE_PASSWORD <<<"$OCV" || fail "opencode viewer env: $OCV"
 grep -q pw-selftest <<<"$OCV" && fail "viewer printed a credential value"
@@ -87,6 +92,8 @@ import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/
 import ui_view
 e = ui_view.clean_env({"OPENCODE_PASSWORD": "x"})
 assert not [k for k in e if k.startswith(("HERDR_", "ZELLIJ"))], sorted(e)
+import config  # every harness probe's env (backends, claude_rows) drops pane identity too
+assert not [k for k in config.tool_env() if k.startswith(("HERDR_", "ZELLIJ"))]
 assert e["OPENCODE_PASSWORD"] == "x"
 print("env ok")
 PY
@@ -140,18 +147,20 @@ while True:
         out = {"id": req["id"], "result": res}
     c.sendall((json.dumps(out) + "\n").encode()); c.close()
 PY
-FAKE=$!
+FAKE=$!; BGPIDS+=("$FAKE")
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.3; done
 [ -S "$SOCK" ] || fail "fake herdr socket did not start"
-check "create workspace shoal:$SID: overview + 3 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
-check "up to date (3 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+# an explicit session wins over a socket inherited from the pane the suite runs in
+HERDR_SOCKET_PATH="$S/not-the-live-herdr.sock" \
+  check "create workspace shoal:$SID: overview + 4 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+check "up to date (4 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 [ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 2 ] || fail "open is not idempotent: $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 ra = [c["params"] for c in calls if c["method"] == "pane.report_agent"]
-assert {r["agent"] for r in ra} == {"cl", "oc", "dead"}, ra
+assert {r["agent"] for r in ra} == {"cl", "oc", "dead", "far"}, ra
 st = {r["agent"]: r["state"] for r in ra}
 assert st["cl"] == "blocked" and st["dead"] == "blocked", st
 md = [c["params"] for c in calls if c["method"] == "pane.report_metadata"]

@@ -108,13 +108,21 @@ def opencode_server() -> tuple[str, str]:
         r = subprocess.run(["ss", "-tlnpH"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return "", ""
+    cands = []
     for line in r.stdout.splitlines():
         if "opencode" in line and "127.0.0.1:" in line:
             m = re.search(r"127\.0\.0\.1:(\d+)", line)
             p = re.search(r"pid=(\d+)", line)
             if m and p:
-                return m.group(1), p.group(1)
-    return "", ""
+                cands.append((m.group(1), p.group(1)))
+    for port, pid in cands:  # prefer the managed server: the one started with a server password
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as fh:
+                if b"OPENCODE_SERVER_PASSWORD=" in fh.read():
+                    return port, pid
+        except OSError:
+            continue
+    return cands[0] if cands else ("", "")
 
 
 def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:

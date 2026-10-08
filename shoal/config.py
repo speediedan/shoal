@@ -134,10 +134,15 @@ def tool_path() -> str:
     return str(_get("tool_path", names("TOOL_PATH"), lambda: os.environ.get("PATH", "")))
 
 
+MUX_ENV_PREFIXES = ("HERDR_", "ZELLIJ")
+
+
 def tool_env(base: dict | None = None) -> dict:
     """An environment whose PATH is `tool_path` ahead of the current PATH (duplicates dropped,
-    first occurrence wins, so lookup order is unchanged)."""
-    env = dict(os.environ if base is None else base)
+    first occurrence wins, so lookup order is unchanged). Terminal-multiplexer variables are
+    dropped: a harness CLI started from a pane (a probe that happens to start the Claude daemon)
+    must never carry pane identity into every session's hooks."""
+    env = {k: v for k, v in (os.environ if base is None else base).items() if not k.startswith(MUX_ENV_PREFIXES)}
     seen, parts = set(), []
     for p in (tool_path() + ":" + env.get("PATH", "")).split(":"):
         if p and p not in seen:

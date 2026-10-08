@@ -18,9 +18,9 @@ Rules this adapter keeps (design driver 1 and the coexistence constraints):
   selftest greps this file for those calls.
 - Role panes run `shoal view --stub`: a card that attaches only on Enter (never a resume). Layouts
   are restored by re-applying a whole tab (`layout.apply`), never by typing a command into a pane.
-- Herdr is told role state with `pane.report_agent` (source `shoal`) and tokens with
-  `pane.report_metadata`, both with a TTL: if the feeder dies the sidebar loses shoal data instead of
-  showing stale data.
+- Herdr is told role state with `pane.report_agent` (source `shoal`; Herdr has no TTL for it, so
+  it holds the last reported state) and tokens with `pane.report_metadata` with a TTL: if the
+  feeder dies the shoal tokens disappear instead of showing stale data.
 """
 from __future__ import annotations
 
@@ -71,7 +71,10 @@ def config_dir() -> str:
 
 
 def socket_path(session: str = "") -> str:
-    """Inside a Herdr pane or plugin, the injected socket; else the named session's socket."""
+    """An explicit session (argument, then SHOAL_HERDR_SESSION) wins; else the socket Herdr injected
+    into this pane or plugin; else the default `shoal` session."""
+    if not session and config.env("HERDR_SESSION"):
+        session = config.env("HERDR_SESSION")
     if not session and os.environ.get("HERDR_SOCKET_PATH"):
         return os.environ["HERDR_SOCKET_PATH"]
     name = session or session_name()
@@ -572,9 +575,11 @@ def cmd_tail(a) -> int:
     import ui_status
     from roles import ShoalSpec
     files: dict[str, tuple[str, int]] = {}
+    from ledger import Ledger
     for p in ui_status.discover_all(a.ledger_root, a.ids or None):
         spec = ShoalSpec.load(p)
-        for f in glob.glob(os.path.join(os.path.dirname(p), "ledger", "*.jsonl")):
+        ldir = Ledger(spec.sid, root=spec.ledger_dir or None, sync=False).ldir
+        for f in glob.glob(os.path.join(ldir, "*.jsonl")):
             files[f] = (spec.sid, max(0, os.path.getsize(f) - (4000 if a.backlog else 0)))
     print(f"ledger tail: {len(files)} writer files (read-only)")
     while True:
@@ -828,7 +833,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         if how == "m":
             text = _ask("answer text: ")
             if text:
-                return confirm_run(["msg", "--shoal", sid, "--to", pick, "--text", text, "--wake"],
+                return confirm_run(["msg", "--shoal", sid, "--to", pick, f"--text={text}", "--wake"],
                                    "a --wake from user starts one turn of that role (tokens)")
         return 0
     if verb == "msg":
@@ -837,7 +842,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         if not text:
             return 1
         wake = _ask("wake it now? (mail is otherwise read at its next boundary) [y/N] ").lower() == "y"
-        args = ["msg", "--shoal", sid, "--to", slug, "--text", text] + (["--wake"] if wake else [])
+        args = ["msg", "--shoal", sid, "--to", slug, f"--text={text}"] + (["--wake"] if wake else [])
         note = ("a * message with --wake starts a turn in EVERY role" if slug == "*" and wake else
                 "a --wake starts one turn of that role (tokens)" if wake else "")
         return confirm_run(args, note)
@@ -847,7 +852,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         if not item:
             return 1
         note = _ask("note (optional): ")
-        args = ["offer", "--shoal", sid, "--to", slug, "--item", item] + (["--note", note] if note else [])
+        args = ["offer", "--shoal", sid, "--to", slug, f"--item={item}"] + ([f"--note={note}"] if note else [])
         return confirm_run(args, "an offer wakes an idle role (one turn)")
     if verb == "withdraw":
         item = _ask("item to withdraw (repo#n): ")

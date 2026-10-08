@@ -59,7 +59,8 @@ export S=<id> SPEC=<path to the group's spec>
     shoal view --harness claude|opencode --session <id>
     ```
 
-- The Herdr workspace (lane host once; the laptop attaches with its launcher):
+- The Herdr workspace (once on the lane host; a viewing machine then attaches with
+  `herdr --remote <host> --session shoal --remote-keybindings server`):
 
     ```bash
     shoal ui herdr-install            # config block, plugin link, herdr + feeder units, layouts

@@ -90,6 +90,16 @@ def run_viewer(harness: str, session: str, label: str) -> int:
     return r.returncode
 
 
+def flush_input() -> None:
+    """Discard pending terminal input, so nothing typed at a card reaches the harness client."""
+    if sys.stdin.isatty():
+        import termios
+        try:
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except termios.error:
+            pass
+
+
 def _getkey(timeout: float) -> str:
     """One keypress within `timeout` seconds, '' on timeout. Raw mode only when stdin is a tty."""
     import select
@@ -157,7 +167,8 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             return 0
         if k in ("r", "R"):
             force = True
-        if k in ("\r", "\n", "a"):
+        if k in ("\r", "\n"):  # Enter only: a typed word must never start an attach
+            flush_input()
             try:
                 spec, role = resolve_role(sid, slug, spec_path)
                 run_viewer(role.ecosystem, role.session, f"{sid}/{slug}")
@@ -175,7 +186,8 @@ def standalone_stub(harness: str, session: str, label: str) -> int:
         k = _getkey(3600)
         if k in ("q", "Q"):
             return 0
-        if k in ("\r", "\n", "a"):
+        if k in ("\r", "\n"):
+            flush_input()
             run_viewer(harness, session, label)
             time.sleep(2)
 

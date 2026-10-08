@@ -23,6 +23,10 @@ shoal_test_setup() {
     unset "SHOAL_$v"
   done
   unset GPU_LEASE_CMD
+  # an operator often runs the suites (or `shoal upgrade`) from inside a terminal multiplexer pane:
+  # nothing may reach the live herdr socket or another ledger clone from a selftest
+  for v in $(env | sed -n 's/^\(HERDR_[A-Za-z0-9_]*\|ZELLIJ[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+  for v in UI_LEDGER_ROOTS HERDR_SESSION HERDR_BIN FAKE_OPENCODE_SERVER; do unset "SHOAL_$v"; done
   mkdir -p "$s/data"
   printf 'data_root = "%s"\nledger_dir = "%s"\n' "$s/data" "$s/no-ledger-clone" > "$s/host.toml"
   export SHOAL_CONFIG="$s/host.toml"

@@ -401,7 +401,7 @@ changes anything:
 | re-arm | code a running watcher executes (`ledger-watch`, `relay-watch`) | `--rearm lazy` (default): at each role's next wake; `--rearm now`: one wake per stale `ledger-watch`, and the stale `relay-watch` is killed (see below) |
 | brief | `briefs.py` text | the next restart; `next` and `queue` output carry rule changes now |
 | restart | a spec change a live session depends on (model, harness) | never done by `upgrade`; `restart --only` does it |
-| ui | the operator UI's feeder (`shoal-ui-feed`) | restarted when `ui/` changed; it only reads, so no session is woken |
+| ui | the operator UI's feeder (`shoal-ui-feed`) | restarted on any module change (it keeps the protocol modules loaded); it only reads, so no session is woken |
 
 The command refuses a dirty package tree, runs the four selftests, diffs the package against the
 spec's recorded `tooling.sha`, applies `--enable`, `--disable` and `--set` feature edits, records
@@ -461,8 +461,8 @@ and the contract are in [`ui.md`](ui.md).
     confirm, and log them to `ui-actions.jsonl`.
   - The adapter never calls `pane.send_*`, `agent.prompt` or `pane.close`, and the UI selftest
     enforces this.
-- **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts when
-  `ui/` changed. No session is woken.
+- **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
+  module change. No session is woken.
 
 ## 13. Known limitations
 
