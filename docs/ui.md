@@ -77,6 +77,13 @@ reader ignores fields it does not know.
 
 `parked` is informational. `ok` is false for any reason other than `waiting-on-you` and `parked`.
 
+`watcher-dead` and `parked-work` come from the health quorum's own predicates
+(`health.watcher_dead`, `health.parked_free`). Blocker checks there run with `live=False` (no
+provider calls), so a provider-checkable blocker (`upstream:`, `lease:`) that resolved minutes ago
+still reads as current until the quorum's next run marks it stale. This is deliberate: never turn
+provider calls on in the 20-second feed. `--conditions` (the quorum's own `evaluate()`, live, cached
+five minutes) is the up-to-date view.
+
 ## The viewer: `shoal view`
 
 ```bash

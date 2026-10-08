@@ -179,9 +179,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     q = view.current_queue(slug) or {}
     st = view.role_state(slug) or {}
     idle = view.is_idle(slug)
-    posture = st.get("state") or ("idle" if idle else "active")
-    if posture == "waiting":
-        posture = "wait"
+    # `hposture` is the ledger's word (health's predicates take it); `posture` is the contract's
+    hposture = st.get("state") or ("idle" if idle else "active")
+    posture = "wait" if hposture == "waiting" else hposture
     boundary = max(q.get("ts", ""), st.get("ts", ""))
     sub = st.get("sub", "")
     nb = q.get("next_blocked") or {}
@@ -214,7 +214,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
         # turn's end, and a dead worker is reported as dead-worker instead
         if not remote and not is_wake_relay(role) and sess != "dead" and \
-                _h.watcher_dead(alive, "waiting" if posture == "wait" else posture, BETWEEN.get(sess)):
+                _h.watcher_dead(alive, hposture, BETWEEN.get(sess)):
             reasons.append("watcher-dead")
         for x in q.get("next") or []:
             b = next((v for kk, v in nb.items() if item_key(kk) == item_key(x)), "")
@@ -222,7 +222,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                 reasons.append("blocker-role-cannot-take")
                 break
         # the quorum's own predicate, with blocker checks kept off the network (live=False)
-        free, _ = _h.parked_free(spec, view, role, q, "waiting" if posture == "wait" else posture, sub, live=False)
+        free, _ = _h.parked_free(spec, view, role, q, hposture, sub, live=False)
         if free:
             reasons.append("parked-work")
         if asks or sub in USER_WAITS:
