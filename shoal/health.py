@@ -329,8 +329,13 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                 out.append({"slug": slug, "condition": "wait-expired", "key": f"rescan:{ru}", "since": ru,
                             "detail": f"{sub} wait on '{str(st.get('holder', ''))[:80]}' passed its rescan {ru} unproven.{ask}"})
             planned = {x.lower() for x in [q.get("active") or ""] + list(q.get("next") or []) if x}
+            import blockers as _blk
             for b in view.blocked_by(slug):
                 item = (b["item"] or "").lower()
+                # a wait on an item this role cannot take is the waiter's to fix (parked-work wakes it);
+                # waking this role about it cannot help (measured 2026-10-08: three wakes in a minute)
+                if item and _blk.takeable(spec, view, f"{slug}:{item}"):
+                    continue
                 if item and item.split(":", 1)[0] not in {p.split(":", 1)[0] for p in planned}:
                     out.append({"slug": slug, "condition": "blocking-unscheduled", "key": f"block:{b['role']}:{item}",
                                 "since": b["since"],

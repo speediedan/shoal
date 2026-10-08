@@ -126,6 +126,12 @@ def check(spec, view, slug: str, q: dict, item_k: str, blocker: str, meta: dict 
         if other and item_key(other) in view.done:
             d = view.done[item_key(other)]
             return "resolved", f"{item_key(other)} done by {d['by']} {d['ts']}"
+        # a carried-forward blocker naming a role that cannot take the item parks nothing: `queue`
+        # refuses it when recorded, and one carried forward is stale, so the writer is woken
+        # (parked-work), not the named role
+        why_t = takeable(spec, view, blocker)
+        if why_t:
+            return "expired", f"untakeable: {why_t.split(', so nothing', 1)[0]}"
         ttl = c["peer_ttl_min"]
     elif k in ("upstream", "lease"):
         target = provider_target(blocker)

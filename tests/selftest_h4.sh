@@ -835,6 +835,11 @@ OUT=$($H msg --shoal $SID --spec "$SPEC" --by tl --to up --no-sync --text "no it
 # once the maintainer offers it, the same blocker is accepted
 check "offered interpretune#9971:review to up" $H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9971:review --no-sync
 check "posture=active" $Q --slug tl --active interpretune#9970:fix --next interpretune#9971 --blocked "interpretune#9971=up:interpretune#9971"
+# carried forward after the offer is withdrawn, the same blocker is stale: it parks nothing, and the
+# named role is not woken about it (the waiter is)
+check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --to up --item interpretune#9971 --reason selftest --no-sync
+check "BLOCKER STALE interpretune#9971 <- up:interpretune#9971 (expired: untakeable: up is fill=assigned" \
+  $H next --shoal $SID --spec "$SPEC" --slug tl --peek --no-sync
 # a fill=self peer can claim board items itself: not checked
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); [r.update(fill="self") for r in d["roles"] if r["slug"]=="up"]
