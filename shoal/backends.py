@@ -430,8 +430,11 @@ class ClaudeBackend(Backend):
     def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
         """`claude attach <id>`: the live background session in this terminal, ownership unchanged.
         Detaching (or closing the terminal) leaves the session running. Attach is exclusive: a second
-        attach fails while another terminal holds it."""
-        return [shutil.which("claude") or "claude", "attach", session_id], {}
+        attach fails while another terminal holds it. Recaps are switched off for the client: Claude
+        Code may write an `away_summary` (a model call) when a client returns to a session with
+        unseen activity (measured once on a testbed lane, 2026-10-08; not reproducible on demand),
+        and a viewer should cost nothing."""
+        return [shutil.which("claude") or "claude", "attach", session_id], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
 
     @staticmethod
     def launch_command(brief_file: str) -> str:

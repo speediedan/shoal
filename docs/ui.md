@@ -99,6 +99,10 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   - Claude: attach is exclusive, so detach another terminal first.
 - **Environment.** `HERDR_*` and `ZELLIJ*` are stripped from the client's environment, so a Claude
   daemon first spawned from a pane cannot carry pane identity into every role's hooks.
+- **Recaps.** A Claude attach sets `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0`. Claude Code can write an
+  `away_summary` recap (a small model call, not a turn) when a client returns to a session with
+  unseen activity. This was measured once on a testbed lane; `ui quiet-check` reports recaps
+  separately from turns.
 - **Stub mode.** `--stub` shows a role card that refreshes every 15 seconds. It attaches on Enter and
   comes back to the card on detach.
 
@@ -145,6 +149,19 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 **Standalone sessions** (`shoal ui pick [--save]`, `shoal ui forget <id>`) list Claude background
 sessions and OpenChamber sessions that are not shoal roles, and open one in the `standalone`
 workspace. Saved ones (`~/.config/shoal/ui-standalone.json`) come back on every `ui open`.
+
+**Quiet check** (`shoal ui quiet-check --save F`, then `--compare F`). It proves that viewing woke
+nobody. For each Claude role it classifies what the transcript gained:
+
+- **`turns`:** completed turns. This is the number to judge: a turn the period's offers and wakes
+  do not explain is a wake to investigate.
+- **`turn_inputs`:** the prompts and notifications that started those turns.
+- **`recaps`:** `away_summary` model calls, which are not turns.
+- **`other`:** assistant messages and tool results inside those turns. It is context: `other > 0`
+  is not an extra wake.
+
+For opencode roles it reports whether the session's `updated` time moved, and for every role,
+ledger lines.
 
 **Metrics** (`shoal ui metrics`) prints failure-mode counts from the health review's `fm_report.py`
 and the latest report files. The browser view is the report HTML (`shoal report --out-html`).

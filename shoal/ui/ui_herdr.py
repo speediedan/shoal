@@ -434,7 +434,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
         if p is None or e.get("harness") != "claude":
             continue
         row = ui_status.claude_session(rows, e["session"]) or {}
-        st = ui_status.CLAUDE_STATE.get(str(row.get("state") or ""), "unknown")
+        st = ui_status.claude_turn(row) if row else "unknown"
         h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE, "agent": e.get("label") or "claude",
                                      "state": {"working": "working", "blocked": "blocked"}.get(st, "idle"),
                                      "message": f"standalone {st}", "seq": seq})
