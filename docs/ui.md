@@ -99,6 +99,10 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   - Claude: attach is exclusive, so detach another terminal first.
 - **Environment.** `HERDR_*` and `ZELLIJ*` are stripped from the client's environment, so a Claude
   daemon first spawned from a pane cannot carry pane identity into every role's hooks.
+- **Recaps.** A Claude attach sets `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0`. Claude Code can write an
+  `away_summary` recap (a small model call, not a turn) when a client returns to a session with
+  unseen activity. This was measured once on a testbed lane; `ui quiet-check` reports recaps
+  separately from turns.
 - **Stub mode.** `--stub` shows a role card that refreshes every 15 seconds. It attaches on Enter and
   comes back to the card on detach.
 

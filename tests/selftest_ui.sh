@@ -125,6 +125,7 @@ PY2
 
 echo "== 2 viewer: argv per harness, never a resume; multiplexer env stripped; dead sessions refused"
 check '"attach", "c1a2b3c4-0000"' $H view $SID cl --spec "$SPEC" --dry-run
+check 'CLAUDE_CODE_ENABLE_AWAY_SUMMARY' $H view $SID cl --spec "$SPEC" --dry-run
 # the opencode viewer reads the server password from the server process's own environment
 env OPENCODE_SERVER_PASSWORD=pw-selftest sleep 300 & SRVPID=$!; BGPIDS+=("$SRVPID")
 OCV=$(SHOAL_FAKE_OPENCODE_SERVER="4096:$SRVPID" $H view $SID oc --spec "$SPEC" --dry-run)
