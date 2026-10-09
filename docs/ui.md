@@ -150,6 +150,19 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 sessions and OpenChamber sessions that are not shoal roles, and open one in the `standalone`
 workspace. Saved ones (`~/.config/shoal/ui-standalone.json`) come back on every `ui open`.
 
+**Quiet check** (`shoal ui quiet-check --save F`, then `--compare F`). It proves that viewing woke
+nobody. For each Claude role it classifies what the transcript gained:
+
+- **`turns`:** completed turns. This is the number to judge: a turn the period's offers and wakes
+  do not explain is a wake to investigate.
+- **`turn_inputs`:** the prompts and notifications that started those turns.
+- **`recaps`:** `away_summary` model calls, which are not turns.
+- **`other`:** assistant messages and tool results inside those turns. It is context: `other > 0`
+  is not an extra wake.
+
+For opencode roles it reports whether the session's `updated` time moved, and for every role,
+ledger lines.
+
 **Metrics** (`shoal ui metrics`) prints failure-mode counts from the health review's `fm_report.py`
 and the latest report files. The browser view is the report HTML (`shoal report --out-html`).
 
