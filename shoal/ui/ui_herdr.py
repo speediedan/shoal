@@ -235,12 +235,13 @@ _TAGS: dict[str, str] = {}
 
 def shoal_tag(sid: str) -> str:
     """The short name a shoal shows as (workspace label, the `$shoal` token): the id without its
-    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `it-mvp`, unless another shoal on this host (retired ones
-    included) shares that stem, in which case the full id."""
+    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `it-mvp`, unless another LIVE shoal on this host shares
+    that stem, in which case the full id. Retired shoals do not count: a group's next incarnation
+    retires the previous one with the same stem, and a retired shoal gets no workspace."""
     import re
     if not _TAGS:
         import ui_status
-        ids = [os.path.basename(os.path.dirname(p)) for p in ui_status.discover_all("", None, True)]
+        ids = [os.path.basename(os.path.dirname(p)) for p in ui_status.discover_all("", None, False)]
         stems = {}
         for i in ids:
             stems.setdefault(re.sub(r"-\d{8}-\d{6}$", "", i), []).append(i)
@@ -251,12 +252,14 @@ def shoal_tag(sid: str) -> str:
 
 
 def find_shoal_ws(h: Herdr, sid: str, dry_run: bool = False) -> dict | None:
-    """The shoal's workspace, by its short label; a workspace still under the legacy `shoal:<id>`
-    label is renamed in place (no pane is touched)."""
-    ws = find_ws(h, shoal_tag(sid))
+    """The shoal's workspace, by its short label. A workspace under an older label (the legacy
+    `shoal:<id>`, or the full id a stem collision once forced) is renamed in place; no pane is
+    touched."""
+    tag = shoal_tag(sid)
+    ws = find_ws(h, tag)
     if ws is not None:
         return ws
-    ws = find_ws(h, WS_PREFIX + sid)
+    ws = next((w for w in (find_ws(h, x) for x in (WS_PREFIX + sid, sid) if x != tag) if w), None)
     if ws is not None and not dry_run:
         h.call("workspace.rename", {"workspace_id": ws["workspace_id"], "label": shoal_tag(sid)})
         ws = dict(ws, label=shoal_tag(sid))
@@ -508,7 +511,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
     for s in doc["shoals"]:
         if s.get("error"):
             continue
-        ws = wss.get(shoal_tag(s["id"])) or wss.get(WS_PREFIX + s["id"])
+        ws = wss.get(shoal_tag(s["id"])) or wss.get(WS_PREFIX + s["id"]) or wss.get(s["id"])
         if ws is not None:
             h.call("workspace.report_metadata", {"workspace_id": ws["workspace_id"], "source": SOURCE,
                                                  "tokens": shoal_tokens(s), "ttl_ms": ttl, "seq": seq})

@@ -236,6 +236,10 @@ h.call("workspace.create", {"label": "shoal:zz-20260101-000000"})
 ws = ui_herdr.find_shoal_ws(h, "zz-20260101-000000")
 assert ws and ws["label"] == "zz", ws
 assert [w["label"] for w in h.workspaces()].count("zz") == 1
+# a workspace labelled with the full id (an earlier stem collision) is renamed to the tag too
+h.call("workspace.create", {"label": "yy-20260101-000000"})
+ws = ui_herdr.find_shoal_ws(h, "yy-20260101-000000")
+assert ws and ws["label"] == "yy" and not ui_herdr.find_ws(h, "yy-20260101-000000"), ws
 print("legacy rename ok")
 # the old shared `standalone` workspace closes only when every pane is ours (card, stub, idle shell)
 w = h.call("workspace.create", {"label": "standalone"})["workspace"]
@@ -296,6 +300,15 @@ assert not ui_herdr.internal_session("shoal-ui-explore", slugs)
 ui_herdr._TAGS.clear(); ui_herdr._TAGS.update({"it-mvp-20260921-170946": "it-mvp"})
 assert ui_herdr.shoal_tag("it-mvp-20260921-170946") == "it-mvp"
 assert ui_herdr.shoal_tag("other-20261008-161310") == "other"
+# a retired shoal with the same stem does not force the full id (the next incarnation retires it)
+import json, os, tempfile, ui_status
+root = tempfile.mkdtemp()
+for sid, retired in (("grp-20260101-000000", "2026-01-02T00:00:00Z"), ("grp-20260201-000000", "")):
+    os.makedirs(os.path.join(root, "shoals", sid))
+    json.dump({"shoal": sid, "retired_utc": retired, "roles": []}, open(os.path.join(root, "shoals", sid, "shoal.json"), "w"))
+os.environ["SHOAL_LEDGER_DIR"] = root
+ui_herdr._TAGS.clear()
+assert ui_herdr.shoal_tag("grp-20260201-000000") == "grp", ui_herdr._TAGS
 assert "tab_bar_right" in ui_herdr.server_block() and "tab_bar_right" not in ui_herdr.client_block()
 assert '"workspace"' not in ui_herdr.client_block().split("[ui.sidebar.spaces]")[0]
 assert '$shoal"' in ui_herdr.client_block()
