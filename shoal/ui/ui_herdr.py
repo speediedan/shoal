@@ -201,12 +201,25 @@ def overview_root(spec) -> dict:
             "second": _node(f"{spec.sid}/ledger", spec.dir, shoal_argv("ui", "tail", "--shoal", spec.sid), pane_env(spec))}
 
 
-VIEWERS = {"claude", "opencode", "node", "bun"}
-
-
-def viewer_attached(h: "Herdr", pane_id: str) -> bool:
+def disposable(h: "Herdr", pane_id: str) -> bool:
+    """True only when everything in the pane's foreground is ours to replace: the adapter's own card,
+    stub or overview process (this checkout's CLI running `view` or `ui`), or an idle shell. Anything
+    else (an attached harness client, or whatever an operator started from the card's shell) makes
+    the pane NOT disposable: an allowlist, so unknown work is never closed. A process_info error
+    propagates (fails closed)."""
     info = h.call("pane.process_info", {"pane_id": pane_id}).get("process_info", {})
-    return any(os.path.basename(p.get("name", "")) in VIEWERS for p in info.get("foreground_processes") or [])
+    procs = info.get("foreground_processes") or []
+    if not procs:
+        return False
+    cli = os.path.join(PKG, "cli.py")
+    for p in procs:
+        name = os.path.basename(p.get("name", ""))
+        argv = p.get("argv") or str(p.get("cmdline", "")).split()
+        ours = any(os.path.abspath(x) == cli for x in argv if x.endswith("cli.py")) and \
+            any(x in ("view", "ui") for x in argv)
+        if not (ours or name in SHELLS):
+            return False
+    return True
 
 
 def viewable_roles(spec) -> list:
@@ -277,15 +290,15 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False) -> list[str]:
     missing = [lab for lab in want if lab not in by_label]
     tabs = {p.get("tab_id") for p in cards}
     shells = [p for p in cards if h.foreground_is_shell(p["pane_id"])]
-    attached = [p["label"] for p in cards if viewer_attached(h, p["pane_id"])]
+    attached = [p["label"] for p in cards if not disposable(h, p["pane_id"])]
     # A cold Herdr restore brings every pane back as a bare shell; a new role has no card yet. Either
     # way the roles tab is re-applied whole (cards are stateless), never by typing into a pane, and
     # never while an operator is attached to a role in it.
     if missing or (cards and len(shells) == len(cards)):
         why = (f"add {', '.join(missing)}" if missing else "restore cards after a restart")
         if attached:
-            out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is attached: "
-                       f"detach, then run `shoal ui open` again")
+            out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is in use (attached, "
+                       f"or running something from its shell): free it, then run `shoal ui open` again")
         else:
             out.append(f"re-apply roles tab: {why}")
             if not dry_run and roles:
@@ -366,8 +379,9 @@ def migrate_standalone(h: Herdr, dry_run: bool = False) -> list[str]:
     if ws is None:
         return []
     panes = h.panes(ws["workspace_id"])
-    if any(viewer_attached(h, p["pane_id"]) for p in panes):
-        return [f"the old `{STANDALONE_WS}` workspace has an attached session: detach, then `ui open` again"]
+    if not panes or not all(disposable(h, p["pane_id"]) for p in panes):
+        return [f"the old `{STANDALONE_WS}` workspace has a pane in use (an attached session, or something "
+                f"started from its shell): free it, then `ui open` again; it is left as it is"]
     if not dry_run:
         h.call("workspace.close", {"workspace_id": ws["workspace_id"]})
     return [f"retire the old `{STANDALONE_WS}` workspace (one workspace per session now)"]

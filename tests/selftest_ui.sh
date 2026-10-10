@@ -150,14 +150,19 @@ PY
 echo "== 3 herdr adapter against a recording fake socket: idempotent open, feed, allowed methods only"
 export XDG_CONFIG_HOME="$S/xdg"; export SHOAL_HERDR_SESSION=uitest
 SOCK="$XDG_CONFIG_HOME/herdr/sessions/uitest/herdr.sock"; mkdir -p "$(dirname "$SOCK")"
-python3 - "$SOCK" "$S/herdr-calls.jsonl" <<'PY' &
+python3 - "$SOCK" "$S/herdr-calls.jsonl" "$SHOALD" <<'PY' &
 import json, os, socket, sys
-path, log = sys.argv[1], sys.argv[2]
-ws, panes, n = [], [], [0]
+path, log, shoald = sys.argv[1], sys.argv[2], sys.argv[3]
+ws, panes, n, fg = [], [], [0], {}
 def walk(node, wid, tid, out):
     if node["type"] == "pane":
         n[0] += 1
-        out.append({"pane_id": f"{wid}:p{n[0]}", "label": node.get("label"), "tab_id": tid, "workspace_id": wid})
+        pid = f"{wid}:p{n[0]}"
+        cmd = node.get("command") or ["bash"]
+        # the real card process: the wrapper execs python on this checkout's cli.py
+        fg[pid] = ([{"name": "python3", "argv": ["python3", os.path.join(shoald, "cli.py")] + cmd[1:]}]
+                   if cmd[0].endswith("shoal-ui") else [{"name": os.path.basename(cmd[0]), "argv": cmd}])
+        out.append({"pane_id": pid, "label": node.get("label"), "tab_id": tid, "workspace_id": wid})
     else:
         walk(node["first"], wid, tid, out); walk(node["second"], wid, tid, out)
 def handle(req):
@@ -189,7 +194,9 @@ def handle(req):
     if m == "pane.list":
         return {"panes": [q for q in panes if not p.get("workspace_id") or q["workspace_id"] == p["workspace_id"]]}
     if m == "pane.process_info":
-        return {"process_info": {"foreground_processes": [{"name": "python3"}]}}
+        return {"process_info": {"foreground_processes": fg.get(p["pane_id"], [{"name": "bash"}])}}
+    if m == "test.set_fg":  # test hook: what an operator started in a pane
+        fg[p["pane_id"]] = p["procs"]; return {"type": "ok"}
     return {"type": "ok"}
 s = socket.socket(socket.AF_UNIX); s.bind(path); s.listen(8)
 while True:
@@ -230,13 +237,26 @@ ws = ui_herdr.find_shoal_ws(h, "zz-20260101-000000")
 assert ws and ws["label"] == "zz", ws
 assert [w["label"] for w in h.workspaces()].count("zz") == 1
 print("legacy rename ok")
+# the old shared `standalone` workspace closes only when every pane is ours (card, stub, idle shell)
+w = h.call("workspace.create", {"label": "standalone"})["workspace"]
+h.call("layout.apply", {"tab_id": w["active_tab_id"], "tab_label": "x", "root": {"type": "pane",
+       "label": "standalone/old", "command": ui_herdr.shoal_argv("view", "--harness", "claude", "--session", "s", "--stub")}})
+old = next(p for p in h.panes() if p.get("label") == "standalone/old")
+assert ui_herdr.disposable(h, old["pane_id"])
+h.call("test.set_fg", {"pane_id": old["pane_id"], "procs": [{"name": "vim", "argv": ["vim", "notes.md"]}]})
+assert not ui_herdr.disposable(h, old["pane_id"])
+msg = ui_herdr.migrate_standalone(h)
+assert "in use" in msg[0] and ui_herdr.find_ws(h, "standalone"), msg
+h.call("test.set_fg", {"pane_id": old["pane_id"], "procs": [{"name": "bash", "argv": ["bash"]}]})
+assert "retire" in ui_herdr.migrate_standalone(h)[0] and not ui_herdr.find_ws(h, "standalone")
+print("standalone migration allowlist ok")
 PY2
 # standalone sessions get one workspace each, named after the session; the old shared one retires
 mkdir -p "$XDG_CONFIG_HOME/shoal"
 printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 3 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 4 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 1 test-made legacy tab): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys
@@ -254,7 +274,7 @@ allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "p
            "workspace.rename", "workspace.close"}
 md_shoal = {m["tokens"].get("shoal") for m in md if m["tokens"].get("role")}
 assert md_shoal == {"uiselftest"}, md_shoal
-bad = sorted({c["method"] for c in calls} - allowed)
+bad = sorted({c["method"] for c in calls if not c["method"].startswith("test.")} - allowed)
 assert not bad, bad
 print("adapter ok")
 PY

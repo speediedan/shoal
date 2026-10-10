@@ -151,8 +151,8 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 - **The focused card is the target.** An action passes the pane focused when the key was pressed
   to its popup (`SHOAL_UI_FOCUS_PANE`, from Herdr's `focused_pane_id`). `next` uses that role as is.
   A write verb offers Enter to keep it, `o` for another and Esc to cancel.
-- **Popup keys.** Every prompt cancels on Esc. Every popup closes on Enter, Esc or `q`; a pager
-  (status, next) closes on `q`.
+- **Popup keys.** Every prompt cancels on Esc. Every popup closes on Enter, Esc or `q`; a pager (status, next) closes on `q`
+  (or Ctrl+C), and its prompt line says so.
 - **Wake costs are named** before confirming: a `--wake`, an offer to an idle role, a mode toggle
   that wakes every role.
 
