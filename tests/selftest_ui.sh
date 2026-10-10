@@ -168,6 +168,17 @@ def handle(req):
     if m == "workspace.create":
         w = {"workspace_id": f"w{len(ws) + 1}", "label": p.get("label"), "active_tab_id": f"w{len(ws) + 1}:t1"}
         ws.append(w); return {"workspace": w}
+    if m == "workspace.rename":
+        for w in ws:
+            if w["workspace_id"] == p["workspace_id"]:
+                w["label"] = p["label"]
+        return {"type": "ok"}
+    if m == "workspace.close":
+        ws[:] = [w for w in ws if w["workspace_id"] != p["workspace_id"]]
+        panes[:] = [q for q in panes if q["workspace_id"] != p["workspace_id"]]
+        return {"type": "ok"}
+    if m == "pane.get":
+        return {"pane": next((q for q in panes if q["pane_id"] == p["pane_id"]), {})}
     if m == "layout.apply":
         if "tab_id" in p and "workspace_id" in p:
             return {"__error": "invalid_target"}
@@ -201,15 +212,37 @@ for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.3; done
 [ -S "$SOCK" ] || fail "fake herdr socket did not start"
 # an explicit session wins over a socket inherited from the pane the suite runs in
 HERDR_SOCKET_PATH="$S/not-the-live-herdr.sock" \
-  check "create workspace shoal:$SID: overview + 4 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+  check "create workspace $SID: overview + 4 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 check "up to date (4 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 2 ] || fail "open is not idempotent: $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+# focused card: an action hands the focused pane to its popup; the popup resolves its role from it
+python3 - "$SHOALD" <<'PY2' || fail "focused card"
+import os, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+pid = next(p["pane_id"] for p in h.panes() if str(p.get("label", "")).endswith("/cl"))
+os.environ["SHOAL_UI_FOCUS_PANE"] = pid
+assert ui_herdr.focused_role() == ("uiselftest", "cl"), ui_herdr.focused_role()
+print("focused card ok")
+# a workspace under the legacy `shoal:<id>` label is renamed to the short tag, not duplicated
+h.call("workspace.create", {"label": "shoal:zz-20260101-000000"})
+ws = ui_herdr.find_shoal_ws(h, "zz-20260101-000000")
+assert ws and ws["label"] == "zz", ws
+assert [w["label"] for w in h.workspaces()].count("zz") == 1
+print("legacy rename ok")
+PY2
+# standalone sessions get one workspace each, named after the session; the old shared one retires
+mkdir -p "$XDG_CONFIG_HOME/shoal"
+printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
+check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
+check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 3 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 ra = [c["params"] for c in calls if c["method"] == "pane.report_agent"]
-assert {r["agent"] for r in ra} == {"cl", "oc", "dead", "far"}, ra
+assert {r["agent"] for r in ra} >= {"cl", "oc", "dead", "far"}, ra
 st = {r["agent"]: r["state"] for r in ra}
 assert st["cl"] == "blocked" and st["dead"] == "blocked", st
 md = [c["params"] for c in calls if c["method"] == "pane.report_metadata"]
@@ -217,7 +250,10 @@ assert all(m["source"] == "shoal" and m["ttl_ms"] > 0 for m in md) and md, md
 assert any(m["tokens"].get("posture") == "QUESTION" for m in md), md
 assert any(c["method"] == "workspace.report_metadata" for c in calls)
 allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "pane.process_info",
-           "pane.report_agent", "pane.report_metadata", "workspace.report_metadata", "pane.get"}
+           "pane.report_agent", "pane.report_metadata", "workspace.report_metadata", "pane.get",
+           "workspace.rename", "workspace.close"}
+md_shoal = {m["tokens"].get("shoal") for m in md if m["tokens"].get("role")}
+assert md_shoal == {"uiselftest"}, md_shoal
 bad = sorted({c["method"] for c in calls} - allowed)
 assert not bad, bad
 print("adapter ok")
@@ -227,6 +263,24 @@ kill $FAKE 2>/dev/null
 grep -nE 'call\("(pane\.send_|pane\.close|agent\.prompt|agent\.send_keys|pane\.run)' "$SHOALD/ui/"*.py \
   && fail "the UI adapter calls a pane input/close method"
 unset XDG_CONFIG_HOME SHOAL_HERDR_SESSION
+
+python3 - "$SHOALD" <<'PY2' || fail "picker filter / shoal tag"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+slugs = {"cl", "oc", "tb-opencode"}
+assert ui_herdr.internal_session("shoal-matcher-20261008T1200", slugs)
+assert ui_herdr.internal_session("tb-opencode-r1", slugs) and ui_herdr.internal_session("cl-r12", slugs)
+assert not ui_herdr.internal_session("Agent-ecosystem-neutrality Phase C", slugs)
+assert not ui_herdr.internal_session("shoal-ui-explore", slugs)
+ui_herdr._TAGS.clear(); ui_herdr._TAGS.update({"it-mvp-20260921-170946": "it-mvp"})
+assert ui_herdr.shoal_tag("it-mvp-20260921-170946") == "it-mvp"
+assert ui_herdr.shoal_tag("other-20261008-161310") == "other"
+assert "tab_bar_right" in ui_herdr.server_block() and "tab_bar_right" not in ui_herdr.client_block()
+assert '"workspace"' not in ui_herdr.client_block().split("[ui.sidebar.spaces]")[0]
+assert '$shoal"' in ui_herdr.client_block()
+print("picker filter, tags and config placement ok")
+PY2
 
 echo "== 4 herdr config: managed block merges idempotently and refuses duplicate tables"
 CFG="$S/herdr-config.toml"

@@ -41,6 +41,7 @@ for _p in (PKG, HERE):
         sys.path.insert(0, _p)
 
 import config  # noqa: E402
+import ui_term  # noqa: E402
 
 SOURCE = "shoal"
 DEFAULT_SESSION = "shoal"
@@ -51,7 +52,8 @@ PLUGIN_DIR = os.path.join(REPO, "plugins", "shoal-herdr")
 PLUGIN_ID = "shoal.herdr"
 SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"}
 # socket methods the adapter calls; `ui doctor` checks the running Herdr still offers them
-METHODS = ("workspace.list", "workspace.create", "workspace.report_metadata", "pane.list", "pane.get",
+METHODS = ("workspace.list", "workspace.create", "workspace.rename", "workspace.close", "workspace.report_metadata",
+           "pane.list", "pane.get",
            "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply")
 
 
@@ -215,15 +217,48 @@ def find_ws(h: Herdr, label: str) -> dict | None:
     return next((w for w in h.workspaces() if w.get("label") == label), None)
 
 
+_TAGS: dict[str, str] = {}
+
+
+def shoal_tag(sid: str) -> str:
+    """The short name a shoal shows as (workspace label, the `$shoal` token): the id without its
+    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `it-mvp`, unless another shoal on this host (retired ones
+    included) shares that stem, in which case the full id."""
+    import re
+    if not _TAGS:
+        import ui_status
+        ids = [os.path.basename(os.path.dirname(p)) for p in ui_status.discover_all("", None, True)]
+        stems = {}
+        for i in ids:
+            stems.setdefault(re.sub(r"-\d{8}-\d{6}$", "", i), []).append(i)
+        for stem, members in stems.items():
+            for i in members:
+                _TAGS[i] = stem if len(members) == 1 else i
+    return _TAGS.get(sid) or re.sub(r"-\d{8}-\d{6}$", "", sid)
+
+
+def find_shoal_ws(h: Herdr, sid: str, dry_run: bool = False) -> dict | None:
+    """The shoal's workspace, by its short label; a workspace still under the legacy `shoal:<id>`
+    label is renamed in place (no pane is touched)."""
+    ws = find_ws(h, shoal_tag(sid))
+    if ws is not None:
+        return ws
+    ws = find_ws(h, WS_PREFIX + sid)
+    if ws is not None and not dry_run:
+        h.call("workspace.rename", {"workspace_id": ws["workspace_id"], "label": shoal_tag(sid)})
+        ws = dict(ws, label=shoal_tag(sid))
+    return ws
+
+
 def ensure_shoal(h: Herdr, spec, dry_run: bool = False) -> list[str]:
-    """One workspace `shoal:<id>`: tab `overview` (dashboard + ledger tail) and tab `roles` (a card
-    per role with a session). Re-running only fills gaps: a missing role pane is split in, and a
-    pane left at a bare shell (a Herdr cold restore brings panes back as shells) gets its card
-    again. Nothing running is replaced or closed."""
+    """One workspace per shoal, labelled with its short tag (`shoal_tag`): tab `overview` (dashboard
+    + ledger tail) and tab `roles` (a card per role with a session). Re-running only fills gaps by
+    re-applying a whole tab (a new role, or a cold restore that left bare shells). Nothing running
+    is replaced or closed."""
     out = []
-    label = WS_PREFIX + spec.sid
+    label = shoal_tag(spec.sid)
     roles = viewable_roles(spec)
-    ws = find_ws(h, label)
+    ws = find_shoal_ws(h, spec.sid, dry_run)
     if ws is None:
         out.append(f"create workspace {label}: overview + {len(roles)} role cards")
         if dry_run:
@@ -297,40 +332,70 @@ def standalone_argv(e: dict) -> list[str]:
                       "--label", e.get("label") or e["session"][:12], "--stub")
 
 
+def standalone_ws_label(e: dict) -> str:
+    """A standalone session's own workspace is named after the session, so the spaces list shows
+    it; a name that collides with a shoal's tag gets a suffix."""
+    name = (e.get("label") or e["session"][:12])[:40]
+    return name + " (standalone)" if name in set(_TAGS.values()) else name
+
+
 def open_standalone(h: Herdr, e: dict, dry_run: bool = False, focus: bool = False) -> str:
-    """One tab per standalone session inside the `standalone` workspace."""
+    """One workspace per standalone session, named after it (found by its pane label wherever it
+    is, so sessions opened before this layout keep working)."""
+    shoal_tag("")  # load the shoal tags so a colliding name is suffixed
     lab = standalone_label(e)
-    ws = find_ws(h, STANDALONE_WS)
-    if ws is not None:
-        p = next((q for q in h.panes(ws["workspace_id"]) if q.get("label") == lab), None)
-        if p is not None:
-            if h.foreground_is_shell(p["pane_id"]):
-                if not dry_run:
-                    apply_tab(h, ws["workspace_id"], e.get("label") or e["session"][:12],
-                              {"type": "pane", "label": lab, "cwd": e.get("cwd") or os.path.expanduser("~"),
-                               "command": standalone_argv(e)}, tab_id=p["tab_id"])
-                return f"restore standalone {lab}"
-            return f"standalone {lab}: open"
+    node = {"type": "pane", "label": lab, "cwd": e.get("cwd") or os.path.expanduser("~"), "command": standalone_argv(e)}
+    p = next((q for q in h.panes() if q.get("label") == lab), None)
+    if p is not None:
+        if h.foreground_is_shell(p["pane_id"]):
+            if not dry_run:
+                apply_tab(h, p["workspace_id"], e.get("label") or e["session"][:12], node, tab_id=p["tab_id"])
+            return f"restore standalone {lab}"
+        return f"standalone {lab}: open"
     if dry_run:
         return f"open standalone {lab}"
-    node = {"type": "pane", "label": lab, "cwd": e.get("cwd") or os.path.expanduser("~"), "command": standalone_argv(e)}
+    ws = h.call("workspace.create", {"label": standalone_ws_label(e), "focus": False})["workspace"]
+    apply_tab(h, ws["workspace_id"], "session", node, tab_id=ws.get("active_tab_id") or "", focus=focus)
+    return f"open standalone {lab} (workspace {standalone_ws_label(e)!r})"
+
+
+def migrate_standalone(h: Herdr, dry_run: bool = False) -> list[str]:
+    """Retire the old single `standalone` workspace: when none of its sessions is attached, close
+    it (cards only) so `open_standalone` rebuilds one workspace per session."""
+    ws = find_ws(h, STANDALONE_WS)
     if ws is None:
-        ws = h.call("workspace.create", {"label": STANDALONE_WS, "focus": False})["workspace"]
-        apply_tab(h, ws["workspace_id"], e.get("label") or e["session"][:12], node,
-                  tab_id=ws.get("active_tab_id") or "", focus=focus)
-    else:
-        apply_tab(h, ws["workspace_id"], e.get("label") or e["session"][:12], node, focus=focus)
-    return f"open standalone {lab}"
+        return []
+    panes = h.panes(ws["workspace_id"])
+    if any(viewer_attached(h, p["pane_id"]) for p in panes):
+        return [f"the old `{STANDALONE_WS}` workspace has an attached session: detach, then `ui open` again"]
+    if not dry_run:
+        h.call("workspace.close", {"workspace_id": ws["workspace_id"]})
+    return [f"retire the old `{STANDALONE_WS}` workspace (one workspace per session now)"]
+
+
+def internal_session(name: str, role_slugs: set[str]) -> bool:
+    """A session shoal itself runs that is not a standalone session: semantic matcher runs, and any
+    incarnation of a shoal role (`<slug>-r<N>`, current or retired)."""
+    import re
+    n = (name or "").strip()
+    if n.startswith("shoal-matcher"):
+        return True
+    m = re.match(r"^(.+)-r\d+$", n)
+    return bool(m and m.group(1) in role_slugs)
 
 
 def candidates_standalone(exclude: set[str]) -> list[dict]:
     """Live sessions on this host that are not shoal roles: Claude background sessions and
-    OpenChamber's opencode sessions (most recently updated first)."""
+    OpenChamber's opencode sessions (most recently updated first). Matcher runs and old role
+    incarnations are left out."""
     import ui_status
+    slugs = role_slugs()
     out = []
     for e in ui_status.claude_rows():
         sid = str(e.get("sessionId", ""))
         if not sid or not e.get("pid") or any(sid.startswith(x) or x.startswith(sid) for x in exclude if x):
+            continue
+        if internal_session(str(e.get("name") or ""), slugs):
             continue
         out.append({"harness": "claude", "session": sid, "label": str(e.get("name") or sid[:8])[:40],
                     "state": e.get("state"), "cwd": e.get("cwd")})
@@ -338,12 +403,24 @@ def candidates_standalone(exclude: set[str]) -> list[dict]:
         r = subprocess.run(["openchamber", "session", "list", "--limit", "15", "--with-status", "--json"],
                            capture_output=True, text=True, timeout=30, env=config.tool_env())
         for s in json.loads(r.stdout or "{}").get("sessions", []):
-            if s.get("id") in exclude:
+            if s.get("id") in exclude or internal_session(str(s.get("title") or ""), slugs):
                 continue
             out.append({"harness": "opencode", "session": s["id"], "label": str(s.get("title") or s["id"][:12])[:40],
                         "state": (s.get("status") or {}).get("type"), "cwd": (s.get("location") or {}).get("directory")})
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
+    return out
+
+
+def role_slugs() -> set[str]:
+    import ui_status
+    from roles import ShoalSpec
+    out = set()
+    for p in ui_status.discover_all("", None, True):
+        try:
+            out |= {r.slug for r in ShoalSpec.load(p).roles}
+        except (OSError, ValueError):
+            continue
     return out
 
 
@@ -388,6 +465,10 @@ def role_tokens(r: dict) -> dict[str, str]:
     }
 
 
+def role_tokens_for(s: dict, r: dict) -> dict[str, str]:
+    return dict(role_tokens(r), shoal=shoal_tag(s["id"]))
+
+
 def shoal_tokens(s: dict) -> dict[str, str]:
     m = s["mode"]
     c = s.get("conditions") or {}
@@ -413,7 +494,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
     for s in doc["shoals"]:
         if s.get("error"):
             continue
-        ws = wss.get(WS_PREFIX + s["id"])
+        ws = wss.get(shoal_tag(s["id"])) or wss.get(WS_PREFIX + s["id"])
         if ws is not None:
             h.call("workspace.report_metadata", {"workspace_id": ws["workspace_id"], "source": SOURCE,
                                                  "tokens": shoal_tokens(s), "ttl_ms": ttl, "seq": seq})
@@ -425,7 +506,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
             h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE, "agent": r["slug"],
                                          "state": herdr_state(r), "message": msg[:80], "seq": seq})
             h.call("pane.report_metadata", {"pane_id": p["pane_id"], "source": SOURCE,
-                                            "tokens": role_tokens(r), "ttl_ms": ttl, "seq": seq})
+                                            "tokens": role_tokens_for(s, r), "ttl_ms": ttl, "seq": seq})
             pushed += 1
     # standalone Claude sessions: their turn state (the harness's own, no scraping)
     rows = ui_status.claude_rows()
@@ -480,6 +561,8 @@ def cmd_open(a) -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"ui open: {p}: {exc}")
     if not a.no_standalone:
+        for line in migrate_standalone(h, a.dry_run):
+            print(("[dry-run] " if a.dry_run else "") + line)
         for e in load_standalone():
             print(("[dry-run] " if a.dry_run else "") + open_standalone(h, e, a.dry_run))
     return 0
@@ -488,17 +571,14 @@ def cmd_open(a) -> int:
 def _choose(items: list[str], prompt: str = "number") -> int | None:
     for i, it in enumerate(items, 1):
         print(f"  {i:>2}  {it}")
-    try:
-        raw = input(f"{prompt} (enter to cancel): ").strip()
-    except EOFError:
-        return None
-    if not raw.isdigit() or not 1 <= int(raw) <= len(items):
+    raw = ui_term.read_line(f"{prompt} (esc or empty enter cancels): ")
+    if not raw or not raw.isdigit() or not 1 <= int(raw) <= len(items):
         return None
     return int(raw) - 1
 
 
 def cmd_pick(a) -> int:
-    """Pick a live non-shoal session and open it in the `standalone` workspace."""
+    """Pick a live non-shoal session and open it in its own workspace, named after it."""
     if a.harness and a.session_id:
         e = {"harness": a.harness, "session": a.session_id, "label": a.label or a.session_id[:12]}
     else:
@@ -516,10 +596,7 @@ def cmd_pick(a) -> int:
             e["label"] = a.label
     save = a.save
     if not a.harness and not save:
-        try:
-            save = input("save it so `ui open` restores it? [y/N] ").strip().lower() == "y"
-        except EOFError:
-            save = False
+        save = ui_term.confirm("save it so `ui open` restores it? [y/N] ")
     if save:
         entries = [x for x in load_standalone() if x["session"] != e["session"]] + [e]
         save_standalone(entries)
@@ -697,10 +774,7 @@ def cmd_metrics(a) -> int:
         for f in latest_reports(sid):
             print(f"  report: {f}")
     if a.pause:
-        try:
-            input("\n[enter] close")
-        except EOFError:
-            pass
+        ui_term.pause("\n[enter, esc or q] close")
     return 0
 
 
@@ -733,10 +807,7 @@ def confirm_run(args: list[str], cost_note: str = "") -> int:
         print((pv.stdout + pv.stderr).strip() or "(no preview output)")
     if cost_note:
         print(f"\x1b[33m{cost_note}\x1b[0m")
-    try:
-        ok = input("run it? [y/N] ").strip().lower() == "y"
-    except EOFError:
-        ok = False
+    ok = ui_term.confirm("run it? [y/N] ")
     if not ok:
         print("cancelled; nothing written")
         return 1
@@ -746,14 +817,16 @@ def confirm_run(args: list[str], cost_note: str = "") -> int:
 
 
 def focused_role() -> tuple[str, str]:
-    """(shoal id, role) of the pane the operator was on, from Herdr's injected context."""
-    pane = os.environ.get("HERDR_ACTIVE_PANE_ID") or os.environ.get("HERDR_PANE_ID") or ""
-    ctx = os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or ""
-    if ctx and not pane:
+    """(shoal id, role) of the card the operator was on. A plugin action captures Herdr's
+    `focused_pane_id` and hands it to its popup as SHOAL_UI_FOCUS_PANE (a popup's own context may
+    already have moved); then the popup's context; then the custom-command variables."""
+    pane = os.environ.get("SHOAL_UI_FOCUS_PANE") or ""
+    if not pane:
         try:
-            pane = (json.loads(ctx).get("pane") or {}).get("pane_id") or json.loads(ctx).get("pane_id") or ""
+            pane = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}").get("focused_pane_id") or ""
         except ValueError:
             pane = ""
+    pane = pane or os.environ.get("HERDR_ACTIVE_PANE_ID") or os.environ.get("HERDR_PANE_ID") or ""
     if not pane:
         return "", ""
     try:
@@ -761,7 +834,9 @@ def focused_role() -> tuple[str, str]:
     except (HerdrError, ValueError):
         return "", ""
     sid, _, slug = str(p.get("label") or "").partition("/")
-    return (sid, slug) if slug and sid != STANDALONE_WS and slug not in ("overview", "ledger") else (sid, "")
+    if sid == STANDALONE_WS:
+        return "", ""
+    return (sid, slug) if slug and slug not in ("overview", "ledger") else (sid, "")
 
 
 def pick_shoal(default: str = "") -> str:
@@ -776,15 +851,20 @@ def pick_shoal(default: str = "") -> str:
     return ids[i] if i is not None else ""
 
 
-def pick_role(sid: str, default: str = "", allow_all: bool = False) -> str:
+def pick_role(sid: str, default: str = "", allow_all: bool = False, ask: bool = True) -> str:
+    """The focused card's role when there is one. A read-only verb takes it as is (`ask=False`);
+    a write verb offers [enter] to keep it, [o] for another, [esc] to cancel."""
     from roles import ShoalSpec, find_spec
     spec = ShoalSpec.load(find_spec(sid))
     slugs = [r.slug for r in spec.roles if r.session] + (["*"] if allow_all else [])
     if default in slugs:
-        try:
-            if input(f"role [{default}] (enter keeps it, o for another): ").strip().lower() != "o":
-                return default
-        except EOFError:
+        if not ask:
+            print(f"role: {default} (focused card)")
+            return default
+        k = ui_term.key(f"role {default} (focused card): [enter] keep, [o] another, [esc] cancel ")
+        if k == "esc":
+            return ""
+        if k != "o":
             return default
     print("role:")
     i = _choose(slugs)
@@ -792,10 +872,8 @@ def pick_role(sid: str, default: str = "", allow_all: bool = False) -> str:
 
 
 def _ask(prompt: str) -> str:
-    try:
-        return input(prompt).strip()
-    except EOFError:
-        return ""
+    """A text answer; Escape cancels (returns "")."""
+    return ui_term.read_line(prompt) or ""
 
 
 def act(verb: str, sid: str = "", slug: str = "") -> int:
@@ -807,7 +885,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         subprocess.run(["sh", "-c", f"{shlex.join(shoal_argv('ui', 'status', '--shoal', sid, '--conditions'))} | less -R"])
         return 0
     if verb == "next":
-        slug = slug or pick_role(sid, fr)
+        slug = slug or pick_role(sid, fr, ask=False)
         if slug:
             subprocess.run(["sh", "-c", f"{shlex.join(shoal_argv('next', '--shoal', sid, '--slug', slug, '--peek', '--no-sync'))} | less -R"])
         return 0
@@ -817,7 +895,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         rows = [r for r in doc["shoals"][0].get("roles", []) if r["asks"] or "blocked-on-question" in r["can_progress"]["reasons"]]
         if not rows:
             print("no open asks and no role waiting on a question")
-            _ask("[enter] close")
+            ui_term.pause()
             return 0
         for r in rows:
             print(f"\n{r['slug']}" + ("  (blocked on a question in its session: attach to answer it)"
@@ -875,7 +953,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         print("Upgrades stay a CLI step (operator-only). Preview of what this commit would roll out:\n")
         run_shoal(["upgrade", "--spec", find_spec(sid), "--dry-run", "--skip-selftests"])
         print(f"\nTo apply with zero session wakes: shoal upgrade --spec {find_spec(sid)}   (--rearm lazy is the default)")
-        _ask("[enter] close")
+        ui_term.pause()
         return 0
     if verb == "conditions":
         import ui_status
@@ -887,7 +965,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         for x in c.get("open", []):
             print(f"  {x['slug']}: {x['condition']}: {x['detail']}")
         print(f"{len(c.get('open', []))} open condition(s) (health quorum's own evaluate, refreshed now)")
-        _ask("[enter] close")
+        ui_term.pause()
         return 0
     print(f"unknown action {verb}")
     return 2
@@ -923,18 +1001,18 @@ def cmd_menu(a) -> int:
         return subprocess.run(shoal_argv("ui", "pick")).returncode
     if k == "open":
         rc = subprocess.run(shoal_argv("ui", "open")).returncode
-        _ask("[enter] close")
+        ui_term.pause()
         return rc
     rc = act(k)
     if k not in ("status", "next", "asks", "upgrade", "conditions"):
-        _ask("[enter] close")
+        ui_term.pause()
     return rc
 
 
 def cmd_act(a) -> int:
     rc = act(a.verb, a.target_shoal, a.role)
     if a.pause:
-        _ask("[enter] close")
+        ui_term.pause()
     return rc
 
 
@@ -959,27 +1037,27 @@ def keys_block() -> str:
     return "\n".join(out)
 
 
-def sidebar_block(line_cmd: str) -> str:
-    return f"""[ui]
+def sidebar_block() -> str:
+    """Client side (the viewing machine draws these): agent rows by role name, with the shoal's
+    short tag dim beside it (the agents list is already grouped by workspace, one per shoal), and
+    the spaces rows with the per-shoal tokens. The tab-bar status line is NOT here: a remote client
+    draws the server's `tab_bar_right` (measured in the laptop pilot), so it is in server_block."""
+    return """[ui]
 status_indicators = "symbols"
-tab_bar_right = [
-  {{ type = "command", command = {json.dumps(line_cmd)}, interval_seconds = 30, timeout_seconds = 20 }},
-  {{ type = "hostname" }},
-]
 
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "machine", "workspace", {{ token = "agent", bold = true }}],
-  [{{ token = "$posture", rules = [{{ equals = "DEAD", fg = "#f38ba8", bold = true }}, {{ equals = "QUESTION", fg = "#fab387", bold = true }}, {{ equals = "NOWATCH", fg = "#f38ba8" }}, {{ contains = "?", fg = "#f9e2af", bold = true }}, {{ starts_with = "wait", fg = "#89b4fa" }}] }}, "$item", "$age"],
-  [{{ token = "$asks", fg = "#fab387", bold = true }}, {{ token = "$next", rules = [{{ contains = "!", fg = "#f9e2af" }}] }}, "$wait", {{ token = "$why", dim = true }}],
+  ["state_icon", "machine", { token = "agent", bold = true }, { token = "$shoal", dim = true }],
+  [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#fab387", bold = true }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#f9e2af", bold = true }, { starts_with = "wait", fg = "#89b4fa" }] }, "$item", "$age"],
+  [{ token = "$asks", fg = "#fab387", bold = true }, { token = "$next", rules = [{ contains = "!", fg = "#f9e2af" }] }, "$wait", { token = "$why", dim = true }],
 ]
 
 [ui.sidebar.spaces]
 row_gap = 0
 rows = [
   ["state_icon", "workspace"],
-  [{{ token = "$shoal_mode", rules = [{{ equals = "ok", hide = true }}, {{ equals = "OFFLINE", fg = "#89b4fa", bold = true }}, {{ equals = "FREEZE", fg = "#f38ba8", bold = true }}] }}, {{ token = "$shoal_needs", rules = [{{ equals = "0", hide = true }}, {{ gt = 0, fg = "#fab387", bold = true }}] }}, {{ token = "$shoal_relay", rules = [{{ equals = "ok", hide = true }}, {{ equals = "DEAD", fg = "#f38ba8", bold = true }}] }}, {{ token = "$shoal_tooling", dim = true }}],
+  [{ token = "$shoal_mode", rules = [{ equals = "ok", hide = true }, { equals = "OFFLINE", fg = "#89b4fa", bold = true }, { equals = "FREEZE", fg = "#f38ba8", bold = true }] }, { token = "$shoal_needs", rules = [{ equals = "0", hide = true }, { gt = 0, fg = "#fab387", bold = true }] }, { token = "$shoal_relay", rules = [{ equals = "ok", hide = true }, { equals = "DEAD", fg = "#f38ba8", bold = true }] }, { token = "$shoal_tooling", dim = true }],
   ["branch", "git_status"],
 ]
 """
@@ -998,11 +1076,18 @@ version_check = false
 # startup hook) puts the role cards back.
 resume_agents_on_restore = false
 
+[ui]
+# the tab-bar status line renders from the SERVER's config, also for a `herdr --remote` client
+tab_bar_right = [
+  {{ type = "command", command = {json.dumps(shlex.join(shoal_argv("ui", "line")))}, interval_seconds = 30, timeout_seconds = 20 }},
+  {{ type = "hostname" }},
+]
+
 {keys_block()}"""
 
 
 def client_block() -> str:
-    return sidebar_block(shlex.join(shoal_argv("ui", "line")))
+    return sidebar_block()
 
 
 def merge_block(path: str, block: str) -> str:

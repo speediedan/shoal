@@ -17,10 +17,19 @@ import ui_view  # noqa: E402
 
 
 def cmd_pane_open(a) -> int:
-    """A plugin action's body: open one of the plugin's popup panes (keys bind to actions)."""
+    """A plugin action's body: open one of the plugin's popup panes (keys bind to actions). The
+    card focused when the key was pressed rides along as SHOAL_UI_FOCUS_PANE, so `next`, `msg` and
+    the others act on it."""
+    import json
     herdr = os.environ.get("HERDR_BIN_PATH") or "herdr"
-    return subprocess.run([herdr, "plugin", "pane", "open", "--plugin", ui_herdr.PLUGIN_ID,
-                           "--entrypoint", a.entrypoint]).returncode
+    argv = [herdr, "plugin", "pane", "open", "--plugin", ui_herdr.PLUGIN_ID, "--entrypoint", a.entrypoint]
+    try:
+        focus = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}").get("focused_pane_id") or ""
+    except ValueError:
+        focus = ""
+    if focus:
+        argv += ["--env", f"SHOAL_UI_FOCUS_PANE={focus}"]
+    return subprocess.run(argv).returncode
 
 
 def add_parsers(sub) -> None:
