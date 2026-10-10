@@ -110,20 +110,29 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 
 **Layout** (`shoal ui open`, idempotent):
 
-- **One workspace per shoal**, named `shoal:<id>`, with two tabs:
+- **One workspace per shoal**, named with the shoal's short tag: the id without its
+  `-YYYYMMDD-HHMMSS` mint stamp (`it-mvp`), or the full id when two shoals share a stem. A
+  workspace still under the old `shoal:<id>` label is renamed in place. It has two tabs:
   - **`overview`:** the `ui dash` status pane and a read-only `ui tail` of the ledger.
   - **`roles`:** one role card per role that has a session, each pane labelled `<id>/<role>`.
-- **One `standalone` workspace**, with a tab per saved non-shoal session.
+- **One workspace per standalone session**, named after the session (the old shared `standalone`
+  workspace is retired by `ui open` when none of its sessions is attached).
 - **Re-running.** Gaps are filled by re-applying a whole tab with `layout.apply` (cards hold no
   state). This covers a new role, and every pane coming back as a bare shell after a Herdr cold
-  restore. It never happens while an operator is attached to a role in that tab.
+  restore. It never happens while any pane in that tab is in use: a pane is replaceable only when
+  every foreground process is this checkout's CLI running a card, stub or overview, or an idle
+  shell (an allowlist). Cards started from a different checkout path (an old worktree, a stale
+  install) therefore read as in use and the re-apply refuses. Detach and close those cards by
+  hand; do not widen the match.
 
 **Feed** (`shoal ui feed`, the `shoal-ui-feed` user unit, every 20 s):
 
 - **Role panes:** each tick reports `pane.report_agent` (source `shoal`, agent = role slug, state
   `blocked` when the role needs you, `working` while the session is mid-turn, otherwise `idle`) and
-  `pane.report_metadata` tokens. The tokens are `role`, `posture`, `item`, `next`, `wait`, `asks`,
-  `offers`, `watch`, `age`, `why` and `harness`.
+  `pane.report_metadata` tokens. The tokens are `role`, `shoal` (the short tag), `posture`,
+  `item`, `next`, `wait`, `asks`, `offers`, `watch`, `age`, `why` and `harness`. The agents rows
+  show the role name with the shoal tag dim beside it; Herdr's default `agent_panel_sort = "spaces"`
+  already groups agents by workspace.
 - **Workspaces:** `workspace.report_metadata` tokens `shoal_mode`, `shoal_needs`, `shoal_stalled`,
   `shoal_asks`, `shoal_pages`, `shoal_relay`, `shoal_conditions` and `shoal_tooling`.
 - **Failure shape:** tokens carry a TTL of three intervals, so a dead feeder clears them instead of
@@ -143,12 +152,18 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   - `Alt+g`: metrics.
 - **The palette** also offers offer, withdraw, offline, freeze, health conditions, re-apply layouts,
   and an upgrade preview (applying an upgrade stays a CLI step).
+- **The focused card is the target.** An action passes the pane focused when the key was pressed
+  to its popup (`SHOAL_UI_FOCUS_PANE`, from Herdr's `focused_pane_id`). `next` uses that role as is.
+  A write verb offers Enter to keep it, `o` for another and Esc to cancel.
+- **Popup keys.** Every prompt cancels on Esc. Every popup closes on Enter, Esc or `q`; a pager (status, next) closes on `q`
+  (or Ctrl+C), and its prompt line says so.
 - **Wake costs are named** before confirming: a `--wake`, an offer to an idle role, a mode toggle
   that wakes every role.
 
 **Standalone sessions** (`shoal ui pick [--save]`, `shoal ui forget <id>`) list Claude background
-sessions and OpenChamber sessions that are not shoal roles, and open one in the `standalone`
-workspace. Saved ones (`~/.config/shoal/ui-standalone.json`) come back on every `ui open`.
+sessions and OpenChamber sessions that are not shoal roles, and open one in its own workspace. The
+picker leaves out shoal's own sessions: matcher runs (`shoal-matcher-*`) and every incarnation of a
+role (`<slug>-r<N>`, current or retired). Saved ones (`~/.config/shoal/ui-standalone.json`) come back on every `ui open`.
 
 **Quiet check** (`shoal ui quiet-check --save F`, then `--compare F`). It proves that viewing woke
 nobody. For each Claude role it classifies what the transcript gained:
@@ -170,8 +185,10 @@ and the latest report files. The browser view is the report HTML (`shoal report 
 
 Herdr splits its configuration by machine:
 
-- **Presentation lives on the viewing machine:** theme, sidebar rows, status line layout.
-- **Execution lives on the server:** restore policy, keys, plugins. The launcher attaches with
+- **Presentation lives on the viewing machine:** theme and sidebar rows.
+- **Execution lives on the server:** restore policy, keys, plugins, and the tab-bar status line
+  (`tab_bar_right`). A `herdr --remote` client draws the server's status line, not its own
+  (measured in the laptop pilot), so the server block carries it. The launcher attaches with
   `--remote-keybindings server`, so the server's keys reach the client.
 
 ```bash

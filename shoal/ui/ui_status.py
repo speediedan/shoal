@@ -482,7 +482,8 @@ def render_line(doc: dict) -> str:
             bits.append("FRZ")
         if s.get("relay") and not s["relay"]["alive"]:
             bits.append("relay DEAD")
-        parts.append(f"{s['id'][:18]}: {' '.join(bits)}")
+        import re
+        parts.append(f"{re.sub(r'-[0-9]{8}-[0-9]{6}$', '', s['id'])}: {' '.join(bits)}")
     return " | ".join(parts) or "no shoals"
 
 
