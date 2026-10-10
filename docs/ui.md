@@ -113,7 +113,10 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 - **One workspace per shoal**, named with the shoal's short tag: the id without its
   `-YYYYMMDD-HHMMSS` mint stamp (`it-mvp`), or the full id when two live (non-retired) shoals share a
   stem. A
-  workspace still under the old `shoal:<id>` label is renamed in place. It has two tabs:
+  workspace still under the old `shoal:<id>` label (or a full id) is renamed in place. A retired
+  shoal's workspace is released so its successor (same stem, same tag) never inherits it: `ui open`
+  closes it when every pane is disposable, and otherwise (and in the feeder, which never closes)
+  relabels it with the retired shoal's full id. `shoal retire` never calls the UI. It has two tabs:
   - **`overview`:** the `ui dash` status pane and a read-only `ui tail` of the ledger.
   - **`roles`:** one role card per role that has a session, each pane labelled `<id>/<role>`.
 - **One workspace per standalone session**, named after the session (the old shared `standalone`
