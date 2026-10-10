@@ -236,6 +236,10 @@ h.call("workspace.create", {"label": "shoal:zz-20260101-000000"})
 ws = ui_herdr.find_shoal_ws(h, "zz-20260101-000000")
 assert ws and ws["label"] == "zz", ws
 assert [w["label"] for w in h.workspaces()].count("zz") == 1
+# a workspace labelled with the full id (an earlier stem collision) is renamed to the tag too
+h.call("workspace.create", {"label": "yy-20260101-000000"})
+ws = ui_herdr.find_shoal_ws(h, "yy-20260101-000000")
+assert ws and ws["label"] == "yy" and not ui_herdr.find_ws(h, "yy-20260101-000000"), ws
 print("legacy rename ok")
 # the old shared `standalone` workspace closes only when every pane is ours (card, stub, idle shell)
 w = h.call("workspace.create", {"label": "standalone"})["workspace"]
@@ -250,13 +254,30 @@ assert "in use" in msg[0] and ui_herdr.find_ws(h, "standalone"), msg
 h.call("test.set_fg", {"pane_id": old["pane_id"], "procs": [{"name": "bash", "argv": ["bash"]}]})
 assert "retire" in ui_herdr.migrate_standalone(h)[0] and not ui_herdr.find_ws(h, "standalone")
 print("standalone migration allowlist ok")
+# a retired shoal's workspace is released: closed when every pane is disposable, else relabelled
+# with its full id, so a successor with the same stem never inherits it
+import ui_status
+real = ui_herdr.retired_ids
+ui_herdr.retired_ids = lambda: ["old-20250101-000000"]
+w1 = h.call("workspace.create", {"label": "old"})["workspace"]
+h.call("layout.apply", {"tab_id": w1["active_tab_id"], "tab_label": "roles", "root": {"type": "pane",
+       "label": "old-20250101-000000/r1", "command": ui_herdr.shoal_argv("view", "old-20250101-000000", "r1", "--stub")}})
+busy = next(p for p in h.panes() if p.get("label") == "old-20250101-000000/r1")
+h.call("test.set_fg", {"pane_id": busy["pane_id"], "procs": [{"name": "claude", "argv": ["claude", "attach", "x"]}]})
+assert "relabel" in ui_herdr.release_retired(h, close=True)[0]
+assert ui_herdr.find_ws(h, "old-20250101-000000") and not ui_herdr.find_ws(h, "old")
+h.call("test.set_fg", {"pane_id": busy["pane_id"], "procs": [{"name": "bash", "argv": ["bash"]}]})
+assert "close" in ui_herdr.release_retired(h, close=True)[0]
+assert not ui_herdr.find_ws(h, "old-20250101-000000")
+ui_herdr.retired_ids = real
+print("retired release ok")
 PY2
 # standalone sessions get one workspace each, named after the session; the old shared one retires
 mkdir -p "$XDG_CONFIG_HOME/shoal"
 printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 4 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 1 test-made legacy tab): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 5 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys
@@ -296,6 +317,15 @@ assert not ui_herdr.internal_session("shoal-ui-explore", slugs)
 ui_herdr._TAGS.clear(); ui_herdr._TAGS.update({"it-mvp-20260921-170946": "it-mvp"})
 assert ui_herdr.shoal_tag("it-mvp-20260921-170946") == "it-mvp"
 assert ui_herdr.shoal_tag("other-20261008-161310") == "other"
+# a retired shoal with the same stem does not force the full id (the next incarnation retires it)
+import json, os, tempfile, ui_status
+root = tempfile.mkdtemp()
+for sid, retired in (("grp-20260101-000000", "2026-01-02T00:00:00Z"), ("grp-20260201-000000", "")):
+    os.makedirs(os.path.join(root, "shoals", sid))
+    json.dump({"shoal": sid, "retired_utc": retired, "roles": []}, open(os.path.join(root, "shoals", sid, "shoal.json"), "w"))
+os.environ["SHOAL_LEDGER_DIR"] = root
+ui_herdr._TAGS.clear()
+assert ui_herdr.shoal_tag("grp-20260201-000000") == "grp", ui_herdr._TAGS
 assert "tab_bar_right" in ui_herdr.server_block() and "tab_bar_right" not in ui_herdr.client_block()
 assert '"workspace"' not in ui_herdr.client_block().split("[ui.sidebar.spaces]")[0]
 assert '$shoal"' in ui_herdr.client_block()

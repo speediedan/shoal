@@ -235,12 +235,13 @@ _TAGS: dict[str, str] = {}
 
 def shoal_tag(sid: str) -> str:
     """The short name a shoal shows as (workspace label, the `$shoal` token): the id without its
-    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `it-mvp`, unless another shoal on this host (retired ones
-    included) shares that stem, in which case the full id."""
+    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `it-mvp`, unless another LIVE shoal on this host shares
+    that stem, in which case the full id. Retired shoals do not count: a group's next incarnation
+    retires the previous one with the same stem, and a retired shoal gets no workspace."""
     import re
     if not _TAGS:
         import ui_status
-        ids = [os.path.basename(os.path.dirname(p)) for p in ui_status.discover_all("", None, True)]
+        ids = [os.path.basename(os.path.dirname(p)) for p in ui_status.discover_all("", None, False)]
         stems = {}
         for i in ids:
             stems.setdefault(re.sub(r"-\d{8}-\d{6}$", "", i), []).append(i)
@@ -250,13 +251,50 @@ def shoal_tag(sid: str) -> str:
     return _TAGS.get(sid) or re.sub(r"-\d{8}-\d{6}$", "", sid)
 
 
+def retired_ids() -> list[str]:
+    import ui_status
+    live = set(ui_status.discover_all("", None, False))
+    return [os.path.basename(os.path.dirname(p)) for p in ui_status.discover_all("", None, True) if p not in live]
+
+
+def release_retired(h: Herdr, close: bool, dry_run: bool = False) -> list[str]:
+    """Free a retired shoal's short tag for its successor (same stem, same tag). A workspace whose
+    panes belong to a retired shoal is closed when every pane is disposable (`close`, from `ui
+    open`), else relabelled with the retired shoal's full id, so the successor never inherits it or
+    cards bound to retired sessions. One-way coupling: `shoal retire` never calls the UI; the UI
+    reacts to a retired spec."""
+    out = []
+    gone = retired_ids()
+    if not gone:
+        return out
+    panes = h.panes()
+    for w in h.workspaces():
+        mine = [p for p in panes if p.get("workspace_id") == w["workspace_id"]]
+        owners = {str(p.get("label") or "").split("/", 1)[0] for p in mine if "/" in str(p.get("label") or "")}
+        rid = next((r for r in gone if r in owners), None)
+        if rid is None or owners - {rid}:
+            continue
+        if close and mine and all(disposable(h, p["pane_id"]) for p in mine):
+            out.append(f"close workspace {w.get('label')!r} of retired shoal {rid}")
+            if not dry_run:
+                h.call("workspace.close", {"workspace_id": w["workspace_id"]})
+        elif w.get("label") != rid:
+            out.append(f"relabel workspace {w.get('label')!r} of retired shoal {rid} to its full id"
+                       + (" (a pane is in use)" if close else ""))
+            if not dry_run:
+                h.call("workspace.rename", {"workspace_id": w["workspace_id"], "label": rid})
+    return out
+
+
 def find_shoal_ws(h: Herdr, sid: str, dry_run: bool = False) -> dict | None:
-    """The shoal's workspace, by its short label; a workspace still under the legacy `shoal:<id>`
-    label is renamed in place (no pane is touched)."""
-    ws = find_ws(h, shoal_tag(sid))
+    """The shoal's workspace, by its short label. A workspace under an older label (the legacy
+    `shoal:<id>`, or the full id a stem collision once forced) is renamed in place; no pane is
+    touched."""
+    tag = shoal_tag(sid)
+    ws = find_ws(h, tag)
     if ws is not None:
         return ws
-    ws = find_ws(h, WS_PREFIX + sid)
+    ws = next((w for w in (find_ws(h, x) for x in (WS_PREFIX + sid, sid) if x != tag) if w), None)
     if ws is not None and not dry_run:
         h.call("workspace.rename", {"workspace_id": ws["workspace_id"], "label": shoal_tag(sid)})
         ws = dict(ws, label=shoal_tag(sid))
@@ -502,13 +540,14 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
                            refresh_conditions=False)  # conditions come from their own 5-minute cache
     ui_status.write_cache(doc)
     ttl = int(interval * 3 * 1000)
+    release_retired(h, close=False)  # relabel only: the feeder never closes anything
     wss = {w.get("label"): w for w in h.workspaces()}
     panes = {p.get("label"): p for p in h.panes() if p.get("label")}
     pushed = 0
     for s in doc["shoals"]:
         if s.get("error"):
             continue
-        ws = wss.get(shoal_tag(s["id"])) or wss.get(WS_PREFIX + s["id"])
+        ws = wss.get(shoal_tag(s["id"])) or wss.get(WS_PREFIX + s["id"]) or wss.get(s["id"])
         if ws is not None:
             h.call("workspace.report_metadata", {"workspace_id": ws["workspace_id"], "source": SOURCE,
                                                  "tokens": shoal_tokens(s), "ttl_ms": ttl, "seq": seq})
@@ -566,6 +605,11 @@ def cmd_open(a) -> int:
         print(f"ui open: no herdr server at {h.path} (start it: `systemctl --user start shoal-herdr`, "
               f"or attach with `herdr --session {session_name()}`)")
         return 1
+    try:
+        for line in release_retired(h, close=True, dry_run=a.dry_run):
+            print(("[dry-run] " if a.dry_run else "") + line)
+    except Exception as exc:  # noqa: BLE001
+        print(f"ui open: releasing retired workspaces: {exc}")
     for p in ui_status.discover_all(a.ledger_root, a.ids or None):
         try:
             spec = ShoalSpec.load(p)
