@@ -119,7 +119,11 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   workspace is retired by `ui open` when none of its sessions is attached).
 - **Re-running.** Gaps are filled by re-applying a whole tab with `layout.apply` (cards hold no
   state). This covers a new role, and every pane coming back as a bare shell after a Herdr cold
-  restore. It never happens while an operator is attached to a role in that tab.
+  restore. It never happens while any pane in that tab is in use: a pane is replaceable only when
+  every foreground process is this checkout's CLI running a card, stub or overview, or an idle
+  shell (an allowlist). Cards started from a different checkout path (an old worktree, a stale
+  install) therefore read as in use and the re-apply refuses. Detach and close those cards by
+  hand; do not widen the match.
 
 **Feed** (`shoal ui feed`, the `shoal-ui-feed` user unit, every 20 s):
 
