@@ -65,7 +65,7 @@ title = "shoal asks"
 placement = "popup"
 width = "85%"
 height = "80%"
-command = ["bin/shoal-ui", "ui", "act", "asks", "--pause"]
+command = ["bin/shoal-ui", "ui", "act", "asks"]  # asks closes itself: --pause closed it twice
 
 [[panes]]
 id = "next"

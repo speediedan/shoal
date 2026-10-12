@@ -105,6 +105,11 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   separately from turns.
 - **Stub mode.** `--stub` shows a role card that refreshes every 15 seconds. It attaches on Enter and
   comes back to the card on detach.
+- **Detaching.** Inside an attached Claude session, Ctrl+Z detaches (`claude attach` exits 0); in an
+  opencode session, Ctrl+C quits the client. Either way the session keeps running and the card comes
+  back (both measured under a pty, 2026-10-12). Herdr's prefix keys do not detach: they go to Herdr,
+  not to the attached client. `/bg` then `/exit` also returns to the card in a Claude session (seen
+  by the maintainer); `/exit` on its own was not tested, so prefer Ctrl+Z.
 
 ## The Herdr adapter
 
@@ -159,8 +164,13 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 - **The focused card is the target.** An action passes the pane focused when the key was pressed
   to its popup (`SHOAL_UI_FOCUS_PANE`, from Herdr's `focused_pane_id`). `next` uses that role as is.
   A write verb offers Enter to keep it, `o` for another and Esc to cancel.
-- **Popup keys.** Every prompt cancels on Esc. Every popup closes on Enter, Esc or `q`; a pager (status, next) closes on `q`
-  (or Ctrl+C), and its prompt line says so.
+- **Popup keys.** Every prompt cancels on Esc. Every popup closes on Enter, Esc or `q`, including
+  status and next when their text fits the popup. Text longer than the popup opens in `less`, which
+  closes on `q` (or Ctrl+C) only, and its prompt line says so.
+- **Status layout.** `ui status` (and the status popup and dashboard) prints one ASCII table per
+  shoal fitted to the terminal width: role, posture, session, active, next, last write, attention.
+  Below 110 columns, when that table would not fit, it splits into a status table and a work table.
+  `--width N` sets the width; `--json` is unchanged.
 - **Wake costs are named** before confirming: a `--wake`, an offer to an idle role, a mode toggle
   that wakes every role.
 

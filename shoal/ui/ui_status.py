@@ -435,32 +435,97 @@ def posture_label(r: dict) -> str:
     return r["posture"]
 
 
-def render_text(doc: dict) -> str:
+ATTENTION = {"blocked-on-question": "question for you", "waiting-on-you": "waiting on you",
+             "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "idle with work",
+             "blocker-role-cannot-take": "blocker cannot move"}
+
+
+def term_width(default: int = 120) -> int:
+    """The terminal's width even when stdout is a pipe (the status popup pipes into a pager): COLUMNS,
+    else whichever of stderr, stdin or stdout is a terminal, else `default`."""
+    if os.environ.get("COLUMNS", "").isdigit():
+        return int(os.environ["COLUMNS"])
+    for fd in (2, 0, 1):
+        try:
+            return os.get_terminal_size(fd).columns
+        except OSError:
+            continue
+    return default
+
+
+def _clip(s: str, n: int) -> str:
+    return s if len(s) <= n else (s[: max(n - 3, 1)] + "..." if n > 3 else s[:n])
+
+
+def ascii_table(headers: list[str], rows: list[list[str]], width: int, flex: tuple[int, ...] = ()) -> str:
+    """A plain-ASCII boxed table fitted to `width`: columns take their natural width, and when the
+    table is too wide the `flex` columns (widest first) are clipped with `...`, never below 6; only
+    when they are all at 6 do the other columns give way."""
+    w = [max([len(h)] + [len(str(r[i])) for r in rows]) for i, h in enumerate(headers)]
+    over = sum(w) + 3 * len(w) + 1 - width
+    while over > 0:
+        cand = [i for i in (flex or range(len(w))) if w[i] > 6] or [i for i in range(len(w)) if w[i] > 6]
+        if not cand:
+            break
+        i = max(cand, key=lambda k: w[k])
+        cut = min(over, w[i] - 6, max(1, w[i] // 4))
+        w[i] -= cut
+        over -= cut
+    rule = "+" + "+".join("-" * (x + 2) for x in w) + "+"
+    line = lambda cells: "| " + " | ".join(_clip(str(c), w[i]).ljust(w[i]) for i, c in enumerate(cells)) + " |"  # noqa: E731
+    return "\n".join([rule, line(headers), rule] + [line(r) for r in rows] + [rule])
+
+
+def render_text(doc: dict, width: int = 0) -> str:
+    """Per shoal: a summary line, one table row per role, then open health conditions as a table."""
+    width = width or term_width()
     out = []
     for s in doc["shoals"]:
         if s.get("error"):
-            out.append(f"== {s['id']}: ERROR {s['error']}")
+            out.append(f"{s['id']}: ERROR {s['error']}")
             continue
         m = s["mode"]
-        flags = [x for x, on in (("OFFLINE", m["offline"]), ("FREEZE", m["freeze"])) if on]
         relay = s.get("relay")
-        out.append(f"== {s['id']} {s['gen']}  " + " ".join(flags + [
-            f"needs-you {s['needs_you']}", f"stalled {s['stalled']}", f"asks {s['asks_open']}",
-            f"pages24h {s['pages_24h']}"] + ([f"relay {'ok' if relay['alive'] else 'DEAD'}"] if relay else [])
-            + ([] if s["tooling"]["current"] else [f"tooling {s['tooling']['sha']} != head {s['tooling']['head']}"])))
+        head = [s["id"], f"gen {s['gen']}"] + [x for x, on in (("OFFLINE", m["offline"]), ("FREEZE", m["freeze"])) if on]
+        if relay:
+            head.append(f"relay {'ok' if relay['alive'] else 'DEAD'}")
+        if not s["tooling"]["current"]:
+            head.append(f"tooling {s['tooling']['sha']} != head {s['tooling']['head']}")
+        out.append("  ".join(head))
+        out.append(f"needs you: {s['needs_you']}   stalled: {s['stalled']}   open asks: {s['asks_open']}   "
+                   f"pages (24h): {s['pages_24h']}")
+        rows = []
         for r in s["roles"]:
             if r["relay"] or not r["session_id"]:
                 continue
-            why = ",".join(x for x in r["can_progress"]["reasons"] if x != "parked")
-            nx = " ".join(n["item"] + ("[B]" if n["blocker"] else "") + ("!" if n["stale"] else "") for n in r["next"])
-            out.append(f"  {r['slug']:<34} {posture_label(r):<16} {r['session']:<8} "
-                       f"act={r['active'] or '-'}  next={nx or '-'}  last={_age(r['last_write_age_s'])}"
-                       + (f"  asks={len(r['asks'])}" if r["asks"] else "")
-                       + (f"  offers={r['offers_open']}" if r["offers_open"] else "")
-                       + (f"  [{why}]" if why else ""))
-        for c in (s.get("conditions") or {}).get("open", []):
-            out.append(f"  ! {c['slug']}: {c['condition']}: {c['detail'][:110]}")
-    return "\n".join(out)
+            att = [ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x not in ("parked", "waiting-on-you")
+                   or (x == "waiting-on-you" and "blocked-on-question" not in r["can_progress"]["reasons"])]
+            if r["asks"]:
+                att.append(f"{len(r['asks'])} ask{'s' if len(r['asks']) > 1 else ''}")
+            if r["offers_open"]:
+                att.append(f"{r['offers_open']} offer{'s' if r['offers_open'] > 1 else ''}")
+            nx = ", ".join(n["item"] + ("[B]" if n["blocker"] else "") + ("!" if n["stale"] else "") for n in r["next"])
+            rows.append([r["slug"], posture_label(r), r["session"], r["active"] or "-", nx or "-",
+                         _age(r["last_write_age_s"]), ", ".join(att) or "-"])
+        heads = ["role", "posture", "session", "active", "next", "last write", "attention"]
+        natural = sum(max([len(h)] + [len(str(r[i])) for r in rows]) for i, h in enumerate(heads)) + 3 * len(heads) + 1
+        if natural <= width or width >= 110:
+            out.append(ascii_table(heads, rows, width, flex=(3, 4, 6)))
+        else:  # a narrow terminal: status and work as two tables rather than one unreadable one
+            out.append(ascii_table(["role", "posture", "last write", "attention"],
+                                   [[r[0], r[1], r[5], r[6]] for r in rows], width, flex=(3, 0)))
+            busy = [[r[0], r[3], r[4]] for r in rows if r[3] != "-" or r[4] != "-"]
+            if busy:
+                out.append(ascii_table(["role", "active", "next"], busy, width, flex=(2, 1, 0)))
+        conds = (s.get("conditions") or {}).get("open", [])
+        if conds:
+            out.append("open health conditions:")
+            out.append(ascii_table(["role", "condition", "detail"],
+                                   [[c["slug"], c["condition"], " ".join(str(c["detail"]).split())] for c in conds],
+                                   width, flex=(2,)))
+        out.append("next: [B] has a recorded blocker, ! that blocker is stale.   last write: the role's newest ledger line.")
+        out.append("")
+    return "\n".join(out).rstrip("\n")
 
 
 def render_line(doc: dict) -> str:
@@ -493,12 +558,13 @@ def add_args(p) -> None:
     p.add_argument("--include-retired", action="store_true")
     p.add_argument("--ledger-root", default="", help="ledger clone root (default: host config)")
     p.add_argument("--no-opencode-probe", action="store_true", help="skip the per-role OpenChamber status call")
+    p.add_argument("--width", type=int, default=0, help="text table width (default: the terminal's)")
 
 
 def cmd_status(a) -> int:
     doc = status(a.ids or None, a.ledger_root, a.include_retired, a.conditions, a.pull,
                  not a.no_opencode_probe, getattr(a, "refresh_conditions", False))
-    print(json.dumps(doc, indent=1, default=str) if a.json else render_text(doc))
+    print(json.dumps(doc, indent=1, default=str) if a.json else render_text(doc, getattr(a, "width", 0)))
     return 0 if not any(s.get("error") for s in doc["shoals"]) else 1
 
 

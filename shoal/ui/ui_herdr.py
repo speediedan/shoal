@@ -935,7 +935,6 @@ def _ask(prompt: str) -> str:
 
 
 # the pager says how to close it (the pilot got stuck at `(END)`); Ctrl+C also exits (-K)
-PAGER = "less -R -K -Ps'[q] close   [space] [arrows] scroll'"
 
 
 def act(verb: str, sid: str = "", slug: str = "") -> int:
@@ -944,12 +943,15 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
     if not sid:
         return 1
     if verb == "status":
-        subprocess.run(["sh", "-c", f"{shlex.join(shoal_argv('ui', 'status', '--shoal', sid, '--conditions'))} | {PAGER}"])
+        r = subprocess.run(shoal_argv("ui", "status", "--shoal", sid, "--conditions"), capture_output=True, text=True)
+        ui_term.page((r.stdout + r.stderr).rstrip())
         return 0
     if verb == "next":
         slug = slug or pick_role(sid, fr, ask=False)
         if slug:
-            subprocess.run(["sh", "-c", f"{shlex.join(shoal_argv('next', '--shoal', sid, '--slug', slug, '--peek', '--no-sync'))} | {PAGER}"])
+            r = subprocess.run(shoal_argv("next", "--shoal", sid, "--slug", slug, "--peek", "--no-sync"),
+                               capture_output=True, text=True)
+            ui_term.page((r.stdout + r.stderr).rstrip())
         return 0
     if verb == "asks":
         import ui_status

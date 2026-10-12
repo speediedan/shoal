@@ -34,6 +34,9 @@ for _p in (PKG, HERE):
 
 STRIP_PREFIXES = ("HERDR_", "ZELLIJ")
 CARD_REFRESH_S = 15
+# measured 2026-10-12 under a pty: Ctrl+Z ends `claude attach` (exit 0) and Ctrl+C ends the opencode
+# client; the session keeps running either way, and the card comes back
+DETACH_HINT = "detach once attached: ctrl+z (claude) or ctrl+c (opencode); the session keeps running"
 
 
 class ViewError(RuntimeError):
@@ -160,7 +163,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             body = f"{slug}: status unavailable ({exc})"
         force = False
         sys.stdout.write("\x1b[2J\x1b[H" + body + "\n\n\x1b[2m[enter] attach   [r] refresh   [q] shell"
-                         f"   (refresh every {CARD_REFRESH_S}s; viewing never wakes the role)\x1b[0m\n")
+                         f"   (refresh every {CARD_REFRESH_S}s; viewing never wakes the role)\n{DETACH_HINT}\x1b[0m\n")
         sys.stdout.flush()
         k = _getkey(CARD_REFRESH_S)
         if k in ("q", "Q"):
@@ -181,7 +184,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
 def standalone_stub(harness: str, session: str, label: str) -> int:
     while True:
         sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
-                         "\x1b[2m[enter] attach   [q] shell\x1b[0m\n")
+                         f"\x1b[2m[enter] attach   [q] shell\n{DETACH_HINT}\x1b[0m\n")
         sys.stdout.flush()
         k = _getkey(3600)
         if k in ("q", "Q"):

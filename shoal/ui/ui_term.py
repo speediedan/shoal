@@ -122,3 +122,22 @@ def key(prompt: str) -> str:
             k = _key()
     sys.stdout.write("\n")
     return {"\r": "enter", "\n": "enter", ESC: "esc", CTRL_C: "esc"}.get(k, k)
+
+
+def page(text: str) -> None:
+    """Show a popup's text. When it fits the terminal, print it and close on Enter, Esc or q (the
+    pilot found `less` keeps Esc as a prefix and Enter as scroll); when it does not, `less`, whose
+    prompt says `[q] close`."""
+    rows = 0
+    if _tty():
+        try:
+            rows = os.get_terminal_size(sys.stdout.fileno()).lines
+        except OSError:
+            rows = 0
+    lines = text.rstrip("\n").split("\n")
+    if not rows or len(lines) < rows - 1:
+        sys.stdout.write("\n".join(lines) + "\n")
+        pause()
+        return
+    import subprocess
+    subprocess.run(["less", "-R", "-K", "-Ps[q] close   [space] [arrows] scroll"], input=text, text=True)

@@ -102,6 +102,24 @@ $H ui status --shoal $SID --ledger-root "$ROOT" --json >/dev/null || fail "ui st
 [ "$(cat "$A"/shoals/$SID/ledger/*.jsonl | sha256sum)" = "$SUM0" ] || fail "ui status wrote a ledger line"
 check "uiselftest: 3!" $H ui line --shoal $SID --ledger-root "$ROOT"
 check "QUESTION" $H ui status --shoal $SID --ledger-root "$ROOT"
+# the text view is an ASCII table fitted to the width it is given (wide: one table; narrow: two)
+OUT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 160 2>&1)
+grep -q '^| role ' <<<"$OUT" && grep -q '| attention ' <<<"$OUT" || fail "no status table :: $OUT"
+awk -v w=160 'length($0) > w {exit 1}' <<<"$OUT" || fail "status table wider than 160"
+OUT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 80 2>&1)
+awk -v w=80 'length($0) > w && /^[|+]/ {exit 1}' <<<"$OUT" || fail "narrow status table wider than 80 :: $OUT"
+grep -q '| last write ' <<<"$OUT" || fail "narrow layout missing its status table :: $OUT"
+python3 - "$SHOALD" <<'PY2' || fail "ascii_table clipping"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status
+t = ui_status.ascii_table(["a", "b"], [["x" * 50, "keep"]], 30, flex=(0,))
+assert all(len(l) <= 30 for l in t.splitlines()), t
+assert "..." in t and "keep" in t, t
+PY2
+# a popup that fits closes on Enter (not only q), and the empty asks popup closes on one key
+OUT=$(printf '\n' | python3 -c "import sys; sys.path.insert(0, '$SHOALD/ui'); import ui_term; ui_term.page('a\nb'); print('CLOSED')" 2>&1)
+grep -q CLOSED <<<"$OUT" || fail "page() did not close on Enter :: $OUT"
+grep -q 'act", "asks"]' "$TESTD/../plugins/shoal-herdr/herdr-plugin.toml" || fail "asks popup still double-paused"
 
 # quiet-check classifies what a Claude transcript gained: turns, turn inputs, recaps
 python3 - "$SHOALD" "$S/tx.jsonl" <<'PY2' || fail "transcript classification"
