@@ -77,13 +77,43 @@ def discover_all(explicit: str = "", ids: list[str] | None = None, include_retir
     return out
 
 
+def ui_config_path() -> str:
+    """The viewer's own settings (per user, per host): `{"hidden_shoals": [...]}`."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "shoal", "ui.json")
+
+
+def ui_config() -> dict:
+    try:
+        d = json.load(open(ui_config_path()))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_ui_config(d: dict) -> None:
+    p = ui_config_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p + f".{os.getpid()}.tmp", "w") as fh:
+        json.dump(d, fh, indent=1)
+    os.replace(p + f".{os.getpid()}.tmp", p)
+
+
+def hidden_shoals() -> set[str]:
+    return {str(x) for x in ui_config().get("hidden_shoals") or []}
+
+
 def discover(root: str, ids: list[str] | None = None, include_retired: bool = False) -> list[str]:
     """Spec paths under `<root>/shoals/*/shoal.json`, filtered to `ids` when given. Retired groups are
-    skipped unless asked for (they launch nothing and their roles are gone)."""
+    skipped unless asked for (they launch nothing and their roles are gone), and so are shoals the
+    viewer hides (`shoal ui hide`) unless named in `ids`."""
     out = []
+    hidden = hidden_shoals() if not ids else set()
     for p in sorted(glob.glob(os.path.join(root, GROUPS_DIR, "*", SPEC_FILE))):
         sid = os.path.basename(os.path.dirname(p))
         if ids and sid not in ids:
+            continue
+        if sid in hidden:
             continue
         if not include_retired and not ids:
             try:

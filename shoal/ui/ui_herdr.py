@@ -286,6 +286,41 @@ def release_retired(h: Herdr, close: bool, dry_run: bool = False) -> list[str]:
     return out
 
 
+def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = None) -> list[str]:
+    """Close the workspace of each shoal the viewer hides (`shoal ui hide`), when every pane in it is
+    ours to replace; one in use is left open and named. The shoal itself is untouched."""
+    import ui_status
+    out = []
+    for sid in sorted(ui_status.hidden_shoals() - set(keep or [])):  # a shoal named on the command line wins
+        for label in {shoal_tag(sid), sid, WS_PREFIX + sid}:
+            w = find_ws(h, label)
+            if w is None:
+                continue
+            panes = [p for p in h.panes() if p.get("workspace_id") == w["workspace_id"]]
+            if panes and not all(disposable(h, p["pane_id"]) for p in panes):
+                out.append(f"hidden shoal {sid}: workspace {label!r} is in use (detach, then `shoal ui open` again)")
+                continue
+            out.append(f"close workspace {label!r} of hidden shoal {sid}")
+            if not dry_run:
+                h.call("workspace.close", {"workspace_id": w["workspace_id"]})
+    return out
+
+
+def cmd_hide(a) -> int:
+    import ui_status
+    d = ui_status.ui_config()
+    hidden = set(d.get("hidden_shoals") or [])
+    if a.unhide:
+        hidden -= set(a.shoal)
+    else:
+        hidden |= set(a.shoal)
+    d["hidden_shoals"] = sorted(hidden)
+    ui_status.save_ui_config(d)
+    print(f"hidden shoals: {', '.join(d['hidden_shoals']) or '(none)'} ({ui_status.ui_config_path()})")
+    print("run `shoal ui open` to " + ("add its workspace back" if a.unhide else "close its workspace (when nothing in it is in use)"))
+    return 0
+
+
 def find_shoal_ws(h: Herdr, sid: str, dry_run: bool = False) -> dict | None:
     """The shoal's workspace, by its short label. A workspace under an older label (the legacy
     `shoal:<id>`, or the full id a stem collision once forced) is renamed in place; no pane is
@@ -617,6 +652,11 @@ def cmd_open(a) -> int:
             print(("[dry-run] " if a.dry_run else "") + line)
     except Exception as exc:  # noqa: BLE001
         print(f"ui open: releasing retired workspaces: {exc}")
+    try:
+        for line in release_hidden(h, a.dry_run, keep=a.ids):
+            print(("[dry-run] " if a.dry_run else "") + line)
+    except Exception as exc:  # noqa: BLE001
+        print(f"ui open: closing hidden shoals' workspaces: {exc}")
     for p in ui_status.discover_all(a.ledger_root, a.ids or None):
         try:
             spec = ShoalSpec.load(p)

@@ -62,6 +62,13 @@ def add_parsers(sub) -> None:
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_herdr.cmd_open)
 
+    q = u.add_parser("hide", help="viewer setting: leave a shoal out of the UI (the shoal keeps running)")
+    q.add_argument("shoal", nargs="+")
+    q.set_defaults(func=ui_herdr.cmd_hide, unhide=False)
+    q = u.add_parser("show", help="viewer setting: bring a hidden shoal back into the UI")
+    q.add_argument("shoal", nargs="+")
+    q.set_defaults(func=ui_herdr.cmd_hide, unhide=True)
+
     q = u.add_parser("feed", help="herdr: push role state and tokens (read-only to shoal)")
     session_arg(q)
     q.add_argument("--interval", type=float, default=ui_herdr.FEED_INTERVAL_S)

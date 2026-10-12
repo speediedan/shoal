@@ -363,6 +363,13 @@ check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --s
 [ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 8 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 # --reapply restarts an idle standalone stub on the current code too
 check "restart on the current code standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --reapply
+# a hidden shoal leaves every view (unless named) and its idle workspace closes; show brings it back
+check "hidden shoals: $SID" $H ui hide $SID
+OUT=$($H ui status --ledger-root "$ROOT" 2>&1); ! grep -q "$SID" <<<"$OUT" || fail "hidden shoal still in ui status :: $OUT"
+check "$SID" $H ui status --ledger-root "$ROOT" --shoal $SID
+check "close workspace 'uiselftest' of hidden shoal $SID" $H ui open --ledger-root "$ROOT" --no-standalone
+check "hidden shoals: (none)" $H ui show $SID
+check "create workspace" $H ui open --ledger-root "$ROOT" --no-standalone
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys
