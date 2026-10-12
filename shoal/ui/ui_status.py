@@ -217,7 +217,11 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         if sess == "dead":
             reasons.append("dead-worker")
         if sess == "blocked":
-            reasons.append("blocked-on-question")
+            # a Claude job reads blocked both on a real prompt (AskUserQuestion) and when the session
+            # ended its turn saying it waits on the maintainer; only the first has a prompt to answer
+            e = claude_session(rows, role.session) if role.ecosystem == "claude" else None
+            reasons.append("blocked-on-question" if pending_question(e or {}, role.session)
+                           else "blocked-says-waiting")
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
         # turn's end, and a dead worker is reported as dead-worker instead
         if not remote and not is_wake_relay(role) and sess != "dead" and \
@@ -254,7 +258,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "last_write_age_s": age_s(last, now) if last else None,
         "heartbeat_age_s": int(hb * 60) if hb is not None else None,
         "can_progress": {"ok": not blocking, "reasons": reasons},
-        "needs_you": bool({"dead-worker", "blocked-on-question", "waiting-on-you",
+        "needs_you": bool({"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you",
                            "blocker-role-cannot-take"} & set(reasons)),
         "view": [config.cli(), "view", spec.sid, slug],
     }
@@ -426,6 +430,8 @@ def posture_label(r: dict) -> str:
         return "DEAD"
     if "blocked-on-question" in reasons:
         return "QUESTION"
+    if "blocked-says-waiting" in reasons:
+        return "BLOCKED"
     if "watcher-dead" in reasons:
         return "NOWATCH"
     if "parked-work" in reasons:
@@ -435,7 +441,9 @@ def posture_label(r: dict) -> str:
     return r["posture"]
 
 
-ATTENTION = {"blocked-on-question": "question for you", "waiting-on-you": "waiting on you",
+ATTENTION = {"blocked-on-question": "question for you",
+             "blocked-says-waiting": "says it waits on you (no prompt: reply by message or mail)",
+             "waiting-on-you": "waiting on you",
              "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "idle with work",
              "blocker-role-cannot-take": "blocker cannot move"}
 
@@ -499,7 +507,8 @@ def render_text(doc: dict, width: int = 0) -> str:
             if r["relay"] or not r["session_id"]:
                 continue
             att = [ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x not in ("parked", "waiting-on-you")
-                   or (x == "waiting-on-you" and "blocked-on-question" not in r["can_progress"]["reasons"])]
+                   or (x == "waiting-on-you" and not {"blocked-on-question", "blocked-says-waiting"}
+                       & set(r["can_progress"]["reasons"]))]
             if r["asks"]:
                 att.append(f"{len(r['asks'])} ask{'s' if len(r['asks']) > 1 else ''}")
             if r["offers_open"]:
@@ -575,6 +584,43 @@ def cmd_line(a) -> int:
 
 
 # ---- quiet check: prove that viewing woke nobody ---------------------------------------
+
+def pending_question(row: dict, session: str, tail_bytes: int = 524288) -> bool:
+    """A Claude session is at a question prompt: `claude agents` says it waits for input (measured
+    2026-10-08: `waitingFor` "input needed" on an AskUserQuestion), or its transcript tail has an
+    AskUserQuestion with no result yet. A session that only ended its turn saying it waits on the
+    maintainer reads `blocked` too (measured 2026-10-12, waitingFor None, no prompt)."""
+    if row.get("waitingFor"):
+        return True
+    from backends import fake_sessions
+    if fake_sessions() is not None:
+        return False
+    path = _claude_transcript(session)
+    if not path:
+        return False
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - tail_bytes))
+            chunk = fh.read().decode(errors="replace")
+    except OSError:
+        return False
+    open_q = set()
+    for line in chunk.splitlines():
+        if "AskUserQuestion" not in line and "tool_result" not in line:
+            continue
+        try:
+            content = (json.loads(line).get("message") or {}).get("content")
+        except ValueError:
+            continue
+        for c in content if isinstance(content, list) else []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
+                open_q.add(c.get("id"))
+            elif c.get("type") == "tool_result":
+                open_q.discard(c.get("tool_use_id"))
+    return bool(open_q)
+
 
 def _claude_transcript(session: str) -> str:
     base = os.path.expanduser("~/.claude/projects")

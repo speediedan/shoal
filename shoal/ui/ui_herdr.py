@@ -956,14 +956,16 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
     if verb == "asks":
         import ui_status
         doc = ui_status.status([sid], opencode_probe=False)
-        rows = [r for r in doc["shoals"][0].get("roles", []) if r["asks"] or "blocked-on-question" in r["can_progress"]["reasons"]]
+        rows = [r for r in doc["shoals"][0].get("roles", []) if r["asks"] or {"blocked-on-question", "blocked-says-waiting"} & set(r["can_progress"]["reasons"])]
         if not rows:
             print("no open asks and no role waiting on a question")
             ui_term.pause()
             return 0
         for r in rows:
             print(f"\n{r['slug']}" + ("  (blocked on a question in its session: attach to answer it)"
-                                      if "blocked-on-question" in r["can_progress"]["reasons"] else ""))
+                                      if "blocked-on-question" in r["can_progress"]["reasons"] else
+                                      "  (says it waits on you, with no prompt: answer by mail with a wake, or attach and type)"
+                                      if "blocked-says-waiting" in r["can_progress"]["reasons"] else ""))
             for i, x in enumerate(r["asks"], 1):
                 print(f"  ask {i}: {x}")
         pick = _ask("\nanswer which role? (slug; enter to close): ")
@@ -1113,7 +1115,7 @@ status_indicators = "symbols"
 row_gap = 0
 rows = [
   ["state_icon", "machine", { token = "agent", bold = true }, { token = "$shoal", dim = true }],
-  [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#fab387", bold = true }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#f9e2af", bold = true }, { starts_with = "wait", fg = "#89b4fa" }] }, "$item", "$age"],
+  [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#fab387", bold = true }, { equals = "BLOCKED", fg = "#fab387" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#f9e2af", bold = true }, { starts_with = "wait", fg = "#89b4fa" }] }, "$item", "$age"],
   [{ token = "$asks", fg = "#fab387", bold = true }, { token = "$next", rules = [{ contains = "!", fg = "#f9e2af" }] }, "$wait", { token = "$why", dim = true }],
 ]
 

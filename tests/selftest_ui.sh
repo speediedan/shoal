@@ -43,7 +43,7 @@ JSON
 $H ledger-init --spec "$SPEC" >/dev/null || fail "ledger-init"
 $H offer --shoal $SID --spec "$SPEC" --to oc --item example/repo#7:fix --no-sync >/dev/null || fail "offer"
 $H queue --shoal $SID --spec "$SPEC" --slug cl --active example/repo#3:fix --next example/repo#4:fix --no-sync >/dev/null 2>&1 || true
-export SHOAL_FAKE_SESSIONS='{"claude": [{"sessionId": "c1a2b3c4-0000-1111", "pid": 4242, "state": "blocked", "name": "cl"},
+export SHOAL_FAKE_SESSIONS='{"claude": [{"sessionId": "c1a2b3c4-0000-1111", "id": "c1a2b3c4", "pid": 4242, "state": "blocked", "waitingFor": "input needed", "name": "cl"},
   {"sessionId": "deadbeef-0000-2222", "state": "stopped", "name": "dead"},
   {"sessionId": "f00dface-9999", "pid": 777, "state": "idle", "name": "standalone-x"}],
   "opencode": {"ses_oc1": "ses_oc1 status:idle directory:/x"}}'
@@ -142,7 +142,14 @@ print("transcript classes ok")
 PY2
 
 echo "== 2 viewer: argv per harness, never a resume; multiplexer env stripped; dead sessions refused"
-check '"attach", "c1a2b3c4-0000"' $H view $SID cl --spec "$SPEC" --dry-run
+check '"attach", "c1a2b3c4"' $H view $SID cl --spec "$SPEC" --dry-run
+# a blocked session with no prompt (waitingFor empty) reads BLOCKED, not QUESTION
+python3 - "$SHOALD" <<'PY2' || fail "blocked without a prompt"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status
+assert ui_status.pending_question({"waitingFor": "input needed"}, "x") is True
+assert ui_status.pending_question({"state": "blocked"}, "x") is False
+PY2
 check 'CLAUDE_CODE_ENABLE_AWAY_SUMMARY' $H view $SID cl --spec "$SPEC" --dry-run
 # the opencode viewer reads the server password from the server process's own environment
 env OPENCODE_SERVER_PASSWORD=pw-selftest sleep 300 & SRVPID=$!; BGPIDS+=("$SRVPID")

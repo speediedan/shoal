@@ -447,7 +447,11 @@ class ClaudeBackend(Backend):
         Code may write an `away_summary` (a model call) when a client returns to a session with
         unseen activity (measured once on a testbed lane, 2026-10-08; not reproducible on demand),
         and a viewer should cost nothing."""
-        return [shutil.which("claude") or "claude", "attach", session_id], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
+        # `claude attach` matches the job id (8 hex), not the session UUID a spec may record (restart
+        # adopts the sidecar's full id): measured 2026-10-12, "No job matching '<uuid>'"
+        e = self._row(session_id, include_stopped=True) or {}
+        job = str(e.get("id") or session_id.split("-", 1)[0][:8])
+        return [shutil.which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
 
     @staticmethod
     def launch_command(brief_file: str) -> str:
