@@ -148,7 +148,10 @@ def card(sid: str, slug: str, force: bool = False) -> str:
         rows.append(["offers", f"{r['offers_open']} open"])
     reasons = [ui_status.ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x != "parked"]
     rows.append(["attention", ", ".join(reasons) or "-"])
-    return "\n".join(head + [ui_status.ascii_table(["field", "value"], rows, ui_status.term_width(), flex=(1,))])
+    paint = ({1: lambda v, row: ui_status.state_color(v) if row[0] in ("posture", "session") else ""}
+             if ui_status.use_color() else None)
+    table = ui_status.ascii_table(["field", "value"], rows, ui_status.term_width(), flex=(1,), paint=paint)
+    return "\n".join(head + [table])
 
 
 def stub(sid: str, slug: str, spec_path: str = "") -> int:

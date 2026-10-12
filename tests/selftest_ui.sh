@@ -116,6 +116,22 @@ os.utime(w.pkg + "/a.py", (time.time() + 5, time.time() + 5))
 w.check(); assert not calls, "re-exec on the first sighting"
 w.check(); assert calls, "no re-exec after the change held"
 PY2
+# colors follow the maintainer's scheme; idle with every next item blocked reads blocked:<kind>
+python3 - "$SHOALD" <<'PY2' || fail "state colors / blocked label"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status as u
+assert u.state_color("BLOCKED") == u.RED and u.state_color("blocked:upstream") == u.RED and u.state_color("DEAD") == u.RED
+assert u.state_color("wait:remote-ci") == u.ORANGE and u.state_color("idle") == u.ORANGE
+assert u.state_color("active") == u.GREEN and u.state_color("working") == u.GREEN
+r = {"can_progress": {"reasons": []}, "posture": "idle", "sub": "",
+     "next": [{"item": "a#1", "blocker": "upstream:gh-pr:o/r#1", "stale": None},
+              {"item": "a#2", "blocker": "upstream:gh-pr:o/r#2", "stale": None}]}
+assert u.posture_label(r) == "blocked:upstream", u.posture_label(r)
+r["next"][1]["stale"] = True
+assert u.posture_label(r) == "idle"  # a stale blocker frees the item: not blocked
+t = u.ascii_table(["k", "v"], [["posture", "idle"]], 40, paint={1: lambda v, row: u.state_color(v)})
+assert u.ORANGE in t and all(len(l.replace(u.ORANGE, "").replace(u.RESET, "")) == len(t.splitlines()[0]) for l in t.splitlines())
+PY2
 # a role card is a field/value table
 OUT=$(COLUMNS=90 python3 -c "import sys; sys.path.insert(0, '$SHOALD'); sys.path.insert(0, '$SHOALD/ui'); import ui_status, ui_view
 ui_status.cached_status = lambda ids=None, force=False: ui_status.status(ids, '$ROOT', opencode_probe=False)
@@ -345,6 +361,8 @@ printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
 [ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 8 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+# --reapply restarts an idle standalone stub on the current code too
+check "restart on the current code standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --reapply
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys

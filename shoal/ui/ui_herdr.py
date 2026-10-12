@@ -392,7 +392,7 @@ def standalone_ws_label(e: dict) -> str:
     return name + " (standalone)" if name in set(_TAGS.values()) else name
 
 
-def open_standalone(h: Herdr, e: dict, dry_run: bool = False, focus: bool = False) -> str:
+def open_standalone(h: Herdr, e: dict, dry_run: bool = False, focus: bool = False, reapply: bool = False) -> str:
     """One workspace per standalone session, named after it (found by its pane label wherever it
     is, so sessions opened before this layout keep working)."""
     shoal_tag("")  # load the shoal tags so a colliding name is suffixed
@@ -400,11 +400,12 @@ def open_standalone(h: Herdr, e: dict, dry_run: bool = False, focus: bool = Fals
     node = {"type": "pane", "label": lab, "cwd": e.get("cwd") or os.path.expanduser("~"), "command": standalone_argv(e)}
     p = next((q for q in h.panes() if q.get("label") == lab), None)
     if p is not None:
-        if h.foreground_is_shell(p["pane_id"]):
+        shell = h.foreground_is_shell(p["pane_id"])
+        if shell or (reapply and disposable(h, p["pane_id"])):
             if not dry_run:
                 apply_tab(h, p["workspace_id"], e.get("label") or e["session"][:12], node, tab_id=p["tab_id"])
-            return f"restore standalone {lab}"
-        return f"standalone {lab}: open"
+            return f"{'restore' if shell else 'restart on the current code'} standalone {lab}"
+        return f"standalone {lab}: open" + (" (in use: not re-applied)" if reapply else "")
     if dry_run:
         return f"open standalone {lab}"
     ws = h.call("workspace.create", {"label": standalone_ws_label(e), "focus": False})["workspace"]
@@ -628,7 +629,8 @@ def cmd_open(a) -> int:
         for line in migrate_standalone(h, a.dry_run):
             print(("[dry-run] " if a.dry_run else "") + line)
         for e in load_standalone():
-            print(("[dry-run] " if a.dry_run else "") + open_standalone(h, e, a.dry_run))
+            print(("[dry-run] " if a.dry_run else "") + open_standalone(h, e, a.dry_run,
+                                                                    reapply=getattr(a, "reapply", False)))
     return 0
 
 
@@ -953,7 +955,8 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
     if not sid:
         return 1
     if verb == "status":
-        r = subprocess.run(shoal_argv("ui", "status", "--shoal", sid, "--conditions"), capture_output=True, text=True)
+        r = subprocess.run(shoal_argv("ui", "status", "--shoal", sid, "--conditions"), capture_output=True, text=True,
+                           env=dict(os.environ, SHOAL_UI_COLOR="1"))
         ui_term.page((r.stdout + r.stderr).rstrip())
         return 0
     if verb == "next":
@@ -1125,7 +1128,7 @@ status_indicators = "symbols"
 row_gap = 0
 rows = [
   ["state_icon", "machine", { token = "agent", bold = true }, { token = "$shoal", dim = true }],
-  [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#fab387", bold = true }, { equals = "BLOCKED", fg = "#fab387" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#f9e2af", bold = true }, { starts_with = "wait", fg = "#89b4fa" }] }, "$item", "$age"],
+  [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#f38ba8", bold = true }, { equals = "BLOCKED", fg = "#f38ba8" }, { starts_with = "blocked", fg = "#f38ba8" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#fab387", bold = true }, { starts_with = "wait", fg = "#fab387" }, { equals = "idle", fg = "#fab387" }, { equals = "active", fg = "#a6e3a1" }] }, "$item", "$age"],
   [{ token = "$asks", fg = "#fab387", bold = true }, { token = "$next", rules = [{ contains = "!", fg = "#f9e2af" }] }, "$wait", { token = "$why", dim = true }],
 ]
 

@@ -438,7 +438,34 @@ def posture_label(r: dict) -> str:
         return f"{r['posture'].upper()}?"
     if r["posture"] == "wait" and r["sub"]:
         return f"wait:{r['sub']}"
+    nxt = r.get("next") or []
+    if r["posture"] == "idle" and nxt and all(n["blocker"] and not n["stale"] for n in nxt):
+        # idle with every queued item behind a live blocker reads as blocked, by the blockers' kind
+        # (it-upstream-issues-coordination, 2026-10-12: both next items waiting on upstream PRs)
+        import blockers as _bl
+        kinds = sorted({_bl.kind(n["blocker"]) for n in nxt})
+        return "blocked:" + (kinds[0] if len(kinds) == 1 else "mixed")
     return r["posture"]
+
+
+RED, ORANGE, GREEN, RESET = "\x1b[38;2;243;139;168m", "\x1b[38;2;250;179;135m", "\x1b[38;2;166;227;161m", "\x1b[0m"
+
+
+def state_color(value: str) -> str:
+    """The ANSI color for a posture or session value: red when blocked or dead, orange when waiting or
+    idle, green when active or working (the maintainer's scheme, 2026-10-12)."""
+    v = (value or "").split()[0] if value else ""
+    if v in ("DEAD", "QUESTION", "BLOCKED", "NOWATCH", "blocked", "dead") or v.startswith("blocked:"):
+        return RED
+    if v.startswith("wait") or v in ("idle", "IDLE?", "WAIT?") or v.endswith("?"):
+        return ORANGE
+    if v in ("active", "working"):
+        return GREEN
+    return ""
+
+
+def use_color() -> bool:
+    return os.environ.get("SHOAL_UI_COLOR") == "1" or (sys.stdout.isatty() and os.environ.get("NO_COLOR") is None)
 
 
 ATTENTION = {"blocked-on-question": "question for you",
@@ -465,7 +492,8 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else (s[: max(n - 3, 1)] + "..." if n > 3 else s[:n])
 
 
-def ascii_table(headers: list[str], rows: list[list[str]], width: int, flex: tuple[int, ...] = ()) -> str:
+def ascii_table(headers: list[str], rows: list[list[str]], width: int, flex: tuple[int, ...] = (),
+                paint: dict | None = None) -> str:
     """A plain-ASCII boxed table fitted to `width`: columns take their natural width, and when the
     table is too wide the `flex` columns (widest first) are clipped with `...`, never below 6; only
     when they are all at 6 do the other columns give way."""
@@ -480,8 +508,14 @@ def ascii_table(headers: list[str], rows: list[list[str]], width: int, flex: tup
         w[i] -= cut
         over -= cut
     rule = "+" + "+".join("-" * (x + 2) for x in w) + "+"
-    line = lambda cells: "| " + " | ".join(_clip(str(c), w[i]).ljust(w[i]) for i, c in enumerate(cells)) + " |"  # noqa: E731
-    return "\n".join([rule, line(headers), rule] + [line(r) for r in rows] + [rule])
+    def cell(i: int, c, row) -> str:
+        s = _clip(str(c), w[i]).ljust(w[i])
+        fn = (paint or {}).get(i) if row is not None else None
+        code = fn(str(c), row) if fn else ""
+        return f"{code}{s}{RESET}" if code else s  # color after padding, so widths stay exact
+
+    line = lambda cells, row=None: "| " + " | ".join(cell(i, c, row) for i, c in enumerate(cells)) + " |"  # noqa: E731
+    return "\n".join([rule, line(headers), rule] + [line(r, r) for r in rows] + [rule])
 
 
 def render_text(doc: dict, width: int = 0) -> str:
@@ -518,11 +552,14 @@ def render_text(doc: dict, width: int = 0) -> str:
                          _age(r["last_write_age_s"]), ", ".join(att) or "-"])
         heads = ["role", "posture", "session", "active", "next", "last write", "attention"]
         natural = sum(max([len(h)] + [len(str(r[i])) for r in rows]) for i, h in enumerate(heads)) + 3 * len(heads) + 1
+        sc = lambda v, row: state_color(v)  # noqa: E731
+        pt = {1: sc, 2: sc} if use_color() else None
         if natural <= width or width >= 110:
-            out.append(ascii_table(heads, rows, width, flex=(3, 4, 6)))
+            out.append(ascii_table(heads, rows, width, flex=(3, 4, 6), paint=pt))
         else:  # a narrow terminal: status and work as two tables rather than one unreadable one
             out.append(ascii_table(["role", "posture", "last write", "attention"],
-                                   [[r[0], r[1], r[5], r[6]] for r in rows], width, flex=(3, 0)))
+                                   [[r[0], r[1], r[5], r[6]] for r in rows], width, flex=(3, 0),
+                                   paint={1: sc} if pt else None))
             busy = [[r[0], r[3], r[4]] for r in rows if r[3] != "-" or r[4] != "-"]
             if busy:
                 out.append(ascii_table(["role", "active", "next"], busy, width, flex=(2, 1, 0)))
