@@ -7,7 +7,9 @@ Your brief gives the exact `shoal ledger-watch` command. Arm it in the way your 
   `run_in_background` and `timeout` 7200000, the 2 h maximum, never the Monitor tool, which expires).
   The default timeout kills it after 30 minutes and every kill costs you a turn; a kill is a wake:
   re-arm;
-- a detached process that sends its wake to your session id (opencode).
+- a detached process that sends its wake to your session id (opencode). It sends only between your
+  turns and keeps running after each wake, so it needs no re-arm; arming it again while it runs prints
+  `ALREADY ARMED` and changes nothing.
 
 **Rules:**
 - **Armed means proven.** Its pid is alive (`ps -p`) and matches the sidecar. Re-arm after every

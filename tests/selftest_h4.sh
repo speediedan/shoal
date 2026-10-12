@@ -915,5 +915,26 @@ OUT=$(SHOAL_DATA_ROOT="$S/data" python3 "$FMR" --spec "$SPEC" --days 2 2>&1)
 grep -q "cond-open:" <<<"$OUT" && grep -q "cond-h:parked-work" <<<"$OUT" || fail "fm_report missed health_condition :: $OUT"
 rm -f /tmp/$SID/health.json
 
+echo "== 27 an opencode (send:) watcher keeps running across wakes, defers while busy, and arms once"
+FS_OC_IDLE='{"claude":[],"opencode":{"oc9":"oc9 status:idle directory:/x"}}'
+FS_OC_BUSY='{"claude":[],"opencode":{"oc9":"oc9 status:busy directory:/x"}}'
+python3 - "$SHOALD" <<'PY2' || fail "session_busy"
+import json, os, sys; sys.path.insert(0, sys.argv[1]); import ledger_watch as lw
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [], "opencode": {"oc9": "oc9 status:busy directory:/x"}})
+assert lw.session_busy("oc9", "/x") is True
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [], "opencode": {"oc9": "oc9 status:idle directory:/x"}})
+assert lw.session_busy("oc9", "/x") is False
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [], "opencode": {}})
+assert lw.session_busy("oc9", "/x") is False  # unknown never holds a wake back
+PY2
+# a second arm while the first watcher runs is a no-op (stand-in watcher bound to send:oc9)
+mkdir -p "$S/fakew2"; printf 'import time\ntime.sleep(60)\n' > "$S/fakew2/cli.py"
+python3 "$S/fakew2/cli.py" ledger-watch --shoal $SID --slug up --wake send:oc9 --interval 60 & P_W=$!
+sleep 0.3
+printf 'session_id=oc9\npid=%s\nwake=send:oc9\n' $P_W > "$S/sc-oc.state"
+check "ALREADY ARMED: ledger-watch pid $P_W" env SHOAL_FAKE_SESSIONS="$FS_OC_IDLE" $H ledger-watch --shoal $SID --spec "$SPEC" \
+  --slug up --wake send:oc9 --session oc9 --interval 60 --sidecar "$S/sc-oc.state" --no-sync
+kill $P_W 2>/dev/null; wait $P_W 2>/dev/null || true
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

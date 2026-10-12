@@ -189,6 +189,17 @@ def _wake_requests(sid: str, slug: str) -> list[tuple[str, str]]:
     return out
 
 
+def session_busy(session: str, repo_dir: str) -> bool:
+    """True when the opencode session is mid-turn (its status is known and not idle). Unknown reads
+    as not busy, so a status probe that fails cannot hold a wake back forever."""
+    try:
+        from backends import get as get_backend
+        s = get_backend("opencode").status(session, repo_dir) or ""
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(s) and "status:" in s and "status:idle" not in s
+
+
 def fire(wake: str, text: str, repo_dir: str) -> bool:
     if wake.startswith("send:"):
         sid = wake[len("send:"):]
@@ -235,6 +246,21 @@ def cmd_ledger_watch(a) -> int:
     if own and session != own and not own.startswith(session or "\0"):
         print(f"note: --session {session or '(none)'} is not this Claude session; binding {own}")
         session = own
+    persistent = a.wake.startswith("send:") and not a.test
+    if persistent:
+        # a send: watcher keeps running after each wake (below), so arming twice would send twice:
+        # a second arm for the same role and session finds the first alive and leaves it be
+        old_pid = sc.get("pid", "")
+        try:
+            with open(f"/proc/{old_pid}/cmdline", "rb") as fh:
+                cmd = fh.read()
+            if old_pid and int(old_pid) != os.getpid() and b"ledger-watch" in cmd and slug.encode() in cmd \
+                    and f"send:{session}".encode() in cmd:
+                print(f"ALREADY ARMED: ledger-watch pid {old_pid} for {slug} ({a.wake}) is running and keeps "
+                      f"running across wakes; nothing to do")
+                return 0
+        except (OSError, ValueError):
+            pass
     sc.update(session_id=session, pid=str(os.getpid()), armed_utc=now_iso(),
               wake=a.wake, interval=str(a.interval))
     sc.setdefault("delivered", "")
@@ -253,6 +279,7 @@ def cmd_ledger_watch(a) -> int:
         return 0 if fire(a.wake, text, repo_dir) else 2
     print(f"{now_iso()} armed: {slug}@{sid} every {a.interval:g}s wake={a.wake} sidecar={sc_path}")
     fails = int(sc.get("fetch_fail", "0") or 0)
+    send_fails = 0
     last_board = 0.0
     first = True
     while True:
@@ -283,6 +310,10 @@ def cmd_ledger_watch(a) -> int:
         if not new:
             save_sidecar(sc_path, sc)
             continue
+        if persistent and session_busy(session, repo_dir):
+            # never wake a lane mid-turn: the events stay undelivered and go out at the next idle tick
+            save_sidecar(sc_path, sc)
+            continue
         ids = [i for i, _ in new]
         delivered |= set(ids)
         sc["delivered"] = ",".join(list(delivered)[-DELIVERED_CAP:])
@@ -295,6 +326,18 @@ def cmd_ledger_watch(a) -> int:
         fired = fire(a.wake, text, repo_dir)
         if a.wake == "print":
             continue
+        if persistent:
+            # an opencode lane is woken by the send itself, so the watcher stays: no re-arm to forget
+            # (measured 2026-10-12: shoal-aux took its wake, did not re-arm, and had no watcher for 20 min)
+            if fired:
+                send_fails = 0
+                continue
+            send_fails += 1
+            sc["delivered"] = ",".join(x for x in sc["delivered"].split(",") if x not in set(ids))
+            save_sidecar(sc_path, sc)
+            if send_fails < 5:
+                print(f"{now_iso()} WAKE-SEND-FAILED ({send_fails}/5): retrying next tick")
+                continue
         _exit_verdict(sc_path, sc, "WAKE" if fired else "WAKE-SEND-FAILED")
         return 0 if fired else 2
 

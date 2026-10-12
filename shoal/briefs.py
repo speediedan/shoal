@@ -126,7 +126,9 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
                "a wake: re-arm"
                if role.ecosystem != "opencode" else
                "setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
-               + ".log 2>&1 < /dev/null &`); it self-sends its wake to your session id and exits")
+               + ".log 2>&1 < /dev/null &`); it sends each wake to your session id between your turns and keeps "
+               "running, so it needs no re-arm after a wake (re-arming while it runs prints ALREADY ARMED); "
+               "re-arm only if `next` or health says it is dead")
     fill = {"self": "You fill your own queue: from offers first (by prio), then your digest/board candidates.",
             "assigned": "You work only offers addressed to you (or `*`); you never pop the board.",
             "none": "You never claim."}.get(role.fill, "")
@@ -204,7 +206,9 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
                "command is a wake: re-arm)"
                if role.ecosystem != "opencode" else
                "setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
-               + ".log 2>&1 < /dev/null &`); it self-sends LEDGER-WAKE to your session id and exits")
+               + ".log 2>&1 < /dev/null &`); it sends LEDGER-WAKE to your session id between your turns and keeps "
+               "running, so it needs no re-arm after a wake (re-arming while it runs prints ALREADY ARMED); "
+               "re-arm only if `next` or health says it is dead")
     feats = getattr(spec, "features", {}) or {}
     if role.fill == "self" and feats.get("digest"):
         fill = (f"FILL: self, via the shared board digest. When your queue is empty and you hold nothing, the "
