@@ -56,3 +56,18 @@ the named role. Silence about an unworkable item is the failure this exists to p
    `next` shows candidates beside blocked items, take one rather than idling behind the blockers.
 
 The maintainer's offers always outrank the board.
+
+## One shoal per session; work outside the ledger
+
+- **A session holds a role in at most one shoal.** Two memberships would put one session in two
+  ledgers, under two health quorums, with two sets of wakes and no shared view of its own queue.
+- **Direct work with a session outside your shoal is allowed, at the maintainer's direction.** A
+  standalone session or a role in another shoal may hand you something directly (a cross-session
+  message, a file path), or you may consume its outputs. That work is in no ledger: if it should be
+  tracked or prioritized, the maintainer offers it to you. Mail cannot carry it, because no shoal verb
+  crosses ledgers and a peer's mail never wakes you.
+- **Your commits are your own.** Commit and push your own work under the repository's normal rules.
+  Asking another session to commit for you only adds a hop. In a working tree other sessions share,
+  commit by path (`git commit -- <paths>`): a plain `git commit` takes everything anyone has
+  staged.
+

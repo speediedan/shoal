@@ -65,7 +65,7 @@ per decision. That is stigmergy: coordination through the traces each agent leav
 
 | file | read it when |
 | --- | --- |
-| `references/ledger.md` | you need the event types, who may write what, claims, declines, handoffs |
+| `references/ledger.md` | you need the event types, who may write what, claims, declines, handoffs, or you work with a session outside your shoal |
 | `references/work-loop.md` | you are at a boundary, choosing a posture, or popping the next item |
 | `references/watchers-and-waits.md` | you are about to wait on CI, a lease, a job, or anything slow |
 | `references/asks-and-offline.md` | you need the maintainer's decision, or `next` shows ASKS / USER OFFLINE |
