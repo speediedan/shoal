@@ -141,3 +141,35 @@ def page(text: str) -> None:
         return
     import subprocess
     subprocess.run(["less", "-R", "-K", "-Ps[q] close   [space] [arrows] scroll"], input=text, text=True)
+
+
+class CodeWatch:
+    """Re-exec a long-running UI loop (a role card, the dashboard, the ledger tail) when shoal's code
+    changes, so an upgrade reaches panes that stay open for days (measured 2026-10-12: cards kept a
+    fixed viewer bug until re-applied). The new stamp must hold for two checks before the re-exec,
+    so a checkout caught mid-write is not loaded."""
+
+    def __init__(self) -> None:
+        self.pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.stamp = self._stamp()
+        self.seen = None
+
+    def _stamp(self) -> float:
+        import glob
+        files = [f for d in ("", "ui", "telemetry") for f in glob.glob(os.path.join(self.pkg, d, "*.py"))]
+        try:
+            return max(os.path.getmtime(f) for f in files) if files else 0.0
+        except OSError:
+            return self.stamp if hasattr(self, "stamp") else 0.0
+
+    def check(self) -> None:
+        now = self._stamp()
+        if now == self.stamp:
+            self.seen = None
+            return
+        if self.seen != now:  # changed: wait one more check for it to settle
+            self.seen = now
+            return
+        sys.stdout.write("\x1b[2m(shoal code changed: reloading this pane)\x1b[0m\n")
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable] + sys.argv)

@@ -102,6 +102,25 @@ $H ui status --shoal $SID --ledger-root "$ROOT" --json >/dev/null || fail "ui st
 [ "$(cat "$A"/shoals/$SID/ledger/*.jsonl | sha256sum)" = "$SUM0" ] || fail "ui status wrote a ledger line"
 check "uiselftest: 3!" $H ui line --shoal $SID --ledger-root "$ROOT"
 check "QUESTION" $H ui status --shoal $SID --ledger-root "$ROOT"
+# a long-running pane reloads itself once shoal's code changes and the change has held for two checks
+python3 - "$SHOALD" "$S" <<'PY2' || fail "CodeWatch"
+import os, sys, time
+sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_term
+w = ui_term.CodeWatch(); w.pkg = sys.argv[2] + "/cw"; os.makedirs(w.pkg, exist_ok=True)
+open(w.pkg + "/a.py", "w").write("x = 1\n"); w.stamp = w._stamp()
+calls = []
+os.execv = lambda *a: calls.append(a)
+w.check(); assert not calls
+os.utime(w.pkg + "/a.py", (time.time() + 5, time.time() + 5))
+w.check(); assert not calls, "re-exec on the first sighting"
+w.check(); assert calls, "no re-exec after the change held"
+PY2
+# a role card is a field/value table
+OUT=$(COLUMNS=90 python3 -c "import sys; sys.path.insert(0, '$SHOALD'); sys.path.insert(0, '$SHOALD/ui'); import ui_status, ui_view
+ui_status.cached_status = lambda ids=None, force=False: ui_status.status(ids, '$ROOT', opencode_probe=False)
+print(ui_view.card('$SID', 'cl'))" 2>&1)
+grep -q '| field ' <<<"$OUT" && grep -q '| attention ' <<<"$OUT" || fail "card is not a table :: $OUT"
 # the text view is an ASCII table fitted to the width it is given (wide: one table; narrow: two)
 OUT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 160 2>&1)
 grep -q '^| role ' <<<"$OUT" && grep -q '| attention ' <<<"$OUT" || fail "no status table :: $OUT"
@@ -325,7 +344,7 @@ mkdir -p "$XDG_CONFIG_HOME/shoal"
 printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 6 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + 1 --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 8 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys

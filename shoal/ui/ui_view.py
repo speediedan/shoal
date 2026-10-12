@@ -130,33 +130,34 @@ def card(sid: str, slug: str, force: bool = False) -> str:
     r = next((x for x in s["roles"] if x["slug"] == slug), None)
     if r is None:
         return f"{slug}: not a role of {sid}"
-    lines = [f"\x1b[1m{slug}\x1b[0m  ({r['tag']}, {r['harness']} {r['model'] or ''}, fill={r['fill']})",
-             f"shoal {sid} {s['gen']}" + ("  OFFLINE" if s["mode"]["offline"] else "")
-             + ("  FREEZE" if s["mode"]["freeze"] else ""),
-             "",
-             f"posture   {ui_status.posture_label(r)}  ({ui_status._age(r['posture_age_s'])})",
-             f"session   {r['session']}    watcher {r['watcher']}    last write {ui_status._age(r['last_write_age_s'])} ago",
-             f"active    {r['active'] or '-'}"]
+    head = [f"\x1b[1m{slug}\x1b[0m  ({r['tag']}, {r['harness']} {r['model'] or ''}, fill={r['fill']})",
+            f"shoal {sid} {s['gen']}" + ("  OFFLINE" if s["mode"]["offline"] else "")
+            + ("  FREEZE" if s["mode"]["freeze"] else "")]
+    rows = [["posture", f"{ui_status.posture_label(r)}  ({ui_status._age(r['posture_age_s'])})"],
+            ["session", r["session"]], ["watcher", r["watcher"]],
+            ["last write", f"{ui_status._age(r['last_write_age_s'])} ago"], ["active", r["active"] or "-"]]
     for n in r["next"]:
-        lines.append(f"next      {n['item']}" + (f"  blocked: {n['blocker']}" if n["blocker"] else "")
-                     + ("  (STALE)" if n["stale"] else ""))
+        rows.append(["next", n["item"] + (f"  blocked: {n['blocker']}" if n["blocker"] else "")
+                     + ("  (STALE)" if n["stale"] else "")])
     if r["wait"]:
         w = r["wait"]
-        lines.append(f"wait      {w['sub']} on {w['target'] or '-'}: {w['holder'] or ''}")
+        rows.append(["wait", f"{w['sub']} on {w['target'] or '-'}: {w['holder'] or ''}"])
     for i, a in enumerate(r["asks"], 1):
-        lines.append(f"ask {i}     {a}")
+        rows.append([f"ask {i}", " ".join(str(a).split())])
     if r["offers_open"]:
-        lines.append(f"offers    {r['offers_open']} open")
-    reasons = [x for x in r["can_progress"]["reasons"] if x != "parked"]
-    if reasons:
-        lines.append(f"\x1b[33mattention {', '.join(reasons)}\x1b[0m")
-    return "\n".join(lines)
+        rows.append(["offers", f"{r['offers_open']} open"])
+    reasons = [ui_status.ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x != "parked"]
+    rows.append(["attention", ", ".join(reasons) or "-"])
+    return "\n".join(head + [ui_status.ascii_table(["field", "value"], rows, ui_status.term_width(), flex=(1,))])
 
 
 def stub(sid: str, slug: str, spec_path: str = "") -> int:
     """The role card loop: Enter attaches, `r` refreshes, `q` leaves to a shell. Read-only."""
     force = False
+    import ui_term
+    watch = ui_term.CodeWatch()
     while True:
+        watch.check()
         try:
             body = card(sid, slug, force)
         except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
@@ -188,11 +189,14 @@ def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: s
 
 
 def standalone_stub(harness: str, session: str, label: str) -> int:
+    import ui_term
+    watch = ui_term.CodeWatch()
     while True:
+        watch.check()
         sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
                          f"\x1b[2m[enter] attach   [q] shell\n{DETACH_HINT}\x1b[0m\n")
         sys.stdout.flush()
-        k = _getkey(3600)
+        k = _getkey(300)
         if k in ("q", "Q"):
             return 0
         if k in ("\r", "\n"):

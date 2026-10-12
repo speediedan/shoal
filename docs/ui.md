@@ -167,6 +167,12 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 - **Popup keys.** Every prompt cancels on Esc. Every popup closes on Enter, Esc or `q`, including
   status and next when their text fits the popup. Text longer than the popup opens in `less`, which
   closes on `q` (or Ctrl+C) only, and its prompt line says so.
+- **Panes reload on upgrade.** A role card, standalone stub, dashboard or ledger tail re-execs itself
+  when shoal's code changes (the new modification stamp must hold for two checks), so an upgrade
+  reaches open panes within about 30 seconds. Panes started before this existed need one
+  `shoal ui open --reapply`, which re-applies the roles and overview tabs when nothing in them is in use.
+- **Role cards** are a field and value table (posture, session, watcher, last write, active, next,
+  wait, asks, offers, attention), fitted to the pane.
 - **Status layout.** `ui status` (and the status popup and dashboard) prints one ASCII table per
   shoal fitted to the terminal width: role, posture, session, active, next, last write, attention.
   Below 110 columns, when that table would not fit, it splits into a status table and a work table.

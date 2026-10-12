@@ -344,7 +344,8 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
                 apply_tab(h, ws["workspace_id"], "roles", _grid([role_node(spec, r) for r in roles]),
                           tab_id=next(iter(tabs)) if len(tabs) == 1 else "")
     ov = [by_label.get(f"{spec.sid}/overview"), by_label.get(f"{spec.sid}/ledger")]
-    if any(p is None for p in ov) or all(h.foreground_is_shell(p["pane_id"]) for p in ov if p):
+    ov_reapply = reapply and all(p is not None for p in ov) and all(disposable(h, p["pane_id"]) for p in ov)
+    if any(p is None for p in ov) or all(h.foreground_is_shell(p["pane_id"]) for p in ov if p) or ov_reapply:
         out.append("re-apply overview tab")
         if not dry_run:
             tab = next((p.get("tab_id") for p in ov if p), None)
@@ -682,7 +683,9 @@ def cmd_forget(a) -> int:
 def cmd_dash(a) -> int:
     import ui_status
     import ui_view
+    watch = ui_term.CodeWatch()
     while True:
+        watch.check()
         try:
             doc = ui_status.cached_status(a.ids or None)
             body = ui_status.render_text(doc)
@@ -722,7 +725,9 @@ def cmd_tail(a) -> int:
         for f in glob.glob(os.path.join(ldir, "*.jsonl")):
             files[f] = (spec.sid, max(0, os.path.getsize(f) - (4000 if a.backlog else 0)))
     print(f"ledger tail: {len(files)} writer files (read-only)")
+    watch = ui_term.CodeWatch()
     while True:
+        watch.check()
         new = []
         for f, (sid, off) in list(files.items()):
             try:
