@@ -54,7 +54,7 @@ SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"}
 # socket methods the adapter calls; `ui doctor` checks the running Herdr still offers them
 METHODS = ("workspace.list", "workspace.create", "workspace.rename", "workspace.close", "workspace.report_metadata",
            "pane.list", "pane.get",
-           "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply")
+           "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply", "tab.close")
 
 
 # ---- Herdr socket ----------------------------------------------------------------------
@@ -226,6 +226,31 @@ def viewable_roles(spec) -> list:
     return [r for r in spec.roles if r.session]
 
 
+def role_tabs(spec) -> list[tuple[str, list]]:
+    """The roles split into tabs of `roles_per_tab` cards (viewer setting, default 4: a 2x2 grid).
+    Order: the viewer's `role_order.<shoal>` list when set, else self-filling lanes, then assigned
+    lanes, then infrastructure (fill=none), each in spec order. One tab is `roles`; several are
+    `roles 1`, `roles 2`, ..."""
+    import ui_status
+    cfg = ui_status.ui_config()
+    try:
+        per = max(1, int(cfg.get("roles_per_tab") or 4))
+    except (TypeError, ValueError):
+        per = 4
+    roles = viewable_roles(spec)
+    order = (cfg.get("role_order") or {}).get(spec.sid) or []
+    if order:
+        rank = {s: i for i, s in enumerate(order)}
+        roles = sorted(roles, key=lambda r: (rank.get(r.slug, len(rank)), spec.roles.index(r)))
+    else:
+        group = {"self": 0, "assigned": 1}
+        roles = sorted(roles, key=lambda r: (group.get(getattr(r, "fill", ""), 2), spec.roles.index(r)))
+    chunks = [roles[i:i + per] for i in range(0, len(roles), per)] or [[]]
+    if len(chunks) == 1:
+        return [("roles", chunks[0])]
+    return [(f"roles {i + 1}", c) for i, c in enumerate(chunks)]
+
+
 def find_ws(h: Herdr, label: str) -> dict | None:
     return next((w for w in h.workspaces() if w.get("label") == label), None)
 
@@ -306,6 +331,33 @@ def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = Non
     return out
 
 
+UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
+               "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
+               "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first"}
+
+
+def cmd_set(a) -> int:
+    import ui_status
+    d = ui_status.ui_config()
+    key, _, sub = a.key.partition(".")
+    if key not in UI_SETTINGS or (key == "role_order") != bool(sub):
+        print("ui set: one of " + ", ".join(UI_SETTINGS) + " (role_order needs .<shoal>)")
+        return 1
+    if key == "role_order":
+        d.setdefault("role_order", {})[sub] = [s.strip() for s in a.value.split(",") if s.strip()]
+    elif a.value == "":
+        d.pop(key, None)
+    else:
+        d[key] = int(a.value) if a.value.isdigit() else a.value
+    ui_status.save_ui_config(d)
+    print(f"{a.key} = {a.value or '(default)'} ({ui_status.ui_config_path()})")
+    if key in ("roles_per_tab", "role_order"):
+        print("run `shoal ui open` to lay the roles out again (refused while a card is in use)")
+    else:
+        print("on the laptop: re-run shoal-herdr-setup.sh, then relaunch (the launcher resolves a % width)")
+    return 0
+
+
 def cmd_hide(a) -> int:
     import ui_status
     d = ui_status.ui_config()
@@ -353,8 +405,9 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
                                          "focus": False})["workspace"]
         first_tab = ws.get("active_tab_id")
         apply_tab(h, ws["workspace_id"], "overview", overview_root(spec), tab_id=first_tab)
-        if roles:
-            apply_tab(h, ws["workspace_id"], "roles", _grid([role_node(spec, r) for r in roles]))
+        for label_, chunk in role_tabs(spec):
+            if chunk:
+                apply_tab(h, ws["workspace_id"], label_, _grid([role_node(spec, r) for r in chunk]))
         return out
     panes = h.panes(ws["workspace_id"])
     by_label = {p.get("label"): p for p in panes if p.get("label")}
@@ -367,17 +420,28 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
     # A cold Herdr restore brings every pane back as a bare shell; a new role has no card yet. Either
     # way the roles tab is re-applied whole (cards are stateless), never by typing into a pane, and
     # never while an operator is attached to a role in it.
-    if missing or (cards and len(shells) == len(cards)) or (reapply and cards):
+    tabs_want = role_tabs(spec)
+    tab_of = {p.get("label"): p.get("tab_id") for p in cards}
+    groups = [{tab_of.get(role_label(spec.sid, r.slug)) for r in chunk} for _, chunk in tabs_want]
+    relayout = bool(cards) and not missing and (any(len(g) != 1 for g in groups)
+                                                 or len({next(iter(g)) for g in groups if len(g) == 1}) != len(groups))
+    if missing or (cards and len(shells) == len(cards)) or (reapply and cards) or relayout:
         why = (f"add {', '.join(missing)}" if missing else "restore cards after a restart"
-               if len(shells) == len(cards) else "restart the cards on the current code (--reapply)")
+               if len(shells) == len(cards) else "lay the roles out in tabs of the configured size" if relayout
+               else "restart the cards on the current code (--reapply)")
         if attached:
             out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is in use (attached, "
                        f"or running something from its shell): free it, then run `shoal ui open` again")
         else:
-            out.append(f"re-apply roles tab: {why}")
+            out.append(f"re-apply roles tab{'s' if len(tabs_want) > 1 else ''}: {why}")
             if not dry_run and roles:
-                apply_tab(h, ws["workspace_id"], "roles", _grid([role_node(spec, r) for r in roles]),
-                          tab_id=next(iter(tabs)) if len(tabs) == 1 else "")
+                old_tabs = [x for x in dict.fromkeys(p.get("tab_id") for p in cards) if x]
+                for i, (label_, chunk) in enumerate(tabs_want):
+                    if chunk:
+                        apply_tab(h, ws["workspace_id"], label_, _grid([role_node(spec, r) for r in chunk]),
+                                  tab_id=old_tabs[i] if i < len(old_tabs) else "")
+                for extra in old_tabs[len(tabs_want):]:  # every card in it was checked disposable above
+                    h.call("tab.close", {"tab_id": extra})
     ov = [by_label.get(f"{spec.sid}/overview"), by_label.get(f"{spec.sid}/ledger")]
     ov_reapply = reapply and all(p is not None for p in ov) and all(disposable(h, p["pane_id"]) for p in ov)
     if any(p is None for p in ov) or all(h.foreground_is_shell(p["pane_id"]) for p in ov if p) or ov_reapply:
@@ -385,7 +449,8 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
         if not dry_run:
             tab = next((p.get("tab_id") for p in ov if p), None)
             apply_tab(h, ws["workspace_id"], "overview", overview_root(spec), tab_id=tab or "")
-    return out or [f"{label}: up to date ({len(roles)} role cards)"]
+    n_tabs = len(role_tabs(spec))
+    return out or [f"{label}: up to date ({len(roles)} role cards" + (f" in {n_tabs} tabs)" if n_tabs > 1 else ")")]
 
 
 # ---- standalone sessions ---------------------------------------------------------------
@@ -1161,9 +1226,17 @@ def sidebar_block() -> str:
     short tag dim beside it (the agents list is already grouped by workspace, one per shoal), and
     the spaces rows with the per-shoal tokens. The tab-bar status line is NOT here: a remote client
     draws the server's `tab_bar_right` (measured in the laptop pilot), so it is in server_block."""
+    import ui_status
+    smw = str(ui_status.ui_config().get("sidebar_max_width") or "").strip()
+    width = ""
+    if smw.endswith("%") and smw[:-1].isdigit():
+        # a share of the window: the laptop launcher resolves it from the window width at each launch
+        width = f"# shoal-sidebar-max: {smw}\nsidebar_max_width = 60\n"
+    elif smw.isdigit():
+        width = f"sidebar_max_width = {int(smw)}\n"
     return """[ui]
 status_indicators = "symbols"
-
+""" + width + """
 [ui.sidebar.agents]
 row_gap = 0
 rows = [

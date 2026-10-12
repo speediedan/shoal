@@ -69,6 +69,11 @@ def add_parsers(sub) -> None:
     q.add_argument("shoal", nargs="+")
     q.set_defaults(func=ui_herdr.cmd_hide, unhide=True)
 
+    q = u.add_parser("set", help="viewer setting: roles_per_tab, sidebar_max_width, role_order.<shoal> ('' resets)")
+    q.add_argument("key")
+    q.add_argument("value")
+    q.set_defaults(func=ui_herdr.cmd_set)
+
     q = u.add_parser("feed", help="herdr: push role state and tokens (read-only to shoal)")
     session_arg(q)
     q.add_argument("--interval", type=float, default=ui_herdr.FEED_INTERVAL_S)

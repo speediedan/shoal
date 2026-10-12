@@ -130,7 +130,12 @@ def card(sid: str, slug: str, force: bool = False) -> str:
     r = next((x for x in s["roles"] if x["slug"] == slug), None)
     if r is None:
         return f"{slug}: not a role of {sid}"
-    head = [f"\x1b[1m{slug}\x1b[0m  ({r['tag']}, {r['harness']} {r['model'] or ''}, fill={r['fill']})",
+    import re as _re
+    tag = _re.sub(r"-[0-9]{8}-[0-9]{6}$", "", sid)
+    # Herdr draws the pane border title as plain text, so the card's own first line carries the colors:
+    # the shoal tag in blue, the role bold in green (maintainer, 2026-10-12)
+    head = [f"\x1b[38;2;137;180;250m{tag}\x1b[0m / \x1b[1;38;2;166;227;161m{slug}\x1b[0m"
+            f"  \x1b[2m({r['tag']}, {r['harness']} {r['model'] or ''}, fill={r['fill']})\x1b[0m",
             f"shoal {sid} {s['gen']}" + ("  OFFLINE" if s["mode"]["offline"] else "")
             + ("  FREEZE" if s["mode"]["freeze"] else "")]
     rows = [["posture", f"{ui_status.posture_label(r)}  ({ui_status._age(r['posture_age_s'])})"],

@@ -246,6 +246,9 @@ def handle(req):
         ws[:] = [w for w in ws if w["workspace_id"] != p["workspace_id"]]
         panes[:] = [q for q in panes if q["workspace_id"] != p["workspace_id"]]
         return {"type": "ok"}
+    if m == "tab.close":
+        panes[:] = [q for q in panes if q["tab_id"] != p["tab_id"]]
+        return {"type": "ok"}
     if m == "pane.get":
         return {"pane": next((q for q in panes if q["pane_id"] == p["pane_id"]), {})}
     if m == "layout.apply":
@@ -363,6 +366,35 @@ check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --s
 [ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 8 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 # --reapply restarts an idle standalone stub on the current code too
 check "restart on the current code standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --reapply
+# roles lay out in tabs of roles_per_tab cards; changing it re-lays them and closes a leftover tab
+check "roles_per_tab = 2" $H ui set roles_per_tab 2
+check "re-apply roles tabs: lay the roles out in tabs of the configured size" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+python3 - "$SHOALD" "$SID" <<'PY2' || fail "two role tabs"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+tabs = {p["tab_id"] for p in h.panes() if str(p.get("label", "")).startswith(sys.argv[2] + "/") and not p["label"].endswith(("/overview", "/ledger"))}
+assert len(tabs) == 2, tabs
+PY2
+check "up to date (4 role cards in 2 tabs)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+check "roles_per_tab = (default)" $H ui set roles_per_tab ""
+check "re-apply roles tab: lay the roles out" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+check "up to date (4 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+# role_order puts the named roles first; a card header shows the shoal tag and the role
+check "role_order.$SID = cl" $H ui set role_order.$SID cl
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "role order"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+from roles import ShoalSpec
+assert ui_herdr.role_tabs(ShoalSpec.load(sys.argv[2]))[0][1][0].slug == "cl"
+PY2
+$H ui set role_order.$SID "" >/dev/null
+# the sidebar width setting reaches the client block, as columns or as a share the launcher resolves
+check "sidebar_max_width = 50%" $H ui set sidebar_max_width 50%
+check "# shoal-sidebar-max: 50%" $H ui herdr-config --client
+check "sidebar_max_width = 48" $H ui set sidebar_max_width 48
+check "^sidebar_max_width = 48" $H ui herdr-config --client
+$H ui set sidebar_max_width "" >/dev/null
 # a hidden shoal leaves every view (unless named) and its idle workspace closes; show brings it back
 check "hidden shoals: $SID" $H ui hide $SID
 OUT=$($H ui status --ledger-root "$ROOT" 2>&1); ! grep -q "$SID" <<<"$OUT" || fail "hidden shoal still in ui status :: $OUT"
@@ -384,7 +416,7 @@ assert any(m["tokens"].get("posture") == "QUESTION" for m in md), md
 assert any(c["method"] == "workspace.report_metadata" for c in calls)
 allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "pane.process_info",
            "pane.report_agent", "pane.report_metadata", "workspace.report_metadata", "pane.get",
-           "workspace.rename", "workspace.close"}
+           "workspace.rename", "workspace.close", "tab.close"}
 md_shoal = {m["tokens"].get("shoal") for m in md if m["tokens"].get("role")}
 assert md_shoal == {"uiselftest"}, md_shoal
 bad = sorted({c["method"] for c in calls if not c["method"].startswith("test.")} - allowed)
