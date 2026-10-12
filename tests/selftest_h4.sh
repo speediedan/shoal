@@ -877,5 +877,26 @@ OUT=$(env CLAUDE_CODE_SESSION_ID=cccc9999-real timeout 5 $H ledger-watch --shoal
 grep -q "binding cccc9999-real" <<<"$OUT" || fail "watcher kept a foreign --session :: $OUT"
 grep -q "^session_id=cccc9999-real" "$S/sc-bind.state" || fail "sidecar not bound to the real session :: $(cat $S/sc-bind.state)"
 
+echo "== 25 restart stops a watcher still sending to a replaced session; warns about a Claude one"
+mkdir -p "$S/fakew"; printf 'import time\ntime.sleep(120)\n' > "$S/fakew/cli.py"
+python3 "$S/fakew/cli.py" ledger-watch --shoal $SID --slug tl --wake send:oldsess01 --interval 60 & P_OLD=$!
+python3 "$S/fakew/cli.py" ledger-watch --shoal $SID --slug tl --wake exit --session oldclaude9 --interval 60 & P_CL=$!
+python3 "$S/fakew/cli.py" ledger-watch --shoal $SID --slug tl --wake send:newsess02 --interval 60 & P_NEW=$!
+sleep 0.5
+OUT=$(python3 - "$SHOALD" "$SPEC" <<'PY2'
+import sys; sys.path.insert(0, sys.argv[1]); import cli
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); r = spec.role("tl"); r.session = "newsess02"
+cli.reap_stale_watchers(spec, r, ["oldsess01", "oldclaude9", "newsess02"])
+PY2
+)
+sleep 0.5
+grep -q "stopped stale ledger-watch pid $P_OLD" <<<"$OUT" || fail "stale send: watcher not stopped :: $OUT"
+grep -q "WARN tl: ledger-watch pid $P_CL is still bound to replaced session oldclaude9" <<<"$OUT" || fail "no WARN for the Claude watcher :: $OUT"
+! kill -0 $P_OLD 2>/dev/null || fail "stale opencode watcher still running"
+kill -0 $P_CL 2>/dev/null || fail "Claude watcher was killed (it must only be reported)"
+kill -0 $P_NEW 2>/dev/null || fail "the current session's watcher was touched"
+kill $P_CL $P_NEW 2>/dev/null; wait $P_CL $P_NEW 2>/dev/null || true
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

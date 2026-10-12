@@ -291,6 +291,50 @@ def sidecar_verdict(sc: dict, launched: str, old: list[str], since_utc: str,
     return True, "", "armed after the launch (no id yet)"
 
 
+def stale_watchers(sid: str, slug: str, old: list[str], current: str = "") -> list[tuple[int, str, str]]:
+    """(pid, bound session, wake) of `ledger-watch` processes for this role still bound to a REPLACED
+    session (one of `old`, never `current`). Read from /proc, so nothing is guessed from a sidecar."""
+    old = [o for o in old if o and (not current or not current.startswith(o) and not o.startswith(current))]
+    out = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{d}/cmdline", "rb") as fh:
+                argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+        except OSError:
+            continue
+        if "ledger-watch" not in argv or not any(a.endswith(("shoal", "cli.py")) for a in argv[:3]):
+            continue
+        opt = {argv[i]: argv[i + 1] for i in range(len(argv) - 1) if argv[i].startswith("--")}
+        if opt.get("--shoal") != sid or opt.get("--slug") != slug:
+            continue
+        wake = opt.get("--wake", "")
+        bound = wake[len("send:"):] if wake.startswith("send:") else opt.get("--session", "")
+        if bound and any(bound.startswith(o) or o.startswith(bound) for o in old):
+            out.append((int(d), bound, wake))
+    return out
+
+
+def reap_stale_watchers(spec: ShoalSpec, role: Role, old: list[str]) -> None:
+    """After a role is relaunched, a watcher still bound to its replaced session keeps delivering:
+    an opencode watcher (`--wake send:<old session>`) sends every wake to the abandoned session as
+    well (measured 2026-10-08 on the test shoal: the first launch's watcher outlived the restart).
+    Those are stopped: a detached opencode watcher wakes nobody by dying. A Claude watcher bound to
+    an old session is only reported, because killing a background command wakes its session."""
+    import signal
+    for pid, bound, wake in stale_watchers(spec.sid, role.slug, old, role.session):
+        if wake.startswith("send:"):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                print(f"  {role.slug}: stopped stale ledger-watch pid {pid} (still sending to replaced session {bound})")
+            except OSError as exc:
+                print(f"  {role.slug}: could not stop stale ledger-watch pid {pid}: {exc}")
+        else:
+            print(f"  WARN {role.slug}: ledger-watch pid {pid} is still bound to replaced session {bound}; left "
+                  f"running (stopping it would wake that session). `claude stop {bound[:8]}` retires both")
+
+
 def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600, old: list[str] | None = None,
                     since_utc: str = "", poll_s: float = 30) -> bool:
     """Effect-verification for a launched role: it writes a ledger state, its
@@ -462,6 +506,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
         for role in consumers_launched:
             if not verify_consumer(spec, role, old=old_sessions, since_utc=launch_utc):
                 rc = rc or 3
+            reap_stale_watchers(spec, role, old_sessions)
         spec.record_generation()
     print("DONE. Old generation retires by neglect; live session ids + generation record saved to the spec.")
     return rc
