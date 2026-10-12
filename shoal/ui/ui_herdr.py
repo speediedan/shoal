@@ -492,11 +492,15 @@ def role_sessions() -> set[str]:
 # ---- feed: role state and tokens -------------------------------------------------------
 
 def herdr_state(r: dict) -> str:
+    """Herdr's agent state (idle | working | blocked). A session mid-turn is `working` even when the
+    role also waits on the maintainer: the sidebar showed a busy lane as blocked (2026-10-12), and
+    the needs-you signal stays in the row's posture and ask tokens. `blocked` (drawn as x in
+    symbols mode) means the role needs the maintainer, or cannot be woken (watcher dead)."""
     reasons = r["can_progress"]["reasons"]
-    if r["needs_you"] or "watcher-dead" in reasons:
-        return "blocked"
     if r["session"] == "working":
         return "working"
+    if r["needs_you"] or "watcher-dead" in reasons:
+        return "blocked"
     return "idle"
 
 

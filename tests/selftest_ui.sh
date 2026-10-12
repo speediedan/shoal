@@ -149,6 +149,10 @@ import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/
 import ui_status
 assert ui_status.pending_question({"waitingFor": "input needed"}, "x") is True
 assert ui_status.pending_question({"state": "blocked"}, "x") is False
+import ui_herdr
+mk = lambda s, n, r: {"session": s, "needs_you": n, "can_progress": {"reasons": r}}
+assert ui_herdr.herdr_state(mk("working", True, ["waiting-on-you"])) == "working"  # busy wins over needs-you
+assert ui_herdr.herdr_state(mk("blocked", True, ["blocked-on-question"])) == "blocked"
 PY2
 check 'CLAUDE_CODE_ENABLE_AWAY_SUMMARY' $H view $SID cl --spec "$SPEC" --dry-run
 # the opencode viewer reads the server password from the server process's own environment
