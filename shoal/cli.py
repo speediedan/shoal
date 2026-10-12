@@ -175,9 +175,13 @@ def _doc_problem(role: Role, header: bool) -> str:
     except OSError:
         return f"MISSING: {role.doc} ({role.slug} has no start doc)"
     if header:
-        if not re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan[ _]state|plan[ _]state)",
-                         text, flags=re.M | re.I):
-            return f"INCOMPLETE: {role.doc} (no plan header)"
+        # a titled plan or handoff, or a start doc with the sections a brief points to (measured 2026-10-12:
+        # three start docs written to the four headings were refused for their titles alone)
+        titled = re.search(r"^- handing-off-model:|^# Handoff|^# .*(live plan|coordination plan|live plan[ _]state|plan[ _]state)",
+                           text, flags=re.M | re.I)
+        sectioned = all(re.search(rf"^##\s+{s}\b", text, flags=re.M | re.I) for s in ("mission", "current state"))
+        if not (titled or sectioned):
+            return f"INCOMPLETE: {role.doc} (no plan header: title it as a plan_state, or give it ## Mission and ## Current state)"
         return ""
     missing = [s for s in ("grants-needed", "current state") if s not in text.lower()]
     return f"INCOMPLETE: {role.doc} (missing: {', '.join(missing)})" if missing else ""
