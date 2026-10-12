@@ -301,7 +301,7 @@ def find_shoal_ws(h: Herdr, sid: str, dry_run: bool = False) -> dict | None:
     return ws
 
 
-def ensure_shoal(h: Herdr, spec, dry_run: bool = False) -> list[str]:
+def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -> list[str]:
     """One workspace per shoal, labelled with its short tag (`shoal_tag`): tab `overview` (dashboard
     + ledger tail) and tab `roles` (a card per role with a session). Re-running only fills gaps by
     re-applying a whole tab (a new role, or a cold restore that left bare shells). Nothing running
@@ -332,8 +332,9 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False) -> list[str]:
     # A cold Herdr restore brings every pane back as a bare shell; a new role has no card yet. Either
     # way the roles tab is re-applied whole (cards are stateless), never by typing into a pane, and
     # never while an operator is attached to a role in it.
-    if missing or (cards and len(shells) == len(cards)):
-        why = (f"add {', '.join(missing)}" if missing else "restore cards after a restart")
+    if missing or (cards and len(shells) == len(cards)) or (reapply and cards):
+        why = (f"add {', '.join(missing)}" if missing else "restore cards after a restart"
+               if len(shells) == len(cards) else "restart the cards on the current code (--reapply)")
         if attached:
             out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is in use (attached, "
                        f"or running something from its shell): free it, then run `shoal ui open` again")
@@ -614,7 +615,7 @@ def cmd_open(a) -> int:
         try:
             spec = ShoalSpec.load(p)
             spec.path = p
-            for line in ensure_shoal(h, spec, a.dry_run):
+            for line in ensure_shoal(h, spec, a.dry_run, getattr(a, "reapply", False)):
                 print(("[dry-run] " if a.dry_run else "") + line)
         except Exception as exc:  # noqa: BLE001
             print(f"ui open: {p}: {exc}")

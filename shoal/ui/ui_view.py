@@ -172,13 +172,19 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             force = True
         if k in ("\r", "\n"):  # Enter only: a typed word must never start an attach
             flush_input()
-            try:
-                spec, role = resolve_role(sid, slug, spec_path)
-                run_viewer(role.ecosystem, role.session, f"{sid}/{slug}")
-            except Exception as exc:  # noqa: BLE001
-                print(f"shoal view: {exc}")
+            # a fresh process, so the attach always runs the current code: a card lives for days, and
+            # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
+            subprocess.run(_view_cmd(sid, slug, spec_path))
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
+
+
+def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: str = "", label: str = "") -> list[str]:
+    """`shoal view` for one attach, run as a child process of the card."""
+    argv = [sys.executable, os.path.join(PKG, "cli.py"), "view"]
+    if harness:
+        return argv + ["--harness", harness, "--session", session, "--label", label]
+    return argv + [sid, slug] + (["--spec", spec_path] if spec_path else [])
 
 
 def standalone_stub(harness: str, session: str, label: str) -> int:
@@ -191,7 +197,7 @@ def standalone_stub(harness: str, session: str, label: str) -> int:
             return 0
         if k in ("\r", "\n"):
             flush_input()
-            run_viewer(harness, session, label)
+            subprocess.run(_view_cmd("", "", "", harness=harness, session=session, label=label))
             time.sleep(2)
 
 

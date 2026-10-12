@@ -246,6 +246,25 @@ for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.3; done
 HERDR_SOCKET_PATH="$S/not-the-live-herdr.sock" \
   check "create workspace $SID: overview + 4 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 check "up to date (4 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+# --reapply restarts idle cards on the current code, and refuses while a card is in use
+check "re-apply roles tab: restart the cards on the current code" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone --reapply
+python3 - "$SHOALD" <<'PY2' || fail "reapply must refuse an attached card"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+pid = next(p["pane_id"] for p in h.panes() if str(p.get("label", "")).endswith("/cl"))
+h.call("test.set_fg", {"pane_id": pid, "procs": [{"name": "claude", "argv": ["claude", "attach", "x"]}]})
+PY2
+check "is in use" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone --reapply
+python3 - "$SHOALD" <<'PY2' || fail "reset the attached card"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+pid = next(p["pane_id"] for p in h.panes() if str(p.get("label", "")).endswith("/cl"))
+h.call("test.set_fg", {"pane_id": pid, "procs": [{"name": "bash", "argv": ["bash"]}]})
+PY2
 # focused card: an action hands the focused pane to its popup; the popup resolves its role from it
 python3 - "$SHOALD" <<'PY2' || fail "focused card"
 import os, sys
@@ -302,7 +321,7 @@ mkdir -p "$XDG_CONFIG_HOME/shoal"
 printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 5 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 6 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + 1 --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once"
 python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys

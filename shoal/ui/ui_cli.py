@@ -57,6 +57,8 @@ def add_parsers(sub) -> None:
     q.add_argument("--shoal", dest="ids", action="append", default=[])
     q.add_argument("--ledger-root", default="")
     q.add_argument("--no-standalone", action="store_true")
+    q.add_argument("--reapply", action="store_true",
+                   help="also restart role cards on the current code (refused while any card is in use)")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_herdr.cmd_open)
 
