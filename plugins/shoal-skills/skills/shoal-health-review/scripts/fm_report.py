@@ -142,6 +142,18 @@ def main():
                 C[(day(e["_t"]), "page:user-waits-digest")] += 1
         elif e.get("kind") == "stall-suspect":
             C[(day(e["_t"]), "pages:total")] += 1
+    # --- health_condition (shoal health): onsets per condition, and hours open on each close
+    for e in tel:
+        if e.get("type") != "health_condition" or not inw(e["_t"]):
+            continue
+        cond = e.get("condition") or "?"
+        if e.get("event") == "open":
+            C[(day(e["_t"]), f"cond-open:{cond}")] += 1
+        elif e.get("event") == "close":
+            try:
+                H[(day(e["_t"]), f"cond-h:{cond}")] += float(e.get("duration_min") or 0) * 60
+            except ValueError:
+                pass
 
     tls = role_timelines(led)
     last_write = collections.defaultdict(list)

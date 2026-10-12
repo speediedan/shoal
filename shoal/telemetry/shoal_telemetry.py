@@ -50,6 +50,9 @@ TYPES = {
     "session_transition": ["from_state", "to_state"],
     "coord_comms": ["direction"],
     "watch_event": ["kind"],
+    # one health-quorum condition instance (a ladder key): event=open when first seen, event=close
+    # with since and duration_min when it clears, so onset and duration are measurable per condition
+    "health_condition": ["event", "slug", "condition", "key"],
     "queue_add": ["issue", "queue"],
     "queue_remove": ["issue", "queue", "disposition"],
     "issue_closed": ["issue", "repo"],

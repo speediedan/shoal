@@ -44,7 +44,7 @@ Keep durable metrics in the ledger or telemetry, never in the state dir alone.
 
 | gap | addition | covers |
 | --- | --- | --- |
-| condition onset and duration | a `health_condition` telemetry event on open and close of each ladder key (slug, condition, key, since, closed) | 1, 2, 3, 9, 10 directly, and every future condition |
+| condition onset and duration | DONE 2026-10-12: the `health_condition` telemetry event (event open/close, slug, condition, key, since, duration_min); fm_report `cond-open:<condition>` counts and `cond-h:<condition>` hours | 1, 2, 3, 9, 10 directly, and every future condition |
 | candidates at the time | per-role strong-candidate counts in the `digest-refresh` event | 2 |
 | job end without a waiter | a `job-end` event from the unit wrapper that writes the rc file | 7 (durable) |
 | answered asks | the maintainer's answer recorded as a ledger `msg` with `re=<ask>` | 4 |

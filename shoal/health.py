@@ -463,6 +463,24 @@ def relaunch_relay(spec: ShoalSpec, spec_path: str, dry_run: bool = False) -> st
     return f"relay-launch rc={rc}: {last[:160]}"
 
 
+def emit_conditions(sid: str, opened: dict[str, str], closed: dict[str, str]) -> None:
+    """`health_condition` telemetry: one event per ladder key that opened or closed this run. A key
+    is `<slug>|<condition>|<evidence>`. Best effort: telemetry never stops a quorum run."""
+    try:
+        from watchers import shoal_emit
+    except Exception:  # noqa: BLE001
+        return
+    for event, keys in (("open", opened), ("close", closed)):
+        for k, since in sorted(keys.items()):
+            slug, condition, key = (k.split("|", 2) + ["", ""])[:3]
+            extra = {}
+            if event == "close" and since:
+                a = age_min(since)
+                extra["duration_min"] = f"{a:.1f}" if a is not None else ""
+            shoal_emit(sid, "health", "script", "health_condition", event=event, slug=slug,
+                       condition=condition, key=key, since=since, **extra)
+
+
 def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = "") -> int:
     from ledger import Ledger, View
     sdir = state_dir(spec.sid)
@@ -505,6 +523,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                          "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
                                    f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.sid}`"})
     ladders = state.setdefault("ladders", {})
+    prev_keys = set(ladders)
     live_keys = set()
     for c in conds:
         k = f"{c['slug']}|{c['condition']}|{c['key']}"
@@ -534,9 +553,13 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
             lad["step"] += 1
             break  # at most one action per condition per run
+    closed = {}
     for k in list(ladders):
         if k not in live_keys:
+            closed[k] = ladders[k].get("since", "")
             del ladders[k]  # condition cleared: its ladder resets
+    if not dry_run:
+        emit_conditions(spec.sid, {k: ladders[k].get("since", "") for k in live_keys - prev_keys}, closed)
     # daily digest of maintainer waits; deferred pages once the maintainer is back
     today = iso()[:10]
     waits = []

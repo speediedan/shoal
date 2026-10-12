@@ -898,5 +898,22 @@ kill -0 $P_CL 2>/dev/null || fail "Claude watcher was killed (it must only be re
 kill -0 $P_NEW 2>/dev/null || fail "the current session's watcher was touched"
 kill $P_CL $P_NEW 2>/dev/null; wait $P_CL $P_NEW 2>/dev/null || true
 
+echo "== 26 health_condition telemetry: a ladder that opens or clears is recorded with its duration"
+python3 - /tmp/$SID/health.json <<'PY2'
+import datetime, json, sys
+t = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"ladders": {"ghost|parked-work|parked:x#1": {"since": t, "step": 0}}}, open(sys.argv[1], "w"))
+PY2
+env SHOAL_FAKE_SESSIONS='{"claude":[{"sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":7}],"opencode":{}}' \
+  $H health --spec "$SPEC" --instance a >/dev/null 2>&1 || true
+EV=$(cat "$S"/data/$SID/telemetry/*.jsonl 2>/dev/null | grep '"health_condition"')
+python3 -c "import json,sys; ev=[json.loads(l) for l in sys.stdin if l.strip()]; c=[e for e in ev if e['event']=='close' and e['slug']=='ghost']; assert c and 29 <= float(c[0]['duration_min']) <= 31, ev" <<<"$EV" \
+  || fail "no close event with its duration :: $EV"
+python3 -c "import json,sys; ev=[json.loads(l) for l in sys.stdin if l.strip()]; assert any(e['event']=='open' for e in ev), ev" <<<"$EV" \
+  || fail "no open event :: $EV"
+OUT=$(SHOAL_DATA_ROOT="$S/data" python3 "$FMR" --spec "$SPEC" --days 2 2>&1)
+grep -q "cond-open:" <<<"$OUT" && grep -q "cond-h:parked-work" <<<"$OUT" || fail "fm_report missed health_condition :: $OUT"
+rm -f /tmp/$SID/health.json
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
