@@ -23,6 +23,9 @@ shoal_test_setup() {
     unset "SHOAL_$v"
   done
   unset GPU_LEASE_CMD
+  # the harness that runs a suite must not leak into it: a Claude session id rebinds watchers, and a
+  # systemd INVOCATION_ID changes how `claude` is launched
+  unset CLAUDE_CODE_SESSION_ID INVOCATION_ID
   # an operator often runs the suites (or `shoal upgrade`) from inside a terminal multiplexer pane:
   # nothing may reach the live herdr socket or another ledger clone from a selftest
   for v in $(env | sed -n 's/^\(HERDR_[A-Za-z0-9_]*\|ZELLIJ[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done

@@ -229,6 +229,12 @@ def cmd_ledger_watch(a) -> int:
     sc_path = a.sidecar or sidecar_path(sid, slug)
     sc = load_sidecar(sc_path)
     session = a.session or sc.get("session_id", "") or (role.session if role else "")
+    # a Claude session knows its own id; a lane once passed its Remote Control bridge id instead
+    # (measured 2026-10-12), which restart could not match to the launched session
+    own = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if own and session != own and not own.startswith(session or "\0"):
+        print(f"note: --session {session or '(none)'} is not this Claude session; binding {own}")
+        session = own
     sc.update(session_id=session, pid=str(os.getpid()), armed_utc=now_iso(),
               wake=a.wake, interval=str(a.interval))
     sc.setdefault("delivered", "")

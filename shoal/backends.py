@@ -268,6 +268,19 @@ REVIVED_NOTE = ("Your session was respawned: its worker process had died (the Cl
                 "is gone. Run `next`, re-arm your watcher, then act on this wake: ")
 
 
+def detached(argv: list[str]) -> list[str]:
+    """argv run so that a Claude background daemon it may start outlives the caller's systemd unit.
+    Under a systemd service (INVOCATION_ID set, e.g. a health timer), `claude` starts its daemon on
+    demand inside the unit's cgroup, and KillMode=control-group kills it when the oneshot ends, with
+    every session it spawned (measured 2026-10-12 after a reboot: a relay relaunched by the quorum died
+    4 s later). `systemd-run --user --scope` gives the call its own scope, which keeps the caller's
+    environment, cwd and pipes."""
+    sr = shutil.which("systemd-run")
+    if os.environ.get("INVOCATION_ID") and sr:
+        return [sr, "--user", "--scope", "--collect", "--quiet", *argv]
+    return argv
+
+
 def parse_bg_id(text: str) -> "re.Match[str] | None":
     """The session id from `claude --bg` output. The CLI colours its output when the
     environment forces colour (FORCE_COLOR), so escape codes are stripped first: without
@@ -351,7 +364,7 @@ class ClaudeBackend(Backend):
         if effort:
             argv += ["--effort", effort]
         argv += [brief]
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=120,
+        r = subprocess.run(detached(argv), capture_output=True, text=True, timeout=120,
                            cwd=repo_dir, env=_ENV)
         m = parse_bg_id(r.stdout + r.stderr)
         if not m:
@@ -405,7 +418,7 @@ class ClaudeBackend(Backend):
             return "fake"
         e = self._row(session_id, include_stopped=True) or {}
         b = shutil.which("claude") or "claude"
-        r = subprocess.run([b, "respawn", str(e.get("id") or session_id[:8])], capture_output=True,
+        r = subprocess.run(detached([b, "respawn", str(e.get("id") or session_id[:8])]), capture_output=True,
                            text=True, timeout=120, env=_ENV)
         out = ANSI_RE.sub("", r.stdout + r.stderr).strip().splitlines()
         return (out[-1] if out else "respawned") if r.returncode == 0 else f"FAILED rc={r.returncode}: {out[-1] if out else ''}"

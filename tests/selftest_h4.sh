@@ -862,5 +862,20 @@ check "posture=idle" $Q --slug tl --idle --next ""
 check "wake via no-adapter (claude watcher dead, wake relay waiter dead) (tl's ledger-watch is not running)" \
   $H msg --shoal $SID --spec "$SPEC" --to tl --wake --text "operator wake" --no-sync
 
+echo "== 24 a claude call from a systemd unit runs in its own scope; a watcher binds its own Claude session id"
+python3 - "$SHOALD" <<'PY2' || fail "detached() argv"
+import os, shutil, sys; sys.path.insert(0, sys.argv[1]); import backends
+os.environ.pop("INVOCATION_ID", None)
+assert backends.detached(["claude", "x"]) == ["claude", "x"]
+os.environ["INVOCATION_ID"] = "t"
+got = backends.detached(["claude", "x"])
+assert got == (["claude", "x"] if not shutil.which("systemd-run") else
+               [shutil.which("systemd-run"), "--user", "--scope", "--collect", "--quiet", "claude", "x"]), got
+PY2
+OUT=$(env CLAUDE_CODE_SESSION_ID=cccc9999-real timeout 5 $H ledger-watch --shoal $SID --spec "$SPEC" --slug tl --wake print \
+  --session bridge-id-not-mine --interval 60 --sidecar "$S/sc-bind.state" --no-sync 2>&1 || true)
+grep -q "binding cccc9999-real" <<<"$OUT" || fail "watcher kept a foreign --session :: $OUT"
+grep -q "^session_id=cccc9999-real" "$S/sc-bind.state" || fail "sidecar not bound to the real session :: $(cat $S/sc-bind.state)"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
