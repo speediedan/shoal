@@ -395,6 +395,9 @@ check "# shoal-sidebar-max: 50%" $H ui herdr-config --client
 check "sidebar_max_width = 48" $H ui set sidebar_max_width 48
 check "^sidebar_max_width = 48" $H ui herdr-config --client
 $H ui set sidebar_max_width "" >/dev/null
+check "pane_borders = off" $H ui set pane_borders off
+check '^pane_borders = "off"' $H ui herdr-config --client
+$H ui set pane_borders "" >/dev/null
 # a hidden shoal leaves every view (unless named) and its idle workspace closes; show brings it back
 check "hidden shoals: $SID" $H ui hide $SID
 OUT=$($H ui status --ledger-root "$ROOT" 2>&1); ! grep -q "$SID" <<<"$OUT" || fail "hidden shoal still in ui status :: $OUT"

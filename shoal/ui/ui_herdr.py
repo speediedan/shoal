@@ -333,7 +333,8 @@ def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = Non
 
 UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
-               "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first"}
+               "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
+               "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)"}
 
 
 def cmd_set(a) -> int:
@@ -1234,6 +1235,10 @@ def sidebar_block() -> str:
         width = f"# shoal-sidebar-max: {smw}\nsidebar_max_width = 60\n"
     elif smw.isdigit():
         width = f"sidebar_max_width = {int(smw)}\n"
+    pb = str(ui_status.ui_config().get("pane_borders") or "").strip()
+    if pb in ("auto", "off", "on"):
+        # "off" drops Herdr's plain-text pane titles, so each card's own colored first line is the top
+        width += f"pane_borders = {json.dumps(pb)}\n"
     return """[ui]
 status_indicators = "symbols"
 """ + width + """
