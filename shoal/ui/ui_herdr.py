@@ -348,7 +348,8 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
                "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
                "show_relay": "true to give the wake relay a role card (default: hidden)",
-               "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)"}
+               "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)",
+               "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)"}
 
 
 def cmd_set(a) -> int:
@@ -1252,6 +1253,11 @@ def sidebar_block() -> str:
         width = f"# shoal-sidebar-max: {smw}\nsidebar_max_width = 60\n"
     elif smw.isdigit():
         width = f"sidebar_max_width = {int(smw)}\n"
+    sort = str(ui_status.ui_config().get("agent_sort") or "priority").strip()
+    if sort in ("priority", "spaces"):
+        # "priority" is Herdr's attention queue: blocked (shoal: a question or another need for the
+        # maintainer) first, then the rest by state; "spaces" groups agents under their shoal
+        width += f"agent_panel_sort = {json.dumps(sort)}\n"
     pb = str(ui_status.ui_config().get("pane_borders") or "").strip()
     if pb in ("auto", "off", "on"):
         # "off" drops Herdr's plain-text pane titles, so each card's own colored first line is the top

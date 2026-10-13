@@ -417,6 +417,10 @@ assert ui_status.posture_label(q) == "ACTIVE?"
 PY2
 check "show_relay = false" $H ui set show_relay false
 $H ui set show_relay "" >/dev/null
+check '^agent_panel_sort = "priority"' $H ui herdr-config --client
+check "agent_sort = spaces" $H ui set agent_sort spaces
+check '^agent_panel_sort = "spaces"' $H ui herdr-config --client
+$H ui set agent_sort "" >/dev/null
 check "pane_borders = off" $H ui set pane_borders off
 check '^pane_borders = "off"' $H ui herdr-config --client
 $H ui set pane_borders "" >/dev/null
