@@ -672,41 +672,11 @@ def cmd_line(a) -> int:
 
 # ---- quiet check: prove that viewing woke nobody ---------------------------------------
 
-def pending_question(row: dict, session: str, tail_bytes: int = 524288) -> bool:
-    """A Claude session is at a question prompt: `claude agents` says it waits for input (measured
-    2026-10-08: `waitingFor` "input needed" on an AskUserQuestion), or its transcript tail has an
-    AskUserQuestion with no result yet. A session that only ended its turn saying it waits on the
-    maintainer reads `blocked` too (measured 2026-10-12, waitingFor None, no prompt)."""
-    if row.get("waitingFor"):
-        return True
-    from backends import fake_sessions
-    if fake_sessions() is not None:
-        return False
-    path = _claude_transcript(session)
-    if not path:
-        return False
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(max(0, os.path.getsize(path) - tail_bytes))
-            chunk = fh.read().decode(errors="replace")
-    except OSError:
-        return False
-    open_q = set()
-    for line in chunk.splitlines():
-        if "AskUserQuestion" not in line and "tool_result" not in line:
-            continue
-        try:
-            content = (json.loads(line).get("message") or {}).get("content")
-        except ValueError:
-            continue
-        for c in content if isinstance(content, list) else []:
-            if not isinstance(c, dict):
-                continue
-            if c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
-                open_q.add(c.get("id"))
-            elif c.get("type") == "tool_result":
-                open_q.discard(c.get("tool_use_id"))
-    return bool(open_q)
+def pending_question(row: dict, session: str) -> bool:
+    """A real question prompt is open (health.claude_prompt_open: waitingFor, or an unanswered
+    AskUserQuestion in the transcript tail), as opposed to a session self-reported blocked."""
+    import health as _h
+    return _h.claude_prompt_open(row, session)
 
 
 def _claude_transcript(session: str) -> str:

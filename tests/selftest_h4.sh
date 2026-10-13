@@ -945,8 +945,10 @@ from roles import ShoalSpec
 spec = ShoalSpec.load(sys.argv[2]); r = spec.role("tl")
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "active"}], "opencode": {}})
 assert lw.claude_session_busy("aaaa1111-0000") is True
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "blocked", "waitingFor": "input needed"}], "opencode": {}})
+assert lw.claude_session_busy("aaaa1111-0000") is True   # at a real question prompt: never deliver onto it
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "blocked"}], "opencode": {}})
-assert lw.claude_session_busy("aaaa1111-0000") is True   # at a question: never deliver onto the prompt
+assert lw.claude_session_busy("aaaa1111-0000") is False  # self-reported blocked, no prompt: deliver (it waits for this)
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "idle"}], "opencode": {}})
 assert lw.claude_session_busy("aaaa1111-0000") is False
 assert lw.relay_deliver(spec.sid, r, "aaaa1111-0000", "LEDGER-WAKE tl: test") is True

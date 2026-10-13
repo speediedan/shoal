@@ -281,6 +281,51 @@ def claude_worker_gone(role, cbusy: dict[str, str]) -> bool:
         return False
 
 
+def claude_transcript(session: str) -> str:
+    """The newest transcript file of a Claude session, or ""."""
+    import glob
+    base = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "projects")
+    hits = glob.glob(os.path.join(base, "*", f"{session}*.jsonl")) if session else []
+    return max(hits, key=os.path.getmtime) if hits else ""
+
+
+def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> bool:
+    """A Claude session is at a question prompt: `claude agents` says it waits for input (measured
+    2026-10-08: `waitingFor` "input needed" on an AskUserQuestion), or its transcript tail has an
+    AskUserQuestion with no result yet. A session that only ended its turn saying it waits on the
+    maintainer reads `blocked` too (measured 2026-10-12, waitingFor None, no prompt)."""
+    if row.get("waitingFor"):
+        return True
+    from backends import fake_sessions
+    if fake_sessions() is not None:
+        return False
+    path = claude_transcript(session)
+    if not path:
+        return False
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - tail_bytes))
+            chunk = fh.read().decode(errors="replace")
+    except OSError:
+        return False
+    open_q = set()
+    for line in chunk.splitlines():
+        if "AskUserQuestion" not in line and "tool_result" not in line:
+            continue
+        try:
+            content = (json.loads(line).get("message") or {}).get("content")
+        except ValueError:
+            continue
+        for c in content if isinstance(content, list) else []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
+                open_q.add(c.get("id"))
+            elif c.get("type") == "tool_result":
+                open_q.discard(c.get("tool_use_id"))
+    return bool(open_q)
+
+
 def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | None:
     # SHOAL_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
     if role.slug in [x for x in config.env("HEALTH_BETWEEN").split(",") if x]:

@@ -238,6 +238,15 @@ def cmd_msg(a) -> int:
                     wake=(True if getattr(a, "wake", False) else None))
     print(f"msg {by}->{a.to} [{a.kind}] [{ev['id']}]")
     target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") else None
+    if a.to == "*" and getattr(a, "wake", False) and by == "user" and spec is not None:
+        # broadcast: every role's watcher delivers a user --wake msg; a role whose watcher is dead gets it
+        # through the quorum's adapter instead (the relay, or a respawn first under health.revive)
+        from health import request_wake, watcher_alive
+        from roles import is_wake_relay
+        for r in spec.roles:
+            if r.session and not is_wake_relay(r) and not watcher_alive(spec.sid, r.slug)[0]:
+                print(f"wake via {request_wake(spec, r.slug, 'user message ' + ev['id'] + ': ' + a.text, 'user-msg')} "
+                      f"({r.slug}'s ledger-watch is not running)")
     if target is not None and getattr(a, "wake", False) and by == "user" and target.session:
         # the role's ledger-watch delivers a --wake msg; with that watcher dead nothing would, so the
         # wake goes through the same adapter the health quorum uses (measured 2026-10-08: an operator

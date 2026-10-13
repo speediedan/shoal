@@ -201,15 +201,35 @@ def session_busy(session: str, repo_dir: str) -> bool:
     return bool(s) and "status:" in s and "status:idle" not in s
 
 
-def claude_session_busy(session: str) -> bool:
-    """True while the Claude session is mid-turn or at a question (`health.claude_liveness`: busy or
-    blocked). A message delivered then would interrupt the turn or land on the prompt."""
+def code_stamp() -> float:
+    """Newest modification time of shoal's own .py files (what a running watcher executes)."""
+    import glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    files = [f for d in ("", "telemetry") for f in glob.glob(os.path.join(here, d, "*.py"))]
     try:
-        from health import claude_busy
+        return max(os.path.getmtime(f) for f in files) if files else 0.0
+    except OSError:
+        return 0.0
+
+
+def claude_session_busy(session: str) -> bool:
+    """True while the Claude session is mid-turn, or at an open question prompt, where a message would
+    interrupt the turn or land on the prompt. A session that only ended its turn self-reported
+    'blocked' (waiting on the maintainer, no prompt) is NOT busy: holding wakes from it deadlocked three
+    lanes, each waiting for exactly the message being held (measured 2026-10-13)."""
+    try:
+        from health import claude_busy, claude_prompt_open
         st = next((v for k, v in claude_busy().items() if session and k.startswith(session[:8])), "")
+        if st == "blocked":
+            from backends import fake_sessions, get as get_backend
+            row = {}
+            fake = fake_sessions()
+            rows = (fake.get("claude") or []) if fake is not None else get_backend("claude")._agents()
+            row = next((r for r in rows if str(r.get("sessionId", "")).startswith(session[:8])), {})
+            return claude_prompt_open(row, session)
     except Exception:  # noqa: BLE001
         return False
-    return st in ("busy", "blocked")
+    return st == "busy"
 
 
 def relay_deliver(sid: str, role, session: str, text: str) -> bool:
@@ -310,10 +330,17 @@ def cmd_ledger_watch(a) -> int:
     send_fails = 0
     last_board = 0.0
     first = True
+    stamp = code_stamp() if persistent else 0.0
     while True:
         if not first:
             time.sleep(a.interval)
         first = False
+        if persistent and code_stamp() != stamp:
+            # a persistent watcher never re-arms, so an upgrade would never reach it: re-exec in place
+            # (same pid, so the sidecar and ALREADY ARMED still match) once a code change has landed
+            time.sleep(2)
+            print(f"{now_iso()} shoal code changed: reloading the watcher in place", flush=True)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
         ok = led.pull()
         if not ok:
             fails += 1
