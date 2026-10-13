@@ -71,6 +71,22 @@ expect 0 $H ledger-init --spec "$SPEC" >/dev/null
 [ -z "$(git -C "$A" status --porcelain)" ] || fail "ledger clone not clean after re-init :: $(git -C "$A" status --porcelain)"
 expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#372:fix --base interpretune@3ac6fdf9 --note "phase 1 only" >/dev/null
 check "interpretune#372:fix" $H show --shoal t1shoal --slug alpha
+# a pull that lands on another writer's uncommitted line (a multi-line write between its appends and
+# its one commit) rebases around it and keeps it; a plain rebase refused and killed the watcher (FM-17)
+git -C "$B" pull -q 2>/dev/null; echo remote > "$B/fm17-remote"; git -C "$B" add fm17-remote
+git -C "$B" commit -qm "fm17 remote commit"; git -C "$B" push -q 2>/dev/null || fail "fm17: push from B"
+echo '{"ts":"2026-09-20T00:00:09Z","type":"state","state":"idle"}' >> "$A/shoals/t1shoal/ledger/user.jsonl"
+python3 - "$SHOALD" "$A" <<'PY' || fail "pull onto an uncommitted writer line"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from ledger import sync_pull
+a = sys.argv[2]
+assert sync_pull(a) is True
+assert os.path.exists(os.path.join(a, "fm17-remote")), "remote commit not pulled"
+assert open(os.path.join(a, "shoals/t1shoal/ledger/user.jsonl")).read().rstrip().endswith('"state":"idle"}'), "line lost"
+print("fm17 autostash ok")
+PY
+git -C "$A" checkout -q -- shoals/t1shoal/ledger/user.jsonl
 echo "== 2 offers + permissions"
 expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#600:fix --base interpretune@3ac6fdf9 --prio 10 >/dev/null
 expect 1 $H offer --shoal t1shoal --to alpha --item interpretune#427:fix --by beta >/dev/null      # a role never offers

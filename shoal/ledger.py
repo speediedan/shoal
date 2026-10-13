@@ -218,7 +218,12 @@ def sync_pull(root: str, timeout: int = 60) -> bool:
         if r.returncode != 0:
             return False
         branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        r = git(root, "rebase", "--quiet", f"origin/{branch}", check=False, timeout=timeout)
+        # --autostash: a multi-line write (`queue`: claim, state and queue appended, then ONE commit)
+        # releases the lock between its appends, so a pull can land on an uncommitted line of another
+        # writer's file; a plain rebase refused it and the error killed the pulling watcher (FM-17,
+        # measured 2026-10-13: ie-integration and it-arch-reviewer read NOWATCH). One file per writer,
+        # so the stashed line always re-applies.
+        r = git(root, "rebase", "--quiet", "--autostash", f"origin/{branch}", check=False, timeout=timeout)
         if r.returncode != 0:
             git(root, "rebase", "--abort", check=False)
             raise LedgerError(f"rebase onto origin/{branch} failed (should be impossible with "

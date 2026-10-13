@@ -36,7 +36,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 from ledger import OFFER_WRITERS  # noqa: E402
 
-from ledger import Ledger, View, fmt_item, item_key, short  # noqa: E402
+from ledger import Ledger, LedgerError, View, fmt_item, item_key, short  # noqa: E402
 from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
 import config  # noqa: E402
 
@@ -341,7 +341,11 @@ def cmd_ledger_watch(a) -> int:
             time.sleep(2)
             print(f"{now_iso()} shoal code changed: reloading the watcher in place", flush=True)
             os.execv(sys.executable, [sys.executable] + sys.argv)
-        ok = led.pull()
+        try:
+            ok = led.pull()
+        except LedgerError as exc:  # a failed rebase is a failed fetch: counted and retried, never fatal
+            print(f"{now_iso()} PULL-FAILED: {str(exc)[-200:]}", flush=True)
+            ok = False
         if not ok:
             fails += 1
             print(f"{now_iso()} FETCH-FAILED ({fails}/5)")

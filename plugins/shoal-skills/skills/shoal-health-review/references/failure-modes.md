@@ -174,6 +174,18 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 - **Metric:** `FM14:respawns` counts the repairs; idle retirements appear in the daemon log.
 - **Status:** fixed.
 
+## FM-17: a pull during another writer's queue write kills the watcher (2026-10-13)
+- **Signature:** NOWATCH on a role whose watcher log ends in `LedgerError: rebase onto origin/main
+  failed ... cannot rebase: You have unstaged changes`. Seen on ie-integration, it-arch-reviewer and both
+  testbed roles; the clone was clean again by the time anyone looked.
+- **Cause:** a `queue` write appends claim, state and queue lines, releasing the clone lock between
+  appends, then commits them as one. A watcher pulling in that gap met an uncommitted line, `git rebase`
+  refused, and the error escaped the watcher's loop.
+- **Fix:** the pull rebases with `--autostash` (one file per writer, so the stashed line always
+  re-applies), and a failed pull counts as a fetch failure that is retried, never fatal. Regression
+  test in `selftest_ledger.sh`; without `--autostash` it fails with the production error.
+- **Status:** fixed.
+
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
 the unit ended. The durations came from runners yielding to CI and from lease queueing. Check the
