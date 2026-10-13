@@ -446,7 +446,16 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
         why = (f"add {', '.join(missing)}" if missing else "restore cards after a restart"
                if len(shells) == len(cards) else "lay the roles out in tabs of the configured size" if relayout
                else "restart the cards on the current code (--reapply)")
-        if attached:
+        if attached and missing:
+            # a role added while the operator is attached to cards (fts-docs, 2026-10-13: all three fts
+            # cards attached): an attached card is never replaced, so the new cards open in a tab of their
+            # own. The next `ui open` with the cards free lays every tab out at the configured size again.
+            new = [r for r in roles if role_label(spec.sid, r.slug) in missing]
+            out.append(f"add {', '.join(missing)} in a new tab ({', '.join(attached)} in use, so the roles "
+                       f"tabs are kept; free them and run `shoal ui open` to lay all roles out together)")
+            if not dry_run:
+                apply_tab(h, ws["workspace_id"], f"roles {len(tabs) + 1}", _grid([role_node(spec, r) for r in new]))
+        elif attached:
             out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is in use (attached, "
                        f"or running something from its shell): free it, then run `shoal ui open` again")
         else:

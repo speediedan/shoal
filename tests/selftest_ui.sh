@@ -263,6 +263,9 @@ def handle(req):
     if m == "tab.close":
         panes[:] = [q for q in panes if q["tab_id"] != p["tab_id"]]
         return {"type": "ok"}
+    if m == "test.close_pane":  # test hook: a card missing, as for a role added after the tab was built
+        panes[:] = [q for q in panes if q["pane_id"] != p["pane_id"]]
+        return {"type": "ok"}
     if m == "pane.get":
         return {"pane": next((q for q in panes if q["pane_id"] == p["pane_id"]), {})}
     if m == "layout.apply":
@@ -313,6 +316,28 @@ pid = next(p["pane_id"] for p in h.panes() if str(p.get("label", "")).endswith("
 h.call("test.set_fg", {"pane_id": pid, "procs": [{"name": "claude", "argv": ["claude", "attach", "x"]}]})
 PY2
 check "is in use" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone --reapply
+# a role added while a card is attached opens in a tab of its own; the attached card is kept
+python3 - "$SHOALD" "$S" <<'PY2' || fail "drop a card to stand in for a new role"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+gone = next(p for p in h.panes() if "/" in str(p.get("label", "")) and not str(p["label"]).endswith(("/cl", "/overview", "/ledger")))
+h.call("test.close_pane", {"pane_id": gone["pane_id"]})
+open(sys.argv[2] + "/gone", "w").write(gone["label"])
+PY2
+check "in a new tab" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+python3 - "$SHOALD" "$S" <<'PY2' || fail "new card in its own tab, attached card untouched"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+gone = open(sys.argv[2] + "/gone").read()
+by = {p.get("label"): p for p in h.panes()}
+cl = next(p for l, p in by.items() if str(l).endswith("/cl"))
+assert gone in by and by[gone]["tab_id"] != cl["tab_id"], (gone, by.get(gone), cl)
+print("attached add ok")
+PY2
 python3 - "$SHOALD" <<'PY2' || fail "reset the attached card"
 import sys
 sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
@@ -377,7 +402,7 @@ mkdir -p "$XDG_CONFIG_HOME/shoal"
 printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 8 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 10 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply + the attached-add tab + its consolidation once the card is free): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 # --reapply restarts an idle standalone stub on the current code too
 check "restart on the current code standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --reapply
 # roles lay out in tabs of roles_per_tab cards; changing it re-lays them and closes a leftover tab
