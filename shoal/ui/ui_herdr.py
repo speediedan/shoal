@@ -54,7 +54,7 @@ SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"}
 # socket methods the adapter calls; `ui doctor` checks the running Herdr still offers them
 METHODS = ("workspace.list", "workspace.create", "workspace.rename", "workspace.close", "workspace.report_metadata",
            "pane.list", "pane.get",
-           "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply", "tab.close")
+           "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply", "tab.close", "tab.rename")
 
 
 # ---- Herdr socket ----------------------------------------------------------------------
@@ -454,6 +454,9 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
             out.append(f"add {', '.join(missing)} in a new tab ({', '.join(attached)} in use, so the roles "
                        f"tabs are kept; free them and run `shoal ui open` to lay all roles out together)")
             if not dry_run:
+                # number every roles tab once there are several: a lone `roles` becomes `roles 1`
+                for i, tid in enumerate(sorted(x for x in tabs if x), 1):
+                    h.call("tab.rename", {"tab_id": tid, "label": f"roles {i}"})
                 apply_tab(h, ws["workspace_id"], f"roles {len(tabs) + 1}", _grid([role_node(spec, r) for r in new]))
         elif attached:
             out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is in use (attached, "

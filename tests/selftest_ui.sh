@@ -476,7 +476,7 @@ assert any(m["tokens"].get("posture") == "QUESTION" for m in md), md
 assert any(c["method"] == "workspace.report_metadata" for c in calls)
 allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "pane.process_info",
            "pane.report_agent", "pane.report_metadata", "workspace.report_metadata", "pane.get",
-           "workspace.rename", "workspace.close", "tab.close"}
+           "workspace.rename", "workspace.close", "tab.close", "tab.rename"}
 md_shoal = {m["tokens"].get("shoal") for m in md if m["tokens"].get("role")}
 assert md_shoal == {"uiselftest"}, md_shoal
 bad = sorted({c["method"] for c in calls if not c["method"].startswith("test.")} - allowed)
