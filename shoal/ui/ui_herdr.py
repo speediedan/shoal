@@ -196,7 +196,14 @@ def apply_tab(h: "Herdr", workspace_id: str, label: str, root: dict, tab_id: str
 
 
 def overview_root(spec) -> dict:
-    return {"type": "split", "direction": "right", "ratio": 0.6,
+    """The dashboard above, the ledger tail as a strip below it: `ledger_share` percent of the tab
+    (viewer setting, default 12: the tail starts minimized)."""
+    import ui_status
+    try:
+        share = min(80, max(5, int(ui_status.ui_config().get("ledger_share") or 12)))
+    except (TypeError, ValueError):
+        share = 12
+    return {"type": "split", "direction": "down", "ratio": round(1 - share / 100, 2),
             "first": _node(f"{spec.sid}/overview", spec.dir, shoal_argv("ui", "dash", "--shoal", spec.sid), pane_env(spec)),
             "second": _node(f"{spec.sid}/ledger", spec.dir, shoal_argv("ui", "tail", "--shoal", spec.sid), pane_env(spec))}
 
@@ -223,7 +230,12 @@ def disposable(h: "Herdr", pane_id: str) -> bool:
 
 
 def viewable_roles(spec) -> list:
-    return [r for r in spec.roles if r.session]
+    """Roles that get a card. The wake relay (fill=none infrastructure) is left out unless the viewer
+    sets `show_relay`; its health is in the shoal's summary and tab line either way."""
+    import ui_status
+    from roles import is_wake_relay
+    show_relay = ui_status.ui_config().get("show_relay") is True
+    return [r for r in spec.roles if r.session and (show_relay or not is_wake_relay(r))]
 
 
 def role_tabs(spec) -> list[tuple[str, list]]:
@@ -334,7 +346,9 @@ def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = Non
 UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
-               "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)"}
+               "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
+               "show_relay": "true to give the wake relay a role card (default: hidden)",
+               "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)"}
 
 
 def cmd_set(a) -> int:
@@ -349,7 +363,7 @@ def cmd_set(a) -> int:
     elif a.value == "":
         d.pop(key, None)
     else:
-        d[key] = int(a.value) if a.value.isdigit() else a.value
+        d[key] = int(a.value) if a.value.isdigit() else {"true": True, "false": False}.get(a.value.lower(), a.value)
     ui_status.save_ui_config(d)
     print(f"{a.key} = {a.value or '(default)'} ({ui_status.ui_config_path()})")
     if key in ("roles_per_tab", "role_order"):

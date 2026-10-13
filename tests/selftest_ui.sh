@@ -403,6 +403,20 @@ check "# shoal-sidebar-max: 50%" $H ui herdr-config --client
 check "sidebar_max_width = 48" $H ui set sidebar_max_width 48
 check "^sidebar_max_width = 48" $H ui herdr-config --client
 $H ui set sidebar_max_width "" >/dev/null
+# the wake relay has no card unless show_relay is true; the ledger strip takes ledger_share percent
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "relay hidden by default / ledger share"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr, ui_status
+from roles import ShoalSpec, is_wake_relay
+s = ShoalSpec.load(sys.argv[2])
+assert not any(is_wake_relay(r) for r in ui_herdr.viewable_roles(s))
+o = ui_herdr.overview_root(s)
+assert o["direction"] == "down" and o["ratio"] == 0.88, o
+q = {"can_progress": {"reasons": ["stopped-active"]}, "posture": "active", "sub": "", "next": []}
+assert ui_status.posture_label(q) == "ACTIVE?"
+PY2
+check "show_relay = false" $H ui set show_relay false
+$H ui set show_relay "" >/dev/null
 check "pane_borders = off" $H ui set pane_borders off
 check '^pane_borders = "off"' $H ui herdr-config --client
 $H ui set pane_borders "" >/dev/null

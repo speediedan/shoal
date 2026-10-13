@@ -268,6 +268,10 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             reasons.append("parked-work")
         if asks or sub in USER_WAITS:
             reasons.append("waiting-on-you")
+        if hposture == "active" and sess in ("idle", "dead"):
+            # degenerate: the ledger says active, but no turn is running (health's turn-ended-active
+            # wakes it; measured 2026-10-13: shoal-aux re-wrote active and stopped, again)
+            reasons.append("stopped-active")
     blocking = [r for r in reasons if r != "waiting-on-you" and r != "parked"]
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "model": role.model, "fill": role.fill,
@@ -477,6 +481,8 @@ def posture_label(r: dict) -> str:
         return "BLOCKED"
     if "watcher-dead" in reasons:
         return "NOWATCH"
+    if "stopped-active" in reasons:
+        return "ACTIVE?"
     if "parked-work" in reasons:
         return f"{r['posture'].upper()}?"
     if r["posture"] == "wait" and r["sub"]:
@@ -513,6 +519,7 @@ def use_color() -> bool:
 
 ATTENTION = {"blocked-on-question": "question for you",
              "blocked-says-waiting": "says it waits on you (no prompt: reply by message or mail)",
+             "stopped-active": "says active, but its turn ended (health wakes it; pages if it repeats)",
              "waiting-on-you": "waiting on you",
              "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "idle with work",
              "blocker-role-cannot-take": "blocker cannot move"}
