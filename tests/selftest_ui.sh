@@ -140,6 +140,9 @@ assert u.posture_label(q) == "QUESTION" and ui_herdr.herdr_state(q) == "blocked"
 t = u.ascii_table(["k", "v"], [["posture", "idle"]], 40, paint={1: lambda v, row: u.state_color(v)})
 assert u.ORANGE in t and all(len(l.replace(u.ORANGE, "").replace(u.RESET, "")) == len(t.splitlines()[0]) for l in t.splitlines())
 PY2
+# the prompt line editor: pre-filled default, cursor moves, insert, delete, paste, Escape cancels
+OUT=$(python3 "$TESTD/ui_line_editor_check.py" "$SHOALD" 2>&1)
+[ "$OUT" = "$(printf "%s\n" "'Y2026-10-13T09:00X-07:0pasted'" None "'keep'" "'abc'")" ] || fail "line editor :: $OUT"
 # a role card is a field/value table
 OUT=$(COLUMNS=90 python3 -c "import sys; sys.path.insert(0, '$SHOALD'); sys.path.insert(0, '$SHOALD/ui'); import ui_status, ui_view
 ui_status.cached_status = lambda ids=None, force=False: ui_status.status(ids, '$ROOT', opencode_probe=False)

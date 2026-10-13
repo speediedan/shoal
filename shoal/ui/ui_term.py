@@ -49,32 +49,85 @@ def _key() -> str:
     return ESC if not seq else ""
 
 
-def read_line(prompt: str) -> str | None:
+def _key_seq() -> str:
+    """One key, keeping escape sequences whole: a lone Escape is ESC; an arrow, Home, End, Delete or a
+    bracketed paste (ESC[200~ ... ESC[201~) comes back as its full sequence."""
+    ch = os.read(sys.stdin.fileno(), 1).decode(errors="replace")
+    if ch != ESC:
+        return ch
+    seq = ch
+    while select.select([sys.stdin], [], [], 0.03)[0]:
+        seq += os.read(sys.stdin.fileno(), 1).decode(errors="replace")
+        if seq == ESC + "[200~":  # bracketed paste: read through to its end marker
+            while not seq.endswith(ESC + "[201~"):
+                seq += os.read(sys.stdin.fileno(), 1).decode(errors="replace")
+            break
+    return seq
+
+
+def read_line(prompt: str, default: str = "") -> str | None:
+    """A line of text, pre-filled with `default` to edit. Left/Right, Home/End (or Ctrl+A/Ctrl+E),
+    Delete, Backspace and Ctrl+U edit it; a paste is inserted at the cursor (bracketed-paste markers are
+    removed); Enter accepts; Escape or Ctrl+C cancels (None). The pilot found the earlier editor took
+    only typing and Backspace, so a value could not be fixed in place."""
     if not _tty():
         try:
-            return input(prompt).strip()
+            return input(prompt).strip() or default.strip()
         except EOFError:
             return None
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
-    buf = ""
+    buf, pos = list(default), len(default)
+
+    def draw(buf: list = buf, pos: int = pos) -> None:
+        sys.stdout.write("\r" + prompt + "".join(buf) + "\x1b[K")
+        back = len(buf) - pos
+        if back:
+            sys.stdout.write(f"\x1b[{back}D")
+        sys.stdout.flush()
+
+    sys.stdout.write("\x1b[?2004h")  # bracketed paste on while reading: pastes arrive marked
+    draw()
+    try:
+        return _edit(prompt, buf, pos, draw)
+    finally:
+        sys.stdout.write("\x1b[?2004l")
+        sys.stdout.flush()
+
+
+def _edit(prompt: str, buf: list, pos: int, draw) -> str | None:
     with _Cbreak():
         while True:
-            k = _key()
+            k = _key_seq()
             if k in (ESC, CTRL_C):
                 sys.stdout.write("\n")
                 return None
             if k in ("\r", "\n"):
                 sys.stdout.write("\n")
-                return buf.strip()
-            if k in BACKSPACES:
-                if buf:
-                    buf = buf[:-1]
-                    sys.stdout.write("\b \b")
-            elif k and k.isprintable():
-                buf += k
-                sys.stdout.write(k)
-            sys.stdout.flush()
+                return "".join(buf).strip()
+            if k.startswith(ESC + "[200~"):
+                text = k[len(ESC + "[200~"):-len(ESC + "[201~")].replace("\r", " ").replace("\n", " ")
+                buf[pos:pos] = list(text)
+                pos += len(text)
+            elif k in (ESC + "[D", ESC + "OD"):
+                pos = max(0, pos - 1)
+            elif k in (ESC + "[C", ESC + "OC"):
+                pos = min(len(buf), pos + 1)
+            elif k in (ESC + "[H", ESC + "OH", ESC + "[1~", "\x01"):
+                pos = 0
+            elif k in (ESC + "[F", ESC + "OF", ESC + "[4~", "\x05"):
+                pos = len(buf)
+            elif k == ESC + "[3~":
+                if pos < len(buf):
+                    del buf[pos]
+            elif k == "\x15":  # Ctrl+U clears
+                buf, pos = [], 0
+            elif k in BACKSPACES:
+                if pos:
+                    del buf[pos - 1]
+                    pos -= 1
+            elif len(k) == 1 and k.isprintable():
+                buf.insert(pos, k)
+                pos += 1
+            draw(buf, pos)
 
 
 def pause(prompt: str = "[enter, esc or q] close") -> None:

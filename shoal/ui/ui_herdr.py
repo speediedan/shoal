@@ -796,6 +796,35 @@ def cmd_pick(a) -> int:
     return 0
 
 
+def forget_interactive() -> int:
+    """Pick a saved standalone session, forget it (ui open stops reopening it), and close its
+    workspace when nothing in it is in use. Closing the workspace by hand only lasted until the next
+    launch, which reopens every saved session (the maintainer, 2026-10-13)."""
+    entries = load_standalone()
+    if not entries:
+        print("no saved standalone sessions")
+        return 0
+    i = _choose([f"{e.get('label') or e['session'][:12]}  ({e['harness']})" for e in entries], "forget which")
+    if i is None:
+        return _cancelled()
+    e = entries[i]
+    save_standalone([x for x in entries if x is not e])
+    print(f"forgot {e.get('label') or e['session']}")
+    try:
+        h = Herdr()
+        w = find_ws(h, standalone_ws_label(e))
+        if w is not None:
+            panes = h.panes(w["workspace_id"])
+            if all(disposable(h, p["pane_id"]) for p in panes):
+                h.call("workspace.close", {"workspace_id": w["workspace_id"]})
+                print(f"closed workspace {w.get('label')!r}")
+            else:
+                print(f"workspace {w.get('label')!r} is in use: close it by hand (it will not come back)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"workspace not closed: {exc}")
+    return 0
+
+
 def cmd_forget(a) -> int:
     entries = load_standalone()
     keep = [x for x in entries if x["session"] != a.session_id and x.get("label") != a.session_id]
@@ -1065,9 +1094,25 @@ def pick_role(sid: str, default: str = "", allow_all: bool = False, ask: bool = 
     return slugs[i] if i is not None else ""
 
 
-def _ask(prompt: str) -> str:
-    """A text answer; Escape cancels (returns "")."""
-    return ui_term.read_line(prompt) or ""
+def _ask(prompt: str, default: str = "") -> str:
+    """A text answer, pre-filled with `default` to edit in place; Escape cancels (returns "")."""
+    return ui_term.read_line(prompt, default) or ""
+
+
+def _cancelled() -> int:
+    print("cancelled; nothing written")
+    return 1
+
+
+def next_morning(hour: int = 9) -> str:
+    """The next local `hour`:00 with its UTC offset (e.g. 2026-10-13T09:00-07:00): the usual offline end."""
+    import datetime as _dt
+    now = _dt.datetime.now().astimezone()
+    t = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if t <= now:
+        t += _dt.timedelta(days=1)
+    off = t.strftime("%z")
+    return t.strftime("%Y-%m-%dT%H:%M") + f"{off[:3]}:{off[3:]}"
 
 
 # the pager says how to close it (the pilot got stuck at `(END)`); Ctrl+C also exits (-K)
@@ -1144,12 +1189,22 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
             return 1
         args = [verb, state, "--shoal", sid]
         if verb == "offline" and state == "on":
-            until = _ask("back at (optional, e.g. 2026-10-13T09:00-07:00): ")
+            until = ui_term.read_line("back at (edit, or clear it for no time): ", next_morning())
+            if until is None:
+                return _cancelled()
             if until:
                 args += ["--until", until]
-        note = _ask("note (optional): ")
+        note = ui_term.read_line("note (optional): ")
+        if note is None:
+            return _cancelled()
         if note:
             args += ["--note", note]
+        if verb == "offline":
+            # no preview or confirm (maintainer, 2026-10-13): Escape at any prompt above cancels
+            print("\n$ shoal " + shlex.join(args))
+            r = run_shoal(args)
+            log_action(args, r.returncode)
+            return r.returncode
         cost = ("wakes the roles waiting on you, once, so they pivot (tokens)" if verb == "offline"
                 else "toggling a freeze wakes every role once (tokens)")
         if verb == "freeze" and _ask("record it without waking every role (--no-wake)? [Y/n] ").lower() != "n":
@@ -1191,6 +1246,7 @@ MENU = [
     ("conditions", "health conditions now (refresh)"),
     ("metrics", "failure-mode metrics and report files"),
     ("pick", "open a standalone (non-shoal) session"),
+    ("forget", "stop reopening a saved standalone session (and close its workspace)"),
     ("open", "re-apply the shoal layouts (fills gaps only)"),
     ("upgrade", "preview a shoal upgrade (applying stays a CLI step)"),
 ]
@@ -1207,6 +1263,10 @@ def cmd_menu(a) -> int:
         return subprocess.run(shoal_argv("ui", "metrics", "--pause")).returncode
     if k == "pick":
         return subprocess.run(shoal_argv("ui", "pick")).returncode
+    if k == "forget":
+        rc = forget_interactive()
+        ui_term.pause()
+        return rc
     if k == "open":
         rc = subprocess.run(shoal_argv("ui", "open")).returncode
         ui_term.pause()
