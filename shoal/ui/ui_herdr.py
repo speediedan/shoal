@@ -1143,10 +1143,15 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         if state not in ("on", "off"):
             return 1
         args = [verb, state, "--shoal", sid]
+        if verb == "offline" and state == "on":
+            until = _ask("back at (optional, e.g. 2026-10-13T09:00-07:00): ")
+            if until:
+                args += ["--until", until]
         note = _ask("note (optional): ")
         if note:
             args += ["--note", note]
-        cost = "toggling a mode wakes every role once (tokens)"
+        cost = ("wakes the roles waiting on you, once, so they pivot (tokens)" if verb == "offline"
+                else "toggling a freeze wakes every role once (tokens)")
         if verb == "freeze" and _ask("record it without waking every role (--no-wake)? [Y/n] ").lower() != "n":
             args.append("--no-wake")
             cost = ""
