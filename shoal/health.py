@@ -268,6 +268,19 @@ def claude_busy() -> dict[str, str]:
         return {}
 
 
+def claude_worker_gone(role, cbusy: dict[str, str]) -> bool:
+    """True when a Claude role's session is listed (`claude agents --json --all`) with no worker.
+    `cbusy` comes from the plain listing, which omits such a session, so only an absent session is
+    probed again."""
+    if not role.session or any(k.startswith(role.session[:8]) for k in cbusy):
+        return False
+    try:
+        from backends import get as get_backend
+        return bool(get_backend("claude").session_dead(role.session))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | None:
     # SHOAL_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
     if role.slug in [x for x in config.env("HEALTH_BETWEEN").split(",") if x]:
@@ -366,6 +379,13 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 f"heuristic: {why}); re-verify the wait is still valid"})
         # watcher
         alive, sc = watcher_alive(spec.sid, slug)
+        if alive and role.ecosystem == "claude" and claude_worker_gone(role, cbusy):
+            # a detached (--wake relay) watcher outlives its session's worker, but it cannot deliver: the
+            # relay would message a session that is gone. Count it dead, so the ladder wakes the role
+            # and revive respawns it (measured 2026-10-13: it-arch-reviewer, retired by the daemon after
+            # 8 h idle at its prompt, sat dead behind a live watcher with no condition raised)
+            alive = False
+            between = True
         if watcher_dead(alive, posture, between):
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")

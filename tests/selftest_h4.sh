@@ -961,5 +961,22 @@ assert briefs.arming(r, spec)[0] == "exit"
 PY2
 rm -f /tmp/$SID/relay-queue
 
+echo "== 29 a live detached watcher does not hide a dead Claude worker (FM-16)"
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "dead worker behind a live watcher"
+import json, os, sys; sys.path.insert(0, sys.argv[1])
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "state": "done"}], "opencode": {}})
+import health
+from roles import ShoalSpec
+from ledger import Ledger, View
+spec = ShoalSpec.load(sys.argv[2])
+view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+health.watcher_alive = lambda sid, slug: (True, {"pid": "1"})
+cbusy = {}  # the plain listing omits a session whose worker is gone
+conds = [c for c in health.evaluate(spec, view, cbusy) if c["slug"] == "tl" and c["condition"] == "watcher-dead"]
+assert conds, "no watcher-dead for a dead worker behind a live watcher"
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "state": "done", "pid": 9}], "opencode": {}})
+assert not [c for c in health.evaluate(spec, view, {"aaaa1111-0000": "idle"}) if c["slug"] == "tl" and c["condition"] == "watcher-dead"]
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
