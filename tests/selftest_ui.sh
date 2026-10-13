@@ -129,6 +129,14 @@ r = {"can_progress": {"reasons": []}, "posture": "idle", "sub": "",
 assert u.posture_label(r) == "blocked:upstream", u.posture_label(r)
 r["next"][1]["stale"] = True
 assert u.posture_label(r) == "idle"  # a stale blocker frees the item: not blocked
+# a role waiting on its own job keeps the wait as its posture even with a question out
+q = {"can_progress": {"reasons": ["blocked-on-question", "waiting-on-you"]}, "posture": "wait", "sub": "local-ci",
+     "next": [], "session": "blocked", "needs_you": True}
+assert u.posture_label(q) == "wait:local-ci", u.posture_label(q)
+import ui_herdr
+assert ui_herdr.herdr_state(q) == "working"
+q["sub"] = "user-auth"
+assert u.posture_label(q) == "QUESTION" and ui_herdr.herdr_state(q) == "blocked"
 t = u.ascii_table(["k", "v"], [["posture", "idle"]], 40, paint={1: lambda v, row: u.state_color(v)})
 assert u.ORANGE in t and all(len(l.replace(u.ORANGE, "").replace(u.RESET, "")) == len(t.splitlines()[0]) for l in t.splitlines())
 PY2

@@ -602,6 +602,9 @@ def herdr_state(r: dict) -> str:
     reasons = r["can_progress"]["reasons"]
     if r["session"] == "working":
         return "working"
+    import ui_status
+    if ui_status.working_wait(r) and "watcher-dead" not in reasons and r["session"] != "dead":
+        return "working"  # its job or CI build is running; an open question stays in the ask tokens
     if r["needs_you"] or "watcher-dead" in reasons:
         return "blocked"
     return "idle"

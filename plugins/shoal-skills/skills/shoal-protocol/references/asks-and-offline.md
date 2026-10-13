@@ -43,3 +43,12 @@ The maintainer runs `shoal offline on` before stepping away and `shoal offline o
    or closed PRs, finished items) are a start, not a verdict.
 2. Drop the ones that no longer apply, with a reason.
 3. Raise the rest as question sets, following steps 2 to 5 above.
+
+## A question while your job runs
+
+When a job unit or CI build of yours is running, that wait stays your posture
+(`queue --wait local-ci --target job:<name>` or `remote-ci`) and your question goes beside it
+(`queue --ask "<question>"`). Do not switch to a `user-*` wait: the work is not blocked on the
+maintainer, only your next decision is. Health and the viewer then read you as waiting on your job,
+with an ask open.
+

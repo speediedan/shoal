@@ -453,11 +453,24 @@ def _age(s: int | None) -> str:
     return f"{s / 86400:.1f}d"
 
 
+CI_SUBS = ("local-ci", "remote-ci")
+
+
+def working_wait(r: dict) -> bool:
+    """The role waits on something running for it (a job, a CI build), not on the maintainer, even
+    when it also has a question out."""
+    return r.get("posture") == "wait" and r.get("sub") in CI_SUBS
+
+
 def posture_label(r: dict) -> str:
     """The one-word posture a sidebar shows: DEAD, ASK, IDLE? (idle on free work), else posture."""
     reasons = r["can_progress"]["reasons"]
     if "dead-worker" in reasons:
         return "DEAD"
+    if working_wait(r):
+        # waiting on its own job or CI: the work runs on, so the wait is the posture and an open
+        # question shows as attention (measured 2026-10-13: jlens-research on a running job read QUESTION)
+        return f"wait:{r['sub']}"
     if "blocked-on-question" in reasons:
         return "QUESTION"
     if "blocked-says-waiting" in reasons:
