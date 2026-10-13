@@ -225,27 +225,51 @@ CLAUDE_TURN_STATES = {"working": "busy", "blocked": "blocked", "done": "idle"}
 CLAUDE_TEMPO = {"active": "busy", "idle": "idle", "blocked": "blocked"}
 
 
-def claude_job_tempo(row: dict) -> str:
-    """The job's `tempo` ('' when unknown). A row may carry it (tests); else the job state file."""
+def claude_job_state(row: dict) -> dict:
+    """The job's state file ({} when unknown). A row may carry `tempo`/`inFlight` itself (tests)."""
     if row.get("tempo"):
-        return str(row["tempo"])
+        return {"tempo": row["tempo"], "inFlight": row.get("inFlight") or {}}
     from backends import fake_sessions
     if fake_sessions() is not None:  # tests: never read the host's real job files
-        return ""
+        return {}
     jid = str(row.get("id") or "")
     if not jid or not re.fullmatch(r"[0-9a-f]{6,64}", jid):
-        return ""
+        return {}
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
     try:
         with open(os.path.join(base, "jobs", jid, "state.json")) as fh:
-            return str(json.load(fh).get("tempo") or "")
+            st = json.load(fh)
+        return st if isinstance(st, dict) else {}
     except (OSError, ValueError):
-        return ""
+        return {}
+
+
+def claude_job_tempo(row: dict) -> str:
+    """The job's `tempo` ('' when unknown)."""
+    return str(claude_job_state(row).get("tempo") or "")
+
+
+def agents_in_flight(st: dict) -> int:
+    """How many of the session's own subagents are running (`inFlight` kinds naming an agent). A
+    background shell does not count: a bare `run_in_background` command kept `state` at working and
+    hid ended turns (2026-10-08), so only delegated agent work holds a turn open."""
+    fl = st.get("inFlight") or {}
+    if not isinstance(fl, dict) or not any("agent" in str(k) for k in fl.get("kinds") or []):
+        return 0
+    try:
+        return int(fl.get("tasks") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def claude_liveness(row: dict) -> str:
-    """'busy'|'blocked'|'idle' from the job's tempo, else `state`, else the raw `status`."""
-    tempo = CLAUDE_TEMPO.get(claude_job_tempo(row))
+    """'busy'|'blocked'|'idle' from the job's tempo, else `state`, else the raw `status`. A session
+    whose turn ended while its own subagents run is still working: their reports re-enter it
+    (jlens-research, 2026-10-13: three research agents writing proposals read as an idle session)."""
+    st = claude_job_state(row)
+    tempo = CLAUDE_TEMPO.get(str(st.get("tempo") or ""))
+    if tempo == "idle" and agents_in_flight(st):
+        return "busy"
     if tempo:
         return tempo
     st = str(row.get("state") or "")

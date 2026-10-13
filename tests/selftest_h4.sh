@@ -1001,5 +1001,17 @@ assert "interpretune#9990" not in v.done and v.reopened["interpretune#9990"][0][
 assert not [x for x in v.violations if "9990" in str(x)], v.violations
 PY2
 
+echo "== 31 a Claude turn that ended while its own subagents run is still working; a background shell is not"
+python3 - "$SHOALD" <<'PY2' || fail "subagents in flight"
+import sys; sys.path.insert(0, sys.argv[1])
+import health
+row = lambda kinds, n: {"tempo": "idle", "inFlight": {"tasks": n, "kinds": kinds}}
+assert health.claude_liveness(row(["local_agent"], 3)) == "busy"
+assert health.claude_liveness(row(["local_bash"], 1)) == "idle"  # a background command never holds a turn open
+assert health.claude_liveness(row(["local_agent"], 0)) == "idle"
+assert health.claude_liveness({"tempo": "blocked", "inFlight": {"tasks": 2, "kinds": ["local_agent"]}}) == "blocked"
+print("subagents in flight ok")
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

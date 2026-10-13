@@ -6,6 +6,12 @@ Each role row carries exactly one state:
 - **active:** executing toward the named item right now. A posted block means execution just
   stopped, so a block posted at the end of a turn is never `active` (except from a foreground
   waiter that never sleeps).
+  - **Your own subagents running on the item is `active`, not a wait.** The work is yours and
+    proceeds without anyone else, and each agent's report re-enters your session, so no waiter or
+    target is needed. Record `queue --active <item>` before dispatching them; health reads a turn that
+    ends with your agents in flight as still working (a background shell does not count). Work with
+    no item yet (proposals the maintainer asked for) still needs one: claim the issue it serves, or
+    ask for an offer.
 - **waiting (<reason>):** not working, for a named reason: `local CI`, `remote CI`, `shared
   resources: <lease>`, `blocked on <role>: <what>`, `user feedback`, `user auth`. A bare `waiting`
   is not a state.
