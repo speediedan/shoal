@@ -161,6 +161,19 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   would show it; proposed for fm_report.
 - **Status:** mitigated (the 2 h cap remains).
 
+## FM-16: a detached watcher hides a dead Claude worker (2026-10-13)
+- **Signature:** a Claude role's session is gone (`claude agents --json --all`: no pid), yet health
+  raises no condition, because its `--wake relay` watcher is still running.
+- **Cause:** a detached watcher (2ad1d5d) outlives the worker; health judged liveness by the watcher.
+  The trigger was the daemon's idle retirement (`bg retire <id>: idle-prompt, idle 8h`), which takes
+  any background session left idle at its prompt for 8 h, typically an assigned-only lane with no offers.
+- **Fix:** 7e42172. A Claude watcher counts as dead when its session has no worker, so the
+  watcher-dead ladder wakes the role and revive respawns it on the same session. The detached watcher
+  stays bound to it, so no re-arm is needed. Verified on it-arch-reviewer: respawned, woken by the relay
+  and writing queue v51 within about 90 s, watcher untouched.
+- **Metric:** `FM14:respawns` counts the repairs; idle retirements appear in the daemon log.
+- **Status:** fixed.
+
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
 the unit ended. The durations came from runners yielding to CI and from lease queueing. Check the
