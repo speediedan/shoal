@@ -113,22 +113,37 @@ def relay_brief(role: Role, spec: ShoalSpec) -> str:
         f"small: no other reading. Confirm arming: {pid_proof(os.path.join(state_dir(sid), 'relay-watch.pid'))}.")
 
 
+def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
+    """(--wake value, how to arm it) for a role's ledger-watch. opencode: a detached watcher that sends
+    each wake. Claude in a shoal with a wake relay: a detached watcher whose wakes the relay delivers as
+    messages, so no lane holds a background command (the harness kills those at 2 h at most, a turn per
+    kill; maintainer-approved 2026-10-13). Claude without a relay: a background Bash command (exit)."""
+    sid = spec.sid
+    detached = ("setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
+                + ".log 2>&1 < /dev/null &`, run once with the Bash tool, NOT as a background command and never "
+                "the Monitor tool)")
+    if role.ecosystem == "opencode":
+        return "send:<your-session-id>", (detached + "; it sends each wake to your session id between your turns "
+                                          "and keeps running, so it needs no re-arm after a wake (re-arming while it "
+                                          "runs prints ALREADY ARMED); re-arm only if `next` or health says it is dead")
+    if (getattr(spec, "features", {}) or {}).get("relay"):
+        return "relay", (detached + "; between your turns the wake relay delivers each wake to you as a message, and "
+                         "the watcher keeps running, so it needs no re-arm after a wake and is never killed at a "
+                         "time limit (re-arming while it runs prints ALREADY ARMED); re-arm only if `next` or health "
+                         "says it is dead")
+    return "exit", ("with the Bash tool, run_in_background=true and timeout=7200000 (the 2 h maximum: the default "
+                    "30 min kill costs you a turn every 30 min; no trailing `&`, never the Monitor tool, which expires "
+                    "and costs a turn per expiry): it re-invokes you when it exits or is killed at that timeout, and a "
+                    "kill is a wake: re-arm")
+
+
 def workwake_brief(role: Role, spec: ShoalSpec) -> str:
     """The work-loop brief (architecture doc §3): wake on work only, two verbs per boundary."""
     sid = spec.sid
     feats = getattr(spec, "features", {}) or {}
-    wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
+    wake, how_arm = arming(role, spec)
     arm = (f"{SHOAL_CLI} ledger-watch --shoal {sid} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
-    how_arm = ("with the Bash tool, run_in_background=true and timeout=7200000 (the 2 h maximum: the default "
-               "30 min kill costs you a turn every 30 min; no trailing `&`, never the Monitor tool, which expires and "
-               "costs a turn per expiry): it re-invokes you when it exits or is killed at that timeout, and a kill is "
-               "a wake: re-arm"
-               if role.ecosystem != "opencode" else
-               "setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
-               + ".log 2>&1 < /dev/null &`); it sends each wake to your session id between your turns and keeps "
-               "running, so it needs no re-arm after a wake (re-arming while it runs prints ALREADY ARMED); "
-               "re-arm only if `next` or health says it is dead")
     fill = {"self": "You fill your own queue: from offers first (by prio), then your digest/board candidates.",
             "assigned": "You work only offers addressed to you (or `*`); you never pop the board.",
             "none": "You never claim."}.get(role.fill, "")
@@ -198,17 +213,9 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
         return relay_brief(role, spec)
     if feats0.get("workwake"):
         return workwake_brief(role, spec)
-    wake = "exit" if role.ecosystem != "opencode" else "send:<your-session-id>"
+    wake, how_arm = arming(role, spec)
     arm = (f"{SHOAL_CLI} ledger-watch --shoal {sid} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
-    how_arm = ("as a background command that re-invokes you when it exits (Claude: Bash with "
-               "run_in_background=true and timeout=7200000, the 2 h maximum, never a Monitor; a killed background "
-               "command is a wake: re-arm)"
-               if role.ecosystem != "opencode" else
-               "setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
-               + ".log 2>&1 < /dev/null &`); it sends LEDGER-WAKE to your session id between your turns and keeps "
-               "running, so it needs no re-arm after a wake (re-arming while it runs prints ALREADY ARMED); "
-               "re-arm only if `next` or health says it is dead")
     feats = getattr(spec, "features", {}) or {}
     if role.fill == "self" and feats.get("digest"):
         fill = (f"FILL: self, via the shared board digest. When your queue is empty and you hold nothing, the "

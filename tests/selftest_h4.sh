@@ -936,5 +936,30 @@ check "ALREADY ARMED: ledger-watch pid $P_W" env SHOAL_FAKE_SESSIONS="$FS_OC_IDL
   --slug up --wake send:oc9 --session oc9 --interval 60 --sidecar "$S/sc-oc.state" --no-sync
 kill $P_W 2>/dev/null; wait $P_W 2>/dev/null || true
 
+echo "== 28 a relay (Claude, detached) watcher queues each wake for the relay, defers mid-turn, keeps running"
+rm -f /tmp/$SID/relay-queue
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "relay watcher primitives"
+import json, os, sys; sys.path.insert(0, sys.argv[1])
+import ledger_watch as lw
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); r = spec.role("tl")
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "active"}], "opencode": {}})
+assert lw.claude_session_busy("aaaa1111-0000") is True
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "blocked"}], "opencode": {}})
+assert lw.claude_session_busy("aaaa1111-0000") is True   # at a question: never deliver onto the prompt
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "idle"}], "opencode": {}})
+assert lw.claude_session_busy("aaaa1111-0000") is False
+assert lw.relay_deliver(spec.sid, r, "aaaa1111-0000", "LEDGER-WAKE tl: test") is True
+line = json.loads(open(f"/tmp/{spec.sid}/relay-queue").read().splitlines()[-1])
+assert line["to"] == r.tag and line["session"] == "aaaa1111-0000" and "LEDGER-WAKE" in line["text"], line
+import briefs
+spec.features["relay"] = True
+w, how = briefs.arming(r, spec)
+assert w == "relay" and "setsid" in how and "NOT as a background command" in how, (w, how)
+spec.features.pop("relay")
+assert briefs.arming(r, spec)[0] == "exit"
+PY2
+rm -f /tmp/$SID/relay-queue
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

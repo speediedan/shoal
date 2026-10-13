@@ -25,6 +25,7 @@ armed_utc=, delivered=<comma ids, capped 400>, fetch_fail=, last_tick=).
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import subprocess
 import sys
@@ -200,6 +201,31 @@ def session_busy(session: str, repo_dir: str) -> bool:
     return bool(s) and "status:" in s and "status:idle" not in s
 
 
+def claude_session_busy(session: str) -> bool:
+    """True while the Claude session is mid-turn or at a question (`health.claude_liveness`: busy or
+    blocked). A message delivered then would interrupt the turn or land on the prompt."""
+    try:
+        from health import claude_busy
+        st = next((v for k, v in claude_busy().items() if session and k.startswith(session[:8])), "")
+    except Exception:  # noqa: BLE001
+        return False
+    return st in ("busy", "blocked")
+
+
+def relay_deliver(sid: str, role, session: str, text: str) -> bool:
+    """Queue one wake for the wake relay, which delivers it to the session as a message. A relay that
+    is down picks the line up when it is back (relay-watch resumes from its cursor; health relaunches
+    it under features.health.revive)."""
+    from health import relay_alive, relay_queue_path, iso
+    os.makedirs(os.path.dirname(relay_queue_path(sid)), exist_ok=True)
+    tag = getattr(role, "tag", "") if role is not None else ""
+    with open(relay_queue_path(sid), "a") as fh:
+        fh.write(json.dumps({"ts": iso(), "to": tag, "slug": getattr(role, "slug", ""), "session": session,
+                             "condition": "ledger-wake", "text": text}) + "\n")
+    print(f"queued for the wake relay ({tag})" + ("" if relay_alive(sid) else ": relay down, delivered on relaunch"))
+    return True
+
+
 def fire(wake: str, text: str, repo_dir: str) -> bool:
     if wake.startswith("send:"):
         sid = wake[len("send:"):]
@@ -246,16 +272,18 @@ def cmd_ledger_watch(a) -> int:
     if own and session != own and not own.startswith(session or "\0"):
         print(f"note: --session {session or '(none)'} is not this Claude session; binding {own}")
         session = own
-    persistent = a.wake.startswith("send:") and not a.test
+    persistent = (a.wake.startswith("send:") or a.wake == "relay") and not a.test
     if persistent:
-        # a send: watcher keeps running after each wake (below), so arming twice would send twice:
-        # a second arm for the same role and session finds the first alive and leaves it be
+        # a send: or relay watcher keeps running after each wake (below), so arming twice would wake
+        # twice: a second arm for the same role, wake and session finds the first alive and leaves it be
         old_pid = sc.get("pid", "")
         try:
             with open(f"/proc/{old_pid}/cmdline", "rb") as fh:
-                cmd = fh.read()
-            if old_pid and int(old_pid) != os.getpid() and b"ledger-watch" in cmd and slug.encode() in cmd \
-                    and f"send:{session}".encode() in cmd:
+                argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+            opt = {argv[i]: argv[i + 1] for i in range(len(argv) - 1) if argv[i].startswith("--")}
+            same = (opt.get("--slug") == slug and opt.get("--wake") == a.wake
+                    and (a.wake.startswith("send:") or (opt.get("--session") or "")[:8] == (session or "")[:8]))
+            if old_pid and int(old_pid) != os.getpid() and "ledger-watch" in argv and same:
                 print(f"ALREADY ARMED: ledger-watch pid {old_pid} for {slug} ({a.wake}) is running and keeps "
                       f"running across wakes; nothing to do")
                 return 0
@@ -310,8 +338,9 @@ def cmd_ledger_watch(a) -> int:
         if not new:
             save_sidecar(sc_path, sc)
             continue
-        if persistent and session_busy(session, repo_dir):
-            # never wake a lane mid-turn: the events stay undelivered and go out at the next idle tick
+        if persistent and (claude_session_busy(session) if a.wake == "relay" else session_busy(session, repo_dir)):
+            # never wake a lane mid-turn (or, for Claude, at an open question): the events stay
+            # undelivered and go out at the next idle tick
             save_sidecar(sc_path, sc)
             continue
         ids = [i for i, _ in new]
@@ -321,9 +350,10 @@ def cmd_ledger_watch(a) -> int:
         save_sidecar(sc_path, sc)
         reason = ",".join(sorted({d.split()[0] for _, d in new}))
         text = (f"{label} at {now_iso()} ({len(new)} new): " + " | ".join(d for _, d in new)
-                + f" || next: `shoal show --shoal {sid} --slug {slug}`; act (claim/msg/release), transition, re-arm.")
+                + f" || next: `shoal show --shoal {sid} --slug {slug}`; act (claim/msg/release), transition"
+                + ("; your watcher keeps running (no re-arm)." if persistent else ", re-arm."))
         emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
-        fired = fire(a.wake, text, repo_dir)
+        fired = relay_deliver(sid, role, session or "", text) if a.wake == "relay" else fire(a.wake, text, repo_dir)
         if a.wake == "print":
             continue
         if persistent:
@@ -346,7 +376,7 @@ def add_parser(sub) -> None:
     p = sub.add_parser("ledger-watch", help="the unified session watcher (wakes on offers/msgs/claims/board)")
     config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
-    p.add_argument("--wake", default="exit", help="exit | send:<session-id> | print")
+    p.add_argument("--wake", default="exit", help="exit | relay (Claude, detached: the wake relay delivers) | send:<session-id> (opencode, detached) | print")
     p.add_argument("--interval", type=float, default=120, help="seconds between ledger pulls (default 120)")
     p.add_argument("--board-interval", type=float, default=600, help="seconds between board reads when self-filling")
     p.add_argument("--no-board", action="store_true", help="never read the priority table")
