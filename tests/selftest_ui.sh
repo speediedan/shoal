@@ -189,12 +189,15 @@ PY2
 
 echo "== 2 viewer: argv per harness, never a resume; multiplexer env stripped; dead sessions refused"
 check '"attach", "c1a2b3c4"' $H view $SID cl --spec "$SPEC" --dry-run
-# a blocked session with no prompt (waitingFor empty) reads BLOCKED, not QUESTION
+# a blocked session with no prompt (waitingFor empty) is not a QUESTION, and keeps its ledger posture
 python3 - "$SHOALD" <<'PY2' || fail "blocked without a prompt"
 import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import ui_status
 assert ui_status.pending_question({"waitingFor": "input needed"}, "x") is True
 assert ui_status.pending_question({"state": "blocked"}, "x") is False
+says = {"posture": "idle", "sub": None, "next": [], "can_progress": {"reasons": ["blocked-says-waiting"]}}
+assert ui_status.posture_label(says) == "idle", ui_status.posture_label(says)
+assert ui_status.posture_label({**says, "posture": "wait", "sub": "queue-empty"}) == "wait:queue-empty"
 import ui_herdr
 mk = lambda s, n, r: {"session": s, "needs_you": n, "can_progress": {"reasons": r}}
 assert ui_herdr.herdr_state(mk("working", True, ["waiting-on-you"])) == "working"  # busy wins over needs-you

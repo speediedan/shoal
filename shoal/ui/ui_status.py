@@ -467,7 +467,8 @@ def working_wait(r: dict) -> bool:
 
 
 def posture_label(r: dict) -> str:
-    """The one-word posture a sidebar shows: DEAD, ASK, IDLE? (idle on free work), else posture."""
+    """The one-word posture a sidebar shows: DEAD, QUESTION (a prompt is open), NOWATCH, ACTIVE?,
+    IDLE? (idle on free work), wait:<sub>, blocked:<kind>, else the ledger posture."""
     reasons = r["can_progress"]["reasons"]
     if "dead-worker" in reasons:
         return "DEAD"
@@ -477,8 +478,10 @@ def posture_label(r: dict) -> str:
         return f"wait:{r['sub']}"
     if "blocked-on-question" in reasons:
         return "QUESTION"
-    if "blocked-says-waiting" in reasons:
-        return "BLOCKED"
+    # a session that only reports itself blocked (no prompt open) keeps its ledger posture: the ledger is
+    # the protocol's record, and the self-report goes stale once the thing it waited for lands
+    # (it-architect, 2026-10-13: idle in the ledger, BLOCKED in the viewer for a permission already added);
+    # the self-report stays visible as attention
     if "watcher-dead" in reasons:
         return "NOWATCH"
     if "stopped-active" in reasons:
