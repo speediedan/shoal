@@ -349,7 +349,8 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
                "show_relay": "true to give the wake relay a role card (default: hidden)",
                "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)",
-               "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)"}
+               "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)",
+               "image_paste_key": "Herdr's remote image paste key (default alt+v; Ctrl+V pastes text in the kitty window)"}
 
 
 def cmd_set(a) -> int:
@@ -1298,7 +1299,11 @@ def keys_block() -> str:
             ("prefix+alt+n", "next", "shoal: next --peek (focused role)"), ("prefix+alt+m", "msg", "shoal: message"),
             ("prefix+alt+o", "pick", "shoal: open a standalone session"), ("prefix+alt+t", "status", "shoal: status"),
             ("prefix+alt+g", "metrics", "shoal: metrics")]
-    out = []
+    import ui_status
+    img = str(ui_status.ui_config().get("image_paste_key") or "alt+v")
+    # Ctrl+V pastes text (the laptop's kitty window maps it to its clipboard paste), so Herdr's
+    # remote image paste moves off Ctrl+V to this key (maintainer, 2026-10-13)
+    out = [f'[keys]\nremote_image_paste = "{img}"\n']
     for k, action, desc in keys:
         out.append(f'[[keys.command]]\nkey = "{k}"\ntype = "plugin_action"\ncommand = "{PLUGIN_ID}.{action}"\n'
                    f'description = "{desc}"\n')
