@@ -461,6 +461,7 @@ class View:
         self.by_item: dict[str, list[dict]] = {}  # item key -> offers
         self.claims: dict[str, list[dict]] = {}   # item key -> live claims (ordered)
         self.done: dict[str, dict] = {}           # item key -> done event
+        self.reopened: dict[str, list] = {}       # item key -> done events a later user offer reopened
         self.releases: list[dict] = []
         self.msgs: list[dict] = []
         self.states: dict[str, dict] = {}         # slug -> last state event
@@ -487,8 +488,14 @@ class View:
                     self._viol(e, f"{by} may not offer to {to}")
                     continue
                 e = dict(e, status="open")
+                key = item_key(e["item"])
+                if by == "user" and key in self.done:
+                    # the maintainer offering a done item opens a new round of work on it (a review
+                    # after another role's smoke check, 2026-10-13: the key drops the verb); a role's
+                    # offer never reopens one (cmd_offer refuses it)
+                    self.reopened.setdefault(key, []).append(self.done.pop(key))
                 self.offers[e["id"]] = e
-                self.by_item.setdefault(item_key(e["item"]), []).append(e)
+                self.by_item.setdefault(key, []).append(e)
             elif typ == "withdraw":
                 key = item_key(e.get("item", ""))
                 targets = [o for o in self.by_item.get(key, []) if o["status"] == "open"

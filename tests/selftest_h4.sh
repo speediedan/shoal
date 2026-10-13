@@ -980,5 +980,26 @@ os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "s
 assert not [c for c in health.evaluate(spec, view, {"aaaa1111-0000": "idle"}) if c["slug"] == "tl" and c["condition"] == "watcher-dead"]
 PY2
 
+echo "== 30 a user offer reopens a done item for a new round (the key drops the verb)"
+$H offer --shoal $SID --spec "$SPEC" --to tl --item interpretune#9990:fix --no-sync >/dev/null
+check "claimed interpretune#9990" $H claim --shoal $SID --spec "$SPEC" --slug tl --item interpretune#9990:fix --no-sync
+sleep 1.1
+check "done" $H done --shoal $SID --spec "$SPEC" --slug tl --item interpretune#9990:fix --no-sync
+# ledger timestamps have one-second resolution and same-second events order by writer, so space the
+# steps as real lanes are spaced
+sleep 1.1
+check "reopens interpretune#9990: done" $H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9990:review --no-sync
+sleep 1.1
+check "claimed interpretune#9990" $H claim --shoal $SID --spec "$SPEC" --slug up --item interpretune#9990:review --no-sync
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "reopened item"
+import sys; sys.path.insert(0, sys.argv[1])
+from roles import ShoalSpec
+from ledger import Ledger, View
+spec = ShoalSpec.load(sys.argv[2])
+v = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+assert "interpretune#9990" not in v.done and v.reopened["interpretune#9990"][0]["by"] == "tl", v.reopened
+assert not [x for x in v.violations if "9990" in str(x)], v.violations
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

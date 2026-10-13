@@ -86,9 +86,11 @@ def cmd_offer(a) -> int:
               f"claim to a peer with `release --kind handoff --to <role>`)")
         return 1
     key = item_key(a.item)
-    if key in view.done:
+    if key in view.done and by != "user":
         print(f"ERROR: {key} is already done ({view.done[key]['ts']} by {view.done[key]['by']})")
         return 1
+    if key in view.done:
+        print(f"reopens {key}: done {view.done[key]['ts']} by {view.done[key]['by']}; this offer starts a new round")
     dup = [o for o in view.by_item.get(key, []) if o["status"] == "open" and o["to"] == a.to]
     if dup and not a.force:
         print(f"already offered to {a.to}: {fmt_item(dup[0])} [{dup[0]['id']}] (pass --force to add another)")
