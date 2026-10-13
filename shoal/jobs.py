@@ -98,6 +98,33 @@ def tail(path: str, n: int = 15) -> str:
         return "(no log)"
 
 
+def last_line(path: str) -> str:
+    """A running job's latest log line: what it is doing now, e.g. queued behind CI before it starts
+    (measured 2026-10-13: a job read as 'running' for 2 h while its first step waited for an idle
+    Azure queue, and nothing outside the log said so)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - 4096))
+            lines = [x.strip() for x in fh.read().decode(errors="replace").splitlines() if x.strip()]
+        return lines[-1][:160] if lines else ""
+    except OSError:
+        return ""
+
+
+def job_meta(sid: str, name: str, slug: str = "") -> dict:
+    """The recorded meta of a job by name (any role's, or `slug`'s), or {}."""
+    sdir = paths(sid, "x")["sdir"]
+    try:
+        for f in os.listdir(sdir):
+            if f.endswith(".json"):
+                m = json.load(open(os.path.join(sdir, f)))
+                if m.get("name") == name and (not slug or m.get("slug") == slug):
+                    return m
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
 def cmd_run(a) -> int:
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     if not cmd:
@@ -224,8 +251,9 @@ def cmd_status(a) -> int:
                 rc = fh.read().strip()
         except OSError:
             pass
+        last = last_line(m.get("log", "")) if st.get("ActiveState") == "active" else ""
         print(f"{m['unit']}: {st.get('ActiveState', '?')}/{st.get('SubState', '?')} rc={rc} "
-              f"started={m['started_utc']} :: {' '.join(m['cmd'])[:80]}")
+              f"started={m['started_utc']} :: {' '.join(m['cmd'])[:80]}" + (f"\n    last: {last}" if last else ""))
     return 0
 
 

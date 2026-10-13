@@ -1283,6 +1283,18 @@ rows = [
 """
 
 
+def server_sidebar() -> str:
+    """The sidebar's maximum width in the SERVER block too: a `herdr --remote` client kept Herdr's
+    default cap with the setting only in its own config (2026-10-13), as it draws the server's
+    tab_bar_right. The server cannot know the client window, so a share like 50% becomes a generous
+    column cap here; the client block keeps the per-window value."""
+    import ui_status
+    smw = str(ui_status.ui_config().get("sidebar_max_width") or "").strip()
+    if smw.endswith("%") and smw[:-1].isdigit():
+        return f"sidebar_max_width = {max(36, 4 * int(smw[:-1]))}\n"
+    return f"sidebar_max_width = {int(smw)}\n" if smw.isdigit() else ""
+
+
 def server_block() -> str:
     return f"""onboarding = false
 
@@ -1298,7 +1310,7 @@ resume_agents_on_restore = false
 
 [ui]
 # the tab-bar status line renders from the SERVER's config, also for a `herdr --remote` client
-tab_bar_right = [
+{server_sidebar()}tab_bar_right = [
   {{ type = "command", command = {json.dumps(shlex.join(shoal_argv("ui", "line")))}, interval_seconds = 30, timeout_seconds = 20 }},
   {{ type = "hostname" }},
 ]

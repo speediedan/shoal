@@ -147,6 +147,15 @@ def card(sid: str, slug: str, force: bool = False) -> str:
     if r["wait"]:
         w = r["wait"]
         rows.append(["wait", f"{w['sub']} on {w['target'] or '-'}: {w['holder'] or ''}"])
+        if str(w.get("target") or "").startswith("job:"):
+            try:
+                import jobs as _jobs
+                m = _jobs.job_meta(sid, w["target"][4:], slug)
+                st = _jobs.unit_state(m["unit"]).get("ActiveState", "?") if m else "unknown"
+                last = _jobs.last_line(m.get("log", "")) if m and st == "active" else ""
+                rows.append(["job", st + (f": {last}" if last else "")])
+            except Exception:  # noqa: BLE001 - a card never fails on a job probe
+                pass
     for i, a in enumerate(r["asks"], 1):
         rows.append([f"ask {i}", " ".join(str(a).split())])
     if r["offers_open"]:

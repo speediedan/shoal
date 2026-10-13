@@ -521,7 +521,7 @@ ATTENTION = {"blocked-on-question": "question for you",
              "blocked-says-waiting": "says it waits on you (no prompt: reply by message or mail)",
              "stopped-active": "says active, but its turn ended (health wakes it; pages if it repeats)",
              "waiting-on-you": "waiting on you",
-             "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "idle with work",
+             "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "free next items it could start",
              "blocker-role-cannot-take": "blocker cannot move"}
 
 
