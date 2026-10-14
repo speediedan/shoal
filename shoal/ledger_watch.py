@@ -212,6 +212,14 @@ def code_stamp() -> float:
         return 0.0
 
 
+def _limit_until(sid: str) -> str:
+    try:
+        from health import limit_until_sid
+        return limit_until_sid(sid)
+    except Exception:  # noqa: BLE001 - a missing or unreadable health state never holds a wake
+        return ""
+
+
 def claude_session_busy(session: str) -> bool:
     """True while the Claude session is mid-turn, or at an open question prompt, where a message would
     interrupt the turn or land on the prompt. A session that only ended its turn self-reported
@@ -372,6 +380,11 @@ def cmd_ledger_watch(a) -> int:
         if persistent and (claude_session_busy(session) if a.wake == "relay" else session_busy(session, repo_dir)):
             # never wake a lane mid-turn (or, for Claude, at an open question): the events stay
             # undelivered and go out at the next idle tick
+            save_sidecar(sc_path, sc)
+            continue
+        if persistent and a.wake == "relay" and _limit_until(sid):
+            # inside the account usage limit a relayed wake errors in the role's turn and is lost
+            # (2026-10-14): hold the events; the first tick after the reset delivers them
             save_sidecar(sc_path, sc)
             continue
         ids = [i for i, _ in new]

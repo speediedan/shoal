@@ -1013,5 +1013,78 @@ assert health.claude_liveness({"tempo": "blocked", "inFlight": {"tasks": 2, "kin
 print("subagents in flight ok")
 PY2
 
+echo "== 32 usage limit: Claude wakes and relaunches held until the reset, then one resume wake; relay re-relaunch; relay-watch commits on re-arm"
+# the measured shape (2026-10-14): tl's turn errored on the limit (resetsAt), up stopped on the grace note
+CC="$S/claude-cfg"; mkdir -p "$CC/projects/p"
+python3 - "$CC" <<'PY2'
+import datetime, json, sys, time
+ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+p = sys.argv[1] + "/projects/p/"
+open(p + "aaaa1111-0000.jsonl", "w").write(json.dumps({"type": "assistant", "timestamp": ts, "error": "rate_limit",
+    "quotaLimits": {"resetsAt": int(time.time()) + 30 * 60}, "message": {"content": [{"type": "text", "text": "limit"}]}}) + "\n")
+open(p + "bbbb2222-0000.jsonl", "w").write(json.dumps({"type": "user", "timestamp": ts,
+    "message": {"role": "user", "content": "[Usage limit reached; a short grace allowance remains"}}) + "\n")
+PY2
+env CLAUDE_CONFIG_DIR="$CC" python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "usage-limit marks"
+import os, sys; sys.path.insert(0, sys.argv[1])
+import health
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); st = {}
+lim = health.update_limit(spec, st)
+assert set(lim["affected"]) == {"tl", "up"} and health.limit_until(lim) == lim["reset"], lim
+os.environ["SHOAL_HEALTH_SHIFT_MIN"] = "40"
+assert health.limit_until(lim) == "", "the limit must end at its reset"
+print("usage-limit marks ok")
+PY2
+FS_IDLE='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":4242},{"id":"bbbb2222","sessionId":"bbbb2222-0000","status":"idle","state":"done","pid":4243}],"opencode":{}}'
+HV="$H health --spec $SPEC --instance a --dry-run"
+rm -f /tmp/$SID/health.json /tmp/$SID/relay-watch.pid /tmp/$SID/ledger-watch-tl.state /tmp/$SID/wake-tl
+SEED='import datetime, json, sys; now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"ladders": {"tl|watcher-dead|pid:none": {"since": now, "step": 0}}}, open(sys.argv[1], "w"))'
+python3 -c "$SEED" /tmp/$SID/health.json
+OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=15 $HV 2>&1)
+grep -q "tl watcher-dead step1:wake -> held (usage limit until" <<<"$OUT" || fail "a Claude wake inside the limit was not held :: $OUT"
+! grep -q "usage-limit reset" <<<"$OUT" || fail "resume wake before the reset :: $OUT"
+python3 -c "$SEED" /tmp/$SID/health.json
+OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "tl watcher-dead step1:wake -> " <<<"$OUT" && ! grep -q "held (usage" <<<"$OUT" || fail "the held wake did not run after the reset :: $OUT"
+grep -q "tl usage-limit reset:wake" <<<"$OUT" && grep -q "up usage-limit reset:wake" <<<"$OUT" \
+  || fail "no resume wake for each role the limit touched :: $OUT"
+# the relay: relaunch held inside the limit; relaunched again while it stays down; a fresh tick is the re-arm gap
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"].get("health")
+d["features"]["health"]=dict(h if isinstance(h,dict) else {}, revive=True); json.dump(d,open(p,"w"),indent=1)
+PY2
+TICK_OLD=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+echo "$TICK_OLD" > /tmp/$SID/tick-relay-watch; rm -f /tmp/$SID/health.json
+OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" $HV 2>&1)
+grep -q "wake-relay relay-dead step1:relaunch -> held (usage limit until" <<<"$OUT" || fail "relay relaunch inside the limit not held :: $OUT"
+python3 - /tmp/$SID/health.json "$TICK_OLD" <<'PY2'
+import datetime, json, sys
+ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"ladders": {f"wake-relay|relay-dead|relay:{sys.argv[2]}": {"since": sys.argv[2], "step": 2, "relaunched": ago}}}, open(sys.argv[1], "w"))
+PY2
+OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "wake-relay relay-dead relaunch-again -> relay-launch rc=0: \[dry-run\]" <<<"$OUT" || fail "a relay still down was not relaunched again :: $OUT"
+date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/$SID/tick-relay-watch; rm -f /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_IDLE" $HV 2>&1)
+! grep -q "relay-dead" <<<"$OUT" || fail "the re-arm gap (fresh tick) read as a dead relay :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("revive",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+rm -f /tmp/$SID/health.json
+# relay-watch: the cursor moves only when the same relay session re-arms; a backlog prints one wake per role
+Q=/tmp/$SID/relay-queue; rm -f $Q $Q.cursor $Q.printed
+for s in tl tl up; do echo "{\"ts\":\"x\",\"to\":\"$s-r1\",\"slug\":\"$s\",\"session\":\"s\",\"text\":\"wake $s\"}" >> $Q; done
+RW="$H relay-watch --shoal $SID --interval 0.1 --max-hours 0.0002"
+OUT=$(env CLAUDE_CODE_SESSION_ID=relay-1 $RW 2>&1)
+[ "$(grep -c '^RELAY-WAKE' <<<"$OUT")" = 2 ] && grep -q "+1 older wake(s) merged" <<<"$OUT" || fail "backlog not merged per role :: $OUT"
+[ ! -s $Q.cursor ] || [ "$(cat $Q.cursor)" = 0 ] || fail "cursor moved before the relay re-armed"
+OUT=$(env CLAUDE_CODE_SESSION_ID=relay-2 $RW 2>&1)
+[ "$(grep -c '^RELAY-WAKE' <<<"$OUT")" = 2 ] || fail "a replacement relay did not get the unsent wakes again :: $OUT"
+OUT=$(env CLAUDE_CODE_SESSION_ID=relay-2 $RW 2>&1)
+grep -q "RELAY-MAX-HOURS" <<<"$OUT" && [ "$(cat $Q.cursor)" = 3 ] || fail "the re-arming relay did not commit the cursor :: $OUT :: $(cat $Q.cursor 2>&1)"
+rm -f $Q $Q.cursor $Q.printed
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

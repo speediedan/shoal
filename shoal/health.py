@@ -72,6 +72,8 @@ LADDERS = {
 # Claude background service failed its own upgrade respawn and reaped every worker, the relay among
 # them; relay-dead paged for six days while every wake it would have carried went nowhere.
 REVIVE_RELAY_LADDER = [(0, "relaunch"), (15, "page"), (360, "page")]
+RELAY_RELAUNCH_EVERY_MIN = 30  # after the ladder's relaunch, again on this period while relay-watch stays down
+RELAY_GAP_MIN = 3  # relay-watch exits to deliver; a tick younger than this is the re-arm gap, not a death
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
 
@@ -350,6 +352,97 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
     return bool(open_q)
 
 
+# ---- the account usage limit ------------------------------------------------------------
+# The Claude usage limit is account-wide (measured 2026-10-14, 03:06Z to the 04:30Z reset): a turn started
+# by a message gets an API error (transcript: `"error": "rate_limit"`, `quotaLimits.resetsAt` epoch), a
+# turn started by a task notification gets a grace note and the session usually stops. Every wake or
+# relaunch spent inside the limit is lost, so health holds them until the reset and then wakes each
+# role the limit touched once (it-mvp lost its relay and stayed down 13 h otherwise).
+LIMIT_LOOKBACK_H = 6
+LIMIT_RESET_GRACE_MIN = 2
+LIMIT_GRACE_TEXT = "[Usage limit reached"
+
+
+def claude_limit_marks(session: str, tail_bytes: int = 1048576) -> list[tuple[str, str, int]]:
+    """[(ts, 'error'|'grace', resetsAt epoch or 0)] for usage-limit entries in a Claude session's
+    transcript tail."""
+    path = claude_transcript(session)
+    if not path:
+        return []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - tail_bytes))
+            chunk = fh.read().decode(errors="replace")
+    except OSError:
+        return []
+    out = []
+    for line in chunk.splitlines():
+        if "rate_limit" not in line and LIMIT_GRACE_TEXT not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        ts = str(d.get("timestamp") or "")[:19] + "Z"
+        if d.get("error") == "rate_limit":
+            try:
+                reset = int((d.get("quotaLimits") or {}).get("resetsAt") or 0)
+            except (TypeError, ValueError):
+                reset = 0
+            out.append((ts, "error", reset))
+        elif d.get("type") == "user":
+            content = (d.get("message") or {}).get("content")
+            text = content if isinstance(content, str) else " ".join(
+                str(c.get("text", "")) for c in content or [] if isinstance(c, dict))
+            if text.lstrip().startswith(LIMIT_GRACE_TEXT):
+                out.append((ts, "grace", 0))
+    return out
+
+
+def update_limit(spec: ShoalSpec, state: dict) -> dict:
+    """Fold the Claude roles' usage-limit marks (last LIMIT_LOOKBACK_H hours) into state['limit']:
+    {reset: newest known reset, affected: {slug: newest mark}, held: [slugs whose wakes were held],
+    woken: the reset already answered with a resume wake}."""
+    lim = state.get("limit") or {}
+    floor = iso(utcnow() - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
+    for role in spec.roles:
+        if role.ecosystem != "claude" or not role.session:
+            continue
+        for ts, _kind, reset in claude_limit_marks(role.session):
+            if ts < floor:
+                continue
+            if reset:
+                r = iso(datetime.datetime.fromtimestamp(reset, datetime.timezone.utc))
+                if r > lim.get("reset", ""):
+                    lim["reset"] = r
+            aff = lim.setdefault("affected", {})
+            aff[role.slug] = max(aff.get(role.slug, ""), ts)
+    if lim.get("reset") and lim.get("woken") == lim["reset"] and lim["reset"] < floor:
+        lim = {}  # answered and out of the lookback: forget it
+    if lim:
+        state["limit"] = lim
+    else:
+        state.pop("limit", None)
+    return lim
+
+
+def limit_until(lim: dict) -> str:
+    """The reset time while the usage limit is in force (plus a short grace), else ""."""
+    r = (lim or {}).get("reset", "")
+    t = parse(r)
+    if t is None or utcnow() >= t + datetime.timedelta(minutes=LIMIT_RESET_GRACE_MIN):
+        return ""
+    return r
+
+
+def limit_until_sid(sid: str) -> str:
+    """limit_until() from a shoal's health state, for processes outside the quorum (ledger-watch)."""
+    try:
+        return limit_until(json.load(open(os.path.join(state_dir(sid), "health.json"))).get("limit") or {})
+    except (OSError, ValueError):
+        return ""
+
+
 def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | None:
     # SHOAL_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
     if role.slug in [x for x in config.env("HEALTH_BETWEEN").split(",") if x]:
@@ -600,12 +693,18 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     led.pull()
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
+    lim = update_limit(spec, state)
+    until = limit_until(lim)
     relay = wake_relay_role(spec)
     revive = bool(health_cfg(spec).get("revive"))
-    if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.sid):
+    tk = os.path.join(sdir, "tick-relay-watch")
+    tick_age = age_min(open(tk).read().strip()) if os.path.exists(tk) else None
+    # relay-watch exits to deliver and the relay re-arms it within seconds: a dead relay is one whose
+    # last tick is older than that gap (measured 2026-10-14 06:22Z: a sample in the gap read dead)
+    if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.sid) \
+            and (tick_age is None or tick_age >= RELAY_GAP_MIN):
         # the relay has no wake adapter of its own: its death is a page, or (revive) a relaunch first.
         # Evaluated ahead of the roles, so a relaunch is under way before this run queues their wakes.
-        tk = os.path.join(sdir, "tick-relay-watch")
         since = open(tk).read().strip() if os.path.exists(tk) else iso()
         conds.insert(0, {"slug": relay.slug, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
                          "first_seen": revive,  # revive: the ladder runs from this sighting (relaunch now, page 15 later)
@@ -629,10 +728,23 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             steps = REVIVE_RELAY_LADDER
         else:
             steps = LADDERS[c["condition"]]
+        acted = False
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:
             at, action = steps[lad["step"]]
+            role_ = spec.role(c["slug"])
+            if until and (action == "relaunch" or (action == "wake" and role_ is not None and role_.ecosystem == "claude")):
+                # inside the usage limit a Claude turn errors and the wake is lost: hold the step (it runs
+                # after the reset) and remember the role for the resume wake
+                if c["slug"] not in lim.setdefault("held", []) and action == "wake":
+                    lim["held"].append(c["slug"])
+                if lad.get("held") != until:
+                    lad["held"] = until
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
+                                 f"held (usage limit until {until})"))
+                break
             if action == "relaunch":
                 ch = relaunch_relay(spec, spec_path, dry_run)
+                lad["relaunched"] = iso()
             elif action == "wake":
                 ch = request_wake(spec, c["slug"], c["detail"], c["condition"], dry_run)
                 if ch.startswith("no-adapter"):
@@ -641,7 +753,27 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)
             acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
             lad["step"] += 1
+            acted = True
             break  # at most one action per condition per run
+        if c["condition"] == "relay-dead" and revive and not acted and not until and lad.get("relaunched") \
+                and (age_min(lad["relaunched"]) or 0.0) >= RELAY_RELAUNCH_EVERY_MIN:
+            # a relaunch is not proof: the relay can die again before it arms (2026-10-14: r7's first turn
+            # hit the usage limit). While relay-watch stays down, relaunch again on a fixed period.
+            acts.append((c["slug"], "relay-dead relaunch-again", relaunch_relay(spec, spec_path, dry_run)))
+            lad["relaunched"] = iso()
+    # the usage limit has reset: one resume wake to every role it touched or whose wakes were held
+    if lim.get("reset") and not until and lim.get("woken") != lim["reset"]:
+        floor = iso(parse(lim["reset"]) - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
+        touched = {s for s, ts in (lim.get("affected") or {}).items() if ts >= floor} | set(lim.get("held") or [])
+        for s in sorted(touched):
+            r_ = spec.role(s)
+            if r_ is None or not r_.session or is_wake_relay(r_):
+                continue  # the relay comes back through its own relaunch
+            acts.append((s, "usage-limit reset:wake", request_wake(
+                spec, s, f"the account usage limit reset at {lim['reset']}: a turn that errored, a turn you "
+                         f"stopped on the grace note, or a wake lost to the limit resumes now", "limit-reset", dry_run)))
+        lim["woken"] = lim["reset"]
+        lim["held"] = []
     closed = {}
     for k in list(ladders):
         if k not in live_keys:
@@ -704,7 +836,21 @@ def cmd_relay_watch(a) -> int:
     with open(os.path.join(sdir, "relay-watch.pid"), "w") as fh:
         fh.write(str(os.getpid()))
     qp, cp = relay_queue_path(a.sid), os.path.join(sdir, "relay-queue.cursor")
+    pp = os.path.join(sdir, "relay-queue.printed")
     tick = os.path.join(sdir, "tick-relay-watch")
+    # The cursor moves only once the wakes were sent: printed wakes are pending until the SAME relay
+    # session re-arms (its brief: send each, then re-arm). A relay that stops first (2026-10-14 03:31Z, on
+    # the usage-limit grace note) or dies leaves them pending, and its replacement prints them again.
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    try:
+        pend = json.load(open(pp))
+    except (OSError, ValueError):
+        pend = None
+    if pend is not None:
+        if pend.get("by", "") == me:
+            with open(cp, "w") as fh:
+                fh.write(str(int(pend.get("upto", 0))))
+        os.remove(pp)
     deadline = time.time() + a.max_hours * 3600 if a.max_hours > 0 else None
     print(f"{iso()} relay-watch armed (pid {os.getpid()}; runs until a wake is due"
           + (f" or {a.max_hours:g} h pass" if deadline else ", indefinitely") + ")", flush=True)
@@ -720,12 +866,24 @@ def cmd_relay_watch(a) -> int:
             lines = []
         cur = int(open(cp).read().strip() or 0) if os.path.exists(cp) else 0
         if len(lines) > cur:
+            # one wake per role: the newest. Every wake says "run `shoal next`", so older ones add nothing,
+            # and a backlog replayed whole floods the roles (2026-10-14: 178 queued for five roles)
+            newest: dict[str, dict] = {}
+            merged: dict[str, int] = {}
             for ln in lines[cur:]:
-                d = json.loads(ln)
-                print(f"RELAY-WAKE to={d['to']} session={d.get('session', '')} :: {d['text']}")
-            with open(cp, "w") as fh:
-                fh.write(str(len(lines)))
-            print(f"{iso()} VERDICT RELAY-DELIVER {len(lines) - cur} (send each with SendMessage by name, then re-arm)")
+                try:
+                    d = json.loads(ln)
+                except ValueError:
+                    continue
+                key = d.get("slug") or d.get("to", "")
+                merged[key] = merged.get(key, -1) + 1
+                newest[key] = d
+            for key, d in newest.items():
+                more = f" (+{merged[key]} older wake(s) merged)" if merged[key] else ""
+                print(f"RELAY-WAKE to={d['to']} session={d.get('session', '')} :: {d['text']}{more}")
+            with open(pp, "w") as fh:
+                json.dump({"upto": len(lines), "by": me, "ts": iso()}, fh)
+            print(f"{iso()} VERDICT RELAY-DELIVER {len(newest)} (send each with SendMessage by name, then re-arm)")
             return 0
         time.sleep(a.interval)
 
@@ -848,6 +1006,10 @@ def cmd_relay_launch(a) -> int:
     spec.record_generation()
     persist_spec(spec, path, note=f"relay-launch {role.tag}")
     print(plan + f" -> launched {role.session}")
+    if old and old != role.session:
+        # the replaced relay must not keep a turn alive beside the new one (2026-10-14: four earlier relay
+        # sessions were still listed working); best effort, a stop that fails changes nothing else
+        subprocess.run(["claude", "stop", old[:8]], capture_output=True, text=True, timeout=60, env=_ENV)
     if a.verify_s <= 0:
         print(f"RELAY LAUNCHED {role.session}: relay-watch not verified here (the health quorum checks it next run)")
         return 0

@@ -369,7 +369,7 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
         "id": spec.sid, "spec": spec_path, "incarnation": spec.incarnation,
         "gen": f"r{spec.incarnation + 1}", "retired": bool(spec.retired_utc), "dir": spec.dir,
         "mode": {"offline": bool(off), "offline_until": (off or {}).get("until"),
-                 "freeze": bool(frz)},
+                 "freeze": bool(frz), "limit_until": limit_until(spec.sid)},
         "relay": ({"alive": _h.relay_alive(spec.sid)} if has_relay else None),
         "pages_24h": len(pages),
         "last_page": _short(pages[-1].get("text"), 160) if pages else None,
@@ -455,6 +455,12 @@ def _age(s: int | None) -> str:
     if s < 172800:
         return f"{s / 3600:.1f}h"
     return f"{s / 86400:.1f}d"
+
+
+def limit_until(sid: str) -> str:
+    """The account usage limit's reset while it is in force (health holds Claude wakes until then)."""
+    import health as _h
+    return _h.limit_until_sid(sid)
 
 
 CI_SUBS = ("local-ci", "remote-ci")
@@ -582,6 +588,8 @@ def render_text(doc: dict, width: int = 0) -> str:
         m = s["mode"]
         relay = s.get("relay")
         head = [s["id"], f"gen {s['gen']}"] + [x for x, on in (("OFFLINE", m["offline"]), ("FREEZE", m["freeze"])) if on]
+        if m.get("limit_until"):
+            head.append(f"LIMITED until {m['limit_until'][11:16]}Z")  # the account usage limit: wakes are held
         if relay:
             head.append(f"relay {'ok' if relay['alive'] else 'DEAD'}")
         if not s["tooling"]["current"]:
@@ -644,6 +652,8 @@ def render_line(doc: dict) -> str:
             bits.append("OFF")
         if m["freeze"]:
             bits.append("FRZ")
+        if m.get("limit_until"):
+            bits.append(f"LIMIT {m['limit_until'][11:16]}Z")
         if s.get("relay") and not s["relay"]["alive"]:
             bits.append("relay DEAD")
         import re

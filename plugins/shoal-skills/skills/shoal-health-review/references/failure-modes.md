@@ -186,6 +186,27 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   test in `selftest_ledger.sh`; without `--autostash` it fails with the production error.
 - **Status:** fixed.
 
+## FM-18: the account usage limit takes the relay down for the night (2026-10-14)
+- **Signature:** relayed wakes end in a turn whose transcript entry is `"error": "rate_limit"` (with
+  `quotaLimits.resetsAt`), or a session stops on the `[Usage limit reached; ...]` grace note. Afterwards the relay
+  reads DEAD and `relay-queue` grows past its cursor (178 wakes overnight, it-mvp).
+- **Cause:** every wake and relaunch spent inside the limit was lost. The relay stopped on the grace note without
+  sending the wake relay-watch had printed, which was lost because the cursor moved at print time. The single
+  revive relaunch landed inside the limit; its first turn errored, it never armed relay-watch, and the ladder did
+  not try again. A shoal whose relay survived (fts-it-refactor) recovered only because its ladders re-fired after
+  the reset.
+- **Fix:**
+  - Health reads the limit and its reset from the transcripts and holds Claude wakes and relay relaunches until
+    the reset. It then wakes each role the limit touched once (`usage-limit reset:wake`), and the viewer shows
+    `LIMITED until HH:MMZ`.
+  - A relay still down is relaunched again every 30 min, and a tick younger than 3 min is the re-arm gap, not a
+    death.
+  - relay-watch moves its cursor only when the same relay session re-arms, and prints one wake per role (older
+    ones merged).
+  - Relay-mode watchers hold their wakes while the limit is in force.
+  - Selftest H4 section 32, with negative controls.
+- **Status:** fixed.
+
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
 the unit ended. The durations came from runners yielding to CI and from lease queueing. Check the
