@@ -202,6 +202,21 @@ import ui_herdr
 mk = lambda s, n, r: {"session": s, "needs_you": n, "can_progress": {"reasons": r}}
 assert ui_herdr.herdr_state(mk("working", True, ["waiting-on-you"])) == "working"  # busy wins over needs-you
 assert ui_herdr.herdr_state(mk("blocked", True, ["blocked-on-question"])) == "blocked"
+# the feeder never waits on the provider probes behind conditions: a missing or stale cache returns at once
+import json as _j, os as _o, tempfile, time as _t, types
+cd = tempfile.mkdtemp(); st = types.SimpleNamespace(sid="condtest", ledger_dir="/nonexistent")
+ui_status.BACKGROUND_CONDITIONS = True
+t0 = _t.time(); r = ui_status.conditions(st, None, cd)
+assert _t.time() - t0 < 1 and r.get("pending") and r["open"] == [], r
+_j.dump({"ts": "2000-01-01T00:00:00Z", "open": [{"slug": "x"}]}, open(_o.path.join(cd, "ui-conditions.json"), "w"))
+t0 = _t.time(); r = ui_status.conditions(st, None, cd)
+assert _t.time() - t0 < 1 and r["open"] == [{"slug": "x"}], r  # the stale cache is served meanwhile
+ui_status.BACKGROUND_CONDITIONS = False
+# an open prompt on a session its subagents keep working is blocked; a job or CI wait still reads working
+q = mk("working", True, ["blocked-on-question"])
+assert ui_herdr.herdr_state(q) == "blocked", ui_herdr.herdr_state(q)
+assert ui_herdr.herdr_state(dict(q, posture="wait", sub="local-ci")) == "working"
+assert ui_status.posture_label(dict(q, posture="wait", sub="user-auth", next=[], active="x")) == "QUESTION"
 PY2
 check 'CLAUDE_CODE_ENABLE_AWAY_SUMMARY' $H view $SID cl --spec "$SPEC" --dry-run
 # the opencode viewer reads the server password from the server process's own environment
@@ -262,6 +277,13 @@ def handle(req):
         return {"type": "ok"}
     if m == "tab.close":
         panes[:] = [q for q in panes if q["tab_id"] != p["tab_id"]]
+        return {"type": "ok"}
+    if m == "pane.move":
+        for q in panes:
+            if q["pane_id"] == p["pane_id"]:
+                q["tab_id"] = p["destination"]["tab_id"]
+        return {"type": "ok"}
+    if m == "tab.rename":
         return {"type": "ok"}
     if m == "test.close_pane":  # test hook: a card missing, as for a role added after the tab was built
         panes[:] = [q for q in panes if q["pane_id"] != p["pane_id"]]
@@ -338,6 +360,19 @@ cl = next(p for l, p in by.items() if str(l).endswith("/cl"))
 assert gone in by and by[gone]["tab_id"] != cl["tab_id"], (gone, by.get(gone), cl)
 print("attached add ok")
 PY2
+# the roles are now spread over two tabs though one holds them all: with the card still attached the
+# stray card MOVES into the first tab (pane.move: nothing is replaced), instead of the refusal
+check "move 1 card" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+python3 - "$SHOALD" <<'PY2' || fail "consolidated into one tab, attached card untouched"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+cards = [p for p in h.panes() if "/" in str(p.get("label", "")) and not str(p["label"]).endswith(("/overview", "/ledger"))]
+assert len({p["tab_id"] for p in cards}) == 1, [(p["label"], p["tab_id"]) for p in cards]
+assert any(str(p["label"]).endswith("/cl") for p in cards)
+print("consolidate ok")
+PY2
 python3 - "$SHOALD" <<'PY2' || fail "reset the attached card"
 import sys
 sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
@@ -402,7 +437,7 @@ mkdir -p "$XDG_CONFIG_HOME/shoal"
 printf '{"v":1,"sessions":[{"harness":"claude","session":"f00dface-9999","label":"my chat"}]}' > "$XDG_CONFIG_HOME/shoal/ui-standalone.json"
 check "workspace 'my chat'" $H ui open --ledger-root "$ROOT" --shoal $SID
 check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --shoal $SID
-[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 10 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply + the attached-add tab + its consolidation once the card is free): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
+[ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 9 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply + the attached-add tab; the consolidation moves the stray card, no apply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 # --reapply restarts an idle standalone stub on the current code too
 check "restart on the current code standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --reapply
 # roles lay out in tabs of roles_per_tab cards; changing it re-lays them and closes a leftover tab
@@ -476,7 +511,7 @@ assert any(m["tokens"].get("posture") == "QUESTION" for m in md), md
 assert any(c["method"] == "workspace.report_metadata" for c in calls)
 allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "pane.process_info",
            "pane.report_agent", "pane.report_metadata", "workspace.report_metadata", "pane.get",
-           "workspace.rename", "workspace.close", "tab.close", "tab.rename"}
+           "workspace.rename", "workspace.close", "tab.close", "tab.rename", "pane.move"}
 md_shoal = {m["tokens"].get("shoal") for m in md if m["tokens"].get("role")}
 assert md_shoal == {"uiselftest"}, md_shoal
 bad = sorted({c["method"] for c in calls if not c["method"].startswith("test.")} - allowed)

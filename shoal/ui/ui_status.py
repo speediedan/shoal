@@ -252,6 +252,13 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             e = claude_session(rows, role.session) if role.ecosystem == "claude" else None
             reasons.append("blocked-on-question" if pending_question(e or {}, role.session)
                            else "blocked-says-waiting")
+        elif sess == "working" and role.ecosystem == "claude" and not is_wake_relay(role):
+            # a prompt can be open while the job still reads working: its own subagents keep the tempo
+            # `active` (measured 2026-10-14: jlens-research showed active with an AskUserQuestion open and
+            # three research agents running). The prompt is the maintainer's to answer either way.
+            e = claude_session(rows, role.session)
+            if pending_question(e or {}, role.session):
+                reasons.append("blocked-on-question")
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
         # turn's end, and a dead worker is reported as dead-worker instead
         if not remote and not is_wake_relay(role) and sess != "dead" and \
@@ -311,12 +318,40 @@ def tooling(spec: ShoalSpec) -> dict:
             "current": bool(sha and head and head.startswith(sha[:12]))}
 
 
+# The feeder sets this: its tick must never wait on provider probes (az and gh, one subprocess per
+# pending wait target). A refresh inside the tick once outlasted the token TTL, and every sidebar row
+# lost its state for the duration (2026-10-14, 16:22 PDT). A stale cache is served while a background
+# thread refreshes it.
+BACKGROUND_CONDITIONS = False
+_REFRESHING: set[str] = set()
+
+
+def _refresh_conditions_async(spec: ShoalSpec, cache_dir: str) -> None:
+    import threading
+    if spec.sid in _REFRESHING:
+        return
+    _REFRESHING.add(spec.sid)
+
+    def work() -> None:
+        try:
+            from ledger import Ledger, View
+            led = Ledger(spec.sid, root=spec.ledger_dir, sync=False)
+            _compute_conditions(spec, View(led, spec), cache_dir)
+        except Exception:  # noqa: BLE001 - a failed refresh leaves the stale cache in place
+            pass
+        finally:
+            _REFRESHING.discard(spec.sid)
+
+    threading.Thread(target=work, daemon=True, name=f"conditions-{spec.sid}").start()
+
+
 def conditions(spec: ShoalSpec, view, cache_dir: str, refresh: bool = False) -> dict:
     """The health quorum's live conditions, from its own `evaluate()` (the derivation, not a copy).
     It probes providers (gh) and the harnesses, so the result is cached per shoal for
     CONDITIONS_TTL_S and never computed on a keystroke path. Ladder step and age arrive with the
     `health_condition` telemetry event; until then this section carries instances only."""
     path = os.path.join(cache_dir, "ui-conditions.json")
+    cached = None
     try:
         cached = json.load(open(path))
         a = age_s(cached.get("ts", ""))
@@ -325,6 +360,17 @@ def conditions(spec: ShoalSpec, view, cache_dir: str, refresh: bool = False) -> 
             return cached
     except (OSError, ValueError):
         pass
+    if BACKGROUND_CONDITIONS and not refresh:
+        _refresh_conditions_async(spec, cache_dir)
+        if cached is not None:
+            cached["age_s"] = age_s(cached.get("ts", "")) or 0
+            return cached
+        return {"source": "health-dry-run", "ts": "", "age_s": 0, "open": [], "pending": True}
+    return _compute_conditions(spec, view, cache_dir)
+
+
+def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
+    path = os.path.join(cache_dir, "ui-conditions.json")
     import health as _h
     try:
         inst = _h.evaluate(spec, view, _h.claude_busy())

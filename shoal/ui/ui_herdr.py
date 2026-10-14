@@ -15,7 +15,8 @@
 Rules this adapter keeps (design driver 1 and the coexistence constraints):
 - It never types into a role's pane and never calls `pane.send_*`, `agent.prompt`, `agent.send_keys`
   or `pane.close`: every action is a shoal CLI verb, so `Backend.wake` accounting holds. The
-  selftest greps this file for those calls.
+  selftest greps this file for those calls. `pane.move` is allowed: it relocates a live card between
+  tabs and changes no process.
 - Role panes run `shoal view --stub`: a card that attaches only on Enter (never a resume). Layouts
   are restored by re-applying a whole tab (`layout.apply`), never by typing a command into a pane.
 - Herdr is told role state with `pane.report_agent` (source `shoal`; Herdr has no TTL for it, so
@@ -48,13 +49,14 @@ DEFAULT_SESSION = "shoal"
 STANDALONE_WS = "standalone"
 WS_PREFIX = "shoal:"
 FEED_INTERVAL_S = 20
+FEED_MIN_TTL_S = 150  # token lifetime floor: one slow tick must not blank every sidebar row
 PLUGIN_DIR = os.path.join(REPO, "plugins", "shoal-herdr")
 PLUGIN_ID = "shoal.herdr"
 SHELLS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"}
 # socket methods the adapter calls; `ui doctor` checks the running Herdr still offers them
 METHODS = ("workspace.list", "workspace.create", "workspace.rename", "workspace.close", "workspace.report_metadata",
            "pane.list", "pane.get",
-           "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply", "tab.close", "tab.rename")
+           "pane.process_info", "pane.report_agent", "pane.report_metadata", "layout.apply", "tab.close", "tab.rename", "pane.move")
 
 
 # ---- Herdr socket ----------------------------------------------------------------------
@@ -405,6 +407,40 @@ def find_shoal_ws(h: Herdr, sid: str, dry_run: bool = False) -> dict | None:
     return ws
 
 
+def consolidation_moves(spec, by_label: dict, tabs_want: list) -> tuple[list[tuple[str, str, str, str]], dict[str, str]]:
+    """Regroup live role cards into the configured tabs WITHOUT replacing any of them: ([(pane_id,
+    home tab id, target pane id, split)], {home tab id: tab label}). A chunk's home is the tab already
+    holding most of its cards (one chunk per tab); a card elsewhere moves to its home with Herdr's
+    `pane.move`, which relocates the live pane (an attached session keeps running). It is used when a
+    relayout is wanted but a card is attached, so the re-apply the unattached case uses is refused."""
+    homes: list[str | None] = []
+    used: set = set()
+    for _, chunk in tabs_want:
+        count: dict[str, int] = {}
+        for r in chunk:
+            p = by_label.get(role_label(spec.sid, r.slug))
+            if p:
+                count[p["tab_id"]] = count.get(p["tab_id"], 0) + 1
+        pick = next((tid for tid, _n in sorted(count.items(), key=lambda kv: -kv[1]) if tid not in used), None)
+        homes.append(pick)
+        used.add(pick)
+    moves, labels = [], {}
+    for (label_, chunk), home in zip(tabs_want, homes):
+        if home is None:
+            continue
+        labels[home] = label_
+        here = [by_label[role_label(spec.sid, r.slug)]["pane_id"] for r in chunk
+                if by_label.get(role_label(spec.sid, r.slug), {}).get("tab_id") == home]
+        for r in chunk:
+            p = by_label.get(role_label(spec.sid, r.slug))
+            if not p or p["tab_id"] == home or not here:
+                continue
+            n = len(here)
+            moves.append((p["pane_id"], home, here[-1] if n == 1 else here[n - 2], "down" if n == 1 else "right"))
+            here.append(p["pane_id"])
+    return moves, labels
+
+
 def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -> list[str]:
     """One workspace per shoal, labelled with its short tag (`shoal_tag`): tab `overview` (dashboard
     + ledger tail) and tab `roles` (a card per role with a session). Re-running only fills gaps by
@@ -458,6 +494,20 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
                 for i, tid in enumerate(sorted(x for x in tabs if x), 1):
                     h.call("tab.rename", {"tab_id": tid, "label": f"roles {i}"})
                 apply_tab(h, ws["workspace_id"], f"roles {len(tabs) + 1}", _grid([role_node(spec, r) for r in new]))
+        elif attached and relayout and not reapply and len(shells) != len(cards):
+            # the roles are spread over more tabs than the configured size needs (a role was added while
+            # cards were attached: roles 2 held three, roles 3 one) but a card is in use, so nothing may be
+            # re-applied: move the stray cards into their tabs instead, live sessions untouched
+            moves, labels = consolidation_moves(spec, {p["label"]: p for p in cards}, tabs_want)
+            out.append(f"move {len(moves)} card(s) into the configured tabs ({', '.join(attached)} in use, so "
+                       f"no card is replaced)")
+            if not dry_run:
+                for pane_id, home, target, split in moves:
+                    h.call("pane.move", {"pane_id": pane_id, "destination": {"type": "tab", "tab_id": home,
+                                                                              "split": split,
+                                                                              "target_pane_id": target}})
+                for tid, label_ in labels.items():
+                    h.call("tab.rename", {"tab_id": tid, "label": label_})
         elif attached:
             out.append(f"roles tab needs a re-apply ({why}) but {', '.join(attached)} is in use (attached, "
                        f"or running something from its shell): free it, then run `shoal ui open` again")
@@ -625,10 +675,12 @@ def role_sessions() -> set[str]:
 def herdr_state(r: dict) -> str:
     """Herdr's agent state (idle | working | blocked). A session mid-turn is `working` even when the
     role also waits on the maintainer: the sidebar showed a busy lane as blocked (2026-10-12), and
-    the needs-you signal stays in the row's posture and ask tokens. `blocked` (drawn as x in
-    symbols mode) means the role needs the maintainer, or cannot be woken (watcher dead)."""
+    the needs-you signal stays in the row's posture and ask tokens. An open question prompt is the
+    exception: it is the maintainer's to answer even while subagents keep the job working, so it reads
+    `blocked` (unless the role waits on its own job or CI build). `blocked` (drawn as x in symbols
+    mode) means the role needs the maintainer, or cannot be woken (watcher dead)."""
     reasons = r["can_progress"]["reasons"]
-    if r["session"] == "working":
+    if r["session"] == "working" and "blocked-on-question" not in reasons:
         return "working"
     import ui_status
     if ui_status.working_wait(r) and "watcher-dead" not in reasons and r["session"] != "dead":
@@ -675,10 +727,11 @@ def shoal_tokens(s: dict) -> dict[str, str]:
 
 def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True) -> int:
     import ui_status
+    ui_status.BACKGROUND_CONDITIONS = True  # a tick never waits on the provider probes behind conditions
     doc = ui_status.status(None, with_conditions=True,
                            refresh_conditions=False)  # conditions come from their own 5-minute cache
     ui_status.write_cache(doc)
-    ttl = int(interval * 3 * 1000)
+    ttl = int(max(interval * 3, FEED_MIN_TTL_S) * 1000)
     release_retired(h, close=False)  # relabel only: the feeder never closes anything
     wss = {w.get("label"): w for w in h.workspaces()}
     panes = {p.get("label"): p for p in h.panes() if p.get("label")}
@@ -1260,9 +1313,33 @@ MENU = [
     ("metrics", "failure-mode metrics and report files"),
     ("pick", "open a standalone (non-shoal) session"),
     ("forget", "stop reopening a saved standalone session (and close its workspace)"),
+    ("keys", "paste, copy and navigation keys (the image paste key is here)"),
     ("open", "re-apply the shoal layouts (fills gaps only)"),
     ("upgrade", "preview a shoal upgrade (applying stays a CLI step)"),
 ]
+
+
+def keys_help() -> str:
+    """The keys this viewer relies on. Herdr's own keybind menu does not list `remote_image_paste`, so
+    the palette states it (maintainer, 2026-10-14: the image paste key was nowhere to be found)."""
+    import ui_status
+    img = str(ui_status.ui_config().get("image_paste_key") or "alt+v")
+    return "\n".join([
+        "\x1b[1mkeys in the shoal viewer\x1b[0m",
+        "",
+        "  paste text            Ctrl+V   (the shoal kitty window maps it to its clipboard paste)",
+        f"  paste an IMAGE        {img.title()} or Ctrl+Shift+V   a screenshot on the laptop clipboard",
+        "                        goes to the focused session (Herdr's remote image paste, a raw key that",
+        "                        only works in `herdr --remote`; kitty's own paste never carries an image)",
+        "  copy                  select with the mouse (OSC 52 copies it to the laptop clipboard in kitty)",
+        "  action palette        Ctrl+B then Alt+S   (Ctrl+B then Shift+S without Alt)",
+        "  zoom a pane           Ctrl+B then Z       (the Z after a tab name marks a zoomed pane)",
+        "  detach an attached session   Ctrl+Z (claude) or Ctrl+C (opencode); the session keeps running",
+        "",
+        "  image paste says nothing when the clipboard holds no image: check on the laptop with",
+        "  `wl-paste --list-types` (Wayland) or `xclip -selection clipboard -t TARGETS -o` (X11);",
+        "  an image shows as image/png.",
+    ])
 
 
 def cmd_menu(a) -> int:
@@ -1276,6 +1353,10 @@ def cmd_menu(a) -> int:
         return subprocess.run(shoal_argv("ui", "metrics", "--pause")).returncode
     if k == "pick":
         return subprocess.run(shoal_argv("ui", "pick")).returncode
+    if k == "keys":
+        print(keys_help())
+        ui_term.pause()
+        return 0
     if k == "forget":
         rc = forget_interactive()
         ui_term.pause()
@@ -1479,7 +1560,7 @@ Environment=PATH={path}
 ExecStart={shlex.join(shoal_argv("ui", "feed"))}
 Restart=always
 RestartSec=15
-MemoryHigh=256M
+MemoryHigh=640M
 [Install]
 WantedBy=default.target
 """
