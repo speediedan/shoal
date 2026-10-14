@@ -85,6 +85,17 @@ assert sync_pull(a) is True
 assert os.path.exists(os.path.join(a, "fm17-remote")), "remote commit not pulled"
 assert open(os.path.join(a, "shoals/t1shoal/ledger/user.jsonl")).read().rstrip().endswith('"state":"idle"}'), "line lost"
 print("fm17 autostash ok")
+# a fetch that hangs past its timeout is a failed fetch (False), never an exception that ends a watcher
+import subprocess, ledger
+real = subprocess.run
+def hung(argv, *a, **k):
+    if "fetch" in argv:
+        raise subprocess.TimeoutExpired(argv, k.get("timeout", 60))
+    return real(argv, *a, **k)
+ledger.subprocess.run = hung
+assert sync_pull(a) is False
+ledger.subprocess.run = real
+print("fm17 hung fetch ok")
 PY
 git -C "$A" checkout -q -- shoals/t1shoal/ledger/user.jsonl
 echo "== 2 offers + permissions"

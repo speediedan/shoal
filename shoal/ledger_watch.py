@@ -343,7 +343,7 @@ def cmd_ledger_watch(a) -> int:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         try:
             ok = led.pull()
-        except LedgerError as exc:  # a failed rebase is a failed fetch: counted and retried, never fatal
+        except (LedgerError, subprocess.TimeoutExpired) as exc:  # a failed pull is a failed fetch: counted and retried, never fatal
             print(f"{now_iso()} PULL-FAILED: {str(exc)[-200:]}", flush=True)
             ok = False
         if not ok:

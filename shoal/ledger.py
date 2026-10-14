@@ -214,7 +214,11 @@ def sync_pull(root: str, timeout: int = 60) -> bool:
     if not has_remote(root):
         return True
     with Lock(root):
-        r = git(root, "fetch", "--quiet", "origin", timeout=timeout, check=False)
+        try:
+            r = git(root, "fetch", "--quiet", "origin", timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            # a hung fetch is a failed fetch (offline): it killed two watchers on 2026-10-14
+            return False
         if r.returncode != 0:
             return False
         branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
