@@ -16,6 +16,30 @@ next wake continues the same session. There is no daemon: an idle role costs no 
 | attach | `claude attach` | the opencode TUI | `muse resume <id>` (takes the session over: only while no turn runs) |
 | questions | prompted | prompted | none: `--yolo` withholds `request_user_input`; asks go through `queue --ask` |
 
+## Interactive sessions (standalone)
+
+Besides the exec-per-wake roles, a Muse session can be a plain interactive TUI in a Herdr card. This is the
+mode for a person-driven session (the first ones are `infra-aux` and `infra-expansion`).
+
+- `shoal muse-new <name> --cwd DIR [--model M] --pick` creates a durable, named, empty session through a
+  short-lived `muse serve` (`session/start` plus `session/rename`) and saves a standalone card for it. A name is
+  3-32 chars of lowercase letters, digits and single hyphens, unique per user; `all`, `self` and `current` are
+  reserved. Make the name describe the seat: peers address it by that name.
+- The card runs `muse resume <id>` with `--model` (default `muse-wonder-full-1.0`, override
+  `SHOAL_MUSE_MODEL`), `--reasoning-effort high`, `--trust-workspace` and `--disable-sandbox`. The model is a
+  per-run choice, not stored in the session, so it must be passed on every resume. Approvals stay on (a person is
+  at the keyboard). `SHOAL_MUSE_VIEW_ARGS` replaces the whole flag list.
+- While an exec turn runs on the same session the viewer shows the read-only tail instead of taking it over, so
+  the two modes can share one session id but never run at once.
+- **Native peer messaging** (Muse "session messaging") works between live interactive, named sessions of one
+  user on one machine: ask the session to list its peers, then send by exact name. Headless (`muse exec`) and
+  `--no-session-log` sessions are not peers. The receiver is asked to approve the sender (allow once or for the
+  session; requests expire after 30 minutes with a 30 minute retry cooldown); a message is data, never
+  authorization, and is at most 8,192 bytes. It is a fallback for conversations between interactive seats; role
+  coordination and anything that must be durable or reach a Claude or exec seat goes through the shoal ledger.
+- Interactive seats are not shoal roles: they are not woken by `exec:` and have no ledger watcher. Making an
+  interactive pane a ledger-woken role (a wake typed into the pane) is deliberately not built yet.
+
 ## State
 
 `/tmp/shoal-muse-<uid>/<session>/` (override `SHOAL_MUSE_STATE`): `lock` (flock; held means a turn runs; the caller takes

@@ -28,6 +28,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -289,16 +290,104 @@ def cmd_muse_tail(a) -> int:
         return 0
 
 
+DEFAULT_MODEL = "muse-wonder-full-1.0"
+
+
+def interactive_flags() -> list[str]:
+    """Flags for an interactive (TUI) client: the model and effort are per run, not stored in the session,
+    and the sandbox is off for the same reason it is off for exec turns (a sandboxed shell cannot push or
+    reach the CI tooling). Approvals stay on: a person is at the keyboard, unlike an exec turn.
+    `SHOAL_MUSE_VIEW_ARGS` replaces the whole list."""
+    extra = config.env("MUSE_VIEW_ARGS")
+    if extra:
+        return extra.split()
+    return ["--model", config.env("MUSE_MODEL") or DEFAULT_MODEL, "--reasoning-effort", "high",
+            "--trust-workspace", "--disable-sandbox"]
+
+
 def view_argv(session: str) -> list[str]:
     """The viewer's command: the interactive client takes the session over, which is only safe while no
     turn runs; mid-turn the read-only tail is shown instead."""
     if busy(session):
         return [sys.executable, CLI, "muse-tail", "--session", session]
     if UUID_RE.match(session) or os.path.isdir(sdir(session)):
-        return [muse_bin(), "resume", session]
+        return [muse_bin(), "resume", session, *interactive_flags()]
     # a standalone session by NAME (Muse names are unique per user): resume it, or start a fresh one the
     # first time (`muse resume` of an unknown name fails); the user then names it with /name
-    return ["sh", "-c", '"$0" resume "$1" || exec "$0"', muse_bin(), session]
+    flags = " ".join(shlex.quote(f) for f in interactive_flags())
+    return ["sh", "-c", f'"$0" resume "$1" {flags} || exec "$0" {flags}', muse_bin(), session]
+
+
+def msp_session(name: str, cwd: str, model: str = "", effort: str = "") -> str:
+    """Create a durable, named, empty Muse session through a short-lived `muse serve` and return its id.
+
+    An interactive session is the same durable object an exec turn uses; it just lacks the first turn.
+    Creating it here (rather than typing `/name` in a fresh TUI) gives the viewer a stable id and name
+    that peer sessions can address, and puts it in the workspace the role belongs to.
+    """
+    import queue
+    import threading
+    p = subprocess.Popen([muse_bin(), "serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, env=turn_env(), cwd=cwd)
+    q: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: [q.put(json.loads(ln)) for ln in iter(p.stdout.readline, b"")],
+                     daemon=True).start()
+    n = [0]
+
+    def send(o: dict) -> None:
+        p.stdin.write((json.dumps(o) + "\n").encode())
+        p.stdin.flush()
+
+    def call(method: str, params: dict) -> dict:
+        n[0] += 1
+        send({"jsonrpc": "2.0", "id": n[0], "method": method, "params": params})
+        end = time.time() + 60
+        while time.time() < end:
+            try:
+                j = q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if j.get("id") == n[0]:
+                if "error" in j:
+                    raise RuntimeError(f"{method}: {j['error'].get('message', j['error'])}")
+                return j.get("result", {})
+        raise RuntimeError(f"{method}: no answer in 60 s")
+
+    try:
+        call("initialize", {"clientInfo": {"name": "shoal", "version": "0"}})
+        send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        params = {"commandId": uuid7(), "workspaceRoot": cwd}
+        if model:
+            params["modelId"] = model
+        sid = call("session/start", params)["session"]["sessionId"]
+        call("session/rename", {"commandId": uuid7(), "sessionId": sid, "name": name})
+        return sid
+    finally:
+        p.terminate()
+
+
+def cmd_muse_new(a) -> int:
+    """Create a named interactive Muse session and (with --pick) give it a Herdr card."""
+    name = a.name.lower()
+    if name in ("all", "self", "current") or not re.fullmatch(r"[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,31}", name):
+        print(f"muse-new: {a.name!r} is not a valid Muse session name "
+              "(3-32 chars: lowercase letters, digits, single hyphens; starts with a letter)")
+        return 2
+    cwd = os.path.abspath(os.path.expanduser(a.cwd))
+    if not os.path.isdir(cwd):
+        print(f"muse-new: no such directory: {cwd}")
+        return 2
+    try:
+        sid = msp_session(name, cwd, a.model, a.effort)
+    except (RuntimeError, OSError) as e:
+        print(f"muse-new: {e}")
+        return 1
+    print(f"{name}  {sid}  {cwd}")
+    if a.pick:
+        return subprocess.call([sys.executable, CLI, "ui", "pick", "--harness", "muse", "--id", sid,
+                                "--label", a.label or name, "--cwd", cwd, "--save"])
+    print(f"open it with: shoal ui pick --harness muse --id {sid} --label {a.label or name} --cwd {cwd} --save")
+    return 0
 
 
 def arm_watcher(spec, role, dry_run: bool = False) -> str:
@@ -330,6 +419,14 @@ def add_parsers(sub) -> None:
     p.add_argument("--model", default="")
     p.add_argument("--effort", default="")
     p.set_defaults(func=cmd_muse_run)
+    n = sub.add_parser("muse-new", help="create a named interactive Muse session (a standalone or a role's seat)")
+    n.add_argument("name", help="3-32 chars: lowercase letters, digits, single hyphens")
+    n.add_argument("--cwd", default=".", help="the workspace the session runs in")
+    n.add_argument("--model", default="")
+    n.add_argument("--effort", default="")
+    n.add_argument("--label", default="")
+    n.add_argument("--pick", action="store_true", help="also save it as a standalone Herdr card (ui pick --save)")
+    n.set_defaults(func=cmd_muse_new)
     q = sub.add_parser("muse-tail", help="read-only view of a Muse session's turns")
     q.add_argument("--session", required=True)
     q.add_argument("--once", action="store_true")

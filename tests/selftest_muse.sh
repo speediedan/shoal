@@ -28,6 +28,18 @@ a = sys.argv[1:]
 open(os.environ["FAKE_MUSE_LOG"], "a").write(json.dumps({
     "argv": a, "key": os.environ.get("META_API_KEY"), "login": os.environ.get("MUSE_LOGIN"),
     "upd": os.environ.get("MUSE_NO_AUTO_UPDATE"), "cwd": os.getcwd()}) + "\n")
+if a[:1] == ["serve"]:
+    # a minimal MSP host: initialize, session/start, session/rename
+    for line in sys.stdin:
+        m = json.loads(line)
+        meth = m.get("method")
+        res = {"serverInfo": {}} if meth == "initialize" else \
+            {"session": {"sessionId": "01a00000-0000-7000-8000-000000000001"}} if meth == "session/start" else {}
+        if meth == "session/rename":
+            open(os.environ["FAKE_MUSE_LOG"], "a").write(json.dumps({"rename": m["params"]["name"]}) + "\n")
+        if "id" in m:
+            print(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": res}), flush=True)
+    sys.exit(0)
 if a[:1] != ["exec"]:
     sys.exit(2)
 prompt = open(a[a.index("--prompt-file") + 1]).read()
@@ -143,6 +155,13 @@ del os.environ["FAKE_MUSE_FAIL"]
 print("failure and quota ok")
 PY
 
+echo "== 3b muse-new: a named, empty, interactive session through the MSP host"
+OUT=$($H muse-new Infra-Aux-1 --cwd "$S/ws" 2>&1) || fail "muse-new :: $OUT"
+grep -q "infra-aux-1  01a00000-0000-7000-8000-000000000001" <<<"$OUT" || fail "muse-new output :: $OUT"
+grep -q '"rename": "infra-aux-1"' "$FAKE_MUSE_LOG" || fail "the session was not renamed (lowercased)"
+$H muse-new "bad name" --cwd "$S/ws" >/dev/null 2>&1 && fail "an invalid Muse name must be refused"
+$H muse-new all --cwd "$S/nowhere" >/dev/null 2>&1 && fail "a missing directory must be refused"
+
 echo "== 4 the viewer: resume when idle, a read-only tail while a turn runs, the tail prints results"
 SID1=$(cat "$S/sid1")
 python3 - "$S" "$SID1" <<'PY' || fail "viewer argv"
@@ -152,7 +171,12 @@ import muse
 from backends import get
 sid = sys.argv[2]
 argv, env = get("muse").view_argv(sid)
-assert argv[-2:] == ["resume", sid], argv
+i = argv.index("resume")
+assert argv[i + 1] == sid, argv
+assert "--disable-sandbox" in argv and "--trust-workspace" in argv, argv
+assert argv[argv.index("--model") + 1] == "muse-wonder-full-1.0", argv
+os.environ["SHOAL_MUSE_MODEL"] = "muse-spark-1.3"
+assert "muse-spark-1.3" in get("muse").view_argv(sid)[0], "SHOAL_MUSE_MODEL picks the interactive model"
 assert env.get("MUSE_NO_AUTO_UPDATE") == "1"
 print("viewer argv ok")
 PY

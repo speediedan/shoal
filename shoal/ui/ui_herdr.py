@@ -837,6 +837,8 @@ def cmd_pick(a) -> int:
     """Pick a live non-shoal session and open it in its own workspace, named after it."""
     if a.harness and a.session_id:
         e = {"harness": a.harness, "session": a.session_id, "label": a.label or a.session_id[:12]}
+        if getattr(a, "cwd", ""):
+            e["cwd"] = os.path.abspath(os.path.expanduser(a.cwd))
     else:
         cands = candidates_standalone(role_sessions())
         if not cands:
