@@ -288,7 +288,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             reasons.append("stopped-active")
     blocking = [r for r in reasons if r != "waiting-on-you" and r != "parked"]
     return {
-        "slug": slug, "tag": role.tag, "harness": role.ecosystem, "model": role.model, "fill": role.fill,
+        "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
+        "model": role.model, "fill": role.fill,
         "server": role.server or "", "aux": bool(role.aux), "relay": is_wake_relay(role),
         "session_id": role.session or None,
         "posture": posture if role.session else "parked", "sub": sub or None,
@@ -662,19 +663,19 @@ def render_text(doc: dict, width: int = 0) -> str:
             if r["offers_open"]:
                 att.append(f"{r['offers_open']} offer{'s' if r['offers_open'] > 1 else ''}")
             nx = ", ".join(n["item"] + ("[B]" if n["blocker"] else "") + ("!" if n["stale"] else "") for n in r["next"])
-            rows.append([r["slug"], posture_label(r), r["session"], r["active"] or "-", nx or "-",
+            rows.append([r["slug"], r["harness"], posture_label(r), r["session"], r["active"] or "-", nx or "-",
                          _age(r["last_write_age_s"]), ", ".join(att) or "-"])
-        heads = ["role", "posture", "session", "active", "next", "last write", "attention"]
+        heads = ["role", "ecosystem", "posture", "session", "active", "next", "last write", "attention"]
         natural = sum(max([len(h)] + [len(str(r[i])) for r in rows]) for i, h in enumerate(heads)) + 3 * len(heads) + 1
         sc = lambda v, row: state_color(v)  # noqa: E731
-        pt = {1: sc, 2: sc} if use_color() else None
+        pt = {2: sc, 3: sc} if use_color() else None
         if natural <= width or width >= 110:
-            out.append(ascii_table(heads, rows, width, flex=(3, 4, 6), paint=pt))
+            out.append(ascii_table(heads, rows, width, flex=(4, 5, 7), paint=pt))
         else:  # a narrow terminal: status and work as two tables rather than one unreadable one
-            out.append(ascii_table(["role", "posture", "last write", "attention"],
-                                   [[r[0], r[1], r[5], r[6]] for r in rows], width, flex=(3, 0),
-                                   paint={1: sc} if pt else None))
-            busy = [[r[0], r[3], r[4]] for r in rows if r[3] != "-" or r[4] != "-"]
+            out.append(ascii_table(["role", "ecosystem", "posture", "last write", "attention"],
+                                   [[r[0], r[1], r[2], r[6], r[7]] for r in rows], width, flex=(4, 0),
+                                   paint={2: sc} if pt else None))
+            busy = [[r[0], r[4], r[5]] for r in rows if r[4] != "-" or r[5] != "-"]
             if busy:
                 out.append(ascii_table(["role", "active", "next"], busy, width, flex=(2, 1, 0)))
         conds = (s.get("conditions") or {}).get("open", [])

@@ -70,6 +70,11 @@ assert r["far"]["session"] == "remote" and r["far"]["watcher"] == "remote", r["f
 assert r["far"]["can_progress"]["ok"], r["far"]
 print("contract ok")
 PY
+# the overview table carries each role's ecosystem (claude, opencode, codex, muse) as its own column
+TXT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 200) || fail "ui status text rc"
+grep -Eq '\| role +\| ecosystem +\| posture' <<<"$TXT" || fail "overview table has no ecosystem column: $TXT"
+grep -Eq '\| cl +\| claude +\|' <<<"$TXT" || fail "cl row does not read ecosystem claude: $TXT"
+grep -Eq '\| oc +\| opencode +\|' <<<"$TXT" || fail "oc row does not read ecosystem opencode: $TXT"
 # the read model and the health quorum share their predicates: parked-work and watcher-dead agree
 $H queue --shoal $SID --spec "$SPEC" --slug oc --wait user-feedback --holder maintainer --next example/repo#8:fix --no-sync >/dev/null 2>&1 || fail "park oc"
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "ui reasons drift from health.evaluate"
