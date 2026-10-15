@@ -57,8 +57,13 @@ def _ledger(a, spec: ShoalSpec | None) -> Ledger:
     return led
 
 
-def _writer(a, spec: ShoalSpec | None, attr: str = "by", default: str = "user") -> str:
+EXT_RE = re.compile(r"^ext:[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+
+
+def _writer(a, spec: ShoalSpec | None, attr: str = "by", default: str = "user", allow_ext: bool = False) -> str:
     by = getattr(a, attr, "") or default
+    if allow_ext and EXT_RE.match(by) and len(by) <= 36:
+        return by  # an outside seat (a standalone session): mail only, see cmd_msg
     if spec is not None and by not in OFFER_WRITERS and spec.role(by) is None:
         raise LedgerError(f"writer {by!r} is not a role in {spec.sid} ({[r.slug for r in spec.roles]})")
     return by
@@ -229,7 +234,14 @@ def cmd_done(a) -> int:
 def cmd_msg(a) -> int:
     spec = _spec(a)
     led = _ledger(a, spec)
-    by = _writer(a, spec)
+    by = _writer(a, spec, allow_ext=True)
+    if by.startswith("ext:"):
+        # a standalone session outside the group (maintainer-sanctioned cross-session mail): plain mail to one
+        # role or the user, never a broadcast, a wake or an ask, and never authorization for anything
+        if a.to == "*" or getattr(a, "wake", False) or a.kind not in ("", "info", "note"):
+            print("ERROR: an outside seat (ext:<name>) may send plain mail to one role or user: no broadcast, "
+                  "--wake or special kind")
+            return 1
     if spec is not None and a.to not in ("*", "user") and spec.role(a.to) is None:
         print(f"ERROR: unknown target {a.to!r} (roles: {[r.slug for r in spec.roles]}, or * / user)")
         return 1

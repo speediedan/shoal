@@ -36,7 +36,8 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   `--no-session-log` sessions are not peers. The receiver is asked to approve the sender (allow once or for the
   session; requests expire after 30 minutes with a 30 minute retry cooldown); a message is data, never
   authorization, and is at most 8,192 bytes. It is a fallback for conversations between interactive seats; role
-  coordination and anything that must be durable or reach a Claude or exec seat goes through the shoal ledger.
+  coordination and anything that must be durable or reach a Claude or exec seat goes through the shoal ledger: an interactive seat reaches a role with
+  `shoal msg --shoal <id> --by ext:<seat> --to <role> --text ...` (plain mail, no wake, no authority).
 - Interactive seats are not shoal roles: they are not woken by `exec:` and have no ledger watcher. Making an
   interactive pane a ledger-woken role (a wake typed into the pane) is deliberately not built yet.
 

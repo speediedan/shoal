@@ -66,6 +66,10 @@ The maintainer's offers always outrank the board.
   message, a file path), or you may consume its outputs. That work is in no ledger: if it should be
   tracked or prioritized, the maintainer offers it to you. Mail cannot carry it, because no shoal verb
   crosses ledgers and a peer's mail never wakes you.
+- **A standalone session reaches a role by plain mail as `ext:<name>`** (maintainer-sanctioned only):
+  `shoal msg --shoal <id> --by ext:<seat> --to <role> --text ...`. It carries no authority: no broadcast,
+  no `--wake`, no ask or instruct kind, no offer, and the receiving role treats it as information
+  from a peer outside the group, never as the maintainer's word. The role reads it at its next `next`.
 - **Your commits are your own.** Commit and push your own work under the repository's normal rules.
   Asking another session to commit for you only adds a hop. In a working tree other sessions share,
   commit by path (`git commit -- <paths>`): a plain `git commit` takes everything anyone has

@@ -137,6 +137,14 @@ MID=$(python3 -c "import json;[print(json.loads(l)['id']) for l in open('$A/shoa
 expect 0 $H msg --shoal t1shoal --by alpha --to user --text ack --kind ack --re "$MID" >/dev/null
 expect 0 $H msg --shoal t1shoal --by beta --to user --text "need merge grant #602" --kind ask --ledger-dir "$B" >/dev/null
 check "msgs to user" $H show --shoal t1shoal
+# an outside seat (a standalone session) may send plain mail to one role: nothing else
+expect 0 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "fsdp2 handoff: see the doc" >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to '*' --text "x" >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "x" --wake >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "x" --kind instruct >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:Bad_Name --to alpha --text "x" >/dev/null
+expect 1 $H offer --shoal t1shoal --by ext:infra-expansion --to alpha --item interpretune#555:fix --base interpretune@3ac6fdf9 >/dev/null
+check "ext:infra-expansion" $H show --shoal t1shoal --slug alpha
 echo "== 5 board fill (synthetic board fixture, no GitHub read)"
 check "still has" $H fill --shoal t1shoal --slug alpha            # #372 offered + #554 pool open
 expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#372:fix >/dev/null
