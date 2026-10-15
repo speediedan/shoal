@@ -387,7 +387,7 @@ def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
     out = {"source": "health-dry-run", "ts": iso(), "age_s": 0,
            "open": [{"slug": c["slug"], "condition": c["condition"], "since": c.get("since"),
                      "detail": _short(c.get("detail"), 200)} for c in inst]}
-    if any(is_wake_relay(r) for r in spec.roles) and not _h.relay_alive(spec.sid):
+    if any(is_wake_relay(r) and r.session for r in spec.roles) and not _h.relay_alive(spec.sid):
         out["open"].append({"slug": "wake-relay", "condition": "relay-dead", "since": None,
                             "detail": "relay-watch not running"})
     try:
@@ -418,7 +418,7 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
              and (age_s(m.get("ts", ""), now) if age_s(m.get("ts", ""), now) is not None else 10**9)
              < PAGE_WINDOW_H * 3600]
     off, frz = view.user_offline(), view.freeze()
-    has_relay = any(is_wake_relay(r) for r in spec.roles)
+    has_relay = any(is_wake_relay(r) and r.session for r in spec.roles)  # a parked relay is no relay
     doc = {
         "id": spec.sid, "spec": spec_path, "incarnation": spec.incarnation,
         "gen": f"r{spec.incarnation + 1}", "retired": bool(spec.retired_utc), "dir": spec.dir,
