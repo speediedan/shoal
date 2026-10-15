@@ -242,7 +242,12 @@ def cmd_msg(a) -> int:
             print("ERROR: an outside seat (ext:<name>) may send plain mail to one role or user: no broadcast, "
                   "--wake or special kind")
             return 1
-    if spec is not None and a.to not in ("*", "user") and spec.role(a.to) is None:
+    to_ext = bool(EXT_RE.match(a.to or "")) and len(a.to) <= 36
+    if to_ext and (getattr(a, "wake", False) or a.kind not in ("", "info", "note", "ack")):
+        # an outside seat is reached by plain mail it reads with `show --slug ext:<name>`: a reply, never a wake
+        print("ERROR: mail to an outside seat (ext:<name>) is plain: no --wake or special kind")
+        return 1
+    if spec is not None and a.to not in ("*", "user") and not to_ext and spec.role(a.to) is None:
         print(f"ERROR: unknown target {a.to!r} (roles: {[r.slug for r in spec.roles]}, or * / user)")
         return 1
     if a.dry_run:
@@ -251,7 +256,7 @@ def cmd_msg(a) -> int:
     ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re, ack=(True if a.ack else None),
                     wake=(True if getattr(a, "wake", False) else None))
     print(f"msg {by}->{a.to} [{a.kind}] [{ev['id']}]")
-    target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") else None
+    target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") and not to_ext else None
     if a.to == "*" and getattr(a, "wake", False) and by == "user" and spec is not None:
         # broadcast: every role's watcher delivers a user --wake msg; a role whose watcher is dead gets it
         # through the quorum's adapter instead (the relay, or a respawn first under health.revive)

@@ -145,6 +145,11 @@ expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "x" -
 expect 1 $H msg --shoal t1shoal --by ext:Bad_Name --to alpha --text "x" >/dev/null
 expect 1 $H offer --shoal t1shoal --by ext:infra-expansion --to alpha --item interpretune#555:fix --base interpretune@3ac6fdf9 >/dev/null
 check "ext:infra-expansion" $H show --shoal t1shoal --slug alpha
+# the reply path: a role mails the outside seat, which reads it with show --slug ext:<name>
+expect 0 $H msg --shoal t1shoal --by alpha --to ext:infra-expansion --text "reply: defaults are fine" >/dev/null
+check "reply: defaults are fine" $H show --shoal t1shoal --slug ext:infra-expansion
+expect 1 $H msg --shoal t1shoal --by alpha --to ext:infra-expansion --text "x" --kind instruct >/dev/null
+expect 1 $H msg --shoal t1shoal --by user --to ext:infra-expansion --text "x" --wake >/dev/null
 echo "== 5 board fill (synthetic board fixture, no GitHub read)"
 check "still has" $H fill --shoal t1shoal --slug alpha            # #372 offered + #554 pool open
 expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#372:fix >/dev/null
