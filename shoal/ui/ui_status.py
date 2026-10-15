@@ -653,8 +653,8 @@ def render_text(doc: dict, width: int = 0) -> str:
                    f"pages (24h): {s['pages_24h']}")
         rows = []
         for r in s["roles"]:
-            if r["relay"] or not r["session_id"]:
-                continue
+            if r["relay"]:
+                continue  # parked roles (no session) still show: a held lane must read as held, not vanish
             att = [ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x not in ("parked", "waiting-on-you")
                    or (x == "waiting-on-you" and not {"blocked-on-question", "blocked-says-waiting"}
                        & set(r["can_progress"]["reasons"]))]
