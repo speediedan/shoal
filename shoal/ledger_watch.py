@@ -316,7 +316,7 @@ def cmd_ledger_watch(a) -> int:
     # a Claude session knows its own id; a lane once passed its Remote Control bridge id instead
     # (measured 2026-10-12), which restart could not match to the launched session
     own = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if own and session != own and not own.startswith(session or "\0"):
+    if own and not a.wake.startswith("exec:") and session != own and not own.startswith(session or "\0"):
         print(f"note: --session {session or '(none)'} is not this Claude session; binding {own}")
         session = own
     persistent = (a.wake.startswith(("send:", "exec:")) or a.wake == "relay") and not a.test

@@ -155,6 +155,16 @@ del os.environ["FAKE_MUSE_FAIL"]
 print("failure and quota ok")
 PY
 
+echo "== 3a a Muse process never inherits the starting Claude session's identity"
+CLAUDE_CODE_SESSION_ID=abc12345 CLAUDECODE=1 python3 - <<'PY' || fail "turn_env leaks the Claude session id"
+import os, sys
+sys.path.insert(0, os.environ["SHOALD"])
+import muse
+e = muse.turn_env()
+assert "CLAUDE_CODE_SESSION_ID" not in e and "CLAUDECODE" not in e, "leaked"
+print("turn_env clean")
+PY
+
 echo "== 3b muse-new: a named, empty, interactive session through the MSP host"
 OUT=$($H muse-new Infra-Aux-1 --cwd "$S/ws" 2>&1) || fail "muse-new :: $OUT"
 grep -q "infra-aux-1  01a00000-0000-7000-8000-000000000001" <<<"$OUT" || fail "muse-new output :: $OUT"

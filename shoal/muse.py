@@ -79,6 +79,10 @@ def turn_env() -> dict:
     env["MUSE_LOGIN"] = "0"            # never open a browser login from an unattended turn: fail fast
     if not config.env("MUSE_ALLOW_API_KEY"):
         env.pop("META_API_KEY", None)  # it outranks the subscription login and bills per token
+    # a Muse process is not the Claude session that happened to start it: an inherited id would make the
+    # role's watcher bind itself to the operator's session (measured 2026-10-15, fts-core)
+    for k in [k for k in env if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE"]:
+        env.pop(k)
     return env
 
 
