@@ -185,6 +185,13 @@ def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = 
         if e is None:
             return "unknown"
         return claude_turn(e)
+    if role.ecosystem == "muse":
+        try:
+            from backends import get as get_backend
+            s = get_backend("muse").status(role.session, repo_dir or os.getcwd())
+        except Exception:  # noqa: BLE001
+            return "unknown"
+        return "idle" if "status:idle" in s else "working" if "status:busy" in s else "unknown"
     if role.ecosystem == "opencode" and opencode_probe:
         try:
             from backends import get as get_backend

@@ -65,6 +65,7 @@ from briefs import brief_for  # noqa: E402
 from heartbeat import age_min, cmd_heartbeat, hb_path, touch as hb_touch  # noqa: E402
 import ledger_cli as _ledger_cli  # noqa: E402
 import ledger_watch as _ledger_watch  # noqa: E402
+import muse as _muse  # noqa: E402
 import digest as _digest  # noqa: E402
 import jobs as _jobs  # noqa: E402
 import worker as _worker  # noqa: E402
@@ -314,7 +315,7 @@ def stale_watchers(sid: str, slug: str, old: list[str], current: str = "") -> li
         if opt.get("--shoal") != sid or opt.get("--slug") != slug:
             continue
         wake = opt.get("--wake", "")
-        bound = wake[len("send:"):] if wake.startswith("send:") else opt.get("--session", "")
+        bound = (wake.split(":", 1)[1] if wake.startswith(("send:", "exec:")) else opt.get("--session", ""))
         if bound and any(bound.startswith(o) or o.startswith(bound) for o in old):
             out.append((int(d), bound, wake))
     return out
@@ -328,7 +329,7 @@ def reap_stale_watchers(spec: ShoalSpec, role: Role, old: list[str]) -> None:
     an old session is only reported, because killing a background command wakes its session."""
     import signal
     for pid, bound, wake in stale_watchers(spec.sid, role.slug, old, role.session):
-        if wake.startswith("send:"):
+        if wake.startswith(("send:", "exec:")):
             try:
                 os.kill(pid, signal.SIGTERM)
                 print(f"  {role.slug}: stopped stale ledger-watch pid {pid} (still sending to replaced session {bound})")
@@ -449,6 +450,31 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                 print(f"lane {tag}: {role.session}")
                 be.send(role.session, spec.dir, brief_for(role, spec),
                         model=role.model)
+        elif role.ecosystem == "muse":
+            # one `muse exec` turn per wake; shoal starts the role's persistent watcher itself, so the
+            # role never needs permission to run a detached process
+            text = brief_for(role, spec)
+            print(f"muse {tag}: brief -> {brief_path}")
+            if role.slug in launched:
+                role.session = launched[role.slug]
+                print(f"  recorded live as {role.session} (--keep/--consumer-launched)")
+            elif defer_consumers:
+                print("  DEFERRED (--defer-consumers): launch by hand when ready.")
+            elif dry_run:
+                print(f"  [dry-run] would start the first muse exec turn (session id minted here) and arm "
+                      f"`ledger-watch --wake exec:<session>`")
+                role.session = f"mu_DRYRUN_{role.slug}"
+            else:
+                try:
+                    role.session = be.create(f"{role.title}-r{role.seq}", spec.dir, brief=text, name=role.tag,
+                                             model=role.model, effort=role.effort)
+                except (UnsupportedError, RuntimeError) as exc:
+                    print(f"  FAIL: muse launch failed: {exc}")
+                    launch_fail = 4
+                    break
+                created.append(role.slug)
+                print(f"  launched: {role.session} (backend: muse); watcher {_muse.arm_watcher(spec, role)}")
+                consumers_launched.append(role)
         else:
             text = brief_for(role, spec)
             print(f"consumer {tag}: brief -> {brief_path}")
@@ -976,6 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
     _report.add_parser(sub)
     _ledger_cli.add_parsers(sub)
     _ledger_watch.add_parser(sub)
+    _muse.add_parsers(sub)
     _digest.add_parsers(sub)
     _jobs.add_parsers(sub)
     _worker.add_parsers(sub)

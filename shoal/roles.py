@@ -38,7 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
-ECOSYSTEMS = ("opencode", "claude", "codex")
+ECOSYSTEMS = ("opencode", "claude", "muse", "codex")
 FILL_MODES = ("self", "assigned", "none")
 
 # The helper session behind the Claude implementation of direct session wake (backends.py

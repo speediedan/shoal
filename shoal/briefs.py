@@ -113,6 +113,26 @@ def relay_brief(role: Role, spec: ShoalSpec) -> str:
         f"small: no other reading. Confirm arming: {pid_proof(os.path.join(state_dir(sid), 'relay-watch.pid'))}.")
 
 
+def watch_clause(role: Role, spec: ShoalSpec, arm: str, how_arm: str) -> str:
+    """The WATCH instruction of the work-loop brief. A Muse role is different in three ways: shoal runs
+    its watcher, its turns are headless `muse exec` processes (nobody answers a prompted question), and the
+    session continues across turns as a durable file (design: muse-code-support plan)."""
+    if role.ecosystem == "muse":
+        return (
+            "HEADLESS TURNS (Muse): each of your turns is a `muse exec` process that shoal starts, one per wake, "
+            "and your session continues across them. There is no terminal and nobody to answer a prompted "
+            "question (request_user_input is withheld): never ask one; record each ask with `queue --ask` and the "
+            "maintainer raises it. You never arm, re-arm or kill a ledger-watch: shoal runs your watcher "
+            f"(`{SHOAL_CLI} ledger-watch ... --wake exec:<your-session-id>`), which starts your next turn when there "
+            "is work and never while a turn runs; it needs no `--test` and no pid proof. A background process you "
+            "start inside a turn does not outlive it unless it is a `job run` unit or a lease waiter: wait on those "
+            "(`queue --wait .. --target job:..|lease:..`) and end the turn, and the watcher wakes you when the "
+            "target resolves. ")
+    return (f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}; run it once with `--test` first and "
+            f"confirm the test wake arrived. Re-arm after every wake and "
+            f"{pid_proof(watch_sidecar(spec.sid, role.slug), sidecar=True)}. ")
+
+
 def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
     """(--wake value, how to arm it) for a role's ledger-watch. opencode: a detached watcher that sends
     each wake. Claude in a shoal with a wake relay: a detached watcher whose wakes the relay delivers as
@@ -122,6 +142,8 @@ def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
     detached = ("setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
                 + ".log 2>&1 < /dev/null &`, run once with the Bash tool, NOT as a background command and never "
                 "the Monitor tool)")
+    if role.ecosystem == "muse":
+        return "exec:<your-session-id>", "run by shoal itself (not by you): a detached watcher that starts a `muse exec` turn per wake"
     if role.ecosystem == "opencode":
         return "send:<your-session-id>", (detached + "; it sends each wake to your session id between your turns "
                                           "and keeps running, so it needs no re-arm after a wake (re-arming while it "
@@ -181,8 +203,7 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
         f"never hoarded. WAKES ARE WORK-ONLY: new work while you are idle, a change to your active item, a wait "
         f"you armed, or a health wake. Mail from other roles never wakes you; read it in `next` and act at the "
         f"boundary. To get another role to DO something, offer it as work; do not message for it. "
-        f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}; run it once with `--test` first and "
-        f"confirm the test wake arrived. Re-arm after every wake and {pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}. "
+        f"{watch_clause(role, spec, arm, how_arm)}"
         f"USER-OFFLINE: when `next` prints "
         f"USER OFFLINE, never wait on the maintainer: record each blocking ask with `queue --ask`, stack PRs "
         f"(gh-stack) or take the next unblocked item; you are woken when they return. When they RETURN (or "

@@ -190,6 +190,15 @@ def _wake_requests(sid: str, slug: str) -> list[tuple[str, str]]:
     return out
 
 
+def muse_session_busy(session: str) -> bool:
+    """True while a `muse exec` turn holds the session's run lock."""
+    try:
+        import muse
+        return muse.busy(session)
+    except Exception:  # noqa: BLE001 - an unreadable lock never holds a wake back
+        return False
+
+
 def session_busy(session: str, repo_dir: str) -> bool:
     """True when the opencode session is mid-turn (its status is known and not idle). Unknown reads
     as not busy, so a status probe that fails cannot hold a wake back forever."""
@@ -255,6 +264,16 @@ def relay_deliver(sid: str, role, session: str, text: str) -> bool:
 
 
 def fire(wake: str, text: str, repo_dir: str) -> bool:
+    if wake.startswith("exec:"):
+        sid = wake[len("exec:"):]
+        try:
+            from backends import get as get_backend
+            get_backend("muse").send(sid, repo_dir, text)
+        except Exception as exc:  # noqa: BLE001 - a busy session or an unrunnable muse: retried next tick
+            print(f"ERROR: wake turn on {sid} not started: {str(exc)[-200:]}")
+            return False
+        print(f"started a turn on {sid}")
+        return True
     if wake.startswith("send:"):
         sid = wake[len("send:"):]
         r = subprocess.run(["openchamber", "session", "send", "--session", sid, "--dir", repo_dir,
@@ -300,7 +319,7 @@ def cmd_ledger_watch(a) -> int:
     if own and session != own and not own.startswith(session or "\0"):
         print(f"note: --session {session or '(none)'} is not this Claude session; binding {own}")
         session = own
-    persistent = (a.wake.startswith("send:") or a.wake == "relay") and not a.test
+    persistent = (a.wake.startswith(("send:", "exec:")) or a.wake == "relay") and not a.test
     if persistent:
         # a send: or relay watcher keeps running after each wake (below), so arming twice would wake
         # twice: a second arm for the same role, wake and session finds the first alive and leaves it be
@@ -310,7 +329,7 @@ def cmd_ledger_watch(a) -> int:
                 argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
             opt = {argv[i]: argv[i + 1] for i in range(len(argv) - 1) if argv[i].startswith("--")}
             same = (opt.get("--slug") == slug and opt.get("--wake") == a.wake
-                    and (a.wake.startswith("send:") or (opt.get("--session") or "")[:8] == (session or "")[:8]))
+                    and (a.wake.startswith(("send:", "exec:")) or (opt.get("--session") or "")[:8] == (session or "")[:8]))
             if old_pid and int(old_pid) != os.getpid() and "ledger-watch" in argv and same:
                 print(f"ALREADY ARMED: ledger-watch pid {old_pid} for {slug} ({a.wake}) is running and keeps "
                       f"running across wakes; nothing to do")
@@ -377,7 +396,9 @@ def cmd_ledger_watch(a) -> int:
         if not new:
             save_sidecar(sc_path, sc)
             continue
-        if persistent and (claude_session_busy(session) if a.wake == "relay" else session_busy(session, repo_dir)):
+        if persistent and (claude_session_busy(session) if a.wake == "relay"
+                           else muse_session_busy(a.wake[len("exec:"):]) if a.wake.startswith("exec:")
+                           else session_busy(session, repo_dir)):
             # never wake a lane mid-turn (or, for Claude, at an open question): the events stay
             # undelivered and go out at the next idle tick
             save_sidecar(sc_path, sc)
@@ -420,7 +441,7 @@ def add_parser(sub) -> None:
     p = sub.add_parser("ledger-watch", help="the unified session watcher (wakes on offers/msgs/claims/board)")
     config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
-    p.add_argument("--wake", default="exit", help="exit | relay (Claude, detached: the wake relay delivers) | send:<session-id> (opencode, detached) | print")
+    p.add_argument("--wake", default="exit", help="exit | relay (Claude, detached: the wake relay delivers) | send:<session-id> (opencode, detached) | exec:<session-id> (Muse: starts one `muse exec` turn per wake, detached) | print")
     p.add_argument("--interval", type=float, default=120, help="seconds between ledger pulls (default 120)")
     p.add_argument("--board-interval", type=float, default=600, help="seconds between board reads when self-filling")
     p.add_argument("--no-board", action="store_true", help="never read the priority table")

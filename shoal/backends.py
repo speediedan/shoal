@@ -11,6 +11,8 @@
   exact launch command and records the consumer as PENDING until the operator
   confirms with --consumer-launched. "Needs no prompt" after a shoal restart
   is therefore a spec violation by construction, not a judgment call.
+- MuseBackend (Muse Code sessions): one `muse exec --session-id` process per wake, durable sessions,
+  no daemon (shoal/muse.py has the design). Shoal itself runs the role's persistent watcher.
 - CodexBackend: stub. Accepts the role shape, raises NotSupported on every
   operation, so adding the real transport later touches this file only.
 """
@@ -529,6 +531,68 @@ class CodexBackend(Backend):
         raise self._no("status")
 
 
+class MuseBackend(Backend):
+    """Muse Code: a session is a durable id and each turn is one `muse exec --session-id <id>` process
+    (shoal/muse.py). There is no harness-wide listing, no attach and no respawn: a turn that died is
+    simply followed by the next wake, so revive is the ordinary wake path."""
+    ecosystem = "muse"
+
+    def create(self, title: str, repo_dir: str, dry_run: bool = False,
+               brief: str = "", name: str = "", model: str = "",
+               effort: str = "") -> str:
+        import muse
+        if dry_run:
+            return "mu_DRYRUN_" + re.sub(r"\W+", "_", title)
+        if not brief:
+            raise UnsupportedError("muse create needs the role brief text")
+        session = muse.uuid7()
+        muse.start_run(session, repo_dir, brief, model=model, effort=effort)
+        return session
+
+    def send(self, session_id: str, repo_dir: str, prompt: str,
+             dry_run: bool = False, model: str = "", effort: str = "") -> None:
+        import muse
+        muse.start_run(session_id, repo_dir, prompt, model=model, effort=effort, dry_run=dry_run)
+
+    def messages(self, session_id: str, repo_dir: str, limit: int = 20, role: str = "") -> str:
+        import muse
+        return muse.messages(session_id, limit)
+
+    def status(self, session_id: str, repo_dir: str) -> str:
+        import muse
+        return muse.status_line(session_id)
+
+    def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
+        """A wake goes to the role's own watcher (a wake-request file it delivers at its next idle tick)
+        while that watcher runs; a dead watcher is started again and the wake is sent directly."""
+        import json as _json
+        import muse
+        from health import iso, state_dir, wake_path, watcher_alive
+        alive, _ = watcher_alive(spec.sid, role.slug)
+        if alive:
+            if not dry_run:
+                os.makedirs(state_dir(spec.sid), exist_ok=True)
+                with open(wake_path(spec.sid, role.slug), "a") as fh:
+                    fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
+            return "wake-file" + (" (dry-run)" if dry_run else "")
+        rearmed = muse.arm_watcher(spec, role, dry_run) if role.session else "no session"
+        try:
+            self.send(role.session, spec.dir, text, dry_run=dry_run, model=role.model, effort=role.effort)
+        except muse.BusyError:
+            return f"muse-busy (the running turn reads the queue at its end; watcher {rearmed})"
+        except Exception as exc:  # noqa: BLE001
+            return f"muse-send FAILED ({str(exc)[:80]}); watcher {rearmed}"
+        return f"muse-send; watcher {rearmed}" + (" (dry-run)" if dry_run else "")
+
+    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+        import muse
+        return muse.view_argv(session_id), {"MUSE_NO_AUTO_UPDATE": "1"}
+
+    def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
+        import muse
+        return muse.quota_hint(session_id)
+
+
 def get(ecosystem: str) -> Backend:
-    return {"opencode": OpenChamberBackend(), "claude": ClaudeBackend(),
+    return {"opencode": OpenChamberBackend(), "claude": ClaudeBackend(), "muse": MuseBackend(),
             "codex": CodexBackend()}[ecosystem]

@@ -1086,5 +1086,61 @@ OUT=$(env CLAUDE_CODE_SESSION_ID=relay-2 $RW 2>&1)
 grep -q "RELAY-MAX-HOURS" <<<"$OUT" && [ "$(cat $Q.cursor)" = 3 ] || fail "the re-arming relay did not commit the cursor :: $OUT :: $(cat $Q.cursor 2>&1)"
 rm -f $Q $Q.cursor $Q.printed
 
+echo "== 33 muse (exec per wake): the brief and arming, the between-turns read, the restart plan, a watcher that starts a turn"
+cat > "$S/muse-stub" <<'PY2'
+#!/usr/bin/env python3
+import json, os, sys, time
+a = sys.argv[1:]
+prompt = open(a[a.index("--prompt-file") + 1]).read()
+sid = a[a.index("--session-id") + 1]
+time.sleep(float(os.environ.get("FAKE_MUSE_SLEEP", "0")))
+print(json.dumps({"schema_version": 1, "stream": {"kind": "session", "id": sid},
+                  "payload": {"kind": "run_terminal", "terminal": "completed", "text": prompt}}), flush=True)
+PY2
+chmod +x "$S/muse-stub"
+export SHOAL_MUSE_BIN="$S/muse-stub" SHOAL_MUSE_STATE="$S/muse-state"
+MU=$(python3 -c "
+import sys; sys.path.insert(0, '$SHOALD'); import muse; print(muse.uuid7())")
+python3 - "$SHOALD" "$SPEC" "$MU" <<'PY2' || fail "muse brief, arming and between-turns"
+import fcntl, os, sys
+sys.path.insert(0, sys.argv[1])
+import briefs, health, muse
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); r = spec.role("up"); r.ecosystem = "muse"; r.session = sys.argv[3]
+w, how = briefs.arming(r, spec)
+assert w.startswith("exec:") and "run by shoal itself" in how, (w, how)
+b = briefs.brief_for(r, spec)
+assert "HEADLESS TURNS (Muse)" in b and "never ask one" in b and "queue --ask" in b, "muse brief lacks the headless clause"
+assert "run it once with `--test` first" not in b, "a muse role must not be told to arm a watcher"
+# between turns: free lock is between turns, a held one is mid-turn
+assert health.session_between_turns(r, {}, "/x") is True
+d = muse.sdir(r.session, create=True)
+fh = open(os.path.join(d, "lock"), "a+"); fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+assert health.session_between_turns(r, {}, "/x") is False
+fh.close()
+print("muse brief and state ok")
+PY2
+python3 - "$SPEC" <<'PY2'
+import json, sys; p = sys.argv[1]; d = json.load(open(p))
+[r.update(ecosystem="muse") for r in d["roles"] if r["slug"] == "up"]; json.dump(d, open(p, "w"), indent=1)
+PY2
+check "would start the first muse exec turn" $H restart --spec "$SPEC" --only up --dry-run
+# a persistent exec: watcher starts a turn on a new offer, keeps running, and is a no-op to arm twice
+$H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9331:fix --no-sync >/dev/null
+$H ledger-watch --shoal $SID --spec "$SPEC" --slug up --wake exec:$MU --session $MU --interval 1 --no-sync \
+  --sidecar "$S/sc-mu.state" > "$S/mu-watch.log" 2>&1 &
+P_MU=$!
+for _ in $(seq 1 60); do [ -s "$S/muse-state/$MU/last.json" ] && grep -q '"ended"' "$S/muse-state/$MU/last.json" && break; sleep 0.5; done
+grep -q "LEDGER-WAKE up@$SID" "$S/muse-state/$MU/last.json" || fail "the watcher did not start a turn with the wake text :: $(cat "$S/mu-watch.log" | tail -5) :: $(cat "$S/muse-state/$MU/last.json" 2>&1 | head -c 400)"
+kill -0 $P_MU 2>/dev/null || fail "an exec: watcher must keep running across wakes (persistent) :: $(tail -5 "$S/mu-watch.log")"
+check "ALREADY ARMED: ledger-watch pid $P_MU" $H ledger-watch --shoal $SID --spec "$SPEC" --slug up --wake exec:$MU --session $MU \
+  --interval 1 --sidecar "$S/sc-mu.state" --no-sync
+kill $P_MU 2>/dev/null; wait $P_MU 2>/dev/null || true
+python3 - "$SPEC" <<'PY2'
+import json, sys; p = sys.argv[1]; d = json.load(open(p))
+[r.update(ecosystem="claude") for r in d["roles"] if r["slug"] == "up"]; json.dump(d, open(p, "w"), indent=1)
+PY2
+unset SHOAL_MUSE_BIN SHOAL_MUSE_STATE
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
