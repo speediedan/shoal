@@ -165,6 +165,35 @@ assert "CLAUDE_CODE_SESSION_ID" not in e and "CLAUDECODE" not in e, "leaked"
 print("turn_env clean")
 PY
 
+echo "== 3c an attached interactive client holds the session: busy, no turn starts, the runner exits 75"
+cat > "$S/muse-bin-test" <<'PY'
+#!/usr/bin/env python3
+import time
+time.sleep(60)
+PY
+chmod +x "$S/muse-bin-test"
+SIDA=01a00000-0000-7000-8000-00000000aaaa
+"$S/muse-bin-test" resume "$SIDA" --model x & CLI_PID=$!
+sleep 0.5
+python3 - "$S" "$SIDA" <<'PY' || { kill $CLI_PID 2>/dev/null; fail "attached client"; }
+import os, sys
+sys.path.insert(0, os.environ["SHOALD"])
+import muse
+sid = sys.argv[2]
+assert muse.attached_client(sid), "client not seen"
+assert muse.busy(sid), "an attached client is busy"
+assert "attached" in muse.status_line(sid), muse.status_line(sid)
+try:
+    muse.start_run(sid, sys.argv[1] + "/ws", "x")
+    raise SystemExit("a turn started under an attached client")
+except muse.BusyError:
+    pass
+assert not muse.attached_client("01a00000-0000-7000-8000-00000000bbbb")
+print("attached client ok")
+PY
+$H muse-run --session "$SIDA" --dir "$S/ws" --prompt-file "$S/muse-calls.jsonl" >/dev/null 2>&1; [ $? = 75 ] || { kill $CLI_PID; fail "runner must exit 75 under an attached client"; }
+kill $CLI_PID 2>/dev/null; wait $CLI_PID 2>/dev/null
+
 echo "== 3b muse-new: a named, empty, interactive session through the MSP host"
 OUT=$($H muse-new Infra-Aux-1 --cwd "$S/ws" 2>&1) || fail "muse-new :: $OUT"
 grep -q "infra-aux-1  01a00000-0000-7000-8000-000000000001" <<<"$OUT" || fail "muse-new output :: $OUT"

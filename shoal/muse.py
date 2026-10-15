@@ -86,9 +86,34 @@ def turn_env() -> dict:
     return env
 
 
+def attached_client(session: str) -> int:
+    """Pid of an interactive Muse client (`muse resume <session>`) holding the session, else 0. Muse
+    refuses a second owner ("session ... is already in use"), so an exec turn started under an attached
+    client fails and its wake is lost (measured 2026-10-15, fts-core): the watcher must hold the wake."""
+    me = os.getpid()
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit() and int(p) != me]
+    except OSError:
+        return 0
+    for p in pids:
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as fh:
+                argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+        except OSError:
+            continue
+        # the native binary is argv[0]; a wrapper or interpreter (a script named muse...) puts it second
+        for i in (0, 1):
+            if (len(argv) > i + 2 and os.path.basename(argv[i]).startswith("muse") and argv[i + 1] == "resume"
+                    and session in argv[i + 2:]):
+                return int(p)
+    return 0
+
+
 def busy(session: str) -> bool:
-    """True while a turn holds the session's lock. A session never run here, or one whose directory is
-    gone, is not busy."""
+    """True while a turn holds the session's lock or an interactive client is attached. A session never
+    run here, or one whose directory is gone, is not busy."""
+    if attached_client(session):
+        return True
     lock = os.path.join(sdir(session), "lock")
     if not os.path.exists(lock):
         return False
@@ -124,7 +149,7 @@ def status_line(session: str) -> str:
     if fake is not None and "muse" in fake:  # a fake world that names no muse sessions leaves muse real
         return str((fake.get("muse") or {}).get(session, ""))
     if busy(session):
-        return f"{session[:8]} status:busy"
+        return f"{session[:8]} status:busy" + (" attached" if attached_client(session) else "")
     last = last_run(session)
     if not last:
         return f"{session[:8]} status:idle never-run-here"
@@ -162,6 +187,8 @@ def start_run(session: str, repo_dir: str, prompt: str, model: str = "", effort:
     inherited by the runner, so the session reads busy from the moment this returns."""
     if dry_run:
         return
+    if attached_client(session):
+        raise BusyError(f"muse session {session[:8]} has an interactive client attached")
     d = sdir(session, create=True)
     lock_fh = open(os.path.join(d, "lock"), "a+")
     try:
@@ -193,6 +220,9 @@ def cmd_muse_run(a) -> int:
     """The runner: one `muse exec` turn, its records appended to run.jsonl, its result to last.json."""
     d = sdir(a.session, create=True)
     held = None
+    if attached_client(a.session):
+        print(f"busy: an interactive client is attached to session {a.session[:8]}")
+        return 75
     if a.lock_fd is None:  # run by hand: take the lock itself
         held = open(os.path.join(d, "lock"), "a+")
         try:
