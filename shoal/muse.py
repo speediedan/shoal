@@ -294,7 +294,11 @@ def view_argv(session: str) -> list[str]:
     turn runs; mid-turn the read-only tail is shown instead."""
     if busy(session):
         return [sys.executable, CLI, "muse-tail", "--session", session]
-    return [muse_bin(), "resume", session]
+    if UUID_RE.match(session) or os.path.isdir(sdir(session)):
+        return [muse_bin(), "resume", session]
+    # a standalone session by NAME (Muse names are unique per user): resume it, or start a fresh one the
+    # first time (`muse resume` of an unknown name fails); the user then names it with /name
+    return ["sh", "-c", '"$0" resume "$1" || exec "$0"', muse_bin(), session]
 
 
 def arm_watcher(spec, role, dry_run: bool = False) -> str:

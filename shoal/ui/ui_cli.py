@@ -93,7 +93,7 @@ def add_parsers(sub) -> None:
 
     q = u.add_parser("pick", help="open a standalone (non-shoal) Claude or opencode session")
     session_arg(q)
-    q.add_argument("--harness", default="", choices=("", "claude", "opencode"))
+    q.add_argument("--harness", default="", choices=("", "claude", "opencode", "muse"))
     q.add_argument("--id", dest="session_id", default="")
     q.add_argument("--label", default="")
     q.add_argument("--save", action="store_true", help="restore it on every `ui open`")
