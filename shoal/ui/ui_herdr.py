@@ -725,6 +725,28 @@ def shoal_tokens(s: dict) -> dict[str, str]:
     }
 
 
+def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
+    """(turn word, herdr state) for one standalone session, from its harness's own probe: Claude
+    from the agents listing, muse and opencode from their backend status lines
+    (`status:busy` is a running turn or, for muse, an attached interactive client)."""
+    import ui_status
+    harness = e.get("harness") or ""
+    if harness == "claude":
+        row = ui_status.claude_session(rows, e["session"]) or {}
+        st = ui_status.claude_turn(row) if row else "unknown"
+        return st, {"working": "working", "blocked": "blocked"}.get(st, "idle")
+    if harness in ("muse", "opencode"):
+        try:
+            from backends import get as get_backend
+            s = get_backend(harness).status(e["session"], e.get("cwd") or os.path.expanduser("~"))
+        except Exception:  # noqa: BLE001 - a failed probe reports idle, never stops the tick
+            return "unknown", "idle"
+        if "status:busy" in s or "status:running" in s or "status:working" in s:
+            return "working", "working"
+        return ("idle", "idle") if "status:idle" in s else ("unknown", "idle")
+    return "unknown", "idle"
+
+
 def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True) -> int:
     import ui_status
     ui_status.BACKGROUND_CONDITIONS = True  # a tick never waits on the provider probes behind conditions
@@ -753,17 +775,18 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
             h.call("pane.report_metadata", {"pane_id": p["pane_id"], "source": SOURCE,
                                             "tokens": role_tokens_for(s, r), "ttl_ms": ttl, "seq": seq})
             pushed += 1
-    # standalone Claude sessions: their turn state (the harness's own, no scraping)
+    # standalone sessions: their turn state (each harness's own probe, no scraping). Every harness
+    # must be reported here: an unreported pane falls back to herdr's process detection, which names
+    # it after the harness binary (three muse seats all reading "muse" in the agents pane, 2026-10-16)
     rows = ui_status.claude_rows()
     for e in load_standalone():
         p = panes.get(standalone_label(e))
-        if p is None or e.get("harness") != "claude":
+        if p is None:
             continue
-        row = ui_status.claude_session(rows, e["session"]) or {}
-        st = ui_status.claude_turn(row) if row else "unknown"
-        h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE, "agent": e.get("label") or "claude",
-                                     "state": {"working": "working", "blocked": "blocked"}.get(st, "idle"),
-                                     "message": f"standalone {st}", "seq": seq})
+        st, hstate = standalone_state(e, rows)
+        h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE,
+                                     "agent": e.get("label") or e.get("harness") or "standalone",
+                                     "state": hstate, "message": f"standalone {st}", "seq": seq})
     if not quiet:
         print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}", flush=True)
     return pushed

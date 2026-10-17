@@ -558,6 +558,19 @@ assert "tab_bar_right" in ui_herdr.server_block() and "tab_bar_right" not in ui_
 assert '"workspace"' not in ui_herdr.client_block().split("[ui.sidebar.spaces]")[0]
 assert '$shoal"' in ui_herdr.client_block()
 print("picker filter, tags and config placement ok")
+# standalone naming: every harness gets a state from its own probe, so the feeder reports the
+# session's label as its agent name (an unreported muse pane reads as the bare binary name)
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({
+    "claude": [{"sessionId": "c1a2b3c4-0000-1111", "pid": 4242, "state": "blocked", "waitingFor": "input"}],
+    "muse": {"mu-busy": "mu-busy status:busy attached", "mu-idle": "mu-idle status:idle last:ok rc:0"},
+    "opencode": {"ses_oc9": "ses_oc9 status:busy directory:/x"}})
+rows = ui_status.claude_rows()
+assert ui_herdr.standalone_state({"harness": "claude", "session": "c1a2b3c4-0000"}, rows) == ("blocked", "blocked")
+assert ui_herdr.standalone_state({"harness": "muse", "session": "mu-busy"}, rows) == ("working", "working")
+assert ui_herdr.standalone_state({"harness": "muse", "session": "mu-idle"}, rows) == ("idle", "idle")
+assert ui_herdr.standalone_state({"harness": "opencode", "session": "ses_oc9"}, rows) == ("working", "working")
+assert ui_herdr.standalone_state({"harness": "muse", "session": "mu-absent"}, rows) == ("unknown", "idle")
+print("standalone state ok")
 PY2
 
 echo "== 4 herdr config: managed block merges idempotently and refuses duplicate tables"
