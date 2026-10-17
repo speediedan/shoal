@@ -336,9 +336,12 @@ Claude needs the relay because a headless send to a running Claude session forks
 waking it. A harness with no implementation returns `no-adapter`, and the condition escalates to a
 page. Adding a harness means adding its `wake`, not changing the quorum.
 
-**Pages.** A page is always a ledger `msg` to `user`. With `features.health.page =
-"gh-issue:<owner/repo>#<n>"` it is also a comment on that issue (the inbox), which reaches the
-maintainer through GitHub notifications. Pages are deferred while the maintainer is offline.
+**Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
+lands, as one channel string or a list of them: `"gh-issue:<owner/repo>#<n>"` also comments on
+that issue (the inbox, reaching the maintainer through GitHub notifications), and
+`"ntfy:<target>"` also publishes to an ntfy topic (a full URL, a `<host>/<topic>`, or a bare
+topic on ntfy.sh; an access token rides `$SHOAL_NTFY_TOKEN`, never the spec), which reaches the
+maintainer's phone through the ntfy app. Pages are deferred while the maintainer is offline.
 
 The lanes and pipeline sensors route through the same adapters: pipeline starvation wakes the
 roles waiting on remote CI, and a harness server respawn wakes every opencode role.

@@ -557,6 +557,37 @@ assert not conds, conds
 rows = [r for r in heartbeat.classify(spec, 60) if r["slug"] == "parked"]
 assert rows and rows[0]["klass"] == "parked" and not rows[0]["suspect"], rows
 PY
+# page channels: string or list specs normalize, and an ntfy page POSTs to a local stub
+python3 - "$SHOALD" <<'PY' || fail "ntfy page channel"
+import sys, json, threading
+sys.path.insert(0, sys.argv[1])
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import health
+from roles import ShoalSpec
+got = {}
+class Stub(BaseHTTPRequestHandler):
+    def do_POST(self):
+        got["path"] = self.path; got["title"] = self.headers.get("Title")
+        got["body"] = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self, *a): pass
+srv = HTTPServer(("127.0.0.1", 0), Stub); threading.Thread(target=srv.serve_forever, daemon=True).start()
+base = f"http://127.0.0.1:{srv.server_address[1]}"
+mk = lambda page: ShoalSpec.from_dict({"shoal": "pgtest", "features": {"health": {"page": page}}, "roles": []})
+assert health.page_channels(mk("gh-issue:o/r#1")) == ["gh-issue:o/r#1"]
+assert health.page_channels(mk(["gh-issue:o/r#1", "ntfy:topic-x"])) == ["gh-issue:o/r#1", "ntfy:topic-x"]
+assert health.page_channels(mk(None)) == []
+assert health.ntfy_url("ntfy:topic-x") == "https://ntfy.sh/topic-x"
+assert health.ntfy_url("ntfy:example.com/t") == "https://example.com/t"
+assert health.ntfy_url(f"ntfy:{base}/t") == f"{base}/t"
+out = health.deliver_page(mk(f"ntfy:{base}/topic-x"), "watcher dead on tl")
+assert out == "+ntfy", out
+assert got["path"] == "/topic-x" and "pgtest page" in got["title"] and "watcher dead" in got["body"], got
+bad = health.deliver_page(mk("ntfy:http://127.0.0.1:1/nope"), "x")
+assert bad.startswith(" (ntfy FAILED"), bad  # a dead channel reports, never raises
+srv.shutdown()
+print("ntfy page channel ok")
+PY
 rm -f /tmp/$SID/ledger-watch-parked.state
 # timers: the .timer unit's own state decides; a running service never reads inactive
 python3 - "$SHOALD" <<'PY' || fail "timer verdicts"

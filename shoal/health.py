@@ -177,6 +177,62 @@ def relay_alive(sid: str) -> bool:
         return False
 
 
+def page_channels(spec: ShoalSpec) -> list[str]:
+    """The spec's page channels (`features.health.page`): one channel string, or a list of them.
+    Known forms: `gh-issue:<owner/repo>#<n>` and `ntfy:<target>`, where the ntfy target is a full
+    URL, a `<host>/<topic>` (https assumed), or a bare topic on ntfy.sh."""
+    page = health_cfg(spec).get("page")
+    if isinstance(page, str) and page:
+        return [page]
+    if isinstance(page, list):
+        return [str(p) for p in page if p]
+    return []
+
+
+def ntfy_url(channel: str) -> str:
+    rest = channel[len("ntfy:"):]
+    if rest.startswith(("http://", "https://")):
+        return rest
+    return f"https://{rest}" if "/" in rest else f"https://ntfy.sh/{rest}"
+
+
+def post_ntfy(channel: str, title: str, text: str) -> None:
+    """One ntfy publish (raises on failure; the caller reports it like a failed gh-issue post).
+    An access token, when the server needs one, comes from $SHOAL_NTFY_TOKEN, never the spec."""
+    import urllib.request
+    import config
+    req = urllib.request.Request(ntfy_url(channel), data=text.encode(), method="POST")
+    req.add_header("Title", title)
+    req.add_header("Priority", "high")
+    req.add_header("Tags", "warning")
+    token = config.env("NTFY_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - the URL is the spec's own
+        resp.read()
+
+
+def deliver_page(spec: ShoalSpec, text: str) -> str:
+    """Deliver one page to every configured channel; returns the suffix naming what happened
+    (`+gh-issue+ntfy`, or a FAILED note per failed channel). Never raises: a dead channel must
+    not stop the quorum run that paged."""
+    out = []
+    for channel in page_channels(spec):
+        if channel.startswith("gh-issue:"):  # a place the maintainer is notified, not only the ledger
+            repo, _, num = channel[len("gh-issue:"):].partition("#")
+            r = subprocess.run(["gh", "issue", "comment", num, "--repo", repo, "--body",
+                                f"**shoal {spec.sid} page** ({iso()}): {text[:1500]}"],
+                               capture_output=True, text=True, timeout=60, env=_ENV)
+            out.append("+gh-issue" if r.returncode == 0 else f" (gh-issue FAILED rc={r.returncode})")
+        elif channel.startswith("ntfy:"):
+            try:
+                post_ntfy(channel, f"shoal {spec.sid} page", text[:1000])
+                out.append("+ntfy")
+            except Exception as exc:  # noqa: BLE001
+                out.append(f" (ntfy FAILED {str(exc)[:60]})")
+    return "".join(out)
+
+
 def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) -> str:
     """A maintainer page is one ledger msg to `user`; deferred while the maintainer is offline."""
     from ledger import Ledger, View
@@ -188,14 +244,7 @@ def page_user(spec: ShoalSpec, text: str, state: dict, dry_run: bool = False) ->
     if dry_run:
         return "page (dry-run)"
     led.append(SYSTEM_WRITER, "msg", to="user", kind="health", text=text[:500])
-    channel = str(health_cfg(spec).get("page") or "")
-    if channel.startswith("gh-issue:"):  # a place the maintainer is notified, not only the ledger
-        repo, _, num = channel[len("gh-issue:"):].partition("#")
-        r = subprocess.run(["gh", "issue", "comment", num, "--repo", repo, "--body",
-                            f"**shoal {spec.sid} page** ({iso()}): {text[:1500]}"],
-                           capture_output=True, text=True, timeout=60, env=_ENV)
-        return "page+gh-issue" if r.returncode == 0 else f"page (gh-issue FAILED rc={r.returncode})"
-    return "page"
+    return "page" + deliver_page(spec, text)
 
 
 # ---- wait-target heuristics ------------------------------------------------------
