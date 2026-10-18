@@ -26,6 +26,6 @@ jobs:
         env:
           SHOAL_TEST_NO_SYSTEMD: "1"
         run: |
-          for suite in selftest_ledger.sh selftest_h4.sh selftest_h8.sh selftest_ui.sh; do
+          for suite in selftest_ledger.sh selftest_h4.sh selftest_h8.sh selftest_ui.sh selftest_usage.sh; do
             bash tests/selftest_hermetic.sh "$suite"
           done

@@ -346,6 +346,8 @@ def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = Non
 
 
 UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
+               "usage_providers": "comma-separated subscription providers; empty disables account polling",
+               "usage_bridge": "JSON object: providers and command argv for an operator-owned quota reader",
                "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
                "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
@@ -362,7 +364,29 @@ def cmd_set(a) -> int:
     if key not in UI_SETTINGS or (key == "role_order") != bool(sub):
         print("ui set: one of " + ", ".join(UI_SETTINGS) + " (role_order needs .<shoal>)")
         return 1
-    if key == "role_order":
+    if key == "usage_bridge":
+        if a.value:
+            try:
+                b = json.loads(a.value)
+                import subscription_usage
+                assert isinstance(b, dict) and isinstance(b["command"], list) and b["command"]
+                assert all(isinstance(s, str) and s for s in b["command"])
+                assert isinstance(b["providers"], list) and b["providers"]
+                assert all(s in subscription_usage.PROVIDERS for s in b["providers"])
+            except (ValueError, KeyError, TypeError, AssertionError):
+                print("usage_bridge needs providers and a nonempty command argv array")
+                return 1
+            d[key] = b
+        else:
+            d.pop(key, None)
+    elif key == "usage_providers":
+        import subscription_usage
+        providers = [s.strip() for s in a.value.split(",") if s.strip()]
+        if any(s not in subscription_usage.PROVIDERS for s in providers):
+            print("ui set: supported usage providers: " + ",".join(subscription_usage.PROVIDERS))
+            return 1
+        d[key] = list(dict.fromkeys(providers))
+    elif key == "role_order":
         d.setdefault("role_order", {})[sub] = [s.strip() for s in a.value.split(",") if s.strip()]
     elif a.value == "":
         d.pop(key, None)
@@ -370,7 +394,9 @@ def cmd_set(a) -> int:
         d[key] = int(a.value) if a.value.isdigit() else {"true": True, "false": False}.get(a.value.lower(), a.value)
     ui_status.save_ui_config(d)
     print(f"{a.key} = {a.value or '(default)'} ({ui_status.ui_config_path()})")
-    if key in ("roles_per_tab", "role_order"):
+    if key in ("usage_providers", "usage_bridge"):
+        print("the feeder refreshes account meters in the background; `shoal ui usage --refresh` reads now")
+    elif key in ("roles_per_tab", "role_order"):
         print("run `shoal ui open` to lay the roles out again (refused while a card is in use)")
     else:
         print("on the laptop: re-run shoal-herdr-setup.sh, then relaunch (the launcher resolves a % width)")
@@ -749,6 +775,9 @@ def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
 
 def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True) -> int:
     import ui_status
+    import subscription_usage
+    settings = ui_status.ui_config()
+    subscription_usage.refresh_async(settings.get("usage_providers", []), bridge=settings.get("usage_bridge"))
     ui_status.BACKGROUND_CONDITIONS = True  # a tick never waits on the provider probes behind conditions
     doc = ui_status.status(None, with_conditions=True,
                            refresh_conditions=False)  # conditions come from their own 5-minute cache

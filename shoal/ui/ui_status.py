@@ -451,7 +451,9 @@ def status(ids: list[str] | None = None, root: str = "", include_retired: bool =
             shoals.append(shoal_doc(p, rows, with_conditions, pull, opencode_probe, refresh_conditions))
         except Exception as exc:  # noqa: BLE001 - one broken spec never hides the others
             shoals.append({"id": os.path.basename(os.path.dirname(p)), "spec": p, "error": _short(exc, 200)})
-    return {"v": CONTRACT_V, "host": socket.gethostname(), "ts": iso(), "shoals": shoals}
+    import subscription_usage
+    return {"v": CONTRACT_V, "host": socket.gethostname(), "ts": iso(), "shoals": shoals,
+            "usage": subscription_usage.snapshot(ui_config().get("usage_providers", []))}
 
 
 # ---- shared cache: one status computation per host, many readers -----------------------
@@ -634,7 +636,9 @@ def ascii_table(headers: list[str], rows: list[list[str]], width: int, flex: tup
 def render_text(doc: dict, width: int = 0) -> str:
     """Per shoal: a summary line, one table row per role, then open health conditions as a table."""
     width = width or term_width()
-    out = []
+    import subscription_usage
+    usage = subscription_usage.render(doc.get("usage") or {}, color=use_color())
+    out = [usage, ""] if usage else []
     for s in doc["shoals"]:
         if s.get("error"):
             out.append(f"{s['id']}: ERROR {s['error']}")
@@ -712,6 +716,10 @@ def render_line(doc: dict) -> str:
             bits.append("relay DEAD")
         import re
         parts.append(f"{re.sub(r'-[0-9]{8}-[0-9]{6}$', '', s['id'])}: {' '.join(bits)}")
+    import subscription_usage
+    usage = subscription_usage.summary(doc.get("usage") or {})
+    if usage:
+        parts.append(usage)
     return " | ".join(parts) or "no shoals"
 
 

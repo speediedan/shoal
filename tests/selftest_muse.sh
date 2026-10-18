@@ -70,7 +70,7 @@ os.environ["META_API_KEY"] = "SECRET-KEY"
 sid = be.create("t", S + "/ws", brief="the first brief", model="muse-spark-1.2", effort="high")
 assert muse.UUID_RE.match(sid), sid
 for _ in range(100):
-    if muse.last_run(sid).get("ended"):
+    if muse.last_run(sid).get("ended") and not muse.busy(sid):
         break
     time.sleep(0.1)
 last = muse.last_run(sid)

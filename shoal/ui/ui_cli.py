@@ -49,6 +49,13 @@ def add_parsers(sub) -> None:
     ui_status.add_args(q)
     q.set_defaults(func=ui_status.cmd_line)
 
+    import subscription_usage
+    q = u.add_parser("usage", help="cached subscription meters (no model turns); --refresh reads account APIs")
+    q.add_argument("--providers", default="", help="comma-separated codex,claude,muse,opencode-go; default UI setting")
+    q.add_argument("--refresh", action="store_true", help="read account APIs now, without inference")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=subscription_usage.cmd_usage)
+
     def session_arg(q):
         q.add_argument("--session", default="", help="herdr session name (default SHOAL_HERDR_SESSION, else shoal)")
 

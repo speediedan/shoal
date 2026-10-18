@@ -84,6 +84,88 @@ still reads as current until the quorum's next run marks it stale. This is delib
 provider calls on in the 20-second feed. `--conditions` (the quorum's own `evaluate()`, live, cached
 five minutes) is the up-to-date view.
 
+## Subscription meters
+
+Enable the account plans used on the host, once for every shoal:
+
+```bash
+shoal ui set usage_providers codex,claude,muse,opencode-go
+shoal ui usage --refresh
+shoal ui usage --json
+```
+
+The overview always displays the compact meter block above the role tables.
+Each reported window has its used percentage and reset date/time in the host's
+configured timezone (`SHOAL_TZ` or `timezone` in host.toml). The status line adds
+each provider's most-used window and its reset. Use `shoal ui usage` for the
+same snapshot outside Herdr. `--providers` temporarily chooses a comma-separated
+list; an empty `usage_providers` setting disables background collection.
+
+Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
+when the service explicitly denies included usage. Text remains useful without
+color: `!` marks the limiting meter in the status line, `~` marks stale values,
+and expired resets say `refresh due`. The display never clears a limit merely
+because a clock passed its reset. Unknown readings show `? unavailable` and a
+reason. `--` means a window is not reported, including monthly quotas absent
+from a provider's API. Claude's optional paid extra-usage budget is explicitly
+named `extra month`; it is not treated as an included subscription allowance.
+
+The feeder polls at most once per provider per five minutes in a background
+thread. Every pane and shoal reads the same cache. Failed reads keep the last
+measurement, mark it stale, and back off up to one hour. Read-only status and
+line commands never start polling. `--refresh` forces one account read and
+costs no inference tokens. There are no model turns or role wakes.
+
+| Provider | Account source | Limits |
+| --- | --- | --- |
+| Codex | Native `codex app-server` account quota RPC, using the CLI's own login | Preserves multiple buckets and server denial; uses reported window duration, not assumed five-hour/weekly names. See the [official app-server account interface](https://learn.chatgpt.com/docs/app-server). |
+| Claude | OAuth usage endpoint with the CLI-owned login | Included five-hour and weekly meters, additional named weekly limits, and optional extra usage. An expired login needs renewal through the CLI; the collector does not rotate credentials. |
+| Muse | Login metadata endpoint, discarding the returned inference key and identity | Some responses omit `subs_usage`; this is unavailable, even if the subscription is active. No fake 0 percent and no automatic browser cookie access. |
+| OpenCode Go | Quota endpoint with the current opencode credential store (read-only SQLite, legacy file fallback) | Five-hour, weekly and monthly meters when returned. A rejected key produces an authentication diagnostic. No opencode CLI/server is started. |
+
+The per-user runtime cache stores normalized percentages, reset epochs,
+observation/attempt timestamps and safe diagnostics, with mode 0600. It stores
+no tokens, email addresses, account IDs, payment metadata or raw responses.
+HTTP account reads refuse redirects. The feature adds no dependency and no
+always-running process beyond the existing feeder. Account usage includes
+standalone sessions sharing that login; it is not summed from role transcripts.
+
+### Authentication without a browser
+
+All four default collectors authenticate from local CLI credentials and call
+account endpoints directly. No open dashboard, browser process, cookie import,
+or laptop connection is required. Codex delegates credential renewal to its CLI;
+the other collectors read credentials without changing their stores. An expired
+OAuth token must be renewed through that provider's normal login.
+
+Optional overrides go in `config/usage.env`, which is ignored by git, or a file
+selected by `SHOAL_USAGE_ENV_FILE`. The file must belong to the current user and
+have owner-only permissions (`chmod 600`). It is parsed as `KEY=value` data, never
+sourced as shell code, and its values are never put in the cache or command
+arguments. Matching process environment variables take precedence.
+
+| Setting | Required credential |
+| --- | --- |
+| `SHOAL_USAGE_OPENCODE_GO_API_KEY` | A valid Go key authorized to read the Go usage endpoint |
+| `SHOAL_USAGE_CLAUDE_OAUTH_TOKEN` | Personal CLI OAuth token authorized for subscription usage, not a generic inference API key |
+| `SHOAL_USAGE_MUSE_DEVICE_TOKEN` | Muse device-login token; the login response may still omit subscription quota |
+
+Codex subscription meters require a ChatGPT login in Codex. An OpenAI inference
+API key is not a replacement for that login. Likewise, a Meta inference key is
+not a verified credential for personal Muse subscription meters. An override
+cannot supply quota fields that a provider does not expose to that credential.
+
+For accounts without a usable direct quota API, an operator may explicitly set
+`usage_bridge` to a JSON object with `providers` and a `command` argv array.
+It is disabled by default. Direct reads always run first; one fallback invocation
+receives only failed, due providers as `{"providers":[...]}` on stdin. It returns
+a JSON object keyed by provider containing the same native payloads described
+above. No shell command string is executed. This interface permits a separately
+maintained reader without embedding browser support or a provider SDK in SHOAL.
+Fallback observations are visibly labeled. If the chosen helper uses a browser
+login, it inherits that login's expiry and host availability; it is not an API key
+solution, even when no dashboard tab needs to remain open.
+
 ## The viewer: `shoal view`
 
 ```bash
