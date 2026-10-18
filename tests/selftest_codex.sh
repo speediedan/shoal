@@ -28,6 +28,15 @@ prompt = sys.stdin.read() if a and a[-1] == "-" else ""
 open(os.environ["FAKE_CODEX_LOG"], "a").write(json.dumps({
     "argv": a, "stdin": prompt, "openai": os.environ.get("OPENAI_API_KEY"), "codex_key": os.environ.get("CODEX_API_KEY"),
     "claude": [k for k in os.environ if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE"], "cwd": os.getcwd()}) + "\n")
+if a[:1] == ["app-server"]:
+    # a minimal app-server: initialize, thread/name/set (logged)
+    for line in sys.stdin:
+        m = json.loads(line)
+        if "id" in m:
+            if m["method"] == "thread/name/set":
+                open(os.environ["FAKE_CODEX_LOG"], "a").write(json.dumps({"name_set": m["params"]}) + "\n")
+            print(json.dumps({"id": m["id"], "result": {}}), flush=True)
+    sys.exit(0)
 if a[:1] != ["exec"]:
     sys.exit(2)
 resume = a[1:2] == ["resume"]
@@ -203,4 +212,17 @@ except RuntimeError as e:
     assert "thread" in str(e) or "cannot run" in str(e), e
 print("no-thread failure ok")
 PY
+echo "== 7 codex-new: a named thread (first turn, then thread/name/set through app-server)"
+OUT=$($H codex-new My-Seat.1 --cwd "$S/ws" --prompt "bootstrap prompt" --wait 30 2>&1) || fail "codex-new :: $OUT"
+TID7=$(awk '{print $2}' <<<"$OUT" | head -1)
+python3 - "$S" "$TID7" <<'PY' || fail "codex-new name"
+import json, sys
+S, tid = sys.argv[1], sys.argv[2]
+rows = [json.loads(l) for l in open(S + "/codex-calls.jsonl")]
+ns = [r["name_set"] for r in rows if "name_set" in r]
+assert ns and ns[-1] == {"threadId": tid, "name": "My-Seat.1"}, (ns, tid)
+print("codex-new ok")
+PY
+$H codex-new "bad name" --cwd "$S/ws" --prompt x >/dev/null 2>&1 && fail "an invalid name must be refused"
+$H codex-new ok-name --cwd "$S/ws" >/dev/null 2>&1 && fail "a missing first prompt must be refused"
 echo "SELFTEST CODEX OK ($S)"

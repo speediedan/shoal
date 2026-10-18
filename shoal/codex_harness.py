@@ -419,6 +419,80 @@ def view_argv(session: str) -> list[str]:
     return ["sh", "-c", f'"$0" resume "$1"{fl} || exec "$0"{fl}', codex_bin(), session]
 
 
+def thread_name_set(thread_id: str, name: str) -> None:
+    """Give a persisted thread its user-facing name through a short-lived `codex app-server` (stdio JSON-RPC,
+    `thread/name/set`): `codex resume <name>` and `codex queue --thread <name>` then find it. The CLI has no
+    flag for this; the TUI's /rename is the interactive form."""
+    import queue
+    import threading
+    p = subprocess.Popen([codex_bin(), "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, text=True, env=turn_env())
+    q: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: [q.put(ln) for ln in p.stdout], daemon=True).start()
+
+    def send(o: dict) -> None:
+        p.stdin.write(json.dumps(o) + "\n")
+        p.stdin.flush()
+
+    def answer(i: int) -> dict:
+        end = time.time() + 60
+        while time.time() < end:
+            try:
+                j = json.loads(q.get(timeout=0.5))
+            except queue.Empty:
+                continue
+            except ValueError:
+                continue
+            if j.get("id") == i:
+                if "error" in j:
+                    raise RuntimeError(f"thread/name/set: {j['error'].get('message', j['error'])}")
+                return j.get("result", {})
+        raise RuntimeError("app-server gave no answer in 60 s")
+
+    try:
+        send({"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "shoal", "title": "shoal", "version": "0"}}})
+        answer(0)
+        send({"method": "initialized", "params": {}})
+        send({"method": "thread/name/set", "id": 1, "params": {"threadId": thread_id, "name": name}})
+        answer(1)
+    finally:
+        p.terminate()
+
+
+def cmd_codex_new(a) -> int:
+    """Start a named interactive Codex thread: a first turn (Codex has no empty thread) whose prompt is the
+    seat's bootstrap, then its name; with --pick, a Herdr card for it (`ui pick --harness codex`)."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", a.name):
+        print(f"codex-new: {a.name!r} is not a usable thread name (letters, digits, . _ -)")
+        return 2
+    cwd = os.path.abspath(os.path.expanduser(a.cwd))
+    if not os.path.isdir(cwd):
+        print(f"codex-new: no such directory: {cwd}")
+        return 2
+    prompt = open(a.prompt_file).read() if a.prompt_file else a.prompt
+    if not prompt.strip():
+        print("codex-new: a first prompt is required (--prompt or --prompt-file): Codex has no empty thread")
+        return 2
+    try:
+        tid = create_session(cwd, prompt, model=a.model, effort=a.effort)
+        end = time.time() + a.wait
+        while busy(tid) and time.time() < end:
+            time.sleep(1)
+        if busy(tid):
+            print(f"codex-new: the first turn is still running after {a.wait} s; name it later with /rename")
+            return 1
+        thread_name_set(tid, a.name)
+    except (RuntimeError, OSError) as e:
+        print(f"codex-new: {e}")
+        return 1
+    print(f"{a.name}  {tid}  {cwd}")
+    if a.pick:
+        return subprocess.call([sys.executable, CLI, "ui", "pick", "--harness", "codex", "--id", tid,
+                                "--label", a.label or a.name, "--cwd", cwd, "--save"])
+    print(f"open it with: shoal ui pick --harness codex --id {tid} --label {a.label or a.name} --cwd {cwd} --save")
+    return 0
+
+
 def arm_watcher(spec, role, dry_run: bool = False) -> str:
     """Shoal runs a Codex role's persistent watcher: `ledger-watch --wake exec:<thread>` starts a turn whenever
     there is work. ALREADY ARMED makes a second start a no-op."""
@@ -449,6 +523,17 @@ def add_parsers(sub) -> None:
     p.add_argument("--model", default="")
     p.add_argument("--effort", default="")
     p.set_defaults(func=cmd_codex_run)
+    n = sub.add_parser("codex-new", help="start a named interactive Codex thread (a first turn, then its name)")
+    n.add_argument("name")
+    n.add_argument("--cwd", default=".")
+    n.add_argument("--prompt", default="")
+    n.add_argument("--prompt-file", default="")
+    n.add_argument("--model", default="")
+    n.add_argument("--effort", default="")
+    n.add_argument("--label", default="")
+    n.add_argument("--wait", type=int, default=900, help="seconds to wait for the first turn to finish")
+    n.add_argument("--pick", action="store_true", help="also save it as a standalone Herdr card (ui pick --save)")
+    n.set_defaults(func=cmd_codex_new)
     q = sub.add_parser("codex-tail", help="read-only view of a Codex thread's turns")
     q.add_argument("--session", required=True)
     q.add_argument("--once", action="store_true")
