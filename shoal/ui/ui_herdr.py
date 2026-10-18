@@ -735,7 +735,7 @@ def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
         row = ui_status.claude_session(rows, e["session"]) or {}
         st = ui_status.claude_turn(row) if row else "unknown"
         return st, {"working": "working", "blocked": "blocked"}.get(st, "idle")
-    if harness in ("muse", "opencode"):
+    if harness in ("muse", "codex", "opencode"):
         try:
             from backends import get as get_backend
             s = get_backend(harness).status(e["session"], e.get("cwd") or os.path.expanduser("~"))

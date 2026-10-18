@@ -506,10 +506,10 @@ def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | 
             return "status:idle" in s if s else None
         except Exception:
             return None
-    if role.ecosystem == "muse":
+    if role.ecosystem in ("muse", "codex"):
         try:
             from backends import get as get_backend
-            s = get_backend("muse").status(role.session, repo_dir)
+            s = get_backend(role.ecosystem).status(role.session, repo_dir)
             return "status:idle" in s if s else None
         except Exception:
             return None

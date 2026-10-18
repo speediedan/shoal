@@ -66,6 +66,7 @@ from heartbeat import age_min, cmd_heartbeat, hb_path, touch as hb_touch  # noqa
 import ledger_cli as _ledger_cli  # noqa: E402
 import ledger_watch as _ledger_watch  # noqa: E402
 import muse as _muse  # noqa: E402
+import codex_harness as _codex  # noqa: E402
 import digest as _digest  # noqa: E402
 import jobs as _jobs  # noqa: E402
 import worker as _worker  # noqa: E402
@@ -450,30 +451,32 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                 print(f"lane {tag}: {role.session}")
                 be.send(role.session, spec.dir, brief_for(role, spec),
                         model=role.model)
-        elif role.ecosystem == "muse":
-            # one `muse exec` turn per wake; shoal starts the role's persistent watcher itself, so the
+        elif role.ecosystem in ("muse", "codex"):
+            # one `<harness> exec` turn per wake; shoal starts the role's persistent watcher itself, so the
             # role never needs permission to run a detached process
+            hmod = _muse if role.ecosystem == "muse" else _codex
             text = brief_for(role, spec)
-            print(f"muse {tag}: brief -> {brief_path}")
+            print(f"{role.ecosystem} {tag}: brief -> {brief_path}")
             if role.slug in launched:
                 role.session = launched[role.slug]
                 print(f"  recorded live as {role.session} (--keep/--consumer-launched)")
             elif defer_consumers:
                 print("  DEFERRED (--defer-consumers): launch by hand when ready.")
             elif dry_run:
-                print(f"  [dry-run] would start the first muse exec turn (session id minted here) and arm "
+                print(f"  [dry-run] would start the first {role.ecosystem} exec turn (session id "
+                      f"{'minted here' if role.ecosystem == 'muse' else 'read from its first event'}) and arm "
                       f"`ledger-watch --wake exec:<session>`")
-                role.session = f"mu_DRYRUN_{role.slug}"
+                role.session = f"{'mu' if role.ecosystem == 'muse' else 'cx'}_DRYRUN_{role.slug}"
             else:
                 try:
                     role.session = be.create(f"{role.title}-r{role.seq}", spec.dir, brief=text, name=role.tag,
                                              model=role.model, effort=role.effort)
                 except (UnsupportedError, RuntimeError) as exc:
-                    print(f"  FAIL: muse launch failed: {exc}")
+                    print(f"  FAIL: {role.ecosystem} launch failed: {exc}")
                     launch_fail = 4
                     break
                 created.append(role.slug)
-                print(f"  launched: {role.session} (backend: muse); watcher {_muse.arm_watcher(spec, role)}")
+                print(f"  launched: {role.session} (backend: {role.ecosystem}); watcher {hmod.arm_watcher(spec, role)}")
                 consumers_launched.append(role)
         else:
             text = brief_for(role, spec)
@@ -1003,6 +1006,7 @@ def main(argv: list[str] | None = None) -> int:
     _ledger_cli.add_parsers(sub)
     _ledger_watch.add_parser(sub)
     _muse.add_parsers(sub)
+    _codex.add_parsers(sub)
     _digest.add_parsers(sub)
     _jobs.add_parsers(sub)
     _worker.add_parsers(sub)

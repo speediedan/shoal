@@ -117,11 +117,12 @@ def watch_clause(role: Role, spec: ShoalSpec, arm: str, how_arm: str) -> str:
     """The WATCH instruction of the work-loop brief. A Muse role is different in three ways: shoal runs
     its watcher, its turns are headless `muse exec` processes (nobody answers a prompted question), and the
     session continues across turns as a durable file (design: muse-code-support plan)."""
-    if role.ecosystem == "muse":
+    if role.ecosystem in ("muse", "codex"):
+        hname, hcmd = ("Muse", "muse exec") if role.ecosystem == "muse" else ("Codex", "codex exec")
         return (
-            "HEADLESS TURNS (Muse): each of your turns is a `muse exec` process that shoal starts, one per wake, "
+            f"HEADLESS TURNS ({hname}): each of your turns is a `{hcmd}` process that shoal starts, one per wake, "
             "and your session continues across them. There is no terminal and nobody to answer a prompted "
-            "question (request_user_input is withheld): never ask one; record each ask with `queue --ask` and the "
+            "question (the question tool is unavailable): never ask one; record each ask with `queue --ask` and the "
             "maintainer raises it. You never arm, re-arm or kill a ledger-watch: shoal runs your watcher "
             f"(`{SHOAL_CLI} ledger-watch ... --wake exec:<your-session-id>`), which starts your next turn when there "
             "is work and never while a turn runs; it needs no `--test` and no pid proof. A background process you "
@@ -142,8 +143,9 @@ def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
     detached = ("setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
                 + ".log 2>&1 < /dev/null &`, run once with the Bash tool, NOT as a background command and never "
                 "the Monitor tool)")
-    if role.ecosystem == "muse":
-        return "exec:<your-session-id>", "run by shoal itself (not by you): a detached watcher that starts a `muse exec` turn per wake"
+    if role.ecosystem in ("muse", "codex"):
+        return "exec:<your-session-id>", ("run by shoal itself (not by you): a detached watcher that starts a `"
+                                          + ("muse exec" if role.ecosystem == "muse" else "codex exec") + "` turn per wake")
     if role.ecosystem == "opencode":
         return "send:<your-session-id>", (detached + "; it sends each wake to your session id between your turns "
                                           "and keeps running, so it needs no re-arm after a wake (re-arming while it "

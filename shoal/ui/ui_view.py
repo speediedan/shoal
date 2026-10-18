@@ -210,9 +210,9 @@ def standalone_stub(harness: str, session: str, label: str) -> int:
     watch = ui_term.CodeWatch()
     while True:
         watch.check()
-        hint = (DETACH_HINT if harness != "muse" else
-                "this card hosts the Muse client itself: quit muse to come back here; the session is saved on disk "
-                "and [enter] resumes it (a name that does not exist yet starts a new session)")
+        hint = (DETACH_HINT if harness not in ("muse", "codex") else
+                f"this card hosts the {harness.capitalize()} client itself: quit {harness} to come back here; the "
+                "session is saved on disk and [enter] resumes it (a name that does not exist yet starts a new session)")
         sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
                          f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n")
         sys.stdout.flush()
@@ -228,8 +228,8 @@ def standalone_stub(harness: str, session: str, label: str) -> int:
 def cmd_view(a) -> int:
     try:
         if a.session:
-            if a.harness not in ("claude", "opencode", "muse"):
-                print("shoal view: --session needs --harness claude|opencode|muse")
+            if a.harness not in ("claude", "opencode", "muse", "codex"):
+                print("shoal view: --session needs --harness claude|opencode|muse|codex")
                 return 2
             label = a.label or f"{a.harness}:{a.session[:12]}"
             if a.dry_run:
@@ -258,8 +258,8 @@ def add_parser(sub) -> None:
     p.add_argument("target_shoal", nargs="?", default="", metavar="SHOAL")
     p.add_argument("role", nargs="?", default="", metavar="ROLE")
     p.add_argument("--spec", default="")
-    p.add_argument("--harness", default="", choices=("", "claude", "opencode", "muse"))
-    p.add_argument("--session", default="", help="a standalone session id (not a shoal role); for muse also a session name")
+    p.add_argument("--harness", default="", choices=("", "claude", "opencode", "muse", "codex"))
+    p.add_argument("--session", default="", help="a standalone session id (not a shoal role); for muse and codex also a session name")
     p.add_argument("--label", default="")
     p.add_argument("--stub", action="store_true", help="role card that attaches on Enter (UI layouts)")
     p.add_argument("--dry-run", action="store_true", help="print the client argv (and env NAMES) only")

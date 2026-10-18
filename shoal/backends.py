@@ -13,8 +13,8 @@
   is therefore a spec violation by construction, not a judgment call.
 - MuseBackend (Muse Code sessions): one `muse exec --session-id` process per wake, durable sessions,
   no daemon (shoal/muse.py has the design). Shoal itself runs the role's persistent watcher.
-- CodexBackend: stub. Accepts the role shape, raises NotSupported on every
-  operation, so adding the real transport later touches this file only.
+- CodexBackend (Codex CLI threads): the same shape as Muse, one `codex exec` (resume) process per wake
+  (shoal/codex_harness.py has the design; the thread id is minted by Codex on the first turn).
 """
 from __future__ import annotations
 
@@ -506,29 +506,63 @@ class ClaudeBackend(Backend):
 
 
 class CodexBackend(Backend):
-    """Placeholder for a future `codex` CLI transport."""
+    """Codex CLI: a session is a thread id and each turn is one `codex exec resume <id>` process
+    (shoal/codex_harness.py). Like Muse there is no harness-wide listing, no attach and no respawn: a turn
+    that died is simply followed by the next wake, so revive is the ordinary wake path."""
     ecosystem = "codex"
-
-    def _no(self, op: str) -> UnsupportedError:
-        return UnsupportedError(
-            f"codex backend not implemented (op={op}): implement the transport "
-            "in backends.py CodexBackend; roles/specs need no changes.")
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
                effort: str = "") -> str:
-        raise self._no("create")
+        import codex_harness as codex
+        if dry_run:
+            return "cx_DRYRUN_" + re.sub(r"\W+", "_", title)
+        if not brief:
+            raise UnsupportedError("codex create needs the role brief text")
+        return codex.create_session(repo_dir, brief, model=model, effort=effort)
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
-             dry_run: bool = False) -> None:
-        raise self._no("send")
+             dry_run: bool = False, model: str = "", effort: str = "") -> None:
+        import codex_harness as codex
+        codex.start_run(session_id, repo_dir, prompt, model=model, effort=effort, dry_run=dry_run)
 
-    def messages(self, session_id: str, repo_dir: str, limit: int = 20,
-                 role: str = "") -> str:
-        raise self._no("messages")
+    def messages(self, session_id: str, repo_dir: str, limit: int = 20, role: str = "") -> str:
+        import codex_harness as codex
+        return codex.messages(session_id, limit)
 
     def status(self, session_id: str, repo_dir: str) -> str:
-        raise self._no("status")
+        import codex_harness as codex
+        return codex.status_line(session_id)
+
+    def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
+        """As for Muse: a wake goes to the role's own watcher while it runs; a dead watcher is started again
+        and the wake is sent directly."""
+        import json as _json
+        import codex_harness as codex
+        from health import iso, state_dir, wake_path, watcher_alive
+        alive, _ = watcher_alive(spec.sid, role.slug)
+        if alive:
+            if not dry_run:
+                os.makedirs(state_dir(spec.sid), exist_ok=True)
+                with open(wake_path(spec.sid, role.slug), "a") as fh:
+                    fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
+            return "wake-file" + (" (dry-run)" if dry_run else "")
+        rearmed = codex.arm_watcher(spec, role, dry_run) if role.session else "no session"
+        try:
+            self.send(role.session, spec.dir, text, dry_run=dry_run, model=role.model, effort=role.effort)
+        except codex.BusyError:
+            return f"codex-busy (the running turn reads the queue at its end; watcher {rearmed})"
+        except Exception as exc:  # noqa: BLE001
+            return f"codex-send FAILED ({str(exc)[:80]}); watcher {rearmed}"
+        return f"codex-send; watcher {rearmed}" + (" (dry-run)" if dry_run else "")
+
+    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+        import codex_harness as codex
+        return codex.view_argv(session_id), {}
+
+    def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
+        import codex_harness as codex
+        return codex.quota_hint(session_id)
 
 
 class MuseBackend(Backend):

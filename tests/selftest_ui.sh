@@ -198,6 +198,8 @@ check '"attach", "c1a2b3c4"' $H view $SID cl --spec "$SPEC" --dry-run
 # a standalone Muse session: a UUID resumes; a name resumes or, the first time, starts a new session
 check '"resume", "01a14091-3870-7923-b66b-d3bfd335dd4e"' env SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session 01a14091-3870-7923-b66b-d3bfd335dd4e --dry-run
 check '--disable-sandbox || exec' env SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session infra-aux --dry-run
+check '"resume", "01a14091-3870-7923-b66b-d3bfd335dd4e"' env SHOAL_CODEX_BIN=/x/codex $H view --harness codex --session 01a14091-3870-7923-b66b-d3bfd335dd4e --dry-run
+check 'resume \\"$1\\" || exec' env SHOAL_CODEX_BIN=/x/codex $H view --harness codex --session infra-laptop --dry-run
 # a blocked session with no prompt (waitingFor empty) is not a QUESTION, and keeps its ledger posture
 python3 - "$SHOALD" <<'PY2' || fail "blocked without a prompt"
 import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")

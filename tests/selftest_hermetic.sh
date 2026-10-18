@@ -3,7 +3,7 @@
 #
 #   selftest_hermetic.sh SUITE [suite args...]     e.g. selftest_hermetic.sh selftest_h4.sh
 #
-# gh, az, opencode, openchamber, claude and muse are put first on PATH as stubs that print
+# gh, az, opencode, openchamber, claude, muse and codex are put first on PATH as stubs that print
 # "network tool called: <argv>" to stderr and exit 1, and SHOAL_TEST_NO_SYSTEMD=1 makes the
 # systemd sections skip. The suite must still pass. Each stub also appends its line to a
 # call log, because the suites capture most command output (a stub's stderr inside a
@@ -17,7 +17,7 @@ SUITE="${1:?usage: selftest_hermetic.sh SUITE [args...]}"; shift
 STUBS="$(mktemp -d "${TMPDIR:-/tmp}/shoal-stubs-XXXXXX")"
 CALLS="$STUBS/calls.log"
 : > "$CALLS"
-for t in gh az opencode openchamber claude muse; do
+for t in gh az opencode openchamber claude muse codex; do
   cat > "$STUBS/$t" <<EOF
 #!/bin/sh
 echo "network tool called: \$0 \$*" >&2

@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""Codex CLI (`codex`, OpenAI's coding agent) as a shoal harness: ONE `codex exec` PROCESS PER WAKE.
+
+The same design as Muse (shoal/muse.py has the reasoning): sessions (Codex "threads") are durable files, so
+`codex exec resume <thread-id>` continues the same session; an idle role costs no process and no tokens; shoal,
+not the role, runs the persistent watcher, so a Codex role never needs permission to start a detached process.
+
+One difference decides the shape of this module: Muse accepts a session id on its first turn
+(`--session-id <uuid>`), Codex mints the thread id itself and prints it as the first event of the first turn
+(`{"type":"thread.started","thread_id":...}`). So the first turn runs under a temporary state key
+(`new-<hex>`); the runner reads the thread id from that first event, hard-links the turn's lock file into the
+thread's own state directory (the same inode, so the thread reads busy from then on) and switches to it, and
+`create_session` returns once the id is known. Later turns key on the thread id from the start.
+
+State per thread lives in `<state root>/<thread id>/` (default /tmp/shoal-codex-<uid>), as for Muse:
+  lock         flock held by the process running a turn (the CALLER takes it; the runner inherits it)
+  run.jsonl    every JSONL event `codex exec --json` printed, all turns appended
+  run.err      its stderr
+  last.json    the latest turn: started, ended, rc, terminal (completed|failed), text, error
+  prompt-*.txt the prompts, handed to codex on stdin (`-`)
+
+Posture: unattended turns run with `--dangerously-bypass-approvals-and-sandbox` (nobody can answer an approval
+prompt, and a sandboxed shell cannot push or reach the CI tooling: the same decision as for Muse, 2026-10-15,
+applied to Codex 2026-10-18 pending the maintainer's confirmation). The environment of every turn drops
+`OPENAI_API_KEY` and `CODEX_API_KEY` (a key outranks the ChatGPT-plan login and bills per token; override with
+SHOAL_CODEX_ALLOW_API_KEY=1) and every `CLAUDE_CODE_*` variable (a Codex process is not the Claude session that
+happened to start it). `codex exec` waits on stdin when it is a pipe: the prompt is piped on purpose, and a
+caller with no prompt must close stdin.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config  # noqa: E402
+
+CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
+POSTURE = ["--dangerously-bypass-approvals-and-sandbox"]
+# PROVISIONAL until the first real usage-limit error is seen on this host (calibrate then, as for Muse)
+QUOTA_RE = re.compile(r"(rate.?limit|usage.?limit|quota|out of credits|insufficient|too many requests|\b429\b"
+                      r"|try again (in|at|after))", re.I)
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+THREAD_WAIT_S = 120
+
+
+class BusyError(RuntimeError):
+    """A turn is already running for the session (its lock is held) or an interactive client holds it."""
+
+
+def state_root() -> str:
+    return config.env("CODEX_STATE") or os.path.join(tempfile.gettempdir(), f"shoal-codex-{os.getuid()}")
+
+
+def sdir(session: str, create: bool = False) -> str:
+    d = os.path.join(state_root(), session)
+    if create:
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def codex_bin() -> str:
+    return config.env("CODEX_BIN") or shutil.which("codex") or os.path.expanduser("~/.nvm/versions/node/current/bin/codex")
+
+
+def turn_env() -> dict:
+    env = dict(os.environ)
+    if not config.env("CODEX_ALLOW_API_KEY"):
+        for k in ("OPENAI_API_KEY", "CODEX_API_KEY"):
+            env.pop(k, None)
+    for k in [k for k in env if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE"]:
+        env.pop(k)
+    return env
+
+
+def attached_client(session: str) -> int:
+    """Pid of an interactive Codex client (`codex resume <thread>`) holding the thread, else 0. Codex keeps
+    a writer lock per thread, so a second owner fails or waits; the watcher must hold the wake instead
+    (the same rule as for Muse, measured there 2026-10-15). The client is `node .../codex resume <id>` with a
+    native `codex resume <id>` child: either matches."""
+    me = os.getpid()
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit() and int(p) != me]
+    except OSError:
+        return 0
+    for p in pids:
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as fh:
+                argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+        except OSError:
+            continue
+        for i in (0, 1, 2):
+            if (len(argv) > i + 2 and os.path.basename(argv[i]) == "codex" and argv[i + 1] == "resume"
+                    and session in argv[i + 2:]):
+                return int(p)
+    return 0
+
+
+def busy(session: str) -> bool:
+    """True while a turn holds the thread's lock or an interactive client is attached."""
+    if attached_client(session):
+        return True
+    lock = os.path.join(sdir(session), "lock")
+    if not os.path.exists(lock):
+        return False
+    try:
+        with open(lock, "a+") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
+
+
+def last_run(session: str) -> dict:
+    try:
+        with open(os.path.join(sdir(session), "last.json")) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def status_line(session: str) -> str:
+    """`<id8> status:busy|idle|unknown ...`, the shape the other backends' consumers match on."""
+    fake = None
+    try:
+        from backends import fake_sessions
+        fake = fake_sessions()
+    except Exception:  # noqa: BLE001
+        pass
+    if fake is not None and "codex" in fake:  # a fake world that names no codex sessions leaves codex real
+        return str((fake.get("codex") or {}).get(session, ""))
+    if busy(session):
+        return f"{session[:8]} status:busy" + (" attached" if attached_client(session) else "")
+    last = last_run(session)
+    if not last:
+        return f"{session[:8]} status:idle never-run-here"
+    tail = f" last:{last.get('terminal') or '?'} rc:{last.get('rc')}"
+    return f"{session[:8]} status:idle{tail}"
+
+
+def quota_hint(session: str) -> str:
+    """'' or a reset hint, from the last turn's failure."""
+    last = last_run(session)
+    if last.get("terminal") not in ("failed", "error") and last.get("rc") in (0, None):
+        return ""
+    blob = f"{last.get('reason') or ''} {last.get('error') or ''} {last.get('text') or ''}"
+    if not QUOTA_RE.search(blob):
+        return ""
+    m = re.search(r"(?:resets?|try again) (?:at |in |after )?([^.\n|]{0,40})", blob, re.I)
+    return (m.group(1).strip() if m else "") or "reset time unknown"
+
+
+def run_argv(session: str, repo_dir: str, model: str = "", effort: str = "") -> list[str]:
+    """The command for one turn; the prompt arrives on stdin (`-`). `session` is a thread id, or empty for a
+    thread's first turn."""
+    flags = [*POSTURE, "--json"]
+    if model:
+        flags += ["-m", model]
+    if effort:
+        flags += ["-c", f'model_reasoning_effort="{effort}"']
+    extra = config.env("CODEX_ARGS")
+    if extra:
+        flags += shlex.split(extra)
+    if session:
+        return [codex_bin(), "exec", "resume", session, *flags, "-"]
+    return [codex_bin(), "exec", *flags, "-C", repo_dir, "-"]
+
+
+def start_run(session: str, repo_dir: str, prompt: str, model: str = "", effort: str = "",
+              dry_run: bool = False) -> str:
+    """Start one turn in the background and return its state key at once. `session` empty starts a new
+    thread (the key is then temporary; `create_session` waits for the thread id). The lock is taken HERE and
+    inherited by the runner, so the thread reads busy from the moment this returns."""
+    if dry_run:
+        return session
+    if session and attached_client(session):
+        raise BusyError(f"codex thread {session[:8]} has an interactive client attached")
+    key = session or "new-" + uuid.uuid4().hex[:12]
+    d = sdir(key, create=True)
+    lock_fh = open(os.path.join(d, "lock"), "a+")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_fh.close()
+        raise BusyError(f"codex thread {session[:8]} is already running a turn")
+    pf = os.path.join(d, f"prompt-{int(time.time() * 1000)}.txt")
+    with open(pf, "w") as fh:
+        fh.write(prompt)
+    argv = [sys.executable, CLI, "codex-run", "--key", key, "--dir", repo_dir, "--prompt-file", pf,
+            "--lock-fd", str(lock_fh.fileno())]
+    if session:
+        argv += ["--session", session]
+    if model:
+        argv += ["--model", model]
+    if effort:
+        argv += ["--effort", effort]
+    from backends import detached
+    log = open(os.path.join(d, "runner.log"), "a")
+    try:
+        subprocess.Popen(detached(argv), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                         cwd=repo_dir if os.path.isdir(repo_dir) else None, env=turn_env(),
+                         start_new_session=True, pass_fds=[lock_fh.fileno()])
+    finally:
+        log.close()
+        lock_fh.close()  # the child keeps the inherited, still-locked descriptor
+    return key
+
+
+def create_session(repo_dir: str, brief: str, model: str = "", effort: str = "") -> str:
+    """Start a thread's first turn and return its thread id (read from the first event)."""
+    key = start_run("", repo_dir, brief, model=model, effort=effort)
+    path = os.path.join(sdir(key), "thread_id")
+    end = time.time() + THREAD_WAIT_S
+    while time.time() < end:
+        try:
+            tid = open(path).read().strip()
+            if tid:
+                return tid
+        except OSError:
+            pass
+        last = last_run(key)
+        if last.get("ended") and not os.path.exists(path):
+            raise RuntimeError("codex exec ended before a thread started: " + (last.get("error") or "no output")[-300:])
+        time.sleep(0.3)
+    raise RuntimeError(f"no thread id from codex exec within {THREAD_WAIT_S} s (see {sdir(key)}/run.err)")
+
+
+def cmd_codex_run(a) -> int:
+    """The runner: one `codex exec` turn, its events appended to run.jsonl, its result to last.json."""
+    key = a.key
+    d = sdir(key, create=True)
+    session = a.session or ""
+    held = None
+    if attached_client(session) if session else False:
+        print(f"busy: an interactive client is attached to thread {session[:8]}")
+        return 75
+    if a.lock_fd is None:  # run by hand: take the lock itself
+        held = open(os.path.join(d, "lock"), "a+")
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"busy: thread {key[:8]} is already running a turn")
+            return 75
+    start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    last = {"session": session or key, "started": start, "pid": os.getpid(), "prompt": os.path.basename(a.prompt_file)}
+    _write_last(d, last)
+    terminal: dict = {}
+    text = ""
+    err_tail = ""
+    rc = 1
+    out = None
+    cur = d  # the directory the turn's records go to: the thread's own once its id is known
+    try:
+        err = open(os.path.join(d, "run.err"), "a")
+        err_from = err.tell()  # this turn's stderr starts here: an older turn's failure must not read as this one's
+        err.write(f"--- {start} {' '.join(run_argv(session, a.dir, a.model, a.effort)[:4])} ...\n")
+        err.flush()
+        with open(a.prompt_file) as pin:
+            p = subprocess.Popen(run_argv(session, a.dir, a.model, a.effort), stdin=pin, stdout=subprocess.PIPE,
+                                 stderr=err, text=True, cwd=a.dir if os.path.isdir(a.dir) else None, env=turn_env())
+            pending: list[str] = []
+            out = open(os.path.join(d, "run.jsonl"), "a")
+            for line in p.stdout:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    ev = {}
+                if ev.get("type") == "thread.started" and not session:
+                    session = ev.get("thread_id") or ""
+                    if session:
+                        cur = sdir(session, create=True)
+                        tl = os.path.join(cur, "lock")
+                        try:
+                            os.unlink(tl)
+                        except OSError:
+                            pass
+                        os.link(os.path.join(d, "lock"), tl)  # one inode: the thread reads busy from here on
+                        out.close()
+                        out = open(os.path.join(cur, "run.jsonl"), "a")
+                        last["session"] = session
+                        _write_last(cur, last)
+                        with open(os.path.join(d, "thread_id"), "w") as fh:
+                            fh.write(session + "\n")
+                out.write(line)
+                out.flush()
+                t = ev.get("type")
+                if t == "item.completed" and (ev.get("item") or {}).get("type") == "agent_message":
+                    text = (ev["item"].get("text") or "")
+                elif t == "turn.completed":
+                    terminal = {"terminal": "completed", "text": text}
+                elif t in ("turn.failed", "error"):
+                    msg = ((ev.get("error") or {}).get("message") if isinstance(ev.get("error"), dict)
+                           else ev.get("message")) or ""
+                    terminal = {"terminal": "failed", "reason": msg[:500], "text": text}
+            rc = p.wait()
+        err.close()
+        try:
+            ep = os.path.join(d, "run.err")
+            with open(ep, "rb") as fh:
+                fh.seek(max(err_from, os.path.getsize(ep) - 600))
+                err_tail = fh.read().decode(errors="replace")
+        except OSError:
+            pass
+    except OSError as exc:  # codex missing or unrunnable
+        err_tail = f"cannot run {codex_bin()}: {exc}"
+    finally:
+        if out is not None:
+            out.close()
+    last.update(ended=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), rc=rc,
+                terminal=terminal.get("terminal") or ("failed" if rc else "completed"),
+                reason=terminal.get("reason"), text=(terminal.get("text") or text or "")[:2000],
+                error=err_tail.strip()[-500:] if (rc or terminal.get("terminal") == "failed") else "")
+    _write_last(cur, last)
+    if cur != d:
+        _write_last(d, last)  # the temporary key's own record, so create_session sees the end
+    if held is not None:
+        held.close()
+    return rc
+
+
+def _write_last(d: str, last: dict) -> None:
+    tmp = os.path.join(d, "last.json.tmp")
+    with open(tmp, "w") as fh:
+        json.dump(last, fh)
+    os.replace(tmp, os.path.join(d, "last.json"))
+
+
+def messages(session: str, limit: int = 20) -> str:
+    """The final text of the latest turns, newest last."""
+    out = []
+    text = ""
+    try:
+        with open(os.path.join(sdir(session), "run.jsonl")) as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                t = ev.get("type")
+                if t == "item.completed" and (ev.get("item") or {}).get("type") == "agent_message":
+                    text = ev["item"].get("text") or ""
+                elif t == "turn.completed":
+                    out.append(f"[completed] {text}")
+                    text = ""
+                elif t == "turn.failed":
+                    out.append(f"[failed] {(ev.get('error') or {}).get('message', '')}")
+    except OSError:
+        return ""
+    return "\n".join(out[-limit:])
+
+
+def cmd_codex_tail(a) -> int:
+    """A read-only view of a thread's turns. Never starts or resumes anything."""
+    print(f"codex thread {a.session} (read-only view; `codex resume {a.session}` takes it over when no turn runs)")
+    shown = 0
+    path = os.path.join(sdir(a.session), "run.jsonl")
+    try:
+        while True:
+            if os.path.exists(path):
+                with open(path) as fh:
+                    lines = fh.readlines()
+                for line in lines[shown:]:
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    t = ev.get("type")
+                    if t == "turn.started":
+                        print("\n--- turn started ---")
+                    elif t == "item.completed" and (ev.get("item") or {}).get("type") == "agent_message":
+                        print(ev["item"].get("text") or "")
+                    elif t == "turn.completed":
+                        print("--- turn completed ---")
+                    elif t == "turn.failed":
+                        print(f"--- turn failed: {(ev.get('error') or {}).get('message', '')} ---")
+                shown = len(lines)
+            if a.once:
+                return 0
+            print(f"\r[{'running' if busy(a.session) else 'idle'}]", end="", flush=True)
+            time.sleep(2)
+    except KeyboardInterrupt:
+        return 0
+
+
+def interactive_flags() -> list[str]:
+    """Flags for an interactive (TUI) client. The sandbox and approval posture come from the host's
+    config.toml; only a model override is passed. `SHOAL_CODEX_VIEW_ARGS` replaces the whole list."""
+    extra = config.env("CODEX_VIEW_ARGS")
+    if extra:
+        return extra.split()
+    model = config.env("CODEX_MODEL")
+    return ["-m", model] if model else []
+
+
+def view_argv(session: str) -> list[str]:
+    """The viewer's command: the interactive client takes the thread over, which is only safe while no turn
+    runs; mid-turn the read-only tail is shown instead."""
+    if busy(session):
+        return [sys.executable, CLI, "codex-tail", "--session", session]
+    flags = interactive_flags()
+    if UUID_RE.match(session) or os.path.isdir(sdir(session)):
+        return [codex_bin(), "resume", session, *flags]
+    # a standalone session by NAME: resume it, or start a fresh one the first time (name it with /rename)
+    fl = "".join(" " + shlex.quote(f) for f in flags)
+    return ["sh", "-c", f'"$0" resume "$1"{fl} || exec "$0"{fl}', codex_bin(), session]
+
+
+def arm_watcher(spec, role, dry_run: bool = False) -> str:
+    """Shoal runs a Codex role's persistent watcher: `ledger-watch --wake exec:<thread>` starts a turn whenever
+    there is work. ALREADY ARMED makes a second start a no-op."""
+    if dry_run:
+        return "arm (dry-run)"
+    from roles import state_dir
+    sd = state_dir(spec.sid)
+    os.makedirs(sd, exist_ok=True)
+    argv = [sys.executable, CLI, "ledger-watch", "--shoal", spec.sid, "--slug", role.slug,
+            "--wake", f"exec:{role.session}", "--session", role.session, "--interval", "120"]
+    from backends import detached
+    log = open(os.path.join(sd, f"ledger-watch-{role.slug}.log"), "a")
+    try:
+        subprocess.Popen(detached(argv), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                         start_new_session=True, env=turn_env())
+    finally:
+        log.close()
+    return "armed"
+
+
+def add_parsers(sub) -> None:
+    p = sub.add_parser("codex-run", help="(internal) run one Codex turn on a thread and record its result")
+    p.add_argument("--key", required=True, help="the state key: the thread id, or new-<hex> for a first turn")
+    p.add_argument("--session", default="", help="the thread id (absent on a thread's first turn)")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--prompt-file", required=True)
+    p.add_argument("--lock-fd", type=int, default=None, help="an inherited, already locked lock descriptor")
+    p.add_argument("--model", default="")
+    p.add_argument("--effort", default="")
+    p.set_defaults(func=cmd_codex_run)
+    q = sub.add_parser("codex-tail", help="read-only view of a Codex thread's turns")
+    q.add_argument("--session", required=True)
+    q.add_argument("--once", action="store_true")
+    q.set_defaults(func=cmd_codex_tail)

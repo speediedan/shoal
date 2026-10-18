@@ -190,9 +190,12 @@ def _wake_requests(sid: str, slug: str) -> list[tuple[str, str]]:
     return out
 
 
-def muse_session_busy(session: str) -> bool:
-    """True while a `muse exec` turn holds the session's run lock."""
+def muse_session_busy(session: str, ecosystem: str = "muse") -> bool:
+    """True while an exec turn (or, for Muse and Codex, an attached interactive client) holds the session."""
     try:
+        if ecosystem == "codex":
+            import codex_harness
+            return codex_harness.busy(session)
         import muse
         return muse.busy(session)
     except Exception:  # noqa: BLE001 - an unreadable lock never holds a wake back
@@ -263,12 +266,12 @@ def relay_deliver(sid: str, role, session: str, text: str) -> bool:
     return True
 
 
-def fire(wake: str, text: str, repo_dir: str) -> bool:
+def fire(wake: str, text: str, repo_dir: str, ecosystem: str = "muse") -> bool:
     if wake.startswith("exec:"):
         sid = wake[len("exec:"):]
         try:
             from backends import get as get_backend
-            get_backend("muse").send(sid, repo_dir, text)
+            get_backend(ecosystem if ecosystem in ("muse", "codex") else "muse").send(sid, repo_dir, text)
         except Exception as exc:  # noqa: BLE001 - a busy session or an unrunnable muse: retried next tick
             print(f"ERROR: wake turn on {sid} not started: {str(exc)[-200:]}")
             return False
@@ -397,7 +400,7 @@ def cmd_ledger_watch(a) -> int:
             save_sidecar(sc_path, sc)
             continue
         if persistent and (claude_session_busy(session) if a.wake == "relay"
-                           else muse_session_busy(a.wake[len("exec:"):]) if a.wake.startswith("exec:")
+                           else muse_session_busy(a.wake[len("exec:"):], role.ecosystem if role else "muse") if a.wake.startswith("exec:")
                            else session_busy(session, repo_dir)):
             # never wake a lane mid-turn (or, for Claude, at an open question): the events stay
             # undelivered and go out at the next idle tick
@@ -418,7 +421,7 @@ def cmd_ledger_watch(a) -> int:
                 + f" || next: `shoal show --shoal {sid} --slug {slug}`; act (claim/msg/release), transition"
                 + ("; your watcher keeps running (no re-arm)." if persistent else ", re-arm."))
         emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
-        fired = relay_deliver(sid, role, session or "", text) if a.wake == "relay" else fire(a.wake, text, repo_dir)
+        fired = relay_deliver(sid, role, session or "", text) if a.wake == "relay" else fire(a.wake, text, repo_dir, role.ecosystem if role else "muse")
         if a.wake == "print":
             continue
         if persistent:

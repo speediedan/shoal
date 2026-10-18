@@ -238,6 +238,7 @@ def cmd_muse_run(a) -> int:
     rc = 1
     try:
         with open(os.path.join(d, "run.jsonl"), "a") as out, open(os.path.join(d, "run.err"), "a") as err:
+            err_from = err.tell()  # this turn's stderr starts here: an older failure must not read as this one's
             err.write(f"--- {start} {' '.join(run_argv(a.session, a.dir, a.prompt_file, a.model, a.effort)[:4])} ...\n")
             p = subprocess.Popen(run_argv(a.session, a.dir, a.prompt_file, a.model, a.effort),
                                  stdout=subprocess.PIPE, stderr=err, text=True, cwd=a.dir if os.path.isdir(a.dir) else None,
@@ -254,7 +255,7 @@ def cmd_muse_run(a) -> int:
             rc = p.wait()
         try:
             with open(os.path.join(d, "run.err"), "rb") as fh:
-                fh.seek(max(0, os.path.getsize(os.path.join(d, "run.err")) - 600))
+                fh.seek(max(err_from, os.path.getsize(os.path.join(d, "run.err")) - 600))
                 err_tail = fh.read().decode(errors="replace")
         except OSError:
             pass
