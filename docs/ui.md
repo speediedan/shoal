@@ -155,6 +155,14 @@ API key is not a replacement for that login. Likewise, a Meta inference key is
 not a verified credential for personal Muse subscription meters. An override
 cannot supply quota fields that a provider does not expose to that credential.
 
+Muse's interactive `/usage` is local and does not spend tokens. Its subscription
+section can be a previous observation, explicitly labeled `as of`; a fresh
+session can instead show `Currently unavailable`. Keeping a CLI open does not
+make that observation current. `muse exec /usage` treats the text as a model
+prompt, so the collector never uses it. A retained CLI observation must keep
+its original timestamp and stale/reset-due markers. OpenCode Go's current
+endpoint uses `percent`; the adapter also supports earlier percentage fields.
+
 For accounts without a usable direct quota API, an operator may explicitly set
 `usage_bridge` to a JSON object with `providers` and a `command` argv array.
 It is disabled by default. Direct reads always run first; one fallback invocation
@@ -162,6 +170,12 @@ receives only failed, due providers as `{"providers":[...]}` on stdin. It return
 a JSON object keyed by provider containing the same native payloads described
 above. No shell command string is executed. This interface permits a separately
 maintained reader without embedding browser support or a provider SDK in SHOAL.
+Cached fallback readings supply `observed_at` as their original Unix timestamp
+in seconds. The collector preserves it instead of making an old observation
+fresh, and refuses invalid or future observation times. Omitting the field means
+the helper made a current account observation. A passive CLI reader can reuse a
+timestamped report from an existing session without issuing a prompt or keeping
+another agent process open.
 Fallback observations are visibly labeled. If the chosen helper uses a browser
 login, it inherits that login's expiry and host availability; it is not an API key
 solution, even when no dashboard tab needs to remain open.

@@ -468,12 +468,21 @@ only after direct account reads fail. It is disabled by default, runs once per
 due batch with failed providers on JSON stdin, and returns provider payloads on
 stdout. The cache labels its source. SHOAL contains no browser credential reader;
 a separately configured helper owns any additional authentication dependency.
+Helpers returning cached readings include their original `observed_at` epoch;
+collection never advances that timestamp. Invalid or future timestamps are
+refused, so a passive reader of a CLI report cannot turn stale usage into an
+apparently current account measurement.
 
 Not every provider returns every window. Missing monthly meters are marked as
 not reported, authentication failures are visible, and Muse's optional missing
 quota payload is unavailable rather than a fabricated zero. CLI account APIs
 and local credential layouts are version-sensitive; hermetic fixtures exercise
 their boundaries and live read-only verification establishes actual coverage.
+OpenCode Go's current `percent` wire field maps to the same internal percentage
+as older field names. Muse's interactive `/usage` is a token-free display of
+the host's last observation, not a fresh quota API: a retained reading keeps
+its original observation timestamp. The collector never submits `/usage` to
+`muse exec`, where it is interpreted as a model prompt.
 
 The UI is an operator's window onto the groups on one host. It is read-only except for explicit
 operator verbs, it never wakes a role as a side effect of viewing, and it owns no session. Details

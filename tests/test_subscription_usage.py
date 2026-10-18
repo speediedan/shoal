@@ -209,6 +209,19 @@ class UsageTests(unittest.TestCase):
             d = u.collect(["codex"], bridge=bridge, fetcher=lambda _: codex(), now=1000)
         self.assertEqual(d["accounts"]["codex"]["source"], "account API")
 
+    def test_fallback_keeps_its_original_observation_time(self):
+        bridge = {"command": ["unused"], "providers": ["codex"]}
+        def unavailable(_):
+            raise u.UsageError("native quota unavailable")
+        for observed in (1000, 5001, "invalid"):
+            with patch.object(u, "read_bridge", return_value={"codex": dict(codex(), observed_at=observed)}):
+                d = u.collect(["codex"], bridge=bridge, fetcher=unavailable, force=True, now=4000)
+            if observed == 1000:
+                self.assertEqual(d["accounts"]["codex"]["observed_at"], 1000)
+                self.assertTrue(u.snapshot(["codex"], now=4001)["accounts"][0]["stale"])
+            else:
+                self.assertIn("fallback quota reader unavailable", d["accounts"]["codex"]["error"])
+
     def test_fallback_gets_only_failed_due_providers_on_stdin(self):
         command = [sys.executable, "-c", "import sys,json; d=json.load(sys.stdin); "
                    "assert d['providers']==['muse']; print('{}')"]
@@ -254,6 +267,14 @@ class UsageTests(unittest.TestCase):
     def test_reset_display_rounds_up_instead_of_inviting_an_early_restart(self):
         with patch.object(u.config, "timezone", return_value="UTC"):
             self.assertEqual(u.reset_text(1792447199.9), "Oct 19 22:00")
+
+    def test_go_current_endpoint_percent_shape(self):
+        rows = u.normalize("opencode-go", {"usage": {
+            "rolling": {"status": "ok", "percent": 0, "resetsAt": None},
+            "weekly": {"status": "ok", "percent": 12, "resetsAt": "2030-01-01T00:00:00Z"},
+            "monthly": {"status": "exceeded", "percent": 101, "resetsAt": "2030-02-01T00:00:00Z"}}})
+        self.assertEqual([w["used_percent"] for w in rows[0]["windows"]], [0, 12, 101])
+        self.assertEqual(u.severity({"stale": False}, rows[0]), "critical")
 
     def test_codex_transport_never_starts_a_thread_or_turn(self):
         fake = Path(self.tmp.name) / "codex-fixture"

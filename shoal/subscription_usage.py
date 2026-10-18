@@ -126,7 +126,7 @@ def normalize(provider, data):
             w = usage.get(key)
             if not isinstance(w, dict):
                 continue
-            used = w.get("usagePercent", w.get("usedPercent"))
+            used = w.get("usagePercent", w.get("usedPercent", w.get("percent")))
             if used is None:
                 amount, limit = number(w.get("used")), number(w.get("limit"))
                 used = amount / limit * 100 if amount is not None and limit else None
@@ -368,7 +368,10 @@ def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
                     data = bridged.get(provider)
                     if not isinstance(data, dict) or data.get("error"):
                         raise UsageError("fallback quota reader unavailable")
-                    row.update(rows=normalize(provider, data), observed_at=now, source="fallback reader",
+                    observed = stamp(data.get("observed_at")) if "observed_at" in data else now
+                    if observed is None or observed > now + 60:
+                        raise UsageError("invalid fallback observation time")
+                    row.update(rows=normalize(provider, data), observed_at=observed, source="fallback reader",
                                error="", failures=0, next_poll_at=now + POLL_S)
                 except Exception:
                     row["error"] += "; fallback quota reader unavailable"
