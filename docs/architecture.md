@@ -104,7 +104,7 @@ to match against), so a group can work from other trackers or a plain file.
 - **Scratch** in `/tmp/<id>/`: heartbeats, wait proofs, watcher sidecars, timer ticks, wake
   requests, and the UI's cached health conditions (`ui-conditions.json`).
 - **Operator UI state** (per host, never committed): saved standalone sessions in
-  `~/.config/shoal/ui-standalone.json`, UI-originated actions in `<data_root>/ui-actions.jsonl`.
+  `~/.config/shoal/ui-standalone.json` (an entry closed in the viewer is marked `dismissed` and stays closed), UI-originated actions in `<data_root>/ui-actions.jsonl`.
 - **Matcher key** (optional paid fallback only): `SHOAL_MATCHER_API_KEY`, from the environment
   or a gitignored `shoal/.env`.
 

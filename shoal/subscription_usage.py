@@ -591,13 +591,15 @@ def render(doc, *, color=False, width=0):
 
 
 SHORT_NAMES = {"opencode-go": "opencode"}
+COMPACT_NAMES = {"codex": "cx", "claude": "cl", "muse": "mu", "opencode-go": "oc"}
 
 
-def summary(doc):
+def summary(doc, compact=False):
     """The status-bar quick view: each provider's used percent for 5h, week and month, `-` where a window is
     not reported, e.g. `codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`. Only exceptions add
     anything: `~` after the name for a stale reading or a window past its reset, `LIMIT` after the numbers
-    for a reached limit, `?` for no reading. Reset times live in the overview table, not here."""
+    for a reached limit, `?` for no reading. Reset times live in the overview table, not here. `compact` is
+    the narrow form for a crowded bar: two-letter names and no `%` (`cx 4/23/- cl 10/87/-`)."""
     parts = []
     for a in doc.get("accounts") or []:
         best, due = {}, False
@@ -605,14 +607,16 @@ def summary(doc):
             for w in r.get("windows", []):
                 best[w["name"]] = max(best.get(w["name"], 0), w["used_percent"])
                 due = due or (w.get("resets_at") is not None and w["resets_at"] <= time.time())
-        name = SHORT_NAMES.get(a["provider"], a["provider"])
+        name = (COMPACT_NAMES if compact else SHORT_NAMES).get(a["provider"], a["provider"])
+        sep, unit = (" ", "") if compact else (": ", "%")
         limit = any(r.get("blocked") for r in a.get("rows", []))
         if not any(n in best for n in WINDOWS):
-            parts.append(f"{name}: " + ("LIMIT" if limit else "?"))
+            parts.append(f"{name}{sep}" + ("LIMIT" if limit else "?"))
         else:
-            parts.append(f"{name}{'~' if a.get('stale') or due else ''}: " + "/".join(f"{round(best[n])}%" if n in best else "-" for n in WINDOWS)
+            parts.append(f"{name}{'~' if a.get('stale') or due else ''}{sep}"
+                         + "/".join(f"{round(best[n])}{unit}" if n in best else "-" for n in WINDOWS)
                          + (" LIMIT" if limit else ""))
-    return " | ".join(parts)
+    return (" " if compact else " | ").join(parts)
 
 
 def cmd_usage(a):

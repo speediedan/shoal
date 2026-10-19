@@ -451,6 +451,35 @@ check "standalone standalone/my chat: open" $H ui open --ledger-root "$ROOT" --s
 [ "$(grep -c '"layout.apply"' "$S/herdr-calls.jsonl")" = 9 ] || fail "open is not idempotent (2 shoal tabs + 1 standalone + 2 test-made tabs + roles and overview on --reapply + overview on the refused --reapply + the attached-add tab; the consolidation moves the stray card, no apply): $(grep -c layout.apply "$S/herdr-calls.jsonl") applies"
 # --reapply restarts an idle standalone stub on the current code too
 check "restart on the current code standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --reapply
+# a standalone session closed in the viewer stays closed across `ui open` (dismissed), and --show brings it back
+python3 - "$SHOALD" <<'PY2' || fail "close the standalone workspace"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+w = next(w for w in h.workspaces() if w.get("label") == "my chat")
+h.call("workspace.close", {"workspace_id": w["workspace_id"]})
+PY2
+check "standalone my chat: closed in the viewer, left closed" $H ui open --ledger-root "$ROOT" --shoal $SID
+check "standalone my chat: closed in the viewer, left closed" $H ui open --ledger-root "$ROOT" --shoal $SID
+python3 - "$SHOALD" "$XDG_CONFIG_HOME" <<'PY2' || fail "dismissed standalone stays closed"
+import json, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+assert not any(p.get("label") == "standalone/my chat" for p in ui_herdr.Herdr().panes()), "re-created"
+e = json.load(open(sys.argv[2] + "/shoal/ui-standalone.json"))["sessions"][0]
+assert e["opened"] and e["dismissed"], e
+# a fresh server (nothing labelled to compare with) never dismisses: a restore that lost every pane reopens them
+class Fresh:
+    def panes(self, *a): return []
+    def call(self, m, p=None, timeout=0): raise AssertionError(m)
+e2 = {"harness": "claude", "session": "feedface-1", "label": "x", "opened": True}
+ui_herdr.open_standalone = lambda h, e, dry, reapply=False: "open " + e["label"]
+assert ui_herdr.sync_standalone(Fresh(), [e2], set(), False, True, False) == ["open x"] and "dismissed" not in e2
+assert "left closed" in ui_herdr.sync_standalone(Fresh(), [e2], set(), True, True, False)[0] and e2["dismissed"]
+assert ui_herdr.sync_standalone(Fresh(), [e2], {"x"}, True, True, False) == ["open x"] and "dismissed" not in e2
+print("dismissal ok")
+PY2
+check "open standalone standalone/my chat" $H ui open --ledger-root "$ROOT" --shoal $SID --show "my chat"
+python3 -c "import json,sys; e=json.load(open(sys.argv[1]+'/shoal/ui-standalone.json'))['sessions'][0]; assert e['opened'] and 'dismissed' not in e, e" "$XDG_CONFIG_HOME" || fail "--show did not clear the dismissal"
 # roles lay out in tabs of roles_per_tab cards; changing it re-lays them and closes a leftover tab
 check "roles_per_tab = 2" $H ui set roles_per_tab 2
 check "re-apply roles tabs: lay the roles out in tabs of the configured size" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone

@@ -288,7 +288,10 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 **Standalone sessions** (`shoal ui pick [--save]`, `shoal ui forget <id>`) list Claude background
 sessions and OpenChamber sessions that are not shoal roles, and open one in its own workspace. The
 picker leaves out shoal's own sessions: matcher runs (`shoal-matcher-*`) and every incarnation of a
-role (`<slug>-r<N>`, current or retired). Saved ones (`~/.config/shoal/ui-standalone.json`) come back on every `ui open`.
+role (`<slug>-r<N>`, current or retired). Saved ones (`~/.config/shoal/ui-standalone.json`) come back on `ui open`, except one that was closed in the viewer:
+once a saved session has had a workspace, a later `ui open` that finds it gone (while Herdr still holds other
+labelled panes, so not a fresh server) marks it `dismissed` and leaves it closed across viewer restarts.
+`shoal ui open --show <label>` brings it back, `shoal ui pick --save` re-saves it, `shoal ui forget` drops it.
 
 **Quiet check** (`shoal ui quiet-check --save F`, then `--compare F`). It proves that viewing woke
 nobody. For each Claude role it classifies what the transcript gained:
@@ -313,7 +316,10 @@ Herdr splits its configuration by machine:
 - **Presentation lives on the viewing machine:** theme and sidebar rows.
 - **Execution lives on the server:** restore policy, keys, plugins, and the tab-bar status line
   (`tab_bar_right`). A `herdr --remote` client draws the server's status line, not its own
-  (measured in the laptop pilot), so the server block carries it. The launcher attaches with
+  (measured in the laptop pilot), so the server block carries it. Herdr clips that command segment near 80
+  columns (measured 2026-10-19), so `shoal ui line` fits itself to the `line_width` setting (default 80; `shoal ui set
+  line_width 120` if your bar shows more): the usage quick view stays in full and quiet shoals drop out first, then the
+  usage turns compact (`cx 4/23/- cl 10/87/-`). The launcher attaches with
   `--remote-keybindings server`, so the server's keys reach the client.
 
 ```bash
