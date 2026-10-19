@@ -360,6 +360,92 @@ p = os.path.join(homes[0], "shoal-protocol", "SKILL.md"); open(p, "a").write("\n
 assert skills.stale() == [os.path.join(homes[0], "shoal-protocol")]
 print("skills ok")
 PY3
+echo "== multi-host: two clones write ONE shared file (user) before a sync; union merge, no wedge"
+# measured 2026-10-19 on two real hosts: without the union rule the second host's rebase conflicted and
+# every later pull on it failed (its writes stayed local)
+expect 0 $H msg --shoal t1shoal --ledger-dir "$A" --no-sync --by user --to alpha --text "MH1 from host A"
+expect 0 $H msg --shoal t1shoal --ledger-dir "$B" --by user --to beta --text "MH1 from host B"
+expect 0 $H sync --shoal t1shoal --ledger-dir "$A"
+BR=$(git -C "$A" rev-parse --abbrev-ref HEAD)
+[ "$(git -C "$A" rev-list --count "origin/$BR..HEAD")" = 0 ] || fail "host A has unpushed commits after sync"
+expect 0 $H sync --shoal t1shoal --ledger-dir "$B"
+for c in "$A" "$B"; do
+  [ "$(grep -c 'MH1 from host' "$c/shoals/t1shoal/ledger/user.jsonl")" = 2 ] || fail "$c lacks a host's user line :: $(cat "$c/shoals/t1shoal/ledger/user.jsonl")"
+  grep -qxF 'shoals/*/ledger/*.jsonl merge=union' "$c/.git/info/attributes" || fail "$c has no clone-local union rule"
+  [ -z "$(git -C "$c" status --porcelain)" ] || fail "$c not clean after the shared-file race :: $(git -C "$c" status --porcelain)"
+done
+git -C "$A" show "origin/$BR:.gitattributes" | grep -qxF 'shoals/*/ledger/*.jsonl merge=union' || fail "the union rule was not committed to the ledger repo"
+echo "== multi-host: two hosts save the spec concurrently; each keeps the other's change (no lost update, no wedge)"
+python3 - "$SHOALD" "$A" "$B" <<'PY3' || fail "concurrent spec saves"
+import io, contextlib, json, sys
+sys.path.insert(0, sys.argv[1])
+import cli
+from roles import ShoalSpec
+A, B = sys.argv[2], sys.argv[3]
+pa, pb = f"{A}/shoals/t1shoal/shoal.json", f"{B}/shoals/t1shoal/shoal.json"
+sa = ShoalSpec.load(pa)  # host A loads first (a restart holds its spec for minutes)
+sb = ShoalSpec.load(pb)
+for sp, root in ((sb, B),):  # each host's clone is its own (the spec names one path; real hosts share the layout)
+    sp.ledger = dict(sp.ledger, dir=root)
+    sp.base["ledger"] = dict(sp.base["ledger"], dir=root)
+sb.role("beta").model = "model-from-B"
+with contextlib.redirect_stdout(io.StringIO()):
+    cli.persist_spec(sb, pb, note="B edits beta")
+sa.role("alpha").model = "model-from-A"
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    cli.persist_spec(sa, pa, note="A edits alpha")
+assert "pushed" in out.getvalue(), out.getvalue()
+import subprocess
+br = subprocess.run(["git", "-C", A, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip()
+remote = json.loads(subprocess.run(["git", "-C", A, "show", f"origin/{br}:shoals/t1shoal/shoal.json"],
+                                   capture_output=True, text=True, check=True).stdout)
+models = {r["slug"]: r.get("model") for r in remote["roles"]}
+assert models["alpha"] == "model-from-A" and models["beta"] == "model-from-B", models
+assert remote["ledger"]["dir"] == A, remote["ledger"]  # B's local clone path never leaked into the shared spec
+assert sa.role("beta").model == "model-from-B", "A's in-memory spec did not take the merged copy"
+print("spec merge ok")
+PY3
+expect 0 $H sync --shoal t1shoal --ledger-dir "$B"
+echo "== multi-host: locality (a remote role is not watched, woken or launched from this host)"
+MH="$S/mh"; mkdir -p "$MH/shoals/t1shoal"
+python3 - "$SPEC" "$MH/shoals/t1shoal/shoal.json" <<'PY3'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["home"] = "hostA"
+for r in d["roles"]:
+    r["server"] = "hostB" if r["slug"] == "beta" else ""
+json.dump(d, open(sys.argv[2], "w"), indent=2)
+PY3
+SHOAL_SERVER=hostA python3 - "$SHOALD" "$MH/shoals/t1shoal/shoal.json" "$SPEC" "$A" <<'PY3' || fail "locality"
+import sys
+sys.path.insert(0, sys.argv[1])
+import health
+from ledger import Ledger, View
+from roles import ShoalSpec, is_home, is_local
+mh, single = ShoalSpec.load(sys.argv[2]), ShoalSpec.load(sys.argv[3])
+mh.ledger = dict(mh.ledger, dir=sys.argv[4])
+assert is_home(mh) and is_local(mh.role("alpha"), mh) and not is_local(mh.role("beta"), mh)
+view = View(Ledger("t1shoal", root=sys.argv[4], sync=False), mh)
+# control first: the same role in the single-host spec raises conditions here (no sidecar on this host)
+ctl = [c for c in health.evaluate(single, View(Ledger("t1shoal", root=sys.argv[4], sync=False), single), {}) if c["slug"] == "beta"]
+assert ctl, "control: beta raised no condition even as a local role, so the check below would prove nothing"
+got = [c for c in health.evaluate(mh, view, {}) if c["slug"] == "beta"]
+assert not got, got
+w = health.request_wake(mh, "beta", "test", "test", dry_run=True)
+assert w.startswith("remote (skipped"), w
+print("locality ok")
+PY3
+SHOAL_SERVER=hostA check "REFUSED: beta run(s) on another host" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --only beta --dry-run
+SHOAL_SERVER=hostA check "ssh hostB shoal restart" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --only alpha,beta --dry-run
+SHOAL_SERVER=hostB SHOAL_LEDGER_DIR="$MH" python3 - "$SHOALD" <<'PY3' || fail "doctor host profile"
+import sys
+sys.path.insert(0, sys.argv[1])
+import doctor
+p = doctor.host_profile()
+assert p["ecosystems"] == {"opencode"} and p["home_of"] == [], p  # hostB runs only beta (opencode)
+print("profile ok")
+PY3
 echo "== matcher transport: model calls go through openchamber, never the opencode CLI"
 mkdir -p "$S/ocstub"
 cat > "$S/ocstub/openchamber" <<'SH'

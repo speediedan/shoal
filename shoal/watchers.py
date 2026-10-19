@@ -144,7 +144,7 @@ def _health_route(sid: str, kind: str, text: str) -> bool | None:
     starvation -> roles waiting on remote CI; server respawn -> every opencode role.
     None = feature off (caller falls back to the ledger msg)."""
     try:
-        from roles import ShoalSpec, find_spec
+        from roles import ShoalSpec, find_spec, is_local
         spec = ShoalSpec.load(find_spec(sid))
         if not (spec.features or {}).get("health") or kind not in ("starved", "server-respawned"):
             return None
@@ -152,7 +152,9 @@ def _health_route(sid: str, kind: str, text: str) -> bool | None:
         if kind == "starved":
             to = [s for s in starved_targets(sid) if s != "user" and spec.role(s) is not None]
         else:
+            # this host's OpenChamber respawned: only the opencode roles it serves lost their watchers
             to = [r.slug for r in spec.roles if r.ecosystem == "opencode" and r.session]
+        to = [s for s in to if is_local(spec.role(s), spec)]  # a remote role's host senses and wakes it
         for s in to:
             print(f"{utcnow()} {kind} -> {s}: {request_wake(spec, s, text, condition=kind)}")
         return True

@@ -15,7 +15,9 @@ readers fold the files into a projection. The human-readable form is `shoal show
 
 **Why.**
 - `git pull --rebase` cannot conflict when no two writers touch one file, so no agent ever
-  resolves a merge. The merged state is the union of every writer's events, which is why two
+  resolves a merge. Two files are shared (`user`, the maintainer from any host; `shoal`, the tooling
+  on every host): they are append-only, so they merge by union (`.gitattributes`). Addendum
+  2026-10-19: two hosts writing `user` before a sync did conflict and wedged a clone until that rule. The merged state is the union of every writer's events, which is why two
   sessions can never overwrite each other.
 - Append-only history is the audit trail the report mines, and a bad line can be flagged without
   rewriting anything.

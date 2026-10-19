@@ -367,8 +367,30 @@ generic default.
 | `default_owner` | `SHOAL_DEFAULT_OWNER` | none |
 | `azure_org`, `azure_project` | `SHOAL_AZURE_ORG`, `SHOAL_AZURE_PROJECT` | none (the pipeline sensor needs them) |
 | `skill_homes` | `SHOAL_SKILL_HOMES` (path-separated) | the existing standard homes: `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills` |
+| `[tool_env]` | an exported variable of the same name wins | none: extra variables for every tool call and generated systemd unit (e.g. `OPENCHAMBER_DATA_DIR` for a server kept apart from a desktop app) |
 
-`doctor` prints every resolved value. The providers (resource leases, wait targets, the board
+`doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
+the clock state. The providers (resource leases, wait targets, the board
+source, harness adapters) and their contracts are in [`providers.md`](providers.md).
+
+**Several hosts.** One shoal's roles may run on several hosts that share the ledger remote; the remote
+is the only coordination path (no host-to-host connection is needed for correctness).
+- **Locality.** The spec's `home` names the host for group duties; each role's `server` names its host,
+  empty meaning home; an empty `home` is a single-host shoal. `roles.is_local(role, spec)` compares with
+  config `server` and is the one test: health evaluates, sensors wake and `request_wake` delivers only for
+  local roles, and `restart`, `relay-launch` and `aux-launch` refuse a remote role and print the
+  `ssh <server> shoal ...` line. A remote role is watched, woken and launched by its own host.
+- **Shared files.** Role files have one writer. `user` and `shoal` are written from any host, so the
+  append-only writer files merge by union: `ledger.sync_pull` ensures the rule in the clone's
+  `.git/info/attributes` (in force for every rebase) and commits it to `.gitattributes`.
+- **The spec** is JSON and cannot merge by union: `cli.persist_spec` pulls under the clone's lock, applies
+  only its own changes (the spec as loaded, `ShoalSpec.base`, to as saved: `merge_spec`, roles by slug and
+  field, generations by `gen`) onto the fresh copy, and on a rejected push undoes only its own commit and
+  merges again. A key both hosts changed keeps this host's value and is printed as a conflict.
+- **Clocks.** Events are stamped by the writer's clock, the fold orders by them and conditions are ages:
+  `doctor` fails a host that is not NTP-synchronized.
+- **Not yet:** per-host timer sets, a host heartbeat, the Claude wake mode off the relay host
+  ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
 source, harness adapters) and their contracts are in [`providers.md`](providers.md).
 
 **Harness-specific verbs**, the only non-neutral surface:

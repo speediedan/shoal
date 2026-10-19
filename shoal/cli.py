@@ -47,7 +47,9 @@ only interactive step.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
+import json
 import os
 import re
 import sys
@@ -74,8 +76,8 @@ import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
-from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, is_wake_relay,  # noqa: E402
-                   home_dir, state_dir, utcnow_iso)
+from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
+                   is_wake_relay, home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
 from watchers import cmd_lanes, cmd_pipeline, shoal_emit  # noqa: E402
@@ -236,24 +238,135 @@ def stage_retire(spec: ShoalSpec, old_sessions: list[str],
     return 0
 
 
-def persist_spec(spec: ShoalSpec, path: str, note: str = "") -> None:
-    """Save the spec; when the path lives under the ledger clone it is the
-    canonical copy, so commit+push (remote agents read it). A spec outside
-    the clone (tests, a pinned $SHOAL_SPEC) saves plain."""
-    spec.save(path)
+_MISSING = object()
+
+
+def merge_spec(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str]]:
+    """Apply what THIS process changed (base -> ours) onto the copy on the remote (theirs): top-level
+    keys whole, roles by slug and then field by field, generations by `gen`. A key both sides changed
+    differently takes ours and is returned as a conflict to report. Another host's restart of its own
+    role and this host's restart of another role then both survive (a whole-file save lost one)."""
+    import copy
+    out = copy.deepcopy(theirs)
+    conflicts: list[str] = []
+
+    def changed(o, b):
+        return o is not b and o != b
+
+    for k in (set(base) | set(ours)) - {"roles", "generations"}:
+        o, b, t = ours.get(k, _MISSING), base.get(k, _MISSING), theirs.get(k, _MISSING)
+        if not changed(o, b):
+            continue
+        if changed(t, b) and changed(t, o):
+            conflicts.append(k)
+        if o is _MISSING:
+            out.pop(k, None)
+        else:
+            out[k] = copy.deepcopy(o)
+    # roles: keyed by slug, merged per field
+    bR = {r["slug"]: r for r in base.get("roles", [])}
+    oR = {r["slug"]: r for r in ours.get("roles", [])}
+    tR = {r["slug"]: r for r in theirs.get("roles", [])}
+    order = [r["slug"] for r in theirs.get("roles", [])] + [r["slug"] for r in ours.get("roles", [])
+                                                           if r["slug"] not in tR]
+    roles = []
+    for slug in order:
+        b, o, t = bR.get(slug), oR.get(slug), tR.get(slug)
+        if not changed(o, b):
+            res = t
+        elif b is None:  # added here
+            if t is not None and changed(t, o):
+                conflicts.append(f"role {slug}")
+            res = o
+        elif o is None:  # removed here
+            res = None
+        else:  # modified here: our changed fields onto theirs
+            res = copy.deepcopy(t if t is not None else b)
+            for f in set(b) | set(o):
+                of, bf = o.get(f, _MISSING), b.get(f, _MISSING)
+                if not changed(of, bf):
+                    continue
+                tf = t.get(f, _MISSING) if t is not None else _MISSING
+                if t is not None and changed(tf, bf) and changed(tf, of):
+                    conflicts.append(f"role {slug}.{f}")
+                if of is _MISSING:
+                    res.pop(f, None)
+                else:
+                    res[f] = copy.deepcopy(of)
+        if res is not None:
+            roles.append(res)
+    out["roles"] = roles
+    # generations: keyed by gen, ours wins for an entry it changed
+    if "generations" in ours or "generations" in theirs:
+        key = lambda g: str(g.get("gen", ""))  # noqa: E731
+        bG = {key(g): g for g in base.get("generations", []) or []}
+        oG = {key(g): g for g in ours.get("generations", []) or []}
+        gens = {key(g): g for g in theirs.get("generations", []) or []}
+        for k, g in oG.items():
+            if changed(g, bG.get(k)):
+                gens[k] = copy.deepcopy(g)
+        out["generations"] = sorted(gens.values(), key=lambda g: (int(g.get("incarnation", 0) or 0), str(g.get("started_utc", ""))))
+    return out, conflicts
+
+
+def persist_spec(spec: ShoalSpec, path: str, note: str = "", attempts: int = 3) -> None:
+    """Save the spec; when the path lives under the ledger clone it is the canonical copy, so
+    commit+push (remote agents read it). A spec outside the clone (tests, a pinned $SHOAL_SPEC)
+    saves plain.
+
+    Multi-host safe: under the clone's Lock it pulls, applies only THIS process's changes (the spec
+    as loaded -> as now, `merge_spec`) onto the copy another host may have pushed meanwhile, commits
+    and pushes; a rejected push undoes only its own commit and goes round again. A whole-file save
+    without a pull lost the other host's edits, and two hosts' spec commits rebased onto each other
+    conflict and wedge the clone (the spec is JSON, so it cannot merge by union like the ledger)."""
     try:
         root = spec.ledger_dir
     except Exception:
         root = ""
-    if root and os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root):
-        from ledger import git as _git
-        rel = os.path.relpath(path, root)
-        _git(root, "add", "--", rel, check=False)
-        _git(root, "commit", "--quiet", "-m", f"{spec.sid}: spec update{(' ' + note) if note else ''}",
-             "--", rel, check=False)
-        from ledger import sync_push
-        sync_push(root)
+    in_clone = bool(root) and os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
+    if not in_clone:
+        spec.save(path)
+        return
+    from ledger import Lock, git as _git, has_remote, sync_pull_locked
+    rel = os.path.relpath(path, root)
+    ours = spec.to_dict()
+    base = getattr(spec, "base", None)
+    remote = has_remote(root)
+    pushed = not remote
+    merged, conflicts = ours, []
+    for _ in range(max(1, attempts)):
+        with Lock(root):
+            if remote:
+                sync_pull_locked(root)
+            if base is not None and os.path.exists(path):
+                with open(path) as fh:
+                    merged, conflicts = merge_spec(base, ours, json.load(fh))
+            ShoalSpec.from_dict(merged).save(path)
+            _git(root, "add", "--", rel, check=False)
+            c = _git(root, "commit", "--quiet", "-m", f"{spec.sid}: spec update{(' ' + note) if note else ''}",
+                     "--", rel, check=False)
+            if not remote:
+                break
+            branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            if _git(root, "push", "--quiet", "origin", branch, check=False, timeout=60).returncode == 0:
+                pushed = True
+                break
+            if c.returncode == 0:
+                # rejected: another host pushed first. Undo only this commit (the Lock is held, so HEAD
+                # is ours) and merge again onto the fresh remote copy, never by rebase
+                _git(root, "reset", "--quiet", "--soft", "HEAD~1", check=False)
+                _git(root, "checkout", "--quiet", "HEAD", "--", rel, check=False)
+    # the in-memory spec becomes what was saved, and the next save's base
+    fresh = ShoalSpec.from_dict(merged)
+    for f in dataclasses.fields(ShoalSpec):
+        setattr(spec, f.name, getattr(fresh, f.name))
+    spec.base = json.loads(json.dumps(merged))
+    for k in conflicts:
+        print(f"WARN spec merge: {k} was also changed on the remote; this host's value kept")
+    if pushed:
         print(f"spec committed + pushed in {root}")
+    else:
+        print(f"WARN spec committed in {root} but NOT pushed after {attempts} attempt(s); the next sync pushes it")
 
 
 def write_brief(spec: ShoalSpec, role: Role) -> str:
@@ -575,7 +688,11 @@ def cmd_start(args: argparse.Namespace) -> int:
               "`ledger_repo` in the host config / SHOAL_LEDGER_REPO)")
         return 1
     spec = ShoalSpec(sid=sid, dir=args.dir, incarnation=0, roles=roles,
-                   repos=list(args.repo or []), ledger=ledger, sources=sources)
+                   repos=list(args.repo or []), ledger=ledger, sources=sources,
+                   home=getattr(args, "home", "") or "")
+    if spec.home and spec.home != config.server():
+        print(f"REFUSED: --home {spec.home} is not this host ({config.server()}): start the shoal on its home host")
+        return 1
     errs = spec.validate()
     if errs:
         print("spec invalid:", *errs, sep="\n  ")
@@ -676,6 +793,23 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
         r.session = sid
         if only is not None and slug not in only:
             only = only + [slug]
+    if want(stages, "restart"):
+        remote = [r for r in spec.roles if (only is None or r.slug in only) and not is_local(r, spec)]
+        if remote:
+            # a session is launched where the restart runs: a laptop role restarted from the server
+            # would run on the server (multi-host). Refuse before anything is mutated.
+            here = [r.slug for r in spec.roles if (only is None or r.slug in only) and is_local(r, spec)]
+            print(f"REFUSED: {', '.join(r.slug for r in remote)} run(s) on another host; restart each role on its "
+                  f"own host:")
+            if here:
+                print(f"  here:   {config.cli()} restart --spec {args.spec} --only {','.join(here)}")
+            by_host: dict[str, list] = {}
+            for r in remote:
+                by_host.setdefault(host_of(r, spec), []).append(r)
+            for h, rs in sorted(by_host.items()):
+                print(f"  {h}: ssh {h} shoal restart --spec <its ledger clone>/shoals/{spec.sid}/shoal.json "
+                      f"--only {','.join(r.slug for r in rs)}")
+            return 1
     old = list(args.old_session or [])
     if getattr(args, "spec", ""):
         old += old_sessions_for_roles(args.spec, only)
@@ -922,6 +1056,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("start", help="mint a new shoal and start its first generation")
     p.add_argument("--name", required=True)
+    p.add_argument("--home", default="", help="multi-host: this host's `server` name, recorded as the shoal's home so "
+                                               "every other host treats its roles (server empty) as remote")
     p.add_argument("--aux", default="", metavar="ECOSYSTEM[:MODEL]",
                    help="also start the shoal-aux residual lane (needs features.matcher)")
     p.add_argument("--dir", required=True)

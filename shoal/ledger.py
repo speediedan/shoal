@@ -186,6 +186,46 @@ def ensure_gitignore(root: str) -> list[str]:
     return add
 
 
+UNION_RULE = "shoals/*/ledger/*.jsonl merge=union"
+
+
+def _ensure_attributes_locked(root: str) -> list[str]:
+    """Caller holds the clone's Lock. Make append-only ledger files merge by union, in two places:
+    the clone's own `.git/info/attributes` (in force for every rebase, including one onto a remote
+    that does not carry the rule yet) and the repository's `.gitattributes` (committed, not pushed,
+    so every other clone gets it). Writer files are append-only, so a union of two appends is exact.
+    Two hosts appending to one shared file (`user`, `shoal`) before a sync made the rebase conflict
+    and wedged that host's clone: every later pull failed (measured 2026-10-19, two hosts)."""
+    done = []
+    gitdir = os.path.join(root, ".git")
+    if not os.path.isdir(gitdir):
+        return done
+    for path, commit in ((os.path.join(gitdir, "info", "attributes"), False), (os.path.join(root, ".gitattributes"), True)):
+        try:
+            text = open(path).read()
+        except OSError:
+            text = ""
+        if UNION_RULE in {ln.strip() for ln in text.splitlines()}:
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as fh:
+            if text and not text.endswith("\n"):
+                fh.write("\n")
+            fh.write(UNION_RULE + "\n")
+        done.append(path)
+        if commit:
+            git(root, "add", "--", ".gitattributes", check=False)
+            git(root, "commit", "--quiet", "-m", "ledger: append-only writer files merge by union (multi-host)",
+                "--", ".gitattributes", check=False)
+    return done
+
+
+def ensure_gitattributes(root: str) -> list[str]:
+    """`_ensure_attributes_locked` under the clone's Lock; returns the files changed."""
+    with Lock(root):
+        return _ensure_attributes_locked(root)
+
+
 def ensure_clone(root: str = LEDGER_DIR, remote: str = DEFAULT_LEDGER_REPO,
                  quiet: bool = False) -> str:
     """Clone the queue repo if absent. Returns the root."""
@@ -214,24 +254,33 @@ def sync_pull(root: str, timeout: int = 60) -> bool:
     if not has_remote(root):
         return True
     with Lock(root):
-        try:
-            r = git(root, "fetch", "--quiet", "origin", timeout=timeout, check=False)
-        except subprocess.TimeoutExpired:
-            # a hung fetch is a failed fetch (offline): it killed two watchers on 2026-10-14
-            return False
-        if r.returncode != 0:
-            return False
-        branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        # --autostash: a multi-line write (`queue`: claim, state and queue appended, then ONE commit)
-        # releases the lock between its appends, so a pull can land on an uncommitted line of another
-        # writer's file; a plain rebase refused it and the error killed the pulling watcher (FM-17,
-        # measured 2026-10-13: ie-integration and it-arch-reviewer read NOWATCH). One file per writer,
-        # so the stashed line always re-applies.
-        r = git(root, "rebase", "--quiet", "--autostash", f"origin/{branch}", check=False, timeout=timeout)
-        if r.returncode != 0:
-            git(root, "rebase", "--abort", check=False)
-            raise LedgerError(f"rebase onto origin/{branch} failed (should be impossible with "
-                              f"one file per writer): {(r.stdout + r.stderr).strip()[-300:]}")
+        return sync_pull_locked(root, timeout)
+
+
+def sync_pull_locked(root: str, timeout: int = 60) -> bool:
+    """`sync_pull` for a caller that already holds the clone's Lock (it is not re-entrant)."""
+    if not has_remote(root):
+        return True
+    try:
+        r = git(root, "fetch", "--quiet", "origin", timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        # a hung fetch is a failed fetch (offline): it killed two watchers on 2026-10-14
+        return False
+    if r.returncode != 0:
+        return False
+    _ensure_attributes_locked(root)  # cheap when present; an older clone gets the union rule here
+    branch = git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    # --autostash: a multi-line write (`queue`: claim, state and queue appended, then ONE commit)
+    # releases the lock between its appends, so a pull can land on an uncommitted line of another
+    # writer's file; a plain rebase refused it and the error killed the pulling watcher (FM-17,
+    # measured 2026-10-13: ie-integration and it-arch-reviewer read NOWATCH). One file per writer,
+    # so the stashed line always re-applies.
+    r = git(root, "rebase", "--quiet", "--autostash", f"origin/{branch}", check=False, timeout=timeout)
+    if r.returncode != 0:
+        git(root, "rebase", "--abort", check=False)
+        raise LedgerError(f"rebase onto origin/{branch} failed (should be impossible: one file per "
+                          f"writer, and shared append-only files merge by union): "
+                          f"{(r.stdout + r.stderr).strip()[-300:]}")
     return True
 
 
@@ -282,6 +331,7 @@ class Ledger:
 
     def init(self, spec_snapshot: dict | None = None, note: str = "") -> str:
         ensure_gitignore(self.root)
+        ensure_gitattributes(self.root)
         os.makedirs(self.ldir, exist_ok=True)
         keep = os.path.join(self.ldir, ".gitkeep")
         if not os.path.exists(keep):

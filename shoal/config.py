@@ -149,7 +149,19 @@ def tool_env(base: dict | None = None) -> dict:
             seen.add(p)
             parts.append(p)
     env["PATH"] = ":".join(parts)
+    for k, v in tool_env_extra().items():
+        env.setdefault(k, v)  # an exported variable still wins, as everywhere in this file
     return env
+
+
+def tool_env_extra() -> dict[str, str]:
+    """`[tool_env]` in the host config: variables every tool call and systemd unit gets, for a host
+    whose harness services sit somewhere non-default (a second host's OpenChamber server kept apart
+    from the desktop app with OPENCHAMBER_DATA_DIR, 2026-10-19). Strings only; PATH stays `tool_path`."""
+    v = file_values().get("tool_env") or {}
+    if not isinstance(v, dict):
+        return {}
+    return {str(k): os.path.expanduser(str(x)) for k, x in v.items() if k != "PATH" and x not in (None, "")}
 
 
 def lease_cmd() -> str:
