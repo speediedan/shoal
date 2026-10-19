@@ -64,18 +64,26 @@ def timer_unit(description: str, on_calendar: str) -> str:
 
 
 def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]:
-    """(job, description, argv, OnCalendar, exe)."""
-    lanes = [r.session for r in spec.roles
-             if r.ecosystem == "opencode" and r.session]
+    """(job, description, argv, OnCalendar, exe) for THIS host. Multi-host: every host that runs a role
+    gets the health quorum and the lanes sensor for its own roles; the group duties (the pipeline
+    sensor, digest, reconcile, weekly report) run on the shoal's home only, so a second host never
+    duplicates board reads, matcher calls or reports. A single-host shoal (no `home`) gets the full set."""
+    from roles import is_home, is_local
+    local = [r for r in spec.roles if is_local(r, spec)]
+    home = is_home(spec)
+    if not local and not home:
+        return []
+    lanes = [r.session for r in local if r.ecosystem == "opencode" and r.session]
     jobs = []
     target = f"ledger:{spec.sid}"
     if lanes:
         jobs.append(("lanes", f"shoal {spec.sid} lanes watch (server respawn -> ledger)",
                      ["watch", "--shoal", spec.sid, "lanes", target, spec.dir] + lanes,
                      "*:0/5", ""))
-    jobs.append(("pipeline", f"shoal {spec.sid} pipeline watch (starvation -> ledger)",
-                 ["watch", "--shoal", spec.sid, "pipeline", target, spec.dir],
-                 "*:0/10", ""))
+    if home:
+        jobs.append(("pipeline", f"shoal {spec.sid} pipeline watch (starvation -> ledger)",
+                     ["watch", "--shoal", spec.sid, "pipeline", target, spec.dir],
+                     "*:0/10", ""))
     if (getattr(spec, "features", {}) or {}).get("health"):
         # the health quorum: two identical, offset instances (architecture doc §6)
         jobs.append(("health-a", f"shoal {spec.sid} health quorum (a)",
@@ -86,6 +94,8 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
         jobs.append(("heartbeat", f"shoal {spec.sid} stall daemon",
                      ["heartbeat", "--spec", spec_path, "--threshold-min", "60"],
                      "*:0/5", ""))
+    if not home:
+        return jobs
     if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
         jobs.append(("digest", f"shoal {spec.sid} board digest (one board read per shoal)",
                      ["digest", "--shoal", spec.sid, "--spec", spec_path, "--refresh"], "*:3/10", ""))
@@ -104,9 +114,13 @@ def cmd_install(spec, spec_path: str,
     if not any(r.session for r in spec.roles):
         print("spec has no live session ids — run start/restart live first (ids are saved back)")
         return 1
+    jobs = jobs_for(spec, spec_path)
+    if not jobs:
+        print(f"nothing to install on {config.server()}: no role of {spec.sid} runs here and home is {spec.home}")
+        return 0
     os.makedirs(UNIT_DIR, exist_ok=True)
     timers = []
-    for job, desc, argv, cal, exe in jobs_for(spec, spec_path):
+    for job, desc, argv, cal, exe in jobs:
         svc = service_unit(desc, spec.dir, argv, exe)
         sn, tn = unit_name(spec.sid, job, "service"), unit_name(spec.sid, job, "timer")
         if dry_run:

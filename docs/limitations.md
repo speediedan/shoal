@@ -75,12 +75,20 @@ Measured on two real hosts first, then proven by `selftest_ledger.sh` (two clone
 - `doctor` checks the tools the roles on this host need and the clock (`NTPSynchronized`; a laptop 115 s fast
   stamped every event wrong).
 
-**Still open (multi-server plan, phase 1 PR B).** Per-host systemd timer sets (health and lanes on every role
-host, digest, reconcile, report and the pipeline sensor on home); a host heartbeat and a "host silent" page;
-the Claude wake mode on a host without the relay; `upgrade --local` for a non-home host; telemetry merge for
-reports. Until then a non-home host installs only its own health timers by hand. Host-local pieces a second
-host reproduces: `config/host.toml` (data root, ledger clone, lease provider, `tool_env`), harness CLIs and
-logins, heartbeats, sidecars, job records and leases (local by construction).
+- Each host installs only its own timer set (`install-systemd` on that host): health and the lanes sensor
+  for its roles everywhere, the pipeline sensor, digest, reconcile and weekly report on home only.
+- Every host with a live role writes a `host-beat` system event at most every 15 min; home pages
+  `host-silent` once per episode for another host silent over 60 min (`features.health.host_beat_min`,
+  `host_silent_min`). A host that never beat is not judged.
+- A Claude role off the relay's host gets the `exit` watcher (the relay reaches only its own host's
+  sessions). `upgrade` on a non-home host syncs skills and re-arms but leaves the spec's tooling and
+  features to home.
+
+**Still open.** Telemetry from other hosts is not merged into `report` (fetch the remote data roots by
+hand); per-host relays; a sleeping host (a laptop) reads as `host-silent` until it beats again, with no
+"away" mark yet. Host-local pieces a second host reproduces: `config/host.toml` (data root, ledger clone,
+lease provider, `tool_env`), harness CLIs and logins, heartbeats, sidecars, job records and leases (local
+by construction).
 
 **Trust model.** The ledger enforces permissions when it is read: a projection ignores an event its
 writer was not allowed to write, and `ledger-lint` lists the violations. Nothing authenticates a

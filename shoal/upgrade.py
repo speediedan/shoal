@@ -341,17 +341,29 @@ def cmd_upgrade(a) -> int:
         return 0
     if stale_skills:
         print(f"skills: synced {len(_skills.sync())} cop{'y' if len(stale_skills) == 1 else 'ies'}")
-    spec.features = new_features
+    from roles import is_home
+    if not is_home(spec):
+        # multi-host: the tooling record and the features are group state, written by home only; two hosts on
+        # different checkouts flapped `tooling.sha`. This host still synced its skills above and re-arms below.
+        print(f"upgrade on {config.server()} (home is {spec.home}): local only; the spec's tooling and features are "
+              f"home's to record (run `shoal upgrade` there)")
+        recorded_local = True
+    else:
+        recorded_local = False
+    if not recorded_local:
+        spec.features = new_features
     spec.tooling = {"sha": sha, "repo": repo_id(), "prev": recorded, "upgraded_utc": now_iso(),
                     "changed": sorted({os.path.basename(f) for f in files}),
                     "features_changed": changes}
-    from cli import persist_spec
-    persist_spec(spec, path, note=f"upgrade tooling {recorded or '-'}..{sha}" + (f"; {', '.join(changes)}" if changes else ""))
+    if not recorded_local:
+        from cli import persist_spec
+        persist_spec(spec, path, note=f"upgrade tooling {recorded or '-'}..{sha}" + (f"; {', '.join(changes)}" if changes else ""))
     try:
         from ledger import Ledger
         Ledger(spec.sid, root=spec.ledger_dir).append(
-            "shoal", "system", kind="upgrade", old=recorded, new=sha, features=changes,
-            text=f"tooling upgraded {recorded or '-'} -> {sha}" + (f"; features {', '.join(changes)}" if changes else ""))
+            "shoal", "system", kind="upgrade", old=recorded, new=sha, features=changes, host=config.server(),
+            text=f"tooling upgraded {recorded or '-'} -> {sha} on {config.server()}"
+                 + (f"; features {', '.join(changes)}" if changes else ""))
     except Exception as exc:  # noqa: BLE001
         print(f"(ledger system event failed: {exc})")
     if a.rearm == "now":

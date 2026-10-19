@@ -150,7 +150,7 @@ def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
         return "send:<your-session-id>", (detached + "; it sends each wake to your session id between your turns "
                                           "and keeps running, so it needs no re-arm after a wake (re-arming while it "
                                           "runs prints ALREADY ARMED); re-arm only if `next` or health says it is dead")
-    if (getattr(spec, "features", {}) or {}).get("relay"):
+    if (getattr(spec, "features", {}) or {}).get("relay") and _relay_on_host_of(spec, role):
         return "relay", (detached + "; between your turns the wake relay delivers each wake to you as a message, and "
                          "the watcher keeps running, so it needs no re-arm after a wake and is never killed at a "
                          "time limit (re-arming while it runs prints ALREADY ARMED); re-arm only if `next` or health "
@@ -323,3 +323,11 @@ def brief_for(role: Role, spec: ShoalSpec) -> str:
 if __name__ == "__main__":
     import sys
     print("\n".join(f"- {g}" for g in extract_grants(sys.argv[1])))
+
+
+def _relay_on_host_of(spec, role) -> bool:
+    """The relay delivers by cross-session message to sessions on ITS host only, so a Claude role on
+    another host gets the `exit` watcher (multi-host): with `relay` it would never be woken."""
+    from roles import host_of, wake_relay_role
+    relay = wake_relay_role(spec)
+    return relay is not None and host_of(relay, spec) == host_of(role, spec)

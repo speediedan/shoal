@@ -446,6 +446,53 @@ p = doctor.host_profile()
 assert p["ecosystems"] == {"opencode"} and p["home_of"] == [], p  # hostB runs only beta (opencode)
 print("profile ok")
 PY3
+echo "== multi-host: per-host timer sets, Claude wake mode by host, host heartbeats"
+for H_ in hostA hostB hostC; do
+SHOAL_SERVER=$H_ python3 - "$SHOALD" "$MH/shoals/t1shoal/shoal.json" "$H_" <<'PY3' || fail "per-host jobs on $H_"
+import sys
+sys.path.insert(0, sys.argv[1])
+import systemd
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+spec.features = {"health": True}
+jobs = {j[0] for j in systemd.jobs_for(spec, sys.argv[2])}
+want = {"hostA": {"health-a", "health-b", "lanes", "pipeline", "reconcile", "weekly-report"},  # home: alpha, observer + group duties
+        "hostB": {"health-a", "health-b", "lanes"},  # beta (opencode) only: no group duty, no duplicated board reads
+        "hostC": set()}[sys.argv[3]]
+assert jobs == want, (sys.argv[3], jobs)
+print(sys.argv[3], "jobs ok")
+PY3
+done
+SHOAL_SERVER=hostA python3 - "$SHOALD" "$MH/shoals/t1shoal/shoal.json" "$A" <<'PY3' || fail "wake mode and host beats"
+import sys
+sys.path.insert(0, sys.argv[1])
+import briefs, health
+from ledger import Ledger
+from roles import Role, ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+spec.ledger = dict(spec.ledger, dir=sys.argv[3])
+spec.features = {"relay": True, "health": {"host_silent_min": 0}}
+spec.roles.append(Role(slug="wake-relay", ecosystem="claude", title="wake-relay", doc="x", fill="none", session="rrrr"))
+spec.roles.append(Role(slug="gamma", ecosystem="claude", title="gamma", doc="x", fill="assigned", session="gggg", server="hostB"))
+assert briefs.arming(spec.role("alpha"), spec)[0] == "relay"  # same host as the relay (home)
+assert briefs.arming(spec.role("gamma"), spec)[0] == "exit"   # the relay cannot reach another host's session
+led = Ledger("t1shoal", root=sys.argv[3], sync=False)
+import config, os
+os.environ["SHOAL_SERVER"] = "hostB"  # hostB's quorum beats; home is not hostB, so it judges nobody
+assert health.host_beats(spec, led, {}, dry_run=False) == []
+os.environ["SHOAL_SERVER"] = "hostA"
+led = Ledger("t1shoal", root=sys.argv[3], sync=False)
+got = health.host_beats(spec, led, {"host_beat": health.iso()}, dry_run=False)
+assert [c["slug"] for c in got] == ["host:hostB"] and got[0]["condition"] == "host-silent", got
+# control: a host that never beat is not judged (no false page when the feature arrives)
+spec.roles.append(Role(slug="delta", ecosystem="opencode", title="delta", doc="x", fill="assigned", session="ses_d", server="hostC"))
+assert [c["slug"] for c in health.host_beats(spec, Ledger("t1shoal", root=sys.argv[3], sync=False), {"host_beat": health.iso()})] == ["host:hostB"]
+# a single-host shoal neither beats nor judges
+single = ShoalSpec.load(sys.argv[2]); single.home = ""
+for r in single.roles: r.server = ""
+assert health.host_beats(single, led, {}) == []
+print("wake mode and host beats ok")
+PY3
 echo "== matcher transport: model calls go through openchamber, never the opencode CLI"
 mkdir -p "$S/ocstub"
 cat > "$S/ocstub/openchamber" <<'SH'
