@@ -529,6 +529,33 @@ bad = sorted({c["method"] for c in calls if not c["method"].startswith("test.")}
 assert not bad, bad
 print("adapter ok")
 PY
+# a role pane whose foreground is a bare shell is not reported as an agent (Herdr clears such a report
+# within a blink, so the role flashed into the agents list every tick); its tokens still go, and the card
+# is reported again once something other than a shell runs in it
+CLP=$(python3 - "$SHOALD" "$SID" <<'PY2'
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+h = ui_herdr.Herdr()
+print(next(p["pane_id"] for p in h.panes() if str(p.get("label", "")).endswith("/cl")))
+PY2
+)
+setfg() { python3 - "$SHOALD" "$CLP" "$1" <<'PY2'
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+ui_herdr.Herdr().call("test.set_fg", {"pane_id": sys.argv[2], "procs": [{"name": sys.argv[3], "argv": [sys.argv[3]]}]})
+PY2
+}
+reports() { grep '"pane.report_agent"' "$S/herdr-calls.jsonl" | grep -c "\"agent\": \"cl\""; }
+meta() { grep '"pane.report_metadata"' "$S/herdr-calls.jsonl" | grep -c '"role": "cl"'; }
+setfg bash
+R0=$(reports); M0=$(meta)
+SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once on a bare shell card"
+[ "$(reports)" = "$R0" ] || fail "a bare shell card was reported as an agent"
+[ "$(meta)" -gt "$M0" ] || fail "a bare shell card lost its tokens"
+setfg python
+SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once on a live card"
+[ "$(reports)" -gt "$R0" ] || fail "a live card was not reported as an agent"
+echo "bare shell cards ok"
 kill $FAKE 2>/dev/null
 # static guard: the adapter source never calls an input or close method on a pane
 grep -nE 'call\("(pane\.send_|pane\.close|agent\.prompt|agent\.send_keys|pane\.run)' "$SHOALD/ui/"*.py \

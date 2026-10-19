@@ -94,9 +94,14 @@ shoal ui usage --refresh
 shoal ui usage --json
 ```
 
-The overview always displays the compact meter block above the role tables.
-Each reported window has its used percentage and reset date/time in the host's
-configured timezone (`SHOAL_TZ` or `timezone` in host.toml). The status line adds
+The overview always displays the meter block above the role tables: a boxed
+table with one row per provider and its 5h, week and month windows side by side.
+Each reported window is a short bar, its used percentage and its reset date/time
+in the host's configured timezone (`SHOAL_TZ` or `timezone` in host.toml), and
+the last column says how old the reading is. A reached limit, a fallback reader
+or a read error is named on a line under the table. The bars shrink (8, 5, then 3
+cells) to fit the terminal, and a terminal too narrow for the table gets one text
+line per provider instead. The status line adds
 each provider's most-used window and its reset. Use `shoal ui usage` for the
 same snapshot outside Herdr. `--providers` temporarily chooses a comma-separated
 list; an empty `usage_providers` setting disables background collection.
@@ -104,7 +109,7 @@ list; an empty `usage_providers` setting disables background collection.
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without
 color: `!` marks the limiting meter in the status line, `~` marks stale values,
-and expired resets say `refresh due`. The display never clears a limit merely
+and expired resets are marked `~` as well (the legend says stale or refresh due). The display never clears a limit merely
 because a clock passed its reset. Unknown readings show `? unavailable` and a
 reason. `--` means a window is not reported, including monthly quotas absent
 from a provider's API. Claude's optional paid extra-usage budget is explicitly
@@ -234,7 +239,10 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 
 - **Role panes:** each tick reports `pane.report_agent` (source `shoal`, agent = role slug, state
   `blocked` when the role needs you, `working` while the session is mid-turn, otherwise `idle`) and
-  `pane.report_metadata` tokens. The tokens are `role`, `shoal` (the short tag), `posture`,
+  `pane.report_metadata` tokens. A pane whose foreground is a bare shell (a card laid out while its
+  role was parked, or a cold restore) gets the tokens only: Herdr clears an agent report from such a
+  pane within a fraction of a second, which made the role flash into the agents list every tick. The
+  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `posture`,
   `item`, `next`, `wait`, `asks`, `offers`, `watch`, `age`, `why` and `harness`. The agents rows
   show the role name with the shoal tag dim beside it; Herdr's default `agent_panel_sort = "spaces"`
   already groups agents by workspace.

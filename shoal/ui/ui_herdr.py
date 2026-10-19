@@ -773,6 +773,18 @@ def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
     return "unknown", "idle"
 
 
+def holds_agent(h: Herdr, pane_id: str) -> bool:
+    """False when the pane's foreground is a bare shell. Herdr clears an agent report from such a pane
+    within a fraction of a second, so reporting it only made the role flash into the agents list (a
+    parked or blocked row jumped to the top and vanished again, once per tick, and its needs-you state
+    was visible for that blink only). A card that went bare (parked when it was laid out, a cold
+    restore) comes back with `shoal ui open --reapply`. A failed probe reports as before."""
+    try:
+        return not h.foreground_is_shell(pane_id)
+    except HerdrError:
+        return True
+
+
 def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True) -> int:
     import ui_status
     import subscription_usage
@@ -787,6 +799,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
     wss = {w.get("label"): w for w in h.workspaces()}
     panes = {p.get("label"): p for p in h.panes() if p.get("label")}
     pushed = 0
+    bare: list[str] = []
     for s in doc["shoals"]:
         if s.get("error"):
             continue
@@ -799,8 +812,11 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
             if p is None:
                 continue
             msg = ui_status.posture_label(r) + (f" {r['active']}" if r["active"] else "")
-            h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE, "agent": r["slug"],
-                                         "state": herdr_state(r), "message": msg[:80], "seq": seq})
+            if holds_agent(h, p["pane_id"]):
+                h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE, "agent": r["slug"],
+                                             "state": herdr_state(r), "message": msg[:80], "seq": seq})
+            else:
+                bare.append(r["slug"])
             h.call("pane.report_metadata", {"pane_id": p["pane_id"], "source": SOURCE,
                                             "tokens": role_tokens_for(s, r), "ttl_ms": ttl, "seq": seq})
             pushed += 1
@@ -812,12 +828,17 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
         p = panes.get(standalone_label(e))
         if p is None:
             continue
+        if not holds_agent(h, p["pane_id"]):
+            bare.append(e.get("label") or e.get("harness") or "standalone")
+            continue
         st, hstate = standalone_state(e, rows)
         h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE,
                                      "agent": e.get("label") or e.get("harness") or "standalone",
                                      "state": hstate, "message": f"standalone {st}", "seq": seq})
     if not quiet:
-        print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}", flush=True)
+        print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}"
+              + (f"; bare shell cards not reported (`shoal ui open --reapply`): {', '.join(bare)}" if bare else ""),
+              flush=True)
     return pushed
 
 

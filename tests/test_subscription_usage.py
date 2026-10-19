@@ -147,7 +147,8 @@ class UsageTests(unittest.TestCase):
             doc = u.snapshot(["muse", "opencode-go"])
             rendered = ui_status.render_text({"shoals": [], "usage": doc})
             line = ui_status.render_line({"shoals": [], "usage": doc})
-        self.assertIn("muse: ? unavailable", rendered)
+        self.assertIn("? unavailable", rendered)
+        self.assertIn("muse: not collected yet", rendered)
         self.assertIn("opencode-go ?", line)
         self.assertNotIn("0%", rendered)
 
@@ -159,7 +160,57 @@ class UsageTests(unittest.TestCase):
         self.assertIn("America/Los_Angeles", rendered)
         a["rows"][0]["windows"][0]["used_percent"] = 90
         self.assertIn("\x1b[31m", u.render({"accounts": [a]}, color=True))
-        self.assertIn("month --", rendered)
+        self.assertRegex(rendered, r"week\s+\| month")  # the missing windows read as --, never as 0
+        self.assertIn("| --   | --    |", rendered)
+
+    def test_table_puts_all_windows_of_a_provider_on_one_line(self):
+        now = time.time()
+        w = lambda n, p, off: {"name": n, "used_percent": p, "resets_at": now + off}  # noqa: E731
+        doc = {"accounts": [
+            {"provider": "codex", "stale": False, "age_s": 240, "rows": [{"bucket": "codex", "windows": [w("5h", 10, 3600), w("week", 23, 90000)]}]},
+            {"provider": "opencode-go", "stale": False, "age_s": 7500,
+             "rows": [{"bucket": "opencode-go", "windows": [w("5h", 0, 3600), w("week", 0, 90000), w("month", 6, 900000)]}]}]}
+        out = u.render(doc, width=200, color=False)
+        rows = {ln.split("|")[1].strip(): ln for ln in out.splitlines() if ln.startswith("| ") and "provider" not in ln}
+        self.assertEqual(set(rows), {"codex", "opencode-go"})
+        self.assertEqual(rows["codex"].count("%"), 2)
+        self.assertEqual(rows["opencode-go"].count("%"), 3)  # 5h, week and month in one row
+        self.assertIn("10%", rows["codex"])
+        self.assertIn("2h ago", rows["opencode-go"])
+        self.assertEqual(len({len(ln) for ln in out.splitlines() if ln.startswith(("|", "+"))}), 1)  # aligned box
+
+    def test_colour_does_not_change_column_alignment(self):
+        import re
+        now = time.time()
+        doc = {"accounts": [{"provider": "claude", "stale": False, "age_s": 60, "rows": [
+            {"bucket": "claude", "windows": [{"name": "5h", "used_percent": 95, "resets_at": now + 600},
+                                              {"name": "week", "used_percent": 75, "resets_at": now + 90000}]}]}]}
+        plain = u.render(doc, width=200, color=False)
+        coloured = re.sub(r"\x1b\[[0-9;]*m", "", u.render(doc, width=200, color=True))
+        self.assertEqual(plain, coloured)
+
+    def test_bars_never_read_as_empty_or_full_by_rounding(self):
+        glyphs = ("#", "-")
+        self.assertEqual(u.bar(0, 8, glyphs), ("", "-" * 8))
+        self.assertEqual(u.bar(3, 8, glyphs), ("#", "-" * 7))  # a nonzero reading shows
+        self.assertEqual(u.bar(99.6, 8, glyphs), ("#" * 7, "-"))  # not yet at the limit
+        self.assertEqual(u.bar(100, 8, glyphs), ("#" * 8, ""))
+        self.assertEqual(u.bar(150, 4, glyphs), ("#" * 4, ""))
+
+    def test_table_shrinks_its_bars_then_falls_back_to_lines(self):
+        now = time.time()
+        doc = {"accounts": [{"provider": "muse", "stale": False, "age_s": 60, "rows": [
+            {"bucket": "muse", "windows": [{"name": s, "used_percent": 50, "resets_at": now + 3600} for s in ("5h", "week", "month")]}]}]}
+        widths = {}
+        for width in (200, 116, 104):
+            out = u.render(doc, width=width, color=False)
+            self.assertTrue(out.startswith("Subscription usage"))
+            widths[width] = max(len(ln) for ln in out.splitlines()[1:])
+            self.assertLessEqual(widths[width], width)
+        self.assertGreater(widths[200], widths[104])
+        narrow = u.render(doc, width=60, color=False)
+        self.assertNotIn("+--", narrow)  # too narrow for a table: one line per provider
+        self.assertIn("muse: 5h 50%", narrow)
 
     def test_async_refresh_does_not_block_ui(self):
         gate = threading.Event()
