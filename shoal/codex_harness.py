@@ -133,8 +133,24 @@ def last_run(session: str) -> dict:
         return {}
 
 
+ACTIVE_WINDOW_S = 120  # a thread whose rollout file changed within this long is mid-turn, not just held open
+
+
+def activity_age(session: str):
+    """Seconds since the thread's rollout file last changed, or None when it cannot be found. `busy()` is
+    also true for a client that is merely attached, which a viewer must not draw as working."""
+    import glob
+    root = config.env("CODEX_HOME") or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
+    try:
+        files = glob.glob(os.path.join(root, "sessions", "*", "*", "*", f"rollout-*-{session}.jsonl"))
+        return max(0.0, time.time() - max(os.path.getmtime(f) for f in files))
+    except (OSError, ValueError):
+        return None
+
+
 def status_line(session: str) -> str:
-    """`<id8> status:busy|idle|unknown ...`, the shape the other backends' consumers match on."""
+    """`<id8> status:busy|idle|unknown ...`, the shape the other backends' consumers match on. An attached
+    client adds `attached`, then `active` or `quiet` by the rollout file's age (none: unreadable)."""
     fake = None
     try:
         from backends import fake_sessions
@@ -144,7 +160,10 @@ def status_line(session: str) -> str:
     if fake is not None and "codex" in fake:  # a fake world that names no codex sessions leaves codex real
         return str((fake.get("codex") or {}).get(session, ""))
     if busy(session):
-        return f"{session[:8]} status:busy" + (" attached" if attached_client(session) else "")
+        if not attached_client(session):
+            return f"{session[:8]} status:busy"
+        age = activity_age(session)
+        return f"{session[:8]} status:busy attached" + ("" if age is None else " active" if age <= ACTIVE_WINDOW_S else " quiet")
     last = last_run(session)
     if not last:
         return f"{session[:8]} status:idle never-run-here"

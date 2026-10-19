@@ -109,6 +109,9 @@ def add_parsers(sub) -> None:
     q.add_argument("--save", action="store_true", help="restore it on every `ui open`")
     q.set_defaults(func=ui_herdr.cmd_pick)
 
+    q = u.add_parser("legend", help="what the viewer's state icons and glyphs mean")
+    q.set_defaults(func=ui_herdr.cmd_legend)
+
     q = u.add_parser("forget", help="drop a saved standalone session (open panes stay)")
     q.add_argument("session_id", metavar="ID_OR_LABEL")
     q.set_defaults(func=ui_herdr.cmd_forget)

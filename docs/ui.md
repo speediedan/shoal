@@ -243,10 +243,22 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   `pane.report_metadata` tokens. A pane whose foreground is a bare shell (a card laid out while its
   role was parked, or a cold restore) gets the tokens only: Herdr clears an agent report from such a
   pane within a fraction of a second, which made the role flash into the agents list every tick. The
-  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `posture`,
+  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `mode`, `posture`,
   `item`, `next`, `wait`, `asks`, `offers`, `watch`, `age`, `why` and `harness`. The agents rows
-  show the role name with the shoal tag dim beside it; Herdr's default `agent_panel_sort = "spaces"`
+  show the role name, then the `mode` glyph, then the shoal tag dim; Herdr's default `agent_panel_sort = "spaces"`
   already groups agents by workspace.
+- **What the icons mean** (`shoal ui legend`, or the palette's `legend` entry). Herdr draws the state icon from the
+  state shoal reports: half-moon yellow is `working`, hollow circle green is `idle`, red x is `blocked`, a grey dot is
+  nothing reported. `working` covers two different things, so the `mode` token says which: `▶` a turn is running,
+  `◷` the role waits on a job, CI build or lease running for it (by design it reads working, so a lane with a job in
+  flight does not look stalled). No glyph means asleep, idle or needing you. The glyphs live in the client's sidebar
+  rows: after an upgrade re-run `shoal ui herdr-config --client --write` (the laptop's `shoal-herdr-setup.sh`) and
+  relaunch. **Standalone seats** get the same tokens (`posture` is `working`, `attached` or `idle`). For a Muse or
+  Codex seat the backend's `status:busy` is a running turn OR a client merely attached, so it also reports `active`
+  or `quiet` by the age of the session's journal or rollout file (120 s): `attached quiet` reads idle, so a seat that
+  waits for you is not drawn as working. Standalone registry labels are unique: two entries with one label share one
+  pane label, and their equal-sequence reports collided (the first won), so the later registration is kept and
+  `ui pick --save` replaces a same-label entry and says so.
 - **Workspaces:** `workspace.report_metadata` tokens `shoal_mode`, `shoal_needs`, `shoal_stalled`,
   `shoal_asks`, `shoal_pages`, `shoal_relay`, `shoal_conditions` and `shoal_tooling`.
 - **Failure shape:** tokens carry a TTL of three intervals, so a dead feeder clears them instead of

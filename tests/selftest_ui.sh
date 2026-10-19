@@ -548,6 +548,7 @@ assert st["cl"] == "blocked" and st["dead"] == "blocked", st
 md = [c["params"] for c in calls if c["method"] == "pane.report_metadata"]
 assert all(m["source"] == "shoal" and m["ttl_ms"] > 0 for m in md) and md, md
 assert any(m["tokens"].get("posture") == "QUESTION" for m in md), md
+assert all("mode" in m["tokens"] for m in md if m["tokens"].get("role")), md  # why a role reads working
 assert any(c["method"] == "workspace.report_metadata" for c in calls)
 allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "pane.process_info",
            "pane.report_agent", "pane.report_metadata", "workspace.report_metadata", "pane.get",
@@ -585,6 +586,71 @@ setfg python
 SHOAL_LEDGER_DIR="$ROOT" $H ui feed --once >/dev/null || fail "feed --once on a live card"
 [ "$(reports)" -gt "$R0" ] || fail "a live card was not reported as an agent"
 echo "bare shell cards ok"
+# state clarity: why a role reads working (mode glyph), attached-but-quiet Muse/Codex seats read idle, one card per label,
+# and the legend says what the icons mean
+python3 - "$SHOALD" <<'PY2' || fail "state clarity"
+import json, os, sys, tempfile, time, types
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr, muse, codex_harness, backends
+role = lambda **k: dict({"session": "idle", "posture": "idle", "sub": "", "needs_you": False, "can_progress": {"reasons": []}}, **k)
+assert ui_herdr.role_mode(role(session="working")) == ui_herdr.MODE_TURN
+assert ui_herdr.role_mode(role(posture="wait", sub="remote-ci")) == ui_herdr.MODE_JOB
+assert ui_herdr.herdr_state(role(posture="wait", sub="remote-ci")) == "working"
+q = role(session="working", needs_you=True, can_progress={"reasons": ["blocked-on-question"]})
+assert ui_herdr.role_mode(q) == "" and ui_herdr.herdr_state(q) == "blocked"
+assert ui_herdr.role_mode(role()) == "" and ui_herdr.herdr_state(role()) == "idle"
+# activity: an attached client with a journal that has not moved is quiet, a moving one active, an unreadable one unlabelled
+d = tempfile.mkdtemp()
+os.environ["SHOAL_MUSE_DATA"] = d
+sid = "01a1aaaa-0000-7000-8000-000000000000"
+os.makedirs(f"{d}/.msp-view-v1/{sid}")
+j = f"{d}/.msp-view-v1/{sid}/journal-00000000.bin"
+open(j, "w").write("x")
+muse.busy = lambda s: True
+muse.attached_client = lambda s: 4242
+assert muse.status_line(sid).endswith("status:busy attached active"), muse.status_line(sid)
+os.utime(j, (time.time() - 3600, time.time() - 3600))
+assert muse.status_line(sid).endswith("status:busy attached quiet"), muse.status_line(sid)
+os.remove(j)
+assert muse.status_line(sid).endswith("status:busy attached"), muse.status_line(sid)
+muse.attached_client = lambda s: 0
+assert muse.status_line(sid).endswith("status:busy"), muse.status_line(sid)
+# codex: the rollout file's age
+cd = tempfile.mkdtemp()
+os.environ["SHOAL_CODEX_HOME"] = cd
+tid = "01a1bbbb-0000-7000-8000-000000000000"
+os.makedirs(f"{cd}/sessions/2026/10/19")
+rf = f"{cd}/sessions/2026/10/19/rollout-2026-10-19T00-00-00-{tid}.jsonl"
+open(rf, "w").write("{}")
+codex_harness.busy = lambda s: True
+codex_harness.attached_client = lambda s: 99
+assert codex_harness.status_line(tid).endswith("attached active")
+os.utime(rf, (time.time() - 3600, time.time() - 3600))
+assert codex_harness.status_line(tid).endswith("attached quiet")
+# the standalone state follows those words
+for line, want in (("x status:busy attached quiet", ("attached", "idle")), ("x status:busy attached active", ("working", "working")),
+                   ("x status:busy", ("working", "working")), ("x status:idle", ("idle", "idle"))):
+    backends.get = lambda harness, _l=line: types.SimpleNamespace(status=lambda *a, **k: _l)
+    assert ui_herdr.standalone_state({"harness": "muse", "session": "s"}, []) == want, (line, want)
+# one card per label: the later registration wins; pick --save replaces and says so
+kept, dropped = ui_herdr.unique_by_label([{"harness": "codex", "session": "aaaa", "label": "seat"},
+                                           {"harness": "claude", "session": "bbbb", "label": "seat"},
+                                           {"harness": "muse", "session": "cccc", "label": "other"}])
+assert [e["session"] for e in kept] == ["bbbb", "cccc"] and [e["session"] for e in dropped] == ["aaaa"]
+before = ui_herdr.load_standalone(raw=True)
+ns = lambda sess: types.SimpleNamespace(harness="claude", session_id=sess, label="dup-seat", cwd="", save=True, session="")
+ui_herdr.cmd_pick(ns("dddd-1"))
+ui_herdr.cmd_pick(ns("eeee-2"))
+now = [e for e in ui_herdr.load_standalone(raw=True) if e.get("label") == "dup-seat"]
+assert [e["session"] for e in now] == ["eeee-2"], now
+ui_herdr.save_standalone(before)
+# the legend and the sidebar row carry the mapping
+lg = ui_herdr.legend_text(False)
+assert "half-moon" in lg and ui_herdr.MODE_TURN in lg and ui_herdr.MODE_JOB in lg and "attached" in lg
+assert "$mode" in ui_herdr.sidebar_block()
+assert any(k == "legend" for k, _ in ui_herdr.MENU)
+print("state clarity ok")
+PY2
 kill $FAKE 2>/dev/null
 # static guard: the adapter source never calls an input or close method on a pane
 grep -nE 'call\("(pane\.send_|pane\.close|agent\.prompt|agent\.send_keys|pane\.run)' "$SHOALD/ui/"*.py \

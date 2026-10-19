@@ -138,8 +138,26 @@ def last_run(session: str) -> dict:
         return {}
 
 
+ACTIVE_WINDOW_S = 120  # a session whose journal changed within this long is mid-turn, not just held open
+
+
+def activity_age(session: str):
+    """Seconds since the session's journal last changed (Muse appends to it as a turn runs), or None when it
+    cannot be read. `busy()` is also true for a client that is merely attached and waiting for the maintainer,
+    which a viewer must not draw as working."""
+    root = config.env("MUSE_DATA") or os.path.expanduser("~/.local/share/muse/sessions")
+    try:
+        files = [os.path.join(d, f) for d in (os.path.join(root, ".msp-view-v1", session),)
+                 for f in os.listdir(d) if f.startswith("journal")]
+        return max(0.0, time.time() - max(os.path.getmtime(f) for f in files))
+    except (OSError, ValueError):
+        return None
+
+
 def status_line(session: str) -> str:
-    """`<id8> status:busy|idle|unknown ...`, the shape the opencode consumers already match on."""
+    """`<id8> status:busy|idle|unknown ...`, the shape the opencode consumers already match on. An attached
+    client adds `attached`, then `active` (the journal moved within ACTIVE_WINDOW_S) or `quiet` (it did not);
+    no word means the journal could not be read."""
     fake = None
     try:
         from backends import fake_sessions
@@ -149,7 +167,10 @@ def status_line(session: str) -> str:
     if fake is not None and "muse" in fake:  # a fake world that names no muse sessions leaves muse real
         return str((fake.get("muse") or {}).get(session, ""))
     if busy(session):
-        return f"{session[:8]} status:busy" + (" attached" if attached_client(session) else "")
+        if not attached_client(session):
+            return f"{session[:8]} status:busy"
+        age = activity_age(session)
+        return f"{session[:8]} status:busy attached" + ("" if age is None else " active" if age <= ACTIVE_WINDOW_S else " quiet")
     last = last_run(session)
     if not last:
         return f"{session[:8]} status:idle never-run-here"
