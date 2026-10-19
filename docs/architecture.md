@@ -440,7 +440,8 @@ with `next_max`), `health` (`validity_wake_min`, `page`, `revive`), `continuatio
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
 freshness, and warning thresholds. The UI status contract adds `usage`; overview
-panes and the status line render that same snapshot. An operator explicitly sets
+panes and the status line render that same snapshot (the overview as a table of bars, one row
+per provider, falling back to text lines on a narrow terminal). An operator explicitly sets
 `usage_providers` in the viewer settings to enable collection. No shoal feature
 flag or role restart is needed for this read-only UI setting.
 
@@ -508,7 +509,8 @@ and the contract are in [`ui.md`](ui.md).
     `layout.apply`; it never types into a pane.
   - Feeder: the `shoal-ui-feed` unit reports each role pane's state (`pane.report_agent`, source
     `shoal`) and tokens (`pane.report_metadata`, with a TTL, so a dead feeder shows no data rather
-    than stale data).
+    than stale data). A pane whose foreground is a bare shell gets tokens but no agent report:
+    Herdr drops that report at once, so sending it only made the role flash in the agents list.
   - Actions: plugin actions open popups that run shoal verbs after a `--dry-run` preview and a
     confirm, and log them to `ui-actions.jsonl`.
   - The adapter never calls `pane.send_*`, `agent.prompt` or `pane.close`, and the UI selftest

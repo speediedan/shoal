@@ -637,7 +637,7 @@ def render_text(doc: dict, width: int = 0) -> str:
     """Per shoal: a summary line, one table row per role, then open health conditions as a table."""
     width = width or term_width()
     import subscription_usage
-    usage = subscription_usage.render(doc.get("usage") or {}, color=use_color())
+    usage = subscription_usage.render(doc.get("usage") or {}, color=use_color(), width=width)
     out = [usage, ""] if usage else []
     for s in doc["shoals"]:
         if s.get("error"):

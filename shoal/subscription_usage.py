@@ -439,8 +439,8 @@ def reset_text(value):
     return d.strftime("%b %d %H:%M")
 
 
-def render(doc, *, color=False):
-    """Compact, always-visible overview block, using the same cache in every pane."""
+def render_lines(doc, *, color=False):
+    """One text line per provider bucket: the form for a terminal too narrow for the table."""
     accounts = doc.get("accounts") or []
     if not accounts:
         return ""
@@ -474,6 +474,122 @@ def render(doc, *, color=False):
     return "\n".join(lines)
 
 
+WINDOWS = ("5h", "week", "month")
+BAR_STEPS = (8, 5, 3)  # bar cells, widest first: the table takes the widest set that fits the terminal
+DIM, RESET_CODE = "\x1b[90m", "\x1b[0m"
+SEVERITY_CODES = {"ok": "\x1b[32m", "warning": "\x1b[33m", "critical": "\x1b[31m"}
+
+
+def _bar_glyphs():
+    """Block glyphs when the output encoding can carry them, plain ASCII otherwise."""
+    enc = getattr(__import__("sys").stdout, "encoding", None) or "ascii"
+    try:
+        "\u2588\u2591".encode(enc)
+        return "\u2588", "\u2591"
+    except (UnicodeEncodeError, LookupError):
+        return "#", "-"
+
+
+def bar(percent, cells, glyphs=None):
+    """(filled, empty) cell strings for a used percentage: a nonzero reading always shows one filled
+    cell and anything under 100 leaves one empty, so the bar never reads as 0 or as a full limit."""
+    full, empty = glyphs or _bar_glyphs()
+    n = max(1, cells)
+    f = int(round(max(0.0, min(100.0, percent)) / 100 * n))
+    if percent > 0 and f == 0:
+        f = 1
+    if percent < 100 and f >= n:
+        f = n - 1
+    return full * f, empty * (n - f)
+
+
+def _window_code(pct):
+    return SEVERITY_CODES["critical" if pct >= 90 else "warning" if pct >= 70 else "ok"]
+
+
+def _cell(w, stale, cells, glyphs):
+    """Segments (text, colour code) of one window cell: bar, percent, reset time."""
+    due = w.get("resets_at") is not None and w["resets_at"] <= time.time()
+    mark = "~" if stale or due else ""
+    pct = w["used_percent"]
+    filled, empty = bar(pct, cells, glyphs)
+    code = SEVERITY_CODES["warning"] if (stale or due) and pct < 70 else _window_code(pct)
+    return [(filled, code), (empty, DIM), (" ", ""), (f"{mark}{pct:g}%".rjust(5), code),
+            (" " + reset_text(w.get("resets_at")), "")]
+
+
+def _age_text(age_s):
+    if age_s is None:
+        return "?"
+    m = int(age_s) // 60
+    return f"{m}m ago" if m < 120 else f"{m // 60}h ago"
+
+
+def _plain(cell):
+    return "".join(t for t, _ in cell)
+
+
+def render_table(doc, *, color=False, width=0, glyphs=None):
+    """The overview block: one boxed row per provider bucket with 5h, week and month side by side,
+    each a bar, the used percent and the reset time, then when the reading was taken. Returns ""
+    when `width` is too narrow for even the shortest bar (use render_lines then)."""
+    accounts = doc.get("accounts") or []
+    if not accounts:
+        return ""
+    glyphs = glyphs or _bar_glyphs()
+    heads = ["provider", *WINDOWS, "as of"]
+    for cells in BAR_STEPS:
+        body = []
+        for a in accounts:
+            for r in a.get("rows") or [{"bucket": a["provider"], "windows": []}]:
+                by = {w["name"]: w for w in r["windows"]}
+                row = [[(a["provider"] + ("/" + r["bucket"] if r["bucket"] != a["provider"] else ""),
+                         SEVERITY_CODES[severity(a, r)])]]
+                for i, name in enumerate(WINDOWS):
+                    if name in by:
+                        row.append(_cell(by[name], a.get("stale"), cells, glyphs))
+                    else:
+                        row.append([("? unavailable" if i == 0 and not by else "--", "")])
+                row.append([(_age_text(a.get("age_s")), "")])
+                body.append(row)
+        w = [max([len(h)] + [len(_plain(r[i])) for r in body]) for i, h in enumerate(heads)]
+        if not width or sum(w) + 3 * len(w) + 1 <= width:
+            break
+    else:
+        return ""
+    zone = config.timezone() if config.tzinfo() else "UTC"
+    rule = "+" + "+".join("-" * (x + 2) for x in w) + "+"
+
+    def line(cells_, head=False):
+        out = []
+        for i, c in enumerate(cells_):
+            pad = " " * (w[i] - len(_plain(c)))
+            if color and not head:
+                out.append("".join(f"{code}{t}{RESET_CODE}" if code and t else t for t, code in c) + pad)
+            else:
+                out.append(_plain(c) + pad)
+        return "| " + " | ".join(out) + " |"
+
+    lines = [f"Subscription usage (used %, resets in {zone}; ~ = stale or refresh due; -- = not reported)", rule,
+             line([[(h, "")] for h in heads], head=True), rule, *[line(r) for r in body], rule]
+    for a in accounts:  # what a table cell cannot carry: a reached limit, a fallback source, a read error
+        for r in a.get("rows") or []:
+            if r.get("blocked"):
+                lines.append((SEVERITY_CODES["critical"] + f"{a['provider']}: LIMIT REACHED" + RESET_CODE) if color
+                             else f"{a['provider']}: LIMIT REACHED")
+        extra = ([f"fallback reader"] if a.get("source") == "fallback reader" else []) + \
+                ([text(a["error"], 100)] if a.get("error") else [])
+        if extra:
+            lines.append(f"{a['provider']}: " + "; ".join(extra))
+    return "\n".join(lines)
+
+
+def render(doc, *, color=False, width=0):
+    """Compact, always-visible overview block, using the same cache in every pane: the table when it
+    fits `width` (0 = unconstrained), else one line per provider bucket."""
+    return render_table(doc, color=color, width=width) or render_lines(doc, color=color)
+
+
 def summary(doc):
     parts = []
     for a in doc.get("accounts") or []:
@@ -502,6 +618,6 @@ def cmd_usage(a):
     if a.refresh:
         collect(providers, force=True, bridge=ui_status.ui_config().get("usage_bridge"))
     doc = snapshot(providers)
-    print(json.dumps(doc) if a.json else render(doc, color=ui_status.use_color()) or
+    print(json.dumps(doc) if a.json else render(doc, color=ui_status.use_color(), width=ui_status.term_width()) or
           "No subscription providers configured; set usage_providers in the UI settings.")
     return 0
