@@ -101,14 +101,15 @@ in the host's configured timezone (`SHOAL_TZ` or `timezone` in host.toml), and
 the last column says how old the reading is. A reached limit, a fallback reader
 or a read error is named on a line under the table. The bars shrink (8, 5, then 3
 cells) to fit the terminal, and a terminal too narrow for the table gets one text
-line per provider instead. The status line adds
-each provider's most-used window and its reset. Use `shoal ui usage` for the
+line per provider instead. The status line (the quick view in the tab bar)
+shows each provider's used percent for 5h, week and month, for example
+`codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`, with `-` for a window the provider does not report and no reset times. Use `shoal ui usage` for the
 same snapshot outside Herdr. `--providers` temporarily chooses a comma-separated
 list; an empty `usage_providers` setting disables background collection.
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without
-color: `!` marks the limiting meter in the status line, `~` marks stale values,
+color: in the status line `~` after a provider name marks a stale reading, `LIMIT` a reached limit and `?` no reading; in the table `~` marks stale values,
 and expired resets are marked `~` as well (the legend says stale or refresh due). The display never clears a limit merely
 because a clock passed its reset. Unknown readings show `? unavailable` and a
 reason. `--` means a window is not reported, including monthly quotas absent

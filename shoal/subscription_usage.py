@@ -590,22 +590,28 @@ def render(doc, *, color=False, width=0):
     return render_table(doc, color=color, width=width) or render_lines(doc, color=color)
 
 
+SHORT_NAMES = {"opencode-go": "opencode"}
+
+
 def summary(doc):
+    """The status-bar quick view: each provider's used percent for 5h, week and month, `-` where a window is
+    not reported, e.g. `codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`. Only exceptions add
+    anything: `~` after the name for a stale reading or a window past its reset, `LIMIT` after the numbers
+    for a reached limit, `?` for no reading. Reset times live in the overview table, not here."""
     parts = []
     for a in doc.get("accounts") or []:
-        windows = [(w, r) for r in a.get("rows", []) for w in r.get("windows", [])]
-        if not windows:
-            denied = any(r.get("blocked") for r in a.get("rows", []))
-            parts.append(f"{a['provider']} " + ("! LIMIT REACHED" if denied else "?"))
-            continue
-        w, row = max(windows, key=lambda pair: pair[0]["used_percent"])
-        expired = w.get("resets_at") is not None and w["resets_at"] <= time.time()
-        level = "critical" if any(r.get("blocked") for r in a.get("rows", [])) else severity(a, row)
-        flag = ("~" if a.get("stale") or expired else "") + ("!" if level == "critical" else "^" if level == "warning" else "")
-        reset = w.get("resets_at")
-        date = dt.datetime.fromtimestamp(math.ceil(reset / 60) * 60, config.tzinfo() or dt.timezone.utc) if reset else None
-        short_reset = date.strftime("%H:%M" if w["name"] == "5h" else "%a%H:%M") if date else "?"
-        parts.append(f"{a['provider']} {flag}{w['used_percent']:g}%/{w['name']}@{short_reset}")
+        best, due = {}, False
+        for r in a.get("rows", []):
+            for w in r.get("windows", []):
+                best[w["name"]] = max(best.get(w["name"], 0), w["used_percent"])
+                due = due or (w.get("resets_at") is not None and w["resets_at"] <= time.time())
+        name = SHORT_NAMES.get(a["provider"], a["provider"])
+        limit = any(r.get("blocked") for r in a.get("rows", []))
+        if not any(n in best for n in WINDOWS):
+            parts.append(f"{name}: " + ("LIMIT" if limit else "?"))
+        else:
+            parts.append(f"{name}{'~' if a.get('stale') or due else ''}: " + "/".join(f"{round(best[n])}%" if n in best else "-" for n in WINDOWS)
+                         + (" LIMIT" if limit else ""))
     return " | ".join(parts)
 
 

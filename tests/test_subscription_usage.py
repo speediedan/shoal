@@ -72,12 +72,13 @@ class UsageTests(unittest.TestCase):
 
     def test_status_line_retains_denial_without_a_meter_or_in_another_bucket(self):
         rows = u.normalize("codex", {"ordinaryUsageAllowed": False})
-        self.assertIn("! LIMIT REACHED", u.summary({"accounts": [{"provider": "codex", "rows": rows}]}))
+        self.assertEqual("codex: LIMIT", u.summary({"accounts": [{"provider": "codex", "rows": rows}]}))
         d = codex()
         d["rateLimitsByLimitId"] = {"normal": d["rateLimits"], "denied": {
             "spendControlReached": True, "primary": {"usedPercent": 5}}}
         rows = u.normalize("codex", d)
-        self.assertIn("!32%", u.summary({"accounts": [{"provider": "codex", "rows": rows}]}))
+        line = u.summary({"accounts": [{"provider": "codex", "rows": rows}]})
+        self.assertTrue(line.startswith("codex: 32%/") and line.endswith(" LIMIT"), line)
 
     def test_bad_percent_is_not_a_green_meter(self):
         for value in [None, "0", True, -1, float("nan"), float("inf")]:
@@ -139,7 +140,7 @@ class UsageTests(unittest.TestCase):
         rendered = u.render(doc)
         self.assertIn("~100%", rendered)
         self.assertIn("refresh due", rendered)
-        self.assertIn("!100%/5h", u.summary(doc))
+        self.assertRegex(u.summary(doc), r"^codex~: 100%/")  # past its reset: marked, never read as fresh
 
     def test_ui_readers_are_cache_only_and_unknown_is_visible(self):
         import ui_status
@@ -149,7 +150,7 @@ class UsageTests(unittest.TestCase):
             line = ui_status.render_line({"shoals": [], "usage": doc})
         self.assertIn("? unavailable", rendered)
         self.assertIn("muse: not collected yet", rendered)
-        self.assertIn("opencode-go ?", line)
+        self.assertIn("opencode: ?", line)
         self.assertNotIn("0%", rendered)
 
     def test_colours_and_local_zone(self):
@@ -162,6 +163,17 @@ class UsageTests(unittest.TestCase):
         self.assertIn("\x1b[31m", u.render({"accounts": [a]}, color=True))
         self.assertRegex(rendered, r"week\s+\| month")  # the missing windows read as --, never as 0
         self.assertIn("| --   | --    |", rendered)
+
+    def test_status_line_is_percent_numbers_only(self):
+        now = time.time()
+        w = lambda n, p: {"name": n, "used_percent": p, "resets_at": now + 3600}  # noqa: E731
+        doc = {"accounts": [
+            {"provider": "codex", "stale": False, "rows": [{"bucket": "codex", "windows": [w("5h", 4.2), w("week", 22.6)]}]},
+            {"provider": "claude", "stale": False, "rows": [{"bucket": "claude", "windows": [w("5h", 10), w("week", 87)]}]},
+            {"provider": "opencode-go", "stale": False, "rows": [{"bucket": "opencode-go", "windows": [w("5h", 4), w("week", 10), w("month", 13)]}]},
+            {"provider": "muse", "stale": True, "rows": [{"bucket": "muse", "windows": [w("5h", 7)]}]}]}
+        self.assertEqual(u.summary(doc), "codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13% | muse~: 7%/-/-")
+        self.assertNotIn("@", u.summary(doc))  # no reset times in the status bar
 
     def test_table_puts_all_windows_of_a_provider_on_one_line(self):
         now = time.time()
