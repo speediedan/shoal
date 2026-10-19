@@ -354,6 +354,7 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "show_relay": "true to give the wake relay a role card (default: hidden)",
                "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)",
                "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)",
+               "line_width": "columns the tab-bar status line may use (default 80); wider shows more shoals in full",
                "image_paste_key": "Herdr's remote image paste key (default alt+v; Ctrl+V pastes text in the kitty window)"}
 
 
@@ -870,6 +871,7 @@ def cmd_open(a) -> int:
         print(f"ui open: no herdr server at {h.path} (start it: `systemctl --user start shoal-herdr`, "
               f"or attach with `herdr --session {session_name()}`)")
         return 1
+    labelled_before = any(p.get("label") for p in h.panes())  # a fresh server holds nothing to compare with
     try:
         for line in release_retired(h, close=True, dry_run=a.dry_run):
             print(("[dry-run] " if a.dry_run else "") + line)
@@ -891,10 +893,42 @@ def cmd_open(a) -> int:
     if not a.no_standalone:
         for line in migrate_standalone(h, a.dry_run):
             print(("[dry-run] " if a.dry_run else "") + line)
-        for e in load_standalone():
-            print(("[dry-run] " if a.dry_run else "") + open_standalone(h, e, a.dry_run,
-                                                                    reapply=getattr(a, "reapply", False)))
+        entries = load_standalone()
+        show = {x.strip() for x in getattr(a, "show", []) or []}
+        for line in sync_standalone(h, entries, show, labelled_before, a.dry_run, getattr(a, "reapply", False)):
+            print(("[dry-run] " if a.dry_run else "") + line)
     return 0
+
+
+def sync_standalone(h: Herdr, entries: list[dict], show: set[str], labelled_before: bool, dry_run: bool,
+                    reapply: bool) -> list[str]:
+    """Open each saved standalone session, except one the maintainer closed in the viewer. An entry is
+    `opened` once a workspace has been made for it; later missing that workspace while Herdr still holds
+    other labelled panes (so it is not a fresh server with nothing restored) means it was closed on
+    purpose: it becomes `dismissed` and stays closed across restarts of the viewer. `--show <label>`
+    (or `ui pick --save`) brings it back, `ui forget` drops it for good."""
+    out, changed = [], False
+    present = {q.get("label") for q in h.panes()}
+    for e in entries:
+        name = e.get("label") or e["session"][:12]
+        shown = name in show or e["session"] in show
+        if shown and e.pop("dismissed", None):
+            changed = True
+        if e.get("dismissed"):
+            out.append(f"standalone {name}: closed in the viewer, left closed (`shoal ui open --show {name}` restores it)")
+            continue
+        if e.get("opened") and not shown and standalone_label(e) not in present and labelled_before:
+            e["dismissed"] = True
+            changed = True
+            out.append(f"standalone {name}: closed in the viewer, left closed (`shoal ui open --show {name}` restores it)")
+            continue
+        out.append(open_standalone(h, e, dry_run, reapply=reapply))
+        if not e.get("opened"):
+            e["opened"] = True
+            changed = True
+    if changed and not dry_run:
+        save_standalone(entries)
+    return out
 
 
 def _choose(items: list[str], prompt: str = "number") -> int | None:
@@ -929,6 +963,7 @@ def cmd_pick(a) -> int:
     if not a.harness and not save:
         save = ui_term.confirm("save it so `ui open` restores it? [y/N] ")
     if save:
+        e["opened"] = True  # it opens right below: closing it in the viewer later is a deliberate dismissal
         entries = [x for x in load_standalone() if x["session"] != e["session"]] + [e]
         save_standalone(entries)
         print(f"saved to {standalone_path()}")

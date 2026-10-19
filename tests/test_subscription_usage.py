@@ -175,6 +175,28 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(u.summary(doc), "codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13% | muse~: 7%/-/-")
         self.assertNotIn("@", u.summary(doc))  # no reset times in the status bar
 
+    def test_compact_status_line_and_adaptive_width(self):
+        import ui_status
+        now = time.time()
+        w = lambda n, p: {"name": n, "used_percent": p, "resets_at": now + 3600}  # noqa: E731
+        usage = {"accounts": [
+            {"provider": "codex", "stale": False, "rows": [{"bucket": "codex", "windows": [w("5h", 4), w("week", 23)]}]},
+            {"provider": "claude", "stale": False, "rows": [{"bucket": "claude", "windows": [w("5h", 10), w("week", 87)]}]},
+            {"provider": "muse", "stale": False, "rows": [{"bucket": "muse", "windows": [w("5h", 17), w("week", 22)]}]},
+            {"provider": "opencode-go", "stale": False, "rows": [{"bucket": "opencode-go", "windows": [w("5h", 0), w("week", 0), w("month", 6)]}]}]}
+        self.assertEqual(u.summary(usage, compact=True), "cx 4/23/- cl 10/87/- mu 17/22/- oc 0/0/6")
+        shoal = lambda sid, needs, stalled: {"id": sid, "mode": {"offline": False, "freeze": False}, "needs_you": needs,  # noqa: E731
+                                              "stalled": stalled, "asks_open": 0, "relay": {"alive": True}}
+        calm = {"shoals": [shoal("alpha-20261012-165047", 0, 0), shoal("beta-20260921-170946", 0, 0)], "usage": usage}
+        line = ui_status.render_line(calm, 80)
+        self.assertTrue(line.startswith("codex: 4%/23%/-") and "opencode: 0%/0%/6%" in line and len(line) <= 80, line)
+        self.assertNotIn("alpha", line)  # quiet shoals give way to the usage numbers
+        busy = {"shoals": [shoal("alpha-20261012-165047", 0, 0), shoal("beta-20260921-170946", 1, 2)], "usage": usage}
+        line = ui_status.render_line(busy, 80)
+        self.assertTrue(line.startswith("beta: 1! 2 stalled | ") and "oc 0/0/6" in line and len(line) <= 80, line)
+        self.assertEqual(ui_status.render_line(busy, 200), "alpha: ok | beta: 1! 2 stalled | " + u.summary(usage))
+        self.assertEqual(ui_status.render_line(busy), ui_status.render_line(busy, 200))  # no width: everything
+
     def test_table_puts_all_windows_of_a_provider_on_one_line(self):
         now = time.time()
         w = lambda n, p, off: {"name": n, "used_percent": p, "resets_at": now + off}  # noqa: E731

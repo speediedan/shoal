@@ -693,34 +693,63 @@ def render_text(doc: dict, width: int = 0) -> str:
     return "\n".join(out).rstrip("\n")
 
 
-def render_line(doc: dict) -> str:
-    """One line for a tab bar: per shoal, needs-you / stalled / asks, and mode flags."""
-    parts = []
-    for s in doc["shoals"]:
-        if s.get("error"):
-            parts.append(f"{s['id'][:18]} ERR")
-            continue
-        m = s["mode"]
-        bits = [f"{s['needs_you']}!" if s["needs_you"] else "ok"]
-        if s["stalled"]:
-            bits.append(f"{s['stalled']} stalled")
-        if s["asks_open"]:
-            bits.append(f"{s['asks_open']} asks")
-        if m["offline"]:
-            bits.append("OFF")
-        if m["freeze"]:
-            bits.append("FRZ")
-        if m.get("limit_until"):
-            bits.append(f"LIMIT {m['limit_until'][11:16]}Z")
-        if s.get("relay") and not s["relay"]["alive"]:
-            bits.append("relay DEAD")
-        import re
-        parts.append(f"{re.sub(r'-[0-9]{8}-[0-9]{6}$', '', s['id'])}: {' '.join(bits)}")
+LINE_WIDTH = 80  # columns the tab bar showed for the command segment (measured 2026-10-19: it clipped near 80)
+
+
+def _shoal_bits(s: dict) -> list[str]:
+    m = s["mode"]
+    bits = [f"{s['needs_you']}!" if s["needs_you"] else "ok"]
+    if s["stalled"]:
+        bits.append(f"{s['stalled']} stalled")
+    if s["asks_open"]:
+        bits.append(f"{s['asks_open']} asks")
+    if m["offline"]:
+        bits.append("OFF")
+    if m["freeze"]:
+        bits.append("FRZ")
+    if m.get("limit_until"):
+        bits.append(f"LIMIT {m['limit_until'][11:16]}Z")
+    if s.get("relay") and not s["relay"]["alive"]:
+        bits.append("relay DEAD")
+    return bits
+
+
+def render_line(doc: dict, width: int = 0) -> str:
+    """One line for a tab bar: each shoal's needs-you / stalled / asks and mode flags, then the usage
+    quick view. With `width` (the tab bar clips a command segment, so the usage numbers of a provider
+    cut off the end were simply not shown) it picks the richest form that fits, in order: every shoal
+    with usage in full; only the shoals that need attention, usage in full; those shoals with compact
+    usage; just a count of them with compact usage. Quiet shoals are not worth the room: usage first."""
+    import re
     import subscription_usage
+    full, flagged, short = [], [], []
+    for s in doc["shoals"]:
+        tag = re.sub(r"-[0-9]{8}-[0-9]{6}$", "", s["id"])
+        if s.get("error"):
+            part = f"{s['id'][:18]} ERR"
+            full.append(part)
+            flagged.append(part)
+            short.append("ERR")
+            continue
+        bits = _shoal_bits(s)
+        part = f"{tag}: {' '.join(bits)}"
+        full.append(part)
+        if bits != ["ok"]:
+            flagged.append(part)
+            short.append(f"{tag[:6]}: {' '.join(bits)}")
     usage = subscription_usage.summary(doc.get("usage") or {})
-    if usage:
-        parts.append(usage)
-    return " | ".join(parts) or "no shoals"
+    compact = subscription_usage.summary(doc.get("usage") or {}, compact=True)
+
+    def join(parts, u):
+        return " | ".join([*parts, *([u] if u else [])]) or "no shoals"
+
+    options = [join(full, usage), join(flagged, usage), join(flagged, compact), join(short[:1], compact) if short else compact or "ok"]
+    if not width:
+        return options[0]
+    for o in options:
+        if len(o) <= width:
+            return o
+    return options[-1][:width]
 
 
 def add_args(p) -> None:
@@ -740,8 +769,9 @@ def cmd_status(a) -> int:
 
 
 def cmd_line(a) -> int:
+    width = a.width or int(ui_config().get("line_width") or LINE_WIDTH)
     print(render_line(cached_status(a.ids or None) if not a.ledger_root else
-                      status(a.ids or None, a.ledger_root, False, False, False, False)))
+                      status(a.ids or None, a.ledger_root, False, False, False, False), width))
     return 0
 
 
