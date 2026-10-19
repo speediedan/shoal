@@ -438,6 +438,14 @@ print("locality ok")
 PY3
 SHOAL_SERVER=hostA check "REFUSED: beta run(s) on another host" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --only beta --dry-run
 SHOAL_SERVER=hostA check "ssh hostB shoal restart" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --only alpha,beta --dry-run
+# lifecycle: mint on home, launch each role on its own host
+SHOAL_SERVER=hostA check "full restart here restarts this host's roles only: alpha, observer" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --dry-run
+SHOAL_SERVER=hostA check "remote role(s) gamma on hostB: not launched here" $H add-role --spec "$MH/shoals/t1shoal/shoal.json" --role "gamma,opencode,gamma,$DOC_B,fill=assigned,server=hostB" --dry-run
+OUT=$(SHOAL_SERVER=hostA $H start --name mhs --home hostA --dir "$WORK" --role "ra,opencode,ra,$DOC_A,fill=assigned" --role "rb,claude,rb,$DOC_B,fill=assigned,server=hostB" --ledger-repo "$S/remote/ledgers.git" --ledger-dir "$A" --dry-run 2>&1 || true)
+grep -q "remote role(s) rb on hostB: not launched here" <<<"$OUT" || fail "start launched or did not report the remote role :: $OUT"
+grep -q "create + brief lane ra (ra-r1" <<<"$OUT" || fail "start did not launch the home role :: $OUT"
+! grep -q "rb (rb-r1" <<<"$OUT" || fail "start would launch the remote role here :: $OUT"
+SHOAL_SERVER=hostB check "REFUSED: --home hostA is not this host" $H start --name mhs --home hostA --dir "$WORK" --role "ra,opencode,ra,$DOC_A,fill=assigned" --ledger-repo "$S/remote/ledgers.git" --ledger-dir "$A" --dry-run
 SHOAL_SERVER=hostB SHOAL_LEDGER_DIR="$MH" python3 - "$SHOALD" <<'PY3' || fail "doctor host profile"
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -487,10 +495,13 @@ assert [c["slug"] for c in got] == ["host:hostB"] and got[0]["condition"] == "ho
 # control: a host that never beat is not judged (no false page when the feature arrives)
 spec.roles.append(Role(slug="delta", ecosystem="opencode", title="delta", doc="x", fill="assigned", session="ses_d", server="hostC"))
 assert [c["slug"] for c in health.host_beats(spec, Ledger("t1shoal", root=sys.argv[3], sync=False), {"host_beat": health.iso()})] == ["host:hostB"]
-# a single-host shoal neither beats nor judges
+# a single-host shoal neither beats nor judges, with or without a recorded home
 single = ShoalSpec.load(sys.argv[2]); single.home = ""
 for r in single.roles: r.server = ""
 assert health.host_beats(single, led, {}) == []
+single.home = "hostA"
+n0 = len(led.events(reload=True))
+assert health.host_beats(single, led, {}, dry_run=False) == [] and len(led.events(reload=True)) == n0, "beat written"
 print("wake mode and host beats ok")
 PY3
 echo "== matcher transport: model calls go through openchamber, never the opencode CLI"

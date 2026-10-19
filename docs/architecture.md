@@ -378,8 +378,10 @@ is the only coordination path (no host-to-host connection is needed for correctn
 - **Locality.** The spec's `home` names the host for group duties; each role's `server` names its host,
   empty meaning home; an empty `home` is a single-host shoal. `roles.is_local(role, spec)` compares with
   config `server` and is the one test: health evaluates, sensors wake and `request_wake` delivers only for
-  local roles, and `restart`, `relay-launch` and `aux-launch` refuse a remote role and print the
-  `ssh <server> shoal ...` line. A remote role is watched, woken and launched by its own host.
+  local roles, and `restart --only`, `relay-launch` and `aux-launch` refuse a remote role and print the
+  `ssh <server> shoal ...` line. `start` and `add-role` record a remote role and launch only this host's
+  roles; a full `restart` on a multi-host shoal restarts this host's roles. Mint on home, then launch each
+  remote role on its host. A remote role is watched, woken and launched by its own host.
 - **Shared files.** Role files have one writer. `user` and `shoal` are written from any host, so the
   append-only writer files merge by union: `ledger.sync_pull` ensures the rule in the clone's
   `.git/info/attributes` (in force for every rebase) and commits it to `.gitattributes`.

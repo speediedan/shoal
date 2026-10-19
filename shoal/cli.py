@@ -520,6 +520,18 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
     caller can persist launched ids whatever the rc."""
     created = created if created is not None else []
     targets = [r for r in spec.roles if only is None or r.slug in only]
+    remote_t = [r for r in targets if not is_local(r, spec)]
+    if remote_t:
+        # a session is created where this runs: a remote role is recorded (start, add-role) and launched on
+        # its own host, never here (multi-host)
+        targets = [r for r in targets if r not in remote_t]
+        by_host: dict[str, list] = {}
+        for r in remote_t:
+            by_host.setdefault(host_of(r, spec), []).append(r)
+        for h, rs in sorted(by_host.items()):
+            print(f"remote role(s) {', '.join(r.slug for r in rs)} on {h}: not launched here; launch them there: "
+                  f"ssh {h} shoal restart --spec <its ledger clone>/shoals/{spec.sid}/shoal.json "
+                  f"--only {','.join(r.slug for r in rs)}")
     if only is not None:
         unknown = [s for s in only if spec.role(s) is None]
         if unknown:
@@ -793,7 +805,12 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
         r.session = sid
         if only is not None and slug not in only:
             only = only + [slug]
-    if want(stages, "restart"):
+    if only is None and any(not is_local(r, spec) for r in spec.roles):
+        # a full restart would clear every other role's session id and retire them from here: on a multi-host
+        # shoal it is a restart of THIS host's roles
+        only = [r.slug for r in spec.roles if is_local(r, spec)]
+        print(f"multi-host shoal: a full restart here restarts this host's roles only: {', '.join(only) or '(none)'}")
+    if want(stages, "restart") and not getattr(args, "adding", False):
         remote = [r for r in spec.roles if (only is None or r.slug in only) and not is_local(r, spec)]
         if remote:
             # a session is launched where the restart runs: a laptop role restarted from the server
@@ -916,6 +933,7 @@ def cmd_add_role(a: argparse.Namespace) -> int:
         print("spec invalid:", *errs, sep="\n  ")
         return 1
     a.only = ",".join(r.slug for r in new_roles)
+    a.adding = True  # a new remote role is recorded here and launched on its host (stage_restart skips it)
     a.stages = getattr(a, "stages", "") or "handoffs,sync-plans,restart"
     a.save_spec = a.spec
     for attr, default in (("old_session", []), ("consumer_launched", []),
