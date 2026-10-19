@@ -166,6 +166,11 @@ def cmd_aux_launch(a) -> int:
     if role is None or not getattr(role, "aux", False):
         print(f"ERROR: no aux role {slug} in {spec.sid}: run `shoal aux-init --shoal {spec.sid}` first")
         return 1
+    from roles import is_local
+    if not is_local(role, spec):
+        print(f"REFUSED: {slug} runs on {role.server or spec.home}; launch it there: "
+              f"ssh {role.server or spec.home} shoal aux-launch --shoal {spec.sid}")
+        return 1
     alive, _ = watcher_alive(spec.sid, slug)
     if alive and not a.force:
         print(f"{slug} ledger-watch already running; nothing to do (--force to launch anyway)")

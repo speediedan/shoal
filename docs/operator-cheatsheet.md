@@ -124,6 +124,16 @@ export S=<id> SPEC=<path to the group's spec>
       --repo <owner/repo> --source github-project:<owner>/<number> --dry-run
     ```
 
+- Several hosts: start the shoal on its home host with `--home <server>` and give remote roles
+  `server=<host>`; run lifecycle verbs for a role on that role's host (a remote target is refused with
+  the line to run). Each host needs its own `config/host.toml` (`server`, `data_root`, `ledger_dir`,
+  `tool_path`, `[tool_env]`), harness CLIs and logins, an NTP-synced clock, and a passing `shoal doctor`:
+
+    ```bash
+    shoal start --name <name> --home <this server> --dir <repo> --role "<role>,claude,<title>,<doc>,server=<other host>"
+    ssh <other host> shoal restart --spec <its ledger clone>/shoals/<id>/shoal.json --only <role>
+    ```
+
 - Restart into the next incarnation (all roles, or `--only` some); add a role; retire:
 
     ```bash

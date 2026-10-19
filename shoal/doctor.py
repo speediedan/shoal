@@ -84,6 +84,47 @@ def run(argv, timeout=30, env=None):
                           env=env or ENV)
 
 
+ECOSYSTEM_TOOLS = {"claude": "claude", "opencode": "openchamber", "muse": "muse", "codex": "codex"}
+
+
+def host_profile() -> dict:
+    """What THIS host needs, from the live specs in its ledger clone: the harnesses of the roles that
+    run here (`roles.is_local`), whether it is home to a shoal with the pipeline sensor (az). A
+    second host failed on tools no role there used (multi-host, 2026-10-19)."""
+    from roles import is_home, is_local
+    eco, home_of, azure = set(), [], False
+    for path in sorted(glob.glob(os.path.join(config.ledger_dir(), "shoals", "*", "shoal.json"))):
+        try:
+            spec = ShoalSpec.load(path)
+        except Exception:  # noqa: BLE001
+            continue
+        if spec.retired_utc:
+            continue
+        eco |= {r.ecosystem for r in spec.roles if is_local(r, spec)}
+        if is_home(spec) and spec.home:
+            home_of.append(spec.sid)
+        if is_home(spec) and config.azure_org():
+            azure = True
+    return {"ecosystems": eco, "home_of": home_of, "azure": azure}
+
+
+def clock_check(d: Doc) -> None:
+    """Ledger events are stamped by the writing host's clock, the fold orders by them and every
+    health condition is an age: an unsynchronized host corrupts both (a laptop 115 s fast,
+    2026-10-19). Offline-safe: reads the local sync flag, never the network."""
+    try:
+        r = run(["timedatectl", "show", "-p", "NTPSynchronized", "-p", "NTP"], timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        d.warn("clock", f"cannot read the sync state ({exc}); check this host is NTP-synchronized")
+        return
+    vals = dict(ln.split("=", 1) for ln in r.stdout.splitlines() if "=" in ln)
+    if vals.get("NTPSynchronized") == "yes":
+        d.ok("clock", "NTP-synchronized")
+    else:
+        d.fail("clock", f"not NTP-synchronized (NTP={vals.get('NTP', '?')}): ledger timestamps and every age-based "
+                        f"health condition depend on it; `sudo timedatectl set-ntp true`")
+
+
 def host_checks(d: Doc) -> None:
     v = sys.version_info
     (d.ok if v >= (3, 10) else d.fail)("python", f"{sys.executable} {v.major}.{v.minor}")
@@ -96,20 +137,38 @@ def host_checks(d: Doc) -> None:
                                                f"current in {len(config.skill_homes())} home(s)"))
     except Exception as exc:  # noqa: BLE001
         d.warn("skill copies", f"check failed: {exc}")
-    for tool in ("openchamber", "claude", "gh", "az", "git", "systemctl"):
+    prof = host_profile()
+    need = {"gh", "git", "systemctl"} | {ECOSYSTEM_TOOLS[e] for e in prof["ecosystems"] if e in ECOSYSTEM_TOOLS}
+    if prof["azure"]:
+        need.add("az")
+    d.info("host profile", f"server={config.server()}; local roles' harnesses: "
+           f"{', '.join(sorted(prof['ecosystems'])) or '(none)'}; home of: {', '.join(prof['home_of']) or '(none)'}")
+    for tool in ("openchamber", "claude", "muse", "codex", "gh", "az", "git", "systemctl"):
         p = shutil.which(tool, path=ENV["PATH"])
-        (d.ok if p else d.fail)(f"tool {tool}", p or "not found on tool PATH")
-    try:
-        r = run(["openchamber", "status"], timeout=30)
-        port = next((ln.strip(" │◆") for ln in r.stdout.splitlines() if "port" in ln), "?")
-        (d.ok if r.returncode == 0 else d.fail)("openchamber server", port[:80])
-    except Exception as exc:  # noqa: BLE001
-        d.fail("openchamber server", str(exc))
+        if p:
+            d.ok(f"tool {tool}", p)
+        elif tool in need:
+            d.fail(f"tool {tool}", "not found on tool PATH (a role on this host needs it)")
+        else:
+            d.info(f"tool {tool}", "not installed; no role on this host needs it")
+    if "opencode" in prof["ecosystems"]:
+        try:
+            r = run(["openchamber", "status"], timeout=30)
+            port = next((ln.strip(" │◆") for ln in r.stdout.splitlines() if "port" in ln), "?")
+            (d.ok if r.returncode == 0 else d.fail)("openchamber server", port[:80])
+        except Exception as exc:  # noqa: BLE001
+            d.fail("openchamber server", str(exc))
     try:
         r = run(["gh", "auth", "status"], timeout=30)
-        (d.ok if r.returncode == 0 else d.fail)("gh auth", (r.stdout + r.stderr).strip().splitlines()[-1][:80] if (r.stdout + r.stderr).strip() else "?")
+        text = (r.stdout + r.stderr).strip()
+        # `gh auth status` exited 0 with "The token in default is invalid" (measured 2026-10-19): read the text too
+        bad = r.returncode != 0 or re.search(r"token .* invalid|failed to log in|not logged in", text, re.I)
+        detail = next((ln.strip() for ln in text.splitlines() if re.search(r"invalid|failed|logged in", ln, re.I)),
+                      text.splitlines()[-1] if text else "?")
+        (d.fail if bad else d.ok)("gh auth", detail[:80])
     except Exception as exc:  # noqa: BLE001
         d.fail("gh auth", str(exc))
+    clock_check(d)
     pat = os.environ.get("AZURE_DEVOPS_EXT_PAT", "")
     if not pat:
         try:
@@ -119,7 +178,8 @@ def host_checks(d: Doc) -> None:
                     break
         except OSError:
             pass
-    (d.ok if pat else d.warn)("AZURE_DEVOPS_EXT_PAT", "resolvable" if pat else "unset (pipeline watcher will refuse to judge)")
+    if prof["azure"]:
+        (d.ok if pat else d.warn)("AZURE_DEVOPS_EXT_PAT", "resolvable" if pat else "unset (pipeline watcher will refuse to judge)")
     for name, root in (("SHOAL_DATA_ROOT", SHOAL_DATA_ROOT),):
         if os.path.isdir(root) and os.access(root, os.W_OK):
             d.ok(name, root)
@@ -402,6 +462,11 @@ def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
             # parked or retired: a leftover sidecar's dead pid is history, not a failure
             d.info(f"ledger-watch {r.slug}", "parked (no session)")
             continue
+        from roles import host_of, is_local
+        if not is_local(r, spec):
+            # checked first: a remote role has no sidecar here, which read as a WARN before the remote test
+            d.ok(f"ledger-watch {r.slug}", f"remote host {host_of(r, spec)}: watched there, not here")
+            continue
         sc = load_sidecar(sidecar_path(spec.sid, r.slug))
         if not sc:
             d.warn(f"ledger-watch {r.slug}", "not armed (no sidecar)")
@@ -410,9 +475,7 @@ def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
         bound = sid and r.session and (sid.startswith(r.session) or r.session.startswith(sid))
         alive = bool(pid) and os.path.exists(f"/proc/{pid}")
         skew = tools_skew_note(sc.get("armed_utc", ""))
-        if r.server and r.server != os.uname().nodename:
-            d.ok(f"ledger-watch {r.slug}", f"remote host {r.server}: sidecar not expected here")
-        elif not alive:
+        if not alive:
             d.fail(f"ledger-watch {r.slug}", f"pid {pid or '?'} not running (last tick {sc.get('last_tick', 'never')}); re-arm")
         elif not bound:
             d.warn(f"ledger-watch {r.slug}", f"alive (pid {pid}) but bound to {sid or '(none)'} != spec {r.session or '(none)'}")

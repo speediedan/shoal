@@ -48,3 +48,9 @@
 # Env: SHOAL_AZURE_ORG, SHOAL_AZURE_PROJECT. Default: "" (those features are off)
 # azure_org = "https://dev.azure.com/<org>"
 # azure_project = "<project>"
+
+# Extra environment for every tool call and generated systemd unit, for a host whose harness services
+# sit somewhere non-default (e.g. an OpenChamber server kept apart from a desktop app). An exported
+# variable still wins; PATH stays `tool_path`. Default: none.
+# [tool_env]
+# OPENCHAMBER_DATA_DIR = "~/.local/share/shoal/openchamber"

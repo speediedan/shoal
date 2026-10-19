@@ -49,10 +49,11 @@ def service_unit(description: str, repo_dir: str, argv: list[str],
         head = f"{sys.executable} {exe}"
     else:
         head = f"{_CLI_EXE} {SHOAL_CLI}".rstrip()
+    env = "".join(f"Environment={k}={v}\n" for k, v in sorted(config.tool_env_extra().items()))
     return (f"[Unit]\nDescription={description}\n"
             f"[Service]\nType=oneshot\nWorkingDirectory={repo_dir}\n"
-            f"Environment=PATH={TOOL_PATH}\n"
-            f"ExecStart={head} {' '.join(argv)}\n"
+            f"Environment=PATH={TOOL_PATH}\n" + env
+            + f"ExecStart={head} {' '.join(argv)}\n"
             f"StandardOutput=journal\nStandardError=journal\n")
 
 

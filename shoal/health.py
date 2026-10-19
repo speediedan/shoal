@@ -49,7 +49,7 @@ from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
-from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, is_wake_relay, roles_dir, state_dir,  # noqa: E402
+from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, is_home, is_local, is_wake_relay, roles_dir, state_dir,  # noqa: E402
                    wake_relay_role)
 
 TOOL_PATH = config.tool_path()
@@ -158,6 +158,9 @@ def request_wake(spec: ShoalSpec, slug: str, reason: str, condition: str = "", d
     role = spec.role(slug)
     if role is None:
         return "no-such-role"
+    if not is_local(role, spec):
+        # the role's own host delivers its wakes (its watcher reads the ledger; its quorum runs there)
+        return f"remote (skipped: {slug} runs on {role.server or spec.home}, whose watcher and quorum wake it)"
     text = wake_text(spec, slug, reason, condition)
     from backends import get as get_backend
     try:
@@ -455,7 +458,7 @@ def update_limit(spec: ShoalSpec, state: dict) -> dict:
     lim = state.get("limit") or {}
     floor = iso(utcnow() - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
     for role in spec.roles:
-        if role.ecosystem != "claude" or not role.session:
+        if role.ecosystem != "claude" or not role.session or not is_local(role, spec):
             continue
         for ts, _kind, reset in claude_limit_marks(role.session):
             if ts < floor:
@@ -554,6 +557,10 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         if is_wake_relay(role):
             continue
         if not role.session:  # parked or retired: no liveness conditions at all
+            continue
+        if not is_local(role, spec):
+            # another host watches it: its sidecar, wake files and session are there, so this host
+            # would read every remote role as watcher-dead and page it (multi-host, docs/limitations.md)
             continue
         slug = role.slug
         q = view.current_queue(slug) or {}
@@ -757,8 +764,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     tick_age = age_min(open(tk).read().strip()) if os.path.exists(tk) else None
     # relay-watch exits to deliver and the relay re-arms it within seconds: a dead relay is one whose
     # last tick is older than that gap (measured 2026-10-14 06:22Z: a sample in the gap read dead)
-    if (spec.features or {}).get("relay") and relay is not None and relay.session and not relay_alive(spec.sid) \
-            and (tick_age is None or tick_age >= RELAY_GAP_MIN):
+    if (spec.features or {}).get("relay") and relay is not None and relay.session and is_local(relay, spec) \
+            and not relay_alive(spec.sid) and (tick_age is None or tick_age >= RELAY_GAP_MIN):
         # the relay has no wake adapter of its own: its death is a page, or (revive) a relaunch first.
         # Evaluated ahead of the roles, so a relaunch is under way before this run queues their wakes.
         since = open(tk).read().strip() if os.path.exists(tk) else iso()
@@ -848,7 +855,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             role_ = spec.role(s_)
             waits.append(f"{role_.label if role_ else s_}: {st.get('sub')} ({str(st.get('holder', ''))[:80]})"
                          + (f" ASKS: {' | '.join(a[:120] for a in asks)}" if asks else " NO ASK RECORDED"))
-    if waits and state.get("digest_day") != today and view.user_offline() is None:
+    if waits and state.get("digest_day") != today and view.user_offline() is None and is_home(spec):
+        # a group duty: every host's quorum sees the same ledger, so only home sends it
         acts.append(("user", "user-waits digest", page_user(spec, "roles waiting on you: " + "; ".join(waits), state, dry_run)))
         state["digest_day"] = today
     if view.user_offline() is None and state.get("deferred_pages"):
@@ -1038,6 +1046,10 @@ def cmd_relay_launch(a) -> int:
     role = wake_relay_role(spec)
     if role is None:
         print(f"ERROR: no wake relay role in {spec.sid}: run `shoal relay-init --shoal {spec.sid}` first")
+        return 1
+    if not is_local(role, spec):
+        print(f"REFUSED: the relay runs on {role.server or spec.home}; launch it there: "
+              f"ssh {role.server or spec.home} shoal relay-launch --shoal {spec.sid}")
         return 1
     if relay_alive(spec.sid) and not a.force:
         print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.sid), 'relay-watch.pid')).read().strip()}); "

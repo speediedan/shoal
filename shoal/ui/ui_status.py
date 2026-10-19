@@ -169,16 +169,18 @@ def claude_turn(row: dict) -> str:
     return LIVENESS.get(_h.claude_liveness(row), "unknown")
 
 
-def is_remote(role) -> bool:
-    """A role whose session runs on another host: no local sidecar, no local harness row (as doctor)."""
-    return bool(role.server) and role.server not in (os.uname().nodename, config.server())
+def is_remote(role, spec=None) -> bool:
+    """A role whose session runs on another host (`roles.is_local`: its `server`, else the shoal's
+    `home`): no local sidecar, no local harness row (as doctor)."""
+    from roles import is_local
+    return not is_local(role, spec)
 
 
-def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = "") -> str:
+def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = "", spec=None) -> str:
     """working | blocked | idle | dead | unknown | remote | parked (no session)."""
     if not role.session:
         return "parked"
-    if is_remote(role):
+    if is_remote(role, spec):
         return "remote"
     if role.ecosystem == "claude":
         e = claude_session(rows, role.session)
@@ -238,9 +240,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         k = item_key(x)
         b = next((v for kk, v in nb.items() if item_key(kk) == k), None)
         nxt.append({"item": x, "blocker": b, "stale": k in stale_nb or None})
-    remote = is_remote(role)
+    remote = is_remote(role, spec)
     alive, sc = (False, {}) if remote else _h.watcher_alive(spec.sid, slug)
-    sess = session_state(role, rows, opencode_probe, spec.dir)
+    sess = session_state(role, rows, opencode_probe, spec.dir, spec)
     asks = list(q.get("asks") or [])
     mail = [m for m in view.msgs_to(slug, boundary)]
     last = view.last_by.get(slug, "")

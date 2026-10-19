@@ -58,20 +58,29 @@ log is then dead weight for every clone).
    bounds replay cost for a group that never retires. It needs a rule for who may write a
    checkpoint and how a reader verifies one.
 
-## 2. Joining from another host or as another user is untested
+## 2. Several hosts: safe since 2026-10-19, not yet complete
 
-**What happens.** The ledger's data model already crosses hosts: each event records its writer, and
-the spec records a `server` for each role. Nothing else has been tried. Host-local pieces that a
-second host would have to reproduce or coordinate:
+**What holds now.** A shoal may name a `home` host (`start --home`) and each role its `server`; an empty
+`server` means home, and an empty `home` is a single-host shoal. `roles.is_local` is the one locality test.
+Measured on two real hosts first, then proven by `selftest_ledger.sh` (two clones over one remote):
 
-- `config/host.toml`: the data root, the ledger clone path, the lease provider and the harness CLIs.
-- The health quorum, the digest, reconcile and relay timers. These are installed on one host. A second
-  host running its own copy would duplicate pages and board refreshes; a second host running none
-  depends on the first host for health.
-- Heartbeats, wait proofs, watcher sidecars and job records. These are files on the local host, so
-  the other host sees a remote role's liveness only through its ledger writes (a ledger write counts
-  as a heartbeat).
-- Resource leases and job units. These are local to one host by construction.
+- A claim race between hosts resolves to one holder (commit order, then `ts`).
+- Shared append-only files (`user`, `shoal`) written from two hosts before a sync merge by union
+  (`.git/info/attributes` plus a committed `.gitattributes`, both ensured on every pull). Without the rule
+  the second host's rebase conflicted and its clone wedged (2026-10-19).
+- Spec saves from two hosts keep both changes: `persist_spec` pulls under the lock, applies only its own
+  delta (`merge_spec`), and on a rejected push undoes only its own commit and merges again.
+- This host's health quorum, sensors and wakes skip remote roles (no false `watcher-dead`, no wake on the
+  wrong host), and `restart`, `relay-launch` and `aux-launch` refuse a remote role and print the ssh line.
+- `doctor` checks the tools the roles on this host need and the clock (`NTPSynchronized`; a laptop 115 s fast
+  stamped every event wrong).
+
+**Still open (multi-server plan, phase 1 PR B).** Per-host systemd timer sets (health and lanes on every role
+host, digest, reconcile, report and the pipeline sensor on home); a host heartbeat and a "host silent" page;
+the Claude wake mode on a host without the relay; `upgrade --local` for a non-home host; telemetry merge for
+reports. Until then a non-home host installs only its own health timers by hand. Host-local pieces a second
+host reproduces: `config/host.toml` (data root, ledger clone, lease provider, `tool_env`), harness CLIs and
+logins, heartbeats, sidecars, job records and leases (local by construction).
 
 **Trust model.** The ledger enforces permissions when it is read: a projection ignores an event its
 writer was not allowed to write, and `ledger-lint` lists the violations. Nothing authenticates a
@@ -79,7 +88,7 @@ writer beyond git push access. Anyone who can push can write any file under any 
 read-time rules then judge it by the name it claims. That is sound only while everyone with push
 access is trusted.
 
-**Trigger.** Before anyone joins from a second host or a second account.
+**Trigger.** Before anyone joins from a second account (a second host of the same maintainer is above).
 
 **Direction, if it proves useful.** Today a shoal is one maintainer's swarm working through one
 ordered, multi-repository body of work. A later incarnation may be refactored so that several users
@@ -87,14 +96,6 @@ contribute sessions to one shoal targeting a shared multi-repository work set. T
 least: writer identity bound to something stronger than a name (the trust model above), per-user
 authorization for merges and other grants, a maintainer channel per user rather than one inbox, and
 one agreed host (or a leader election) for the timers.
-
-**What the first test should prove.** A second clone on another machine and account runs one role.
-
-- A claim race between the two hosts resolves to exactly one holder.
-- A wake crosses hosts within one watcher interval plus one push.
-- The first host's health quorum does not page the remote role as dead.
-- Exactly one host runs the digest and reconcile timers, and the other host's `doctor` reports that
-  state rather than failing on it.
 
 ## 3. One repository holds every group
 
@@ -128,8 +129,9 @@ repository small.
 
 **The write path.** An append is a local commit followed by a push. On one host, a lock on the shared
 clone serializes every role's writes. Across hosts, the remote's branch ref does: a push that loses
-the race is rejected, the writer fetches and rebases, which cannot conflict because every file has one
-writer, and retries up to three times. After that the event stays committed but unpushed until the
+the race is rejected, the writer fetches and rebases, which cannot conflict because every role file has
+one writer and the shared append-only files (`user`, `shoal`) merge by union, and retries up to three
+times. After that the event stays committed but unpushed until the
 next sync. Contention therefore costs latency, not data. Claims lean on this: the push is the single
 point that orders them, which is what makes "first landed wins" well defined.
 

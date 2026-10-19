@@ -214,6 +214,9 @@ class ShoalSpec:
     tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "repo", "prev", "upgraded_utc",
         # "changed"}: the shoal/ tooling commit this shoal was last upgraded to (`shoal upgrade`);
         # `repo` names the repository that sha belongs to (origin URL, else toplevel dir name)
+    home: str = ""  # multi-host: the host (config `server`) that runs the shoal's group duties
+        # (digest, reconcile, reports, the pipeline sensor, group pages, spec-level edits). A role
+        # whose `server` is empty runs on home. Empty home: a single-host shoal, every host local.
 
     def validate(self) -> list[str]:
         errs = []
@@ -299,6 +302,7 @@ class ShoalSpec:
                 "repos": self.repos, "retired_utc": self.retired_utc,
                 "ledger": self.ledger, "sources": self.sources, "features": self.features,
                 "tooling": self.tooling,
+                **({"home": self.home} if self.home else {}),
                 "roles": [dataclasses.asdict(r) for r in self.roles],
                 "generations": self.generations}
 
@@ -329,7 +333,8 @@ class ShoalSpec:
                        ledger=dict(d.get("ledger", {}) or {}),
                        sources=list(d.get("sources", []) or []),
                        features=dict(d.get("features", {}) or {}),
-                       tooling=dict(d.get("tooling", {}) or {}))
+                       tooling=dict(d.get("tooling", {}) or {}),
+                       home=str(d.get("home", "") or ""))
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -342,7 +347,37 @@ class ShoalSpec:
     @staticmethod
     def load(path: str) -> "ShoalSpec":
         with open(path) as fh:
-            return ShoalSpec.from_dict(json.load(fh))
+            raw = json.load(fh)
+        spec = ShoalSpec.from_dict(raw)
+        # what this process loaded, so a save can apply only ITS changes onto a copy another host
+        # pushed meanwhile (cli.persist_spec): a whole-file save lost the other host's edits
+        spec.base = json.loads(json.dumps(raw))
+        return spec
+
+
+def host_of(role, spec=None) -> str:
+    """The host a role's session runs on: its `server`, else the shoal's `home`; "" = this host."""
+    return (getattr(role, "server", "") or (getattr(spec, "home", "") if spec is not None else "") or "")
+
+
+def is_local(role, spec=None) -> bool:
+    """True when the role's session runs on THIS host (config `server`). The one locality test
+    for health, wakes, sensors, launches and the UI: a remote role is watched, woken and launched
+    by its own host, never by this one (a second watcher and exec turn on the wrong host is a
+    split-brain role)."""
+    h = host_of(role, spec)
+    return not h or h == config.server()
+
+
+def is_home(spec) -> bool:
+    """True when this host runs the shoal's group duties (an empty `home` is a single-host shoal)."""
+    h = getattr(spec, "home", "") or ""
+    return not h or h == config.server()
+
+
+def remote_command(role, spec, verb: str) -> str:
+    """The line an operator runs for a role that lives on another host."""
+    return f"ssh {host_of(role, spec)} {config.cli()} {verb}"
 
 
 def is_wake_relay(role) -> bool:
