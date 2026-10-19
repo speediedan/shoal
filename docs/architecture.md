@@ -437,6 +437,53 @@ with `next_max`), `health` (`validity_wake_min`, `page`, `revive`), `continuatio
 
 ## 12. Operator UI
 
+Subscription meters are account observations, not per-role token estimates.
+`subscription_usage.py` owns provider reads, normalization, one host-wide cache,
+freshness, and warning thresholds. The UI status contract adds `usage`; overview
+panes and the status line render that same snapshot. An operator explicitly sets
+`usage_providers` in the viewer settings to enable collection. No shoal feature
+flag or role restart is needed for this read-only UI setting.
+
+The existing feeder starts at most one background refresh. A file lock and
+per-provider five-minute TTL deduplicate across processes and shoals. Network
+reads never block a feeder tick or a pane. Failures back off up to one hour and
+retain the last successful observation with a visible stale marker. No reset
+time implies zero usage: an expired window waits for another provider reading.
+
+Collectors call account endpoints only: Codex's native app-server
+`account/rateLimits/read`, Claude's OAuth usage read, Muse's subscription key
+metadata read, and OpenCode Go's quota endpoint. The Muse response's returned key
+and identity fields are discarded immediately; only quota windows are cached.
+Codex's process ends after the account RPC, without creating a thread or turn.
+HTTP redirects are refused so credentials cannot follow another origin.
+Credentials default to CLI-owned stores. Optional per-provider overrides come
+from process environment or an owner-only, ignored `config/usage.env` (override
+path: `SHOAL_USAGE_ENV_FILE`), parsed as data without shell execution. Cached
+files contain normalized meter fields and safe diagnostics only. Direct account
+reads require no browser, terminal scraping, always-running CLI session, model
+request, or role wake.
+
+An optional, operator-owned `usage_bridge` command supplies fallback observations
+only after direct account reads fail. It is disabled by default, runs once per
+due batch with failed providers on JSON stdin, and returns provider payloads on
+stdout. The cache labels its source. SHOAL contains no browser credential reader;
+a separately configured helper owns any additional authentication dependency.
+Helpers returning cached readings include their original `observed_at` epoch;
+collection never advances that timestamp. Invalid or future timestamps are
+refused, so a passive reader of a CLI report cannot turn stale usage into an
+apparently current account measurement.
+
+Not every provider returns every window. Missing monthly meters are marked as
+not reported, authentication failures are visible, and Muse's optional missing
+quota payload is unavailable rather than a fabricated zero. CLI account APIs
+and local credential layouts are version-sensitive; hermetic fixtures exercise
+their boundaries and live read-only verification establishes actual coverage.
+OpenCode Go's current `percent` wire field maps to the same internal percentage
+as older field names. Muse's interactive `/usage` is a token-free display of
+the host's last observation, not a fresh quota API: a retained reading keeps
+its original observation timestamp. The collector never submits `/usage` to
+`muse exec`, where it is interpreted as a model prompt.
+
 The UI is an operator's window onto the groups on one host. It is read-only except for explicit
 operator verbs, it never wakes a role as a side effect of viewing, and it owns no session. Details
 and the contract are in [`ui.md`](ui.md).
