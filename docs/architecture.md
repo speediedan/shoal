@@ -511,6 +511,8 @@ and the contract are in [`ui.md`](ui.md).
     `shoal`) and tokens (`pane.report_metadata`, with a TTL, so a dead feeder shows no data rather
     than stale data). A pane whose foreground is a bare shell gets tokens but no agent report:
     Herdr drops that report at once, so sending it only made the role flash in the agents list.
+    The `mode` token (`▶` turn, `◷` waiting on a job or CI) says why a role reads working; an attached but
+    quiet Muse or Codex seat reads idle (`status_line` adds `active` or `quiet` from the session file's age).
   - Actions: plugin actions open popups that run shoal verbs after a `--dry-run` preview and a
     confirm, and log them to `ui-actions.jsonl`.
   - The adapter never calls `pane.send_*`, `agent.prompt` or `pane.close`, and the UI selftest

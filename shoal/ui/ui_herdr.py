@@ -566,11 +566,23 @@ def standalone_path() -> str:
     return os.path.join(base, "shoal", "ui-standalone.json")
 
 
-def load_standalone() -> list[dict]:
+def unique_by_label(entries: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(kept, dropped): two saved sessions with one label share a pane label, so their feeder reports
+    collided (equal sequence numbers: the first, an old idle seat, won and a working seat read idle,
+    2026-10-19). The later entry wins, as the newer registration is the live one."""
+    last = {}
+    for i, e in enumerate(entries):
+        last[e.get("label") or e["session"][:12]] = i
+    kept = [e for i, e in enumerate(entries) if last[e.get("label") or e["session"][:12]] == i]
+    return kept, [e for e in entries if e not in kept]
+
+
+def load_standalone(raw: bool = False) -> list[dict]:
     try:
-        return list(json.load(open(standalone_path())).get("sessions", []))
+        entries = list(json.load(open(standalone_path())).get("sessions", []))
     except (OSError, ValueError):
         return []
+    return entries if raw else unique_by_label(entries)[0]
 
 
 def save_standalone(entries: list[dict]) -> None:
@@ -699,20 +711,33 @@ def role_sessions() -> set[str]:
 
 # ---- feed: role state and tokens -------------------------------------------------------
 
+MODE_TURN, MODE_JOB = "\u25b6", "\u25f7"  # a turn is running / waiting on its own job, CI build or lease
+
+
+def role_mode(r: dict) -> str:
+    """Why a role reads `working` in Herdr, because the half-moon alone cannot say: MODE_TURN while its
+    session is mid-turn (an open question prompt excepted: that is the maintainer's to answer), MODE_JOB
+    while it waits on a job or CI build running for it, else empty (asleep, idle or needing you)."""
+    reasons = r["can_progress"]["reasons"]
+    if r["session"] == "working" and "blocked-on-question" not in reasons:
+        return MODE_TURN
+    import ui_status
+    if ui_status.working_wait(r) and "watcher-dead" not in reasons and r["session"] != "dead":
+        return MODE_JOB
+    return ""
+
+
 def herdr_state(r: dict) -> str:
     """Herdr's agent state (idle | working | blocked). A session mid-turn is `working` even when the
     role also waits on the maintainer: the sidebar showed a busy lane as blocked (2026-10-12), and
     the needs-you signal stays in the row's posture and ask tokens. An open question prompt is the
     exception: it is the maintainer's to answer even while subagents keep the job working, so it reads
     `blocked` (unless the role waits on its own job or CI build). `blocked` (drawn as x in symbols
-    mode) means the role needs the maintainer, or cannot be woken (watcher dead)."""
-    reasons = r["can_progress"]["reasons"]
-    if r["session"] == "working" and "blocked-on-question" not in reasons:
+    mode) means the role needs the maintainer, or cannot be woken (watcher dead). `working` covers a
+    turn and a wait on its own job; the `mode` token (role_mode) says which."""
+    if role_mode(r):
         return "working"
-    import ui_status
-    if ui_status.working_wait(r) and "watcher-dead" not in reasons and r["session"] != "dead":
-        return "working"  # its job or CI build is running; an open question stays in the ask tokens
-    if r["needs_you"] or "watcher-dead" in reasons:
+    if r["needs_you"] or "watcher-dead" in r["can_progress"]["reasons"]:
         return "blocked"
     return "idle"
 
@@ -722,6 +747,7 @@ def role_tokens(r: dict) -> dict[str, str]:
     nx = r["next"]
     return {
         "role": r["slug"],
+        "mode": role_mode(r),
         "posture": ui_status.posture_label(r),
         "item": (r["active"] or "-")[:80],
         "next": (f"{len(nx)}" + ("!" if r["blocker_stale"] else "")) if nx else "",
@@ -754,8 +780,10 @@ def shoal_tokens(s: dict) -> dict[str, str]:
 
 def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
     """(turn word, herdr state) for one standalone session, from its harness's own probe: Claude
-    from the agents listing, muse and opencode from their backend status lines
-    (`status:busy` is a running turn or, for muse, an attached interactive client)."""
+    from the agents listing, muse, codex and opencode from their backend status lines. For Muse and
+    Codex `status:busy` is a running turn OR a client merely attached and waiting for the maintainer;
+    the backend adds `active` or `quiet` by the session file's age, and `attached quiet` reads as
+    idle (word `attached`), so a seat waiting for you is not drawn as working."""
     import ui_status
     harness = e.get("harness") or ""
     if harness == "claude":
@@ -768,6 +796,8 @@ def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
             s = get_backend(harness).status(e["session"], e.get("cwd") or os.path.expanduser("~"))
         except Exception:  # noqa: BLE001 - a failed probe reports idle, never stops the tick
             return "unknown", "idle"
+        if "status:busy" in s and "attached quiet" in s:
+            return "attached", "idle"
         if "status:busy" in s or "status:running" in s or "status:working" in s:
             return "working", "working"
         return ("idle", "idle") if "status:idle" in s else ("unknown", "idle")
@@ -836,6 +866,9 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
         h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE,
                                      "agent": e.get("label") or e.get("harness") or "standalone",
                                      "state": hstate, "message": f"standalone {st}", "seq": seq})
+        h.call("pane.report_metadata", {"pane_id": p["pane_id"], "source": SOURCE, "ttl_ms": ttl, "seq": seq,
+                                        "tokens": {"role": e.get("label") or "", "shoal": e.get("harness") or "",
+                                                   "posture": st, "mode": MODE_TURN if hstate == "working" else ""}})
     if not quiet:
         print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}"
               + (f"; bare shell cards not reported (`shoal ui open --reapply`): {', '.join(bare)}" if bare else ""),
@@ -893,7 +926,7 @@ def cmd_open(a) -> int:
     if not a.no_standalone:
         for line in migrate_standalone(h, a.dry_run):
             print(("[dry-run] " if a.dry_run else "") + line)
-        entries = load_standalone()
+        entries = load_standalone(raw=True)
         show = {x.strip() for x in getattr(a, "show", []) or []}
         for line in sync_standalone(h, entries, show, labelled_before, a.dry_run, getattr(a, "reapply", False)):
             print(("[dry-run] " if a.dry_run else "") + line)
@@ -909,6 +942,11 @@ def sync_standalone(h: Herdr, entries: list[dict], show: set[str], labelled_befo
     (or `ui pick --save`) brings it back, `ui forget` drops it for good."""
     out, changed = [], False
     present = {q.get("label") for q in h.panes()}
+    entries[:], dropped = unique_by_label(entries)
+    for d in dropped:
+        out.append(f"standalone {d.get('label') or d['session'][:12]}: dropped a saved duplicate label "
+                   f"({d['harness']} {d['session'][:8]}); the later registration is kept")
+        changed = True
     for e in entries:
         name = e.get("label") or e["session"][:12]
         shown = name in show or e["session"] in show
@@ -964,7 +1002,13 @@ def cmd_pick(a) -> int:
         save = ui_term.confirm("save it so `ui open` restores it? [y/N] ")
     if save:
         e["opened"] = True  # it opens right below: closing it in the viewer later is a deliberate dismissal
-        entries = [x for x in load_standalone() if x["session"] != e["session"]] + [e]
+        label = e.get("label") or e["session"][:12]
+        for x in load_standalone(raw=True):
+            if x["session"] != e["session"] and (x.get("label") or x["session"][:12]) == label:
+                print(f"replacing the saved {x['harness']} session {x['session'][:8]} that had the same label "
+                      f"({label}): one label, one card")
+        entries = [x for x in load_standalone(raw=True) if x["session"] != e["session"]
+                   and (x.get("label") or x["session"][:12]) != label] + [e]
         save_standalone(entries)
         print(f"saved to {standalone_path()}")
     h = Herdr(a.session)
@@ -976,7 +1020,7 @@ def forget_interactive() -> int:
     """Pick a saved standalone session, forget it (ui open stops reopening it), and close its
     workspace when nothing in it is in use. Closing the workspace by hand only lasted until the next
     launch, which reopens every saved session (the maintainer, 2026-10-13)."""
-    entries = load_standalone()
+    entries = load_standalone(raw=True)
     if not entries:
         print("no saved standalone sessions")
         return 0
@@ -1002,7 +1046,7 @@ def forget_interactive() -> int:
 
 
 def cmd_forget(a) -> int:
-    entries = load_standalone()
+    entries = load_standalone(raw=True)
     keep = [x for x in entries if x["session"] != a.session_id and x.get("label") != a.session_id]
     save_standalone(keep)
     print(f"forgot {len(entries) - len(keep)} saved standalone session(s); open panes are left as they are")
@@ -1423,10 +1467,35 @@ MENU = [
     ("metrics", "failure-mode metrics and report files"),
     ("pick", "open a standalone (non-shoal) session"),
     ("forget", "stop reopening a saved standalone session (and close its workspace)"),
+    ("legend", "what the state icons and glyphs mean"),
     ("keys", "paste, copy and navigation keys (the image paste key is here)"),
     ("open", "re-apply the shoal layouts (fills gaps only)"),
     ("upgrade", "preview a shoal upgrade (applying stays a CLI step)"),
 ]
+
+
+def legend_text(color: bool = True) -> str:
+    """What the viewer's icons and glyphs mean. Herdr draws the state icon from the state shoal reports; the
+    glyph beside the name is shoal's `mode` token, which says WHY a role reads working."""
+    b = ("\x1b[1m", "\x1b[0m") if color else ("", "")
+    return "\n".join([
+        f"{b[0]}icons in the viewer{b[1]}",
+        "",
+        "  state icon (Herdr draws it from the state shoal reports; its colour is part of the meaning)",
+        "    half-moon, yellow   working: a turn is running, or the role waits on its own job, CI build or lease",
+        "    hollow circle, green  idle: ready for input (a role holding a blocker, or asleep, is idle)",
+        "    x, red              blocked: the role needs you (a question, or it says it waits) or its watcher is dead",
+        "    dot, grey           unknown: nothing reported (a card that is a bare shell, a space with no agent)",
+        "    A space (workspace) shows the summary of its agents.",
+        "",
+        f"  glyph beside the name (why it reads working)",
+        f"    {MODE_TURN}  a turn is running            {MODE_JOB}  waiting on a job, CI build or lease running for it",
+        "    (none) asleep with a watcher, idle, or needing you",
+        "",
+        "  second row, the posture word: wait:<kind> orange, blocked:<kind> and QUESTION red, active green, idle orange",
+        "  Standalone seats: `attached` = a client is open but nothing moved in the session for two minutes (idle);",
+        "  `working` = the session's own activity is recent or a turn is running.",
+    ])
 
 
 def keys_help() -> str:
@@ -1471,6 +1540,10 @@ def cmd_menu(a) -> int:
         print(keys_help())
         ui_term.pause()
         return 0
+    if k == "legend":
+        print(legend_text())
+        ui_term.pause()
+        return 0
     if k == "forget":
         rc = forget_interactive()
         ui_term.pause()
@@ -1483,6 +1556,11 @@ def cmd_menu(a) -> int:
     if k not in ("status", "next", "asks", "upgrade", "conditions"):
         ui_term.pause()
     return rc
+
+
+def cmd_legend(a) -> int:
+    print(legend_text(sys.stdout.isatty()))
+    return 0
 
 
 def cmd_act(a) -> int:
@@ -1545,7 +1623,7 @@ status_indicators = "symbols"
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "machine", { token = "agent", bold = true }, { token = "$shoal", dim = true }],
+  ["state_icon", "machine", { token = "agent", bold = true }, { token = "$mode", rules = [{ equals = "\u25b6", fg = "#a6e3a1" }, { equals = "\u25f7", fg = "#fab387" }] }, { token = "$shoal", dim = true }],
   [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#f38ba8", bold = true }, { equals = "BLOCKED", fg = "#f38ba8" }, { starts_with = "blocked", fg = "#f38ba8" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#fab387", bold = true }, { starts_with = "wait", fg = "#fab387" }, { equals = "idle", fg = "#fab387" }, { equals = "active", fg = "#a6e3a1" }] }, "$item", "$age"],
   [{ token = "$asks", fg = "#fab387", bold = true }, { token = "$next", rules = [{ contains = "!", fg = "#f9e2af" }] }, "$wait", { token = "$why", dim = true }],
 ]
