@@ -389,8 +389,11 @@ is the only coordination path (no host-to-host connection is needed for correctn
   merges again. A key both hosts changed keeps this host's value and is printed as a conflict.
 - **Clocks.** Events are stamped by the writer's clock, the fold orders by them and conditions are ages:
   `doctor` fails a host that is not NTP-synchronized.
-- **Not yet:** per-host timer sets, a host heartbeat, the Claude wake mode off the relay host
-  ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
+- **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the pipeline
+  sensor, digest, reconcile and report on home only); every host with a live role writes a `host-beat`
+  system event and home pages `host-silent` for one that stops; a Claude role off the relay's host gets
+  the `exit` watcher; `upgrade` off home leaves the spec's tooling and features to home. Still open:
+  telemetry merge for reports and per-host relays ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
 source, harness adapters) and their contracts are in [`providers.md`](providers.md).
 
 **Harness-specific verbs**, the only non-neutral surface:

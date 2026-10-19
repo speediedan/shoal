@@ -49,8 +49,8 @@ from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
-from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, is_home, is_local, is_wake_relay, roles_dir, state_dir,  # noqa: E402
-                   wake_relay_role)
+from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, host_of, is_home, is_local, is_wake_relay, roles_dir,  # noqa: E402
+                   state_dir, wake_relay_role)
 
 TOOL_PATH = config.tool_path()
 _ENV = config.tool_env()
@@ -67,7 +67,12 @@ LADDERS = {
     "parked-work": [(30, "wake"), (90, "wake"), (180, "page")],
     "relay-dead": [(10, "page"), (360, "page")],
     "hold-long": [(0, "wake"), (240, "page")],
+    # multi-host: a host that stopped beating has no quorum for its roles and nothing here can wake them,
+    # so its silence is a page once per episode (the key carries its last beat)
+    "host-silent": [(0, "page")],
 }
+HOST_BEAT_MIN = 15
+HOST_SILENT_MIN = 60
 # features.health.revive: a dead relay is relaunched before anyone is paged. Measured 2026-10-02: the
 # Claude background service failed its own upgrade respawn and reaped every worker, the relay among
 # them; relay-dead paged for six days while every wake it would have carried went nowhere.
@@ -690,6 +695,48 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     return out
 
 
+def multi_host(spec: ShoalSpec) -> bool:
+    return bool(spec.home) or any(r.server for r in spec.roles)
+
+
+def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list[dict]:
+    """Multi-host liveness of whole hosts. Every host with a live local role writes a `host-beat` system
+    event at most every `host_beat_min` (its quorum is alive); home raises `host-silent` for another host
+    whose last beat is older than `host_silent_min`. A host that never beat is not judged (no false page
+    when the feature arrives under a running shoal). A single-host shoal does neither."""
+    if not multi_host(spec):
+        return []
+    cfg = health_cfg(spec)
+    beat_min = float(cfg.get("host_beat_min", HOST_BEAT_MIN))
+    silent_min = float(cfg.get("host_silent_min", HOST_SILENT_MIN))
+    me = config.server()
+    if any(r.session and is_local(r, spec) for r in spec.roles):
+        last = state.get("host_beat", "")
+        if not dry_run and (not last or (age_min(last) or 0.0) >= beat_min):
+            try:
+                led.append("shoal", "system", kind="host-beat", host=me)
+                state["host_beat"] = iso()
+            except Exception as exc:  # noqa: BLE001 - a beat must never stop the quorum
+                print(f"{iso()} health: host-beat write failed: {exc}")
+    if not is_home(spec):
+        return []
+    beats: dict[str, str] = {}
+    for e in led.events():
+        if e.get("type") == "system" and e.get("kind") == "host-beat" and e.get("host"):
+            beats[e["host"]] = max(beats.get(e["host"], ""), e.get("ts", ""))
+    out = []
+    for h in sorted({host_of(r, spec) for r in spec.roles if r.session} - {"", me}):
+        ts = beats.get(h)
+        a = age_min(ts) if ts else None
+        if a is not None and a >= silent_min:
+            roles_there = ", ".join(r.slug for r in spec.roles if r.session and host_of(r, spec) == h)
+            out.append({"slug": f"host:{h}", "condition": "host-silent", "key": f"beat:{ts}", "since": ts,
+                        "detail": f"host {h} has not beaten since {ts} ({a:.0f} min): its roles ({roles_there}) have "
+                                  f"no health quorum and nothing on {me} can wake them. Asleep or offline is fine; "
+                                  f"otherwise check its timers (`ssh {h} systemctl --user list-timers 'shoal-*'`)"})
+    return out
+
+
 def relaunch_relay(spec: ShoalSpec, spec_path: str, dry_run: bool = False) -> str:
     """features.health.revive: `relay-launch` from the quorum, without its blocking verification
     (the next run sees relay-watch alive, or the ladder's page step fires). A relay session still
@@ -756,6 +803,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     led.pull()
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
+    conds += host_beats(spec, led, state, dry_run)
     lim = update_limit(spec, state)
     until = limit_until(lim)
     relay = wake_relay_role(spec)
@@ -812,6 +860,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ch = request_wake(spec, c["slug"], c["detail"], c["condition"], dry_run)
                 if ch.startswith("no-adapter"):
                     ch += "; " + page_user(spec, f"{c['slug']}: {c['detail']} (and no wake adapter: {ch})", state, dry_run)
+            elif c["condition"] == "host-silent":
+                ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)
             acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
