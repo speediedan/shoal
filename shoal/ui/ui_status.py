@@ -418,8 +418,33 @@ def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
     return out
 
 
+def merge_remote(spec, roles: list[dict]) -> None:
+    """Live state for roles on other hosts: their harness liveness and sidecars are readable only there,
+    so a host with a route pulls that host's own rows (`ui status --rows-only`, cached 30 s) and takes
+    their live fields (routes.LIVE_FIELDS). Each merged row gets `remote_status` {ok, age_s, stale}; a row
+    whose host has no route keeps `session: remote`."""
+    import routes
+    by_host: dict[str, list[dict]] = {}
+    for x in roles:
+        if x.get("session") == "remote" and x.get("session_id"):
+            by_host.setdefault(x["host"], []).append(x)
+    for host, xs in by_host.items():
+        if routes.route(host) is None:
+            continue
+        got, meta = routes.remote_rows(host, spec.sid)
+        for x in xs:
+            g = got.get(x["slug"])
+            x["remote_status"] = dict(meta, found=g is not None)
+            if g is None or g.get("session_id") != x.get("session_id"):
+                continue  # a row for another incarnation is not this one's liveness
+            for f in routes.LIVE_FIELDS:
+                if f in g:
+                    x[f] = g[f]
+
+
 def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, pull: bool = False,
-              opencode_probe: bool = True, refresh_conditions: bool = False) -> dict:
+              opencode_probe: bool = True, refresh_conditions: bool = False, rows_only: bool = False,
+              remote: bool = True) -> dict:
     import health as _h
     from ledger import Ledger, View
     spec = ShoalSpec.load(spec_path)
@@ -431,6 +456,11 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
         return {"id": spec.sid, "spec": spec_path, "error": f"no ledger at {led.ldir}"}
     view = View(led, spec)
     roles = [role_row(spec, view, r, rows, now, opencode_probe) for r in spec.roles]
+    if rows_only:
+        # what another host's viewer pulls over its route: this host's own roles, nothing else
+        return {"id": spec.sid, "roles": [x for x in roles if x["session"] != "remote"]}
+    if remote:
+        merge_remote(spec, roles)
     pages = [m for m in view.msgs if m.get("to") == "user" and m.get("kind") == "health"
              and (age_s(m.get("ts", ""), now) if age_s(m.get("ts", ""), now) is not None else 10**9)
              < PAGE_WINDOW_H * 3600]
@@ -481,15 +511,19 @@ def host_beats_doc(spec, led, now) -> dict:
 
 def status(ids: list[str] | None = None, root: str = "", include_retired: bool = False,
            with_conditions: bool = False, pull: bool = False, opencode_probe: bool = True,
-           refresh_conditions: bool = False) -> dict:
+           refresh_conditions: bool = False, rows_only: bool = False) -> dict:
     import socket
     rows = claude_rows()
     shoals = []
     for p in discover_all(root, ids, include_retired):
         try:
-            shoals.append(shoal_doc(p, rows, with_conditions, pull, opencode_probe, refresh_conditions))
+            # rows_only is another host's pull: never pull further hosts from it (no ssh ping-pong)
+            shoals.append(shoal_doc(p, rows, with_conditions, pull, opencode_probe, refresh_conditions,
+                                    rows_only=rows_only, remote=not rows_only))
         except Exception as exc:  # noqa: BLE001 - one broken spec never hides the others
             shoals.append({"id": os.path.basename(os.path.dirname(p)), "spec": p, "error": _short(exc, 200)})
+    if rows_only:
+        return {"v": CONTRACT_V, "host": socket.gethostname(), "ts": iso(), "shoals": shoals}
     import subscription_usage
     return {"v": CONTRACT_V, "host": socket.gethostname(), "ts": iso(), "shoals": shoals,
             "usage": subscription_usage.snapshot(ui_config().get("usage_providers", []))}
@@ -819,7 +853,11 @@ def add_args(p) -> None:
 
 def cmd_status(a) -> int:
     doc = status(a.ids or None, a.ledger_root, a.include_retired, a.conditions, a.pull,
-                 not a.no_opencode_probe, getattr(a, "refresh_conditions", False))
+                 not a.no_opencode_probe, getattr(a, "refresh_conditions", False),
+                 rows_only=getattr(a, "rows_only", False))
+    if getattr(a, "rows_only", False):
+        print(json.dumps(doc, default=str))
+        return 0
     print(json.dumps(doc, indent=1, default=str) if a.json else render_text(doc, getattr(a, "width", 0)))
     return 0 if not any(s.get("error") for s in doc["shoals"]) else 1
 

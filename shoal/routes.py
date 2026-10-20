@@ -47,7 +47,7 @@ def ssh_bin() -> str:
 
 
 def _cache_dir() -> str:
-    d = os.path.join("/tmp", f"shoal-routes-{os.getuid()}")
+    d = config.env("ROUTE_CACHE") or os.path.join("/tmp", f"shoal-routes-{os.getuid()}")  # tests: a scratch dir
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -132,3 +132,43 @@ def view_argv(server: str, sid: str, slug: str) -> list[str] | None:
     if r is None:
         return None
     return ssh_argv(r, tty=True) + [remote_cmd(r, "view", sid, slug)]
+
+
+STATUS_CACHE_S = 30
+STATUS_STALE_S = 600
+# the fields of a role row that only the role's own host can know (its harness and its sidecars); the
+# ledger-derived ones (posture, queue, asks, last write) are already right on every host
+LIVE_FIELDS = ("session", "watcher", "can_progress", "needs_you", "context_k", "heartbeat_age_s")
+
+
+def remote_rows(server: str, sid: str) -> tuple[dict, dict]:
+    """({slug: row}, meta) for `sid`'s roles on `server`, from that host's `shoal ui status --rows-only`
+    over its route: fresh within STATUS_CACHE_S, else pulled again; a failed pull keeps the last good rows
+    (up to STATUS_STALE_S) and marks them stale. meta: {"ok", "age_s", "stale"}."""
+    r = route(server)
+    if r is None:
+        return {}, {"ok": False, "age_s": None, "stale": True}
+    key = f"status-{server}-{sid}"
+    c = _cached(key, STATUS_CACHE_S)
+    if c is None:
+        prev = _cached(key, STATUS_STALE_S) or {}
+        rows, ok = {}, False
+        try:
+            out = subprocess.run(ssh_argv(r) + [remote_cmd(r, "ui", "status", "--shoal", sid, "--rows-only", "--json")],
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+            d = json.loads(out.stdout) if out.returncode in (0, 1) and out.stdout.strip() else {}
+            s = next((x for x in d.get("shoals") or [] if x.get("id") == sid), None)
+            if s is not None:
+                rows, ok = {x["slug"]: x for x in s.get("roles") or []}, True
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            pass
+        if ok:
+            c = {"rows": rows, "ok": True, "pulled": time.time()}
+            _store(key, c)
+        else:
+            c = {"rows": prev.get("rows") or {}, "ok": False, "pulled": prev.get("pulled")}
+            _store(key, dict(c))  # retry after STATUS_CACHE_S, not on every read
+    pulled = c.get("pulled")
+    age = int(time.time() - pulled) if pulled else None
+    return c.get("rows") or {}, {"ok": bool(c.get("ok")), "age_s": age,
+                                 "stale": not c.get("ok") or age is None or age > STATUS_CACHE_S * 4}
