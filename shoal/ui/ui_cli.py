@@ -115,6 +115,10 @@ def add_parsers(sub) -> None:
     q = u.add_parser("legend", help="what the viewer's state icons and glyphs mean")
     q.set_defaults(func=ui_herdr.cmd_legend)
 
+    q = u.add_parser("standalone", help="this host's saved standalone sessions with their turn state (read-only)")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=ui_herdr.cmd_standalone)
+
     q = u.add_parser("forget", help="drop a saved standalone session (open panes stay)")
     q.add_argument("session_id", metavar="ID_OR_LABEL")
     q.set_defaults(func=ui_herdr.cmd_forget)

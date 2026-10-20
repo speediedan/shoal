@@ -323,6 +323,14 @@ once a saved session has had a workspace, a later `ui open` that finds it gone (
 labelled panes, so not a fresh server) marks it `dismissed` and leaves it closed across viewer restarts.
 `shoal ui open --show <label>` brings it back, `shoal ui pick --save` re-saves it, `shoal ui forget` drops it.
 
+**Standalone sessions on other hosts.** On `ui open`, each host with a route is asked for its own saved
+standalone sessions (`shoal ui standalone --json` over the route, cached 30 s), and they are mirrored into this
+registry with `host` set and the label suffixed `@<host>`. They get cards like local ones, and Enter attaches
+over ssh, with the same 30 s retry when the attach fails fast. Their turn state comes from that host's own probe.
+A reachable host's list is the truth (a session it no longer saves is dropped here); an unreachable host's
+mirrored entries stay as they were. Closing a mirrored card dismisses it here only. `shoal ui standalone`
+reports only a host's own open sessions, never its mirrors, so hosts never re-export each other.
+
 **Quiet check** (`shoal ui quiet-check --save F`, then `--compare F`). It proves that viewing woke
 nobody. For each Claude role it classifies what the transcript gained:
 

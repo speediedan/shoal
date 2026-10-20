@@ -90,7 +90,7 @@ PY2
 cat > "$S/ssh-stub" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_SSH_LOG:-/dev/null}"
-case "$*" in *--rows-only*) [ -n "${STUB_SSH_OUT:-}" ] && cat "$STUB_SSH_OUT" ;; esac
+case "$*" in *--rows-only*) [ -n "${STUB_SSH_OUT:-}" ] && cat "$STUB_SSH_OUT" ;; *"ui standalone"*) [ -n "${STUB_SSH_SA:-}" ] && cat "$STUB_SSH_SA" ;; esac
 exit "${STUB_SSH_RC:-0}"
 SH
 chmod +x "$S/ssh-stub"
@@ -169,6 +169,37 @@ d = json.load(open(p)); d["t"] -= 60; d["pulled"] -= 200; json.dump(d, open(p, "
 f = far()
 assert f["session"] == "idle" and f["remote_status"]["stale"] and not f["remote_status"]["ok"], f
 print("remote status merge ok")
+PY2
+# standalone sessions saved on a routed host are mirrored here (label @host) and attach over ssh; a reachable
+# host's list is the truth, an unreachable host's mirrors stay as they were
+printf '{"v": 1, "host": "other-host.invalid", "sessions": [{"harness": "claude", "session": "abcd1234-5555", "label": "lapseat", "turn": "idle", "state": "idle"}]}' > "$S/sa.json"
+rm -rf "$SHOAL_ROUTE_CACHE"
+STUB_SSH_SA="$S/sa.json" SHOAL_SSH="$S/ssh-stub" XDG_CONFIG_HOME="$S/xdg-sa" python3 - "$SHOALD" <<'PY2' || fail "remote standalone"
+import io, json, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import routes, ui_herdr
+local = {"harness": "opencode", "session": "ses_local", "label": "mine"}
+entries = [dict(local)]
+changed, notes = ui_herdr.reconcile_remote_standalone(entries)
+m = [e for e in entries if e.get("host")]
+assert changed and len(m) == 1 and m[0]["label"] == "lapseat@other-host.invalid", entries
+assert ui_herdr.standalone_argv(m[0])[-2:] == ["--host", "other-host.invalid"], ui_herdr.standalone_argv(m[0])
+assert ui_herdr.remote_standalone_state(m[0]) == ("idle", "idle")
+# the mirror never re-exports: this host's own list has only its local, open sessions
+ui_herdr.save_standalone(entries + [{"harness": "claude", "session": "gone0000", "label": "closed", "dismissed": True}])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    ui_herdr.cmd_standalone(type("A", (), {"json": True})())
+mine = json.loads(buf.getvalue())["sessions"]
+assert [x["session"] for x in mine] == ["ses_local"], mine
+# unreachable now: the mirror stays; reachable with an empty list: it goes
+os.environ["STUB_SSH_RC"] = "255"; rm = routes._cache_dir(); [os.remove(os.path.join(rm, f)) for f in os.listdir(rm)]
+changed, notes = ui_herdr.reconcile_remote_standalone(entries)
+assert not changed and any(e.get("host") for e in entries) and "not reachable" in " ".join(notes), (entries, notes)
+os.environ["STUB_SSH_RC"] = "0"; open(os.environ["STUB_SSH_SA"], "w").write('{"v": 1, "sessions": []}')
+[os.remove(os.path.join(rm, f)) for f in os.listdir(rm)]
+changed, notes = ui_herdr.reconcile_remote_standalone(entries)
+assert changed and not any(e.get("host") for e in entries), entries
+print("remote standalone ok")
 PY2
 cp "$S/host-noroute.toml" "$SHOAL_CONFIG"
 # the fixture is multi-host (role far lives elsewhere): the host column names it, the header names home
