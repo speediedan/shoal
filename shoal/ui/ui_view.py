@@ -72,14 +72,20 @@ ATTACH_RETRY_S = 30
 FAST_EXIT_S = 15
 
 
-def remote_attach(server: str, sid: str, slug: str) -> int:
+def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, str] | None = None) -> int:
     """Attach a role on another host through its route, from a card. A Claude attach is exclusive, so a session
     held by another viewer cannot open here: an attach that fails within FAST_EXIT_S says why (host unreachable,
     or attached elsewhere) and retries every ATTACH_RETRY_S rather than taking the session over; `q` gives up,
     `r` retries now (maintainer ruling 2026-10-20)."""
     import routes
     while True:
-        argv = routes.view_argv(server, sid, slug)
+        if standalone:
+            r = routes.route(server)
+            h_, sess, lab = standalone
+            argv = (routes.ssh_argv(r, tty=True) + [routes.remote_cmd(r, "view", "--harness", h_, "--session", sess,
+                                                                      "--label", lab)]) if r else None
+        else:
+            argv = routes.view_argv(server, sid, slug)
         if argv is None:
             print(f"no route to {server}")
             return 2
@@ -275,11 +281,26 @@ def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: s
     return argv + [sid, slug] + (["--spec", spec_path] if spec_path else [])
 
 
-def standalone_stub(harness: str, session: str, label: str) -> int:
+def standalone_stub(harness: str, session: str, label: str, host: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
     while True:
         watch.check()
+        if host:
+            import routes
+            up = routes.reachable(host)
+            sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session} on {host})\n\n"
+                             f"\x1b[2m[enter] attach over ssh{'' if up else ' (unreachable now)'}   [q] shell\n"
+                             f"{DETACH_HINT}\x1b[0m\n")
+            sys.stdout.flush()
+            k = _getkey(60)
+            if k in ("q", "Q"):
+                return 0
+            if k in ("\r", "\n"):
+                flush_input()
+                remote_attach(host, "", "", standalone=(harness, session, label.rsplit("@", 1)[0]))
+                time.sleep(2)
+            continue
         hint = (DETACH_HINT if harness not in ("muse", "codex") else
                 f"this card hosts the {harness.capitalize()} client itself: quit {harness} to come back here; the "
                 "session is saved on disk and [enter] resumes it (a name that does not exist yet starts a new session)")
@@ -306,6 +327,9 @@ def cmd_view(a) -> int:
                 argv, env = viewer(a.harness, a.session)
                 print(json.dumps({"argv": argv, "env_extra": sorted(k for k in env if k not in os.environ)}))
                 return 0
+            if getattr(a, "host", ""):
+                return (standalone_stub(a.harness, a.session, label, a.host) if a.stub else
+                        remote_attach(a.host, "", "", standalone=(a.harness, a.session, label.rsplit("@", 1)[0])))
             return standalone_stub(a.harness, a.session, label) if a.stub else run_viewer(a.harness, a.session, label)
         if not (a.target_shoal and a.role):
             print("usage: shoal view <shoal> <role> | shoal view --harness H --session ID")
@@ -339,5 +363,6 @@ def add_parser(sub) -> None:
     p.add_argument("--session", default="", help="a standalone session id (not a shoal role); for muse and codex also a session name")
     p.add_argument("--label", default="")
     p.add_argument("--stub", action="store_true", help="role card that attaches on Enter (UI layouts)")
+    p.add_argument("--host", default="", help="with --session: the standalone session lives on this routed host")
     p.add_argument("--dry-run", action="store_true", help="print the client argv (and env NAMES) only")
     p.set_defaults(func=cmd_view)

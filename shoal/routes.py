@@ -172,3 +172,24 @@ def remote_rows(server: str, sid: str) -> tuple[dict, dict]:
     age = int(time.time() - pulled) if pulled else None
     return c.get("rows") or {}, {"ok": bool(c.get("ok")), "age_s": age,
                                  "stale": not c.get("ok") or age is None or age > STATUS_CACHE_S * 4}
+
+
+def remote_standalone(server: str) -> tuple[list[dict], bool]:
+    """(entries, ok) for the standalone sessions saved on `server` (its `shoal ui standalone --json`), each
+    with its turn state there; cached STATUS_CACHE_S, the last good list kept on a failed pull (ok False)."""
+    r = route(server)
+    if r is None:
+        return [], False
+    key = f"standalone-{server}"
+    c = _cached(key, STATUS_CACHE_S)
+    if c is None:
+        prev = _cached(key, STATUS_STALE_S) or {}
+        try:
+            out = subprocess.run(ssh_argv(r) + [remote_cmd(r, "ui", "standalone", "--json")], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=20)
+            got = json.loads(out.stdout).get("sessions") if out.returncode == 0 and out.stdout.strip() else None
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            got = None
+        c = {"sessions": got, "ok": True} if isinstance(got, list) else {"sessions": prev.get("sessions") or [], "ok": False}
+        _store(key, dict(c))
+    return list(c.get("sessions") or []), bool(c.get("ok"))

@@ -605,7 +605,70 @@ def standalone_label(e: dict) -> str:
 
 def standalone_argv(e: dict) -> list[str]:
     return shoal_argv("view", "--harness", e["harness"], "--session", e["session"],
-                      "--label", e.get("label") or e["session"][:12], "--stub")
+                      "--label", e.get("label") or e["session"][:12], "--stub",
+                      *(["--host", e["host"]] if e.get("host") else []))
+
+
+def local_standalone() -> list[dict]:
+    """This host's own saved standalone sessions, open in its viewer (not ones mirrored from other hosts)."""
+    return [e for e in load_standalone() if not e.get("host") and not e.get("dismissed")]
+
+
+def cmd_standalone(a) -> int:
+    """`shoal ui standalone [--json]`: this host's saved standalone sessions with their turn state, which is
+    what another host's viewer pulls over its route to give them cards there."""
+    import ui_status
+    rows = ui_status.claude_rows()
+    out = []
+    for e in local_standalone():
+        st, hstate = standalone_state(e, rows)
+        out.append({k: e[k] for k in ("harness", "session", "label", "cwd") if e.get(k)} | {"turn": st, "state": hstate})
+    if getattr(a, "json", False):
+        print(json.dumps({"v": 1, "host": config.server(), "sessions": out}))
+    else:
+        for x in out:
+            print(f"{x['harness']:<8} {x.get('label', ''):<40} {x['turn']:<9} {x['session'][:16]}")
+    return 0
+
+
+def reconcile_remote_standalone(entries: list[dict]) -> tuple[bool, list[str]]:
+    """Mirror each routed host's saved standalone sessions into this registry (`host` set, label suffixed
+    `@<host>` so it cannot collide with a local one), so `ui open` gives them cards whose Enter attaches over
+    ssh, and the usual flags (opened, dismissed) work on them. A reachable host's list is the truth (gone
+    there, gone here); an unreachable host's mirrored entries stay as they were."""
+    import routes
+    changed, notes = False, []
+    for host in sorted(routes.routes()):
+        got, ok = routes.remote_standalone(host)
+        if not ok:
+            notes.append(f"standalone on {host}: not reachable now; its mirrored sessions are left as they were")
+            continue
+        want = {(g["harness"], g["session"]): g for g in got if g.get("harness") and g.get("session")}
+        keep = []
+        for e in entries:
+            if e.get("host") == host and (e["harness"], e["session"]) not in want:
+                changed = True
+                notes.append(f"standalone {e.get('label')}: no longer saved on {host}; dropped here")
+                continue
+            keep.append(e)
+        have = {(e["harness"], e["session"]) for e in keep if e.get("host") == host}
+        for k, g in want.items():
+            if k not in have:
+                keep.append({"harness": g["harness"], "session": g["session"], "host": host,
+                             "label": f"{(g.get('label') or g['session'][:12])[:32]}@{host}"})
+                changed = True
+        entries[:] = keep
+    return changed, notes
+
+
+def remote_standalone_state(e: dict) -> tuple[str, str]:
+    """(turn word, herdr state) for a mirrored session, from its host's own probe (cached pull)."""
+    import routes
+    got, ok = routes.remote_standalone(e["host"])
+    g = next((x for x in got if x.get("session") == e["session"]), None)
+    if g is None:
+        return "unknown", "idle"
+    return (g.get("turn") or "unknown") + ("" if ok else "~"), g.get("state") or "idle"
 
 
 def standalone_ws_label(e: dict) -> str:
@@ -868,7 +931,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
         if not holds_agent(h, p["pane_id"]):
             bare.append(e.get("label") or e.get("harness") or "standalone")
             continue
-        st, hstate = standalone_state(e, rows)
+        st, hstate = remote_standalone_state(e) if e.get("host") else standalone_state(e, rows)
         h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE,
                                      "agent": e.get("label") or e.get("harness") or "standalone",
                                      "state": hstate, "message": f"standalone {st}", "seq": seq})
@@ -933,6 +996,11 @@ def cmd_open(a) -> int:
         for line in migrate_standalone(h, a.dry_run):
             print(("[dry-run] " if a.dry_run else "") + line)
         entries = load_standalone(raw=True)
+        changed, notes = reconcile_remote_standalone(entries)
+        for line in notes:
+            print(("[dry-run] " if a.dry_run else "") + line)
+        if changed and not a.dry_run:
+            save_standalone(entries)
         show = {x.strip() for x in getattr(a, "show", []) or []}
         for line in sync_standalone(h, entries, show, labelled_before, a.dry_run, getattr(a, "reapply", False)):
             print(("[dry-run] " if a.dry_run else "") + line)
