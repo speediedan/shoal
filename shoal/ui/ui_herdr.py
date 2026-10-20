@@ -762,7 +762,8 @@ def role_tokens(r: dict) -> dict[str, str]:
 
 
 def role_tokens_for(s: dict, r: dict) -> dict[str, str]:
-    return dict(role_tokens(r), shoal=shoal_tag(s["id"]))
+    # `host` only on a multi-host shoal, so a single-host sidebar is unchanged
+    return dict(role_tokens(r), shoal=shoal_tag(s["id"]), host=(r.get("host", "") if s.get("multi_host") else ""))
 
 
 def shoal_tokens(s: dict) -> dict[str, str]:
@@ -1623,7 +1624,7 @@ status_indicators = "symbols"
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "machine", { token = "agent", bold = true }, { token = "$mode", rules = [{ equals = "\u25b6", fg = "#a6e3a1" }, { equals = "\u25f7", fg = "#fab387" }] }, { token = "$shoal", dim = true }],
+  ["state_icon", "machine", { token = "agent", bold = true }, { token = "$mode", rules = [{ equals = "\u25b6", fg = "#a6e3a1" }, { equals = "\u25f7", fg = "#fab387" }] }, { token = "$shoal", dim = true }, { token = "$host", dim = true }],
   [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#f38ba8", bold = true }, { equals = "BLOCKED", fg = "#f38ba8" }, { starts_with = "blocked", fg = "#f38ba8" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#fab387", bold = true }, { starts_with = "wait", fg = "#fab387" }, { equals = "idle", fg = "#fab387" }, { equals = "active", fg = "#a6e3a1" }] }, "$item", "$age"],
   [{ token = "$asks", fg = "#fab387", bold = true }, { token = "$next", rules = [{ contains = "!", fg = "#f9e2af" }] }, "$wait", { token = "$why", dim = true }],
 ]

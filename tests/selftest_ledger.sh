@@ -447,6 +447,29 @@ grep -q "create + brief lane ra (ra-r1" <<<"$OUT" || fail "start did not launch 
 ! grep -q "rb (rb-r1" <<<"$OUT" || fail "start would launch the remote role here :: $OUT"
 SHOAL_SERVER=hostB check "REFUSED: --home hostA is not this host" $H start --name mhs --home hostA --dir "$WORK" --role "ra,opencode,ra,$DOC_A,fill=assigned" --ledger-repo "$S/remote/ledgers.git" --ledger-dir "$A" --dry-run
 SHOAL_SERVER=hostA check "beta runs on hostB: its own watcher delivers this --wake" $H msg --shoal t1shoal --spec "$MH/shoals/t1shoal/shoal.json" --ledger-dir "$A" --no-sync --to beta --wake --text "remote wake"
+SHOAL_SERVER=hostA python3 - "$SHOALD" "$MH/shoals/t1shoal/shoal.json" "$A" <<'PY3' || fail "host overview and name clash"
+import sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import json, health, ui_status, ui_herdr
+from ledger import Ledger
+p = sys.argv[2]
+d = json.load(open(p)); d["ledger"]["dir"] = sys.argv[3]; json.dump(d, open(p, "w"))
+doc = ui_status.shoal_doc(p, [], opencode_probe=False)
+assert doc["multi_host"] and doc["home"] == "hostA", doc["home"]
+assert {r["slug"]: r["host"] for r in doc["roles"]}["beta"] == "hostB"
+txt = ui_status.render_text({"shoals": [doc]}, width=200)
+assert "home hostA" in txt and "| host " in txt and "hostB" in txt, txt[:600]
+narrow = ui_status.render_text({"shoals": [doc]}, width=70)
+assert "| host" in narrow, narrow[:400]
+assert ui_herdr.role_tokens_for(doc, doc["roles"][1])["host"] == "hostB"
+# server names are labels: another machine beating under THIS host's name is a clash (detection, no registry)
+led = Ledger("t1shoal", root=sys.argv[3], sync=False)
+assert health.name_clash(health.ShoalSpec.load(p), led, 60) == []
+led.append("shoal", "system", kind="host-beat", host="hostA", instance="feedfacecafe")
+c = health.name_clash(health.ShoalSpec.load(p), Ledger("t1shoal", root=sys.argv[3], sync=False), 60)
+assert [x["condition"] for x in c] == ["host-name-clash"] and "feedfacecafe" in c[0]["detail"], c
+print("host overview and clash ok")
+PY3
 SHOAL_SERVER=hostB SHOAL_LEDGER_DIR="$MH" python3 - "$SHOALD" <<'PY3' || fail "doctor host profile"
 import sys
 sys.path.insert(0, sys.argv[1])

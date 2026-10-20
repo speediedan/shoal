@@ -70,6 +70,9 @@ LADDERS = {
     # multi-host: a host that stopped beating has no quorum for its roles and nothing here can wake them,
     # so its silence is a page once per episode (the key carries its last beat)
     "host-silent": [(0, "page")],
+    # two hosts configured with one `server` name both think the same roles are theirs (double watchers, wakes,
+    # launches): a page to rename one, once per clash
+    "host-name-clash": [(0, "page")],
 }
 HOST_BEAT_MIN = 15
 HOST_SILENT_MIN = 60
@@ -716,17 +719,17 @@ def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list
         last = state.get("host_beat", "")
         if not dry_run and (not last or (age_min(last) or 0.0) >= beat_min):
             try:
-                led.append("shoal", "system", kind="host-beat", host=me)
+                led.append("shoal", "system", kind="host-beat", host=me, instance=host_instance())
                 state["host_beat"] = iso()
             except Exception as exc:  # noqa: BLE001 - a beat must never stop the quorum
                 print(f"{iso()} health: host-beat write failed: {exc}")
+    out = name_clash(spec, led, silent_min)
     if not is_home(spec):
-        return []
+        return out
     beats: dict[str, str] = {}
     for e in led.events():
         if e.get("type") == "system" and e.get("kind") == "host-beat" and e.get("host"):
             beats[e["host"]] = max(beats.get(e["host"], ""), e.get("ts", ""))
-    out = []
     for h in sorted({host_of(r, spec) for r in spec.roles if r.session} - {"", me}):
         ts = beats.get(h)
         a = age_min(ts) if ts else None
@@ -737,6 +740,36 @@ def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list
                                   f"no health quorum and nothing on {me} can wake them. Asleep or offline is fine; "
                                   f"otherwise check its timers (`ssh {h} systemctl --user list-timers 'shoal-*'`)"})
     return out
+
+
+def host_instance() -> str:
+    """A stable, non-identifying id for THIS machine (a hash of /etc/machine-id, else of the hostname and
+    data root): beats carry it so two hosts that chose the same `server` name can be told apart. Server
+    names are labels each host picks; nothing authenticates them (git push access is the only authority)."""
+    import hashlib
+    try:
+        seed = open("/etc/machine-id").read().strip()
+    except OSError:
+        seed = ""
+    seed = seed or f"{os.uname().nodename}:{config.data_root()}"
+    return hashlib.sha256(("shoal-host:" + seed).encode()).hexdigest()[:12]
+
+
+def name_clash(spec: ShoalSpec, led, window_min: float) -> list[dict]:
+    """`host-name-clash` when another machine beat under THIS host's `server` name within the window: both
+    would treat the same roles as local. Detection, not prevention: the fix is renaming one host's `server`."""
+    me, mine = config.server(), host_instance()
+    others = sorted({e.get("instance") for e in led.events()
+                     if e.get("type") == "system" and e.get("kind") == "host-beat" and e.get("host") == me
+                     and e.get("instance") and e.get("instance") != mine
+                     and (age_min(e.get("ts", "")) or 10**9) < window_min})
+    if not others:
+        return []
+    return [{"slug": f"host:{me}", "condition": "host-name-clash", "key": f"clash:{','.join(others)}", "since": iso(),
+             "first_seen": True,
+             "detail": f"another machine (instance {', '.join(others)}) beats as `{me}`, this host's `server` name "
+                       f"(instance {mine}): both treat the same roles as local. Give one host a different `server` "
+                       f"in its config/host.toml"}]
 
 
 def relaunch_relay(spec: ShoalSpec, spec_path: str, dry_run: bool = False) -> str:
@@ -862,7 +895,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ch = request_wake(spec, c["slug"], c["detail"], c["condition"], dry_run)
                 if ch.startswith("no-adapter"):
                     ch += "; " + page_user(spec, f"{c['slug']}: {c['detail']} (and no wake adapter: {ch})", state, dry_run)
-            elif c["condition"] == "host-silent":
+            elif c["condition"] in ("host-silent", "host-name-clash"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)

@@ -243,7 +243,7 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   `pane.report_metadata` tokens. A pane whose foreground is a bare shell (a card laid out while its
   role was parked, or a cold restore) gets the tokens only: Herdr clears an agent report from such a
   pane within a fraction of a second, which made the role flash into the agents list every tick. The
-  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `mode`, `posture`,
+  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `host` (multi-host shoals only), `mode`, `posture`,
   `item`, `next`, `wait`, `asks`, `offers`, `watch`, `age`, `why` and `harness`. The agents rows
   show the role name, then the `mode` glyph, then the shoal tag dim; Herdr's default `agent_panel_sort = "spaces"`
   already groups agents by workspace.

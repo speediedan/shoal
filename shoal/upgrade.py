@@ -377,7 +377,8 @@ def cmd_upgrade(a) -> int:
             rearm_relay(spec, relay_pid, rearm_verify_s(a))
     if ui_restart:
         print(f"ui: {UI_FEED_UNIT} {restart_ui_feed()}")
-    print(f"upgraded {spec.sid} to tooling {sha}")
+    print(f"{'local upgrade on ' + config.server() + ' of' if recorded_local else 'upgraded'} {spec.sid} "
+          f"{'(home records the tooling)' if recorded_local else 'to tooling ' + sha}")
     if any(c.startswith("matcher") for c in changes):
         print(f"matcher: the digest timer applies it within 10 minutes; `shoal digest --shoal {spec.sid} --refresh` "
               f"applies it now")
