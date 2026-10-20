@@ -43,6 +43,9 @@ def add_parsers(sub) -> None:
     q.add_argument("--refresh-conditions", action="store_true", help="recompute the conditions now")
     q.add_argument("--pull", action="store_true", help="pull the ledger first (multi-host; default no)")
     q.add_argument("--json", action="store_true")
+    q.add_argument("--rows-only", action="store_true",
+                   help="this host's own role rows as JSON, no usage and no remote merge (what another host's "
+                        "viewer pulls over its route)")
     q.set_defaults(func=ui_status.cmd_status)
 
     q = u.add_parser("line", help="one status line for a tab bar")

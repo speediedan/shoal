@@ -178,6 +178,9 @@ def card(sid: str, slug: str, force: bool = False) -> str:
             + ("  FREEZE" if s["mode"]["freeze"] else "")]
     rows = [["posture", f"{ui_status.posture_label(r)}  ({ui_status._age(r['posture_age_s'])})"],
             ["session", r["session"]], ["watcher", r["watcher"]],
+            *([["host", f"{r['host']} via ssh, state {ui_status._age(r['remote_status'].get('age_s'))} old"
+                        + ("  (STALE: host not answering)" if r["remote_status"].get("stale") else "")]]
+              if r.get("remote_status") else []),
             ["last write", f"{ui_status._age(r['last_write_age_s'])} ago"], ["active", r["active"] or "-"]]
     for n in r["next"]:
         rows.append(["next", n["item"] + (f"  blocked: {n['blocker']}" if n["blocker"] else "")

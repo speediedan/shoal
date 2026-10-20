@@ -90,6 +90,7 @@ PY2
 cat > "$S/ssh-stub" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_SSH_LOG:-/dev/null}"
+case "$*" in *--rows-only*) [ -n "${STUB_SSH_OUT:-}" ] && cat "$STUB_SSH_OUT" ;; esac
 exit "${STUB_SSH_RC:-0}"
 SH
 chmod +x "$S/ssh-stub"
@@ -136,6 +137,38 @@ routes.reachable = orig
 attempts = [l for l in open(os.environ["STUB_SSH_LOG"]) if "shoal view uiselftest far" in l]
 assert len(attempts) == 3, attempts
 print("routed cards ok")
+PY2
+# live state of a routed remote role comes from its own host's rows (`ui status --rows-only`), cached 30 s;
+# a failed pull keeps the last good rows, marked stale
+OUT=$($H ui status --shoal $SID --ledger-root "$ROOT" --rows-only --json) || fail "rows-only rc"
+python3 - "$OUT" <<'PY2' || fail "rows-only is this host's rows only"
+import json, sys
+d = json.loads(sys.argv[1]); r = {x["slug"] for x in d["shoals"][0]["roles"]}
+assert "far" not in r and "cl" in r and "usage" not in d, (r, list(d))
+print("rows-only ok")
+PY2
+cat > "$S/far-rows.json" <<JSON
+{"v": 1, "shoals": [{"id": "$SID", "roles": [{"slug": "far", "session_id": "farfar00", "session": "idle", "watcher": "alive",
+ "can_progress": {"ok": true, "reasons": []}, "needs_you": false, "context_k": 42, "heartbeat_age_s": 30}]}]}
+JSON
+rm -rf "$SHOAL_ROUTE_CACHE"
+STUB_SSH_OUT="$S/far-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" "$ROOT" <<'PY2' || fail "remote status merge"
+import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import routes, ui_status
+def far():
+    doc = ui_status.status(["uiselftest"], root=sys.argv[3])
+    return next(x for x in doc["shoals"][0]["roles"] if x["slug"] == "far")
+f = far()
+assert f["session"] == "idle" and f["watcher"] == "alive" and f["context_k"] == 42, f
+assert f["remote_status"]["ok"] and not f["remote_status"]["stale"], f["remote_status"]
+# the host stops answering: the last good rows stay, marked stale once the cache has aged
+os.environ["STUB_SSH_RC"] = "255"; os.environ.pop("STUB_SSH_OUT")
+import json, time
+p = os.path.join(routes._cache_dir(), "status-other-host.invalid-uiselftest.json")
+d = json.load(open(p)); d["t"] -= 60; d["pulled"] -= 200; json.dump(d, open(p, "w"))
+f = far()
+assert f["session"] == "idle" and f["remote_status"]["stale"] and not f["remote_status"]["ok"], f
+print("remote status merge ok")
 PY2
 cp "$S/host-noroute.toml" "$SHOAL_CONFIG"
 # the fixture is multi-host (role far lives elsewhere): the host column names it, the header names home

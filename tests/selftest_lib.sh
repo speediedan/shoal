@@ -35,6 +35,7 @@ shoal_test_setup() {
   export SHOAL_CONFIG="$s/host.toml"
   export SHOAL_DATA_ROOT="$s/data"
   # anything shoal spawns itself (the quorum re-arming a watcher) runs THIS checkout, never the live install
+  export SHOAL_ROUTE_CACHE="$s/route-cache"   # never the live viewer's route cache
   export SHOAL_CLI="python3 $(cd "$(dirname "${BASH_SOURCE[0]}")/../shoal" && pwd)/cli.py"
   # never touch the real harness skill homes: upgrade syncs skills into these
   export SHOAL_SKILL_HOMES="$s/skillhomes/a:$s/skillhomes/b"; mkdir -p "$s/skillhomes/a" "$s/skillhomes/b"
