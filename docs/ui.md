@@ -69,6 +69,8 @@ reader ignores fields it does not know.
 **`can_progress` reasons** are the stalls measured on a live group:
 
 - `dead-worker`: the session is listed with no worker process.
+- `context-large`: the session's context is past its `context_restart_k` limit (informational; the row's
+  `context_k` holds the size in thousands of tokens).
 - `dormant`: a Claude session with no worker (the background service retired it idle) behind a live
   detached watcher, with `health.direct_wake` on. The watcher resumes it when work arrives, so it is
   not blocking and shows as `DORMANT`.
@@ -78,7 +80,7 @@ reader ignores fields it does not know.
 - `parked-work`: the role sleeps while a next item has no current blocker.
 - `waiting-on-you`: the role has recorded asks, or a user wait.
 
-`parked` and `dormant` are informational. `ok` is false for any reason other than `waiting-on-you`, `parked` and `dormant`.
+`parked`, `dormant` and `context-large` are informational. `ok` is false for any other reason except `waiting-on-you`.
 
 `watcher-dead` and `parked-work` come from the health quorum's own predicates
 (`health.watcher_dead`, `health.parked_free`). Blocker checks there run with `live=False` (no

@@ -31,7 +31,7 @@ DOC=$(shoal_doc uirole)
 cat > "$SPEC" <<JSON
 {"shoal":"$SID","dir":"$WORK","incarnation":2,"repos":["example/repo"],
  "ledger":{"repo":"$S/remote/q.git","dir":"$A"},
- "features":{"workwake":true},
+ "features":{"workwake":true,"waitgate":false},
  "roles":[
   {"slug":"cl","ecosystem":"claude","title":"cl","doc":"$DOC","fill":"self","session":"c1a2b3c4-0000"},
   {"slug":"oc","ecosystem":"opencode","title":"oc","doc":"$DOC","fill":"assigned","session":"ses_oc1"},

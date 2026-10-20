@@ -324,6 +324,13 @@ def cmd_next(a) -> int:
     for banner in (freeze_banner(view), offline_banner(view)):
         if banner:
             out.append(banner)
+    try:
+        import context as _ctx
+        adv = _ctx.advisory(spec, me)
+        if adv:
+            out.append(adv)
+    except Exception:  # noqa: BLE001 - an advisory never breaks `next`
+        pass
     # MAIL prints right after the identity and offline lines: a `next` piped through `head` must still
     # show it, because this call marks it read (measured 2026-09-24: a lane's piped `next` consumed a
     # maintainer rules update unseen). Maintainer mail prints in full; peer mail is shortened.
@@ -651,6 +658,22 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
               f"hold:<why>`); a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle "
               f"(nothing written)")
         return 3
+    if posture == "waiting" and a.wait != "local-ci" and unblocked and view.freeze() is None \
+            and (spec.features or {}).get("waitgate", True) is not False:
+        # the same gate for a wait: a role waiting on CI, a peer, upstream or the maintainer while a next
+        # item could start is parked work. Refused here, mid-turn, it costs nothing; caught later by the
+        # quorum it cost a cold wake each time (2026-10-20). A local-ci job usually holds what the next
+        # items need, so it is exempt, as in parked-work.
+        stale_txt = "".join(f"; {k} <- {nb[k]} is stale ({stale_nb[k]})" for k in sorted(stale_nb))
+        print(f"ERROR: waiting ({a.wait}) with unblocked next items ({', '.join(unblocked)}){stale_txt}: stack "
+              f"rather than stall, as parked-work would ask you to. Pop one (`--active <item>`), or record why each "
+              f"cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
+              f"hold:<why>`) (nothing written)")
+        return 3
+    if a.restart_ready and posture == "active":
+        print("ERROR: --restart-ready marks a quiet boundary: idle or waiting, never with an active item "
+              "(nothing written)")
+        return 3
     if bcfg is not None and posture == "idle" and view.freeze() is None and role.fill == "self":
         # a short queue is not a reason to idle while the board offers eligible work (measured
         # 2026-09-29: two lanes idle 2.5 h and 11.5 h beside 2 and 8 eligible candidates)
@@ -706,7 +729,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                session=sess, host=os.uname().nodename)
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
                      asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag,
-                     dropped=dropped or None, next_blocked=nb or None, next_blocked_meta=nb_meta or None)
+                     dropped=dropped or None, next_blocked=nb or None, next_blocked_meta=nb_meta or None,
+                     restart_ready=True if a.restart_ready else None)
     led.commit_own(slug, f"{spec.sid} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     # 3. first-landed-wins re-check for the claims just made
@@ -851,6 +875,9 @@ def add_parsers(sub) -> None:
     p.add_argument("--answered", action="append", default=[], metavar="N|TEXT",
                    help="remove an ask the maintainer answered (repeatable); prefer this to --asks-clear")
     p.add_argument("--reason", default="", help="why next is shorter than the maximum")
+    p.add_argument("--restart-ready", action="store_true",
+                   help="your start doc is refreshed and nothing is mid-flight: hand over to a fresh session here "
+                        "(asked for by a CONTEXT line in `next` or a wake)")
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_queue)

@@ -48,7 +48,7 @@ JSON
 DOC_TL=$(shoal_doc tl); DOC_UP=$(shoal_doc up)
 cat > "$SPEC" <<JSON
 {"shoal":"$SID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
- "ledger":{"repo":"$S/remote/q.git","dir":"$A"}, "features":{"digest":true},
+ "ledger":{"repo":"$S/remote/q.git","dir":"$A"}, "features":{"digest":true,"waitgate":false},
  "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
   {"slug":"tl","ecosystem":"claude","title":"tl","doc":"$DOC_TL","fill":"self","session":"aaaa1111","scope":{"labels_any":["tl-4-migration"]}},
@@ -195,7 +195,7 @@ import providers; print(providers.resolve('lease:gpu', 'tl', 'x')[0])")
 echo "== 7 work loop: next reads, queue writes ONE commit (claim + posture + version)"
 python3 - "$SPEC" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p))
-d["features"]={"digest":True,"jobs":True,"workwake":True,"health":{"validity_wake_min":90}}
+d["features"]={"digest":True,"jobs":True,"workwake":True,"waitgate":False,"health":{"validity_wake_min":90}}
 json.dump(d,open(p,"w"),indent=1)
 PY
 check "\[dry-run\] relay-init $SID: doc $S/data/$SID/roles/wake-relay/plan_state.md; role ADD" $H relay-init --shoal $SID --spec "$SPEC" --dry-run
@@ -433,7 +433,19 @@ check "NEXT BLOCKED interpretune#9603 <- hold:design pending" $H next --shoal $S
 # blockers carry forward to the next write; clearing one re-opens the gate
 check "posture=idle" $Q --slug tl --idle
 [ "$(rc_of $Q --slug tl --idle --blocked interpretune#9603=)" = 3 ] || fail "idle accepted after clearing a blocker"
-# a wait that leaves a next item unblocked is parked work for the quorum (idle is gated at the write)
+# a wait that leaves a next item unblocked is refused at the write (waitgate: on by default, off in this suite's
+# base spec so the sections that predate it keep their writes) ...
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("waitgate",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+check "waiting (remote-ci) with unblocked next items (interpretune#9603)" env LEASE_STUB=held $Q --slug tl \
+   --active interpretune#9601:fix --blocked interpretune#9603= --wait remote-ci --holder "gate" --target lease:gpu
+check "posture=waiting/local-ci" env LEASE_STUB=held $Q --slug tl --active interpretune#9601:fix --blocked interpretune#9603= \
+   --wait local-ci --holder "gate" --target lease:gpu
+# ... and, with the gate off, is parked work for the quorum (idle is always gated at the write)
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["waitgate"]=False; json.dump(d,open(p,"w"),indent=1)
+PY2
 check "posture=waiting/remote-ci" env LEASE_STUB=held $Q --slug tl --active interpretune#9601:fix --blocked interpretune#9603= \
    --wait remote-ci --holder "gate" --target lease:gpu
 rm -f /tmp/$SID/health.json
@@ -1308,6 +1320,51 @@ spec = ShoalSpec.load(sys.argv[2]); v = ledger.View(ledger.Ledger(spec.sid, root
 hits = [d for _, d in ledger_watch.actionable(v, sys.argv[3], spec.role(sys.argv[3]), spec, board=False) if "wake test" in d]
 assert bool(hits) == (sys.argv[4] == "yes"), hits
 PY2
+
+echo "== 35 bounded context: the CONTEXT advisory in next and wakes, --restart-ready, the context-restart ladder"
+Q="$H queue --shoal $SID --spec $SPEC --no-sync"
+check "posture=idle" $Q --slug tl --idle --next "" --reason test
+OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
+grep -q "CONTEXT 412k (limit 300k)" <<<"$OUT" || fail "no CONTEXT advisory past the limit :: $(head -c 800 <<<"$OUT")"
+OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 120000}' $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
+! grep -q "CONTEXT " <<<"$OUT" || fail "CONTEXT advisory under the limit"
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "context limits and wake text"
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import context, health
+from roles import ShoalSpec
+d = json.load(open(sys.argv[2])); d["features"].setdefault("health", {})["context_restart_k"] = {"*": 300, "tl": 0, "up": 800}
+json.dump(d, open(sys.argv[2], "w"), indent=1)
+spec = ShoalSpec.load(sys.argv[2])
+assert context.limit_k(spec, "tl") == 0 and context.limit_k(spec, "up") == 800 and context.limit_k(spec, "zz") == 300
+os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"tl": 900000, "up": 500000})
+assert context.over(spec, spec.role("tl")) is None, "a role with limit 0 is never advised"
+assert context.over(spec, spec.role("up")) is None, "under its own 800k limit"
+d["features"]["health"].pop("context_restart_k"); json.dump(d, open(sys.argv[2], "w"), indent=1)
+spec = ShoalSpec.load(sys.argv[2])
+assert "CONTEXT 900k" in health.wake_text(spec, "tl", "x"), "wakes carry the advisory"
+print("context limits ok")
+PY2
+check "never with an active item" $Q --slug tl --active interpretune#9601:fix --restart-ready
+check "posture=idle" $Q --slug tl --idle --restart-ready
+rm -f /tmp/$SID/health.json
+check "tl context-restart step1:page" env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run
+OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 100000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "context-restart" <<<"$OUT" || fail "context-restart under the limit :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].setdefault("health", {})["context_restart"]="auto"; json.dump(d,open(p,"w"),indent=1)
+PY2
+rm -f /tmp/$SID/health.json
+check "tl context-restart step1:restart -> would restart (dry-run): .*--only tl" env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl \
+  $H health --spec "$SPEC" --instance a --dry-run
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("context_restart",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+# a later write without the flag clears it
+check "posture=idle" $Q --slug tl --idle
+rm -f /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "context-restart" <<<"$OUT" || fail "restart-ready survived a later queue write :: $OUT"
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
