@@ -397,6 +397,9 @@ is the only coordination path (no host-to-host connection is needed for correctn
   unique per shoal by spec validation, since a slug is a ledger writer file.
 - **The overview** shows `home` and, on a multi-host shoal, each host's last beat in the header and a
   `host` column in the role table; the Herdr sidebar gets a `$host` token (empty on a single-host shoal).
+  A viewer gives cards only to the roles on its own host: a session resolves through the local harness
+  (`claude agents`, the local OpenChamber), so a remote session cannot be attached from here, and
+  `shoal view`, a stale card and the asks popup all refuse to try (answer a remote role by mail).
 - **Clocks.** Events are stamped by the writer's clock, the fold orders by them and conditions are ages:
   `doctor` fails a host that is not NTP-synchronized.
 - **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the pipeline

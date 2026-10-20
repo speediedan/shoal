@@ -73,6 +73,18 @@ PY
 # the overview table carries each role's ecosystem (claude, opencode, codex, muse) as its own column
 TXT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 200) || fail "ui status text rc"
 grep -Eq '\| role +\| host +\| ecosystem +\| posture' <<<"$TXT" || fail "overview table has no host and ecosystem columns: $TXT"
+# a role on another host is never attached from here (sessions resolve through this host's harness), and gets no card
+check "far runs on other-host.invalid: attach from that host's viewer" $H view $SID far --spec "$SPEC" --dry-run
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "remote roles get no card"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr, ui_view
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+assert "far" not in {r.slug for r in ui_herdr.viewable_roles(spec)}
+assert ui_view._remote_host(spec.sid, "far", sys.argv[2]) == "other-host.invalid"
+assert ui_view._remote_host(spec.sid, "cl", sys.argv[2]) == ""
+print("remote cards ok")
+PY2
 # the fixture is multi-host (role far lives elsewhere): the host column names it, the header names home
 grep -Eq '\| far +\| other-host.invalid +\| claude' <<<"$TXT" || fail "the remote role's host is not shown: $TXT"
 grep -Eq '\| cl +\| [^|]+ +\| claude +\|' <<<"$TXT" || fail "cl row does not read ecosystem claude: $TXT"
@@ -338,8 +350,8 @@ for i in 1 2 3 4 5 6 7 8 9 10; do [ -S "$SOCK" ] && break; sleep 0.3; done
 [ -S "$SOCK" ] || fail "fake herdr socket did not start"
 # an explicit session wins over a socket inherited from the pane the suite runs in
 HERDR_SOCKET_PATH="$S/not-the-live-herdr.sock" \
-  check "create workspace $SID: overview + 4 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
-check "up to date (4 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+  check "create workspace $SID: overview + 3 role cards" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+check "up to date (3 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 # --reapply restarts idle cards on the current code, and refuses while a card is in use
 check "re-apply roles tab: restart the cards on the current code" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone --reapply
 python3 - "$SHOALD" <<'PY2' || fail "reapply must refuse an attached card"
@@ -492,10 +504,10 @@ h = ui_herdr.Herdr()
 tabs = {p["tab_id"] for p in h.panes() if str(p.get("label", "")).startswith(sys.argv[2] + "/") and not p["label"].endswith(("/overview", "/ledger"))}
 assert len(tabs) == 2, tabs
 PY2
-check "up to date (4 role cards in 2 tabs)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+check "up to date (3 role cards in 2 tabs)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 check "roles_per_tab = (default)" $H ui set roles_per_tab ""
 check "re-apply roles tab: lay the roles out" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
-check "up to date (4 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+check "up to date (3 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 # role_order puts the named roles first; a card header shows the shoal tag and the role
 check "role_order.$SID = cl" $H ui set role_order.$SID cl
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "role order"
@@ -544,7 +556,8 @@ python3 - "$S/herdr-calls.jsonl" <<'PY' || fail "feed reports / allowed methods"
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
 ra = [c["params"] for c in calls if c["method"] == "pane.report_agent"]
-assert {r["agent"] for r in ra} >= {"cl", "oc", "dead", "far"}, ra
+assert {r["agent"] for r in ra} >= {"cl", "oc", "dead"}, ra
+assert "far" not in {r["agent"] for r in ra}, ra  # a role on another host has no card here, so nothing to report
 st = {r["agent"]: r["state"] for r in ra}
 assert st["cl"] == "blocked" and st["dead"] == "blocked", st
 md = [c["params"] for c in calls if c["method"] == "pane.report_metadata"]
