@@ -309,6 +309,31 @@ def detached(argv: list[str]) -> list[str]:
     return argv
 
 
+def spawn_detached(argv: list[str], **kw) -> subprocess.Popen:
+    """Popen a long-lived process that must outlive the caller's systemd unit (a watcher the quorum
+    re-arms): detached() gives it its own scope, and this waits, up to 5 s, until the child has left the
+    unit's cgroup. Without the wait the oneshot can end first and take the child with it (measured
+    2026-10-20 in a probe unit: the scoped child died when the unit exited at once, lived when it did not)."""
+    import time as _time
+    wrapped = detached(argv)
+    p = subprocess.Popen(wrapped, start_new_session=True, **kw)
+    if wrapped is argv:
+        return p
+    try:
+        mine = open("/proc/self/cgroup").read().strip()
+    except OSError:
+        return p
+    end = _time.time() + 5
+    while _time.time() < end and p.poll() is None:
+        try:
+            if open(f"/proc/{p.pid}/cgroup").read().strip() != mine:
+                break
+        except OSError:
+            break
+        _time.sleep(0.05)
+    return p
+
+
 def parse_bg_id(text: str) -> "re.Match[str] | None":
     """The session id from `claude --bg` output. The CLI colours its output when the
     environment forces colour (FORCE_COLOR), so escape codes are stripped first: without

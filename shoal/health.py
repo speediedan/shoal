@@ -758,10 +758,13 @@ def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> 
     if dry_run:
         return f"re-arm by the quorum ({wake.split(':')[0]}; no wake) (dry-run)"
     try:
+        from backends import spawn_detached
         os.makedirs(state_dir(spec.sid), exist_ok=True)
         log = open(os.path.join(state_dir(spec.sid), f"ledger-watch-{role.slug}.log"), "a")
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, cwd=spec.dir or None,
-                         env=_ENV, start_new_session=True)
+        # its own scope: the quorum is a oneshot unit, and KillMode=control-group ends every process left
+        # in its cgroup when it exits (measured 2026-10-20: a re-armed watcher died before its first tick)
+        spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                       cwd=spec.dir or None, env=_ENV)
     except OSError as exc:
         return f"FAILED re-arm ({exc})"
     rearmed[role.slug] = iso()
