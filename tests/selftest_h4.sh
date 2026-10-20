@@ -1288,6 +1288,26 @@ spec_with()
 print("direct delivery ok")
 PY2
 rm -f /tmp/$SID/health.json
+# a user --wake message read at a boundary is not delivered again by a watcher armed after it
+$H msg --shoal $SID --spec "$SPEC" --to up --wake --text "wake test" --no-sync >/dev/null 2>&1 || fail "msg --wake"
+python3 - "$SHOALD" "$SPEC" up yes <<'PY2' || fail "a fresh --wake msg must be actionable"
+import sys; sys.path.insert(0, sys.argv[1])
+import ledger, ledger_watch
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); v = ledger.View(ledger.Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+hits = [d for _, d in ledger_watch.actionable(v, sys.argv[3], spec.role(sys.argv[3]), spec, board=False) if "wake test" in d]
+assert bool(hits) == (sys.argv[4] == "yes"), hits
+PY2
+sleep 1
+$H queue --shoal $SID --spec "$SPEC" --slug up --idle --next "" --reason test --no-sync >/dev/null 2>&1 || fail "up idle"
+python3 - "$SHOALD" "$SPEC" up no <<'PY2' || fail "a --wake msg read at a boundary was delivered again"
+import sys; sys.path.insert(0, sys.argv[1])
+import ledger, ledger_watch
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); v = ledger.View(ledger.Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+hits = [d for _, d in ledger_watch.actionable(v, sys.argv[3], spec.role(sys.argv[3]), spec, board=False) if "wake test" in d]
+assert bool(hits) == (sys.argv[4] == "yes"), hits
+PY2
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

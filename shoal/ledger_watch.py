@@ -108,7 +108,13 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
                     + (" NOW" if o.get("now") else "")
                     + (f" base={o['base']}" if o.get("base") else "")
                     + (f" — {short(o.get('note', ''), 80)}" if o.get("note") else "")))
+    st = view.role_state(slug) or {}
+    boundary = max(q.get("ts", ""), st.get("ts", ""))
     for m in view.msgs_to(slug):
+        if boundary and m["ts"] < boundary:
+            # read at that boundary (`next` shows mail): a watcher armed since, by the role or the quorum, must
+            # not deliver it again (measured 2026-10-20: a quorum-delivered wake was re-delivered 2 min later)
+            continue
         if workwake and not (m.get("by") == "user" and m.get("wake")):
             continue  # mail, not a wake
         out.append((m["id"], f"MSG {m['by']}->{m['to']} [{m.get('kind', 'info')}] {short(m.get('text', ''), 120)}"
@@ -342,8 +348,11 @@ def cmd_ledger_watch(a) -> int:
             with open(f"/proc/{old_pid}/cmdline", "rb") as fh:
                 argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
             opt = {argv[i]: argv[i + 1] for i in range(len(argv) - 1) if argv[i].startswith("--")}
+            # the session the running watcher actually bound (it rebinds to its own Claude session) counts,
+            # not only its argv: a role once armed with a stale id and a second arm started a duplicate
+            bound = {(opt.get("--session") or "")[:8], (sc.get("session_id") or "")[:8]} - {""}
             same = (opt.get("--slug") == slug and opt.get("--wake") == a.wake
-                    and (a.wake.startswith(("send:", "exec:")) or (opt.get("--session") or "")[:8] == (session or "")[:8]))
+                    and (a.wake.startswith(("send:", "exec:")) or (session or "")[:8] in bound))
             if old_pid and int(old_pid) != os.getpid() and "ledger-watch" in argv and same:
                 print(f"ALREADY ARMED: ledger-watch pid {old_pid} for {slug} ({a.wake}) is running and keeps "
                       f"running across wakes; nothing to do")
