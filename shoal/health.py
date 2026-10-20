@@ -696,7 +696,9 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
 
 
 def multi_host(spec: ShoalSpec) -> bool:
-    return bool(spec.home) or any(r.server for r in spec.roles)
+    """True when the shoal's roles span more than one host. A shoal that names its home but runs every
+    role there (the usual case) is single-host: it neither beats nor judges, so it writes no ledger noise."""
+    return len({host_of(r, spec) for r in spec.roles}) > 1
 
 
 def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list[dict]:
