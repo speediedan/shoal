@@ -812,8 +812,10 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
         if role.ecosystem == "claude" and role.session:
             from backends import get as get_backend
             get_backend("claude").stop(role.session[:8])
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,
-                         cwd=spec.dir or None, env=_ENV, start_new_session=True)
+        from backends import spawn_detached
+        # its own scope, like a re-armed watcher: the quorum's oneshot unit would end it with its cgroup
+        spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,
+                       cwd=spec.dir or None, env=_ENV)
     except (OSError, ValueError) as exc:
         return f"FAILED ({exc})"
     return f"restarting on a fresh session (log {log})"
