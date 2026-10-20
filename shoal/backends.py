@@ -33,6 +33,13 @@ TOOL_PATH = config.tool_path()
 _ENV = config.tool_env()
 
 
+def tool_which(name: str) -> str | None:
+    """A harness binary on this process's PATH, else on the host's tool path (`tool_path`): a command run
+    over ssh gets a login shell's PATH, which on a host with an nvm install lacks `claude` (measured
+    2026-10-20: a remote `shoal view` failed with "No such file or directory: 'claude'")."""
+    return shutil.which(name) or shutil.which(name, path=_ENV.get("PATH", ""))
+
+
 def fake_sessions() -> dict | None:
     """Test hook (same family as SHOAL_FAKE_PR / SHOAL_FAKE_REF_STATE): SHOAL_FAKE_SESSIONS=
     '{"claude": [<claude agents --json rows>], "opencode": {"<session id>": "<status line>"}}'
@@ -163,7 +170,7 @@ class OpenChamberBackend(Backend):
             pass
         if not pw:
             raise UnsupportedError(f"no server password in the environment of opencode server pid {pid}")
-        b = shutil.which("opencode") or os.path.expanduser("~/.opencode/bin/opencode")
+        b = tool_which("opencode") or os.path.expanduser("~/.opencode/bin/opencode")
         argv = [b, "--server", f"http://127.0.0.1:{port}"] + (["--session", session_id] if session_id else [])
         return argv, {"OPENCODE_PASSWORD": pw}
 
@@ -465,7 +472,7 @@ class ClaudeBackend(Backend):
     def _resume(self, row: dict, session: str, text: str, dry_run: bool = False) -> str:
         if dry_run or fake_sessions() is not None:
             return "resume" + (" (dry-run)" if dry_run else " (fake)")
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         cwd = row.get("cwd") or None
         if cwd and not os.path.isdir(cwd):
             cwd = None
@@ -502,7 +509,7 @@ class ClaudeBackend(Backend):
             return "cc_DRYRUN_" + re.sub(r"\W+", "_", title)
         if not brief:
             raise UnsupportedError("claude create needs the role brief text")
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         argv = [b, "--bg", "-n", name or title]
         if model:
             argv += ["--model", model]
@@ -529,7 +536,7 @@ class ClaudeBackend(Backend):
         fake = fake_sessions()
         if fake is not None:
             return list(fake.get("claude") or [])
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         r = subprocess.run([b, "agents", "--json"] + (["--all"] if include_stopped else []),
                            capture_output=True, text=True, timeout=30, env=_ENV)
         try:
@@ -562,7 +569,7 @@ class ClaudeBackend(Backend):
         if fake_sessions() is not None:
             return "fake"
         e = self._row(session_id, include_stopped=True) or {}
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         r = subprocess.run(detached([b, "respawn", str(e.get("id") or session_id[:8])]), capture_output=True,
                            text=True, timeout=120, env=_ENV)
         out = ANSI_RE.sub("", r.stdout + r.stderr).strip().splitlines()
@@ -570,7 +577,7 @@ class ClaudeBackend(Backend):
 
     def messages(self, session_id: str, repo_dir: str, limit: int = 20,
                  role: str = "") -> str:
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         r = subprocess.run([b, "logs", session_id], capture_output=True,
                            text=True, timeout=30, env=_ENV)
         out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", r.stdout)
@@ -596,17 +603,17 @@ class ClaudeBackend(Backend):
         # adopts the sidecar's full id): measured 2026-10-12, "No job matching '<uuid>'"
         e = self._row(session_id, include_stopped=True) or {}
         job = str(e.get("id") or session_id.split("-", 1)[0][:8])
-        return [shutil.which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
+        return [tool_which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
 
     @staticmethod
     def launch_command(brief_file: str) -> str:
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         return f'{b} "$(cat {brief_file})"'
 
     @staticmethod
     def stop(session_id: str) -> str:
         import shutil as _sh
-        b = _sh.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         r = subprocess.run([b, "stop", session_id], capture_output=True,
                            text=True, timeout=30, env=_ENV)
         return (r.stdout + r.stderr).strip()[-200:]
@@ -615,7 +622,7 @@ class ClaudeBackend(Backend):
         """Terminal-log limit signature (zero model cost). Verified 2026-09-21:
         'reached your Fable limit' present while quota-dead, absent after the
         opus switch on the same session."""
-        b = shutil.which("claude")
+        b = tool_which("claude")
         if not b:
             return ""
         try:
@@ -640,7 +647,7 @@ class ClaudeBackend(Backend):
 
     @staticmethod
     def probe_turn(model: str = "claude-haiku-5-5") -> str:
-        b = shutil.which("claude") or "claude"
+        b = tool_which("claude") or "claude"
         r = subprocess.run(
             [b, "-p", "Reply with exactly: SHOAL-PROBE-OK (connectivity probe, "
                       "no action)", "--model", model, "--output-format", "text"],

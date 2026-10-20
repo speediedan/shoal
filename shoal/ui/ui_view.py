@@ -60,10 +60,42 @@ def resolve_role(sid: str, slug: str, spec_path: str = ""):
     from roles import host_of, is_local
     if not is_local(role, spec):
         # sessions resolve through THIS host's harness (its `claude agents`, its OpenChamber server), so a
-        # session on another host cannot be attached from here: never try (multi-host)
-        raise ViewError(f"{slug} runs on {host_of(role, spec)}: attach from that host's viewer "
-                        f"(or `ssh -t {host_of(role, spec)} shoal view {sid} {slug}`)")
+        # session on another host is attached by running its own host's `shoal view` over a route
+        import routes
+        if routes.route(host_of(role, spec)) is None:
+            raise ViewError(f"{slug} runs on {host_of(role, spec)}: attach from that host's viewer, or add a route "
+                            f"(`[hosts.{host_of(role, spec)}] ssh = \"<user>@<name>\"` in this host's config)")
     return spec, role
+
+
+ATTACH_RETRY_S = 30
+FAST_EXIT_S = 15
+
+
+def remote_attach(server: str, sid: str, slug: str) -> int:
+    """Attach a role on another host through its route, from a card. A Claude attach is exclusive, so a session
+    held by another viewer cannot open here: an attach that fails within FAST_EXIT_S says why (host unreachable,
+    or attached elsewhere) and retries every ATTACH_RETRY_S rather than taking the session over; `q` gives up,
+    `r` retries now (maintainer ruling 2026-10-20)."""
+    import routes
+    while True:
+        argv = routes.view_argv(server, sid, slug)
+        if argv is None:
+            print(f"no route to {server}")
+            return 2
+        t0 = time.time()
+        rc = subprocess.run(argv).returncode
+        if rc == 0 or time.time() - t0 >= FAST_EXIT_S:
+            return rc
+        why = ("host unreachable" if routes.reachable(server, force=True) is False
+               else "attached elsewhere, or not attachable right now")
+        sys.stdout.write(f"\n\x1b[33m{slug} on {server}: {why} (exit {rc}); retrying in {ATTACH_RETRY_S}s\x1b[0m"
+                         f"   [r] retry now   [q] back to the card\n")
+        sys.stdout.flush()
+        k = _getkey(ATTACH_RETRY_S)
+        if k in ("q", "Q"):
+            return rc
+        flush_input()
 
 
 def verify_listed(harness: str, session: str) -> str:
@@ -180,15 +212,22 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
     remote = _remote_host(sid, slug, spec_path)
+    import routes
     while True:
         watch.check()
+        routed = bool(remote) and routes.route(remote) is not None
         try:
             body = card(sid, slug, force)
         except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
             body = f"{slug}: status unavailable ({exc})"
         force = False
-        keys = (f"runs on {remote}: attach from that host's viewer   [r] refresh   [q] shell" if remote
-                else "[enter] attach   [r] refresh   [q] shell")
+        if routed:
+            up = routes.reachable(remote)
+            keys = (f"runs on {remote} (ssh{'' if up else ': unreachable now'})   [enter] attach   [r] refresh   [q] shell")
+        elif remote:
+            keys = f"runs on {remote}: attach from that host's viewer (no route here)   [r] refresh   [q] shell"
+        else:
+            keys = "[enter] attach   [r] refresh   [q] shell"
         sys.stdout.write("\x1b[2J\x1b[H" + body + "\n\n\x1b[2m" + keys
                          + f"   (refresh every {CARD_REFRESH_S}s; viewing never wakes the role)\n{DETACH_HINT}\x1b[0m\n")
         sys.stdout.flush()
@@ -197,8 +236,14 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             return 0
         if k in ("r", "R"):
             force = True
-        if k in ("\r", "\n") and remote:
-            continue  # nothing to attach here: the session lives on another host
+        if k in ("\r", "\n") and remote and not routed:
+            continue  # nothing to attach here: the session lives on another host with no route from here
+        if k in ("\r", "\n") and routed:
+            flush_input()
+            remote_attach(remote, sid, slug)
+            print("\x1b[2m(back to the card in 3s)\x1b[0m")
+            time.sleep(3)
+            continue
         if k in ("\r", "\n"):  # Enter only: a typed word must never start an attach
             flush_input()
             # a fresh process, so the attach always runs the current code: a card lives for days, and
@@ -265,6 +310,13 @@ def cmd_view(a) -> int:
         if a.stub and not a.dry_run:
             return stub(a.target_shoal, a.role, a.spec)
         spec, role = resolve_role(a.target_shoal, a.role, a.spec)
+        from roles import host_of, is_local
+        if not is_local(role, spec):
+            import routes
+            if a.dry_run:
+                print(json.dumps({"argv": routes.view_argv(host_of(role, spec), spec.sid, role.slug), "env_extra": []}))
+                return 0
+            return remote_attach(host_of(role, spec), spec.sid, role.slug)
         if a.dry_run:
             argv, env = viewer(role.ecosystem, role.session)
             print(json.dumps({"argv": argv, "env_extra": sorted(k for k in env if k not in os.environ)}))

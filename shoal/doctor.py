@@ -169,6 +169,12 @@ def host_checks(d: Doc) -> None:
     except Exception as exc:  # noqa: BLE001
         d.fail("gh auth", str(exc))
     clock_check(d)
+    import routes
+    for name, r in sorted(routes.routes().items()):
+        # a route lets this host's viewer attach that host's roles over ssh (architecture doc §12)
+        ok = routes.reachable(name, force=True)
+        (d.ok if ok else d.warn)(f"route {name}", f"{r['ssh']}" + ("" if ok else
+                                 ": unreachable (ssh BatchMode); its cards show unreachable until it answers"))
     pat = os.environ.get("AZURE_DEVOPS_EXT_PAT", "")
     if not pat:
         try:
