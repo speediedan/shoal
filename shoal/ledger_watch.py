@@ -266,6 +266,17 @@ def relay_deliver(sid: str, role, session: str, text: str) -> bool:
     return True
 
 
+def claude_deliver(sid: str, spec, role, session: str, text: str) -> str:
+    """A detached Claude watcher's delivery (`--wake relay`): direct where features.health.direct_wake
+    allows it (resume a retired session, or stop and resume an idle one), else the wake relay. Returns
+    the channel, as backends.ClaudeBackend.deliver names it."""
+    from backends import direct_wake_mode, get as get_backend
+    if spec is None or role is None or direct_wake_mode(spec) == "off":
+        relay_deliver(sid, role, session, text)
+        return "wake-relay"
+    return get_backend("claude").deliver(spec, role, session, text)
+
+
 def fire(wake: str, text: str, repo_dir: str, ecosystem: str = "muse") -> bool:
     if wake.startswith("exec:"):
         sid = wake[len("exec:"):]
@@ -421,7 +432,18 @@ def cmd_ledger_watch(a) -> int:
                 + f" || next: `shoal show --shoal {sid} --slug {slug}`; act (claim/msg/release), transition"
                 + ("; your watcher keeps running (no re-arm)." if persistent else ", re-arm."))
         emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
-        fired = relay_deliver(sid, role, session or "", text) if a.wake == "relay" else fire(a.wake, text, repo_dir, role.ecosystem if role else "muse")
+        if a.wake == "relay":
+            ch = claude_deliver(sid, spec, role, session or "", text)
+            print(f"{now_iso()} delivered via {ch}", flush=True)
+            if ch.startswith("deferred"):
+                # nothing failed: the session cannot take a direct wake yet (work in flight wakes it
+                # anyway), so the events stay undelivered for a later tick
+                sc["delivered"] = ",".join(x for x in sc["delivered"].split(",") if x not in set(ids))
+                save_sidecar(sc_path, sc)
+                continue
+            fired = not ch.startswith(("FAILED", "no-adapter"))
+        else:
+            fired = fire(a.wake, text, repo_dir, role.ecosystem if role else "muse")
         if a.wake == "print":
             continue
         if persistent:

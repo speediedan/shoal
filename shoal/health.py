@@ -38,6 +38,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -49,6 +50,7 @@ from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
+from backends import direct_wake_mode  # noqa: E402
 from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, host_of, is_home, is_local, is_wake_relay, roles_dir,  # noqa: E402
                    state_dir, wake_relay_role)
 
@@ -74,6 +76,15 @@ LADDERS = {
     # launches): a page to rename one, once per clash
     "host-name-clash": [(0, "page")],
 }
+# wake economy (architecture doc §7, "When roles wake"): held while the maintainer is away, re-woken for
+# the same evidence at most once per REWAKE_MIN, quiet for a while after the maintainer returns (the
+# return wakes roles with asks itself), and at least WAKE_GAP_MIN between two health wakes of one role
+OFFLINE_HOLD = ("parked-work", "hold-long", "blocking-unscheduled")
+REWAKE_CONDS = ("parked-work", "hold-long")
+REWAKE_MIN = 720
+ONLINE_SETTLE_MIN = 20
+WAKE_GAP_MIN = 30
+REARM_RETRY_MIN = 15
 HOST_BEAT_MIN = 15
 HOST_SILENT_MIN = 60
 # features.health.revive: a dead relay is relaunched before anyone is paged. Measured 2026-10-02: the
@@ -537,6 +548,28 @@ def watcher_dead(alive: bool, posture: str, between: bool | None) -> bool:
     return not alive and posture != "offline" and between is not False
 
 
+def lazy_rearm(spec: ShoalSpec) -> bool:
+    """features.health.lazy_rearm (default on): a dead watcher on a role with nothing to do is not
+    worth a turn; the role is woken when work for it appears (architecture doc §7)."""
+    return bool(health_cfg(spec).get("lazy_rearm", True))
+
+
+def watcher_dormant(spec: ShoalSpec, view, role, posture: str) -> bool:
+    """True when a dead watcher needs no wake now: lazy_rearm is on, the role is not active, and the
+    ledger holds nothing its watcher would have woken it for (ledger_watch.actionable, board off: a
+    self-fill role's board is the digest's or its next wake's). Its next real work raises its own
+    condition (unacked-work, wait-resolved, a wake request), and that wake goes direct or by relay,
+    re-arming included. Waking it only to re-arm cost a cold turn each (2026-10-20: six overnight)."""
+    if not lazy_rearm(spec) or posture == "active":
+        return False
+    try:
+        from ledger_watch import actionable, load_sidecar, sidecar_path
+        done = set(filter(None, load_sidecar(sidecar_path(spec.sid, role.slug)).get("delivered", "").split(",")))
+        return not [i for i, _ in actionable(view, role.slug, role, spec, board=False) if i not in done]
+    except Exception:  # noqa: BLE001 - unknown is not dormant
+        return False
+
+
 def parked_free(spec: ShoalSpec, view, role, q: dict, posture: str, sub: str,
                 live: bool = True) -> tuple[list[str], dict[str, str]]:
     """(next items with no current blocker, {item: why its blocker is stale}) for a role asleep on
@@ -612,14 +645,16 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 f"heuristic: {why}); re-verify the wait is still valid"})
         # watcher
         alive, sc = watcher_alive(spec.sid, slug)
-        if alive and role.ecosystem == "claude" and claude_worker_gone(role, cbusy):
-            # a detached (--wake relay) watcher outlives its session's worker, but it cannot deliver: the
-            # relay would message a session that is gone. Count it dead, so the ladder wakes the role
-            # and revive respawns it (measured 2026-10-13: it-arch-reviewer, retired by the daemon after
-            # 8 h idle at its prompt, sat dead behind a live watcher with no condition raised)
+        if alive and role.ecosystem == "claude" and claude_worker_gone(role, cbusy) and direct_wake_mode(spec) == "off":
+            # a detached (--wake relay) watcher outlives its session's worker, but without direct wake it
+            # cannot deliver: the relay would message a session that is gone. Count it dead, so the ladder
+            # wakes the role and revive respawns it (measured 2026-10-13: it-arch-reviewer, retired by the
+            # daemon after 8 h idle at its prompt, sat dead behind a live watcher with no condition raised).
+            # With direct wake the watcher resumes the session when work arrives: a retired worker is
+            # dormant, and waking it only to re-arm cost a cold turn (2026-10-20: six in one night)
             alive = False
             between = True
-        if watcher_dead(alive, posture, between):
+        if watcher_dead(alive, posture, between) and not watcher_dormant(spec, view, role, posture):
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")
             if ex:
@@ -670,7 +705,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # maintainer, raised once per hold; deferred while offline like every page
         import blockers as _bl
         for k, b, first, age, n in _bl.long_holds(spec, q):
-            out.append({"slug": slug, "condition": "hold-long", "key": f"hold:{k}:{first}", "since": first,
+            out.append({"slug": slug, "condition": "hold-long", "key": f"hold:{k}:{first}", "since": first, "fp": f"hold:{k}",
                         "first_seen": True,  # the ladder runs from this sighting: wake now, page 240 min later
                         "detail": f"{k} held since {first} ({age / 60:.1f} h, re-recorded {n}x): {b[:120]}. "
                                   f"A hold this old is a question: record it as an ask (`queue --ask`) or name "
@@ -696,6 +731,41 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
             out.append({"slug": slug, "condition": "stale-active", "key": f"last:{last}", "since": last,
                         "detail": f"posture active, last ledger write {last}, session between turns"})
     return out
+
+
+def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> str:
+    """Re-arm a dead DETACHED ledger-watch from the quorum, with no model turn: Claude `--wake relay`,
+    opencode `send:` and muse/codex `exec:` watchers run setsid-detached, so shoal can start one as well as
+    the role can (features.health.rearm, default on). Returns what it did, or "" when the role's watcher is
+    not detached (an in-session `exit` watcher needs its role woken) or was re-armed within
+    REARM_RETRY_MIN (a watcher that will not stay up is a wake, then a page)."""
+    if not health_cfg(spec).get("rearm", True) or role is None or not role.session:
+        return ""
+    from briefs import arming
+    wake = arming(role, spec)[0]
+    rearmed = state.setdefault("rearmed", {})
+    if not (wake == "relay" or wake.startswith(("send:", "exec:"))) or \
+            (age_min(rearmed.get(role.slug, "")) or 1e9) < REARM_RETRY_MIN:
+        return ""
+    if role.ecosystem == "claude" and direct_wake_mode(spec) == "off":
+        # without direct wake a watcher cannot reach a session whose worker is gone: that is revive's
+        from backends import get as get_backend
+        if get_backend("claude").session_dead(role.session) is not False:
+            return ""
+    wake = wake.replace("<your-session-id>", role.session)
+    argv = shlex.split(config.cli()) + ["ledger-watch", "--shoal", spec.sid, "--slug", role.slug, "--wake", wake,
+                                        "--session", role.session, "--interval", "120"]
+    if dry_run:
+        return f"re-arm by the quorum ({wake.split(':')[0]}; no wake) (dry-run)"
+    try:
+        os.makedirs(state_dir(spec.sid), exist_ok=True)
+        log = open(os.path.join(state_dir(spec.sid), f"ledger-watch-{role.slug}.log"), "a")
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, cwd=spec.dir or None,
+                         env=_ENV, start_new_session=True)
+    except OSError as exc:
+        return f"FAILED re-arm ({exc})"
+    rearmed[role.slug] = iso()
+    return f"re-armed by the quorum ({wake.split(':')[0]}; no wake)"
 
 
 def multi_host(spec: ShoalSpec) -> bool:
@@ -856,6 +926,21 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                          "first_seen": revive,  # revive: the ladder runs from this sighting (relaunch now, page 15 later)
                          "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
                                    f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.sid}`"})
+    hc = health_cfg(spec)
+    wake_off = set(hc.get("wake_off") or [])
+    offline_hold = set(hc.get("offline_hold", OFFLINE_HOLD))
+    rewake_min = float(hc.get("rewake_min", REWAKE_MIN))
+    settle_min = float(hc.get("online_settle_min", ONLINE_SETTLE_MIN))
+    gap_min = float(hc.get("wake_gap_min", WAKE_GAP_MIN))
+    offline = view.user_offline() is not None
+    um = view.modes.get("user-offline") or {}
+    back = age_min(um.get("ts", "")) if um.get("state") == "off" else None
+    settling = back is not None and back < settle_min
+    woke = state.setdefault("woke", {})
+    for k_ in [k_ for k_, t_ in woke.items() if (age_min(t_) or 0.0) >= rewake_min]:
+        del woke[k_]
+    last_wake = state.setdefault("last_wake", {})
+    merged: dict[str, list] = {}  # slug -> [(condition, detail, act index)]: one wake per role per run
     ladders = state.setdefault("ladders", {})
     prev_keys = set(ladders)
     live_keys = set()
@@ -874,6 +959,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             steps = REVIVE_RELAY_LADDER
         else:
             steps = LADDERS[c["condition"]]
+        if c["condition"] in wake_off:  # features.health.wake_off: this condition pages, never wakes
+            steps = [x for x in steps if x[1] != "wake"]
         acted = False
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:
             at, action = steps[lad["step"]]
@@ -888,13 +975,49 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
                                  f"held (usage limit until {until})"))
                 break
+            if action == "wake" and c["condition"] == "watcher-dead":
+                # the quorum re-arms a dead DETACHED watcher itself (no model turn); only an in-session
+                # (exit) watcher still needs its role woken to re-arm (architecture doc §7)
+                ch = rearm_watcher(spec, role_, state, dry_run)
+                if ch and not ch.startswith("FAILED"):
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:rearm", ch))
+                    lad["step"] += 1
+                    acted = True
+                    break
+            if action == "wake":
+                fp = f"{c['slug']}|{c['condition']}|{c.get('fp') or c['key']}"
+                hold = ""
+                if offline and c["condition"] in offline_hold:
+                    # the maintainer is away: a role re-woken about a parked queue or a long hold finds the
+                    # same blocker and goes back to sleep (2026-10-20: three cold wakes overnight)
+                    hold = "maintainer offline"
+                elif settling:
+                    hold = f"settling {settle_min:g} min after the maintainer's return"
+                elif c["slug"] not in merged and (age_min(last_wake.get(c["slug"], "")) or 1e9) < gap_min:
+                    hold = f"woken {age_min(last_wake[c['slug']]):.0f} min ago (gap {gap_min:g})"
+                if hold:
+                    if lad.get("quiet") != hold.split(" ")[0]:
+                        lad["quiet"] = hold.split(" ")[0]
+                        acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", f"held ({hold})"))
+                    break
+                lad.pop("quiet", None)
+                if c["condition"] in REWAKE_CONDS and fp in woke:
+                    # the same parked set or hold already had its wake: nothing has moved it since
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake",
+                                 f"skipped (woken for the same at {woke[fp]}; rewake_min {rewake_min:g})"))
+                    lad["step"] += 1
+                    acted = True
+                    break
+                if c["condition"] in REWAKE_CONDS:
+                    woke[fp] = iso()
+                merged.setdefault(c["slug"], []).append((c["condition"], c["detail"], len(acts)))
+                acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", ""))
+                lad["step"] += 1
+                acted = True
+                break
             if action == "relaunch":
                 ch = relaunch_relay(spec, spec_path, dry_run)
                 lad["relaunched"] = iso()
-            elif action == "wake":
-                ch = request_wake(spec, c["slug"], c["detail"], c["condition"], dry_run)
-                if ch.startswith("no-adapter"):
-                    ch += "; " + page_user(spec, f"{c['slug']}: {c['detail']} (and no wake adapter: {ch})", state, dry_run)
             elif c["condition"] in ("host-silent", "host-name-clash"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
@@ -909,6 +1032,17 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             # hit the usage limit). While relay-watch stays down, relaunch again on a fixed period.
             acts.append((c["slug"], "relay-dead relaunch-again", relaunch_relay(spec, spec_path, dry_run)))
             lad["relaunched"] = iso()
+    # one wake per role per run, carrying every condition that is due (each used to be its own turn)
+    for slug_, items in merged.items():
+        conds_ = "+".join(dict.fromkeys(x[0] for x in items))
+        detail = items[0][1] if len(items) == 1 else " | ".join(f"[{x[0]}] {x[1]}" for x in items)
+        ch = request_wake(spec, slug_, detail, conds_, dry_run)
+        if ch.startswith("no-adapter"):
+            ch += "; " + page_user(spec, f"{slug_}: {detail} (and no wake adapter: {ch})", state, dry_run)
+        elif not ch.startswith("remote"):
+            last_wake[slug_] = iso()
+        for n_, (_, _, i_) in enumerate(items):
+            acts[i_] = (acts[i_][0], acts[i_][1], ch if n_ == 0 else f"merged into the {items[0][0]} wake")
     # the usage limit has reset: one resume wake to every role it touched or whose wakes were held
     if lim.get("reset") and not until and lim.get("woken") != lim["reset"]:
         floor = iso(parse(lim["reset"]) - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
