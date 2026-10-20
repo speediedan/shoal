@@ -14,7 +14,7 @@ days), taken 2026-09-25. Re-measure before acting on any number here.
 | # | Limitation | Accepted today because | Refactor trigger |
 | --- | --- | --- | --- |
 | 1 | The ledger grows without bound: no compaction, snapshot or archival | projection costs ~9 µs per event; the network dominates | a group passes ~50k events, projection passes 0.5 s, or a group retires |
-| 2 | Joining from a second host or as a second user is untested | every role runs on one host today | before anyone joins from another host or account |
+| 2 | Several hosts are supported for one maintainer; a second user is not | roles of one shoal run on two hosts in a live test shoal | before anyone joins from another account (see [`roadmap.md`](roadmap.md)) |
 | 3 | One repository holds every group's ledger | one owner, one host, few groups | a second user, or a group that needs its own access control |
 | 4 | Git as the ledger's store and transport caps write rate, wake latency and group size | measured load is ~2 orders of magnitude below the write ceiling | sustained writes, retry exhaustion, wake latency or role count past the thresholds in §4 |
 | 5 | Items carried over from earlier design notes | each is tracked; none blocks a single-host group | per item |

@@ -292,7 +292,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
         "model": role.model, "fill": role.fill,
-        "server": role.server or "", "aux": bool(role.aux), "relay": is_wake_relay(role),
+        "server": role.server or "", "host": _host_of(role, spec), "aux": bool(role.aux), "relay": is_wake_relay(role),
         "session_id": role.session or None,
         "posture": posture if role.session else "parked", "sub": sub or None,
         "posture_age_s": age_s(boundary, now) if boundary else None,
@@ -435,11 +435,33 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
         "violations": len(view.violations), "contested": len(view.contested),
         "tooling": tooling(spec),
         "features": sorted((spec.features or {}).keys()),
+        "home": spec.home or "",
+        "this_host": config.server(),
+        "multi_host": len({r["host"] for r in roles}) > 1,
+        "hosts": host_beats_doc(spec, led, now),
         "roles": roles,
     }
     if with_conditions:
         doc["conditions"] = conditions(spec, view, state_dir(spec.sid), refresh_conditions)
     return doc
+
+
+def _host_of(role, spec) -> str:
+    from roles import host_of
+    return host_of(role, spec) or config.server()
+
+
+def host_beats_doc(spec, led, now) -> dict:
+    """{host: {"last_beat": ts, "age_s": n}} from the ledger's host-beat events (multi-host liveness)."""
+    out: dict = {}
+    try:
+        for e in led.events():
+            if e.get("type") == "system" and e.get("kind") == "host-beat" and e.get("host"):
+                if e.get("ts", "") > out.get(e["host"], {}).get("last_beat", ""):
+                    out[e["host"]] = {"last_beat": e["ts"], "age_s": age_s(e["ts"], now)}
+    except Exception:  # noqa: BLE001 - a view never fails on liveness annotations
+        pass
+    return out
 
 
 def status(ids: list[str] | None = None, root: str = "", include_retired: bool = False,
@@ -648,6 +670,14 @@ def render_text(doc: dict, width: int = 0) -> str:
         m = s["mode"]
         relay = s.get("relay")
         head = [s["id"], f"gen {s['gen']}"] + [x for x, on in (("OFFLINE", m["offline"]), ("FREEZE", m["freeze"])) if on]
+        if s.get("multi_host") or s.get("home"):
+            here = s.get("this_host", "")
+            hosts = sorted({r["host"] for r in s["roles"]} | ({s["home"]} if s.get("home") else set()))
+            beat = lambda h: ("" if h == here or h not in s.get("hosts", {})  # noqa: E731
+                              else f" beat {_age(s['hosts'][h].get('age_s'))} ago")
+            head.append(f"home {s.get('home') or here}")
+            if s.get("multi_host"):
+                head.append("hosts " + ", ".join(f"{h}{' (here)' if h == here else ''}{beat(h)}" for h in hosts))
         if m.get("limit_until"):
             head.append(f"LIMITED until {m['limit_until'][11:16]}Z")  # the account usage limit: wakes are held
         if relay:
@@ -672,15 +702,21 @@ def render_text(doc: dict, width: int = 0) -> str:
             rows.append([r["slug"], r["harness"], posture_label(r), r["session"], r["active"] or "-", nx or "-",
                          _age(r["last_write_age_s"]), ", ".join(att) or "-"])
         heads = ["role", "ecosystem", "posture", "session", "active", "next", "last write", "attention"]
-        natural = sum(max([len(h)] + [len(str(r[i])) for r in rows]) for i, h in enumerate(heads)) + 3 * len(heads) + 1
+        mh = bool(s.get("multi_host"))  # multi-host: a host column after the role (the role rows stay 8 wide)
+        hosts_ = [r["host"] for r in s["roles"] if not r["relay"]]
+        wide_h = heads[:1] + ["host"] + heads[1:] if mh else heads
+        wide_r = [row[:1] + [h] + row[1:] for row, h in zip(rows, hosts_)] if mh else rows
+        o = 1 if mh else 0
+        natural = sum(max([len(h)] + [len(str(r[i])) for r in wide_r]) for i, h in enumerate(wide_h)) + 3 * len(wide_h) + 1
         sc = lambda v, row: state_color(v)  # noqa: E731
-        pt = {2: sc, 3: sc} if use_color() else None
+        pt = {2 + o: sc, 3 + o: sc} if use_color() else None
         if natural <= width or width >= 110:
-            out.append(ascii_table(heads, rows, width, flex=(4, 5, 7), paint=pt))
+            out.append(ascii_table(wide_h, wide_r, width, flex=(4 + o, 5 + o, 7 + o), paint=pt))
         else:  # a narrow terminal: status and work as two tables rather than one unreadable one
-            out.append(ascii_table(["role", "ecosystem", "posture", "last write", "attention"],
-                                   [[r[0], r[1], r[2], r[6], r[7]] for r in rows], width, flex=(4, 0),
-                                   paint={2: sc} if pt else None))
+            nh = ["role"] + (["host"] if mh else []) + ["ecosystem", "posture", "last write", "attention"]
+            nr = [[r[0]] + ([h] if mh else []) + [r[1], r[2], r[6], r[7]] for r, h in zip(rows, hosts_)]
+            out.append(ascii_table(nh, nr, width, flex=(4 + o, 0),
+                                   paint={2 + o: sc} if pt else None))
             busy = [[r[0], r[4], r[5]] for r in rows if r[4] != "-" or r[5] != "-"]
             if busy:
                 out.append(ascii_table(["role", "active", "next"], busy, width, flex=(2, 1, 0)))

@@ -31,7 +31,7 @@ Every mechanism below exists to serve one of these, in this order.
 multi-repository body of work for **one maintainer**. Depending on how useful that proves, a future
 incarnation may be refactored to accommodate shoals to which **several users contribute sessions**
 while targeting one shared multi-repository work set; what that would need is in
-[`limitations.md`](limitations.md).
+[`limitations.md`](limitations.md), and the direction is sketched in [`roadmap.md`](roadmap.md).
 
 ## 1. Shape
 
@@ -389,6 +389,14 @@ is the only coordination path (no host-to-host connection is needed for correctn
   only its own changes (the spec as loaded, `ShoalSpec.base`, to as saved: `merge_spec`, roles by slug and
   field, generations by `gen`) onto the fresh copy, and on a rejected push undoes only its own commit and
   merges again. A key both hosts changed keeps this host's value and is printed as a conflict.
+- **Host names are labels, not identities.** A host's `server` (config, default its host name) is the name
+  roles and beats use; nothing authenticates it (push access to the ledger remote is the only authority).
+  It must be unique among the hosts of a shoal, or two hosts treat the same roles as local. That is
+  detected, not prevented: every beat carries a hash of the machine id, and a host that sees its own
+  name beaten by another machine raises `host-name-clash` (a page: rename one host). Role slugs are
+  unique per shoal by spec validation, since a slug is a ledger writer file.
+- **The overview** shows `home` and, on a multi-host shoal, each host's last beat in the header and a
+  `host` column in the role table; the Herdr sidebar gets a `$host` token (empty on a single-host shoal).
 - **Clocks.** Events are stamped by the writer's clock, the fold orders by them and conditions are ages:
   `doctor` fails a host that is not NTP-synchronized.
 - **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the pipeline
