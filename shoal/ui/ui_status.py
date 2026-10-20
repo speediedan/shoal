@@ -253,7 +253,11 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     if not role.session:
         reasons.append("parked")
     else:
-        if sess == "dead":
+        if sess == "dead" and alive and role.ecosystem == "claude" and _h.direct_wake_mode(spec) != "off":
+            # retired by the background service while idle; its detached watcher resumes it on work
+            # (features.health.direct_wake), so nothing is stuck and nothing is due from the maintainer
+            reasons.append("dormant")
+        elif sess == "dead":
             reasons.append("dead-worker")
         if sess == "blocked":
             # a Claude job reads blocked both on a real prompt (AskUserQuestion) and when the session
@@ -288,7 +292,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             # degenerate: the ledger says active, but no turn is running (health's turn-ended-active
             # wakes it; measured 2026-10-13: shoal-aux re-wrote active and stopped, again)
             reasons.append("stopped-active")
-    blocking = [r for r in reasons if r != "waiting-on-you" and r != "parked"]
+    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant")]
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
         "model": role.model, "fill": role.fill,
@@ -558,6 +562,8 @@ def posture_label(r: dict) -> str:
     reasons = r["can_progress"]["reasons"]
     if "dead-worker" in reasons:
         return "DEAD"
+    if "dormant" in reasons:
+        return "DORMANT"
     if working_wait(r):
         # waiting on its own job or CI: the work runs on, so the wait is the posture and an open
         # question shows as attention (measured 2026-10-13: jlens-research on a running job read QUESTION)

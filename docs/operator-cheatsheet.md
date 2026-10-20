@@ -86,7 +86,8 @@ export S=<id> SPEC=<path to the group's spec>
     shoal withdraw --shoal $S --to <role> --item <repo>#<n> --reason "<why>"
     ```
 
-- Message a role. Mail never wakes it; `--wake` does:
+- Message a role. Mail never wakes it; `--wake` does. Every wake is a turn, and a cold turn re-reads the
+  role's whole context, so prefer mail and batch what you send (architecture doc §7, "When roles wake"):
 
     ```bash
     shoal msg --shoal $S --to <role> --text "FYI: <note>"

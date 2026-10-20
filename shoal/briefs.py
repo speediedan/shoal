@@ -150,8 +150,13 @@ def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
         return "send:<your-session-id>", (detached + "; it sends each wake to your session id between your turns "
                                           "and keeps running, so it needs no re-arm after a wake (re-arming while it "
                                           "runs prints ALREADY ARMED); re-arm only if `next` or health says it is dead")
-    if (getattr(spec, "features", {}) or {}).get("relay") and _relay_on_host_of(spec, role):
-        return "relay", (detached + "; between your turns the wake relay delivers each wake to you as a message, and "
+    from backends import direct_wake_mode
+    # detached needs a way into a live idle session: the relay, or direct_wake `idle` (stop and resume);
+    # direct_wake `dead` alone would hold a wake to a live idle session until its worker retired
+    if direct_wake_mode(spec) == "idle" or ((getattr(spec, "features", {}) or {}).get("relay")
+                                           and _relay_on_host_of(spec, role)):
+        return "relay", (detached + "; between your turns each wake reaches you as a message (resumed directly when "
+                         "your session can take it, else by the wake relay), and "
                          "the watcher keeps running, so it needs no re-arm after a wake and is never killed at a "
                          "time limit (re-arming while it runs prints ALREADY ARMED); re-arm only if `next` or health "
                          "says it is dead")

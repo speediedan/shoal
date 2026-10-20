@@ -292,7 +292,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `unacked-work` | an offer or wake request to an idle role, or a `--now` offer, newer than its last queue version | wake 10, wake 30, page 60 |
 | `wait-resolved` | a checkable wait target is no longer pending | wake 15, page 60 |
 | `wait-validity` | any CI, lease or job wait (not `upstream`), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
-| `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns | wake 10, page 40 |
+| `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
 | `turn-ended-active` (`continuation`) | posture `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
@@ -335,6 +335,48 @@ under `revive`, park it or mark it `offline`: a dead session alone is revived.
 Claude needs the relay because a headless send to a running Claude session forks it instead of
 waking it. A harness with no implementation returns `no-adapter`, and the condition escalates to a
 page. Adding a harness means adding its `wake`, not changing the quorum.
+
+**Direct Claude wake (`health.direct_wake`).** A Claude session with **no worker** can be woken with no
+relay turn: `claude --bg --resume <session> "<text>"` continues it under the same id, with its saved
+options, and the text as its prompt (verified 2026-10-20; the prompt cache is mostly kept). It forks a
+copy only while a worker is running, and shoal stops and removes any copy that appears. Modes:
+
+| `direct_wake` | a session with no worker | a live session idle at its prompt, nothing in flight | anything else (mid-turn, at a question, background work in flight) |
+| --- | --- | --- | --- |
+| `off` | `revive`'s respawn, then the relay | the relay | held, or the relay |
+| `dead` (default with `revive`) | resumed directly | the relay | the relay |
+| `idle` | resumed directly | stopped, then resumed directly | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
+
+`relay_fallback` (default on, off under `idle`) says whether a wake that cannot go direct takes the relay
+or waits. A Claude watcher is detached (`--wake relay`) when the host has a relay or `direct_wake` is
+`idle`; it delivers each wake through the same path, so a detached watcher outlives its worker usefully:
+a session the background service retired after 8 h idle is **dormant**, not dead, and its next work
+resumes it. **When the relay is still worth having:** only to reach a live session that cannot be
+stopped safely (background work in flight) faster than that work ends, which is at most the harness's
+2 h background-command limit. Under `idle` with `relay_fallback` off, the relay is unused.
+
+### When roles wake, and what that costs
+
+A role spends tokens only on a turn, and every turn re-reads its context: cheaply from cache when warm,
+as a cache rebuild the size of the context when cold. So the measure that matters is **target turns**.
+Free: ledger mail without `--wake`, ledger reads, `status`, the UI, pages, watchers polling. A turn: a
+watcher's work wake (an offer, a handoff, a user `--wake` message, a resolved wait target, board
+candidates for a self-fill role), the role's own background command ending, a health wake, a
+cross-session message, a maintainer prompt. A relayed wake is two turns (the relay's, then the role's).
+
+The quorum's wakes follow these rules (all under `features.health`):
+
+| key | default | effect |
+| --- | --- | --- |
+| `lazy_rearm` | on | a dead watcher on a role that is not active and has nothing its watcher would wake it for raises no `watcher-dead`: its next real work raises its own condition |
+| `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `relay`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder |
+| `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
+| `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
+| `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
+| `wake_gap_min` | 30 | at least this long between two health wakes of one role |
+| `wake_off` | none | conditions that never wake, only page (for example `["parked-work", "hold-long"]`) |
+
+And every run sends **at most one wake per role**, carrying every condition then due.
 
 **Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
 lands, as one channel string or a list of them: `"gh-issue:<owner/repo>#<n>"` also comments on

@@ -838,7 +838,7 @@ grep -q "tl watcher-dead step1:wake -> no-adapter (claude watcher dead, wake rel
 ! grep -q "respawned\|relaunch" <<<"$OUT" || fail "revive acted while off :: $OUT"
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"].get("health")
-d["features"]["health"]=dict(h if isinstance(h,dict) else {}, revive=True); json.dump(d,open(p,"w"),indent=1)
+d["features"]["health"]=dict(h if isinstance(h,dict) else {}, revive=True, direct_wake="off"); json.dump(d,open(p,"w"),indent=1)
 PY2
 python3 -c "$SEED_TL" /tmp/$SID/health.json
 OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
@@ -848,6 +848,26 @@ grep -q "tl watcher-dead step1:wake -> wake-relay (queued; relay down, relaunch 
   || fail "reaped role not respawned and queued for the relaunching relay :: $OUT"
 [ "$(grep -n 'relay-dead' <<<"$OUT" | head -1 | cut -d: -f1)" -lt "$(grep -n 'tl watcher-dead' <<<"$OUT" | head -1 | cut -d: -f1)" ] \
   || fail "relay relaunch must precede the role wakes it will carry :: $OUT"
+# direct wake (the default with revive): the quorum re-arms the detached watcher instead of waking the
+# role, and the watcher resumes the session when work arrives; with rearm off the quorum resumes it itself
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("direct_wake",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+python3 -c "$SEED_TL" /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "tl watcher-dead step1:rearm -> re-armed\?.* by the quorum (relay; no wake) (dry-run)\|tl watcher-dead step1:rearm -> re-arm by the quorum (relay; no wake) (dry-run)" <<<"$OUT" \
+  || fail "direct wake: a dead detached watcher should be re-armed, not woken :: $OUT"
+! grep -q "respawned aaaa1111\|tl watcher-dead step1:wake" <<<"$OUT" || fail "direct wake: re-arm must not also wake :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"]["rearm"]=False; json.dump(d,open(p,"w"),indent=1)
+PY2
+python3 -c "$SEED_TL" /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "tl watcher-dead step1:wake -> resume (dry-run)" <<<"$OUT" \
+  || fail "direct wake: a workerless session should be resumed directly, no relay :: $OUT"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("rearm",None); json.dump(d,open(p,"w"),indent=1)
+PY2
 # a live worker (pid present) is never respawned
 FS_LIVE='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":4242}],"opencode":{}}'
 python3 -c "$SEED_TL" /tmp/$SID/health.json
@@ -1078,7 +1098,8 @@ grep -q "tl watcher-dead step1:wake -> held (usage limit until" <<<"$OUT" || fai
 ! grep -q "usage-limit reset" <<<"$OUT" || fail "resume wake before the reset :: $OUT"
 python3 -c "$SEED" /tmp/$SID/health.json
 OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
-grep -q "tl watcher-dead step1:wake -> " <<<"$OUT" && ! grep -q "held (usage" <<<"$OUT" || fail "the held wake did not run after the reset :: $OUT"
+# after the reset the step runs: a re-arm by the quorum (detached watcher, live worker) where it used to wake
+grep -Eq "tl watcher-dead step1:(wake|rearm) -> " <<<"$OUT" && ! grep -q "held (usage" <<<"$OUT" || fail "the held wake did not run after the reset :: $OUT"
 grep -q "tl usage-limit reset:wake" <<<"$OUT" && grep -q "up usage-limit reset:wake" <<<"$OUT" \
   || fail "no resume wake for each role the limit touched :: $OUT"
 # the relay: relaunch held inside the limit; relaunched again while it stays down; a fresh tick is the re-arm gap
@@ -1172,6 +1193,101 @@ import json, sys; p = sys.argv[1]; d = json.load(open(p))
 [r.update(ecosystem="claude") for r in d["roles"] if r["slug"] == "up"]; json.dump(d, open(p, "w"), indent=1)
 PY2
 unset SHOAL_MUSE_BIN SHOAL_MUSE_STATE
+
+echo "== 34 wake economy: dormant watchers, offline hold, return settle, wake gap, one wake per role, rewake cooldown, wake_off, direct delivery"
+rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl /tmp/$SID/wake-up /tmp/$SID/relay-queue
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "wake economy"
+import datetime, io, json, os, sys, contextlib
+sys.path.insert(0, sys.argv[1])
+import health, ledger, backends, briefs
+from roles import ShoalSpec
+SPEC = sys.argv[2]
+def spec_with(**h):
+    d = json.load(open(SPEC)); d.setdefault("features", {})["health"] = h; d["features"].pop("relay", None)
+    json.dump(d, open(SPEC, "w"), indent=1); return ShoalSpec.load(SPEC)
+def ago(m):
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+MODES = {}
+_init = ledger.View.__init__
+def init(self, *a, **k):
+    _init(self, *a, **k); self.modes.update(MODES)
+ledger.View.__init__ = init
+COND = []
+health.evaluate = lambda spec, view, cbusy: [dict(c) for c in COND]
+health.host_beats = lambda *a, **k: []
+health.claude_busy = lambda: {}
+def run(spec, state=None):
+    p = os.path.join(health.state_dir(spec.sid), "health.json")
+    if state is not None:
+        json.dump(state, open(p, "w"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        health.run(spec, "a", dry_run=False)
+    return out.getvalue(), json.load(open(p))
+def pw(items, since=200):
+    return {"slug": "tl", "condition": "parked-work", "key": "parked:" + items, "since": ago(since), "detail": "parked " + items}
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "idle"}], "opencode": {}})
+spec = spec_with()
+# offline: parked-work wakes are held (not advanced) while the maintainer is away
+MODES["user-offline"] = {"mode": "user-offline", "state": "on", "ts": ago(300)}
+COND[:] = [pw("x#1")]
+out, st = run(spec, {"ladders": {"tl|parked-work|parked:x#1": {"since": ago(200), "step": 0}}})
+assert "held (maintainer offline)" in out and st["ladders"]["tl|parked-work|parked:x#1"]["step"] == 0, out
+# back online: quiet for online_settle_min, then the held wake runs once
+MODES["user-offline"] = {"mode": "user-offline", "state": "off", "ts": ago(5)}
+out, st = run(spec)
+assert "held (settling" in out, out
+MODES["user-offline"] = {"mode": "user-offline", "state": "off", "ts": ago(60)}
+out, st = run(spec)
+assert "tl parked-work step1:wake -> " in out and "held" not in out, out
+# the same parked set re-opening (its blocker went stale) is not woken again inside rewake_min
+st["ladders"] = {"tl|parked-work|parked:x#1": {"since": ago(200), "step": 0}}; st["last_wake"] = {}
+out, st = run(spec, st)
+assert "skipped (woken for the same at" in out, out
+# a different condition for the same role inside wake_gap_min is held; outside it, it runs
+COND[:] = [{"slug": "tl", "condition": "wait-expired", "key": "rescan:z", "since": ago(1), "detail": "expired"}]
+out, st = run(spec, dict(st, last_wake={"tl": ago(5)}))
+assert "held (woken 5 min ago" in out, out
+out, st = run(spec, dict(st, last_wake={"tl": ago(45)}))
+assert "tl wait-expired step1:wake -> " in out, out
+# two conditions due in one run: one wake, the second merged into it
+COND[:] = [pw("y#2"), {"slug": "tl", "condition": "wait-expired", "key": "rescan:w", "since": ago(1), "detail": "expired"}]
+out, st = run(spec, {"ladders": {"tl|parked-work|parked:y#2": {"since": ago(200), "step": 0}}})
+assert "merged into the parked-work wake" in out and out.count("wake-file") + out.count("resume") + out.count("relay") <= 1, out
+# wake_off: parked-work only pages
+spec = spec_with(wake_off=["parked-work"])
+COND[:] = [pw("v#3")]
+out, st = run(spec, {"ladders": {"tl|parked-work|parked:v#3": {"since": ago(200), "step": 0}}})
+assert "tl parked-work step1:page" in out and ":wake" not in out, out
+print("wake economy ladders ok")
+# dormant: a dead watcher on an idle role with nothing actionable raises nothing (lazy_rearm)
+import importlib; importlib.reload(health)
+spec = spec_with(revive=True)
+v = ledger.View(ledger.Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+r = spec.role("up")
+health.watcher_dormant  # exists
+assert health.watcher_dormant(spec, v, r, "active") is False, "an active role is never dormant"
+# direct delivery (fake sessions): no worker -> resume; busy -> deferred or relay; idle mode -> stop+resume
+be = backends.get("claude")
+def rows(**kw):
+    os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict({"id": "bbbb2222", "sessionId": "bbbb2222-0000"}, **kw)], "opencode": {}})
+rows(state="done")
+assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
+rows(pid=9, tempo="active")
+assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("no-adapter (wake relay disabled) (mid-turn)")
+spec = spec_with(revive=True, direct_wake="idle")
+rows(pid=9, tempo="idle")
+assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("stop+resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
+rows(pid=9, tempo="idle", inFlight={"tasks": 1, "queued": 0, "kinds": ["local_bash"]})
+assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", be.deliver(spec, r, "bbbb2222-0000", "w")
+# arming: direct idle makes a Claude watcher detached even with no relay; dead alone does not
+assert briefs.arming(r, spec)[0] == "relay"
+spec = spec_with(revive=True)
+assert briefs.arming(r, spec)[0] == "exit"
+spec_with()
+print("direct delivery ok")
+PY2
+rm -f /tmp/$SID/health.json
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
