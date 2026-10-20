@@ -446,6 +446,7 @@ grep -q "remote role(s) rb on hostB: not launched here" <<<"$OUT" || fail "start
 grep -q "create + brief lane ra (ra-r1" <<<"$OUT" || fail "start did not launch the home role :: $OUT"
 ! grep -q "rb (rb-r1" <<<"$OUT" || fail "start would launch the remote role here :: $OUT"
 SHOAL_SERVER=hostB check "REFUSED: --home hostA is not this host" $H start --name mhs --home hostA --dir "$WORK" --role "ra,opencode,ra,$DOC_A,fill=assigned" --ledger-repo "$S/remote/ledgers.git" --ledger-dir "$A" --dry-run
+SHOAL_SERVER=hostA check "beta runs on hostB: its own watcher delivers this --wake" $H msg --shoal t1shoal --spec "$MH/shoals/t1shoal/shoal.json" --ledger-dir "$A" --no-sync --to beta --wake --text "remote wake"
 SHOAL_SERVER=hostB SHOAL_LEDGER_DIR="$MH" python3 - "$SHOALD" <<'PY3' || fail "doctor host profile"
 import sys
 sys.path.insert(0, sys.argv[1])

@@ -253,7 +253,12 @@ def merge_spec(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str]]:
     def changed(o, b):
         return o is not b and o != b
 
+    # keys the spec model never writes (the ledger-init snapshot's `snapshot_utc`, `canonical`) are not this
+    # process's to change: `ours` lacks them only because `to_dict` does not produce them
+    modeled = set(ShoalSpec(sid="_").to_dict()) | {"home"}
     for k in (set(base) | set(ours)) - {"roles", "generations"}:
+        if k not in modeled:
+            continue
         o, b, t = ours.get(k, _MISSING), base.get(k, _MISSING), theirs.get(k, _MISSING)
         if not changed(o, b):
             continue

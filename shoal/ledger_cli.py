@@ -261,9 +261,10 @@ def cmd_msg(a) -> int:
         # broadcast: every role's watcher delivers a user --wake msg; a role whose watcher is dead gets it
         # through the quorum's adapter instead (the relay, or a respawn first under health.revive)
         from health import request_wake, watcher_alive
-        from roles import is_wake_relay
+        from roles import is_local, is_wake_relay
         for r in spec.roles:
-            if r.session and not is_wake_relay(r) and not watcher_alive(spec.sid, r.slug)[0]:
+            # a remote role's watcher runs on its own host: its sidecar is not here to check
+            if r.session and not is_wake_relay(r) and is_local(r, spec) and not watcher_alive(spec.sid, r.slug)[0]:
                 print(f"wake via {request_wake(spec, r.slug, 'user message ' + ev['id'] + ': ' + a.text, 'user-msg')} "
                       f"({r.slug}'s ledger-watch is not running)")
     if target is not None and getattr(a, "wake", False) and by == "user" and target.session:
@@ -271,7 +272,10 @@ def cmd_msg(a) -> int:
         # wake goes through the same adapter the health quorum uses (measured 2026-10-08: an operator
         # wake to a role whose watcher had died a day earlier reached no one)
         from health import request_wake, watcher_alive
-        if not watcher_alive(spec.sid, a.to)[0]:
+        from roles import host_of, is_local
+        if not is_local(target, spec):
+            print(f"{a.to} runs on {host_of(target, spec)}: its own watcher delivers this --wake at its next tick")
+        elif not watcher_alive(spec.sid, a.to)[0]:
             print(f"wake via {request_wake(spec, a.to, 'user message ' + ev['id'] + ': ' + a.text, 'user-msg')} "
                   f"({a.to}'s ledger-watch is not running)")
     if target is not None and by not in ("user",) + SYSTEM_WRITERS and re.search(r"#\d+", a.text or ""):
