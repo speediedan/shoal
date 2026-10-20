@@ -26,7 +26,9 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    --holder <who> --target <kind:ref>` (with the waiter armed first), `queue --active <next>` (and
    keep working), or `queue --idle`. A turn that stops while `active` gets woken to continue.
    **Idle means an empty queue, or every next item has a recorded blocker** (`queue --blocked
-   ITEM=<blocker>`); `queue --idle` is refused otherwise. A blocker `next` prints as `BLOCKER STALE`
+   ITEM=<blocker>`); `queue --idle` is refused otherwise, and so is a wait other than `local-ci`
+   with such an item (stack rather than stall). A `CONTEXT` line in `next` asks you to refresh your
+   start doc and end with `--restart-ready` (`references/work-loop.md`, "Bounded context"). A blocker `next` prints as `BLOCKER STALE`
    no longer counts, and where `next` shows `BOARD` candidates beside blocked items, take one or pass
    it with a reason. A busy lease is a wait on `lease:<key>`, never idle. A freeze binds only while `next` prints `FREEZE ACTIVE`; a message announcing one
    binds nothing once `next` stops showing it.

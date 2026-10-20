@@ -75,7 +75,11 @@ LADDERS = {
     # two hosts configured with one `server` name both think the same roles are theirs (double watchers, wakes,
     # launches): a page to rename one, once per clash
     "host-name-clash": [(0, "page")],
+    # bounded context (context.py): a role past its limit that marked a quiet boundary `--restart-ready` is
+    # handed to a fresh session; `auto` mode does it from here, `page` (the default) asks the operator
+    "context-restart": [(0, "page")],
 }
+CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 # wake economy (architecture doc §7, "When roles wake"): held while the maintainer is away, re-woken for
 # the same evidence at most once per REWAKE_MIN, quiet for a while after the maintainer returns (the
 # return wakes roles with asks itself), and at least WAKE_GAP_MIN between two health wakes of one role
@@ -167,6 +171,14 @@ def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "") -> s
         if banner:
             text = banner + " || " + text
     except Exception:  # noqa: BLE001 - a wake must never fail on its annotation
+        pass
+    try:
+        import context as _ctx
+        role = spec.role(slug)
+        adv = _ctx.advisory(spec, role) if role is not None else ""
+        if adv:
+            text += " || " + adv
+    except Exception:  # noqa: BLE001
         pass
     return text
 
@@ -711,6 +723,16 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                   f"A hold this old is a question: record it as an ask (`queue --ask`) or name "
                                   f"a checkable blocker (`<role>:<repo#n>`, `upstream:<target>`); a hold still "
                                   f"standing 4 h after this wake pages the maintainer"})
+        # bounded context: the role marked a quiet boundary after its context passed the limit
+        if q.get("restart_ready") and posture in ("idle", "waiting") and between:
+            import context as _ctx
+            o = _ctx.over(spec, role)
+            if o is not None:
+                out.append({"slug": slug, "condition": "context-restart", "key": f"session:{role.session}",
+                            "since": q.get("ts") or iso(), "first_seen": True,
+                            "detail": f"context {o[0]}k past its {o[1]}k limit and the role is restart-ready "
+                                      f"(start doc refreshed, nothing mid-flight): `shoal restart --spec <spec> "
+                                      f"--only {slug}` hands it to a fresh session"})
         # continuation: a turn that ended while the posture says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
         if cont is not None and posture == "active" and between:
@@ -769,6 +791,32 @@ def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> 
         return f"FAILED re-arm ({exc})"
     rearmed[role.slug] = iso()
     return f"re-armed by the quorum ({wake.split(':')[0]}; no wake)"
+
+
+def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False) -> str:
+    """features.health.context_restart `auto`: hand a restart-ready role to a fresh session. The old Claude
+    session is stopped first and its detached watcher ended (neither wakes it), so nothing delivers to it
+    afterwards; then `restart --only` launches the new one, detached from this run (it verifies the new
+    loop for minutes, and the quorum holds a lock)."""
+    if role is None or not spec_path:
+        return "FAILED (no role or spec path)"
+    argv = shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", role.slug]
+    if dry_run:
+        return "would restart (dry-run): " + " ".join(argv[-4:])
+    log = os.path.join(state_dir(spec.sid), f"context-restart-{role.slug}.log")
+    try:
+        os.makedirs(state_dir(spec.sid), exist_ok=True)
+        alive, sc = watcher_alive(spec.sid, role.slug)
+        if alive and (sc.get("wake") == "relay" or str(sc.get("wake", "")).startswith(("send:", "exec:"))):
+            os.kill(int(sc["pid"]), 15)  # a detached watcher: ending it wakes nobody
+        if role.ecosystem == "claude" and role.session:
+            from backends import get as get_backend
+            get_backend("claude").stop(role.session[:8])
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,
+                         cwd=spec.dir or None, env=_ENV, start_new_session=True)
+    except (OSError, ValueError) as exc:
+        return f"FAILED ({exc})"
+    return f"restarting on a fresh session (log {log})"
 
 
 def multi_host(spec: ShoalSpec) -> bool:
@@ -960,6 +1008,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
         elif c["condition"] == "relay-dead" and revive:
             steps = REVIVE_RELAY_LADDER
+        elif c["condition"] == "context-restart" and __import__("context").mode(spec) == "auto":
+            steps = CONTEXT_AUTO_LADDER
         else:
             steps = LADDERS[c["condition"]]
         if c["condition"] in wake_off:  # features.health.wake_off: this condition pages, never wakes
@@ -1021,7 +1071,9 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             if action == "relaunch":
                 ch = relaunch_relay(spec, spec_path, dry_run)
                 lad["relaunched"] = iso()
-            elif c["condition"] in ("host-silent", "host-name-clash"):
+            elif action == "restart":
+                ch = context_restart(spec, spec_path, role_, dry_run)
+            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)

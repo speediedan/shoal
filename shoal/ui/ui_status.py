@@ -292,7 +292,17 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             # degenerate: the ledger says active, but no turn is running (health's turn-ended-active
             # wakes it; measured 2026-10-13: shoal-aux re-wrote active and stopped, again)
             reasons.append("stopped-active")
-    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant")]
+    ctx_k = None
+    if role.session and not remote:
+        try:
+            import context as _ctx
+            t = _ctx.tokens(role)
+            ctx_k = None if t is None else t // 1000
+            if _ctx.over(spec, role) is not None:
+                reasons.append("context-large")
+        except Exception:  # noqa: BLE001 - a read model never fails on an advisory
+            pass
+    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "context-large")]
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
         "model": role.model, "fill": role.fill,
@@ -312,6 +322,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
         "heartbeat_age_s": int(hb * 60) if hb is not None else None,
+        "context_k": ctx_k,
         "can_progress": {"ok": not blocking, "reasons": reasons},
         "needs_you": bool({"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you",
                            "blocker-role-cannot-take"} & set(reasons)),
@@ -617,7 +628,8 @@ ATTENTION = {"blocked-on-question": "question for you",
              "stopped-active": "says active, but its turn ended (health wakes it; pages if it repeats)",
              "waiting-on-you": "waiting on you",
              "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "free next items it could start",
-             "blocker-role-cannot-take": "blocker cannot move"}
+             "blocker-role-cannot-take": "blocker cannot move",
+             "context-large": "context past its limit (hand over to a fresh session at a quiet boundary)"}
 
 
 def term_width(default: int = 120) -> int:

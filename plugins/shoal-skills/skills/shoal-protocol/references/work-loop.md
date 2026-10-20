@@ -57,10 +57,11 @@ Sleep only on a real wait or an empty queue:
   <role>:<item>`, never yourself). Your item waiting on something outside the shoal, such as an
   upstream issue or release, is `upstream` with a `gh-issue:` or `gh-pr:` target.
 - **A wait covers the active item only.** If a next item is workable, work it rather than parking
-  it behind the wait; `next` reminds you.
+  it behind the wait. A wait other than `local-ci` with a next item that has no recorded blocker is
+  refused at the write, exactly like idle (`features.waitgate`): pop the item, or record its blocker.
 - **Idle:** `queue --idle`, only when nothing is actionable: an empty queue, or every next item
-  with a recorded blocker (`--blocked`). Otherwise the write is refused, and a lane asleep while a
-  next item has no recorded blocker raises the health condition `parked-work`, which wakes it.
+  with a recorded blocker (`--blocked`). Otherwise the write is refused. A blocker that later goes
+  stale shows in `next` as `BLOCKER STALE` and raises the health condition `parked-work`.
   A GPU or cpu-heavy lease held by someone else is a wait (`--wait local-ci --target lease:<key>`),
   not a reason to idle.
 
@@ -69,6 +70,15 @@ for `upstream`). A `session-blocked` wait names its blocker with `--blocked-on <
 `next` prints `WAIT TARGET RESOLVED` or `WAIT TARGET UNVERIFIABLE` when the target no longer
 holds the wait: act on it the same turn. A `user-*` wait exists
 only together with a raised, recorded ask.
+
+## Bounded context
+
+Every wake re-reads your whole context, so a long-lived session gets more expensive to wake. When
+`next` or a wake prints `CONTEXT <n>k (limit <m>k)`, hand over at your next quiet boundary (nothing
+mid-flight): refresh your start doc so a fresh session can continue from it alone (current state,
+decisions taken, next steps), then end the turn with `queue --idle --restart-ready` (or your wait plus
+`--restart-ready`). The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
+yourself, and never mark `--restart-ready` with an item active.
 
 ## Wakes
 

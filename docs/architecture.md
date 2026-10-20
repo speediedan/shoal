@@ -378,6 +378,32 @@ The quorum's wakes follow these rules (all under `features.health`):
 
 And every run sends **at most one wake per role**, carrying every condition then due.
 
+**The wait gate (`features.waitgate`, default on).** `queue --wait` other than `local-ci` is refused
+while a next item has no current blocker, exactly like `queue --idle`. Refused mid-turn, it costs
+nothing; caught later by `parked-work` it cost a cold wake. `parked-work` remains for a recorded
+blocker that goes stale afterwards, and with `wake_off` it pages instead of waking. `waitgate: false`
+restores the old write.
+
+### Bounding context
+
+A cold wake costs about the size of the session's context, so a long-lived lane is handed to a fresh
+session at a quiet boundary rather than carried forward (`shoal/context.py`).
+
+| key (`features.health`) | default | effect |
+| --- | --- | --- |
+| `context_restart_k` | 300 | the context size, in thousands of tokens, past which a role is advised to hand over; 0 is off. A dict sets it per role, with `"*"` as the default: `{"*": 300, "<slug>": 0}` exempts a session that needs a large context |
+| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>` |
+
+1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line. It asks the role, at its next boundary
+   with nothing mid-flight, to refresh its start doc (current state, decisions taken, next steps) and end with
+   `queue --idle --restart-ready`, or with its wait plus `--restart-ready`. No extra wake is spent on it.
+2. A restart-ready role between turns raises `context-restart`, page or restart as configured, keyed by its session. A
+   later queue write without the flag clears it.
+3. The new incarnation reads that start doc: the refresh is the handoff.
+4. The overview row carries `context_k`, and `context-large` is an informational reason.
+
+Today only Claude reports its context (the transcript's last `usage`).
+
 **Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
 lands, as one channel string or a list of them: `"gh-issue:<owner/repo>#<n>"` also comments on
 that issue (the inbox, reaching the maintainer through GitHub notifications), and
