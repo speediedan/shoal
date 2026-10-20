@@ -85,6 +85,59 @@ assert ui_view._remote_host(spec.sid, "far", sys.argv[2]) == "other-host.invalid
 assert ui_view._remote_host(spec.sid, "cl", sys.argv[2]) == ""
 print("remote cards ok")
 PY2
+# ... unless this host has an ssh route to that host: then the card attaches by running that host's own
+# `shoal view` over ssh (a stub ssh here records its argv and exits with $STUB_SSH_RC)
+cat > "$S/ssh-stub" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STUB_SSH_LOG:-/dev/null}"
+exit "${STUB_SSH_RC:-0}"
+SH
+chmod +x "$S/ssh-stub"
+cp "$SHOAL_CONFIG" "$S/host-noroute.toml"
+printf '\n[hosts."other-host.invalid"]\nssh = "u@other-host.invalid"\nresolve = "dns"\n' >> "$SHOAL_CONFIG"
+OUT=$(SHOAL_SSH="$S/ssh-stub" $H view $SID far --spec "$SPEC" --dry-run) || fail "view far with a route rc :: $OUT"
+python3 - "$OUT" "$S/ssh-stub" <<'PY2' || fail "view over a route"
+import json, sys
+a = json.loads(sys.argv[1])["argv"]
+assert a[0] == sys.argv[2] and "-tt" in a and "BatchMode=yes" in a and "u@other-host.invalid" in a, a
+assert a[-1] == "bash -lc 'shoal view uiselftest far'", a[-1]
+print("view over a route ok")
+PY2
+STUB_SSH_LOG="$S/ssh.log" STUB_SSH_RC=0 SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "routed cards"
+import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import routes, ui_herdr, ui_view
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+assert "far" in {r.slug for r in ui_herdr.viewable_roles(spec)}, "a routed remote role gets a card"
+assert routes.reachable("other-host.invalid", force=True) is True
+assert routes.reachable("nowhere.invalid") is None, "no route: None"
+os.environ["STUB_SSH_RC"] = "255"
+assert routes.reachable("other-host.invalid", force=True) is False
+# an attach that fails fast says why and retries every ATTACH_RETRY_S; q gives up (no session is taken over)
+ui_view.ATTACH_RETRY_S = 0
+keys = iter(["r", "q"])
+ui_view._getkey = lambda t: next(keys)
+import io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = ui_view.remote_attach("other-host.invalid", spec.sid, "far")
+assert rc == 255 and buf.getvalue().count("host unreachable") == 2, buf.getvalue()
+os.environ["STUB_SSH_RC"] = "1"
+routes._store("reach-other-host.invalid", {"ok": True})
+ui_view.routes = routes
+orig = routes.reachable
+routes.reachable = lambda server, force=False: True
+keys = iter(["q"])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = ui_view.remote_attach("other-host.invalid", spec.sid, "far")
+assert rc == 1 and "attached elsewhere" in buf.getvalue(), buf.getvalue()
+routes.reachable = orig
+attempts = [l for l in open(os.environ["STUB_SSH_LOG"]) if "shoal view uiselftest far" in l]
+assert len(attempts) == 3, attempts
+print("routed cards ok")
+PY2
+cp "$S/host-noroute.toml" "$SHOAL_CONFIG"
 # the fixture is multi-host (role far lives elsewhere): the host column names it, the header names home
 grep -Eq '\| far +\| other-host.invalid +\| claude' <<<"$TXT" || fail "the remote role's host is not shown: $TXT"
 grep -Eq '\| cl +\| [^|]+ +\| claude +\|' <<<"$TXT" || fail "cl row does not read ecosystem claude: $TXT"

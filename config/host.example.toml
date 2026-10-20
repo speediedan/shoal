@@ -54,3 +54,12 @@
 # variable still wins; PATH stays `tool_path`. Default: none.
 # [tool_env]
 # OPENCHAMBER_DATA_DIR = "~/.local/share/shoal/openchamber"
+
+# ssh routes to the other hosts of a multi-host shoal: this host's viewer gives their roles cards and
+# attaches them by running that host's `shoal view` over ssh. One table per other host's `server` name.
+# `resolve = "tailscale"` (the default when tailscale is on PATH) looks the name up with
+# `tailscale ip -4`, so a host whose resolver does not accept tailnet DNS still reaches a MagicDNS name.
+# Optional: ssh_opts (extra ssh arguments), cli (the shoal command there; default `shoal` under bash -lc).
+# Default: no routes (other hosts' roles are shown, never attached).
+# [hosts.<server>]
+# ssh = "<user>@<magicdns-name>"

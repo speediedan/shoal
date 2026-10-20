@@ -12,7 +12,7 @@ trigger it. Current limits and their triggers are in [`limitations.md`](limitati
 - it records its liveness as `host-beat` events;
 - lifecycle verbs for its roles run on that host.
 
-No host ever connects to another host for coordination. Server names are labels: they are not
+No host ever connects to another host for coordination (a viewer's ssh route is for a terminal, not for coordination). Server names are labels: they are not
 authenticated, and a clash between two hosts is detected from the beats.
 
 **Missing for a holistic view from any host:**
@@ -20,8 +20,8 @@ authenticated, and a clash between two hosts is detected from the beats.
   known only on the role's host today. Other hosts see ledger state (posture, queue, last write) and the
   host's beat. Direction: carry a compact per-role liveness summary in each host's beat, so every host
   renders every role from the ledger alone.
-- **Viewing or attaching to a remote session.** This needs reachability by nature. Without it, a viewer
-  shows the ledger's view of that role, not its terminal.
+- **Viewing or attaching to a remote session:** done for hosts with an ssh route (cards run the role's own
+  host's `shoal view` over ssh). Without a route, a viewer shows the ledger's view of that role.
 - **Reports across hosts.** Telemetry stays in each host's data root. Direction: publish per-host
   summaries, not raw events, where the report can read them.
 

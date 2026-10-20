@@ -235,12 +235,14 @@ def viewable_roles(spec) -> list:
     """Roles that get a card. The wake relay (fill=none infrastructure) is left out unless the viewer
     sets `show_relay`; its health is in the shoal's summary and tab line either way."""
     import ui_status
-    from roles import is_local, is_wake_relay
+    import routes
+    from roles import host_of, is_local, is_wake_relay
     show_relay = ui_status.ui_config().get("show_relay") is True
-    # a role on another host gets no card here: its session can be attached only on its own host (`view`
-    # resolves sessions through THIS host's harness), so a card would invite an attach that cannot work.
-    # It stays in the overview table, with its host.
-    return [r for r in spec.roles if r.session and is_local(r, spec) and (show_relay or not is_wake_relay(r))]
+    # a role on another host gets a card only when this host has an ssh route to it (`[hosts.<server>]`):
+    # its session can be attached only on its own host, so the card runs that host's `shoal view` over ssh.
+    # Without a route it stays in the overview table, with its host, and is answered by mail.
+    return [r for r in spec.roles if r.session and (is_local(r, spec) or routes.route(host_of(r, spec)) is not None)
+            and (show_relay or not is_wake_relay(r))]
 
 
 def role_tabs(spec) -> list[tuple[str, list]]:
