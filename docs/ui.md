@@ -238,6 +238,9 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 
 **Feed** (`shoal ui feed`, the `shoal-ui-feed` user unit, every 20 s):
 
+- **Cards are for this host's roles.** A role on another host (multi-host shoal) has no card: its session
+  resolves only through its own host's harness, so attaching from here cannot work. It stays in the overview
+  table with its host; answer it by mail, or attach from its host's viewer.
 - **Role panes:** each tick reports `pane.report_agent` (source `shoal`, agent = role slug, state
   `blocked` when the role needs you, `working` while the session is mid-turn, otherwise `idle`) and
   `pane.report_metadata` tokens. A pane whose foreground is a bare shell (a card laid out while its

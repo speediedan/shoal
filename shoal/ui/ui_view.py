@@ -57,6 +57,12 @@ def resolve_role(sid: str, slug: str, spec_path: str = ""):
         raise ViewError(f"{slug} is not a role of {sid} (roles: {', '.join(r.slug for r in spec.roles)})")
     if not role.session:
         raise ViewError(f"{slug} has no live session (parked or retired)")
+    from roles import host_of, is_local
+    if not is_local(role, spec):
+        # sessions resolve through THIS host's harness (its `claude agents`, its OpenChamber server), so a
+        # session on another host cannot be attached from here: never try (multi-host)
+        raise ViewError(f"{slug} runs on {host_of(role, spec)}: attach from that host's viewer "
+                        f"(or `ssh -t {host_of(role, spec)} shoal view {sid} {slug}`)")
     return spec, role
 
 
@@ -173,6 +179,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     force = False
     import ui_term
     watch = ui_term.CodeWatch()
+    remote = _remote_host(sid, slug, spec_path)
     while True:
         watch.check()
         try:
@@ -180,14 +187,18 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
             body = f"{slug}: status unavailable ({exc})"
         force = False
-        sys.stdout.write("\x1b[2J\x1b[H" + body + "\n\n\x1b[2m[enter] attach   [r] refresh   [q] shell"
-                         f"   (refresh every {CARD_REFRESH_S}s; viewing never wakes the role)\n{DETACH_HINT}\x1b[0m\n")
+        keys = (f"runs on {remote}: attach from that host's viewer   [r] refresh   [q] shell" if remote
+                else "[enter] attach   [r] refresh   [q] shell")
+        sys.stdout.write("\x1b[2J\x1b[H" + body + "\n\n\x1b[2m" + keys
+                         + f"   (refresh every {CARD_REFRESH_S}s; viewing never wakes the role)\n{DETACH_HINT}\x1b[0m\n")
         sys.stdout.flush()
         k = _getkey(CARD_REFRESH_S)
         if k in ("q", "Q"):
             return 0
         if k in ("r", "R"):
             force = True
+        if k in ("\r", "\n") and remote:
+            continue  # nothing to attach here: the session lives on another host
         if k in ("\r", "\n"):  # Enter only: a typed word must never start an attach
             flush_input()
             # a fresh process, so the attach always runs the current code: a card lives for days, and
@@ -195,6 +206,17 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             subprocess.run(_view_cmd(sid, slug, spec_path))
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
+
+
+def _remote_host(sid: str, slug: str, spec_path: str = "") -> str:
+    """The other host a role runs on, or "" when it runs here (or cannot be resolved)."""
+    try:
+        from roles import ShoalSpec, find_spec, host_of, is_local
+        spec = ShoalSpec.load(find_spec(sid, spec_path))
+        role = spec.role(slug)
+        return host_of(role, spec) if role is not None and not is_local(role, spec) else ""
+    except Exception:  # noqa: BLE001 - a card never fails on this annotation
+        return ""
 
 
 def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: str = "", label: str = "") -> list[str]:

@@ -235,9 +235,12 @@ def viewable_roles(spec) -> list:
     """Roles that get a card. The wake relay (fill=none infrastructure) is left out unless the viewer
     sets `show_relay`; its health is in the shoal's summary and tab line either way."""
     import ui_status
-    from roles import is_wake_relay
+    from roles import is_local, is_wake_relay
     show_relay = ui_status.ui_config().get("show_relay") is True
-    return [r for r in spec.roles if r.session and (show_relay or not is_wake_relay(r))]
+    # a role on another host gets no card here: its session can be attached only on its own host (`view`
+    # resolves sessions through THIS host's harness), so a card would invite an attach that cannot work.
+    # It stays in the overview table, with its host.
+    return [r for r in spec.roles if r.session and is_local(r, spec) and (show_relay or not is_wake_relay(r))]
 
 
 def role_tabs(spec) -> list[tuple[str, list]]:
@@ -1364,17 +1367,26 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
             print("no open asks and no role waiting on a question")
             ui_term.pause()
             return 0
+        here = doc["shoals"][0].get("this_host", "")
+        remote = {r["slug"]: r.get("host", "") for r in rows if r.get("host") and r.get("host") != here}
         for r in rows:
-            print(f"\n{r['slug']}" + ("  (blocked on a question in its session: attach to answer it)"
-                                      if "blocked-on-question" in r["can_progress"]["reasons"] else
-                                      "  (says it waits on you, with no prompt: answer by mail with a wake, or attach and type)"
-                                      if "blocked-says-waiting" in r["can_progress"]["reasons"] else ""))
+            if r["slug"] in remote:
+                print(f"\n{r['slug']}  (runs on {remote[r['slug']]}: answer by mail with a wake here, or attach from that "
+                      f"host's viewer)")
+            else:
+                print(f"\n{r['slug']}" + ("  (blocked on a question in its session: attach to answer it)"
+                                          if "blocked-on-question" in r["can_progress"]["reasons"] else
+                                          "  (says it waits on you, with no prompt: answer by mail with a wake, or attach and type)"
+                                          if "blocked-says-waiting" in r["can_progress"]["reasons"] else ""))
             for i, x in enumerate(r["asks"], 1):
                 print(f"  ask {i}: {x}")
         pick = _ask("\nanswer which role? (slug; enter to close): ")
         if not pick:
             return 0
-        how = _ask("[a] attach and answer in its question flow, [m] send the answer as mail with a wake: ").lower()
+        if pick in remote:
+            how = "m" if _ask(f"{pick} runs on {remote[pick]}: [m] send the answer as mail with a wake: ").lower() == "m" else ""
+        else:
+            how = _ask("[a] attach and answer in its question flow, [m] send the answer as mail with a wake: ").lower()
         if how == "a":
             return subprocess.run(shoal_argv("view", sid, pick)).returncode
         if how == "m":
