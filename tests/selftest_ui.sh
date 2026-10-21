@@ -133,9 +133,17 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = ui_view.remote_attach("other-host.invalid", spec.sid, "far")
 assert rc == 1 and "attached elsewhere" in buf.getvalue(), buf.getvalue()
+# reachable, but ssh's own exit 255: the connection ended, not a refused attach
+os.environ["STUB_SSH_RC"] = "255"
+keys = iter(["q"])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = ui_view.remote_attach("other-host.invalid", spec.sid, "far")
+assert rc == 255 and "connection ended" in buf.getvalue() and "attached elsewhere" not in buf.getvalue(), buf.getvalue()
+os.environ["STUB_SSH_RC"] = "1"
 routes.reachable = orig
 attempts = [l for l in open(os.environ["STUB_SSH_LOG"]) if "shoal view uiselftest far" in l]
-assert len(attempts) == 3, attempts
+assert len(attempts) == 4, attempts
 print("routed cards ok")
 PY2
 # live state of a routed remote role comes from its own host's rows (`ui status --rows-only`), cached 30 s;
@@ -239,6 +247,24 @@ assert changed and not any(e.get("host") for e in entries), entries
 print("remote standalone ok")
 PY2
 cp "$S/host-noroute.toml" "$SHOAL_CONFIG"
+# a single-host shoal reports no host beats even when the ledger holds an old one (a leftover read as a fault)
+python3 - "$SHOALD" "$SPEC" "$S" <<'PY2' || fail "single-host beats"
+import json, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status
+from ledger import Ledger
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+Ledger(spec.sid, root=spec.ledger_dir, sync=False).append("shoal", "system", kind="host-beat", host="other-host.invalid",
+                                                         instance="feedfacecafe")
+d = json.load(open(sys.argv[2])); d["roles"] = [r for r in d["roles"] if r["slug"] != "far"]
+one = os.path.join(sys.argv[3], "single-host-spec.json"); json.dump(d, open(one, "w"))
+rows = ui_status.claude_rows()
+multi = ui_status.shoal_doc(sys.argv[2], rows)
+single = ui_status.shoal_doc(one, rows)
+assert multi["multi_host"] and "other-host.invalid" in multi["hosts"], multi["hosts"]
+assert not single["multi_host"] and single["hosts"] == {}, single["hosts"]
+print("single-host beats ok")
+PY2
 # the fixture is multi-host (role far lives elsewhere): the host column names it, the header names home
 grep -Eq '\| far +\| other-host.invalid +\| claude' <<<"$TXT" || fail "the remote role's host is not shown: $TXT"
 grep -Eq '\| cl +\| [^|]+ +\| claude +\|' <<<"$TXT" || fail "cl row does not read ecosystem claude: $TXT"

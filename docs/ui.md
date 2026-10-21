@@ -247,7 +247,7 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   a role on another host is attached by running that host's `shoal view` over ssh. A role whose host has a
   route in this host's config (`[hosts.<server>] ssh = "<user>@<name>"`, `routes.py`) gets a card like a
   local one; Enter attaches over ssh. A Claude attach is exclusive, so an attach that fails within 15 s says
-  why (host unreachable, or attached elsewhere) and retries every 30 s instead of taking the session over
+  why (host unreachable, connection ended, or attached elsewhere) and retries every 30 s instead of taking the session over
   (`q` gives up, `r` retries now). A role whose host has no route has no card: it stays in the overview table
   with its host, answered by mail.
 - **The relay is read where it runs.** The wake relay's watch process is visible only on its own host, so a

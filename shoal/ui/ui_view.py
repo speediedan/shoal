@@ -93,7 +93,10 @@ def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, 
         rc = subprocess.run(argv).returncode
         if rc == 0 or time.time() - t0 >= FAST_EXIT_S:
             return rc
+        # ssh itself exits 255 for its own failures: an unreachable host, or a connection that ended under the
+        # attach (measured 2026-10-21: a dropped link read as "attached elsewhere"); any other code is the remote side
         why = ("host unreachable" if routes.reachable(server, force=True) is False
+               else "connection ended" if rc == 255
                else "attached elsewhere, or not attachable right now")
         sys.stdout.write(f"\n\x1b[33m{slug} on {server}: {why} (exit {rc}); retrying in {ATTACH_RETRY_S}s\x1b[0m"
                          f"   [r] retry now   [q] back to the card\n")

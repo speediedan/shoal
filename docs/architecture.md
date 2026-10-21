@@ -463,7 +463,7 @@ is the only coordination path (no host-to-host connection is needed for correctn
   detected, not prevented: every beat carries a hash of the machine id, and a host that sees its own
   name beaten by another machine raises `host-name-clash` (a page: rename one host). Role slugs are
   unique per shoal by spec validation, since a slug is a ledger writer file.
-- **The overview** shows `home` and, on a multi-host shoal, each host's last beat in the header and a
+- **The overview** shows `home` and, on a multi-host shoal, each host's last beat in the header (the contract's `hosts`, empty on a single-host shoal) and a
   `host` column in the role table; the Herdr sidebar gets a `$host` token (empty on a single-host shoal).
   **One view for every host.** A session resolves only through its own host's harness (`claude agents`,
   its OpenChamber), so a viewer attaches a remote role by running that host's `shoal view` over ssh. Routes
