@@ -974,6 +974,14 @@ for k in ("server", "feed"):
     t = ui_herdr.unit_text(k, sys.argv[2])
     assert f"Environment=HERDR_CONFIG_PATH={sys.argv[2]}" in t, t
 assert "HERDR_CONFIG_PATH" not in ui_herdr.unit_text("server"), "a lane host's unit reads config.toml"
+path = next(l for l in ui_herdr.unit_text("server").splitlines() if l.startswith("Environment=PATH="))[len("Environment=PATH="):]
+assert len(path.split(":")) == len(set(path.split(":"))), f"duplicate PATH entries: {path}"
+# doctor names where the plugin is really linked, and says when that is another checkout
+listed = f"1 plugin installed:\n- shoal.herdr (shoal) enabled [local:{ui_herdr.PLUGIN_DIR}]\n"
+assert ui_herdr.plugin_link_state(listed) == (True, ui_herdr.PLUGIN_DIR), ui_herdr.plugin_link_state(listed)
+ok, why = ui_herdr.plugin_link_state("1 plugin installed:\n- shoal.herdr (shoal) enabled [local:/elsewhere/plugins/shoal-herdr]\n")
+assert ok and "/elsewhere/plugins/shoal-herdr" in why and "this code is" in why, why
+assert ui_herdr.plugin_link_state("0 plugins installed")[0] is False
 print("local units ok")
 PY2
 printf '#!/bin/sh\necho "herdr ${FAKE_HERDR_VERSION:-0.9.3}"\n' > "$S/fake-herdr"; chmod +x "$S/fake-herdr"

@@ -1910,7 +1910,8 @@ def unit_text(kind: str, local_conf: str = "") -> str:
     """A user unit for the Herdr server or the feeder. `local_conf`: the local view's own config file, carried as
     HERDR_CONFIG_PATH so the server and the feeder read it (herdr-install --local)."""
     herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
-    path = ":".join([os.path.expanduser("~/.local/bin"), config.tool_path() or "/usr/local/bin:/usr/bin:/bin"])
+    parts = [os.path.expanduser("~/.local/bin")] + (config.tool_path() or "/usr/local/bin:/usr/bin:/bin").split(":")
+    path = ":".join(dict.fromkeys(x for x in parts if x))  # tool_path may already hold ~/.local/bin
     conf = f"Environment=HERDR_CONFIG_PATH={local_conf}\n" if local_conf else ""
     if kind == "server":
         return f"""[Unit]
@@ -1959,6 +1960,10 @@ def install_local(a) -> int:
     if not os.path.exists(herdr):
         print(f"herdr-install: no herdr at {herdr}: `shoal ui herdr-get` installs the pinned release")
         return 1
+    if from_worktree() and not a.dry_run:
+        print(f"herdr-install: refusing to provision from a git worktree ({REPO}): the units and the status line "
+              f"would point into it. Run it from the checkout the live install uses (`--dry-run` and `--check` are fine here)")
+        return 2
     new = build_local_config()
     reload_ = new != (open(conf).read() if os.path.exists(conf) else None)
     unitdir = os.path.expanduser("~/.config/systemd/user")
@@ -2060,6 +2065,26 @@ def _claude_hooks_text(path: str) -> str:
         return raw
 
 
+def plugin_link_state(listing: str) -> tuple[bool, str]:
+    """(ok, detail) from `herdr plugin list`: ok when the plugin is listed. The detail is the path it is really
+    linked from, and says so when that is not this checkout's plugin (a link to a stale or other checkout; measured
+    2026-10-21: a check run from a worktree printed the worktree path while the link pointed at the live checkout)."""
+    import re
+    m = re.search(rf"^- {re.escape(PLUGIN_ID)}\b.*\[(?:local:)?([^\]]+)\]", listing, re.M)
+    if PLUGIN_ID not in listing:
+        return False, f"not linked (this code's plugin: {PLUGIN_DIR})"
+    linked = os.path.expanduser(m.group(1)) if m else ""
+    if linked and os.path.realpath(linked) != os.path.realpath(PLUGIN_DIR):
+        return True, f"{linked} (this code is {PLUGIN_DIR}: run from the checkout the units use)"
+    return True, linked or PLUGIN_DIR
+
+
+def from_worktree() -> bool:
+    """True when this code runs from a git worktree (its `.git` is a file), not a main checkout: provisioning
+    from there writes units and a status line that point into the worktree."""
+    return os.path.isfile(os.path.join(REPO, ".git"))
+
+
 def doctor_checks(session: str = "") -> list[tuple[str, bool, str]]:
     out = []
     herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
@@ -2098,7 +2123,7 @@ def doctor_checks(session: str = "") -> list[tuple[str, bool, str]]:
         try:
             r = subprocess.run([herdr, "plugin", "list"], capture_output=True, text=True, timeout=20,
                                env=dict(os.environ, HERDR_SESSION=session or session_name()))
-            out.append(("plugin linked", PLUGIN_ID in r.stdout, PLUGIN_DIR))
+            out.append(("plugin linked",) + plugin_link_state(r.stdout))
         except (OSError, subprocess.SubprocessError) as exc:
             out.append(("plugin linked", False, str(exc)))
     for unit in ("shoal-herdr.service", "shoal-ui-feed.service"):

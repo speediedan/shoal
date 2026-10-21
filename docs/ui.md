@@ -382,7 +382,10 @@ server and its client read a file of their own instead, `~/.config/herdr/shoal-l
 plus one merged block, in which the client's `[ui]` keys win and the server's status line stays. `config.toml`
 stays the remote client's file. `herdr-install --local` writes that file and both user units with
 `Environment=HERDR_CONFIG_PATH=...`, links the plugin, starts the server and the feeder (restarting what a
-change touched), then runs `ui open`. `--check` runs `ui doctor` against the local file.
+change touched), then runs `ui open`. `--check` runs `ui doctor` against the local file. Run it from the checkout
+the live install uses: the feeder unit and the status line name the shoal wrapper of the code that writes them, so
+`herdr-install --local` refuses to write from a git worktree (`--dry-run` and `--check` still work there), and
+`ui doctor`'s plugin line names the path the plugin is really linked from.
 
 **The Herdr pin.** Every shoal host runs one pinned Herdr release (`PIN` in `shoal/ui/herdr_pin.py`, equal to
 the plugin's `min_herdr_version`), never `herdr update`. Herdr ships often, with breaking socket changes, and
