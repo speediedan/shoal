@@ -168,6 +168,7 @@ def launch_local(opened: bool, ids: list[str], dry_run: bool = False) -> int:
     if dry_run:
         print(shlex.join(["exec"] + argv) + f"   (config {conf})")
         return 0
+    remember("local")
     resolve_sidebar(conf)
     sys.stdout.flush()
     os.execvpe(argv[0], argv, env)
@@ -194,6 +195,21 @@ def launch_remote(server: str, opened: bool, ids: list[str], dry_run: bool = Fal
     import ui_herdr
     r, target = remote_target(server)
     sess = ui_herdr.session_name()
+    if not dry_run:
+        # every mode probes first, attach-only included: an unreachable host gets the doctor hint and the chooser
+        # again, never Herdr's own ssh error (measured 2026-10-21 with --no-open)
+        if routes.route(server) is not None:
+            up = routes.reachable(server, force=True)
+        else:  # a typed target: probe it the same way
+            try:
+                up = subprocess.run(routes.ssh_argv(r) + ["true"], stdin=subprocess.DEVNULL, capture_output=True,
+                                    timeout=12).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                up = False
+        if up is False:
+            print(f"shoal ui launch: {server} is unreachable now (ssh BatchMode, 5 s): `shoal doctor` checks its route; "
+                  f"nothing was attached")
+            return 2
     if opened:
         only = "".join(f" --shoal {shlex.quote(i)}" for i in ids)
         script = (f"export PATH=$HOME/.local/bin:$PATH HERDR_SESSION={sess} SHOAL_HERDR_SESSION={sess}; "
@@ -205,10 +221,6 @@ def launch_remote(server: str, opened: bool, ids: list[str], dry_run: bool = Fal
             print(shlex.join(argv))
         else:
             print(f"shoal ui launch: preparing {sess} on {server} (no role is woken)...")
-            if routes.route(server) is not None and routes.reachable(server, force=True) is False:
-                print(f"shoal ui launch: {server} is unreachable now (ssh BatchMode, 5 s): `shoal doctor` checks its "
-                      f"route; nothing was attached")
-                return 2
             try:
                 rc = subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=PREP_TIMEOUT_S).returncode
             except subprocess.TimeoutExpired:
@@ -224,6 +236,7 @@ def launch_remote(server: str, opened: bool, ids: list[str], dry_run: bool = Fal
     if dry_run:
         print(shlex.join(["exec"] + argv))
         return 0
+    remember(server)
     resolve_sidebar(os.path.join(ui_herdr.config_dir(), "config.toml"))
     sys.stdout.flush()
     os.execvp(argv[0], argv)
@@ -246,8 +259,8 @@ def cmd_launch(a) -> int:
         else:
             choice = last_choice() or "local"
         choice = "local" if is_local(choice) else choice
-        if not a.dry_run:
-            remember(choice)
+        # only a choice that worked is remembered: a host that just failed must never become the default
+        # (measured 2026-10-21: an unreachable test host became the chooser's Enter)
         if choice == "local":
             return launch_local(opened, a.ids, a.dry_run)
         rc = launch_remote(choice, opened, a.ids, a.dry_run)

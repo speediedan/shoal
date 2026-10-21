@@ -1022,7 +1022,16 @@ OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV STUB_SSH_RC=255 STUB_HERDR
       $H ui launch --server other-host.invalid 2>&1); RC=$?
 [ "$RC" = 2 ] && grep -q "unreachable now .*shoal doctor" <<<"$OUT" || fail "unreachable host: rc $RC :: $OUT"
 [ ! -s "$S/herdr.log" ] || fail "a client was attached to an unreachable host :: $(cat "$S/herdr.log")"
-grep -qx "other-host.invalid" "$S/state/shoal/launch.last" || fail "the choice was not remembered"
+[ ! -e "$S/state/shoal/launch.last" ] || fail "a host that just failed became the remembered choice"
+# attach-only probes too: no Herdr ssh error, the doctor hint instead
+OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV STUB_SSH_RC=255 STUB_HERDR_LOG="$S/herdr.log" \
+      $H ui launch --server other-host.invalid --no-open 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "unreachable now .*shoal doctor" <<<"$OUT" && [ ! -s "$S/herdr.log" ] || fail "--no-open, unreachable: rc $RC :: $OUT"
+# reachable: the client runs (the stub records it) and the choice is remembered
+env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV STUB_SSH_RC=0 STUB_HERDR_LOG="$S/herdr.log" \
+      $H ui launch --server other-host.invalid --no-open >/dev/null 2>&1 || fail "reachable attach-only launch"
+grep -q -- "--remote u@other-host.invalid --session shoal" "$S/herdr.log" || fail "the client did not run :: $(cat "$S/herdr.log")"
+grep -qx "other-host.invalid" "$S/state/shoal/launch.last" || fail "a choice that worked was not remembered"
 env $LENV python3 - "$SHOALD" "$S" <<'PY2' || fail "chooser"
 import io, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import routes, ui_launch
