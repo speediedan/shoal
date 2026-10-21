@@ -372,8 +372,11 @@ shoal ui herdr-install [--dry-run]         # lane host: server block, plugin lin
 shoal ui doctor                            # lane host preflight
 ```
 
-`--write` merges a delimited managed block into `~/.config/herdr/config.toml`. A backup is kept, and
-the merge refuses when the file already defines a table the block defines.
+`--write` merges a delimited managed block into `~/.config/herdr/config.toml`, or into the file
+`HERDR_CONFIG_PATH` names (Herdr's own override; `--path` wins over both). A backup is kept, and
+the merge refuses when the file already defines a table the block defines. `ui doctor` reads the same
+file, and counts a Claude integration only when `~/.claude/settings.json` has a `hooks` section that
+mentions Herdr (a permission rule or plugin name that contains "herdr" is not one).
 
 **Hazards the configuration closes:**
 

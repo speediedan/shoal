@@ -894,5 +894,25 @@ check "already defines \[ui\]" $H ui herdr-config --client --write --path "$S/co
 grep -q "resume_agents_on_restore = false" "$S/server.toml" || fail "server block lacks restore off"
 head -1 "$S/server.toml" | grep -q "managed block" || fail "server block (top-level keys) must come first"
 
+# doctor reads the config file this Herdr reads (HERDR_CONFIG_PATH), and an integration is a Claude HOOK:
+# a permission rule that merely names a herdr script is not one
+mkdir -p "$S/dochome/.claude"
+printf '{"permissions": {"allow": ["Bash(/x/shoal-herdr-tmux.sh:*)"]}, "enabledPlugins": {"herdr-helper@x": true}}' > "$S/dochome/.claude/settings.json"
+HOME="$S/dochome" HERDR_CONFIG_PATH="$S/server.toml" python3 - "$SHOALD" "$S/server.toml" <<'PY2' || fail "doctor config path and integrations"
+import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+def checks():
+    return {n: (ok, d) for n, ok, d in ui_herdr.doctor_checks("doctorsess")}
+c = checks()
+assert c["agent resume on restore is off"] == (True, sys.argv[2]), c["agent resume on restore is off"]
+assert c["no herdr agent integrations on this lane host"][0], c["no herdr agent integrations on this lane host"]
+open(os.path.expanduser("~/.claude/settings.json"), "w").write('{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "herdr agent report"}]}]}}')
+c = checks()
+assert not c["no herdr agent integrations on this lane host"][0], c
+os.environ["HERDR_CONFIG_PATH"] = os.path.join(os.path.dirname(sys.argv[2]), "absent.toml")
+assert not checks()["agent resume on restore is off"][0]
+print("doctor config path and integrations ok")
+PY2
+
 rm -rf /tmp/uiselftest
 echo "SELFTEST PASS ($S)"

@@ -74,6 +74,12 @@ def config_dir() -> str:
     return os.path.join(base, "herdr")
 
 
+def config_path() -> str:
+    """The config file this Herdr reads: `HERDR_CONFIG_PATH` (Herdr's own override, set for a server and its
+    clients that keep a config of their own), else `config.toml` in the config directory."""
+    return os.path.expanduser(os.environ.get("HERDR_CONFIG_PATH") or "") or os.path.join(config_dir(), "config.toml")
+
+
 def socket_path(session: str = "") -> str:
     """An explicit session (argument, then SHOAL_HERDR_SESSION) wins; else the socket Herdr injected
     into this pane or plugin; else the default `shoal` session."""
@@ -1790,7 +1796,7 @@ def cmd_config(a) -> int:
     if not a.write:
         print(block)
         return 0
-    path = a.path or os.path.join(config_dir(), "config.toml")
+    path = a.path or config_path()
     try:
         new = merge_block(path, block)
     except HerdrError as exc:
@@ -1881,11 +1887,23 @@ def argparse_ns(**kw):
     return argparse.Namespace(**kw)
 
 
+def _claude_hooks_text(path: str) -> str:
+    """The `hooks` section of a Claude settings file as text: Herdr's integration is a hook, so a permission
+    rule or a plugin name that merely contains "herdr" is not one. A file that does not parse is read whole."""
+    if not os.path.exists(path):
+        return ""
+    raw = open(path).read()
+    try:
+        return json.dumps((json.loads(raw) or {}).get("hooks") or {})
+    except (ValueError, AttributeError):
+        return raw
+
+
 def doctor_checks(session: str = "") -> list[tuple[str, bool, str]]:
     out = []
     herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
     out.append(("herdr installed", os.path.exists(herdr), herdr))
-    cfg = os.path.join(config_dir(), "config.toml")
+    cfg = config_path()
     txt = open(cfg).read() if os.path.exists(cfg) else ""
     import re
     off = bool(re.search(r"^\s*resume_agents_on_restore\s*=\s*false", txt, re.M))
@@ -1893,7 +1911,7 @@ def doctor_checks(session: str = "") -> list[tuple[str, bool, str]]:
     integ = []
     try:
         claude_settings = os.path.expanduser("~/.claude/settings.json")
-        if "herdr" in (open(claude_settings).read() if os.path.exists(claude_settings) else ""):
+        if "herdr" in _claude_hooks_text(claude_settings):
             integ.append("claude hooks mention herdr")
     except OSError:
         pass
