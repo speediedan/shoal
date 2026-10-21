@@ -372,6 +372,7 @@ shoal ui herdr-install [--dry-run]         # lane host: server block, plugin lin
 shoal ui herdr-config --local [--write]    # local view: both blocks merged, in its own file
 shoal ui herdr-install --local [--check]   # local view: that file, units carrying it, plugin, open
 shoal ui herdr-get [--check]               # the pinned Herdr release, checksum-verified (no sudo)
+shoal ui launch [--server S|local]         # open the view from this terminal (the host chooser, below)
 shoal ui doctor                            # preflight (also: herdr at the pin)
 ```
 
@@ -386,6 +387,25 @@ change touched), then runs `ui open`. `--check` runs `ui doctor` against the loc
 the live install uses: the feeder unit and the status line name the shoal wrapper of the code that writes them, so
 `herdr-install --local` refuses to write from a git worktree (`--dry-run` and `--check` still work there), and
 `ui doctor`'s plugin line names the path the plugin is really linked from.
+
+**Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
+- **The chooser.** It asks which host serves the view: this host (`local`) first, then every host with an ssh
+  route, each marked when its cached probe fails. Enter takes the last choice (`$XDG_STATE_HOME/shoal/launch.last`),
+  and a typed ssh target also works. `--server` never asks, and neither does a launch without a terminal (it takes
+  the last choice, else local).
+- **No configuration beyond the routes,** by design until Herdr machines are in use.
+- **local:**
+  - a host provisioned for the local view keeps its file;
+  - a lane host is started as it is;
+  - a host with neither is provisioned with `herdr-install --local`;
+  - then `ui open`, and a local client.
+- **remote:** over the route, the host's `shoal-herdr` unit is started and its `ui open` run, then
+  `herdr --remote <route> --session shoal --remote-keybindings server`. The route's MagicDNS name is resolved
+  through tailscale like every route, so the view works off the home network too.
+- **An unreachable host** fails at once, with the `doctor` hint, and returns to the chooser. It never attaches a
+  client that hangs.
+- **Width and guard:** a percent sidebar width is resolved from the window just before the client starts. The
+  command refuses to run inside a Herdr pane.
 
 **The Herdr pin.** Every shoal host runs one pinned Herdr release (`PIN` in `shoal/ui/herdr_pin.py`, equal to
 the plugin's `min_herdr_version`), never `herdr update`. Herdr ships often, with breaking socket changes, and

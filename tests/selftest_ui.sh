@@ -1003,4 +1003,48 @@ assert m and m.group(1) == herdr_pin.PIN, (m and m.group(1), herdr_pin.PIN)
 print("pin ok")
 PY2
 
+echo "== 6 ui launch: the chooser from routes, both modes, fail fast on an unreachable host, never inside Herdr"
+printf '#!/bin/sh\necho "herdr $*" >> "${STUB_HERDR_LOG:-/dev/null}"\n' > "$S/herdr-stub"; chmod +x "$S/herdr-stub"
+cp "$SHOAL_CONFIG" "$S/host-launch.toml"
+printf '\n[hosts."other-host.invalid"]\nssh = "u@other-host.invalid"\nresolve = "dns"\n' >> "$S/host-launch.toml"
+LENV="SHOAL_CONFIG=$S/host-launch.toml SHOAL_SSH=$S/ssh-stub SHOAL_HERDR_BIN=$S/herdr-stub XDG_STATE_HOME=$S/state XDG_CONFIG_HOME=$S/xdg-launch"
+check "not inside the Herdr viewer" env $LENV HERDR_SESSION=shoal $H ui launch --server local --dry-run
+OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV $H ui launch --server other-host.invalid --dry-run) || fail "launch remote dry-run :: $OUT"
+grep -q "u@other-host.invalid 'bash -lc" <<<"$OUT" || fail "remote preparation over the route :: $OUT"
+grep -q "exec $S/herdr-stub --remote u@other-host.invalid --session shoal --remote-keybindings server" <<<"$OUT" || fail "remote client argv :: $OUT"
+OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV $H ui launch --server local --dry-run) || fail "launch local dry-run :: $OUT"
+grep -q "exec $S/herdr-stub --session shoal   (config $S/xdg-launch/herdr/shoal-local.toml)" <<<"$OUT" \
+  || fail "a host with no shoal-herdr unit is provisioned for the local view :: $OUT"
+[ ! -e "$S/state/shoal/launch.last" ] || fail "a dry run remembered a choice"
+# unreachable: fails within the ssh timeout, says so with the doctor hint, never runs the client
+rm -rf "$SHOAL_ROUTE_CACHE"
+OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV STUB_SSH_RC=255 STUB_HERDR_LOG="$S/herdr.log" \
+      $H ui launch --server other-host.invalid 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "unreachable now .*shoal doctor" <<<"$OUT" || fail "unreachable host: rc $RC :: $OUT"
+[ ! -s "$S/herdr.log" ] || fail "a client was attached to an unreachable host :: $(cat "$S/herdr.log")"
+grep -qx "other-host.invalid" "$S/state/shoal/launch.last" || fail "the choice was not remembered"
+env $LENV python3 - "$SHOALD" "$S" <<'PY2' || fail "chooser"
+import io, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import routes, ui_launch
+assert ui_launch.candidates() == ["local", "other-host.invalid"], ui_launch.candidates()
+routes._store("reach-other-host.invalid", {"ok": False})
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    got = ui_launch.choose(read=lambda p: "")
+assert got == "other-host.invalid" and "(unreachable now)" in buf.getvalue() and "*2)" in buf.getvalue(), buf.getvalue()
+with contextlib.redirect_stdout(io.StringIO()):
+    assert ui_launch.choose(read=lambda p: "1") == "local"
+    assert ui_launch.choose(read=lambda p: "me@typed.example") == "me@typed.example"
+    assert ui_launch.choose(read=lambda p: "q") is None
+assert ui_launch.is_local("local") and not ui_launch.is_local("other-host.invalid")
+# a percent sidebar width becomes this window's columns
+f = os.path.join(sys.argv[2], "sidebar.toml")
+open(f, "w").write("[ui]\n# shoal-sidebar-max: 25%\nsidebar_max_width = 40\n")
+ui_launch.resolve_sidebar(f, cols=200)
+assert "sidebar_max_width = 50" in open(f).read(), open(f).read()
+ui_launch.resolve_sidebar(f, cols=40)
+assert "sidebar_max_width = 18" in open(f).read(), "floor of 18 columns"
+print("launch chooser ok")
+PY2
+
 echo "SELFTEST PASS ($S)"
