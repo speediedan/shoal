@@ -390,7 +390,7 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 
 **Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
 - **The chooser.** It asks which host serves the view: this host (`local`) first, then every host with an ssh
-  route, each marked when its cached probe fails. Enter takes the last choice (`$XDG_STATE_HOME/shoal/launch.last`),
+  route, each marked when its cached probe fails. Enter takes the last choice that worked (`$XDG_STATE_HOME/shoal/launch.last`; a host that just failed is never remembered),
   and a typed ssh target also works. `--server` never asks, and neither does a launch without a terminal (it takes
   the last choice, else local).
 - **No configuration beyond the routes,** by design until Herdr machines are in use.
@@ -402,7 +402,7 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 - **remote:** over the route, the host's `shoal-herdr` unit is started and its `ui open` run, then
   `herdr --remote <route> --session shoal --remote-keybindings server`. The route's MagicDNS name is resolved
   through tailscale like every route, so the view works off the home network too.
-- **An unreachable host** fails at once, with the `doctor` hint, and returns to the chooser. It never attaches a
+- **An unreachable host** fails at once, with the `doctor` hint, and returns to the chooser, in every mode (`--no-open` probes too). It never attaches a
   client that hangs.
 - **Width and guard:** a percent sidebar width is resolved from the window just before the client starts. The
   command refuses to run inside a Herdr pane.
