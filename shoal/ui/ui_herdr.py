@@ -1795,7 +1795,7 @@ def local_config_path() -> str:
     """The local view's own Herdr config (a host whose terminal client also serves the view): the client and
     server blocks both define [ui], so they cannot share one managed block; the local server and its client read
     this file through HERDR_CONFIG_PATH, and `config.toml` stays the remote client's file."""
-    return os.path.expanduser(config.env("LOCAL_HERDR_CONF") or "~/.config/herdr/shoal-local.toml")
+    return os.path.expanduser(config.env("LOCAL_HERDR_CONF") or os.path.join(config_dir(), "shoal-local.toml"))
 
 
 def _tables(text: str) -> tuple[list[str], list[list]]:

@@ -173,6 +173,15 @@ def add_parsers(sub) -> None:
     q.add_argument("--shoal", dest="ids", action="append", default=[], help="with --local: shoals to open (default all)")
     q.set_defaults(func=ui_herdr.cmd_install)
 
+    import ui_launch
+    q = u.add_parser("launch", help="open the shoal Herdr view from this terminal: choose the host (local or a route)")
+    q.add_argument("--server", default="", help="SERVER (a [hosts.*] route name), an ssh target, or local: never asks")
+    q.add_argument("--no-open", action="store_true", help="attach only: do not prepare the host or run ui open")
+    q.add_argument("--no-choose", action="store_true", help="never ask: the last choice, else local")
+    q.add_argument("--shoal", dest="ids", action="append", default=[], help="shoals to open (default all)")
+    q.add_argument("--dry-run", action="store_true", help="print what would run, attach nothing")
+    q.set_defaults(func=ui_launch.cmd_launch)
+
     import herdr_pin
     q = u.add_parser("herdr-get", help=f"install the pinned Herdr release (checksum-verified; pin {herdr_pin.PIN})")
     q.add_argument("--version", default="", help="override the pin (bump PIN in herdr_pin.py instead, deliberately)")
