@@ -510,7 +510,9 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
         "home": spec.home or "",
         "this_host": config.server(),
         "multi_host": len({r["host"] for r in roles}) > 1,
-        "hosts": host_beats_doc(spec, led, now),
+        # beats are written only while a shoal's roles span hosts: a single-host shoal's last beat is a leftover
+        # (it read as a day-old fault on another host's view, 2026-10-21), so it reports none
+        "hosts": host_beats_doc(spec, led, now) if len({r["host"] for r in roles}) > 1 else {},
         "roles": roles,
     }
     if with_conditions:
