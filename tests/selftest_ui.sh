@@ -941,4 +941,66 @@ print("doctor config path and integrations ok")
 PY2
 
 rm -rf /tmp/uiselftest
+echo "== 5 local view provisioning (herdr-config --local, herdr-install --local) and the Herdr pin (herdr-get)"
+# the local file: the user's own settings plus ONE merged block (server and client), idempotent, valid TOML
+mkdir -p "$S/xdg-local/herdr"
+printf '[theme]\nname = "nord"\n' > "$S/xdg-local/herdr/config.toml"
+LC="$S/xdg-local/herdr/shoal-local.toml"
+XDG_CONFIG_HOME="$S/xdg-local" SHOAL_LOCAL_HERDR_CONF="$LC" $H ui herdr-config --local --write >/dev/null || fail "local write"
+cp "$LC" "$S/local-1.toml"
+check "is current" env XDG_CONFIG_HOME="$S/xdg-local" SHOAL_LOCAL_HERDR_CONF="$LC" $H ui herdr-config --local --write
+cmp -s "$LC" "$S/local-1.toml" || fail "local config not idempotent"
+[ "$(grep -c 'shoal-ui managed block (shoal' "$LC")" = 1 ] || fail "local block duplicated"
+grep -q 'name = "nord"' "$LC" || fail "user settings lost in the local file"
+python3 - "$LC" <<'PY2' || fail "local config"
+import sys
+try:
+    import tomllib as t
+except ImportError:
+    try:
+        import tomli as t
+    except ImportError:
+        print("toml check SKIP (no reader)"); sys.exit(0)
+d = t.loads(open(sys.argv[1]).read())
+assert d["session"]["resume_agents_on_restore"] is False, "the server half (restore off) is in the local file"
+assert "tab_bar_right" in d["ui"] and "sidebar" in d["ui"], "[ui] carries the server's status line and the client's sidebar"
+print("local config ok")
+PY2
+# units carry HERDR_CONFIG_PATH; --dry-run reports and touches nothing
+python3 - "$SHOALD" "$LC" <<'PY2' || fail "local units"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+for k in ("server", "feed"):
+    t = ui_herdr.unit_text(k, sys.argv[2])
+    assert f"Environment=HERDR_CONFIG_PATH={sys.argv[2]}" in t, t
+assert "HERDR_CONFIG_PATH" not in ui_herdr.unit_text("server"), "a lane host's unit reads config.toml"
+path = next(l for l in ui_herdr.unit_text("server").splitlines() if l.startswith("Environment=PATH="))[len("Environment=PATH="):]
+assert len(path.split(":")) == len(set(path.split(":"))), f"duplicate PATH entries: {path}"
+# doctor names where the plugin is really linked, and says when that is another checkout
+listed = f"1 plugin installed:\n- shoal.herdr (shoal) enabled [local:{ui_herdr.PLUGIN_DIR}]\n"
+assert ui_herdr.plugin_link_state(listed) == (True, ui_herdr.PLUGIN_DIR), ui_herdr.plugin_link_state(listed)
+ok, why = ui_herdr.plugin_link_state("1 plugin installed:\n- shoal.herdr (shoal) enabled [local:/elsewhere/plugins/shoal-herdr]\n")
+assert ok and "/elsewhere/plugins/shoal-herdr" in why and "this code is" in why, why
+assert ui_herdr.plugin_link_state("0 plugins installed")[0] is False
+print("local units ok")
+PY2
+printf '#!/bin/sh\necho "herdr ${FAKE_HERDR_VERSION:-0.9.3}"\n' > "$S/fake-herdr"; chmod +x "$S/fake-herdr"
+UNITS0=$(ls ~/.config/systemd/user 2>/dev/null | md5sum)
+OUT=$(XDG_CONFIG_HOME="$S/xdg-local" SHOAL_LOCAL_HERDR_CONF="$S/xdg-local/herdr/never.toml" SHOAL_HERDR_BIN="$S/fake-herdr" \
+      $H ui herdr-install --local --dry-run) || fail "install --local --dry-run rc :: $OUT"
+grep -q "\[dry-run\] local config .*never.toml: write" <<<"$OUT" || fail "dry-run plan :: $OUT"
+[ ! -e "$S/xdg-local/herdr/never.toml" ] || fail "--dry-run wrote the local config"
+[ "$(ls ~/.config/systemd/user 2>/dev/null | md5sum)" = "$UNITS0" ] || fail "--dry-run touched the user units"
+# the pin: --check against a fake install (no network)
+mkdir -p "$S/hprefix/bin"; cp "$S/fake-herdr" "$S/hprefix/bin/herdr"
+check "installed=0.9.3 pin=0.9.3" env HERDR_PREFIX="$S/hprefix" $H ui herdr-get --check
+if env HERDR_PREFIX="$S/hprefix" FAKE_HERDR_VERSION=0.9.2 $H ui herdr-get --check >/dev/null 2>&1; then fail "an off-pin herdr passed --check"; fi
+python3 - "$SHOALD" <<'PY2' || fail "pin matches the plugin"
+import re, sys; sys.path.insert(0, sys.argv[1] + "/ui")
+import herdr_pin
+m = re.search(r'min_herdr_version = "([^"]+)"', open(sys.argv[1] + "/../plugins/shoal-herdr/herdr-plugin.toml").read())
+assert m and m.group(1) == herdr_pin.PIN, (m and m.group(1), herdr_pin.PIN)
+print("pin ok")
+PY2
+
 echo "SELFTEST PASS ($S)"

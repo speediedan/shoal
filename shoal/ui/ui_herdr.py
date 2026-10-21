@@ -1791,7 +1791,97 @@ def merge_block(path: str, block: str) -> str:
     return (outside.rstrip() + "\n\n" if outside.strip() else "") + body
 
 
+def local_config_path() -> str:
+    """The local view's own Herdr config (a host whose terminal client also serves the view): the client and
+    server blocks both define [ui], so they cannot share one managed block; the local server and its client read
+    this file through HERDR_CONFIG_PATH, and `config.toml` stays the remote client's file."""
+    return os.path.expanduser(config.env("LOCAL_HERDR_CONF") or "~/.config/herdr/shoal-local.toml")
+
+
+def _tables(text: str) -> tuple[list[str], list[list]]:
+    """(top-level lines, [[header, body lines]]) in file order."""
+    import re
+    top, out, cur = [], [], None
+    for line in text.splitlines():
+        if re.match(r"^\[\[?([A-Za-z0-9_.]+)\]\]?\s*$", line):
+            cur = [line, []]
+            out.append(cur)
+        elif cur is None:
+            top.append(line)
+        else:
+            cur[1].append(line)
+    return top, out
+
+
+def _key(line: str) -> str | None:
+    import re
+    m = re.match(r"^([a-z_]+)\s*=", line)
+    return m.group(1) if m else None
+
+
+def local_block(mine: str = "") -> str:
+    """The server and client blocks merged into one: every server table, then the client's. [ui] is the one table
+    both define: the client's keys win (its sidebar width marker is resolved at launch from the window) and the
+    server's tab_bar_right stays. Top-level keys the user's own settings (`mine`) already set are left out."""
+    s_top, s_tabs = _tables(server_block())
+    c_top, c_tabs = _tables(client_block())
+    merged = [[h, list(b)] for h, b in s_tabs]
+    for h, body in c_tabs:
+        same = [m for m in merged if m[0] == h and not h.startswith("[[")]
+        if not same:
+            merged.append([h, list(body)])
+            continue
+        mb = same[0][1]
+        ckeys = {_key(x) for x in body if _key(x)}
+        mb[:] = [x for x in mb if _key(x) not in ckeys]
+        mb.extend(["", *body])
+    my_top = {_key(x) for x in mine.split("\n[", 1)[0].splitlines() if _key(x)}
+    top = "\n".join(x for x in s_top + c_top if _key(x) not in my_top).strip()
+    return (top + "\n\n" if top else "") + "\n\n".join(h + "\n" + "\n".join(b).strip("\n") + "\n" for h, b in merged)
+
+
+def build_local_config(base: str = "") -> str:
+    """The local view's whole file: the user's own `config.toml` settings (any shoal managed block removed) plus one
+    merged shoal block. Validated as TOML."""
+    import re
+    base = base or os.path.join(config_dir(), "config.toml")
+    cur = open(base).read() if os.path.exists(base) else ""
+    if BEGIN in cur and END in cur:
+        pre, rest = cur.split(BEGIN, 1)
+        cur = pre + rest.split(END, 1)[1]
+    out = (cur.rstrip() + "\n\n" if cur.strip() else "") + f"{BEGIN}\n{local_block(cur).rstrip()}\n{END}\n"
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    try:
+        import tomllib as _toml  # type: ignore[import-not-found]
+    except ImportError:  # Python 3.10
+        try:
+            import tomli as _toml  # type: ignore[import-not-found,no-redef]
+        except ImportError:
+            _toml = None
+    if _toml is not None:
+        _toml.loads(out)  # a merge that does not parse is never written
+    return out
+
+
 def cmd_config(a) -> int:
+    if getattr(a, "local", False):
+        path = a.path or local_config_path()
+        try:
+            new = build_local_config()
+        except Exception as exc:  # noqa: BLE001 - a merge that does not parse is reported, never written
+            print(f"herdr-config: the local file does not build: {exc}")
+            return 1
+        if not a.write or a.dry_run:
+            print(new)
+            return 0
+        if new != (open(path).read() if os.path.exists(path) else None):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path + ".tmp", "w").write(new)
+            os.replace(path + ".tmp", path)
+            print(f"herdr-config: wrote {path}")
+        else:
+            print(f"herdr-config: {path} is current")
+        return 0
     block = client_block() if a.client else server_block()
     if not a.write:
         print(block)
@@ -1816,16 +1906,20 @@ def cmd_config(a) -> int:
     return 0
 
 
-def unit_text(kind: str) -> str:
+def unit_text(kind: str, local_conf: str = "") -> str:
+    """A user unit for the Herdr server or the feeder. `local_conf`: the local view's own config file, carried as
+    HERDR_CONFIG_PATH so the server and the feeder read it (herdr-install --local)."""
     herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
-    path = ":".join([os.path.expanduser("~/.local/bin"), config.tool_path() or "/usr/local/bin:/usr/bin:/bin"])
+    parts = [os.path.expanduser("~/.local/bin")] + (config.tool_path() or "/usr/local/bin:/usr/bin:/bin").split(":")
+    path = ":".join(dict.fromkeys(x for x in parts if x))  # tool_path may already hold ~/.local/bin
+    conf = f"Environment=HERDR_CONFIG_PATH={local_conf}\n" if local_conf else ""
     if kind == "server":
         return f"""[Unit]
-Description=herdr server for the shoal UI (session {session_name()})
+Description=herdr server for the shoal UI (session {session_name()}{', local view' if local_conf else ''})
 [Service]
 Type=simple
 Environment=HERDR_SESSION={session_name()}
-Environment=PATH={path}
+{conf}Environment=PATH={path}
 ExecStart={herdr} server
 Restart=on-failure
 RestartSec=10
@@ -1838,7 +1932,7 @@ After=shoal-herdr.service
 [Service]
 Type=simple
 Environment=HERDR_SESSION={session_name()}
-Environment=PATH={path}
+{conf}Environment=PATH={path}
 ExecStart={shlex.join(shoal_argv("ui", "feed"))}
 Restart=always
 RestartSec=15
@@ -1848,9 +1942,81 @@ WantedBy=default.target
 """
 
 
+def install_local(a) -> int:
+    """`herdr-install --local [--check] [--dry-run]`: the local view on a host whose terminal client also serves it
+    (a laptop). Its own config file (local_config_path, through HERDR_CONFIG_PATH), the server and feeder units
+    carrying it, the plugin link, then `ui open`. Idempotent; a unit or config change restarts what reads it.
+    --check reports only, against the file the local server really reads. Nothing here wakes a role."""
+    conf = local_config_path()
+    os.environ["HERDR_CONFIG_PATH"] = conf
+    herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
+    env = dict(os.environ, HERDR_SESSION=session_name(), HERDR_CONFIG_PATH=conf)
+    if getattr(a, "check", False):
+        bad = 0
+        for name, ok, detail in doctor_checks():
+            print(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}")
+            bad += not ok
+        return 1 if bad else 0
+    if not os.path.exists(herdr):
+        print(f"herdr-install: no herdr at {herdr}: `shoal ui herdr-get` installs the pinned release")
+        return 1
+    if from_worktree() and not a.dry_run:
+        print(f"herdr-install: refusing to provision from a git worktree ({REPO}): the units and the status line "
+              f"would point into it. Run it from the checkout the live install uses (`--dry-run` and `--check` are fine here)")
+        return 2
+    new = build_local_config()
+    reload_ = new != (open(conf).read() if os.path.exists(conf) else None)
+    unitdir = os.path.expanduser("~/.config/systemd/user")
+    units = {"shoal-herdr.service": unit_text("server", conf), "shoal-ui-feed.service": unit_text("feed", conf)}
+    changed = [n for n, t in units.items() if t != (open(os.path.join(unitdir, n)).read()
+                                                    if os.path.exists(os.path.join(unitdir, n)) else None)]
+    if a.dry_run:
+        print(f"[dry-run] local config {conf}: {'write' if reload_ else 'current'}")
+        for n in units:
+            print(f"[dry-run] unit {n}: {'write' if n in changed else 'current'}")
+        print("[dry-run] plugin link, enable the server and the feeder, ui open")
+        return 0
+    if reload_:
+        os.makedirs(os.path.dirname(conf), exist_ok=True)
+        open(conf + ".tmp", "w").write(new)
+        os.replace(conf + ".tmp", conf)
+        print(f"local config: wrote {conf}")
+    chk = subprocess.run([herdr, "config", "check"], capture_output=True, text=True, env=env)
+    said = (chk.stdout + chk.stderr).strip()
+    if "config: ok" not in (said.splitlines() or [""])[0]:
+        print(f"herdr-install: herdr rejects {conf}: {said[:300]}")
+        return 1
+    os.makedirs(unitdir, exist_ok=True)
+    for n in changed:
+        open(os.path.join(unitdir, n), "w").write(units[n])
+        print(f"unit {n}: wrote")
+    sh = lambda *c: subprocess.run(list(c), capture_output=True, text=True, env=env)  # noqa: E731
+    if changed:
+        sh("systemctl", "--user", "daemon-reload")
+    if PLUGIN_ID not in sh(herdr, "plugin", "list").stdout:
+        sh(herdr, "plugin", "link", PLUGIN_DIR)
+    sh("systemctl", "--user", "enable", "--now", "shoal-herdr.service")
+    if "shoal-herdr.service" in changed:
+        sh("systemctl", "--user", "restart", "shoal-herdr.service")
+    for _ in range(10):
+        if Herdr(session_name()).alive():
+            break
+        time.sleep(1)
+    if reload_:
+        sh(herdr, "server", "reload-config")
+    sh("systemctl", "--user", "enable", "--now", "shoal-ui-feed.service")
+    if "shoal-ui-feed.service" in changed:
+        sh("systemctl", "--user", "restart", "shoal-ui-feed.service")
+    print("local view: server and feeder up")
+    return cmd_open(argparse_ns(session="", ids=list(getattr(a, "ids", []) or []), ledger_root="", dry_run=False,
+                                no_standalone=False))
+
+
 def cmd_install(a) -> int:
     """Server side, idempotent: managed config block, plugin link, the herdr server and feeder
     user units. No session is touched; nothing here can wake a role."""
+    if getattr(a, "local", False):
+        return install_local(a)
     steps = []
     unitdir = os.path.expanduser("~/.config/systemd/user")
     herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
@@ -1899,10 +2065,34 @@ def _claude_hooks_text(path: str) -> str:
         return raw
 
 
+def plugin_link_state(listing: str) -> tuple[bool, str]:
+    """(ok, detail) from `herdr plugin list`: ok when the plugin is listed. The detail is the path it is really
+    linked from, and says so when that is not this checkout's plugin (a link to a stale or other checkout; measured
+    2026-10-21: a check run from a worktree printed the worktree path while the link pointed at the live checkout)."""
+    import re
+    m = re.search(rf"^- {re.escape(PLUGIN_ID)}\b.*\[(?:local:)?([^\]]+)\]", listing, re.M)
+    if PLUGIN_ID not in listing:
+        return False, f"not linked (this code's plugin: {PLUGIN_DIR})"
+    linked = os.path.expanduser(m.group(1)) if m else ""
+    if linked and os.path.realpath(linked) != os.path.realpath(PLUGIN_DIR):
+        return True, f"{linked} (this code is {PLUGIN_DIR}: run from the checkout the units use)"
+    return True, linked or PLUGIN_DIR
+
+
+def from_worktree() -> bool:
+    """True when this code runs from a git worktree (its `.git` is a file), not a main checkout: provisioning
+    from there writes units and a status line that point into the worktree."""
+    return os.path.isfile(os.path.join(REPO, ".git"))
+
+
 def doctor_checks(session: str = "") -> list[tuple[str, bool, str]]:
     out = []
     herdr = config.env("HERDR_BIN") or os.path.expanduser("~/.local/bin/herdr")
     out.append(("herdr installed", os.path.exists(herdr), herdr))
+    import herdr_pin
+    have = herdr_pin.installed(os.path.dirname(os.path.dirname(herdr))) if os.path.exists(herdr) else ""
+    out.append(("herdr at the pin", have == herdr_pin.PIN,
+                f"{have or 'none'} (pin {herdr_pin.PIN}; `shoal ui herdr-get` installs it)"))
     cfg = config_path()
     txt = open(cfg).read() if os.path.exists(cfg) else ""
     import re
@@ -1933,7 +2123,7 @@ def doctor_checks(session: str = "") -> list[tuple[str, bool, str]]:
         try:
             r = subprocess.run([herdr, "plugin", "list"], capture_output=True, text=True, timeout=20,
                                env=dict(os.environ, HERDR_SESSION=session or session_name()))
-            out.append(("plugin linked", PLUGIN_ID in r.stdout, PLUGIN_DIR))
+            out.append(("plugin linked",) + plugin_link_state(r.stdout))
         except (OSError, subprocess.SubprocessError) as exc:
             out.append(("plugin linked", False, str(exc)))
     for unit in ("shoal-herdr.service", "shoal-ui-feed.service"):

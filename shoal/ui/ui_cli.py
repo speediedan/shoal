@@ -158,6 +158,8 @@ def add_parsers(sub) -> None:
     g = q.add_mutually_exclusive_group(required=True)
     g.add_argument("--client", action="store_true", help="sidebar rows and status line (the viewing machine)")
     g.add_argument("--server", action="store_true", help="restore off, keys (the lane host)")
+    g.add_argument("--local", action="store_true",
+                   help="both blocks merged, in the local view's own file (a host whose client also serves the view)")
     q.add_argument("--write", action="store_true", help="merge into the herdr config file (backup kept)")
     q.add_argument("--path", default="")
     q.add_argument("--dry-run", action="store_true")
@@ -165,7 +167,17 @@ def add_parsers(sub) -> None:
 
     q = u.add_parser("herdr-install", help="lane host: config block, plugin link, server + feeder units, open")
     q.add_argument("--dry-run", action="store_true")
+    q.add_argument("--local", action="store_true",
+                   help="the local view: its own config file (HERDR_CONFIG_PATH), units carrying it, plugin, open")
+    q.add_argument("--check", action="store_true", help="with --local: report only, against the local file")
+    q.add_argument("--shoal", dest="ids", action="append", default=[], help="with --local: shoals to open (default all)")
     q.set_defaults(func=ui_herdr.cmd_install)
+
+    import herdr_pin
+    q = u.add_parser("herdr-get", help=f"install the pinned Herdr release (checksum-verified; pin {herdr_pin.PIN})")
+    q.add_argument("--version", default="", help="override the pin (bump PIN in herdr_pin.py instead, deliberately)")
+    q.add_argument("--check", action="store_true", help="exit 0 when the installed version is the pin")
+    q.set_defaults(func=herdr_pin.cmd_get)
 
     q = u.add_parser("doctor", help="adapter preflight: restore off, no integrations, schema, units")
     session_arg(q)
