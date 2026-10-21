@@ -369,8 +369,26 @@ Herdr splits its configuration by machine:
 shoal ui herdr-config --server [--write]   # lane host: restore off, version checks off, keys
 shoal ui herdr-config --client [--write]   # viewing machine: sidebar rows, the `ui line` segment
 shoal ui herdr-install [--dry-run]         # lane host: server block, plugin link, units, open
-shoal ui doctor                            # lane host preflight
+shoal ui herdr-config --local [--write]    # local view: both blocks merged, in its own file
+shoal ui herdr-install --local [--check]   # local view: that file, units carrying it, plugin, open
+shoal ui herdr-get [--check]               # the pinned Herdr release, checksum-verified (no sudo)
+shoal ui doctor                            # preflight (also: herdr at the pin)
 ```
+
+**The local view** is for a host whose own terminal client also serves the view (a laptop that also runs
+roles). The server and client blocks both define `[ui]`, so they cannot share one managed block. The local
+server and its client read a file of their own instead, `~/.config/herdr/shoal-local.toml`
+(`SHOAL_LOCAL_HERDR_CONF`), through `HERDR_CONFIG_PATH`. That file holds the user's own `config.toml` settings
+plus one merged block, in which the client's `[ui]` keys win and the server's status line stays. `config.toml`
+stays the remote client's file. `herdr-install --local` writes that file and both user units with
+`Environment=HERDR_CONFIG_PATH=...`, links the plugin, starts the server and the feeder (restarting what a
+change touched), then runs `ui open`. `--check` runs `ui doctor` against the local file.
+
+**The Herdr pin.** Every shoal host runs one pinned Herdr release (`PIN` in `shoal/ui/herdr_pin.py`, equal to
+the plugin's `min_herdr_version`), never `herdr update`. Herdr ships often, with breaking socket changes, and
+the adapter checks the methods it uses. `shoal ui herdr-get` installs the pin under `~/.local/share/herdr/<version>/`
+with a `~/.local/bin/herdr` symlink, after verifying the release asset's sha256 digest from the GitHub release
+API. Bump the pin deliberately: lane host first, then `ui doctor`.
 
 `--write` merges a delimited managed block into `~/.config/herdr/config.toml`, or into the file
 `HERDR_CONFIG_PATH` names (Herdr's own override; `--path` wins over both). A backup is kept, and
