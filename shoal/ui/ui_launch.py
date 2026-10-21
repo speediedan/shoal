@@ -11,7 +11,8 @@ launch without a terminal (it takes the last choice, else local). No configurati
 
 - **local:** this host's own Herdr server. A host provisioned for the local view (`herdr-install --local`, its
   units carry HERDR_CONFIG_PATH) keeps using that file; a lane host (its server reads `config.toml`) is started as
-  it is; a host with neither is provisioned with `herdr-install --local`. Then `ui open`, and a local client.
+  it is, and its terminal client reads the merged local file (the client rows too; the server never reads it); a
+  host with neither is provisioned with `herdr-install --local`. Then `ui open`, and a local client.
 - **remote:** over the route, the host's own `shoal-herdr` unit is started and its `ui open` run (it fills layout
   gaps only), then `herdr --remote <route> --session <s> --remote-keybindings server` draws that host's view here.
   An unreachable host fails within about 10 s with the `doctor` hint and returns to the chooser: it never attaches
@@ -163,6 +164,20 @@ def launch_local(opened: bool, ids: list[str], dry_run: bool = False) -> int:
             rc = ui_herdr.install_local(ui_herdr.argparse_ns(check=False, dry_run=False, ids=ids))
         if rc:
             print("shoal ui launch: local preparation failed (attaching anyway; `shoal ui doctor` says why)")
+    if kind is False:
+        # a lane host's server reads config.toml, which holds only the server block; its own terminal client gets the
+        # merged local file (the client rows too), for the client only: the running server never reads it
+        conf = env["HERDR_CONFIG_PATH"] = ui_herdr.local_config_path()
+        if not dry_run:
+            try:
+                new = ui_herdr.build_local_config()
+                if new != (open(conf).read() if os.path.exists(conf) else None):
+                    os.makedirs(os.path.dirname(conf), exist_ok=True)
+                    open(conf + ".tmp", "w").write(new)
+                    os.replace(conf + ".tmp", conf)
+            except Exception as exc:  # noqa: BLE001 - a client without the rows still works
+                print(f"shoal ui launch: client config not written ({exc}); attaching with config.toml")
+                conf = env["HERDR_CONFIG_PATH"] = ui_herdr.config_path()
     conf = env.get("HERDR_CONFIG_PATH") or ui_herdr.config_path()
     argv = [herdr_bin(), "--session", ui_herdr.session_name()]
     if dry_run:

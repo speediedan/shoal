@@ -63,7 +63,9 @@ export S=<id> SPEC=<path to the group's spec>
   which host serves it, or `herdr --remote <host> --session shoal --remote-keybindings server` by hand):
 
     ```bash
+    shoal ui herdr-get                # the pinned Herdr release, checksum-verified (every host)
     shoal ui herdr-install            # config block, plugin link, herdr + feeder units, layouts
+    shoal ui launch                   # open the view from a terminal: local, or a routed host
     shoal ui doctor                   # restore off, no integrations, schema, units
     shoal ui open                     # re-apply layouts after adding a role (fills gaps only)
     ```
