@@ -307,6 +307,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
         "model": role.model, "fill": role.fill,
         "server": role.server or "", "host": _host_of(role, spec), "aux": bool(role.aux), "relay": is_wake_relay(role),
+        # the relay-watch process runs where the relay role does; only that host can say, so a remote row
+        # gets it from its own host's pull (routes.LIVE_FIELDS)
+        "relay_alive": _relay_alive(spec, role),
         "session_id": role.session or None,
         "posture": posture if role.session else "parked", "sub": sub or None,
         "posture_age_s": age_s(boundary, now) if boundary else None,
@@ -404,7 +407,8 @@ def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
     out = {"source": "health-dry-run", "ts": iso(), "age_s": 0,
            "open": [{"slug": c["slug"], "condition": c["condition"], "since": c.get("since"),
                      "detail": _short(c.get("detail"), 200)} for c in inst]}
-    if any(is_wake_relay(r) and r.session for r in spec.roles) and not _h.relay_alive(spec.sid):
+    from roles import is_local
+    if any(is_wake_relay(r) and r.session and is_local(r, spec) for r in spec.roles) and not _h.relay_alive(spec.sid):
         out["open"].append({"slug": "wake-relay", "condition": "relay-dead", "since": None,
                             "detail": "relay-watch not running"})
     try:
@@ -416,6 +420,30 @@ def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
     except OSError:
         pass
     return out
+
+
+def _relay_alive(spec, role):
+    """Whether the wake relay's watch process runs: probed here for a relay role on this host, None for any
+    other role and for a relay role whose host has to say (merge_remote fills it in)."""
+    if not is_wake_relay(role):
+        return None
+    from roles import is_local
+    import health as _h
+    return _h.relay_alive(spec.sid) if is_local(role, spec) else None
+
+
+def relay_word(relay: dict) -> str:
+    """ok / DEAD / ? (not readable from this host)."""
+    return {True: "ok", False: "DEAD"}.get(relay.get("alive"), "?")
+
+
+def relay_doc(roles: list[dict]):
+    """The shoal's relay state from its relay role's row: {"alive": True|False}, or {"alive": None} when the
+    relay runs on a host this one cannot read (no route, or the pull failed and nothing was cached)."""
+    row = next((x for x in roles if x["relay"]), None)
+    if row is None or not row.get("session_id"):
+        return None  # no relay role, or parked: a parked relay is no relay
+    return {"alive": row.get("relay_alive")}
 
 
 def merge_remote(spec, roles: list[dict]) -> None:
@@ -465,13 +493,12 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
              and (age_s(m.get("ts", ""), now) if age_s(m.get("ts", ""), now) is not None else 10**9)
              < PAGE_WINDOW_H * 3600]
     off, frz = view.user_offline(), view.freeze()
-    has_relay = any(is_wake_relay(r) and r.session for r in spec.roles)  # a parked relay is no relay
     doc = {
         "id": spec.sid, "spec": spec_path, "incarnation": spec.incarnation,
         "gen": f"r{spec.incarnation + 1}", "retired": bool(spec.retired_utc), "dir": spec.dir,
         "mode": {"offline": bool(off), "offline_until": (off or {}).get("until"),
                  "freeze": bool(frz), "limit_until": limit_until(spec.sid)},
-        "relay": ({"alive": _h.relay_alive(spec.sid)} if has_relay else None),
+        "relay": relay_doc(roles),
         "pages_24h": len(pages),
         "last_page": _short(pages[-1].get("text"), 160) if pages else None,
         "asks_open": sum(len(r["asks"]) for r in roles),
@@ -733,7 +760,7 @@ def render_text(doc: dict, width: int = 0) -> str:
         if m.get("limit_until"):
             head.append(f"LIMITED until {m['limit_until'][11:16]}Z")  # the account usage limit: wakes are held
         if relay:
-            head.append(f"relay {'ok' if relay['alive'] else 'DEAD'}")
+            head.append(f"relay {relay_word(relay)}")
         if not s["tooling"]["current"]:
             head.append(f"tooling {s['tooling']['sha']} != head {s['tooling']['head']}")
         out.append("  ".join(head))
@@ -799,7 +826,7 @@ def _shoal_bits(s: dict) -> list[str]:
         bits.append("FRZ")
     if m.get("limit_until"):
         bits.append(f"LIMIT {m['limit_until'][11:16]}Z")
-    if s.get("relay") and not s["relay"]["alive"]:
+    if s.get("relay") and s["relay"]["alive"] is False:
         bits.append("relay DEAD")
     return bits
 

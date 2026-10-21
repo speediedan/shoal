@@ -170,6 +170,43 @@ f = far()
 assert f["session"] == "idle" and f["remote_status"]["stale"] and not f["remote_status"]["ok"], f
 print("remote status merge ok")
 PY2
+# the wake relay's watch process runs where the relay role does: a relay on another host is read from that
+# host's rows (relay_alive), unknown when nothing can say, and never DEAD because this host has no watch process
+python3 - "$SPEC" "$S/relay-spec.json" <<'PY2' || fail "relay spec"
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["roles"].append({"slug": "wake-relay", "ecosystem": "claude", "title": "wake-relay", "doc": d["roles"][0]["doc"],
+                   "fill": "none", "session": "relay000", "server": "other-host.invalid"})
+json.dump(d, open(sys.argv[2], "w"))
+PY2
+cat > "$S/relay-rows.json" <<JSON
+{"v": 1, "shoals": [{"id": "$SID", "roles": [{"slug": "wake-relay", "session_id": "relay000", "session": "idle", "watcher": "none",
+ "can_progress": {"ok": true, "reasons": []}, "needs_you": false, "context_k": null, "heartbeat_age_s": 5, "relay_alive": true}]}]}
+JSON
+rm -rf "$SHOAL_ROUTE_CACHE"
+STUB_SSH_RC=0 STUB_SSH_OUT="$S/relay-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$S/relay-spec.json" <<'PY2' || fail "relay read where it runs"
+import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import routes, ui_status, ui_herdr
+def doc():
+    return ui_status.shoal_doc(sys.argv[2], [])
+d = doc()
+assert d["relay"] == {"alive": True}, d["relay"]
+assert ui_herdr.shoal_tokens(d)["shoal_relay"] == "ok"
+# the relay's host says it is down
+rows = open(os.environ["STUB_SSH_OUT"]).read().replace('"relay_alive": true', '"relay_alive": false')
+open(os.environ["STUB_SSH_OUT"], "w").write(rows); [os.remove(os.path.join(routes._cache_dir(), f)) for f in os.listdir(routes._cache_dir())]
+d = doc()
+assert d["relay"] == {"alive": False}, d["relay"]
+assert ui_herdr.shoal_tokens(d)["shoal_relay"] == "DEAD" and "relay DEAD" in ui_status._shoal_bits(d)
+# nothing can say (the host does not answer, nothing cached): unknown, not DEAD
+os.environ["STUB_SSH_RC"] = "255"; os.environ.pop("STUB_SSH_OUT")
+[os.remove(os.path.join(routes._cache_dir(), f)) for f in os.listdir(routes._cache_dir())]
+d = doc()
+assert d["relay"] == {"alive": None}, d["relay"]
+assert ui_herdr.shoal_tokens(d)["shoal_relay"] == "?", ui_herdr.shoal_tokens(d)
+assert "relay DEAD" not in ui_status._shoal_bits(d)
+print("relay read where it runs ok")
+PY2
 # standalone sessions saved on a routed host are mirrored here (label @host) and attach over ssh; a reachable
 # host's list is the truth, an unreachable host's mirrors stay as they were
 printf '{"v": 1, "host": "other-host.invalid", "sessions": [{"harness": "claude", "session": "abcd1234-5555", "label": "lapseat", "turn": "idle", "state": "idle"}]}' > "$S/sa.json"
