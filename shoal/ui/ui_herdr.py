@@ -835,13 +835,14 @@ def role_tokens_for(s: dict, r: dict) -> dict[str, str]:
 
 
 def shoal_tokens(s: dict) -> dict[str, str]:
+    import ui_status
     m = s["mode"]
     c = s.get("conditions") or {}
     return {
         "shoal_mode": "OFFLINE" if m["offline"] else ("FREEZE" if m["freeze"] else "ok"),
         "shoal_needs": str(s["needs_you"]), "shoal_stalled": str(s["stalled"]),
         "shoal_asks": str(s["asks_open"]), "shoal_pages": str(s["pages_24h"]),
-        "shoal_relay": ("" if not s.get("relay") else ("ok" if s["relay"]["alive"] else "DEAD")),
+        "shoal_relay": ("" if not s.get("relay") else ui_status.relay_word(s["relay"])),
         "shoal_conditions": str(len(c.get("open", []))) if c else "",
         "shoal_tooling": "" if s["tooling"]["current"] else f"{s['tooling']['sha']}->{s['tooling']['head']}",
     }

@@ -250,6 +250,11 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   why (host unreachable, or attached elsewhere) and retries every 30 s instead of taking the session over
   (`q` gives up, `r` retries now). A role whose host has no route has no card: it stays in the overview table
   with its host, answered by mail.
+- **The relay is read where it runs.** The wake relay's watch process is visible only on its own host, so a
+  relay role on another host reports `relay_alive` in that host's rows (a live field, pulled like the rest) and
+  the shoal's `relay` is `{"alive": true|false}` from it. When nothing can say (no route, or a failed pull with
+  nothing cached) it is `{"alive": null}`: the status text and the sidebar show `relay ?` (the line shows nothing), never `DEAD`, and the
+  `relay-dead` condition is raised only by the host that runs the relay.
 - **Live state of routed remote roles.** Harness liveness and sidecars are readable only on the role's host,
   so the read model pulls that host's own rows (`shoal ui status --shoal <id> --rows-only --json`, which has
   no usage and never pulls further hosts) over the route, cached 30 s, and takes their live fields
