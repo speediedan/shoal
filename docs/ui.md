@@ -365,6 +365,19 @@ Herdr splits its configuration by machine:
   usage turns compact (`cx 4/23/- cl 10/87/-`). The launcher attaches with
   `--remote-keybindings server`, so the server's keys reach the client.
 
+**Setting up a host.** Every host first installs the pinned Herdr (`shoal ui herdr-get`); `shoal ui doctor`
+then checks it. After that, the steps depend on what the host is for:
+
+| Host | One-time setup | Every day |
+|---|---|---|
+| **Lane host** (runs roles; serves the view) | `shoal ui herdr-install` (server block in `config.toml`, plugin, the `shoal-herdr` and `shoal-ui-feed` units, layouts) | `shoal ui launch` in a terminal there (local: the running server, a client with the client rows), or from another host |
+| **Viewing machine** (draws another host's view) | `shoal ui herdr-config --client --write` (sidebar rows in `config.toml`), and a `[hosts.<server>]` route per lane host in the host config | `shoal ui launch --server <server>`, or pick it in the chooser |
+| **Local-view host** (its own terminal also serves; a laptop that runs roles) | nothing extra: the first `shoal ui launch` (local) runs `herdr-install --local` | `shoal ui launch` (local), with routes to reach other hosts' roles |
+
+A host can be more than one of these. A laptop is a viewing machine for the lane host and a local-view host for its
+own roles, and the chooser picks per launch. Routes are private host configuration (`config/host.toml`,
+gitignored), and the ssh key is the only authority.
+
 ```bash
 shoal ui herdr-config --server [--write]   # lane host: restore off, version checks off, keys
 shoal ui herdr-config --client [--write]   # viewing machine: sidebar rows, the `ui line` segment
@@ -396,7 +409,8 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 - **No configuration beyond the routes,** by design until Herdr machines are in use.
 - **local:**
   - a host provisioned for the local view keeps its file;
-  - a lane host is started as it is;
+  - a lane host is started as it is, and its terminal client reads the merged local file (the client rows too;
+    the server never reads it);
   - a host with neither is provisioned with `herdr-install --local`;
   - then `ui open`, and a local client.
 - **remote:** over the route, the host's `shoal-herdr` unit is started and its `ui open` run, then

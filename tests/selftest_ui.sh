@@ -1016,6 +1016,11 @@ OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV $H ui launch --server loca
 grep -q "exec $S/herdr-stub --session shoal   (config $S/xdg-launch/herdr/shoal-local.toml)" <<<"$OUT" \
   || fail "a host with no shoal-herdr unit is provisioned for the local view :: $OUT"
 [ ! -e "$S/state/shoal/launch.last" ] || fail "a dry run remembered a choice"
+# a lane host (its unit reads config.toml): the server is left as it is; its own client reads the merged local file
+mkdir -p "$S/xdg-lane/systemd/user" && printf '[Service]\nEnvironment=HERDR_SESSION=shoal\n' > "$S/xdg-lane/systemd/user/shoal-herdr.service"
+OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV XDG_CONFIG_HOME="$S/xdg-lane" $H ui launch --server local --dry-run) || fail "lane local dry-run :: $OUT"
+grep -q "exec $S/herdr-stub --session shoal   (config $S/xdg-lane/herdr/shoal-local.toml)" <<<"$OUT" || fail "lane host client config :: $OUT"
+[ ! -e "$S/xdg-lane/herdr/shoal-local.toml" ] || fail "a dry run wrote the lane client's config"
 # unreachable: fails within the ssh timeout, says so with the doctor hint, never runs the client
 rm -rf "$SHOAL_ROUTE_CACHE"
 OUT=$(env -u HERDR_SOCKET_PATH -u HERDR_SESSION $LENV STUB_SSH_RC=255 STUB_HERDR_LOG="$S/herdr.log" \
