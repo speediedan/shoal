@@ -811,6 +811,11 @@ def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> 
     return f"re-armed by the quorum ({wake.split(':')[0]}; no wake)"
 
 
+def is_local_any(spec: ShoalSpec) -> bool:
+    """True when at least one role of the shoal runs on this host (its transcripts are here)."""
+    return any(is_local(r, spec) for r in spec.roles)
+
+
 def claude_installed_version() -> str:
     """The installed Claude Code version (`claude --version`), '' when unknown."""
     from backends import fake_sessions, tool_which
@@ -1048,6 +1053,15 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
     conds += host_beats(spec, led, state, dry_run)
+    if not dry_run and is_local_any(spec) and health_cfg(spec).get("context_snapshot", True):
+        try:
+            # one context-cost snapshot per host per UTC day (context_cost.py): the first run after midnight writes it
+            import context_cost
+            p_ = context_cost.write_snapshot()
+            if p_:
+                acts.append(("health", "context snapshot", p_))
+        except Exception as exc:  # noqa: BLE001 - a snapshot never breaks a health run
+            acts.append(("health", "context snapshot", f"skipped ({str(exc)[:80]})"))
     try:
         stale_worker_upkeep(spec, acts, dry_run, state)
     except Exception as exc:  # noqa: BLE001 - upkeep never breaks a health run

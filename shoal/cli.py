@@ -76,6 +76,7 @@ import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
+import context_cost as _context_cost  # noqa: E402
 import startdoc as _startdoc  # noqa: E402
 from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    is_wake_relay, home_dir, state_dir, utcnow_iso)
@@ -1174,6 +1175,7 @@ def main(argv: list[str] | None = None) -> int:
     _kill_audit.add_parser(sub)
     _aux.add_parsers(sub)
     _upgrade.add_parser(sub)
+    _context_cost.add_parser(sub)
     _startdoc.add_parser(sub)
     _ui_parsers(sub)
 

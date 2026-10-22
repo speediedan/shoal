@@ -55,6 +55,30 @@ doc. Each harness implements it in its own way:
 
 So a session cleared by hand runs fine until its worker is retired. A new job does not have that problem.
 
+## Setting the limit
+
+Context cost is measured, not guessed: `shoal context-report [--days N] [--json]` reads this host's Claude transcripts, with no
+model calls. Per session it reports:
+- calls and calls per day;
+- cold calls (more than half the context written fresh) and cold wakes (gaps over the cache's hour);
+- average and current context;
+- the cost split (warm reads, writes, cold writes, output), and the cost in base-input tokens (cache read 0.1, 1 h write
+  2.0, output 5.0);
+- the payback of a handover at the current context, in warm calls and in cold wakes.
+
+The first health run on each host after midnight UTC writes yesterday's snapshot to
+`<data_root>/_context/<server>-<YYYY-MM-DD>.json` (`features.health.context_snapshot`, default on; `context-report
+--snapshot` by hand). A few days of snapshots show each session's pattern, busy or mostly idle, and that is what a limit is
+set from.
+
+Two regimes were measured (2026-10-22):
+- **A busy interactive session** pays 70 to 80% of its cost in warm reads, a tenth of its context on every call. A handover
+  at 850k repays after about 8 calls.
+- **A mostly idle role** pays mostly in cold rebuilds, twice its context per wake. A handover repays on its first cold wake.
+
+So the token case for a handover arrives early in both. The limit is mostly a judgment about continuity: how well the
+start doc carries a session.
+
 ## Related upkeep
 
 **Stale workers** (`features.health.stale_upkeep`, default on). A Claude worker running an older Claude Code than the
