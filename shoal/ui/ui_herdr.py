@@ -612,7 +612,8 @@ def standalone_label(e: dict) -> str:
 def standalone_argv(e: dict) -> list[str]:
     return shoal_argv("view", "--harness", e["harness"], "--session", e["session"],
                       "--label", e.get("label") or e["session"][:12], "--stub",
-                      *(["--host", e["host"]] if e.get("host") else []))
+                      *(["--host", e["host"]] if e.get("host") else []),
+                      *(["--job", e["job"]] if e.get("job") else []))
 
 
 def local_standalone() -> list[dict]:
@@ -628,13 +629,30 @@ def cmd_standalone(a) -> int:
     out = []
     for e in local_standalone():
         st, hstate = standalone_state(e, rows)
-        out.append({k: e[k] for k in ("harness", "session", "label", "cwd") if e.get(k)} | {"turn": st, "state": hstate})
+        out.append({k: e[k] for k in ("harness", "session", "job", "label", "cwd") if e.get(k)} | {"turn": st, "state": hstate})
     if getattr(a, "json", False):
         print(json.dumps({"v": 1, "host": config.server(), "sessions": out}))
     else:
         for x in out:
             print(f"{x['harness']:<8} {x.get('label', ''):<40} {x['turn']:<9} {x['session'][:16]}")
     return 0
+
+
+def record_claude_jobs(entries: list[dict]) -> bool:
+    """Give each local Claude entry its job id (stable across `/clear`), resolved while the stored conversation id
+    still names it; the card then finds the session by job even after its conversation id changes."""
+    import ui_status
+    rows = None
+    changed = False
+    for e in entries:
+        if e.get("harness") != "claude" or e.get("host") or e.get("job"):
+            continue
+        rows = ui_status.claude_rows() if rows is None else rows
+        r = ui_status.claude_session(rows, e["session"])
+        if r is not None and r.get("id"):
+            e["job"] = str(r["id"])
+            changed = True
+    return changed
 
 
 def reconcile_remote_standalone(entries: list[dict]) -> tuple[bool, list[str]]:
@@ -661,6 +679,7 @@ def reconcile_remote_standalone(entries: list[dict]) -> tuple[bool, list[str]]:
         for k, g in want.items():
             if k not in have:
                 keep.append({"harness": g["harness"], "session": g["session"], "host": host,
+                             **({"job": g["job"]} if g.get("job") else {}),
                              "label": f"{(g.get('label') or g['session'][:12])[:32]}@{host}"})
                 changed = True
         entries[:] = keep
@@ -744,8 +763,8 @@ def candidates_standalone(exclude: set[str]) -> list[dict]:
             continue
         if internal_session(str(e.get("name") or ""), slugs):
             continue
-        out.append({"harness": "claude", "session": sid, "label": str(e.get("name") or sid[:8])[:40],
-                    "state": e.get("state"), "cwd": e.get("cwd")})
+        out.append({"harness": "claude", "session": sid, "job": str(e.get("id") or ""),
+                    "label": str(e.get("name") or sid[:8])[:40], "state": e.get("state"), "cwd": e.get("cwd")})
     try:
         r = subprocess.run(["openchamber", "session", "list", "--limit", "15", "--with-status", "--json"],
                            capture_output=True, text=True, timeout=30, env=config.tool_env())
@@ -863,7 +882,7 @@ def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
     import ui_status
     harness = e.get("harness") or ""
     if harness == "claude":
-        row = ui_status.claude_session(rows, e["session"]) or {}
+        row = ui_status.claude_session(rows, e["session"], e.get("job", "")) or {}
         st = ui_status.claude_turn(row) if row else "unknown"
         return st, {"working": "working", "blocked": "blocked"}.get(st, "idle")
     if harness in ("muse", "codex", "opencode"):
@@ -1004,6 +1023,8 @@ def cmd_open(a) -> int:
             print(("[dry-run] " if a.dry_run else "") + line)
         entries = load_standalone(raw=True)
         changed, notes = reconcile_remote_standalone(entries)
+        if record_claude_jobs(entries):
+            changed = True
         for line in notes:
             print(("[dry-run] " if a.dry_run else "") + line)
         if changed and not a.dry_run:

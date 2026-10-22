@@ -81,9 +81,10 @@ def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, 
     while True:
         if standalone:
             r = routes.route(server)
-            h_, sess, lab = standalone
+            h_, sess, lab, *rest = standalone
+            job = rest[0] if rest else ""
             argv = (routes.ssh_argv(r, tty=True) + [routes.remote_cmd(r, "view", "--harness", h_, "--session", sess,
-                                                                      "--label", lab)]) if r else None
+                                                                      "--label", lab, *(["--job", job] if job else []))]) if r else None
         else:
             argv = routes.view_argv(server, sid, slug)
         if argv is None:
@@ -107,15 +108,19 @@ def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, 
         flush_input()
 
 
-def verify_listed(harness: str, session: str) -> str:
-    """'' when the harness lists the session with a live worker, else why not. Never guesses."""
+def verify_listed(harness: str, session: str, job: str = "") -> str:
+    """'' when the harness lists the session, else why not. Never guesses. A Claude session is found by its job id
+    or any conversation id it has had (backends.claude_find), so a `/clear` does not strand it. One with no worker
+    (retired idle by the background service, or stopped) is still viewable: `claude attach` wakes its worker
+    without a turn (measured 2026-10-22: "Waking session", pid back, no new assistant message)."""
     if harness == "claude":
         import ui_status
-        e = ui_status.claude_session(ui_status.claude_rows(), session)
+        e = ui_status.claude_session(ui_status.claude_rows(), session, job)
         if e is None:
-            return f"session {session} is not listed by `claude agents` (relaunched? re-resolve, never guess)"
+            return f"session {session} is not listed by `claude agents` (removed? re-resolve, never guess)"
         if not e.get("pid"):
-            return f"session {session} has no worker (state {e.get('state')}): it is dead, not viewable"
+            print(f"shoal view: {e.get('id')} has no worker (state {e.get('state')}, retired idle or stopped): "
+                  f"attaching wakes its worker; no turn is taken")
         return ""
     return ""  # opencode: the server rejects an unknown session id itself
 
@@ -126,12 +131,12 @@ def viewer(harness: str, session: str) -> tuple[list[str], dict[str, str]]:
     return argv, clean_env(extra)
 
 
-def run_viewer(harness: str, session: str, label: str) -> int:
-    why = verify_listed(harness, session)
+def run_viewer(harness: str, session: str, label: str, job: str = "") -> int:
+    why = verify_listed(harness, session, job)
     if why:
         print(f"shoal view: {label}: {why}")
         return 1
-    argv, env = viewer(harness, session)
+    argv, env = viewer(harness, session if not job else job)
     print(f"shoal view: {label} -> {harness} {session} (detach to come back; the session keeps running)")
     r = subprocess.run(argv, env=env)
     if r.returncode != 0 and harness == "claude":
@@ -284,7 +289,7 @@ def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: s
     return argv + [sid, slug] + (["--spec", spec_path] if spec_path else [])
 
 
-def standalone_stub(harness: str, session: str, label: str, host: str = "") -> int:
+def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
     while True:
@@ -301,7 +306,7 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "") -> i
                 return 0
             if k in ("\r", "\n"):
                 flush_input()
-                remote_attach(host, "", "", standalone=(harness, session, label.rsplit("@", 1)[0]))
+                remote_attach(host, "", "", standalone=(harness, session, label.rsplit("@", 1)[0], job))
                 time.sleep(2)
             continue
         hint = (DETACH_HINT if harness not in ("muse", "codex") else
@@ -315,7 +320,8 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "") -> i
             return 0
         if k in ("\r", "\n"):
             flush_input()
-            subprocess.run(_view_cmd("", "", "", harness=harness, session=session, label=label))
+            subprocess.run(_view_cmd("", "", "", harness=harness, session=session, label=label)
+                           + (["--job", job] if job else []))
             time.sleep(2)
 
 
@@ -330,10 +336,13 @@ def cmd_view(a) -> int:
                 argv, env = viewer(a.harness, a.session)
                 print(json.dumps({"argv": argv, "env_extra": sorted(k for k in env if k not in os.environ)}))
                 return 0
+            job = getattr(a, "job", "") or ""
             if getattr(a, "host", ""):
-                return (standalone_stub(a.harness, a.session, label, a.host) if a.stub else
-                        remote_attach(a.host, "", "", standalone=(a.harness, a.session, label.rsplit("@", 1)[0])))
-            return standalone_stub(a.harness, a.session, label) if a.stub else run_viewer(a.harness, a.session, label)
+                return (standalone_stub(a.harness, a.session, label, a.host, job) if a.stub else
+                        remote_attach(a.host, "", "", standalone=(a.harness, a.session, label.rsplit("@", 1)[0], job)))
+            job = getattr(a, "job", "") or ""
+            return (standalone_stub(a.harness, a.session, label, job=job) if a.stub
+                    else run_viewer(a.harness, a.session, label, job))
         if not (a.target_shoal and a.role):
             print("usage: shoal view <shoal> <role> | shoal view --harness H --session ID")
             return 2
@@ -367,5 +376,6 @@ def add_parser(sub) -> None:
     p.add_argument("--label", default="")
     p.add_argument("--stub", action="store_true", help="role card that attaches on Enter (UI layouts)")
     p.add_argument("--host", default="", help="with --session: the standalone session lives on this routed host")
+    p.add_argument("--job", default="", help="with --harness claude: the background job id (stable across /clear)")
     p.add_argument("--dry-run", action="store_true", help="print the client argv (and env NAMES) only")
     p.set_defaults(func=cmd_view)

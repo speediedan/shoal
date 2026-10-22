@@ -372,7 +372,17 @@ def claude_busy() -> dict[str, str]:
             r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
             rows = json.loads(r.stdout or "[]")
         # a session blocked on a question to the maintainer is never "between turns"
-        return {str(e.get("sessionId", "")): claude_liveness(e) for e in rows}
+        # keyed by every id a role may have stored: the current conversation, the job id and the job's original
+        # conversation (a `/clear` changes the first; backends.claude_find)
+        from backends import claude_original
+        out = {}
+        for e in rows:
+            live = claude_liveness(e)
+            for k in (str(e.get("sessionId", "")), str(e.get("id", "")),
+                      str(e.get("originalSessionId") or claude_original(str(e.get("id", ""))))):
+                if k:
+                    out.setdefault(k, live)
+        return out
     except Exception:
         return {}
 
@@ -391,10 +401,18 @@ def claude_worker_gone(role, cbusy: dict[str, str]) -> bool:
 
 
 def claude_transcript(session: str) -> str:
-    """The newest transcript file of a Claude session, or ""."""
+    """The newest transcript file of a Claude session, or "": of its CURRENT conversation, since a `/clear` starts
+    a new transcript under a new id (backends.claude_current)."""
     import glob
     base = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "projects")
-    hits = glob.glob(os.path.join(base, "*", f"{session}*.jsonl")) if session else []
+    hits = []
+    if session:
+        try:
+            from backends import claude_current
+            cur = claude_current(session)
+        except Exception:  # noqa: BLE001
+            cur = session
+        hits = glob.glob(os.path.join(base, "*", f"{cur}*.jsonl")) or glob.glob(os.path.join(base, "*", f"{session}*.jsonl"))
     return max(hits, key=os.path.getmtime) if hits else ""
 
 

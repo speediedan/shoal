@@ -284,6 +284,63 @@ RESUME_SETTLE_S = 6.0
 COPY_RE = re.compile(r"started a copy as ([0-9a-f]{8})")
 
 
+# ---- Claude identity -----------------------------------------------------------------------------------------
+# A Claude background session has a stable JOB id (8 hex, what `claude attach`, `stop` and `respawn` take) and a
+# CONVERSATION id that changes on `/clear` (measured 2026-10-22: job aaeab104 went from conversation aaeab104-f4c9..
+# to 31873623-.. and its viewer card refused it as "not listed"). `claude agents` reports the current conversation;
+# the job's state.json keeps the original one. Shoal stores whichever id it saw (a spec keeps the launch id, a
+# viewer registry the id current when it was saved), so every lookup resolves a stored id against all three.
+
+def claude_original(job: str) -> str:
+    """The conversation id a Claude job was started with (its state.json), '' when unknown."""
+    if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job) or fake_sessions() is not None:
+        return ""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    try:
+        import json as _json
+        with open(os.path.join(base, "jobs", job, "state.json")) as fh:
+            return str((_json.load(fh) or {}).get("sessionId") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _same(a: str, b: str) -> bool:
+    return bool(a and b) and (a == b or a.startswith(b) or b.startswith(a))
+
+
+def claude_find(rows: list, session: str, job: str = "") -> dict | None:
+    """The `claude agents` row a stored id names: by an explicit job id first, then the current conversation id, the
+    job id (a stored id's first 8 characters) and the job's original conversation id (rows may carry it as
+    `originalSessionId`, tests). None when nothing matches: never a guess."""
+    if job:
+        e = next((e for e in rows if str(e.get("id", "")) == job), None)
+        if e is not None:
+            return e
+    if not session:
+        return None
+    for e in rows:
+        if _same(str(e.get("sessionId", "")), session):
+            return e
+    for e in rows:
+        jid = str(e.get("id", ""))
+        if jid and (jid == session or jid == session[:8]):
+            return e
+    for e in rows:
+        orig = str(e.get("originalSessionId") or claude_original(str(e.get("id", ""))))
+        if _same(orig, session):
+            return e
+    return None
+
+
+def claude_current(session: str, job: str = "") -> str:
+    """The conversation id a stored id names now (after any `/clear`), else the stored id itself."""
+    try:
+        e = claude_find(get("claude")._agents(include_stopped=True), session, job)
+    except Exception:  # noqa: BLE001
+        e = None
+    return str((e or {}).get("sessionId") or session)
+
+
 def direct_wake_mode(spec) -> str:
     """features.health.direct_wake: 'off', 'dead' (resume a session with no worker: no relay turn) or
     'idle' (also stop and resume a live session idle at its prompt with nothing in flight). Default
@@ -545,11 +602,7 @@ class ClaudeBackend(Backend):
             return []
 
     def _row(self, session_id: str, include_stopped: bool = False) -> dict | None:
-        for e in self._agents(include_stopped):
-            sid = str(e.get("sessionId", ""))
-            if sid == session_id or sid.startswith(session_id) or str(e.get("id", "")) == session_id[:8]:
-                return e
-        return None
+        return claude_find(self._agents(include_stopped), session_id)
 
     def session_dead(self, session_id: str) -> bool | None:
         """True when the session is listed but has no worker process. Plain `claude agents --json`
@@ -585,11 +638,9 @@ class ClaudeBackend(Backend):
         return "\n".join(lines[-max(limit, 1) * 4:])
 
     def status(self, session_id: str, repo_dir: str) -> str:
-        for e in self._agents():
-            sid = str(e.get("sessionId", ""))
-            if sid == session_id or sid.startswith(session_id) \
-                    or str(e.get("id", "")) == session_id:
-                return f"{e.get('name', '?')} state:{e.get('state', '?')}"
+        e = claude_find(self._agents(), session_id)
+        if e is not None:
+            return f"{e.get('name', '?')} state:{e.get('state', '?')}"
         return "not-listed (retired or unknown id)"
 
     def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:

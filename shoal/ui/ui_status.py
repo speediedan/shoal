@@ -142,14 +142,10 @@ def claude_rows() -> list[dict]:
         return []
 
 
-def claude_session(rows: list[dict], session: str) -> dict | None:
-    if not session:
-        return None
-    for e in rows:
-        sid = str(e.get("sessionId", ""))
-        if sid == session or sid.startswith(session) or session.startswith(sid) and sid:
-            return e
-    return None
+def claude_session(rows: list[dict], session: str, job: str = "") -> dict | None:
+    """The row a stored Claude id names (backends.claude_find: job id, current or original conversation id)."""
+    from backends import claude_find
+    return claude_find(rows, session, job)
 
 
 # session_state() -> health.session_between_turns() semantics: True between turns, False mid-turn
@@ -908,9 +904,8 @@ def pending_question(row: dict, session: str) -> bool:
 
 
 def _claude_transcript(session: str) -> str:
-    base = os.path.expanduser("~/.claude/projects")
-    hits = glob.glob(os.path.join(base, "*", f"{session}*.jsonl")) if session else []
-    return max(hits, key=os.path.getmtime) if hits else ""
+    import health as _h
+    return _h.claude_transcript(session)  # the current conversation's transcript, after any `/clear`
 
 
 def _opencode_updated() -> dict[str, int]:

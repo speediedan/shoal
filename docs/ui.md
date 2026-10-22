@@ -328,6 +328,18 @@ once a saved session has had a workspace, a later `ui open` that finds it gone (
 labelled panes, so not a fresh server) marks it `dismissed` and leaves it closed across viewer restarts.
 `shoal ui open --show <label>` brings it back, `shoal ui pick --save` re-saves it, `shoal ui forget` drops it.
 
+**Claude identity: job id, not conversation id.**
+- **The two ids:** a Claude background session has a stable job id, the 8 hex that `claude attach`, `stop` and `respawn` take.
+  It also has a conversation id, which a `/clear` replaces.
+- **What shoal stores:** a spec keeps the id a role was launched with. The registry keeps the id current when the session was
+  saved, plus its `job` (recorded by the next `ui open`).
+- **How it resolves:** every lookup (cards, `shoal view`, health, watchers, the context advisory) matches a stored id against
+  the job id, the current conversation id and the job's original one, from its `state.json`.
+- **After a `/clear`:** nothing has to be refreshed. The card still attaches, and transcript reads follow the new
+  conversation.
+- **Retired sessions:** one with no worker (retired after 8 h idle, or stopped) is still attachable. `claude attach` wakes its
+  worker without taking a turn.
+
 **Standalone sessions on other hosts.** On `ui open`, each host with a route is asked for its own saved
 standalone sessions (`shoal ui standalone --json` over the route, cached 30 s), and they are mirrored into this
 registry with `host` set and the label suffixed `@<host>`. They get cards like local ones, and Enter attaches
