@@ -1092,5 +1092,31 @@ assert ui_herdr.record_claude_jobs(entries) and entries[0]["job"] == "abcd1234" 
 assert ui_herdr.standalone_argv(entries[0])[-2:] == ["--job", "abcd1234"], ui_herdr.standalone_argv(entries[0])
 print("claude identity ok")
 PY2
+# Claude Code updated while attached: the client's binary is gone, its reconnect fails; one fresh reattach follows
+python3 - "$SHOALD" "$S" <<'PY2' || fail "reattach after update"
+import io, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_view
+d = sys.argv[2]; old = os.path.join(d, "claude-old"); new = os.path.join(d, "claude-new"); log = os.path.join(d, "attach.log")
+for p, rc in ((old, 1), (new, 0)):
+    open(p, "w").write(f"#!/bin/sh\necho $0 >> {log}\nexit {rc}\n"); os.chmod(p, 0o755)
+calls = iter([old, new])
+ui_view.verify_listed = lambda *a, **k: ""
+def viewer(h, s):
+    return [next(calls), "attach", s], dict(os.environ)
+ui_view.viewer = viewer
+orig_run = ui_view.subprocess.run
+def run(argv, env=None):
+    r = orig_run(argv, env=env)
+    if argv[0] == old:
+        os.remove(old)  # simulate the update landing during the attach
+    return r
+ui_view.subprocess.run = run
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = ui_view.run_viewer("claude", "abcd1234", "seat")
+assert rc == 0 and "updated while attached" in buf.getvalue(), buf.getvalue()
+assert open(log).read().split() == [old, new], open(log).read()
+print("reattach after update ok")
+PY2
 
 echo "SELFTEST PASS ($S)"

@@ -138,11 +138,33 @@ def run_viewer(harness: str, session: str, label: str, job: str = "") -> int:
         return 1
     argv, env = viewer(harness, session if not job else job)
     print(f"shoal view: {label} -> {harness} {session} (detach to come back; the session keeps running)")
+    binary = os.path.realpath(argv[0]) if harness == "claude" else ""
     r = subprocess.run(argv, env=env)
+    if r.returncode != 0 and binary and replaced(binary):
+        # Claude Code updated itself while attached: the running client's own binary is gone, so its reconnect
+        # (which respawns the background service from that path) fails (measured 2026-10-22: "posix_spawn
+        # '...claude.exe (deleted)'"). A fresh client on the new binary reattaches the same session; no turn is taken.
+        print("shoal view: Claude Code was updated while attached (the old binary is gone); reattaching on the new "
+              "version")
+        argv, env = viewer(harness, session if not job else job)
+        r = subprocess.run(argv, env=env)
     if r.returncode != 0 and harness == "claude":
-        print(f"shoal view: attach exited {r.returncode}: is the session attached in another terminal? "
-              "Detach it there first (attach is exclusive). Nothing was resumed or started.")
+        print(f"shoal view: attach exited {r.returncode}: attached in another terminal (attach is exclusive), or the "
+              f"background service is down (`claude daemon status`). Nothing was resumed or started.")
     return r.returncode
+
+
+def replaced(binary: str) -> bool:
+    """True when the binary a client was started from no longer exists, or the name now resolves elsewhere (an update
+    replaced the package while the client ran)."""
+    if not os.path.exists(binary):
+        return True
+    try:
+        from backends import tool_which
+        now = tool_which("claude")
+        return bool(now) and os.path.realpath(now) != binary
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def flush_input() -> None:
