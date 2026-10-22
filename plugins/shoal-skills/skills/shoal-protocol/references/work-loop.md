@@ -76,8 +76,10 @@ only together with a raised, recorded ask.
 Every wake re-reads your whole context, so a long-lived session gets more expensive to wake. When
 `next` or a wake prints `CONTEXT <n>k (limit <m>k)`, hand over at your next quiet boundary (nothing
 mid-flight): refresh your start doc so a fresh session can continue from it alone (current state,
-decisions taken, next steps), then end the turn with `queue --idle --restart-ready` (or your wait plus
-`--restart-ready`). The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
+decisions taken, next steps), update its `Last updated: <UTC>` line, then end the turn with
+`queue --idle --restart-ready` (or your wait plus `--restart-ready`). The flag is refused for a doc not
+refreshed since the advisory or missing a required section; `shoal doc-check <doc>` says which (the
+contract: shoal `docs/start-doc.md`). The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
 yourself, and never mark `--restart-ready` with an item active.
 
 ## Wakes

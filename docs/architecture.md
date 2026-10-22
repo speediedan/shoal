@@ -67,7 +67,7 @@ to match against), so a group can work from other trackers or a plain file.
 | host config | `shoal/config.py`, `config/host.toml` | always | every host-specific value (section 8) |
 | spec | `shoals/<id>/shoal.json` in the ledger repository (`shoal/roles.py`, `shoal/layout.py`) | always | roles, sources, repos, `features`, generation history |
 | ledger | `shoals/<id>/ledger/<writer>.jsonl` (`shoal/ledger.py`, `shoal/ledger_cli.py`) | always | all traffic between roles; one writer per file |
-| role start doc | each role's `plan_state.md` | always | mission, current state, `grants-needed` |
+| role start doc | each role's `plan_state.md` | always | mission, current state, next steps, `grants-needed`, a `Last updated` stamp (the contract: [`start-doc.md`](start-doc.md); `shoal doc-check`) |
 | briefs | `shoal/briefs.py` | always | the first prompt of every session, identical in shape for every role |
 | work loop | `shoal/worker.py` (`next`, `queue`, `asks`, `offline`, `freeze`) | `workwake` | one read and one write per boundary |
 | session watcher | `shoal/ledger_watch.py` (`ledger-watch`) | always (work-only waking with `workwake`) | wakes its own session |
@@ -392,13 +392,15 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 | key (`features.health`) | default | effect |
 | --- | --- | --- |
 | `context_restart_k` | 300 | the context size, in thousands of tokens, past which a role is advised to hand over; 0 is off. A dict sets it per role, with `"*"` as the default: `{"*": 300, "<slug>": 0}` exempts a session that needs a large context |
-| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>` |
+| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
 
-1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line. It asks the role, at its next boundary
+1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line (`next` records when the session was first
+   shown it). It asks the role, at its next boundary
    with nothing mid-flight, to refresh its start doc (current state, decisions taken, next steps) and end with
    `queue --idle --restart-ready`, or with its wait plus `--restart-ready`. No extra wake is spent on it.
-2. A restart-ready role between turns raises `context-restart`, page or restart as configured, keyed by its session. A
-   later queue write without the flag clears it.
+2. `--restart-ready` is refused unless the start doc meets the contract and its `Last updated` stamp is at or after that first
+   advisory ([`start-doc.md`](start-doc.md)). A restart-ready role between turns raises `context-restart`, page or restart as
+   configured, keyed by its session. A later queue write without the flag clears it.
 3. The new incarnation reads that start doc: the refresh is the handoff.
 4. The overview row carries `context_k`, and `context-large` is an informational reason.
 

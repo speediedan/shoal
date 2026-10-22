@@ -329,6 +329,8 @@ def cmd_next(a) -> int:
         adv = _ctx.advisory(spec, me)
         if adv:
             out.append(adv)
+            if not getattr(a, "peek", False):
+                _ctx.mark_advised(spec, me)
     except Exception:  # noqa: BLE001 - an advisory never breaks `next`
         pass
     # MAIL prints right after the identity and offline lines: a `next` piped through `head` must still
@@ -674,6 +676,18 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         print("ERROR: --restart-ready marks a quiet boundary: idle or waiting, never with an active item "
               "(nothing written)")
         return 3
+    if a.restart_ready:
+        # the proof of refresh (docs/start-doc.md): the start doc meets the contract and was stamped since this session
+        # was first advised (else since its previous boundary), so the fresh session continues from current state
+        import context as _ctx
+        import startdoc as _sd
+        since_s = _ctx.advised_since(spec, role) or prev.get("ts", "")
+        r = _sd.check(role.doc, _sd.parse_ts(since_s) if since_s else None) if role.doc else \
+            {"ok": False, "problems": ["the role has no start doc in the spec"]}
+        if not r["ok"]:
+            print(f"ERROR: --restart-ready needs a refreshed start doc ({role.doc or 'none'}): "
+                  + "; ".join(r["problems"]) + " (nothing written)")
+            return 3
     if bcfg is not None and posture == "idle" and view.freeze() is None and role.fill == "self":
         # a short queue is not a reason to idle while the board offers eligible work (measured
         # 2026-09-29: two lanes idle 2.5 h and 11.5 h beside 2 and 8 eligible candidates)
