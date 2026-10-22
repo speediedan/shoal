@@ -375,6 +375,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
 | `wake_gap_min` | 30 | at least this long between two health wakes of one role |
 | `wake_off` | none | conditions that never wake, only page (for example `["parked-work", "hold-long"]`) |
+| `stale_upkeep` | on | respawn an idle Claude worker that runs an older Claude Code than the installed one (no turn); report a busy one once per version. An old worker's updater keeps reinstalling the current version, and each reinstall restarts the background service and drops attached clients ([`handover.md`](handover.md), "Related upkeep") |
 
 And every run sends **at most one wake per role**, carrying every condition then due.
 

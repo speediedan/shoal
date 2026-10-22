@@ -811,6 +811,74 @@ def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> 
     return f"re-armed by the quorum ({wake.split(':')[0]}; no wake)"
 
 
+def claude_installed_version() -> str:
+    """The installed Claude Code version (`claude --version`), '' when unknown."""
+    from backends import fake_sessions, tool_which
+    if fake_sessions() is not None:
+        return config.env("FAKE_CLAUDE_VERSION")
+    b = tool_which("claude")
+    if not b:
+        return ""
+    try:
+        out = subprocess.run([b, "--version"], capture_output=True, text=True, timeout=20, env=_ENV).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    m = re.search(r"\d+\.\d+\.\d+", out)
+    return m.group(0) if m else ""
+
+
+def claude_roster() -> dict:
+    """{job id: {pid, cliVersion, ...}} from the background service's roster: the version each worker RUNS (a job's
+    state.json `cliVersion` updates only at its next turn). SHOAL_FAKE_ROSTER (tests)."""
+    raw = config.env("FAKE_ROSTER")
+    if raw:
+        return json.loads(raw)
+    p = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "daemon", "roster.json")
+    try:
+        d = json.load(open(p))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, state: dict | None = None) -> None:
+    """Respawn this host's idle Claude role workers that run an older Claude Code than the installed one (no turn:
+    `claude respawn` brings a new worker on the same conversation, idle at its prompt). An old worker's own updater
+    keeps reinstalling the current version, and every reinstall restarts the background service and drops every
+    attached client (measured 2026-10-22: 124 restarts in a day, driven by three workers on 2.1.292 and 2.1.304). A
+    busy stale worker (the wake relay runs relay-watch) is reported, not touched (features.health.stale_upkeep,
+    default on)."""
+    if not health_cfg(spec).get("stale_upkeep", True):
+        return
+    want = claude_installed_version()
+    roster = claude_roster()
+    if not want or not roster:
+        return
+    from backends import claude_find, fake_sessions, get as get_backend
+    be = get_backend("claude")
+    rows = list((fake_sessions() or {}).get("claude") or []) if fake_sessions() is not None else be._agents(True)
+    for role in spec.roles:
+        if role.ecosystem != "claude" or not role.session or not is_local(role, spec):
+            continue
+        e = claude_find(rows, role.session)
+        job = str((e or {}).get("id") or "")
+        have = str((roster.get(job) or {}).get("cliVersion") or "")
+        if not job or not have or have == want or not (e or {}).get("pid"):
+            continue
+        st = claude_job_state(e)
+        fl = st.get("inFlight") or {}
+        idle = claude_liveness(e) == "idle" and not (isinstance(fl, dict) and (fl.get("tasks") or fl.get("kinds")))
+        if not idle:
+            seen = (state if state is not None else {}).setdefault("stale_reported", {})
+            if seen.get(job) != have:  # once per worker and version, not every run
+                seen[job] = have
+                acts.append((role.slug, "stale worker", f"runs Claude {have}, installed {want}; busy, so left as it "
+                                                        f"is (relaunch it at a quiet moment)"))
+            continue
+        acts.append((role.slug, "stale worker", f"runs Claude {have}, installed {want}: "
+                                                + be.respawn(job, dry_run) + " (no turn)"))
+
+
 def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False) -> str:
     """features.health.context_restart `auto`: hand a restart-ready role to a fresh session. The old Claude
     session is stopped first and its detached watcher ended (neither wakes it), so nothing delivers to it
@@ -980,6 +1048,10 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
     conds += host_beats(spec, led, state, dry_run)
+    try:
+        stale_worker_upkeep(spec, acts, dry_run, state)
+    except Exception as exc:  # noqa: BLE001 - upkeep never breaks a health run
+        acts.append(("health", "stale worker", f"upkeep skipped ({str(exc)[:80]})"))
     lim = update_limit(spec, state)
     until = limit_until(lim)
     relay = wake_relay_role(spec)

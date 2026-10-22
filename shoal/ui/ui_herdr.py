@@ -911,6 +911,18 @@ def holds_agent(h: Herdr, pane_id: str) -> bool:
         return True
 
 
+HANDOVER_EVERY = 15  # feeder ticks (20 s each)
+
+
+def _handover_pass(quiet: bool = True) -> None:
+    try:
+        import handover as _handover
+        for n in _handover.tick():
+            print(f"{datetime.datetime.now():%H:%M:%S} handover: {n}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - the feeder never stops on a handover pass
+        print(f"handover pass failed: {str(exc)[:160]}", flush=True)
+
+
 def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True) -> int:
     import ui_status
     import subscription_usage
@@ -968,6 +980,11 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
         print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}"
               + (f"; bare shell cards not reported (`shoal ui open --reapply`): {', '.join(bare)}" if bare else ""),
               flush=True)
+    if tick % HANDOVER_EVERY == 0:
+        # standalone-session handover (handover.py): about every 5 minutes, in the background, so a delivery (which
+        # can take seconds) never delays a tick
+        import threading
+        threading.Thread(target=_handover_pass, args=(quiet,), daemon=True).start()
     return pushed
 
 
