@@ -1119,4 +1119,80 @@ assert open(log).read().split() == [old, new], open(log).read()
 print("reattach after update ok")
 PY2
 
+echo "== 8 handover for standalone sessions, stale-worker upkeep, reattach after a service restart"
+python3 - "$SHOALD" "$S" <<'PY2' || fail "handover"
+import datetime, io, json, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+S = sys.argv[2]
+os.environ["XDG_CONFIG_HOME"] = os.path.join(S, "xdg-handover")
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "seat0001", "sessionId": "seat0001-aaaa", "pid": 7, "tempo": "idle", "inFlight": {}, "name": "seat"}], "opencode": {}})
+os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"seat": 620000})
+import handover, startdoc, ui_herdr
+doc = os.path.join(S, "seat_plan_state.md")
+open(doc, "w").write("# seat\n\n## Mission\n\nm\n\n## Current state\n\nLast updated: 2020-01-01T00:00Z\n\n## Next\n\n- n\n\n## grants-needed\n\n- None pending\n")
+ui_herdr.save_standalone([{"harness": "claude", "session": "seat0001-aaaa", "job": "seat0001", "label": "seat"}])
+# opting in above the limit advises at once (one direct delivery)
+A = type("A", (), {"target": "seat", "doc": doc, "mode": "auto", "k": 0, "list": False, "dry_run": False})()
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert handover.cmd_handover(A) == 0
+assert "advised (620k past 500k)" in buf.getvalue(), buf.getvalue()
+e = ui_herdr.load_standalone(raw=True)[0]
+assert e["handover_state"]["step"] == "advised" and e["doc"] == doc, e
+# a doc not refreshed since the advice: no reset
+assert handover.tick() == [] and ui_herdr.load_standalone(raw=True)[0]["handover_state"]["step"] == "advised"
+# refreshed: reset onto it; the registry follows the new job
+open(doc, "a").write("\nLast updated: %s\n" % datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+notes = handover.tick()
+assert any("handed over: fake new job fe5e7000" in n for n in notes), notes
+e = ui_herdr.load_standalone(raw=True)[0]
+assert e["job"] == "fe5e7000" and e["handover_state"]["step"] == "reset" and e["handover_state"]["from"] == "seat0001", e
+# the new session under its limit: complete
+os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"seat": 40000})
+assert any("handover complete" in n for n in handover.tick())
+assert "handover_state" not in ui_herdr.load_standalone(raw=True)[0]
+# mode off clears it; advise mode never resets
+A.mode = "off"
+with contextlib.redirect_stdout(io.StringIO()):
+    handover.cmd_handover(A)
+assert ui_herdr.load_standalone(raw=True)[0]["handover"] == "off"
+print("handover ok")
+PY2
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "stale upkeep"
+import json, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "c1a2b3c4", "sessionId": "c1a2b3c4-0000-1111", "pid": 4242, "tempo": "idle", "inFlight": {}},
+    {"id": "farfar00", "sessionId": "farfar00", "pid": 9, "tempo": "active", "inFlight": {}}], "opencode": {}})
+os.environ["SHOAL_FAKE_ROSTER"] = json.dumps({"c1a2b3c4": {"cliVersion": "2.1.292"}})
+os.environ["SHOAL_FAKE_CLAUDE_VERSION"] = "2.1.308"
+import health
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); acts, state = [], {}
+health.stale_worker_upkeep(spec, acts, False, state)
+assert any(a[0] == "cl" and "runs Claude 2.1.292, installed 2.1.308" in a[2] and "no turn" in a[2] for a in acts), acts
+os.environ["SHOAL_FAKE_ROSTER"] = json.dumps({"c1a2b3c4": {"cliVersion": "2.1.308"}})
+acts = []; health.stale_worker_upkeep(spec, acts, False, state)
+assert not acts, "a current worker is left alone"
+print("stale upkeep ok")
+PY2
+python3 - "$SHOALD" "$S" <<'PY2' || fail "reattach after a service restart"
+import io, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+d = os.path.join(sys.argv[2], "cc-restart"); os.makedirs(d, exist_ok=True); os.environ["CLAUDE_CONFIG_DIR"] = d
+log = os.path.join(d, "daemon.log"); open(log, "w").write("")
+first, second, calls = os.path.join(d, "a1"), os.path.join(d, "a2"), os.path.join(d, "calls")
+open(first, "w").write("#!/bin/sh\necho a1 >> %s\nsleep 1\necho \"[$(date -u +%%Y-%%m-%%dT%%H:%%M:%%S.000Z)] [supervisor] ─── daemon start ─── version=x\" >> %s\nexit 0\n" % (calls, log))
+open(second, "w").write("#!/bin/sh\necho a2 >> %s\nexit 0\n" % calls)
+for p in (first, second): os.chmod(p, 0o755)
+import ui_view
+seq = iter([first, second])
+ui_view.verify_listed = lambda *a, **k: ""
+ui_view.viewer = lambda h, s: ([next(seq), "attach", s], dict(os.environ))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = ui_view.run_viewer("claude", "abcd1234", "seat")
+assert rc == 0 and "background service restarted" in buf.getvalue(), buf.getvalue()
+assert open(calls).read().split() == ["a1", "a2"], open(calls).read()
+print("reattach after a service restart ok")
+PY2
+
 echo "SELFTEST PASS ($S)"

@@ -44,3 +44,5 @@ shoal doc-check <path>                          # ok, or each missing section
 shoal doc-check <path> --since 2026-10-22T19:00Z   # also: stamped at or after this time
 shoal doc-check <path> --json
 ```
+
+The whole handover, including opt-in handover for standalone sessions and the reset per harness: [`handover.md`](handover.md).

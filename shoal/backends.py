@@ -63,6 +63,14 @@ class Backend:
                effort: str = "") -> str:
         raise NotImplementedError
 
+    def reset(self, session: str, prompt: str, label: str = "", cwd: str = "", dry_run: bool = False) -> dict:
+        """Start a NEW conversation in the same seat with `prompt` as its first message (a handover from a start doc;
+        docs/handover.md), retire the old one, and return {"session", "job", "did"} for the caller to record. The
+        concept is ecosystem neutral; each harness implements it its own way, and ACP's `session/new` plus
+        `session/prompt` is the target form. A harness without one raises UnsupportedError: the handover then stops
+        after its advise step and a reset by hand stays possible."""
+        raise UnsupportedError(f"{self.ecosystem}: no reset yet (a new session from the start doc, by hand)")
+
     def send(self, session_id: str, repo_dir: str, prompt: str,
              dry_run: bool = False, model: str = "") -> None:
         raise NotImplementedError
@@ -558,6 +566,35 @@ class ClaudeBackend(Backend):
                 fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": session,
                                       "condition": "wake", "text": text}) + "\n")
         return "wake-relay" + pending + (" (dry-run)" if dry_run else "")
+
+    def reset(self, session: str, prompt: str, label: str = "", cwd: str = "", dry_run: bool = False) -> dict:
+        """Claude: a new job on the prompt, with the old job's saved options (name, model, effort from its state.json),
+        in its directory; then `claude stop` on the old job. Not `/clear`: a background job cleared and later stopped
+        splits into its original conversation and a separate job for the cleared one, and the two block each other
+        (measured 2026-10-22)."""
+        import json as _json
+        rows = self._agents(include_stopped=True)
+        e = claude_find(rows, session) or {}
+        job = str(e.get("id") or "")
+        flags = []
+        if job:
+            base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+            try:
+                flags = list((_json.load(open(os.path.join(base, "jobs", job, "state.json"))) or {}).get("respawnFlags") or [])
+            except (OSError, ValueError):
+                flags = []
+        opt = {flags[i]: flags[i + 1] for i in range(len(flags) - 1) if str(flags[i]).startswith("-")}
+        name = label or opt.get("-n") or str(e.get("name") or "") or "session"
+        where = cwd or str(e.get("cwd") or "") or os.getcwd()
+        if dry_run:
+            return {"session": "", "job": "", "did": f"would start a new job {name!r} in {where} "
+                                                      f"(model {opt.get('--model', 'default')}) and stop {job or session[:8]}"}
+        if fake_sessions() is not None:  # tests: no real launch
+            return {"session": "fe5e7000-0000", "job": "fe5e7000", "did": f"fake new job fe5e7000 ({name}); stopped {job or '-'}"}
+        new = self.create(name, where, brief=prompt, name=name, model=opt.get("--model", ""), effort=opt.get("--effort", ""))
+        if job:
+            self.stop(job)
+        return {"session": new, "job": new[:8], "did": f"new job {new[:8]} ({name}); stopped {job or '-'}"}
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",

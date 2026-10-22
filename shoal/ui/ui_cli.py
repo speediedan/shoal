@@ -119,6 +119,17 @@ def add_parsers(sub) -> None:
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=ui_herdr.cmd_standalone)
 
+    import handover as _handover
+    q = u.add_parser("handover", help="context handover for a saved standalone session: opt in, toggle, show (docs/handover.md)")
+    q.add_argument("target", nargs="?", default="", metavar="LABEL_OR_JOB")
+    q.add_argument("--doc", default="", help="the session's start doc (plan_state)")
+    q.add_argument("--mode", default="", choices=("", "off", "advise", "auto"),
+                   help="off; advise (ask it to refresh its start doc past the limit); auto (then reset it onto that doc)")
+    q.add_argument("--k", type=int, default=0, help=f"limit in thousands of tokens (default {_handover.DEFAULT_K})")
+    q.add_argument("--list", action="store_true", help="every saved local session's handover settings and context")
+    q.add_argument("--dry-run", action="store_true")
+    q.set_defaults(func=_handover.cmd_handover)
+
     q = u.add_parser("forget", help="drop a saved standalone session (open panes stay)")
     q.add_argument("session_id", metavar="ID_OR_LABEL")
     q.set_defaults(func=ui_herdr.cmd_forget)

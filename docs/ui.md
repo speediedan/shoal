@@ -340,6 +340,10 @@ labelled panes, so not a fresh server) marks it `dismissed` and leaves it closed
 - **Retired sessions:** one with no worker (retired after 8 h idle, or stopped) is still attachable. `claude attach` wakes its
   worker without taking a turn.
 
+**Context handover for standalone sessions** (opt-in): `shoal ui handover <label|job> --doc <plan_state> --mode
+advise|auto`, `--list`. The feeder advises a session past its limit to refresh its start doc and, in `auto` mode, resets it
+onto that doc in a new conversation (for Claude, a new job, which the registry follows). See [`handover.md`](handover.md).
+
 **Standalone sessions on other hosts.** On `ui open`, each host with a route is asked for its own saved
 standalone sessions (`shoal ui standalone --json` over the route, cached 30 s), and they are mirrored into this
 registry with `host` set and the label suffixed `@<host>`. They get cards like local ones, and Enter attaches

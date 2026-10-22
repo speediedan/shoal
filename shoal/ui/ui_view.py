@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -139,7 +140,19 @@ def run_viewer(harness: str, session: str, label: str, job: str = "") -> int:
     argv, env = viewer(harness, session if not job else job)
     print(f"shoal view: {label} -> {harness} {session} (detach to come back; the session keeps running)")
     binary = os.path.realpath(argv[0]) if harness == "claude" else ""
+    started = time.time()
     r = subprocess.run(argv, env=env)
+    for _ in range(REATTACH_MAX):
+        # the Claude background service restarted under the client (an update reinstalled the binary: measured
+        # 2026-10-22, 124 restarts in a day), which drops every attached client back to its card. Reattach the same
+        # session; attaching never takes a turn.
+        if harness != "claude" or not service_restarted_since(started):
+            break
+        print("shoal view: the Claude background service restarted (an update); reattaching")
+        time.sleep(2)
+        argv, env = viewer(harness, session if not job else job)
+        started = time.time()
+        r = subprocess.run(argv, env=env)
     if r.returncode != 0 and binary and replaced(binary):
         # Claude Code updated itself while attached: the running client's own binary is gone, so its reconnect
         # (which respawns the background service from that path) fails (measured 2026-10-22: "posix_spawn
@@ -152,6 +165,29 @@ def run_viewer(harness: str, session: str, label: str, job: str = "") -> int:
         print(f"shoal view: attach exited {r.returncode}: attached in another terminal (attach is exclusive), or the "
               f"background service is down (`claude daemon status`). Nothing was resumed or started.")
     return r.returncode
+
+
+REATTACH_MAX = 3
+SERVICE_START = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)\] \[supervisor\] .*daemon start")
+
+
+def service_restarted_since(t: float) -> bool:
+    """True when the Claude background service logged a start after `t` (epoch seconds): its log names each start
+    (`[supervisor] ─── daemon start ───`)."""
+    import datetime as _dt
+    p = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "daemon.log")
+    try:
+        with open(p, "rb") as fh:
+            fh.seek(max(os.path.getsize(p) - 65536, 0))
+            lines = fh.read().decode(errors="replace").splitlines()
+    except OSError:
+        return False
+    for ln in reversed(lines):
+        m = SERVICE_START.match(ln)
+        if m:
+            ts = _dt.datetime.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_dt.timezone.utc).timestamp()
+            return ts >= t - 1
+    return False
 
 
 def replaced(binary: str) -> bool:
