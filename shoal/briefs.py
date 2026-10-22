@@ -186,7 +186,7 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
         f"You are {role.label} in shoal {sid} (incarnation {spec.incarnation}). Your Lane row label in every "
         f"posted block is exactly `{role.label}`: the base name, then your session tag; never an incarnation "
         f"number. Read: (1) {role.doc} "
-        f"(your plan_state start doc: mission, current state, decisions, grants-needed, next; keep it current), "
+        f"(your plan_state start doc: mission, current state, decisions, grants-needed, next, and a `Last updated: <UTC>` line; keep it current, docs/start-doc.md), "
         f"(2) the shoal-protocol skill's references `ledger.md`, `work-loop.md` and "
         f"`watchers-and-waits.md`. Your job is to work through a QUEUE: one active item and up to {queue_next_max(spec)} next items, "
         f"declared by you in the ledger. {fill} "
@@ -273,7 +273,8 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
     return (
         f"You are {role.slug} ({role.tag}, incarnation {spec.display_gen}, ledger mode, flattened) in shoal "
         f"{sid}. Read: (1) {role.doc} (your plan_state "
-        f"start doc: mission, current state, decisions, grants-needed, next; keep it current), (2) the "
+        f"start doc: mission, current state, decisions, grants-needed, next, and a `Last updated: <UTC>` line; keep it "
+        f"current), (2) the "
         f"shoal-protocol skill's reference `ledger.md`. ALL traffic is the ledger "
         f"(git repo {spec.ledger.get('repo', '')}, clone {spec.ledger_dir}, {os.path.relpath(group_dir(spec.ledger_dir, sid), spec.ledger_dir)}/ledger/<writer>.jsonl, "
         f"one file per writer, append-only) through `{SHOAL_CLI}` verbs: `show --shoal {sid} --slug {role.slug} "

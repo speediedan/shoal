@@ -1028,7 +1028,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
         elif c["condition"] == "relay-dead" and revive:
             steps = REVIVE_RELAY_LADDER
-        elif c["condition"] == "context-restart" and __import__("context").mode(spec) == "auto":
+        elif c["condition"] == "context-restart" and __import__("context").mode(spec, c["slug"]) == "auto":
             steps = CONTEXT_AUTO_LADDER
         else:
             steps = LADDERS[c["condition"]]

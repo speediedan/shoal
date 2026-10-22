@@ -1346,13 +1346,26 @@ assert "CONTEXT 900k" in health.wake_text(spec, "tl", "x"), "wakes carry the adv
 print("context limits ok")
 PY2
 check "never with an active item" $Q --slug tl --active interpretune#9601:fix --restart-ready
+# the proof of refresh (docs/start-doc.md): no `Last updated` stamp, or one older than the advisory, is refused
+TLDOC=$(python3 -c "import json,sys;print([r for r in json.load(open(sys.argv[1]))['roles'] if r['slug']=='tl'][0]['doc'])" "$SPEC")
+cp "$TLDOC" "$S/tl-doc.bak"
+check "needs a refreshed start doc .*no \`Last updated" $Q --slug tl --idle --restart-ready
+env SHOAL_FAKE_CONTEXT='{"tl": 412000}' $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync >/dev/null 2>&1   # advised now
+printf '\nLast updated: 2020-01-01T00:00Z\n' >> "$TLDOC"
+check "is older than" $Q --slug tl --idle --restart-ready
+printf '\nLast updated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TLDOC"
 check "posture=idle" $Q --slug tl --idle --restart-ready
+check "ok  .*tl_plan_state.md" $H doc-check "$TLDOC"
+printf '# x\n\n## Mission\n\nm\n\n## Current state\n\nLast updated: 2026-10-22T10:00Z\n\n## Next\n\n- n\n' > "$S/nogrants.md"
+check "no grants-needed section" $H doc-check "$S/nogrants.md"
+[ "$(rc_of $H doc-check "$S/nogrants.md")" = 1 ] || fail "doc-check passed a doc without grants-needed"
+check "is older than" $H doc-check "$S/nogrants.md" --since 2026-10-22T11:00Z
 rm -f /tmp/$SID/health.json
 check "tl context-restart step1:page" env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run
 OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 100000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "context-restart" <<<"$OUT" || fail "context-restart under the limit :: $OUT"
 python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].setdefault("health", {})["context_restart"]="auto"; json.dump(d,open(p,"w"),indent=1)
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].setdefault("health", {})["context_restart"]={"*": "page", "tl": "auto"}; json.dump(d,open(p,"w"),indent=1)
 PY2
 rm -f /tmp/$SID/health.json
 check "tl context-restart step1:restart -> would restart (dry-run): .*--only tl" env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl \
