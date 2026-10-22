@@ -432,7 +432,9 @@ grep -q -- '"--server", "http://127.0.0.1:4096", "--session", "ses_oc1"' <<<"$OC
 grep -q OPENCODE_PASSWORD <<<"$OCV" || fail "opencode viewer env: $OCV"
 grep -q pw-selftest <<<"$OCV" && fail "viewer printed a credential value"
 grep -q -- '--resume\|"resume"' <<<"$OCV$($H view $SID cl --spec "$SPEC" --dry-run)" && fail "a viewer resumes"
-check "has no worker" $H view $SID dead --spec "$SPEC"
+# a role whose worker is gone is still viewable: `claude attach` wakes it without a turn (section 7 checks the note);
+# --dry-run here, so no real attach runs
+check '"attach", "deadbeef"' $H view $SID dead --spec "$SPEC" --dry-run
 check "no live session" $H view $SID parked --spec "$SPEC"
 HERDR_PANE_ID=w1:p1 HERDR_SOCKET_PATH=/x ZELLIJ_SESSION_NAME=z python3 - "$SHOALD" <<'PY' || fail "env hygiene"
 import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
@@ -1059,6 +1061,36 @@ assert "sidebar_max_width = 50" in open(f).read(), open(f).read()
 ui_launch.resolve_sidebar(f, cols=40)
 assert "sidebar_max_width = 18" in open(f).read(), "floor of 18 columns"
 print("launch chooser ok")
+PY2
+
+echo "== 7 Claude identity: a /clear changes the conversation id, never the job; a retired worker is still viewable"
+python3 - "$SHOALD" "$S" <<'PY2' || fail "claude identity"
+import io, json, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+# job abcd1234 was started as abcd1234-0000 and has been /clear'ed to ffff0000-1111; job eeee5555 has no worker
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "abcd1234", "sessionId": "ffff0000-1111", "originalSessionId": "abcd1234-0000", "pid": 9, "status": "idle"},
+    {"id": "eeee5555", "sessionId": "eeee5555-2222", "state": "done"}], "opencode": {}})
+import backends, health, ui_herdr, ui_status, ui_view
+rows = ui_status.claude_rows()
+for stored in ("abcd1234-0000", "ffff0000-1111", "abcd1234"):
+    assert (ui_status.claude_session(rows, stored) or {}).get("id") == "abcd1234", stored
+assert (ui_status.claude_session(rows, "zzzz9999-0000", "abcd1234") or {}).get("id") == "abcd1234", "an explicit job wins"
+assert ui_status.claude_session(rows, "zzzz9999-0000") is None, "never a guess"
+busy = health.claude_busy()
+assert {"ffff0000-1111", "abcd1234", "abcd1234-0000"} <= set(busy), sorted(busy)
+assert backends.get("claude")._row("abcd1234-0000")["id"] == "abcd1234"
+# a session with no worker is viewable (attach wakes it, no turn); one not listed is refused
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.verify_listed("claude", "eeee5555-2222") == ""
+assert "attaching wakes its worker; no turn is taken" in buf.getvalue(), buf.getvalue()
+assert "not listed" in ui_view.verify_listed("claude", "zzzz9999-0000")
+assert ui_view.viewer("claude", "abcd1234")[0][-2:] == ["attach", "abcd1234"]
+# the registry learns each Claude entry's job id while its stored id still resolves
+entries = [{"harness": "claude", "session": "ffff0000-1111", "label": "seat"}, {"harness": "opencode", "session": "ses_x"}]
+assert ui_herdr.record_claude_jobs(entries) and entries[0]["job"] == "abcd1234" and "job" not in entries[1], entries
+assert ui_herdr.standalone_argv(entries[0])[-2:] == ["--job", "abcd1234"], ui_herdr.standalone_argv(entries[0])
+print("claude identity ok")
 PY2
 
 echo "SELFTEST PASS ($S)"

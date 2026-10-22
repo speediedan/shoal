@@ -251,7 +251,8 @@ def claude_session_busy(session: str) -> bool:
             row = {}
             fake = fake_sessions()
             rows = (fake.get("claude") or []) if fake is not None else get_backend("claude")._agents()
-            row = next((r for r in rows if str(r.get("sessionId", "")).startswith(session[:8])), {})
+            from backends import claude_find
+            row = claude_find(rows, session) or {}
             return claude_prompt_open(row, session)
     except Exception:  # noqa: BLE001
         return False
