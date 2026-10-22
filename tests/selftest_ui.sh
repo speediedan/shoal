@@ -1195,4 +1195,34 @@ assert open(calls).read().split() == ["a1", "a2"], open(calls).read()
 print("reattach after a service restart ok")
 PY2
 
+echo "== 9 context-report: cost per session from transcripts, warm vs cold, payback, one snapshot per host and day"
+python3 - "$SHOALD" "$S" <<'PY2' || fail "context-report"
+import datetime as dt, json, os, sys; sys.path.insert(0, sys.argv[1])
+S = sys.argv[2]; cc = os.path.join(S, "cc-cost"); os.environ["CLAUDE_CONFIG_DIR"] = cc
+os.environ["SHOAL_DATA_ROOT"] = os.path.join(S, "data-cost")
+os.makedirs(os.path.join(cc, "projects", "p"), exist_ok=True); os.makedirs(os.path.join(cc, "jobs", "abcd1234"), exist_ok=True)
+json.dump({"sessionId": "abcd1234-0000", "respawnFlags": ["-n", "busy-seat"]}, open(os.path.join(cc, "jobs", "abcd1234", "state.json"), "w"))
+now = dt.datetime.now(dt.timezone.utc)
+def call(t, read, w1h, out=100):
+    return json.dumps({"type": "assistant", "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "message": {"model": "claude-opus-5-5",
+        "usage": {"input_tokens": 2, "cache_read_input_tokens": read, "cache_creation_input_tokens": w1h, "output_tokens": out,
+                  "cache_creation": {"ephemeral_1h_input_tokens": w1h, "ephemeral_5m_input_tokens": 0}}}})
+lines = [call(now - dt.timedelta(hours=5), 0, 400000)]                       # cold: the whole context written
+lines += [call(now - dt.timedelta(hours=3, minutes=i), 400000, 1000) for i in range(9)]   # warm, after a 2 h gap
+open(os.path.join(cc, "projects", "p", "abcd1234-0000.jsonl"), "w").write("\n".join(lines) + "\n")
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [], "opencode": {}})
+import context_cost
+doc = context_cost.report(1.0)
+r = next(x for x in doc["sessions"] if x["id"] == "abcd1234-0000")
+assert r["name"] == "busy-seat" and r["calls"] == 10 and r["cold_calls"] == 1 and r["cold_wakes"] == 1, r
+assert r["context_now_k"] == 401 and r["share"]["cold_writes"] > 0.4, r
+assert r["payback"]["warm_calls"] > 0 and r["payback"]["cold_wakes"] < 1, r["payback"]
+# one snapshot per host and day; a second call writes nothing
+p = context_cost.write_snapshot(now.date())
+assert p and os.path.exists(p) and context_cost.write_snapshot(now.date()) == "", p
+assert json.load(open(p))["v"] == 1
+assert "busy-seat" in context_cost.render(doc)
+print("context-report ok")
+PY2
+
 echo "SELFTEST PASS ($S)"
