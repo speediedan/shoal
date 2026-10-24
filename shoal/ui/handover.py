@@ -109,9 +109,10 @@ def follow(e: dict) -> bool:
     if e.get("harness") != "claude":
         return False
     import ui_status
-    from backends import claude_current
+    from backends import claude_current, claude_holders
     cur = claude_current(e["session"], e.get("job", ""))
-    r = next((x for x in ui_status.claude_rows() if str(x.get("sessionId")) == cur), None)
+    # the live copy first: a stop+resume can leave the stopped job listed beside the one now holding the conversation
+    r = next(iter(claude_holders(ui_status.claude_rows(), cur)), None)
     if r is not None and r.get("id") and r["id"] != e.get("job"):
         e["job"], e["session"] = str(r["id"]), cur
         return True
@@ -182,6 +183,8 @@ def step(e: dict, force: bool = False, dry_run: bool = False) -> str:
         old = e.get("job") or e["session"][:8]
         e["session"], e["job"] = out["session"], out.get("job") or ""
         e["handover_state"] = {"step": "reset", "at": now_iso(), "from": old}
+        if out.get("still_live"):
+            e["handover_state"]["still_live"] = out["still_live"]  # shown by --list until someone stops them
         return f"{label}: handed over: {out['did']}"
     return ""
 
@@ -219,7 +222,8 @@ def cmd_handover(a) -> int:
             st = x.get("handover_state") or {}
             print(f"{(x.get('label') or x['session'][:12]):<32} {x.get('harness'):<8} handover {x.get('handover') or 'off':<6} "
                   f"limit {int(x.get('handover_k') or DEFAULT_K)}k context {k if k is not None else '?'}k "
-                  f"step {st.get('step') or '-'}{' STALLED' if st.get('stalled') else ''}  doc {x.get('doc') or '-'}")
+                  f"step {st.get('step') or '-'}{' STALLED' if st.get('stalled') else ''}"
+                  f"{' OLD JOB STILL LIVE: ' + ', '.join(st['still_live']) if st.get('still_live') else ''}  doc {x.get('doc') or '-'}")
         return 0
     e = find(entries, a.target)
     if e is None:

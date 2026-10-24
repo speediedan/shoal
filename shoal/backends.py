@@ -289,6 +289,8 @@ RESUMED_NOTE = ("Your session was resumed for this wake: its worker had been ret
 # `claude --bg --resume` right after `claude stop` still finds the session running and forks a copy;
 # measured 2026-10-20: forked with the pid gone for 1 s, continued in place 4 s later
 RESUME_SETTLE_S = 6.0
+# how long a reset watches the old jobs for a respawned worker (2026-10-24: one came back within 2 s of a removal)
+RETIRE_VERIFY_S = 20.0
 COPY_RE = re.compile(r"started a copy as ([0-9a-f]{8})")
 
 
@@ -338,6 +340,19 @@ def claude_find(rows: list, session: str, job: str = "") -> dict | None:
         if _same(orig, session):
             return e
     return None
+
+
+def claude_holders(rows: list, session: str, job: str = "") -> list[dict]:
+    """Every row holding the conversation a stored id names, a live worker first, then the most recently started. A
+    stop+resume of a job whose id is not its conversation's prefix starts a second job on the same conversation, and acting
+    on the first match only reaches the stopped one (measured 2026-10-24: the advice resumed b193724a's conversation as job
+    4decf3de, the reset stopped b193724a again, and the copy stayed live beside the new session)."""
+    e = claude_find(rows, session, job)
+    if e is None:
+        return []
+    conv = str(e.get("sessionId") or session)
+    out = [r for r in rows if _same(str(r.get("sessionId", "")), conv)] or [e]
+    return sorted(out, key=lambda r: (bool(r.get("pid")), r.get("startedAt") or 0), reverse=True)
 
 
 def claude_current(session: str, job: str = "") -> str:
@@ -574,27 +589,53 @@ class ClaudeBackend(Backend):
         (measured 2026-10-22)."""
         import json as _json
         rows = self._agents(include_stopped=True)
-        e = claude_find(rows, session) or {}
-        job = str(e.get("id") or "")
+        holders = claude_holders(rows, session)
+        e = holders[0] if holders else {}
+        jobs = [str(h.get("id")) for h in holders if h.get("id")]
         flags = []
-        if job:
-            base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+        base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+        for j in jobs:  # the saved options of whichever copy has them (a long-lived job may carry none)
             try:
-                flags = list((_json.load(open(os.path.join(base, "jobs", job, "state.json"))) or {}).get("respawnFlags") or [])
+                flags = list((_json.load(open(os.path.join(base, "jobs", j, "state.json"))) or {}).get("respawnFlags") or [])
             except (OSError, ValueError):
                 flags = []
+            if flags:
+                break
         opt = {flags[i]: flags[i + 1] for i in range(len(flags) - 1) if str(flags[i]).startswith("-")}
         name = label or opt.get("-n") or str(e.get("name") or "") or "session"
         where = cwd or str(e.get("cwd") or "") or os.getcwd()
+        old = ", ".join(jobs) or session[:8]
         if dry_run:
             return {"session": "", "job": "", "did": f"would start a new job {name!r} in {where} "
-                                                      f"(model {opt.get('--model', 'default')}) and stop {job or session[:8]}"}
+                                                      f"(model {opt.get('--model', 'default')}) and stop {old}"}
         if fake_sessions() is not None:  # tests: no real launch
-            return {"session": "fe5e7000-0000", "job": "fe5e7000", "did": f"fake new job fe5e7000 ({name}); stopped {job or '-'}"}
+            return {"session": "fe5e7000-0000", "job": "fe5e7000", "did": f"fake new job fe5e7000 ({name}); stopped {old or '-'}"}
         new = self.create(name, where, brief=prompt, name=name, model=opt.get("--model", ""), effort=opt.get("--effort", ""))
-        if job:
-            self.stop(job)
-        return {"session": new, "job": new[:8], "did": f"new job {new[:8]} ({name}); stopped {job or '-'}"}
+        live = self.retire(jobs)
+        did = f"new job {new[:8]} ({name}); stopped {old or '-'}"
+        return {"session": new, "job": new[:8], "did": did + (f"; STILL LIVE: {', '.join(live)}" if live else ""),
+                "still_live": live}
+
+    def retire(self, jobs: list[str], verify_s: float = RETIRE_VERIFY_S) -> list[str]:
+        """Stop every job and verify that none comes back: the background service can respawn a stopped job's worker
+        when another job on its conversation is removed (measured 2026-10-24: `claude rm` of the copy above restarted
+        b193724a, and a later stop did not hold). A job seen live again is stopped once more; returns those still live.
+        Never `claude rm`: a stopped job is retired, and removing one is what woke the other."""
+        import time as _time
+        for j in jobs:
+            self.stop(j)
+        restopped: set[str] = set()
+        deadline = _time.time() + verify_s
+        while jobs and _time.time() < deadline:
+            _time.sleep(2)
+            rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
+            back = [j for j in jobs if (rows.get(j) or {}).get("pid")]
+            for j in back:
+                if j not in restopped:
+                    self.stop(j)
+                    restopped.add(j)
+        rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
+        return [j for j in jobs if (rows.get(j) or {}).get("pid")]
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
