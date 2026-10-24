@@ -115,6 +115,8 @@ class Role:
         # "never": {"repos": [...], "labels": [...]}}. Soft ranking; `never` is the
         # only hard exclusion and is reserved for safety.
     server: str = ""             # host the session runs on ("" = this host)
+    parked: dict = dataclasses.field(default_factory=dict)  # `shoal park` (park.py): {at, by, note, until,
+        # session}; set while the role has no session on purpose, cleared by the restart that relaunches it
     aux: bool = False            # residual lane (architecture doc §4.1): no brief of its own;
         # the digest ranks it the work no other ACTIVE role's brief covers (minmax over the
         # semantic matcher's fits, unblockers first). Needs features.matcher.
@@ -163,6 +165,8 @@ class Role:
             d["scope"] = {}
         if d.get("context") is None:
             d["context"] = {}
+        if d.get("parked") is None:
+            d["parked"] = {}
         return Role(**{k: v for k, v in d.items() if k in known})
 
     def working_context(self) -> dict:

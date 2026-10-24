@@ -1379,5 +1379,63 @@ rm -f /tmp/$SID/health.json
 OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "context-restart" <<<"$OUT" || fail "restart-ready survived a later queue write :: $OUT"
 
+echo "== 36 park and unpark: no session and no watcher, the queue kept; a full restart keeps it parked; --until unparks"
+FS0='{"claude": [], "opencode": {}}'
+check "posture=active" $Q --slug up --active interpretune#9701:fix --next interpretune#9702
+check "REFUSED: up holds active item" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up
+[ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up)" = 1 ] || fail "park took a role mid-item"
+check "posture=idle" $Q --slug up --idle --next interpretune#9702 --blocked interpretune#9702=hold:research
+mkdir -p "$S/fakewatch"; printf 'import time\ntime.sleep(300)\n' > "$S/fakewatch/cli.py"
+# a stand-in ledger-watch for up, bound to its session: the same argv shape, so the /proc scan finds it
+setsid python3 "$S/fakewatch/cli.py" ledger-watch --shoal $SID --slug up --session bbbb2222 &
+LWP=$!
+check "would stop bbbb2222" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up --dry-run
+check "parked up" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up --note "research hold" \
+  --until "gh-pr:speediedan/interpretune#9703"
+sleep 0.5; ! kill -0 $LWP 2>/dev/null || fail "park left up's ledger-watch running"
+python3 - "$SPEC" "$SHOALD" <<'PY2' || fail "park record"
+import json, sys
+sys.path.insert(0, sys.argv[2])
+from ledger import Ledger
+from roles import ShoalSpec
+r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "up"][0]
+assert r["session"] == "" and r["parked"]["note"] == "research hold" and r["parked"]["session"] == "bbbb2222", r
+assert r["parked"]["until"] == "gh-pr:speediedan/interpretune#9703", r
+spec = ShoalSpec.load(sys.argv[1])
+evs = Ledger(spec.sid, root=spec.ledger_dir, sync=False).events(reload=True)
+assert any(e.get("event") == "role-parked" and e.get("role") == "up" for e in evs), "no role-parked event"
+print("park record ok")
+PY2
+check "parked (no session) since .*: research hold; until gh-pr:speediedan/interpretune#9703" \
+  $H show --shoal $SID --spec "$SPEC" --no-sync
+check "QUEUE .*interpretune#9702" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
+check "parked role(s) up stay parked" env SHOAL_FAKE_SESSIONS="$FS0" $H restart --spec "$SPEC" --dry-run --stages restart
+check "unpark: .*restart --spec .* --only up" env SHOAL_FAKE_SESSIONS="$FS0" $H unpark --spec "$SPEC" --only up --dry-run
+[ "$(rc_of $H unpark --spec "$SPEC" --only tl --dry-run)" = 1 ] || fail "unpark accepted a role with a session"
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "auto unpark"
+import sys; sys.path.insert(0, sys.argv[1])
+import park, providers
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+real = providers.resolve
+providers.resolve = lambda t, slug="", sid="", upstream=False: (True, "PR open")
+assert park.due(spec) == [], "unparked while the target is pending"
+providers.resolve = lambda t, slug="", sid="", upstream=False: (None, "gh unavailable")
+assert park.due(spec) == [], "unknown must never unpark"
+providers.resolve = lambda t, slug="", sid="", upstream=False: (False, "PR merged")
+state, acts = {}, []
+park.auto_unpark(spec, sys.argv[2], state, acts, dry_run=True)
+assert acts and acts[0][0] == "up" and "would restart" in acts[0][2], acts
+providers.resolve = real
+print("auto unpark ok")
+PY2
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p))
+for r in d["roles"]:
+    if r["slug"] == "up":
+        r["session"], r["parked"] = "bbbb2222", {}
+json.dump(d,open(p,"w"),indent=1)
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

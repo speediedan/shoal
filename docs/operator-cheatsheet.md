@@ -137,6 +137,17 @@ export S=<id> SPEC=<path to the group's spec>
     ssh <other host> shoal restart --spec <its ledger clone>/shoals/<id>/shoal.json --only <role>
     ```
 
+- Park a role (dormant on purpose: no session, no wakes, conditions or pages; its queue, offers, claims and blockers
+  are kept), and unpark it. Park stops the session (every Claude job on its conversation, verified), ends any
+  ledger-watch still bound to it, clears the session in the spec and writes a `role-parked` ledger event. A role with
+  an active item is refused without `--force`. A full restart keeps parked roles parked. With `--until <target>` the
+  health quorum unparks the role once that wait target resolves:
+
+    ```bash
+    shoal park --spec <spec> --only <role> --note "<why>" [--until gh-pr:<owner/repo>#<n>] [--dry-run]
+    shoal unpark --spec <spec> --only <role>      # restart --only <role>
+    ```
+
 - Restart into the next incarnation (all roles, or `--only` some); add a role; retire:
 
     ```bash

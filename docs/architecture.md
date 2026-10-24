@@ -307,7 +307,12 @@ digest page listing each role's open ask.
 **Parked roles.** A role with no `session` in the spec (parked or retired) raises no condition, is
 left out of the daily digest, and reads `parked (no session)` in the heartbeat classification;
 `doctor` reports its heartbeat and `ledger-watch` rows as INFO, never WARN or FAIL, whatever a
-leftover sidecar says.
+leftover sidecar says. `shoal park` makes a role so on purpose (`park.py`): it stops the session, ends its
+watchers with SIGKILL (no exit path can deliver a wake to the stopped session) and records `parked` {at, by,
+note, until} beside the empty session, which `show` prints. A full restart keeps a parked role parked; naming
+it (`restart --only`, `unpark`) relaunches it and clears the record. A `parked.until` wait target is checked
+by the quorum each run, outside a freeze: once its provider reads it resolved (unknown never counts), the role
+is restarted, at most once per 30 minutes.
 
 **Timers in `doctor`.** Each `shoal-<id>-*.timer` is judged by its own `ActiveState`: `active`
 (sub-state `waiting`, `running` or `elapsed`) is good, so a timer whose service is activating or

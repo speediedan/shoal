@@ -1079,6 +1079,12 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         stale_worker_upkeep(spec, acts, dry_run, state)
     except Exception as exc:  # noqa: BLE001 - upkeep never breaks a health run
         acts.append(("health", "stale worker", f"upkeep skipped ({str(exc)[:80]})"))
+    if view.freeze() is None:
+        try:
+            import park  # a parked role whose --until target resolved is relaunched (park.py)
+            park.auto_unpark(spec, spec_path, state, acts, dry_run)
+        except Exception as exc:  # noqa: BLE001 - never breaks a health run
+            acts.append(("health", "unpark", f"skipped ({str(exc)[:80]})"))
     lim = update_limit(spec, state)
     until = limit_until(lim)
     relay = wake_relay_role(spec)

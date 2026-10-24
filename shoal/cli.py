@@ -77,6 +77,7 @@ import kill_audit as _kill_audit  # noqa: E402
 import aux as _aux  # noqa: E402
 import upgrade as _upgrade  # noqa: E402
 import context_cost as _context_cost  # noqa: E402
+import park as _park  # noqa: E402
 import startdoc as _startdoc  # noqa: E402
 from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    is_wake_relay, home_dir, state_dir, utcnow_iso)
@@ -812,6 +813,11 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
         r.session = sid
         if only is not None and slug not in only:
             only = only + [slug]
+    if only is None and any(r.parked and not r.session for r in spec.roles):
+        # a full restart relaunches every role; a parked one stays parked until it is named (unpark)
+        parked = [r.slug for r in spec.roles if r.parked and not r.session]
+        only = [r.slug for r in spec.roles if r.slug not in parked]
+        print(f"parked role(s) {', '.join(parked)} stay parked: name them with --only (or `shoal unpark`) to relaunch")
     if only is None and any(not is_local(r, spec) for r in spec.roles):
         # a full restart would clear every other role's session id and retire them from here: on a multi-host
         # shoal it is a restart of THIS host's roles
@@ -837,6 +843,14 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
     old = list(args.old_session or [])
     if getattr(args, "spec", ""):
         old += old_sessions_for_roles(args.spec, only)
+    if dry and want(stages, "restart"):
+        import park as _pk
+        for r in spec.roles:
+            w = _pk.watchers_of(spec.sid, r.slug) if (only is None or r.slug in only) and is_local(r, spec) else []
+            if w:
+                print(f"[dry-run] {r.slug}: ledger-watch {w} running now, bound to {r.session[:8] or '(no session)'}; a "
+                      f"Claude watcher left on the replaced session is only reported after the relaunch (stop that "
+                      f"session to retire both)")
     if want(stages, "restart") and not dry:
         # every session-creating restart opens a new incarnation (full or
         # partial): close the open record, bump, clear replaced sessions.
@@ -863,6 +877,8 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
                         r.seq += 1
                 if r.slug in only and r.slug not in launched:
                     r.session = ""
+                if r.slug in only:
+                    r.parked = {}  # relaunched: no longer parked
     rc = 0
     if want(stages, "handoffs"):
         rc = stage_handoffs(spec, dry, only) or rc
@@ -1176,6 +1192,7 @@ def main(argv: list[str] | None = None) -> int:
     _aux.add_parsers(sub)
     _upgrade.add_parser(sub)
     _context_cost.add_parser(sub)
+    _park.add_parser(sub)
     _startdoc.add_parser(sub)
     _ui_parsers(sub)
 
