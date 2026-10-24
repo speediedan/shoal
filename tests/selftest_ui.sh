@@ -1222,6 +1222,30 @@ p = context_cost.write_snapshot(now.date())
 assert p and os.path.exists(p) and context_cost.write_snapshot(now.date()) == "", p
 assert json.load(open(p))["v"] == 1
 assert "busy-seat" in context_cost.render(doc)
+# turns: a prompt with an origin starts one; tool results, meta records and a subagent's prompts do not
+def rec(t, **kw):
+    return json.dumps({"type": "user", "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000Z"), **kw})
+t0 = now - dt.timedelta(hours=12)
+tl = [rec(t0 - dt.timedelta(minutes=1), origin={"kind": "human"}, message={"content": "go"}),
+      rec(t0, message={"content": [{"type": "tool_result", "content": "x"}]}),
+      rec(t0, isMeta=True, message={"content": [{"type": "text", "text": "skill body"}]}),
+      rec(t0, isSidechain=True, origin={"kind": "human"}, message={"content": "subagent"})]
+for i in range(12):   # turn i at t0 + i h, one call after it, the context 100k + 60k per turn
+    t = t0 + dt.timedelta(hours=i)
+    if i:
+        tl.append(rec(t, origin={"kind": "task-notification" if i % 2 else "peer"}, message={"content": "wake"}))
+    tl.append(call(t + dt.timedelta(minutes=1), 100000 + 60000 * i - 1000, 1000))
+open(os.path.join(cc, "projects", "p", "eeee0000-0000.jsonl"), "w").write("\n".join(tl) + "\n")
+calls, turns = context_cost.read_session(os.path.join(cc, "projects", "p", "eeee0000-0000.jsonl"), now - dt.timedelta(days=1), now)
+assert len(turns) == 12 and len(calls) == 12, (len(turns), len(calls))
+assert round(context_cost.growth_per_turn(calls, turns)) == 60000
+h = context_cost.replay(calls, turns, 300)
+# crosses 300k at turn 5 (from 100k), then a fresh 75k crosses again after 4 turns, 4 h later; 225k / 60k is 4 turns
+assert (h["handovers"], h["first_after_turns"], h["turns_between"], h["hours_between"], h["turns_from_fresh"]) == \
+    (2, 5, [4], [4.0], 4), h
+r = next(x for x in context_cost.report(1.0, limits=(300, 500))["sessions"] if x["id"] == "eeee0000-0000")
+assert r["turns"] == 12 and r["calls_per_turn"] == 1.0 and set(r["handover"]) == {"300", "500"}, r
+assert "handover at a limit" in context_cost.render(context_cost.report(1.0))
 print("context-report ok")
 PY2
 

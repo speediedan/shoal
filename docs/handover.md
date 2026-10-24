@@ -64,7 +64,16 @@ model calls. Per session it reports:
 - average and current context;
 - the cost split (warm reads, writes, cold writes, output), and the cost in base-input tokens (cache read 0.1, 1 h write
   2.0, output 5.0);
-- the payback of a handover at the current context, in warm calls and in cold wakes.
+- the payback of a handover at the current context, in warm calls and in cold wakes;
+- turns (each prompt from the maintainer, a peer or a task notification starts one), calls per turn, and the context
+  growth per turn;
+- for each candidate limit (`--limits`, default 300,400,500), a replay of the window with a handover at that limit: how many
+  would have fired, the turns and hours between them, and the turns a fresh session takes to reach the limit at that growth.
+
+The turn count is what a limit means to the session: how often it would be asked to refresh its start doc. Measured
+2026-10-24 over three days on speediedl: the busiest standalone seat grew about 19k per turn, so a 500k limit would have
+handed it over every 16 to 27 turns (11 to 13 h); most roles grew 12k to 20k per turn (a fresh role reaches 500k in 21 to
+34 turns, one role at 35k per turn in 12); the wake relay grew under 3k per turn and would not reach it for 150 turns.
 
 The first health run on each host after midnight UTC writes yesterday's snapshot to
 `<data_root>/_context/<server>-<YYYY-MM-DD>.json` (`features.health.context_snapshot`, default on; `context-report

@@ -12,7 +12,11 @@ per session, the figures a limit is set from:
 
   calls, calls/day, cold calls (more than half the context written fresh), cold wakes (gaps over the cache TTL),
   average and current context, the cost split (warm reads, writes, cold writes, output), cost-equivalent in base input
-  tokens, and the payback of a handover at the current context, in warm calls and in cold wakes.
+  tokens, and the payback of a handover at the current context, in warm calls and in cold wakes;
+  turns (a prompt from the maintainer, a peer or a task notification starts one), calls per turn and context growth per
+  turn, and for each candidate limit (`--limits`, default 300,400,500k) a replay of the window with a handover at that
+  limit: how many would have fired, and how many turns and hours apart, with the turns a fresh session would take to
+  reach the limit at this window's growth.
 
 Snapshots (one per host per UTC day, written by the first health run after midnight; `--snapshot` by hand) go to
 <data_root>/_context/<server>-<YYYY-MM-DD>.json, so limits can be tuned on a few days of data, roles included.
@@ -37,6 +41,7 @@ WEIGHTS = {"read": 0.1, "w1h": 2.0, "w5m": 1.25, "in": 1.0, "out": 5.0}
 CACHE_TTL_S = 3600
 COLD_MIN_CTX = 20000
 FRESH_CTX = 75000  # a fresh session's first context (brief plus start doc), for the payback estimate
+LIMITS_K = (300, 400, 500)  # candidate handover limits the replay tries
 
 
 def claude_dir() -> str:
@@ -91,26 +96,47 @@ def names() -> dict[str, dict]:
 
 def calls_of(path: str, since: dt.datetime, until: dt.datetime) -> list[tuple]:
     """[(time, context, read, write_1h, write_5m, input, output, model)] for each model call in the window."""
-    out = []
+    return read_session(path, since, until)[0]
+
+
+def _turn_start(d: dict) -> bool:
+    """A prompt that starts a turn: the maintainer's, a peer's message or a task notification (Claude Code records its
+    `origin`). Tool results, skill bodies and other meta records continue a turn; a subagent's records are its own."""
+    if d.get("type") != "user" or d.get("isSidechain"):
+        return False
+    if "origin" in d:
+        return bool(d["origin"])
+    c = (d.get("message") or {}).get("content")
+    return not d.get("isMeta") and (isinstance(c, str) or any(
+        isinstance(b, dict) and b.get("type") == "text" for b in (c or [])))  # older records carry no origin
+
+
+def read_session(path: str, since: dt.datetime, until: dt.datetime) -> tuple[list[tuple], list[dt.datetime]]:
+    """(calls as calls_of gives them, turn start times) in the window, from one pass over the transcript."""
+    out, turns = [], []
     try:
         fh = open(path, errors="replace")
     except OSError:
-        return out
+        return out, turns
     with fh:
         for line in fh:
-            if '"usage"' not in line or '"assistant"' not in line:
+            call = '"usage"' in line and '"assistant"' in line
+            if not call and ('"user"' not in line or '"isSidechain":true' in line):
                 continue
             try:
                 d = json.loads(line)
             except ValueError:
                 continue
-            if d.get("type") != "assistant":
+            if d.get("type") != "assistant" and not _turn_start(d):
                 continue
             try:
                 t = dt.datetime.fromisoformat(str(d.get("timestamp", "")).replace("Z", "+00:00"))
             except ValueError:
                 continue
             if t < since or t >= until:
+                continue
+            if d.get("type") == "user":
+                turns.append(t)
                 continue
             m = d.get("message") or {}
             u = m.get("usage") or {}
@@ -122,10 +148,65 @@ def calls_of(path: str, since: dt.datetime, until: dt.datetime) -> list[tuple]:
                 w1h = w_all  # older records carry only the total
             out.append((t, cin + read + w_all, read, w1h, w5m, cin, int(u.get("output_tokens") or 0), str(m.get("model") or "")))
     out.sort()
+    turns.sort()
+    return out, turns
+
+
+def turn_contexts(calls: list[tuple], turns: list[dt.datetime]) -> list[int]:
+    """The context each turn started from: the last call's before its prompt (turns before the first call are skipped)."""
+    out, i, ctx = [], 0, None
+    for t in turns:
+        while i < len(calls) and calls[i][0] <= t:
+            ctx = calls[i][1]
+            i += 1
+        if ctx is not None:
+            out.append(ctx)
     return out
 
 
-def summarize(calls: list[tuple], days: float) -> dict:
+def growth_per_turn(calls: list[tuple], turns: list[dt.datetime]) -> float:
+    """Mean context growth from one turn's start to the next's, over the turns that grew (a compaction or a clear
+    shrinks the context; it is not growth)."""
+    ctx = turn_contexts(calls, turns)
+    g = [b - a for a, b in zip(ctx, ctx[1:]) if b >= a]
+    return sum(g) / len(g) if g else 0.0
+
+
+def replay(calls: list[tuple], turns: list[dt.datetime], limit_k: float) -> dict:
+    """The window again with a handover at `limit_k`: the simulated context follows the real one's growth, and at a
+    turn's start past the limit it hands over to a fresh session (FRESH_CTX). A real shrink (compaction, clear) caps it.
+    The first crossing comes from the window's starting context, so `first_after_turns` is partial; `turns_between`
+    and `hours_between` are the full spans from one handover to the next."""
+    lim = limit_k * 1000
+    sim = prev = None
+    n, since_turns, since_t, first, between, hours = 0, 0, None, None, [], []
+    ti = 0
+    for c in calls:
+        while ti < len(turns) and turns[ti] <= c[0]:
+            t = turns[ti]
+            ti += 1
+            if sim is not None and sim >= lim:
+                n += 1
+                if first is None:
+                    first = since_turns
+                else:
+                    between.append(since_turns)
+                    hours.append(round((t - since_t).total_seconds() / 3600, 1))
+                sim, since_turns, since_t = FRESH_CTX, 0, t
+            since_turns += 1
+        if sim is None:
+            sim = prev = c[1]
+            since_t = c[0]
+            continue
+        sim = min(sim + max(c[1] - prev, 0), c[1])
+        prev = c[1]
+    g = growth_per_turn(calls, turns)
+    return {"handovers": n, "first_after_turns": first, "turns_between": between, "hours_between": hours,
+            "turns_from_fresh": round((lim - FRESH_CTX) / g) if g > 0 and lim > FRESH_CTX else None}
+
+
+def summarize(calls: list[tuple], days: float, turns: list[dt.datetime] | None = None,
+              limits: tuple = LIMITS_K) -> dict:
     W = WEIGHTS
     read = sum(c[2] for c in calls)
     w1h, w5m = sum(c[3] for c in calls), sum(c[4] for c in calls)
@@ -152,12 +233,17 @@ def summarize(calls: list[tuple], days: float) -> dict:
                   (("warm_reads", cost_read), ("writes", cost_write), ("cold_writes", cost_cold), ("output", W["out"] * outp))},
         "payback": {"warm_calls": round(h / (W["read"] * gain), 1), "cold_wakes": round(h / (W["w1h"] * gain), 2)},
         "model": calls[-1][7] if calls else "",
+        "turns": len(turns or []),
+        "calls_per_turn": round(len(calls) / len(turns), 1) if turns else None,
+        "growth_per_turn_k": round(growth_per_turn(calls, turns or []) / 1000, 1),
+        "handover": {f"{k:g}": replay(calls, turns or [], k) for k in limits},
     }
 
 
-def report(days: float = 1.0, until: dt.datetime | None = None, everything: bool = False) -> dict:
-    """{host, since, until, days, weights, sessions: [{id, name, kind, job, ...summary}]} for this host's Claude sessions
-    with at least one call in the window (or at least 3 unless `everything`), costliest first."""
+def report(days: float = 1.0, until: dt.datetime | None = None, everything: bool = False,
+           limits: tuple = LIMITS_K) -> dict:
+    """{host, since, until, days, weights, limits_k, sessions: [{id, name, kind, job, ...summary}]} for this host's
+    Claude sessions with at least one call in the window (or at least 3 unless `everything`), costliest first."""
     until = until or dt.datetime.now(dt.timezone.utc)
     since = until - dt.timedelta(days=days)
     nm = names()
@@ -165,16 +251,17 @@ def report(days: float = 1.0, until: dt.datetime | None = None, everything: bool
     for f in glob.glob(os.path.join(claude_dir(), "projects", "*", "*.jsonl")):
         if os.path.getmtime(f) < since.timestamp():
             continue
-        calls = calls_of(f, since, until)
+        calls, turns = read_session(f, since, until)
         if not calls or (len(calls) < 3 and not everything):
             continue
         sid = os.path.basename(f)[:-6]
         n = nm.get(sid, {})
         rows.append({"id": sid, "name": n.get("name") or sid[:8], "kind": n.get("kind") or "unknown",
-                     "job": n.get("job") or "", **summarize(calls, days)})
+                     "job": n.get("job") or "", **summarize(calls, days, turns, limits)})
     rows.sort(key=lambda r: -r["cost_eq_m"])
     return {"v": 1, "host": config.server() or os.uname().nodename, "since": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days, "weights": WEIGHTS, "sessions": rows}
+            "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"), "days": days, "weights": WEIGHTS,
+            "limits_k": list(limits), "fresh_k": FRESH_CTX // 1000, "sessions": rows}
 
 
 def snapshot_path(day: dt.date) -> str:
@@ -222,6 +309,24 @@ def render(doc: dict) -> str:
                      f"{100 * s['cold_writes']:>5.0f} {r['cost_eq_m']:>7.1f}  {r['payback']['warm_calls']:g} / "
                      f"{r['payback']['cold_wakes']:g}")
     lines.append(f"total {sum(r['cost_eq_m'] for r in doc['sessions']):.1f}M over {len(doc['sessions'])} sessions")
+    limits = doc.get("limits_k") or []
+    if limits:
+        lines += ["", f"handover at a limit, replayed over this window: handovers fired (median turns and hours between); "
+                      f"turns from a fresh {doc.get('fresh_k', FRESH_CTX // 1000)}k at this window's growth per turn",
+                  f"{'session':<30} {'turns':>5} {'calls/t':>7} {'k/turn':>6}  " +
+                  "  ".join(f"{f'{k:g}k':<24}" for k in limits)]
+        for r in doc["sessions"]:
+            nm = r["name"] if seen[r["name"]] == 1 else f"{r['name'][:20]} ({r['id'][:8]})"
+            cells = []
+            for k in limits:
+                h = (r.get("handover") or {}).get(f"{k:g}") or {}
+                tb, hb = sorted(h.get("turns_between") or []), sorted(h.get("hours_between") or [])
+                mid = f" ({tb[len(tb) // 2]}t, {hb[len(hb) // 2]:g}h)" if tb else ""
+                cell = f"{h.get('handovers', 0)}{mid}; fresh {h.get('turns_from_fresh') or '-'}t"
+                cells.append(f"{cell:<24}")
+            cpt = r.get("calls_per_turn")
+            lines.append(f"{nm[:30]:<30} {r.get('turns', 0):>5} {(f'{cpt:g}' if cpt else '-'):>7} "
+                         f"{r.get('growth_per_turn_k', 0):>6g}  " + "  ".join(cells))
     return "\n".join(lines)
 
 
@@ -230,7 +335,12 @@ def cmd_context_report(a) -> int:
         p = write_snapshot()
         print(f"context-report: wrote {p}" if p else "context-report: today's snapshot already exists")
         return 0
-    doc = report(a.days, everything=a.all)
+    try:
+        limits = tuple(float(x) for x in str(a.limits).split(",") if x.strip())
+    except ValueError:
+        print(f"context-report: --limits takes thousands of tokens, comma separated (got {a.limits!r})")
+        return 2
+    doc = report(a.days, everything=a.all, limits=limits)
     print(json.dumps(doc) if a.json else render(doc))
     return 0
 
@@ -241,4 +351,6 @@ def add_parser(sub) -> None:
     p.add_argument("--json", action="store_true")
     p.add_argument("--all", action="store_true", help="include sessions with fewer than 3 calls in the window")
     p.add_argument("--snapshot", action="store_true", help="write yesterday's per-host snapshot (if not written yet)")
+    p.add_argument("--limits", default=",".join(f"{k:g}" for k in LIMITS_K),
+                   help="candidate handover limits to replay, in thousands of tokens (default 300,400,500)")
     p.set_defaults(func=cmd_context_report)
