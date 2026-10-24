@@ -883,7 +883,9 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
         if hb_ages and r.slug in hb_ages and hb_ages[r.slug] is not None:
             last += f" (hb {hb_ages[r.slug]:.0f}m)"
         if not r.session:
-            state = "parked (no session)"
+            pk = getattr(r, "parked", None) or {}
+            state = "parked (no session)" + (f" since {pk['at']}" if pk.get("at") else "") + \
+                (f": {pk['note']}" if pk.get("note") else "") + (f"; until {pk['until']}" if pk.get("until") else "")
         elif _is_wake_relay(r):
             # the relay writes no state events (a stale one may predate this session), so its
             # row is its waiter's liveness
