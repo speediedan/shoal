@@ -291,7 +291,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | --- | --- | --- |
 | `unacked-work` | an offer or wake request to an idle role, or a `--now` offer, newer than its last queue version | wake 10, wake 30, page 60 |
 | `wait-resolved` | a checkable wait target is no longer pending | wake 15, page 60 |
-| `wait-validity` | any CI, lease or job wait (not `upstream`), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
+| `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
 | `turn-ended-active` (`continuation`) | posture `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |

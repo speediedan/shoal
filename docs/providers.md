@@ -47,11 +47,15 @@ can resolve it without the role. Each kind resolves to `pending`, `resolved` or 
 | `gh-run` | `<owner/repo>:<run id>` | `gh run view` | core (needs `gh`) |
 | `gh-pr` | `<owner/repo>#<n>` | `gh pr view`: a merged or closed PR is resolved; for an open one, `gh pr checks`: any pending check is pending, and an empty check list is unknown, never resolved. With upstream semantics (an `upstream` wait or an `upstream:` blocker) an open PR is pending whatever its checks say, because the dependency is the merge, not the CI | core (needs `gh`) |
 | `gh-issue` | `<owner/repo>#<n>` | `gh issue view`: open is pending, closed is resolved (for `upstream` waits) | core (needs `gh`) |
-| `az-build` | an Azure Pipelines build id | `az pipelines build show` | optional (needs `az`) |
+| `az-build` | `[<project>/]<build id>` | `az pipelines build show`: notStarted, inProgress and postponed are pending. A bare id is looked up in each of `azure_projects` in turn (default `[azure_project]`), because the CLI needs the project and an id from another project reads "not found". A timeout is unknown: `az` with no Azure DevOps credential waits rather than failing, so a token exported only from a login profile needs `login_shell_tools = ["az"]` | optional (needs `az`) |
 
 GitHub refs may be written `repo#n` or `repo:n` and take the configured `default_owner`; they are
 stored in the canonical `owner/repo#n` form. An unknown kind or an unparseable ref is refused when
 the wait is written, and so is a target that is already resolved.
+
+Under wait discipline, a target its provider confirms pending gets no periodic `wait-validity` wake: `wait-resolved`
+wakes the role when it ends, and the wait's rescan cap still expires it. A target that reads unknown keeps the validity
+wakes, and their detail says UNVERIFIABLE with the provider's reason.
 
 ## Board source
 

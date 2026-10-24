@@ -104,8 +104,9 @@ ladders.
 - **Guard:** `queue --wait ... --target <kind>:<ref>` names a checkable target. Health condition
   `wait-resolved` reads the target's real state through its provider and wakes the role when it is
   no longer pending. Condition `wait-validity` wakes a role on any CI, lease or job wait every
-  `validity_wake_min` (default 90) to re-verify it. A provider that cannot answer reports unknown,
-  never resolved.
+  `validity_wake_min` (default 90) to re-verify it, unless (under wait discipline) its provider
+  confirms the target pending. A provider that cannot answer reports unknown, never resolved, and
+  the validity wake then says UNVERIFIABLE.
 - **Signature:** `wait-resolved` or `wait-validity` wakes in the health-actions section; a waiting
   row whose target reads resolved.
 

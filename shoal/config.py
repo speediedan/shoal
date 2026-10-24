@@ -21,6 +21,8 @@ when neither is importable the file is skipped with one warning on stderr.
   default_owner  SHOAL_DEFAULT_OWNER                         "" (item keys keep every owner)
   azure_org      SHOAL_AZURE_ORG                             "" (Azure pipeline sensors and GPU share need it)
   azure_project  SHOAL_AZURE_PROJECT                         ""
+  azure_projects (none)                                      [azure_project] (projects an `az-build:<id>` is looked up in)
+  login_shell_tools (none)                                   [] (tools whose calls run under `bash -lc`)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
@@ -260,6 +262,23 @@ def azure_org() -> str:
 
 def azure_project() -> str:
     return str(_get("azure_project", names("AZURE_PROJECT"), ""))
+
+
+def azure_projects() -> list[str]:
+    """The projects a bare `az-build:<id>` is looked up in, in order: `azure_projects`, else `azure_project`. A build id
+    is unique in its organization, but `az pipelines build show` needs the project, and an id from another project reads
+    "not found" (measured 2026-10-24: every finetuning-scheduler gate under the interpretune default)."""
+    v = file_values().get("azure_projects") or []
+    out = [str(x) for x in v] if isinstance(v, list) else []
+    return out or ([azure_project()] if azure_project() else [])
+
+
+def login_shell_tools() -> list[str]:
+    """Tools whose calls run under `bash -lc`, for a credential exported only from a login profile: a systemd unit gets no
+    profile, and `az` without its token hangs to the timeout rather than failing (measured 2026-10-24 on speediedl, where
+    AZURE_DEVOPS_EXT_PAT comes from ~/.bashrc). The variable never enters a unit or a file."""
+    v = file_values().get("login_shell_tools") or []
+    return [str(x) for x in v] if isinstance(v, list) else []
 
 
 def summary() -> dict:
