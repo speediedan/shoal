@@ -347,11 +347,28 @@ def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: s
     return argv + [sid, slug] + (["--spec", spec_path] if spec_path else [])
 
 
+def registry_follow(harness: str, session: str, label: str, job: str = "") -> tuple[str, str]:
+    """(session, job) this card should show now: its saved registry entry's, matched by label. A card's command line
+    carries the ids it was opened with, and a handover moves the entry to a new job, so a card that never re-read the
+    registry kept showing the retired session (measured 2026-10-24: shoal-architecture-evolution's card on 4decf3de,
+    four days after it opened, while the registry held the new job)."""
+    try:
+        import ui_herdr
+        for e in ui_herdr.local_standalone():
+            if e.get("harness") == harness and (e.get("label") or e["session"][:12]) == label:
+                return e["session"], e.get("job", "") or ""
+    except Exception:  # noqa: BLE001 - the registry is a convenience: keep the ids the card was opened with
+        pass
+    return session, job
+
+
 def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
     while True:
         watch.check()
+        if not host:
+            session, job = registry_follow(harness, session, label, job)
         if host:
             import routes
             up = routes.reachable(host)

@@ -1156,6 +1156,33 @@ A.mode = "off"
 with contextlib.redirect_stdout(io.StringIO()):
     handover.cmd_handover(A)
 assert ui_herdr.load_standalone(raw=True)[0]["handover"] == "off"
+# a stop+resume of a job whose id is not its conversation's prefix leaves two jobs on one conversation: the delivery
+# follows the live copy, and the reset stops both (2026-10-24: b193724a stopped, 4decf3de live beside the new session)
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "old00001", "sessionId": "conv0001-aaaa", "name": "seat2", "startedAt": 1},
+    {"id": "conv0001", "sessionId": "conv0001-aaaa", "pid": 9, "tempo": "idle", "inFlight": {}, "name": "seat2-state",
+     "startedAt": 2}], "opencode": {}})
+import backends
+rows = backends.get("claude")._agents(include_stopped=True)
+assert [r["id"] for r in backends.claude_holders(rows, "conv0001-aaaa", "old00001")] == ["conv0001", "old00001"]
+e2 = {"harness": "claude", "session": "conv0001-aaaa", "job": "old00001", "label": "seat2"}
+assert handover.follow(e2) and e2["job"] == "conv0001", e2
+out = backends.get("claude").reset("conv0001-aaaa", "resume", label="seat2")
+assert "stopped conv0001, old00001" in out["did"], out
+# retire: a worker that comes back after its stop is stopped once more; one that stays up is reported
+cb = backends.get("claude"); seen = {"stops": []}
+live = {"old00001": [None, 5, None], "conv0001": [None, 6, 6, 6]}   # pid per _agents call after the stops
+def fake_agents(include_stopped=False):
+    return [{"id": j, "pid": (v.pop(0) if len(v) > 1 else v[0])} for j, v in live.items()]
+cb.stop, cb._agents = (lambda j: seen["stops"].append(j) or ""), fake_agents
+assert cb.retire(["old00001", "conv0001"], verify_s=5) == ["conv0001"]
+assert seen["stops"].count("old00001") == 2 and seen["stops"].count("conv0001") == 2, seen
+del cb.stop, cb._agents
+# a standalone card shows its registry entry's ids, not the ones on its command line
+import ui_view
+ui_herdr.save_standalone([{"harness": "claude", "session": "fe5e7000-0000", "job": "fe5e7000", "label": "seat"}])
+assert ui_view.registry_follow("claude", "seat0001-aaaa", "seat", "seat0001") == ("fe5e7000-0000", "fe5e7000")
+assert ui_view.registry_follow("claude", "zzz", "nobody", "z") == ("zzz", "z")
 print("handover ok")
 PY2
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "stale upkeep"

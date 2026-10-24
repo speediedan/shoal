@@ -43,7 +43,7 @@ doc. Each harness implements it in its own way:
 
 | Harness | Reset |
 |---|---|
-| Claude | a new background job on the prompt, with the old job's saved name, model and effort, in its directory; then `claude stop` on the old job. The registry follows the new job |
+| Claude | a new background job on the prompt, with the old job's saved name, model and effort, in its directory; then `claude stop` on every job holding the old conversation, watched for 20 s and stopped again if a worker comes back (still live ones show in `--list`). The registry follows the new job, and the session's card follows the registry |
 | opencode, Muse, Codex | not yet: the handover stops after the advice, and the reset is done by hand |
 | ACP client | the target form: `session/new` (same cwd and MCP servers), then `session/prompt` with the start doc. Any harness reachable over ACP gets a reset with no harness code |
 
@@ -54,6 +54,13 @@ doc. Each harness implements it in its own way:
 - Waking the original then fails while the other runs.
 
 So a session cleared by hand runs fine until its worker is retired. A new job does not have that problem.
+
+**Copies of one conversation.** Delivering the advice to an idle session stops and resumes it. When the job's id is not its
+conversation's prefix (a long-lived job whose conversation was replaced), the resume starts a second job on the same
+conversation. Measured 2026-10-24: the advice resumed b193724a's conversation as job 4decf3de, the reset stopped only
+b193724a, and the copy stayed beside the new session. So the delivery follows the live copy, the reset stops every copy,
+and nothing is removed: `claude rm` of the copy made the background service respawn the stopped original. To clean up
+by hand, `claude stop` each copy; do not `claude rm` one while another job holds the conversation.
 
 ## Setting the limit
 
