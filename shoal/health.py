@@ -18,6 +18,7 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   unacked-work       open offer to an idle role (or --now) newer than its queue version   wake@10 wake@30 page@60
   wait-resolved      a machine-checkable wait target is no longer pending                  wake@15 page@60
   wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V page@3V
+                     (not a target its provider confirms pending, under wait discipline)
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
   stale-active       posture active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
@@ -618,9 +619,20 @@ def parked_free(spec: ShoalSpec, view, role, q: dict, posture: str, sub: str,
 
 # ---- the policy -----------------------------------------------------------------
 
+def validity_applies(sub: str, target: str, pending, disciplined: bool) -> bool:
+    """Whether a wait gets periodic `wait-validity` wakes: any CI wait, or any wait on a provider target, except
+    `upstream` (it resolves through its target) and, under wait discipline, a target its provider confirms pending.
+    That one is a valid wait: wait-resolved wakes the role when it ends, and its rescan cap still expires it. Waking it
+    to re-verify cost a cold turn on a build that was running (measured 2026-10-24: az-build:1661, inProgress, woken
+    at 90 minutes)."""
+    if sub == "upstream" or (pending is True and disciplined):
+        return False
+    return sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds()
+
+
 def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     """[{slug, condition, key, since, detail}] for every live condition instance."""
-    from state import read_wait
+    from state import read_wait, wait_discipline
     out = []
     cfg = health_cfg(spec)
     validity = float(cfg.get("validity_wake_min", 90))
@@ -666,13 +678,14 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
             # The ladder is keyed by the target, so re-declaring the same wait keeps escalating: keyed
             # by the boundary, every rewrite restarted it at step 1 and it never paged (measured
             # 2026-09-26: five wakes in a day on a wait whose PR had merged, no page).
-            if sub != "upstream" and (sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds()):
+            if validity_applies(sub, target, pending, wait_discipline(spec) is not None):
                 a = age_min(boundary)
                 if validity > 0 and a is not None and a >= validity:
+                    seen = "" if not target else f": UNVERIFIABLE, {why}" if pending is None else f": {why}"
                     out.append({"slug": slug, "condition": "wait-validity",
                                 "key": f"validity:{target}" if target else f"validity:{boundary}",
-                                "since": boundary, "detail": f"waiting {a:.0f}m on {sub} ({target or 'no target'}; "
-                                f"heuristic: {why}); re-verify the wait is still valid"})
+                                "since": boundary, "detail": f"waiting {a:.0f}m on {sub} ({target or 'no target'}{seen}); "
+                                f"re-verify the wait is still valid"})
         # watcher
         alive, sc = watcher_alive(spec.sid, slug)
         if alive and role.ecosystem == "claude" and claude_worker_gone(role, cbusy) and direct_wake_mode(spec) == "off":

@@ -48,6 +48,14 @@
 # Env: SHOAL_AZURE_ORG, SHOAL_AZURE_PROJECT. Default: "" (those features are off)
 # azure_org = "https://dev.azure.com/<org>"
 # azure_project = "<project>"
+# Every project an `az-build:<id>` wait target may live in, tried in order (a build id is unique in its
+# organization, but the CLI needs its project). Default: [azure_project].
+# azure_projects = ["<project>", "<other project>"]
+
+# Tools whose calls (wait-target checks) run under `bash -lc`, for a credential exported only from a login
+# profile: health units get no profile, and `az` without AZURE_DEVOPS_EXT_PAT hangs to the timeout.
+# Default: [] (tools run in the tool environment as they are).
+# login_shell_tools = ["az"]
 
 # Extra environment for every tool call and generated systemd unit, for a host whose harness services
 # sit somewhere non-default (e.g. an OpenChamber server kept apart from a desktop app). An exported

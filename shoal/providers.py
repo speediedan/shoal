@@ -16,7 +16,7 @@ Kinds shipped here:
   lease     a lease key, via the configured lease provider (`lease_cmd --status --json`)
   gh-run    <owner/repo>:<run id>, via `gh run view`
   gh-pr     <owner/repo>#<n>, via `gh pr checks` (an empty check list is unknown)
-  az-build  an Azure Pipelines build id, via `az pipelines build show` (optional: needs `az`)
+  az-build  an Azure Pipelines build, `[<project>/]<id>`, via `az pipelines build show` (optional: needs `az`)
 """
 from __future__ import annotations
 
@@ -77,6 +77,8 @@ def normalize(target: str) -> tuple[str, str]:
         repo, _, rid = ref.rpartition(":")
         if not repo or not rid.isdigit():
             return target, f"gh-run target {ref!r} is not <owner/repo>:<run id>"
+    if kind == "az-build" and not re.fullmatch(r"(?:[\w.-]+/)?\d+", ref):
+        return target, f"az-build target {ref!r} is not [<project>/]<build id>"
     return target, ""
 
 
@@ -111,7 +113,10 @@ def resolve(target: str, slug: str, sid: str = "", upstream: bool = False) -> Re
 
 
 def _run(argv: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=config.tool_env())
+    if argv and argv[0] in config.login_shell_tools():  # its credential lives in the login profile, not the unit
+        argv = ["bash", "-lc", shlex.join(argv)]
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=config.tool_env(),
+                          stdin=subprocess.DEVNULL)
 
 
 @register("job")
@@ -224,10 +229,26 @@ def gh_issue(ref: str, slug: str, sid: str) -> Result:
 
 @register("az-build")
 def az_build(ref: str, slug: str, sid: str) -> Result:
+    """`[<project>/]<id>`: pending while notStarted, inProgress or postponed. A bare id is looked up in each of
+    `azure_projects` in turn, because an id from another project reads "not found"."""
     if not shutil.which("az", path=config.tool_env()["PATH"]):
         return None, "az CLI not on the tool PATH"
-    r = _run(["az", "pipelines", "build", "show", "--id", ref, "--query", "status", "-o", "tsv"], timeout=60)
-    st = r.stdout.strip()
-    if not st:
-        return None, "az build status unavailable"
-    return st in ("notStarted", "inProgress", "postponed"), f"build {st}"
+    proj, _, bid = ref.rpartition("/")
+    org = ["--organization", config.azure_org()] if config.azure_org() else []
+    missed = []
+    for p in ([proj] if proj else config.azure_projects()) or [""]:
+        argv = ["az", "pipelines", "build", "show", "--id", bid, *org, *(["--project", p] if p else []),
+                "--query", "status", "-o", "tsv"]
+        try:
+            r = _run(argv, timeout=60)
+        except subprocess.TimeoutExpired:
+            # az with no Azure DevOps credential waits rather than failing (2026-10-24: 90 s and no output)
+            return None, ("az timed out after 60 s: no Azure DevOps credential in the tool environment? "
+                          "(a profile-only token needs login_shell_tools = [\"az\"])")
+        st = r.stdout.strip()
+        if st:
+            return st in ("notStarted", "inProgress", "postponed"), f"build {st}" + (f" ({p})" if p and not proj else "")
+        if "could not be found" not in r.stderr:
+            return None, f"az build status unavailable ({(r.stderr.strip().splitlines() or ['no output'])[-1][:80]})"
+        missed.append(p or "default project")
+    return None, f"build {bid} not found in {', '.join(missed)} (set azure_projects, or write <project>/<id>)"
