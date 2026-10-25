@@ -394,6 +394,16 @@ check '"resume", "01a14091-3870-7923-b66b-d3bfd335dd4e"' env SHOAL_MUSE_BIN=/x/m
 check '--disable-sandbox || exec' env SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session infra-aux --dry-run
 check '"resume", "01a14091-3870-7923-b66b-d3bfd335dd4e"' env SHOAL_CODEX_BIN=/x/codex $H view --harness codex --session 01a14091-3870-7923-b66b-d3bfd335dd4e --dry-run
 check 'resume \\"$1\\" || exec' env SHOAL_CODEX_BIN=/x/codex $H view --harness codex --session infra-laptop --dry-run
+# a standalone seat's saved model and effort (ui pick --model/--effort, from muse-new --pick) ride every resume
+mkdir -p "$S/xdg-view/shoal"
+python3 - "$S" <<'PY2'
+import json, sys
+json.dump({"v": 1, "sessions": [{"harness": "muse", "session": "01a14091-3870-7923-b66b-d3bfd335dd4e",
+           "label": "saved-seat", "model": "muse-test-9", "effort": "xhigh"}]},
+          open(sys.argv[1] + "/xdg-view/shoal/ui-standalone.json", "w"))
+PY2
+check '"--model", "muse-test-9", "--reasoning-effort", "xhigh"' env XDG_CONFIG_HOME="$S/xdg-view" SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session 01a14091-3870-7923-b66b-d3bfd335dd4e --label saved-seat --dry-run
+check '"--reasoning-effort", "high"' env XDG_CONFIG_HOME="$S/xdg-view-none" SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session 01a14091-3870-7923-b66b-d3bfd335dd4e --dry-run
 # a blocked session with no prompt (waitingFor empty) is not a QUESTION, and keeps its ledger posture
 python3 - "$SHOALD" <<'PY2' || fail "blocked without a prompt"
 import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
@@ -1101,7 +1111,7 @@ for p, rc in ((old, 1), (new, 0)):
     open(p, "w").write(f"#!/bin/sh\necho $0 >> {log}\nexit {rc}\n"); os.chmod(p, 0o755)
 calls = iter([old, new])
 ui_view.verify_listed = lambda *a, **k: ""
-def viewer(h, s):
+def viewer(h, s, label="", model="", effort=""):
     return [next(calls), "attach", s], dict(os.environ)
 ui_view.viewer = viewer
 orig_run = ui_view.subprocess.run
@@ -1213,7 +1223,7 @@ for p in (first, second): os.chmod(p, 0o755)
 import ui_view
 seq = iter([first, second])
 ui_view.verify_listed = lambda *a, **k: ""
-ui_view.viewer = lambda h, s: ([next(seq), "attach", s], dict(os.environ))
+ui_view.viewer = lambda h, s, label="", model="", effort="": ([next(seq), "attach", s], dict(os.environ))
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = ui_view.run_viewer("claude", "abcd1234", "seat")

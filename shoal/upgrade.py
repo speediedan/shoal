@@ -47,7 +47,7 @@ REARM_LEDGER = {"ledger_watch.py", "ledger.py", "roles.py", "digest.py", "source
 REARM_RELAY = {"health.py", "ledger.py", "roles.py"}
 BRIEF = {"briefs.py"}
 SELFTESTS = ("selftest_ledger.sh", "selftest_h4.sh", "selftest_h8.sh", "selftest_ui.sh", "selftest_muse.sh",
-             "selftest_codex.sh", "selftest_usage.sh")
+             "selftest_codex.sh", "selftest_usage.sh", "selftest_providers.sh")
 
 
 def now_iso() -> str:

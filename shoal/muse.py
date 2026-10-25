@@ -349,28 +349,29 @@ def cmd_muse_tail(a) -> int:
 DEFAULT_MODEL = "muse-wonder-full-1.0"
 
 
-def interactive_flags() -> list[str]:
+def interactive_flags(model: str = "", effort: str = "") -> list[str]:
     """Flags for an interactive (TUI) client: the model and effort are per run, not stored in the session,
     and the sandbox is off for the same reason it is off for exec turns (a sandboxed shell cannot push or
-    reach the CI tooling). Approvals stay on: a person is at the keyboard, unlike an exec turn.
-    `SHOAL_MUSE_VIEW_ARGS` replaces the whole list."""
+    reach the CI tooling). Approvals stay on: a person is at the keyboard, unlike an exec turn. A seat's own
+    model and effort (its spec role, or the registry entry `muse-new --pick` saved) win over the host
+    defaults, so a card resumes the seat as it was created. `SHOAL_MUSE_VIEW_ARGS` replaces the whole list."""
     extra = config.env("MUSE_VIEW_ARGS")
     if extra:
         return extra.split()
-    return ["--model", config.env("MUSE_MODEL") or DEFAULT_MODEL, "--reasoning-effort", "high",
-            "--trust-workspace", "--disable-sandbox"]
+    return ["--model", model or config.env("MUSE_MODEL") or DEFAULT_MODEL,
+            "--reasoning-effort", effort or "high", "--trust-workspace", "--disable-sandbox"]
 
 
-def view_argv(session: str) -> list[str]:
+def view_argv(session: str, model: str = "", effort: str = "") -> list[str]:
     """The viewer's command: the interactive client takes the session over, which is only safe while no
     turn runs; mid-turn the read-only tail is shown instead."""
     if busy(session):
         return [sys.executable, CLI, "muse-tail", "--session", session]
     if UUID_RE.match(session) or os.path.isdir(sdir(session)):
-        return [muse_bin(), "resume", session, *interactive_flags()]
+        return [muse_bin(), "resume", session, *interactive_flags(model, effort)]
     # a standalone session by NAME (Muse names are unique per user): resume it, or start a fresh one the
     # first time (`muse resume` of an unknown name fails); the user then names it with /name
-    flags = " ".join(shlex.quote(f) for f in interactive_flags())
+    flags = " ".join(shlex.quote(f) for f in interactive_flags(model, effort))
     return ["sh", "-c", f'"$0" resume "$1" {flags} || exec "$0" {flags}', muse_bin(), session]
 
 
@@ -439,10 +440,15 @@ def cmd_muse_new(a) -> int:
         print(f"muse-new: {e}")
         return 1
     print(f"{name}  {sid}  {cwd}")
+    pick = [sys.executable, CLI, "ui", "pick", "--harness", "muse", "--id", sid,
+            "--label", a.label or name, "--cwd", cwd, "--save"]
+    if a.model:
+        pick += ["--model", a.model]
+    if a.effort:
+        pick += ["--effort", a.effort]
     if a.pick:
-        return subprocess.call([sys.executable, CLI, "ui", "pick", "--harness", "muse", "--id", sid,
-                                "--label", a.label or name, "--cwd", cwd, "--save"])
-    print(f"open it with: shoal ui pick --harness muse --id {sid} --label {a.label or name} --cwd {cwd} --save")
+        return subprocess.call(pick)
+    print(f"open it with: shoal {' '.join(pick[2:])}")
     return 0
 
 

@@ -180,6 +180,10 @@ from backends import get
 sid = sys.argv[2]
 argv, env = get("codex").view_argv(sid)
 assert argv[1:3] == ["resume", sid], argv
+# the seat's own pair (spec role or saved registry entry) rides every resume; nothing is forced without one
+assert "-m" not in argv and not any("model_reasoning_effort" in x for x in argv), argv
+argv = get("codex").view_argv(sid, model="gpt-test-9", effort="xhigh")[0]
+assert argv[argv.index("-m") + 1] == "gpt-test-9" and 'model_reasoning_effort="xhigh"' in argv, argv
 argv2 = cx.view_argv("infra-laptop")
 assert argv2[0] == "sh" and "resume" in argv2[2] and "exec" in argv2[2], argv2
 print("viewer argv ok")

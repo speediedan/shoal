@@ -629,7 +629,7 @@ def cmd_standalone(a) -> int:
     out = []
     for e in local_standalone():
         st, hstate = standalone_state(e, rows)
-        out.append({k: e[k] for k in ("harness", "session", "job", "label", "cwd") if e.get(k)} | {"turn": st, "state": hstate})
+        out.append({k: e[k] for k in ("harness", "session", "job", "label", "cwd", "model", "effort") if e.get(k)} | {"turn": st, "state": hstate})
     if getattr(a, "json", False):
         print(json.dumps({"v": 1, "host": config.server(), "sessions": out}))
     else:
@@ -1116,6 +1116,9 @@ def cmd_pick(a) -> int:
         e = {k: cands[i][k] for k in ("harness", "session", "label", "cwd")}
         if a.label:
             e["label"] = a.label
+    for k in ("model", "effort"):  # the seat's pair, saved so its card resumes with them (ui_view.viewer)
+        if getattr(a, k, ""):
+            e[k] = getattr(a, k)
     save = a.save
     if not a.harness and not save:
         save = ui_term.confirm("save it so `ui open` restores it? [y/N] ")
@@ -1126,6 +1129,10 @@ def cmd_pick(a) -> int:
             if x["session"] != e["session"] and (x.get("label") or x["session"][:12]) == label:
                 print(f"replacing the saved {x['harness']} session {x['session'][:8]} that had the same label "
                       f"({label}): one label, one card")
+            if x["session"] == e["session"] or (x.get("label") or x["session"][:12]) == label:
+                for k in ("model", "effort"):  # a re-pick that names neither keeps the seat's saved pair
+                    if k not in e and x.get(k):
+                        e[k] = x[k]
         entries = [x for x in load_standalone(raw=True) if x["session"] != e["session"]
                    and (x.get("label") or x["session"][:12]) != label] + [e]
         save_standalone(entries)

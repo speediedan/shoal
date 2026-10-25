@@ -88,12 +88,13 @@ class Backend:
         sensors wake roles only through this. Returns the channel used, or `no-adapter (..)`."""
         return f"no-adapter ({self.ecosystem} has no session wake)"
 
-    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+    def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         """(argv, extra env) of the harness's own interactive client for an EXISTING session, for an
         operator to watch or answer it (`shoal view`, the UI adapters). Never creates, resumes or
         messages a session: viewing is not a wake, and a resume of a running Claude session forks it.
         Extra env may carry a credential the client needs; the caller passes it to the client process
-        only and never prints it."""
+        only and never prints it. `model` and `effort` are the seat's own (spec role or registry entry)
+        for clients that take them per run; harnesses whose client ignores them may too."""
         raise UnsupportedError(f"{self.ecosystem}: no viewer client")
 
     def live_model(self, session_id: str, repo_dir: str) -> str:
@@ -160,7 +161,7 @@ class OpenChamberBackend(Backend):
         except Exception as exc:  # noqa: BLE001
             return f"opencode-send FAILED ({str(exc)[:80]})"
 
-    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+    def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         """The stock opencode TUI as a CLIENT of OpenChamber's running server (`--server URL
         --session ID`): no second server, so the one-writer store rule holds. The server's password is
         OPENCODE_SERVER_PASSWORD in that server process's own environment (same uid); the password in
@@ -721,7 +722,7 @@ class ClaudeBackend(Backend):
             return f"{e.get('name', '?')} state:{e.get('state', '?')}"
         return "not-listed (retired or unknown id)"
 
-    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+    def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         """`claude attach <id>`: the live background session in this terminal, ownership unchanged.
         Detaching (or closing the terminal) leaves the session running. Attach is exclusive: a second
         attach fails while another terminal holds it. Recaps are switched off for the client: Claude
@@ -835,9 +836,9 @@ class CodexBackend(Backend):
             return f"codex-send FAILED ({str(exc)[:80]}); watcher {rearmed}"
         return f"codex-send; watcher {rearmed}" + (" (dry-run)" if dry_run else "")
 
-    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+    def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         import codex_harness as codex
-        return codex.view_argv(session_id), {}
+        return codex.view_argv(session_id, model, effort), {}
 
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
         import codex_harness as codex
@@ -897,9 +898,9 @@ class MuseBackend(Backend):
             return f"muse-send FAILED ({str(exc)[:80]}); watcher {rearmed}"
         return f"muse-send; watcher {rearmed}" + (" (dry-run)" if dry_run else "")
 
-    def view_argv(self, session_id: str) -> tuple[list[str], dict[str, str]]:
+    def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         import muse
-        return muse.view_argv(session_id), {"MUSE_NO_AUTO_UPDATE": "1"}
+        return muse.view_argv(session_id, model, effort), {"MUSE_NO_AUTO_UPDATE": "1"}
 
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
         import muse
