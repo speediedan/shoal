@@ -108,7 +108,13 @@ export S=<id> SPEC=<path to the group's spec>
     ```bash
     shoal offline on --shoal $S --until "<when>" --note "<why>"
     shoal offline off --shoal $S
+    shoal offline on --all          # every live shoal in this host's Herdr view at once
+    shoal offline off --all
     ```
+
+  `--all` takes the otherwise-default arguments; standing defaults live in the viewer config
+  (`~/.config/shoal/ui.json`, key `offline_defaults`: `{"until": ..., "note": ...}`) and
+  `--until`/`--note` on the command line override them. Hidden and retired shoals are left out.
 
 - Hand a claimed item from one role to another. The holding role runs this itself:
 

@@ -312,6 +312,14 @@ check "VERDICT RELAY-MAX-HOURS" timeout 30 $H relay-watch --shoal $SID --interva
 echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"
 $H queue --shoal $SID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --ask "ruling on #9202 scope" --no-sync >/dev/null
 export SHOAL_FAKE_REF_STATE='{"speediedan/interpretune#9201": "MERGED", "speediedan/interpretune#9202": "OPEN"}'
+check "exactly one of --shoal ID or --all" $H offline on --all --shoal $SID --no-sync
+check "1 shoal(s) in view" env SHOAL_UI_LEDGER_ROOTS="$ROOT" $H offline on --all --dry-run --no-sync
+mkdir -p "$S/xdg-off/shoal"
+printf '{"offline_defaults": {"until": "cfg-until", "note": "cfg-note"}}' > "$S/xdg-off/shoal/ui.json"
+check "user-offline on" env SHOAL_UI_LEDGER_ROOTS="$ROOT" XDG_CONFIG_HOME="$S/xdg-off" $H offline on --all --no-sync
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --peek --no-sync 2>&1)
+grep -q "until cfg-until (cfg-note)" <<<"$OUT" || fail "offline config defaults did not reach the mode event :: $OUT"
+check "user-offline off" $H offline off --shoal $SID --spec "$SPEC" --no-sync
 check "user-offline on" $H offline on --shoal $SID --spec "$SPEC" --until tomorrow --note "travel" --no-sync
 LONGMSG="RULES UPDATE selftest: $(printf 'word%.0s ' $(seq 1 60))END-OF-MAINTAINER-TEXT"
 $H msg --shoal $SID --spec "$SPEC" --by user --to tl --text "$LONGMSG" --no-sync >/dev/null
