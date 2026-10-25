@@ -797,7 +797,53 @@ def cmd_freeze(a) -> int:
     return 0
 
 
+def offline_defaults(a) -> None:
+    """Fill --until/--note from the viewer config's `offline_defaults` when the command line
+    leaves them empty (command line always wins)."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "ui"))
+        import ui_status
+        d = ui_status.ui_config().get("offline_defaults") or {}
+    except Exception:  # noqa: BLE001 - config is a convenience, never a precondition
+        return
+    if isinstance(d, dict):
+        a.until = a.until or str(d.get("until") or "")
+        a.note = a.note or str(d.get("note") or "")
+
+
+def cmd_offline_all(a) -> int:
+    """`offline on|off --all`: every live shoal in this host's Herdr view (discovered specs,
+    retired and viewer-hidden shoals excluded, the set `ui open` lays out). One shoal failing
+    never stops the batch; the exit code says whether any failed."""
+    import copy
+    sys.path.insert(0, os.path.join(HERE, "ui"))
+    import ui_status
+    paths = ui_status.discover_all("", None, False)
+    if not paths:
+        print("offline --all: no live shoals in view on this host")
+        return 0
+    print(f"offline {a.state} --all: {len(paths)} shoal(s) in view")
+    rc = 0
+    for p in paths:
+        one = copy.copy(a)
+        one.sid = os.path.basename(os.path.dirname(p))
+        one.spec = p
+        print(f"-- {one.sid}")
+        rc |= _offline_one(one)
+    return rc
+
+
 def cmd_offline(a) -> int:
+    if bool(getattr(a, "all_shoals", False)) == bool(getattr(a, "sid", "")):
+        print("ERROR: offline takes exactly one of --shoal ID or --all")
+        return 1
+    offline_defaults(a)
+    if a.all_shoals:
+        return cmd_offline_all(a)
+    return _offline_one(a)
+
+
+def _offline_one(a) -> int:
     try:
         spec, led, view = _load(a)
     except (LedgerError, OSError) as exc:
@@ -916,9 +962,12 @@ def add_parsers(sub) -> None:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_freeze)
 
-    p = sub.add_parser("offline", help="user-offline mode for every role: on|off")
+    p = sub.add_parser("offline", help="user-offline mode for every role: on|off (one --shoal, or --all in view)")
     p.add_argument("state", choices=["on", "off"])
-    config.add_id_arg(p, required=True)
+    config.add_id_arg(p, required=False, default="")
+    p.add_argument("--all", dest="all_shoals", action="store_true",
+                   help="every live shoal in this host's Herdr view (hidden and retired excluded)")
+    p.add_argument("--ledger-dir", default="")
     p.add_argument("--spec", default="")
     p.add_argument("--until", default="", help="expected return (free text or ISO time)")
     p.add_argument("--note", default="")

@@ -86,11 +86,51 @@ def label(choice: str) -> str:
     return f"remote  {choice}: that host's Herdr server, drawn here{mark}"
 
 
+_FISH = ("><(((*>", "><((*>" , "><(*>", "<><")
+_FISH_COLORS = (96, 93, 95, 92, 94, 91, 36, 33)  # bright cyan, yellow, magenta, green, blue, red, ...
+_FISH_ROWS = ((2, 14, 30, 47), (7, 22, 38, 55), (0, 18, 34, 50))
+
+
+def splash(cols: int | None = None, color: bool | None = None) -> str:
+    """A small shoal of ASCII fish for the launch chooser, sized to the terminal (capped at 72
+    columns, one row under 44). Each fish gets its own color; colors only on a terminal and never
+    under NO_COLOR. Pure and deterministic so tests can pin the shape."""
+    if cols is None:
+        cols = shutil.get_terminal_size((80, 24)).columns
+    width = max(24, min(cols, 72))
+    if color is None:
+        color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    rows = _FISH_ROWS if width >= 44 else _FISH_ROWS[1:]
+    lines: list[str] = []
+    n = 0
+    for row in rows:
+        line: list[str] = []
+        at = 0
+        for start in row:
+            if start + 4 > width:
+                break
+            fish = _FISH[n % len(_FISH)]
+            if start > at:
+                line.append(" " * (start - at))
+                at = start
+            piece = f"\x1b[{_FISH_COLORS[n % len(_FISH_COLORS)]}m{fish}\x1b[0m" if color else fish
+            line.append(piece)
+            at += len(fish)
+            n += 1
+        bub = " o " if at + 3 <= width else ""
+        lines.append("".join(line) + bub)
+    title = "S H O A L"
+    pad = max(0, (width - len(title)) // 2)
+    head = f"\x1b[1;96m{title}\x1b[0m" if color else title
+    return "\n".join([" " * pad + head, *lines])
+
+
 def choose(read=input) -> str | None:
     """The numbered chooser; None when cancelled (EOF or q)."""
     cands = candidates()
     last = last_choice()
     default = cands.index(last) + 1 if last in cands else 1
+    print(splash())
     print("shoal ui launch: which host serves the view?")
     for i, c in enumerate(cands, 1):
         print(f"  {'*' if i == default else ' '}{i}) {label(c)}")

@@ -1058,6 +1058,14 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     got = ui_launch.choose(read=lambda p: "")
 assert got == "other-host.invalid" and "(unreachable now)" in buf.getvalue() and "*2)" in buf.getvalue(), buf.getvalue()
+# the splash: fish at every width, capped, colored only when asked
+import re
+plain = ui_launch.splash(cols=200, color=False)
+assert "S H O A L" in plain and "><" in plain and "\x1b[" not in plain, plain
+assert all(len(l) <= 72 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
+colored = ui_launch.splash(cols=60, color=True)
+assert len(set(re.findall(r"\x1b\[(\d+)m", colored))) >= 4, "each fish its own color"
+assert ui_launch.splash(cols=30, color=False).count("\n") < plain.count("\n"), "narrow terminals get fewer rows"
 with contextlib.redirect_stdout(io.StringIO()):
     assert ui_launch.choose(read=lambda p: "1") == "local"
     assert ui_launch.choose(read=lambda p: "me@typed.example") == "me@typed.example"
