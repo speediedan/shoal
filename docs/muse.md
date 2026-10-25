@@ -26,8 +26,10 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   3-32 chars of lowercase letters, digits and single hyphens, unique per user; `all`, `self` and `current` are
   reserved. Make the name describe the seat: peers address it by that name.
 - The card runs `muse resume <id>` with `--model` (default `muse-wonder-full-1.0`, override
-  `SHOAL_MUSE_MODEL`), `--reasoning-effort high`, `--trust-workspace` and `--disable-sandbox`. The model is a
-  per-run choice, not stored in the session, so it must be passed on every resume. Approvals stay on (a person is
+  `SHOAL_MUSE_MODEL`), `--reasoning-effort high`, `--trust-workspace` and `--disable-sandbox`. The model and
+  effort are per-run choices, not stored in the session, so they must be passed on every resume: `muse-new
+  --model/--effort` saves the pair on the seat's registry entry (through `ui pick`), and the viewer re-reads
+  it on every attach, so a seat created at `xhigh` resumes at `xhigh`. Approvals stay on (a person is
   at the keyboard). `SHOAL_MUSE_VIEW_ARGS` replaces the whole flag list.
 - While an exec turn runs on the same session the viewer shows the read-only tail instead of taking it over, so
   the two modes can share one session id but never run at once.

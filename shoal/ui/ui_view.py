@@ -126,18 +126,21 @@ def verify_listed(harness: str, session: str, job: str = "") -> str:
     return ""  # opencode: the server rejects an unknown session id itself
 
 
-def viewer(harness: str, session: str) -> tuple[list[str], dict[str, str]]:
+def viewer(harness: str, session: str, label: str = "", model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
     from backends import get as get_backend
-    argv, extra = get_backend(harness).view_argv(session)
+    if label and not (model and effort):
+        saved_model, saved_effort = registry_view_args(harness, session, label)
+        model, effort = model or saved_model, effort or saved_effort
+    argv, extra = get_backend(harness).view_argv(session, model, effort)
     return argv, clean_env(extra)
 
 
-def run_viewer(harness: str, session: str, label: str, job: str = "") -> int:
+def run_viewer(harness: str, session: str, label: str, job: str = "", model: str = "", effort: str = "") -> int:
     why = verify_listed(harness, session, job)
     if why:
         print(f"shoal view: {label}: {why}")
         return 1
-    argv, env = viewer(harness, session if not job else job)
+    argv, env = viewer(harness, session if not job else job, label, model, effort)
     print(f"shoal view: {label} -> {harness} {session} (detach to come back; the session keeps running)")
     binary = os.path.realpath(argv[0]) if harness == "claude" else ""
     started = time.time()
@@ -150,7 +153,7 @@ def run_viewer(harness: str, session: str, label: str, job: str = "") -> int:
             break
         print("shoal view: the Claude background service restarted (an update); reattaching")
         time.sleep(2)
-        argv, env = viewer(harness, session if not job else job)
+        argv, env = viewer(harness, session if not job else job, label, model, effort)
         started = time.time()
         r = subprocess.run(argv, env=env)
     if r.returncode != 0 and binary and replaced(binary):
@@ -362,6 +365,21 @@ def registry_follow(harness: str, session: str, label: str, job: str = "") -> tu
     return session, job
 
 
+def registry_view_args(harness: str, session: str, label: str) -> tuple[str, str]:
+    """(model, effort) saved on this standalone seat's registry entry, matched by session or label, so its
+    card resumes the client with the model and effort the seat was created with (`muse-new --model/--effort`,
+    saved by `ui pick`). ('', '') when the entry carries neither: the harness defaults then apply."""
+    try:
+        import ui_herdr
+        for e in ui_herdr.local_standalone():
+            if e.get("harness") == harness and (e["session"] == session
+                                                or (e.get("label") or e["session"][:12]) == label):
+                return e.get("model", "") or "", e.get("effort", "") or ""
+    except Exception:  # noqa: BLE001 - the registry is a convenience: fall back to the harness defaults
+        pass
+    return "", ""
+
+
 def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
@@ -408,7 +426,7 @@ def cmd_view(a) -> int:
                 return 2
             label = a.label or f"{a.harness}:{a.session[:12]}"
             if a.dry_run:
-                argv, env = viewer(a.harness, a.session)
+                argv, env = viewer(a.harness, a.session, label)
                 print(json.dumps({"argv": argv, "env_extra": sorted(k for k in env if k not in os.environ)}))
                 return 0
             job = getattr(a, "job", "") or ""
@@ -432,10 +450,11 @@ def cmd_view(a) -> int:
                 return 0
             return remote_attach(host_of(role, spec), spec.sid, role.slug)
         if a.dry_run:
-            argv, env = viewer(role.ecosystem, role.session)
+            argv, env = viewer(role.ecosystem, role.session, model=role.model, effort=role.effort)
             print(json.dumps({"argv": argv, "env_extra": sorted(k for k in env if k not in os.environ)}))
             return 0
-        return run_viewer(role.ecosystem, role.session, f"{spec.sid}/{role.slug}")
+        return run_viewer(role.ecosystem, role.session, f"{spec.sid}/{role.slug}",
+                          model=role.model, effort=role.effort)
     except Exception as exc:  # noqa: BLE001
         print(f"shoal view: {exc}")
         return 1

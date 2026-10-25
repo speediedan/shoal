@@ -415,22 +415,28 @@ def cmd_codex_tail(a) -> int:
         return 0
 
 
-def interactive_flags() -> list[str]:
+def interactive_flags(model: str = "", effort: str = "") -> list[str]:
     """Flags for an interactive (TUI) client. The sandbox and approval posture come from the host's
-    config.toml; only a model override is passed. `SHOAL_CODEX_VIEW_ARGS` replaces the whole list."""
+    config.toml; only the seat's own model and effort are passed (its spec role, or the registry entry
+    `codex-new --pick` saved), falling back to the host model. `SHOAL_CODEX_VIEW_ARGS` replaces the whole list."""
     extra = config.env("CODEX_VIEW_ARGS")
     if extra:
         return extra.split()
-    model = config.env("CODEX_MODEL")
-    return ["-m", model] if model else []
+    flags = []
+    m = model or config.env("CODEX_MODEL")
+    if m:
+        flags += ["-m", m]
+    if effort:
+        flags += ["-c", f'model_reasoning_effort="{effort}"']
+    return flags
 
 
-def view_argv(session: str) -> list[str]:
+def view_argv(session: str, model: str = "", effort: str = "") -> list[str]:
     """The viewer's command: the interactive client takes the thread over, which is only safe while no turn
     runs; mid-turn the read-only tail is shown instead."""
     if busy(session):
         return [sys.executable, CLI, "codex-tail", "--session", session]
-    flags = interactive_flags()
+    flags = interactive_flags(model, effort)
     if UUID_RE.match(session) or os.path.isdir(sdir(session)):
         return [codex_bin(), "resume", session, *flags]
     # a standalone session by NAME: resume it, or start a fresh one the first time (name it with /rename)
@@ -505,10 +511,15 @@ def cmd_codex_new(a) -> int:
         print(f"codex-new: {e}")
         return 1
     print(f"{a.name}  {tid}  {cwd}")
+    pick = [sys.executable, CLI, "ui", "pick", "--harness", "codex", "--id", tid,
+            "--label", a.label or a.name, "--cwd", cwd, "--save"]
+    if a.model:
+        pick += ["--model", a.model]
+    if a.effort:
+        pick += ["--effort", a.effort]
     if a.pick:
-        return subprocess.call([sys.executable, CLI, "ui", "pick", "--harness", "codex", "--id", tid,
-                                "--label", a.label or a.name, "--cwd", cwd, "--save"])
-    print(f"open it with: shoal ui pick --harness codex --id {tid} --label {a.label or a.name} --cwd {cwd} --save")
+        return subprocess.call(pick)
+    print(f"open it with: shoal {' '.join(pick[2:])}")
     return 0
 
 

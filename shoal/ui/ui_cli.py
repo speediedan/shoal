@@ -109,6 +109,8 @@ def add_parsers(sub) -> None:
     q.add_argument("--id", dest="session_id", default="")
     q.add_argument("--label", default="")
     q.add_argument("--cwd", default="", help="with --harness/--id: the session's working directory")
+    q.add_argument("--model", default="", help="the seat's model (saved; its card resumes with it)")
+    q.add_argument("--effort", default="", help="the seat's effort (saved; its card resumes with it)")
     q.add_argument("--save", action="store_true", help="restore it on every `ui open`")
     q.set_defaults(func=ui_herdr.cmd_pick)
 

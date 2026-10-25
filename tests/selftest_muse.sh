@@ -214,8 +214,18 @@ i = argv.index("resume")
 assert argv[i + 1] == sid, argv
 assert "--disable-sandbox" in argv and "--trust-workspace" in argv, argv
 assert argv[argv.index("--model") + 1] == "muse-wonder-full-1.0", argv
+assert argv[argv.index("--reasoning-effort") + 1] == "high", argv
+# the seat's own pair (spec role or saved registry entry) beats the host defaults on every resume
+argv = get("muse").view_argv(sid, model="muse-test-9", effort="xhigh")[0]
+assert argv[argv.index("--model") + 1] == "muse-test-9", argv
+assert argv[argv.index("--reasoning-effort") + 1] == "xhigh", argv
 os.environ["SHOAL_MUSE_MODEL"] = "muse-spark-1.3"
 assert "muse-spark-1.3" in get("muse").view_argv(sid)[0], "SHOAL_MUSE_MODEL picks the interactive model"
+assert "muse-spark-1.3" not in get("muse").view_argv(sid, model="muse-test-9")[0], "a seat model beats the host model"
+os.environ["SHOAL_MUSE_VIEW_ARGS"] = "--reasoning-effort low"
+assert get("muse").view_argv(sid, model="muse-test-9", effort="xhigh")[0][-2:] == ["--reasoning-effort", "low"], \
+    "SHOAL_MUSE_VIEW_ARGS still replaces the whole list"
+del os.environ["SHOAL_MUSE_VIEW_ARGS"]
 assert env.get("MUSE_NO_AUTO_UPDATE") == "1"
 print("viewer argv ok")
 PY

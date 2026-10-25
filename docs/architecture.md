@@ -622,6 +622,9 @@ and the contract are in [`ui.md`](ui.md).
   harness's own client on the live session (`claude attach`; the opencode TUI as a client of
   OpenChamber's server). It strips `HERDR_*` and `ZELLIJ*` from the client's environment and
   refuses a dead or unlisted session. `--stub` is a role card that attaches only on Enter.
+  Clients that take a model and effort per run (Muse, Codex) get the seat's own pair: a role's
+  from its spec, a standalone seat's from its registry entry (saved by `ui pick --model/--effort`,
+  which `muse-new`/`codex-new --pick` pass through), re-read on every attach like the entry's ids.
 - **Herdr adapter** (`shoal/ui/ui_herdr.py`, `plugins/shoal-herdr/`):
   - Layout: one workspace per shoal (an overview tab and a roles tab of cards) and a `standalone`
     workspace for non-shoal sessions. `ui open` is idempotent and re-applies a whole tab with
