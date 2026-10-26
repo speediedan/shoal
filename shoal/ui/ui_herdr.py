@@ -550,9 +550,13 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
             # cards were attached: roles 2 held three, roles 3 one) but a card is in use, so nothing may be
             # re-applied: move the stray cards into their tabs instead, live sessions untouched
             moves, labels = consolidation_moves(spec, {p["label"]: p for p in cards}, tabs_want)
-            out.append(f"move {len(moves)} card(s) into the configured tabs ({', '.join(attached)} in use, so "
-                       f"no card is replaced)")
-            if not dry_run:
+            if not moves:  # a split that needs a new tab: no live pane can be moved into a tab that does not exist
+                out.append(f"roles tabs need a new tab ({why}) but {', '.join(attached)} is in use: it waits until "
+                           f"the cards are free")
+            else:
+                out.append(f"move {len(moves)} card(s) into the configured tabs ({', '.join(attached)} in use, so "
+                           f"no card is replaced)")
+            if moves and not dry_run:
                 for pane_id, home, target, split in moves:
                     h.call("pane.move", {"pane_id": pane_id, "destination": {"type": "tab", "tab_id": home,
                                                                               "split": split,
@@ -1005,6 +1009,9 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
     return pushed
 
 
+_REBALANCED: dict[str, list[str]] = {}  # the last pass's lines per shoal (the feeder process)
+
+
 def rebalance_all(h: Herdr) -> list[str]:
     """Lay every open shoal's roles out again where its tabs no longer match: a role added or removed, or a new
     `roles_per_tab` or `role_order` (auto_rebalance, maintainer 2026-10-26). The same `ensure_shoal` pass as
@@ -1014,16 +1021,21 @@ def rebalance_all(h: Herdr) -> list[str]:
     from roles import ShoalSpec
     open_ws = {w.get("label") for w in h.workspaces()}
     out = []
+    seen = {}
     for p in ui_status.discover_all("", None):
         try:
             spec = ShoalSpec.load(p)
             spec.path = p
             if shoal_tag(spec.sid) not in open_ws:
                 continue
-            out += [f"{shoal_tag(spec.sid)}: {line}" for line in ensure_shoal(h, spec)
-                    if ": up to date (" not in line]
+            lines = [f"{shoal_tag(spec.sid)}: {line}" for line in ensure_shoal(h, spec) if ": up to date (" not in line]
+            seen[spec.sid] = lines
+            if lines != _REBALANCED.get(spec.sid):  # a change that waits on a card in use is reported once
+                out += lines
         except Exception as exc:  # noqa: BLE001 - one shoal never stops the pass
             out.append(f"{p}: {exc}")
+    _REBALANCED.clear()
+    _REBALANCED.update(seen)
     return out
 
 
