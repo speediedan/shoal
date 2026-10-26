@@ -362,6 +362,9 @@ def claude_liveness(row: dict) -> str:
     return CLAUDE_TURN_STATES.get(st) or str(row.get("status", ""))
 
 
+_CLAUDE_ROWS: list = []  # the rows behind the last claude_busy() call
+
+
 def claude_busy() -> dict[str, str]:
     """sessionId -> 'busy'|'blocked'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
     try:
@@ -372,7 +375,7 @@ def claude_busy() -> dict[str, str]:
         else:
             r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
             rows = json.loads(r.stdout or "[]")
-        # a session blocked on a question to the maintainer is never "between turns"
+        _CLAUDE_ROWS[:] = rows  # session_between_turns reads a blocked session's row without a second listing
         # keyed by every id a role may have stored: the current conversation, the job id and the job's original
         # conversation (a `/clear` changes the first; backends.claude_find)
         from backends import claude_original
@@ -422,7 +425,7 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
     2026-10-08: `waitingFor` "input needed" on an AskUserQuestion), or its transcript tail has an
     AskUserQuestion with no result yet. A session that only ended its turn saying it waits on the
     maintainer reads `blocked` too (measured 2026-10-12, waitingFor None, no prompt)."""
-    if row.get("waitingFor"):
+    if row.get("waitingFor") or row.get("status") == "waiting":
         return True
     from backends import fake_sessions
     if fake_sessions() is not None:
@@ -551,7 +554,15 @@ def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | 
         return True
     if role.ecosystem == "claude":
         st = next((v for k, v in cbusy.items() if role.session and k.startswith(role.session)), None)
-        return None if st is None else st not in ("busy", "blocked")
+        if st == "blocked":
+            # `blocked` means the turn ended: on an open prompt (a question; never between turns), or on a last
+            # message that only reads like a question to the user (status idle, no prompt), which IS between
+            # turns. Treating both as a question stranded a restart-ready role at 534k for 14 min with no
+            # context-restart condition (measured 2026-10-26, jlens-research-r4). Same rule as the watcher's
+            # claude_session_busy.
+            from backends import claude_find
+            return not claude_prompt_open(claude_find(_CLAUDE_ROWS, role.session) or {}, role.session)
+        return None if st is None else st != "busy"
     if role.ecosystem == "opencode":
         try:
             from backends import get as get_backend

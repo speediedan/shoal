@@ -1022,6 +1022,19 @@ os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "s
 assert lw.claude_session_busy("aaaa1111-0000") is False  # self-reported blocked, no prompt: deliver (it waits for this)
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "pid": 7, "tempo": "idle"}], "opencode": {}})
 assert lw.claude_session_busy("aaaa1111-0000") is False
+# the quorum's between-turns test agrees: blocked with no prompt is between turns (a restart-ready role read as
+# mid-question got no context-restart condition, 2026-10-26); a prompt (waitingFor or status waiting) is not
+import copy, health
+hr = copy.copy(r); hr.ecosystem, hr.session = "claude", "aaaa1111-0000"
+for row, want in (({"tempo": "blocked", "status": "idle", "state": "blocked"}, True),
+                  ({"tempo": "blocked", "waitingFor": "input needed"}, False),
+                  ({"tempo": "blocked", "status": "waiting"}, False),
+                  ({"tempo": "active", "status": "busy"}, False),
+                  ({"tempo": "idle", "status": "idle"}, True)):
+    os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict(row, id="aaaa1111", sessionId="aaaa1111-0000", pid=7)], "opencode": {}})
+    got = health.session_between_turns(hr, health.claude_busy(), spec.dir)
+    assert got is want, (row, got)
+assert health.watcher_dead(False, "idle", True) and not health.watcher_dead(False, "idle", False)
 assert lw.relay_deliver(spec.sid, r, "aaaa1111-0000", "LEDGER-WAKE tl: test") is True
 line = json.loads(open(f"/tmp/{spec.sid}/relay-queue").read().splitlines()[-1])
 assert line["to"] == r.tag and line["session"] == "aaaa1111-0000" and "LEDGER-WAKE" in line["text"], line
