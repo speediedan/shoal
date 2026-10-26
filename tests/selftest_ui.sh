@@ -1057,15 +1057,22 @@ routes._store("reach-other-host.invalid", {"ok": False})
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     got = ui_launch.choose(read=lambda p: "")
-assert got == "other-host.invalid" and "(unreachable now)" in buf.getvalue() and "*2)" in buf.getvalue(), buf.getvalue()
-# the splash: fish at every width, capped, colored only when asked
 import re
-plain = ui_launch.splash(cols=200, color=False)
-assert "S H O A L" in plain and "><" in plain and "\x1b[" not in plain, plain
-assert all(len(l) <= 72 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
-colored = ui_launch.splash(cols=60, color=True)
-assert len(set(re.findall(r"\x1b\[(\d+)m", colored))) >= 4, "each fish its own color"
-assert ui_launch.splash(cols=30, color=False).count("\n") < plain.count("\n"), "narrow terminals get fewer rows"
+assert got == "other-host.invalid" and re.search(r"> remote +other-host\.invalid  \(unreachable now\) +2", buf.getvalue()), buf.getvalue()
+# the start screen: block header, the menu with keys, fish facing it; capped, colored only when asked
+rows = [("local", "here, this host", False), ("remote", "other-host.invalid", True)]
+assert len({len(r) for r in ui_launch._HEADER}) == 1, "header rows share one width"
+plain = ui_launch.dashboard(rows, 2, cols=200, color=False, uni=True)
+assert "███████╗" in plain and "\x1b[" not in plain and "▸ remote  other-host.invalid  (unreachable now)" in plain, plain
+assert "\\/ o \\" in plain and "/ o \\/" in plain and "><" in plain, "side fish face the menu"
+assert all(len(l) <= 96 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
+colored = ui_launch.dashboard(rows, 1, cols=100, color=True, uni=True)
+assert len(set(re.findall(r"\x1b\[([\d;]+)m", colored))) >= 8, "each fish its own color, the header shaded"
+narrow = ui_launch.dashboard(rows, 1, cols=40, color=False, uni=True)
+assert "S H O A L" in narrow and "███" not in narrow and "\\/ o \\" not in narrow, narrow
+assert all(len(l) <= 40 for l in narrow.splitlines()), [len(l) for l in narrow.splitlines()]
+plain_ascii = ui_launch.dashboard(rows, 1, cols=100, color=False, uni=False)
+assert plain_ascii.isascii() and "> local" in plain_ascii, "a stream that cannot encode box drawing gets ASCII"
 with contextlib.redirect_stdout(io.StringIO()):
     assert ui_launch.choose(read=lambda p: "1") == "local"
     assert ui_launch.choose(read=lambda p: "me@typed.example") == "me@typed.example"

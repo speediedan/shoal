@@ -77,52 +77,156 @@ def is_local(choice: str) -> bool:
     return choice == "local" or c == this_server()
 
 
-def label(choice: str) -> str:
+def entry(choice: str) -> tuple[str, str, bool]:
+    """(kind, where, unreachable) for one chooser row."""
     import routes
     if choice == "local":
-        return f"local   this host ({this_server()}): its own Herdr server; other hosts' roles over ssh"
-    up = routes.reachable(choice)
-    mark = "" if up is not False else "   (unreachable now)"
-    return f"remote  {choice}: that host's Herdr server, drawn here{mark}"
+        return "local", f"{this_server()}, this host", False
+    return "remote", choice, routes.reachable(choice) is False
 
 
-_FISH = ("><(((*>", "><((*>" , "><(*>", "<><")
-_FISH_COLORS = (96, 93, 95, 92, 94, 91, 36, 33)  # bright cyan, yellow, magenta, green, blue, red, ...
-_FISH_ROWS = ((2, 14, 30, 47), (7, 22, 38, 55), (0, 18, 34, 50))
+# The chooser is a start screen in the style of a Neovim dashboard: a block-letter header, the hosts as a
+# menu with their keys on the right, and cute fish swimming around it (maintainer, 2026-10-26).
+_HEADER = (
+    "███████╗██╗  ██╗ ██████╗  █████╗ ██╗     ",
+    "██╔════╝██║  ██║██╔═══██╗██╔══██╗██║     ",
+    "███████╗███████║██║   ██║███████║██║     ",
+    "╚════██║██╔══██║██║   ██║██╔══██║██║     ",
+    "███████║██║  ██║╚██████╔╝██║  ██║███████╗",
+    "╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝",
+)
+_HEADER_SGR = ("1;96", "1;96", "1;36", "1;36", "1;94", "1;94")  # blocks shade from cyan to blue
+_OUTLINE_SGR = "34"
+_TAGLINE = "stigmergic · heterogeneous · open · agent · lattice"
+_FISH_COLORS = ("96", "93", "95", "92", "91", "94", "33", "35")  # each fish its own color
+_BUBBLE_SGR = "2;36"
+_BUBBLES = ("o", "O", ".")
+# the side fish face the menu: two rows of bubbles over a three-row fish
+_LEFT_FISH = ("   o    ", "  .  o  ", "  ___   ", "\\/ o \\  ", "/\\___/  ")
+_RIGHT_FISH = ("    o   ", "  o  .  ", "   ___  ", "  / o \\/", "  \\___/\\")
+_BANDS = ((("><(((*>", 0.03), ("o", 0.22), ("<><", 0.34), ("O", 0.58), ("><((*>", 0.66), ("<*))><", 0.86)),
+          (("<*)))><", 0.08), (".", 0.27), ("><>", 0.40), ("o", 0.53), ("<><", 0.62), ("><((((*>", 0.80)))
+_MENU_W = 54
+_SIDE_GAP = 4
+
+Seg = tuple[str, str]  # (text, SGR; "" for none)
 
 
-def splash(cols: int | None = None, color: bool | None = None) -> str:
-    """A small shoal of ASCII fish for the launch chooser, sized to the terminal (capped at 72
-    columns, one row under 44). Each fish gets its own color; colors only on a terminal and never
-    under NO_COLOR. Pure and deterministic so tests can pin the shape."""
+def _paint(segs: list[Seg], color: bool) -> str:
+    return "".join(f"\x1b[{s}m{t}\x1b[0m" if color and s and t.strip() else t for t, s in segs).rstrip()
+
+
+def _width(segs: list[Seg]) -> int:
+    return sum(len(t) for t, _ in segs)
+
+
+def _centered(segs: list[Seg], width: int) -> list[Seg]:
+    return [(" " * max(0, (width - _width(segs)) // 2), "")] + segs
+
+
+def _band(items, width: int, n: int) -> tuple[list[Seg], int]:
+    """One row of small fish and bubbles at fractions of the width; n numbers the fish for their colors."""
+    segs: list[Seg] = []
+    at = 0
+    for text, frac in items:
+        start = int(frac * width)
+        if start < at + (1 if at else 0) or start + len(text) > width:
+            continue
+        bubble = text in _BUBBLES
+        segs += [(" " * (start - at), ""), (text, _BUBBLE_SGR if bubble else _FISH_COLORS[n % len(_FISH_COLORS)])]
+        n += 0 if bubble else 1
+        at = start + len(text)
+    return segs, n
+
+
+def _header_row(row: str, i: int) -> list[Seg]:
+    segs: list[Seg] = []
+    for ch in row:
+        sgr = "" if ch == " " else _HEADER_SGR[i] if ch == "█" else _OUTLINE_SGR
+        if segs and segs[-1][1] == sgr:
+            segs[-1] = (segs[-1][0] + ch, sgr)
+        else:
+            segs.append((ch, sgr))
+    return segs
+
+
+def _art(lines: tuple[str, ...], n: int) -> list[list[Seg]]:
+    """A side fish: bubble rows dim, the fish rows in fish color n."""
+    return [[(ln, _BUBBLE_SGR if set(ln) <= set(" o.O") else _FISH_COLORS[n % len(_FISH_COLORS)])] for ln in lines]
+
+
+def unicode_ok(stream=None) -> bool:
+    try:
+        "█╗▸·".encode(getattr(stream or sys.stdout, "encoding", None) or "ascii")
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+def layout(cols: int | None = None) -> tuple[int, int]:
+    """(page width, menu width) for a terminal of cols columns (page capped at 96)."""
     if cols is None:
         cols = shutil.get_terminal_size((80, 24)).columns
-    width = max(24, min(cols, 72))
+    width = max(24, min(cols, 96))
+    return width, min(_MENU_W, width - 2)
+
+
+def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None = None,
+              color: bool | None = None, uni: bool | None = None) -> str:
+    """The launch chooser's start screen for rows of (kind, where, unreachable), keys 1..n, the default marked.
+    Sized to the terminal: the block header from 48 columns (else a spaced title), side fish beside the menu from
+    80. Colors only on a terminal and never under NO_COLOR; box-drawing only where the stream can encode it.
+    Pure and deterministic so tests can pin the shape."""
+    width, menu_w = layout(cols)
     if color is None:
         color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-    rows = _FISH_ROWS if width >= 44 else _FISH_ROWS[1:]
-    lines: list[str] = []
-    n = 0
-    for row in rows:
-        line: list[str] = []
-        at = 0
-        for start in row:
-            if start + 4 > width:
-                break
-            fish = _FISH[n % len(_FISH)]
-            if start > at:
-                line.append(" " * (start - at))
-                at = start
-            piece = f"\x1b[{_FISH_COLORS[n % len(_FISH_COLORS)]}m{fish}\x1b[0m" if color else fish
-            line.append(piece)
-            at += len(fish)
-            n += 1
-        bub = " o " if at + 3 <= width else ""
-        lines.append("".join(line) + bub)
-    title = "S H O A L"
-    pad = max(0, (width - len(title)) // 2)
-    head = f"\x1b[1;96m{title}\x1b[0m" if color else title
-    return "\n".join([" " * pad + head, *lines])
+    if uni is None:
+        uni = unicode_ok()
+    dot = " · " if uni else " | "
+    out: list[list[Seg]] = []
+    top, n = _band(_BANDS[0], width, 0)
+    out += [top, []]
+    if uni and width >= len(_HEADER[0]) + 4:
+        out += [_centered(_header_row(r, i), width) for i, r in enumerate(_HEADER)]
+    else:
+        out.append(_centered([("S H O A L", "1;96")], width))
+    tag = _TAGLINE if uni else _TAGLINE.replace("·", "|")
+    if len(tag) <= width:
+        out.append(_centered([(tag, "33")], width))
+    out += [[], _centered([("which host serves the view?", "1")], width), []]
+    menu: list[list[Seg]] = []
+    for i, (kind, where, down) in enumerate(rows, 1):
+        mark = ("▸" if uni else ">") if i == default else " "
+        tail = "  (unreachable now)" if down else ""
+        key = str(i)
+        room = max(4, menu_w - 2 - 8 - len(key) - 2)
+        body = where[:max(1, room - len(tail))]
+        gap = " " * max(1, menu_w - 2 - 8 - len(body) - len(tail) - len(key))
+        menu += [[(mark, "1;93"), (" ", ""), (f"{kind:<7} ", "1" if i == default else ""),
+                  (body, "" if i == default else "2"), (tail, "91"), (gap, ""), (key, "1;91")], []]
+    menu = menu[:-1]
+    sides = width >= menu_w + 2 * (len(_LEFT_FISH[0]) + _SIDE_GAP)
+    left, right = (_art(_LEFT_FISH, n), _art(_RIGHT_FISH, n + 1)) if sides else ([], [])
+    tall = max(len(menu), len(left))
+    m0, a0 = (tall - len(menu)) // 2, (tall - len(left)) // 2
+    for r in range(tall):
+        row = menu[r - m0] if 0 <= r - m0 < len(menu) else []
+        row = row + [(" " * (menu_w - _width(row)), "")]
+        if sides:
+            lw, gap = len(_LEFT_FISH[0]), (" " * _SIDE_GAP, "")
+            la = left[r - a0] if 0 <= r - a0 < len(left) else [(" " * lw, "")]
+            ra = right[r - a0] if 0 <= r - a0 < len(right) else [("", "")]
+            row = la + [gap] + row + [gap] + ra
+        out.append(_centered(row, width))
+    out.append([])
+    for note in ("local: this host's Herdr server, other hosts' roles over ssh",
+                 "remote: that host's Herdr server, drawn here",
+                 f"enter takes the marked host{dot}q quits{dot}or type an ssh target"):
+        if len(note) <= width:
+            out.append(_centered([(note, "2")], width))
+    bottom, _ = _band(_BANDS[1], width, n + 2)
+    out.append(bottom)
+    return "\n".join(_paint(segs, color) for segs in out)
 
 
 def choose(read=input) -> str | None:
@@ -130,12 +234,10 @@ def choose(read=input) -> str | None:
     cands = candidates()
     last = last_choice()
     default = cands.index(last) + 1 if last in cands else 1
-    print(splash())
-    print("shoal ui launch: which host serves the view?")
-    for i, c in enumerate(cands, 1):
-        print(f"  {'*' if i == default else ' '}{i}) {label(c)}")
+    print(dashboard([entry(c) for c in cands], default))
+    width, menu_w = layout()
     try:
-        pick = read(f"host [{default}]: ").strip()
+        pick = read(" " * max(0, (width - menu_w) // 2) + f"host [{default}]: ").strip()
     except EOFError:
         return None
     if pick in ("q", "Q"):
