@@ -697,8 +697,25 @@ tabs = {p["tab_id"] for p in h.panes() if str(p.get("label", "")).startswith(sys
 assert len(tabs) == 2, tabs
 PY2
 check "up to date (3 role cards in 2 tabs)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
-check "roles_per_tab = (default)" $H ui set roles_per_tab ""
-check "re-apply roles tab: lay the roles out" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+# auto_rebalance: `ui set` lays an open shoal's roles out at once (the feeder does within a minute)
+check "uiselftest: re-apply roles tab: lay the roles out" env SHOAL_LEDGER_DIR="$ROOT" $H ui set roles_per_tab ""
+check "up to date (3 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
+# the free card of a role no longer viewable is relaid away
+python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "a removed role's card is relaid away"
+import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_herdr
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); h = ui_herdr.Herdr(); sid = sys.argv[3]
+cards = [p for p in h.panes() if str(p.get("label", "")).startswith(sid + "/") and not p["label"].endswith(("/overview", "/ledger"))]
+nodes = [ui_herdr.role_node(spec, r) for r in ui_herdr.viewable_roles(spec)]
+nodes.append(ui_herdr._node(sid + "/ghost", spec.dir, ui_herdr.shoal_argv("view", sid, "ghost", "--stub"), {}))
+h.call("layout.apply", {"tab_id": cards[0]["tab_id"], "tab_label": "roles", "root": ui_herdr._grid(nodes)})
+out = ui_herdr.ensure_shoal(h, spec)
+assert any(f"remove {sid}/ghost" in ln for ln in out), out
+assert not any(p.get("label") == sid + "/ghost" for p in h.panes()), "the ghost card was kept"
+assert "up to date" in ui_herdr.ensure_shoal(h, spec)[0]
+print("removed role ok")
+PY2
 check "up to date (3 role cards)" $H ui open --ledger-root "$ROOT" --shoal $SID --no-standalone
 # role_order puts the named roles first; a card header shows the shoal tag and the role
 check "role_order.$SID = cl" $H ui set role_order.$SID cl

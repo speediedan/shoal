@@ -363,6 +363,7 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
                "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
                "show_relay": "true to give the wake relay a role card (default: hidden)",
+               "auto_rebalance": "true (default) | false: the feeder re-lays role tabs after a role change or a new roles_per_tab",
                "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)",
                "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)",
                "line_width": "columns the tab-bar status line may use (default 80); wider shows more shoals in full",
@@ -408,8 +409,15 @@ def cmd_set(a) -> int:
     print(f"{a.key} = {a.value or '(default)'} ({ui_status.ui_config_path()})")
     if key in ("usage_providers", "usage_bridge"):
         print("the feeder refreshes account meters in the background; `shoal ui usage --refresh` reads now")
-    elif key in ("roles_per_tab", "role_order"):
-        print("run `shoal ui open` to lay the roles out again (refused while a card is in use)")
+    elif key in ("roles_per_tab", "role_order", "auto_rebalance"):
+        try:  # lay them out now; the feeder would within a minute (cards in use are moved, never replaced)
+            h = Herdr()
+            lines = rebalance_all(h) if h.alive() and ui_status.ui_config().get("auto_rebalance", True) is not False \
+                else ["run `shoal ui open` to lay the roles out again (refused while a card is in use)"]
+        except Exception as exc:  # noqa: BLE001
+            lines = [f"run `shoal ui open` to lay the roles out again ({exc})"]
+        for line in lines or ["roles tabs already match"]:
+            print(line)
     else:
         print("on the laptop: re-run shoal-herdr-setup.sh, then relaunch (the launcher resolves a % width)")
     return 0
@@ -514,12 +522,17 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
     tabs_want = role_tabs(spec)
     tab_of = {p.get("label"): p.get("tab_id") for p in cards}
     groups = [{tab_of.get(role_label(spec.sid, r.slug)) for r in chunk} for _, chunk in tabs_want]
-    relayout = bool(cards) and not missing and (any(len(g) != 1 for g in groups)
+    # the card of a role no longer viewable (removed, parked, retired) lingers in its tab; a free one is relaid away
+    gone = [p for p in panes if str(p.get("label", "")).startswith(spec.sid + "/") and p.get("label") not in want
+            and p.get("label") not in (f"{spec.sid}/overview", f"{spec.sid}/ledger") and disposable(h, p["pane_id"])]
+    relayout = bool(cards) and not missing and (any(len(g) != 1 for g in groups) or bool(gone)
                                                  or len({next(iter(g)) for g in groups if len(g) == 1}) != len(groups))
     if missing or (cards and len(shells) == len(cards)) or (reapply and cards) or relayout:
         why = (f"add {', '.join(missing)}" if missing else "restore cards after a restart"
-               if len(shells) == len(cards) else "lay the roles out in tabs of the configured size" if relayout
+               if len(shells) == len(cards) else f"remove {', '.join(p['label'] for p in gone)}" if gone
+               else "lay the roles out in tabs of the configured size" if relayout
                else "restart the cards on the current code (--reapply)")
+        cards = cards + gone  # their tabs are relaid (or closed) with the rest
         if attached and missing:
             # a role added while the operator is attached to cards (fts-docs, 2026-10-13: all three fts
             # cards attached): an attached card is never replaced, so the new cards open in a tab of their
@@ -537,9 +550,13 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
             # cards were attached: roles 2 held three, roles 3 one) but a card is in use, so nothing may be
             # re-applied: move the stray cards into their tabs instead, live sessions untouched
             moves, labels = consolidation_moves(spec, {p["label"]: p for p in cards}, tabs_want)
-            out.append(f"move {len(moves)} card(s) into the configured tabs ({', '.join(attached)} in use, so "
-                       f"no card is replaced)")
-            if not dry_run:
+            if not moves:  # a split that needs a new tab: no live pane can be moved into a tab that does not exist
+                out.append(f"roles tabs need a new tab ({why}) but {', '.join(attached)} is in use: it waits until "
+                           f"the cards are free")
+            else:
+                out.append(f"move {len(moves)} card(s) into the configured tabs ({', '.join(attached)} in use, so "
+                           f"no card is replaced)")
+            if moves and not dry_run:
                 for pane_id, home, target, split in moves:
                     h.call("pane.move", {"pane_id": pane_id, "destination": {"type": "tab", "tab_id": home,
                                                                               "split": split,
@@ -912,6 +929,7 @@ def holds_agent(h: Herdr, pane_id: str) -> bool:
 
 
 HANDOVER_EVERY = 15  # feeder ticks (20 s each)
+REBALANCE_EVERY = 3  # feeder ticks: the roles tabs follow role changes and roles_per_tab within a minute
 
 
 def _handover_pass(quiet: bool = True) -> None:
@@ -980,12 +998,45 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
         print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}"
               + (f"; bare shell cards not reported (`shoal ui open --reapply`): {', '.join(bare)}" if bare else ""),
               flush=True)
+    if tick % REBALANCE_EVERY == 0 and settings.get("auto_rebalance", True) is not False:
+        for line in rebalance_all(h):
+            print(f"{datetime.datetime.now():%H:%M:%S} rebalance: {line}", flush=True)
     if tick % HANDOVER_EVERY == 0:
         # standalone-session handover (handover.py): about every 5 minutes, in the background, so a delivery (which
         # can take seconds) never delays a tick
         import threading
         threading.Thread(target=_handover_pass, args=(quiet,), daemon=True).start()
     return pushed
+
+
+_REBALANCED: dict[str, list[str]] = {}  # the last pass's lines per shoal (the feeder process)
+
+
+def rebalance_all(h: Herdr) -> list[str]:
+    """Lay every open shoal's roles out again where its tabs no longer match: a role added or removed, or a new
+    `roles_per_tab` or `role_order` (auto_rebalance, maintainer 2026-10-26). The same `ensure_shoal` pass as
+    `ui open`, so a card in use is never replaced (it is moved, or the change waits); only shoals that already
+    have a workspace are touched, and lines that change nothing are dropped."""
+    import ui_status
+    from roles import ShoalSpec
+    open_ws = {w.get("label") for w in h.workspaces()}
+    out = []
+    seen = {}
+    for p in ui_status.discover_all("", None):
+        try:
+            spec = ShoalSpec.load(p)
+            spec.path = p
+            if shoal_tag(spec.sid) not in open_ws:
+                continue
+            lines = [f"{shoal_tag(spec.sid)}: {line}" for line in ensure_shoal(h, spec) if ": up to date (" not in line]
+            seen[spec.sid] = lines
+            if lines != _REBALANCED.get(spec.sid):  # a change that waits on a card in use is reported once
+                out += lines
+        except Exception as exc:  # noqa: BLE001 - one shoal never stops the pass
+            out.append(f"{p}: {exc}")
+    _REBALANCED.clear()
+    _REBALANCED.update(seen)
+    return out
 
 
 def cmd_feed(a) -> int:
