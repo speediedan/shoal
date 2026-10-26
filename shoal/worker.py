@@ -37,7 +37,7 @@ import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, queue_next_max, Ledger, LedgerError, View, fmt_item,  # noqa: E402
                     item_key, short, split_item, sync_push)
-from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
+from roles import ShoalSpec, find_spec, mail_read_since, state_dir  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
 
@@ -337,10 +337,7 @@ def cmd_next(a) -> int:
     # show it, because this call marks it read (measured 2026-09-24: a lane's piped `next` consumed a
     # maintainer rules update unseen). Maintainer mail prints in full; peer mail is shortened.
     marker = os.path.join(state_dir(spec.sid), f"mail-read-{slug}")
-    try:
-        since = open(marker).read().strip()
-    except OSError:
-        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = mail_read_since(spec.sid, slug)  # the watcher skips a msg only when this cursor covers it
     mail = view.msgs_to(slug, since_ts=since)
     if not getattr(a, "peek", False):  # a reviewer's read must not consume the role's mail
         os.makedirs(os.path.dirname(marker), exist_ok=True)

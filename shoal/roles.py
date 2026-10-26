@@ -86,6 +86,21 @@ def state_dir(sid: str) -> str:
     return os.path.join("/tmp", sid)
 
 
+def mail_read_since(sid: str, slug: str) -> str:
+    """The role's mail read cursor: the newest msg ts its last non-peek `shoal next` showed
+    (`/tmp/<id>/mail-read-<slug>`). With no cursor (never read, or `/tmp` wiped by a reboot) the
+    last 24 h count as unread, for `next` and the watcher alike."""
+    try:
+        with open(os.path.join(state_dir(sid), f"mail-read-{slug}")) as fh:
+            got = fh.read().strip()
+        if got:
+            return got
+    except OSError:
+        pass
+    since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+    return since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @dataclasses.dataclass
 class Role:
     slug: str                # stable identity (ledger file, sidecars, heartbeats, telemetry)
