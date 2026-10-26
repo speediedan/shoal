@@ -64,10 +64,106 @@ def mark_advised(spec, role) -> None:
         cur = {}
     if cur.get("session") == role.session:
         return
-    import datetime as _dt
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    json.dump({"session": role.session, "ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
-              open(p, "w"))
+    json.dump({"session": role.session, "ts": _now()}, open(p, "w"))
+    o = over(spec, role)
+    _save_handover(spec.sid, role.slug, {"session": role.session, "advised": _now()})
+    emit_handover(spec, role, "advised", context_k=o[0] if o else "", limit_k=o[1] if o else limit_k(spec, role.slug))
+
+
+# ---- handover telemetry ----------------------------------------------------------------------------
+# One `handover` event per phase, so a handover can be followed and costed from telemetry alone (maintainer,
+# 2026-10-26): `advised` (the advisory first shown), `doc-refreshed` (the first `--restart-ready` past the proof of
+# refresh), `restart` (the quorum's restart action and its outcome), `first-turn` (the new session's first queue
+# write: proof the new incarnation took a turn, with its latency and starting context). The context-restart
+# condition's own open and close are `health_condition` events. Progress is kept in /tmp/<id>/handover-<slug>.
+
+def _now() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _age_s(ts: str) -> str:
+    import datetime as _dt
+    try:
+        t = _dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+    except (TypeError, ValueError):
+        return ""
+    return str(int((_dt.datetime.now(_dt.timezone.utc) - t).total_seconds()))
+
+
+def handover_path(sid: str, slug: str) -> str:
+    from roles import state_dir
+    return os.path.join(state_dir(sid), f"handover-{slug}")
+
+
+def _load_handover(sid: str, slug: str) -> dict:
+    try:
+        d = json.load(open(handover_path(sid, slug)))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_handover(sid: str, slug: str, d: dict) -> None:
+    try:
+        p = handover_path(sid, slug)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        json.dump(d, open(p, "w"))
+    except OSError:
+        pass
+
+
+def emit_handover(spec, role, phase: str, **fields) -> None:
+    """Append one `handover` telemetry event. Never raises: telemetry must not break a handover."""
+    try:
+        import sys as _sys
+        tdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry")
+        if tdir not in _sys.path:
+            _sys.path.insert(0, tdir)
+        from shoal_telemetry import append_event, build_event, resolve_dir
+        kv = [f"slug={role.slug}", f"phase={phase}"] + [f"{k}={v}" for k, v in fields.items() if v not in (None, "")]
+        append_event(resolve_dir(None, spec.sid),
+                     build_event(spec.sid, role.session or role.slug, role.ecosystem or "?", "handover", kv))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def note_ready(spec, role) -> None:
+    """`doc-refreshed`: the first `--restart-ready` of this session that passed the proof of refresh."""
+    h = _load_handover(spec.sid, role.slug)
+    if h.get("session") == role.session and h.get("ready"):
+        return
+    if h.get("session") != role.session:
+        h = {"session": role.session}
+    h["ready"] = _now()
+    _save_handover(spec.sid, role.slug, h)
+    t = tokens(role)
+    emit_handover(spec, role, "doc-refreshed", doc=role.doc, context_k=t // 1000 if t is not None else "",
+                  since_advised_s=_age_s(h.get("advised", "")))
+
+
+def note_restart(spec, role, outcome: str) -> None:
+    """`restart`: the quorum's restart action on a restart-ready role, `ok` or the failure."""
+    h = _load_handover(spec.sid, role.slug)
+    if h.get("session") != role.session:
+        h = {"session": role.session}
+    h.update(old=role.session, restart=_now(), outcome="failed" if outcome.startswith("FAILED") else "ok")
+    _save_handover(spec.sid, role.slug, h)
+    emit_handover(spec, role, "restart", outcome=h["outcome"], detail=outcome[:160], old_session=role.session,
+                  since_ready_s=_age_s(h.get("ready", "")))
+
+
+def note_first_turn(spec, role) -> None:
+    """`first-turn`: the first queue write by a session other than the one the quorum restarted."""
+    h = _load_handover(spec.sid, role.slug)
+    if not h.get("restart") or h.get("first_turn") or not role.session or h.get("old") == role.session:
+        return
+    h["first_turn"] = _now()
+    _save_handover(spec.sid, role.slug, h)
+    t = tokens(role)
+    emit_handover(spec, role, "first-turn", old_session=h.get("old", ""), new_session=role.session,
+                  since_restart_s=_age_s(h["restart"]), fresh_context_k=t // 1000 if t is not None else "")
 
 
 def advised_since(spec, role) -> str:

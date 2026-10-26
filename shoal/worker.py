@@ -744,6 +744,13 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                      restart_ready=True if a.restart_ready else None)
     led.commit_own(slug, f"{spec.sid} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
+    try:  # handover telemetry: a refreshed doc at a restart-ready boundary, and a new incarnation's first turn
+        import context as _ctx
+        if a.restart_ready:
+            _ctx.note_ready(spec, role)
+        _ctx.note_first_turn(spec, role)
+    except Exception:  # noqa: BLE001 - telemetry never fails a queue write
+        pass
     # 3. first-landed-wins re-check for the claims just made
     lost = []
     if claims:
