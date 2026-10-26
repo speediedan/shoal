@@ -1384,6 +1384,31 @@ printf '\nLast updated: 2020-01-01T00:00Z\n' >> "$TLDOC"
 check "is older than" $Q --slug tl --idle --restart-ready
 printf '\nLast updated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TLDOC"
 check "posture=idle" $Q --slug tl --idle --restart-ready
+# handover telemetry: advised (the non-peek next above), doc-refreshed (this restart-ready), then the quorum's restart
+# and the new session's first turn, once each
+python3 - "$SHOALD" "$SPEC" "$S/data/$SID/telemetry" <<'PY2' || fail "handover telemetry"
+import glob, json, sys
+sys.path.insert(0, sys.argv[1])
+import context
+from roles import ShoalSpec
+def evs():
+    return [json.loads(ln) for f in sorted(glob.glob(sys.argv[3] + "/events-*.jsonl")) for ln in open(f)
+            if '"handover"' in ln]
+ph = [e["phase"] for e in evs() if e.get("slug") == "tl"]
+assert ph == ["advised", "doc-refreshed"], ph
+adv = evs()[0]
+assert adv["context_k"] == "412" and adv["limit_k"] == "300", adv
+spec = ShoalSpec.load(sys.argv[2]); r = spec.role("tl")
+context.note_restart(spec, r, "restarting on a fresh session (log x)")
+context.note_first_turn(spec, r)   # the restarted session itself is no first turn
+r.session = "tlnew0001"
+context.note_first_turn(spec, r); context.note_first_turn(spec, r)   # once only
+got = [e for e in evs() if e.get("slug") == "tl" and e["phase"] in ("restart", "first-turn")]
+assert [e["phase"] for e in got] == ["restart", "first-turn"], got
+assert got[0]["outcome"] == "ok" and got[1]["new_session"] == "tlnew0001", got
+assert "since_restart_s" in got[1] and got[1].get("old_session", "") == got[0].get("old_session", ""), got
+print("handover telemetry ok")
+PY2
 check "ok  .*tl_plan_state.md" $H doc-check "$TLDOC"
 printf '# x\n\n## Mission\n\nm\n\n## Current state\n\nLast updated: 2026-10-22T10:00Z\n\n## Next\n\n- n\n' > "$S/nogrants.md"
 check "no grants-needed section" $H doc-check "$S/nogrants.md"

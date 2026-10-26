@@ -931,9 +931,11 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
         # its own scope, like a re-armed watcher: the quorum's oneshot unit would end it with its cgroup
         spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,
                        cwd=spec.dir or None, env=_ENV)
+        out = f"restarting on a fresh session (log {log})"
     except (OSError, ValueError) as exc:
-        return f"FAILED ({exc})"
-    return f"restarting on a fresh session (log {log})"
+        out = f"FAILED ({exc})"
+    __import__("context").note_restart(spec, role, out)
+    return out
 
 
 def multi_host(spec: ShoalSpec) -> bool:
