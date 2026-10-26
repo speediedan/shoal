@@ -1298,6 +1298,39 @@ assert (h["handovers"], h["first_after_turns"], h["turns_between"], h["hours_bet
 r = next(x for x in context_cost.report(1.0, limits=(300, 500))["sessions"] if x["id"] == "eeee0000-0000")
 assert r["turns"] == 12 and r["calls_per_turn"] == 1.0 and set(r["handover"]) == {"300", "500"}, r
 assert "handover at a limit" in context_cost.render(context_cost.report(1.0))
+# --handovers: the handovers that happened, from `handover` telemetry and the context-restart condition, costed by the
+# same model (refresh turn at half the context, fresh first write at 2.0x)
+def ev(mins, typ, sess, **kw):
+    t = now - dt.timedelta(minutes=mins)
+    e = dict(ts_utc=t.strftime("%Y-%m-%dT%H:%M:%SZ"), shoal="t1", session=sess, type=typ, **kw)
+    d = os.path.join(S, "data-cost", "t1", "telemetry"); os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, f"events-{t.strftime('%Y%m%d')}.jsonl"), "a").write(json.dumps(e) + "\n")
+ev(30, "handover", "aaaa", slug="rl", phase="advised", context_k="520", limit_k="500")
+ev(20, "handover", "aaaa", slug="rl", phase="doc-refreshed", context_k="534", since_advised_s="600")
+ev(20, "health_condition", "health", slug="rl", event="open", condition="context-restart", key="session:aaaa")
+ev(19, "handover", "aaaa", slug="rl", phase="restart", outcome="ok", old_session="aaaa", since_ready_s="2")
+ev(17, "health_condition", "health", slug="rl", event="close", condition="context-restart", key="session:aaaa",
+   duration_min="2.5")
+ev(18, "handover", "bbbb", slug="rl", phase="first-turn", old_session="aaaa", new_session="bbbb", since_restart_s="45",
+   fresh_context_k="80")
+ev(10, "handover", "cccc", slug="r2", phase="advised", context_k="410", limit_k="400")
+ev(5, "handover", "dddd", slug="r3", phase="restart", outcome="failed", old_session="dddd")
+ev(60 * 30, "handover", "eeee", slug="r4", phase="advised", context_k="600")   # outside a one-day window
+doc = context_cost.handovers(1.0)
+hs = {h["slug"]: h for h in doc["handovers"]}
+assert set(hs) == {"rl", "r2", "r3"}, hs
+rl = hs["rl"]
+assert rl["status"] == "complete" and rl["new_session"] == "bbbb" and rl["fresh_measured"], rl
+assert (rl["context_k"], rl["fresh_k"], rl["advised_to_ready_s"], rl["ready_to_restart_s"], rl["restart_to_first_turn_s"],
+        rl["condition_min"]) == (534, 80, 600, 2, 45, 2.5), rl
+assert (rl["cost_m"], rl["payback_warm_calls"], rl["payback_cold_wakes"]) == (0.43, 9.4, 0.47), rl
+assert hs["r2"]["status"] == "advised" and not hs["r2"]["fresh_measured"] and hs["r2"]["cost_m"] == 0.35, hs["r2"]
+assert hs["r3"]["status"] == "failed" and "cost_m" not in hs["r3"], hs["r3"]
+assert {(r["slug"], r["handovers"], r["complete"], r["failed"]) for r in doc["roles"]} == \
+    {("rl", 1, 1, 0), ("r2", 1, 0, 0), ("r3", 1, 0, 1)}, doc["roles"]
+out = context_cost.render_handovers(doc)
+assert "complete" in out and "~75k" in out and "total t1 rl" in out, out
+assert "no handover events" in context_cost.render_handovers(context_cost.handovers(1.0, now - dt.timedelta(days=5)))
 print("context-report ok")
 PY2
 
