@@ -1308,9 +1308,11 @@ spec_with()
 print("direct delivery ok")
 PY2
 rm -f /tmp/$SID/health.json
-# a user --wake message read at a boundary is not delivered again by a watcher armed after it
-$H msg --shoal $SID --spec "$SPEC" --to up --wake --text "wake test" --no-sync >/dev/null 2>&1 || fail "msg --wake"
-python3 - "$SHOALD" "$SPEC" up yes <<'PY2' || fail "a fresh --wake msg must be actionable"
+# a user --wake message is skipped only once the role's mail read cursor covers it (`next` marks mail read):
+# a turn-end queue write without `next` must not swallow a wake held mid-turn (measured 2026-10-26: two held
+# wakes lost, never paged), while a read wake is not delivered again by a watcher armed after it (2026-10-20)
+wake_hit() {
+python3 - "$SHOALD" "$SPEC" up "$1" <<'PY2'
 import sys; sys.path.insert(0, sys.argv[1])
 import ledger, ledger_watch
 from roles import ShoalSpec
@@ -1318,16 +1320,22 @@ spec = ShoalSpec.load(sys.argv[2]); v = ledger.View(ledger.Ledger(spec.sid, root
 hits = [d for _, d in ledger_watch.actionable(v, sys.argv[3], spec.role(sys.argv[3]), spec, board=False) if "wake test" in d]
 assert bool(hits) == (sys.argv[4] == "yes"), hits
 PY2
+}
+$H next --shoal $SID --spec "$SPEC" --slug up --no-sync >/dev/null 2>&1 || fail "up next"
+sleep 1
+$H msg --shoal $SID --spec "$SPEC" --to up --wake --text "wake test" --no-sync >/dev/null 2>&1 || fail "msg --wake"
+wake_hit yes || fail "a fresh --wake msg must be actionable"
+# the watcher holds it while the session is busy (nothing marks it delivered), then the turn ends with a queue
+# write and no `next`: the next idle tick must still deliver it
 sleep 1
 $H queue --shoal $SID --spec "$SPEC" --slug up --idle --next "" --reason test --no-sync >/dev/null 2>&1 || fail "up idle"
-python3 - "$SHOALD" "$SPEC" up no <<'PY2' || fail "a --wake msg read at a boundary was delivered again"
-import sys; sys.path.insert(0, sys.argv[1])
-import ledger, ledger_watch
-from roles import ShoalSpec
-spec = ShoalSpec.load(sys.argv[2]); v = ledger.View(ledger.Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
-hits = [d for _, d in ledger_watch.actionable(v, sys.argv[3], spec.role(sys.argv[3]), spec, board=False) if "wake test" in d]
-assert bool(hits) == (sys.argv[4] == "yes"), hits
-PY2
+wake_hit yes || fail "a held --wake msg was swallowed by a turn-end queue write without next"
+# no cursor (never read, or /tmp wiped by a reboot): unread, so delivered rather than skipped
+rm -f /tmp/$SID/mail-read-up
+wake_hit yes || fail "a --wake msg was skipped with no mail read cursor"
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug up --no-sync 2>&1)
+grep -q "wake test" <<<"$OUT" || fail "next did not show the --wake msg :: $(head -c 600 <<<"$OUT")"
+wake_hit no || fail "a --wake msg read by next was delivered again"
 
 echo "== 35 bounded context: the CONTEXT advisory in next and wakes, --restart-ready, the context-restart ladder"
 Q="$H queue --shoal $SID --spec $SPEC --no-sync"

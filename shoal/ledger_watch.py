@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(HERE, "telemetry"))
 from ledger import OFFER_WRITERS  # noqa: E402
 
 from ledger import Ledger, LedgerError, View, fmt_item, item_key, short  # noqa: E402
-from roles import ShoalSpec, find_spec, state_dir  # noqa: E402
+from roles import ShoalSpec, find_spec, mail_read_since, state_dir  # noqa: E402
 import config  # noqa: E402
 
 TOOL_PATH = config.tool_path()
@@ -108,13 +108,12 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
                     + (" NOW" if o.get("now") else "")
                     + (f" base={o['base']}" if o.get("base") else "")
                     + (f" — {short(o.get('note', ''), 80)}" if o.get("note") else "")))
-    st = view.role_state(slug) or {}
-    boundary = max(q.get("ts", ""), st.get("ts", ""))
-    for m in view.msgs_to(slug):
-        if boundary and m["ts"] < boundary:
-            # read at that boundary (`next` shows mail): a watcher armed since, by the role or the quorum, must
-            # not deliver it again (measured 2026-10-20: a quorum-delivered wake was re-delivered 2 min later)
-            continue
+    # a msg the role's mail read cursor covers was read (`next` shows mail and moves the cursor): a watcher
+    # armed since, by the role or the quorum, must not deliver it again (measured 2026-10-20: a quorum-delivered
+    # wake was re-delivered 2 min later). Only the cursor counts, never a queue or state write: a wake held
+    # mid-turn, or deferred for background work, is older than the turn-end queue write that should release it,
+    # and a role that wrote that queue without `next` never saw it (measured 2026-10-26: two held wakes lost)
+    for m in view.msgs_to(slug, since_ts=mail_read_since(view.ledger.sid, slug)):
         if workwake and not (m.get("by") == "user" and m.get("wake")):
             continue  # mail, not a wake
         out.append((m["id"], f"MSG {m['by']}->{m['to']} [{m.get('kind', 'info')}] {short(m.get('text', ''), 120)}"
