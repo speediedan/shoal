@@ -418,10 +418,12 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 `ui doctor`'s plugin line names the path the plugin is really linked from.
 
 **Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
-- **The chooser.** It asks which host serves the view: this host (`local`) first, then every host with an ssh
-  route, each marked when its cached probe fails. Enter takes the last choice that worked (`$XDG_STATE_HOME/shoal/launch.last`; a host that just failed is never remembered),
-  and a typed ssh target also works. `--server` never asks, and neither does a launch without a terminal (it takes
-  the last choice, else local).
+- **The chooser.** A full-screen start screen (the whole terminal window): it asks which host serves the view,
+  this host (`local`) first, then every host with an ssh route, each marked when its cached probe fails. Arrow
+  keys or `j`/`k` move the selection (the last choice that worked starts highlighted,
+  `$XDG_STATE_HOME/shoal/launch.last`; a host that just failed is never remembered), Enter chooses, a digit
+  jumps straight to its host, `t` types an ssh target, `q` quits. Off a terminal it falls back to a numbered
+  prompt. `--server` never asks, and neither does a launch without a terminal (it takes the last choice, else local).
 - **No configuration beyond the routes,** by design until Herdr machines are in use.
 - **local:**
   - a host provisioned for the local view keeps its file;
