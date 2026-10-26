@@ -3,6 +3,7 @@
 
     shoal context-report [--days N] [--json] [--all]      # this host's Claude sessions over the last N days (default 1)
     shoal context-report --snapshot                       # write today's snapshot for yesterday, if not written yet
+    shoal context-report --handovers [--days N] [--json]  # handovers that happened, from `handover` telemetry: cost each
 
 Every Claude call records its usage: cache reads, cache writes (split by TTL; Claude Code uses the 1 h cache), uncached
 input and output. A session pays about a tenth of its context on every warm call and twice its context on a cold one
@@ -330,7 +331,143 @@ def render(doc: dict) -> str:
     return "\n".join(lines)
 
 
+#  ---- handovers that happened: the `handover` telemetry events (context.py) and the context-restart condition --------
+
+def _parse(ts: str) -> dt.datetime | None:
+    try:
+        return dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _num(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def handover_events(since: dt.datetime, until: dt.datetime) -> list[dict]:
+    """`handover` and context-restart `health_condition` events from every shoal's telemetry under the data root."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(config.data_root(), "*", "telemetry", "events-*.jsonl"))):
+        day = os.path.basename(f)[len("events-"):-len(".jsonl")]
+        if not (since.strftime("%Y%m%d") <= day <= until.strftime("%Y%m%d")):
+            continue
+        try:
+            fh = open(f, errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for ln in fh:
+                if '"handover"' not in ln and '"context-restart"' not in ln:
+                    continue
+                try:
+                    e = json.loads(ln)
+                except ValueError:
+                    continue
+                t = _parse(e.get("ts_utc", ""))
+                if t is None or not since <= t <= until:
+                    continue
+                if e.get("type") == "handover" or (e.get("type") == "health_condition"
+                                                   and e.get("condition") == "context-restart"):
+                    out.append(e)
+    return out
+
+
+def handover_cost(context_k: float, fresh_k: float) -> dict:
+    """The C43 model (docs/handover.md; same as the payback above): a handover costs one refresh turn at half the context
+    plus the fresh session's first write (1 h cache, 2.0x); it saves the context difference on every later call."""
+    h = 0.5 * context_k + WEIGHTS["w1h"] * fresh_k
+    gain = max(context_k - fresh_k, 1)
+    return {"cost_m": round(h / 1000, 2), "payback_warm_calls": round(h / (WEIGHTS["read"] * gain), 1),
+            "payback_cold_wakes": round(h / (WEIGHTS["w1h"] * gain), 2)}
+
+
+def handovers(days: float = 1.0, until: dt.datetime | None = None) -> dict:
+    """{since, until, days, handovers: [one per old session], roles: [per shoal, role and UTC day]}. A handover is keyed by
+    the session it retired: `advised` and `doc-refreshed` carry it as their session, `restart` and `first-turn` as
+    old_session, the condition as `session:<id>`."""
+    until = until or dt.datetime.now(dt.timezone.utc)
+    since = until - dt.timedelta(days=days)
+    hs: dict[tuple, dict] = {}
+    for e in handover_events(since, until):
+        if e.get("type") == "health_condition":
+            old = str(e.get("key", "")).partition("session:")[2]
+        else:
+            old = e.get("old_session") or e.get("session", "")
+        h = hs.setdefault((e.get("shoal", ""), e.get("slug", ""), old),
+                          {"shoal": e.get("shoal", ""), "slug": e.get("slug", ""), "old_session": old})
+        ts, ph = e.get("ts_utc", ""), e.get("phase") or f"condition-{e.get('event', '')}"
+        h.setdefault(ph, ts)
+        if ph == "advised":
+            h["context_k"], h["limit_k"] = _num(e.get("context_k")), _num(e.get("limit_k"))
+        elif ph == "doc-refreshed":
+            h["context_k"] = _num(e.get("context_k")) or h.get("context_k")
+            h["advised_to_ready_s"] = _num(e.get("since_advised_s"))
+        elif ph == "restart":
+            h["outcome"], h["ready_to_restart_s"] = e.get("outcome", ""), _num(e.get("since_ready_s"))
+        elif ph == "first-turn":
+            h["new_session"], h["restart_to_first_turn_s"] = e.get("new_session", ""), _num(e.get("since_restart_s"))
+            h["fresh_k"] = _num(e.get("fresh_context_k"))
+        elif ph == "condition-close":
+            h["condition_min"] = _num(e.get("duration_min"))
+    rows = []
+    for h in hs.values():
+        h["status"] = ("failed" if h.get("outcome") == "failed" else "complete" if "first-turn" in h else
+                       "restarted" if "restart" in h else "ready" if "doc-refreshed" in h else "advised")
+        h["day"] = (h.get("restart") or h.get("advised") or h.get("condition-open") or "")[:10]
+        if h.get("context_k"):
+            h["fresh_measured"] = bool(h.get("fresh_k"))
+            h.update(handover_cost(h["context_k"], h.get("fresh_k") or FRESH_CTX // 1000))
+        rows.append(h)
+    rows.sort(key=lambda h: (h["day"], h["shoal"], h["slug"]))
+    roles: dict[tuple, dict] = {}
+    for h in rows:
+        r = roles.setdefault((h["shoal"], h["slug"], h["day"]), {"shoal": h["shoal"], "slug": h["slug"], "day": h["day"],
+                                                                 "handovers": 0, "complete": 0, "failed": 0, "cost_m": 0.0})
+        r["handovers"] += 1
+        r["complete"] += h["status"] == "complete"
+        r["failed"] += h["status"] == "failed"
+        r["cost_m"] = round(r["cost_m"] + (h.get("cost_m") or 0), 2)
+    return {"v": 1, "since": since.strftime("%Y-%m-%dT%H:%M:%SZ"), "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "days": days, "weights": WEIGHTS, "fresh_k_default": FRESH_CTX // 1000, "handovers": rows,
+            "roles": list(roles.values())}
+
+
+def render_handovers(doc: dict) -> str:
+    def s(v, unit=""):
+        return "-" if v is None else f"{v:g}{unit}"
+    import re
+
+    def tag(sid):  # the id without its mint stamp, as the viewer shows it
+        return re.sub(r"-\d{8}-\d{6}$", "", sid)
+    lines = [f"handovers, {doc['since']} to {doc['until']} ({doc['days']:g} d; cost in M base-input tokens: refresh turn at "
+             f"half the context plus the fresh first write at 2.0x; fresh {doc['fresh_k_default']}k assumed where unmeasured, "
+             f"marked ~)",
+             f"{'shoal':<16} {'role':<18} {'day':<10} {'status':<9} {'ctx':>5} {'fresh':>6} {'adv>rdy':>8} {'rdy>rst':>8} "
+             f"{'rst>1st':>8} {'cond':>6} {'cost':>5}  payback (warm calls / cold wakes)"]
+    for h in doc["handovers"]:
+        fresh = h.get("fresh_k") or (doc["fresh_k_default"] if h.get("context_k") else None)
+        ftxt = ("" if h.get("fresh_measured", True) else "~") + s(fresh, "k")
+        pay = f"{h['payback_warm_calls']:g} / {h['payback_cold_wakes']:g}" if "cost_m" in h else "-"
+        lines.append(f"{tag(h['shoal'])[:16]:<16} {h['slug'][:18]:<18} {h['day']:<10} {h['status']:<9} "
+                     f"{s(h.get('context_k'), 'k'):>5} {ftxt:>6} {s(h.get('advised_to_ready_s'), 's'):>8} "
+                     f"{s(h.get('ready_to_restart_s'), 's'):>8} {s(h.get('restart_to_first_turn_s'), 's'):>8} "
+                     f"{s(h.get('condition_min'), 'm'):>6} {s(h.get('cost_m')):>5}  {pay}")
+    for r in doc["roles"]:
+        lines.append(f"total {tag(r['shoal'])} {r['slug']} {r['day']}: {r['handovers']} handover(s), {r['complete']} complete, "
+                     f"{r['failed']} failed, {r['cost_m']:g}M")
+    if not doc["handovers"]:
+        lines.append("no handover events in the window")
+    return "\n".join(lines)
+
+
 def cmd_context_report(a) -> int:
+    if getattr(a, "handovers", False):
+        doc = handovers(a.days)
+        print(json.dumps(doc) if a.json else render_handovers(doc))
+        return 0
     if a.snapshot:
         p = write_snapshot()
         print(f"context-report: wrote {p}" if p else "context-report: today's snapshot already exists")
@@ -351,6 +488,8 @@ def add_parser(sub) -> None:
     p.add_argument("--json", action="store_true")
     p.add_argument("--all", action="store_true", help="include sessions with fewer than 3 calls in the window")
     p.add_argument("--snapshot", action="store_true", help="write yesterday's per-host snapshot (if not written yet)")
+    p.add_argument("--handovers", action="store_true",
+                   help="handovers that happened (handover telemetry, every shoal): phases, latencies, measured cost")
     p.add_argument("--limits", default=",".join(f"{k:g}" for k in LIMITS_K),
                    help="candidate handover limits to replay, in thousands of tokens (default 300,400,500)")
     p.set_defaults(func=cmd_context_report)
