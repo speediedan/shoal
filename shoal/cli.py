@@ -339,6 +339,14 @@ def persist_spec(spec: ShoalSpec, path: str, note: str = "", attempts: int = 3) 
     rel = os.path.relpath(path, root)
     ours = spec.to_dict()
     base = getattr(spec, "base", None)
+    written = getattr(spec, "snapshot_written", None)
+    if base is not None and written and os.path.abspath(written[0]) == os.path.abspath(path):
+        # a restart's ledger snapshot overwrote this very file (a live spec IS the ledger copy), so what it wrote is
+        # the base, not what was loaded. Against the load, the launched short id read as a remote change to
+        # role.session (a WARN on every restart that adopted the full id) and the generations a snapshot strips read
+        # as removed elsewhere, so each restart kept only the last two (measured 2026-10-26)
+        base = written[1]
+    spec.snapshot_written = None
     remote = has_remote(root)
     pushed = not remote
     merged, conflicts = ours, []
@@ -650,7 +658,11 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
             led.pull()
             led.append(SYSTEM_WRITER, "system", event="generation-started", gen=spec.display_gen,
                        note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session), _push=False)
-            led.snapshot_spec(spec.snapshot())
+            snap = spec.snapshot()
+            led.snapshot_spec(snap)
+            # this process's own write: persist_spec merges against it when it overwrote the spec file itself
+            from layout import spec_file
+            spec.snapshot_written = (spec_file(led.dir), json.loads(json.dumps(snap)))
         except Exception as exc:  # noqa: BLE001
             print(f"WARN: ledger generation record failed: {exc}")
     if launch_fail:

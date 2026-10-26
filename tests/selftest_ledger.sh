@@ -406,6 +406,51 @@ assert remote["ledger"]["dir"] == A, remote["ledger"]  # B's local clone path ne
 assert sa.role("beta").model == "model-from-B", "A's in-memory spec did not take the merged copy"
 print("spec merge ok")
 PY3
+echo "== a restart's own ledger snapshot is the merge base: no session WARN, generation history kept"
+python3 - "$SHOALD" "$A" <<'PY3' || fail "restart snapshot merge"
+import io, contextlib, json, sys
+sys.path.insert(0, sys.argv[1])
+import cli
+from layout import spec_file
+from ledger import Ledger
+from roles import ShoalSpec
+pa = f"{sys.argv[2]}/shoals/t1shoal/shoal.json"
+def quiet_persist(s, note):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.persist_spec(s, pa, note=note)
+    return out.getvalue()
+s = ShoalSpec.load(pa)
+d = s.to_dict()
+d["generations"] = [{"gen": f"r{i}", "incarnation": i, "started_utc": f"2026-10-0{i}T00:00:00Z", "ended_utc": "",
+                     "sessions": {}, "seqs": {}} for i in (1, 2, 3)]
+s2 = ShoalSpec.from_dict(d); s2.base = s.base
+quiet_persist(s2, "history")
+# the restart (stage_restart): launch with a short id, record the generation, snapshot over the spec file, then adopt
+# the full id from the new watcher's sidecar and persist (measured 2026-10-26: a WARN each time, history cut to two)
+for genuine in (False, True):
+    s = ShoalSpec.load(pa)
+    gens0 = [g["gen"] for g in s.to_dict()["generations"]]
+    s.role("alpha").session = "abcd1234"
+    d = s.to_dict(); d["generations"].append({"gen": f"r{len(gens0) + 1}", "incarnation": len(gens0) + 1,
+                                               "started_utc": "2026-10-09T00:00:00Z", "ended_utc": "", "sessions": {}, "seqs": {}})
+    base = s.base; s = ShoalSpec.from_dict(d); s.base = base
+    led = Ledger(s.sid, root=sys.argv[2], sync=False)
+    snap = s.snapshot()
+    led.snapshot_spec(snap, push=False)
+    s.snapshot_written = (spec_file(led.dir), json.loads(json.dumps(snap)))
+    if genuine:  # another writer changes the same field after the snapshot: still a conflict
+        other = json.loads(json.dumps(snap)); [r for r in other["roles"] if r["slug"] == "alpha"][0]["session"] = "zzzz9999"
+        led.snapshot_spec(other, push=False)
+    s.role("alpha").session = "abcd1234-0000-full"
+    out = quiet_persist(s, "restart")
+    saved = json.load(open(pa))
+    gens = [g["gen"] for g in saved["generations"]]
+    assert set(gens0) < set(gens) and len(gens) == len(gens0) + 1, (gens0, gens)
+    assert [r for r in saved["roles"] if r["slug"] == "alpha"][0]["session"] == "abcd1234-0000-full", saved["roles"]
+    assert ("WARN spec merge: role alpha.session" in out) == genuine, out
+print("restart snapshot merge ok")
+PY3
 expect 0 $H sync --shoal t1shoal --ledger-dir "$B"
 echo "== multi-host: locality (a remote role is not watched, woken or launched from this host)"
 MH="$S/mh"; mkdir -p "$MH/shoals/t1shoal"
