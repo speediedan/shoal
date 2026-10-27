@@ -188,6 +188,14 @@ with a likely-stale hint where the named item is merged, closed or done, wakes e
 asks to re-verify, drop or raise them as prompted question sets (at most four questions per set),
 and delivers the deferred pages as one summary.
 
+**Signed standing grants** (`features.grants`). A `grant` event from `user` carries an ssh
+signature (`ssh-keygen -Y sign -n shoal-grant`, maintainer's key) over its canonical form;
+readers verify against the host's `allowed_signers` and ignore anything unverified
+(`ledger-lint` E4). Grants are keyed by role (or `"*"` for the shoal), never by session, so they
+survive restarts and ecosystem changes; briefs and `next` print the verified set, and a
+grants-needed item marked `[grant: <kind-or-id>]` is dropped from the restart ask when a live
+grant matches. Revocation is a signed event naming the grant; expiry needs none.
+
 **Freeze mode.** `freeze on|off` is the same kind of `system` event, for a restart or maintenance
 window. While it is on, `next` prints `FREEZE ACTIVE` (checkpoint, persist the plan_state, push,
 sleep), `job run` refuses to start a unit, idle is allowed with a full queue, and `parked-work` is

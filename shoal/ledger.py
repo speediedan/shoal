@@ -61,7 +61,7 @@ LEDGER_DIR = config.ledger_dir()
 GIT_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get("PATH", ""),
                GIT_TERMINAL_PROMPT="0")
 
-TYPES = ("offer", "withdraw", "claim", "release", "done", "msg", "state", "system", "queue")
+TYPES = ("offer", "withdraw", "claim", "release", "done", "msg", "state", "system", "queue", "grant")
 QUEUE_NEXT_MAX = 3  # default length of a role's `next` list (one active item + up to N next)
 
 
@@ -367,7 +367,7 @@ class Ledger:
 
     # -- write
     def append(self, by: str, typ: str, _commit: bool = True, _push: bool | None = None,
-               **fields) -> dict:
+               _finalize=None, **fields) -> dict:
         if typ not in TYPES:
             raise LedgerError(f"unknown event type {typ!r} (want one of {TYPES})")
         ev = {"ts": iso(), "by": by, "type": typ}
@@ -376,6 +376,8 @@ class Ledger:
             if v is None or v == "":
                 continue
             ev[k] = v
+        if _finalize is not None:
+            _finalize(ev)  # may add derived fields (a grant's signature) before serialization
         if "item" in ev:
             key, verb = split_item(str(ev["item"]))
             ev["item"] = key
@@ -526,6 +528,7 @@ class View:
         self.states: dict[str, dict] = {}         # slug -> last state event
         self.queues: dict[str, dict] = {}         # slug -> latest role-owned `queue` version
         self.modes: dict[str, dict] = {}          # mode name -> latest system mode event
+        self.grant_events: list[dict] = []        # grant/revoke events by `user` (verified lazily, grants.py)
         self.last_by: dict[str, str] = {}         # writer -> last ts
         self.violations: list[tuple[dict, str]] = []
         self.contested: dict[str, list[dict]] = {}
@@ -637,6 +640,11 @@ class View:
                     self._viol(e, f"queue event by {by} not in its own role file")
                     continue
                 self.queues[by] = e
+            elif typ == "grant":
+                if by != "user" or e.get("_writer_file") != "user":
+                    self._viol(e, f"grant event by {by}: only the maintainer grants")
+                    continue
+                self.grant_events.append(e)
             elif typ == "system" and e.get("mode"):
                 if by not in OFFER_WRITERS:
                     self._viol(e, f"{by} may not set mode {e.get('mode')}")
@@ -934,6 +942,15 @@ def lint(view: View) -> list[tuple[str, str]]:
             out.append(("W3", f"{e['ts']} {e['type']} {e.get('item')} without a verb (:fix/:review/...)"))
         if e.get("type") == "offer" and not e.get("base"):
             out.append(("W4", f"{e['ts']} offer {e.get('item')} to {e.get('to')} without a base (repo@sha)"))
+    try:
+        import grants as _g
+        if view.spec is not None and _g.enabled(view.spec):
+            for e in view.grant_events:
+                if not _g.verify(e):
+                    out.append(("E4", f"{e['ts']} grant {e.get('id')} [{e.get('role')}] does not verify "
+                                      f"(unsigned, tampered, or no trusted signer here): ignored by every reader"))
+    except Exception:  # noqa: BLE001 - lint must not fail on a grants import problem
+        pass
     for o in view.offers.values():
         if o["status"] == "open":
             try:

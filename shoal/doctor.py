@@ -186,6 +186,14 @@ def host_checks(d: Doc) -> None:
             pass
     if prof["azure"]:
         (d.ok if pat else d.warn)("AZURE_DEVOPS_EXT_PAT", "resolvable" if pat else "unset (pipeline watcher will refuse to judge)")
+    signers = config.grant_allowed_signers()
+    if os.path.exists(signers):
+        d.ok("grant signers", signers)
+    else:
+        d.warn("grant signers", f"{signers} missing (signed grants verify nowhere on this host)")
+    gkey = config.grant_key()
+    (d.ok if gkey and os.path.exists(gkey) else d.info)(
+        "grant key", gkey if gkey else "unset (only the maintainer's signing host needs one)")
     for name, root in (("SHOAL_DATA_ROOT", SHOAL_DATA_ROOT),):
         if os.path.isdir(root) and os.access(root, os.W_OK):
             d.ok(name, root)

@@ -204,6 +204,19 @@ def cli_pkg_dir() -> str:
     return PKG_DIR
 
 
+def grant_key() -> str:
+    """The maintainer's grant-signing private key (host config `grant_key`); empty when unset."""
+    return _path(_get("grant_key", names("GRANT_KEY"), ""))
+
+
+def grant_allowed_signers() -> str:
+    """The ssh allowed_signers file grant signatures verify against (host config
+    `grant_allowed_signers`, else ~/.config/shoal/allowed_signers)."""
+    return _path(_get("grant_allowed_signers", names("GRANT_ALLOWED_SIGNERS"),
+                      lambda: os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                                           "shoal", "allowed_signers")))
+
+
 def psi_out() -> str:
     return _path(_get("psi_out", names("PSI_OUT"),
                       lambda: os.path.join(data_root(), "_instruments", "psi_events.jsonl")))
