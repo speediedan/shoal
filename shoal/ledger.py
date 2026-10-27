@@ -861,9 +861,17 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
     """The status table: one row per role."""
     from roles import is_wake_relay as _is_wake_relay
     n_next = queue_next_max(spec)
+    grants_by_role: dict[str, int] = {}
+    try:
+        import grants as _g
+        for g in _g.live_grants(view, spec):
+            key = g.get("role") or "*"
+            grants_by_role[key] = grants_by_role.get(key, 0) + 1
+    except Exception:  # noqa: BLE001 - the status table never fails on grants
+        grants_by_role = {}
     L = [f"# shoal {view.ledger.sid}: ledger view at {iso()}", ""]
-    L.append(f"| role | fill | state | active | next (max {n_next}) | last event |")
-    L.append("| --- | --- | --- | --- | --- | --- |")
+    L.append(f"| role | fill | state | active | next (max {n_next}) | grants | last event |")
+    L.append("| --- | --- | --- | --- | --- | --- | --- |")
     for r in spec.roles:
         st = view.role_state(r.slug)
         state = "(none)"
@@ -903,7 +911,8 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
                     state = f"relaying (relay-watch pid {pid})" if b"relay-watch" in fh.read() else "relay-watch DEAD"
             except (OSError, ValueError):
                 state = "relay-watch DEAD"
-        L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {last} |")
+        ng = grants_by_role.get(r.slug, 0) + grants_by_role.get("*", 0)
+        L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {ng or '—'} | {last} |")
     pool = [o for o in view.offers.values() if o["status"] == "open" and o["to"] == "*"]
     if pool:
         L.append("")
