@@ -90,6 +90,24 @@ def cmd_doc_check(a) -> int:
         print(f"doc-check: --since {a.since!r} is not a timestamp (use UTC, for example 2026-10-22T19:05Z)")
         return 2
     r = check(a.path, since)
+    if getattr(a, "sid", "") and getattr(a, "slug", ""):
+        try:
+            import grants as _g
+            from briefs import extract_grants
+            from ledger import Ledger, View
+            from roles import ShoalSpec, find_spec
+            spec = ShoalSpec.load(find_spec(a.sid, getattr(a, "spec", "")))
+            if _g.enabled(spec):
+                led = Ledger(spec.sid, root=spec.ledger_dir or None, sync=False)
+                live = _g.grants_for(View(led, spec), spec, a.slug) if led.exists() else []
+                import re as _re
+                for g in extract_grants(a.path):
+                    m = _re.search(r"\[grant:\s*([^\]]+)\]\s*$", g.strip())
+                    if m and not _g.covered(g, live):
+                        r["warnings"].append(f"grants-needed marker [grant: {m.group(1).strip()}] names no live "
+                                              f"verified grant for {a.slug} (it will still be asked)")
+        except Exception as exc:  # noqa: BLE001 - a warning path never fails the check
+            r["warnings"].append(f"grant markers not checked: {exc}")
     if a.json:
         print(json.dumps(r))
     else:
@@ -105,6 +123,9 @@ def add_parser(sub) -> None:
     p = sub.add_parser("doc-check", help="does a start doc (plan_state) meet the start-doc contract? (read-only)")
     p.add_argument("path")
     p.add_argument("--since", default="", help="the Last updated stamp must be at or after this UTC time")
+    p.add_argument("--shoal", dest="sid", default="", help="with --slug: warn on [grant: ...] markers no live grant covers")
+    p.add_argument("--spec", default="")
+    p.add_argument("--slug", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doc_check)
 

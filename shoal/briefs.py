@@ -71,16 +71,35 @@ def launch_config(role: Role) -> str:
             f"natively where the harness supports it).")
 
 
-def grants_block(role: Role) -> str:
-    grants = extract_grants(role.doc) if role.doc else []
-    if not grants:
-        return ""
-    items = "\n".join(f"- {g}" for g in grants)
-    return (
+def grants_block(role: Role, spec=None, view=None) -> str:
+    needed = extract_grants(role.doc) if role.doc else []
+    standing: list[str] = []
+    live: list[dict] = []
+    try:
+        import grants as _g
+        if spec is not None and _g.enabled(spec):
+            if view is None:
+                from ledger import Ledger, View
+                led = Ledger(spec.sid, root=spec.ledger_dir or None, sync=False)
+                view = View(led, spec) if led.exists() else None
+            if view is not None:
+                live = _g.grants_for(view, spec, role.slug)
+                standing = _g.grants_lines(view, spec, role.slug)
+                needed = [g for g in needed if not _g.covered(g, live)]
+    except Exception:  # noqa: BLE001 - grants never break a brief; the ask remains
+        standing, live = [], []
+    out = ""
+    if standing:
+        out += "\n" + "\n".join(standing)
+    if not needed:
+        return out
+    items = "\n".join(f"- {g}" for g in needed)
+    return out + (
         "\nGRANTS NEEDED — before starting any work, ask the maintainer "
         "directly (first-person), all items in ONE question with a "
         "grant / deny option on each (this ask is the only sanctioned "
-        "interactive step of the restart):\n" + items)
+        "interactive step of the restart). Ask only for what no standing "
+        "grant above covers:\n" + items)
 
 
 def state_block(role: Role, spec: ShoalSpec) -> str:
@@ -323,7 +342,7 @@ def h4_disciplines(role: Role, spec: ShoalSpec) -> str:
 
 def brief_for(role: Role, spec: ShoalSpec) -> str:
     body = ledger_brief(role, spec)
-    return body + launch_config(role) + state_block(role, spec) + grants_block(role)
+    return body + launch_config(role) + state_block(role, spec) + grants_block(role, spec)
 
 
 if __name__ == "__main__":

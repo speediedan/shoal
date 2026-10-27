@@ -597,5 +597,62 @@ assert open(sys.argv[2] + "/prompt.md").read() == big, "long prompt not written 
 print("transport ok")
 PY3
 [ ! -f "$S/opencode-called" ] || fail "the matcher invoked the opencode CLI"
+
+echo "== signed grants: sign, verify at read, forged excluded, revoke and expiry"
+if command -v ssh-keygen >/dev/null; then
+  ssh-keygen -q -t ed25519 -N "" -f "$S/grantkey"
+  printf 'shoal-grant %s\n' "$(cat "$S/grantkey.pub")" > "$S/allowed_signers"
+  export SHOAL_GRANT_KEY="$S/grantkey" SHOAL_GRANT_ALLOWED_SIGNERS="$S/allowed_signers"
+  python3 -c "
+import json
+p = '$SPEC'; d = json.load(open(p)); d.setdefault('features', {})['grants'] = True
+open(p, 'w').write(json.dumps(d, indent=2) + '\n')"
+  check "would sign and append" $H grant --shoal t1shoal --spec "$SPEC" --role alpha --scope "fixture reviews" --kind review-comment --dry-run --no-sync
+  GOUT=$($H grant --shoal t1shoal --spec "$SPEC" --role alpha --scope "fixture reviews" --kind review-comment --no-sync 2>&1) || fail "grant :: $GOUT"
+  grep -q "(signed, verified)" <<<"$GOUT" || fail "grant not verified :: $GOUT"
+  GID=$(grep -oE '^grant [0-9a-f]+' <<<"$GOUT" | cut -d' ' -f2)
+  [ -n "$GID" ] || fail "no grant id :: $GOUT"
+  check "active" $H grants --shoal t1shoal --spec "$SPEC" --no-sync
+  check "STANDING GRANTS" $H next --shoal t1shoal --spec "$SPEC" --slug alpha --peek --no-sync
+  check "fixture reviews" $H next --shoal t1shoal --spec "$SPEC" --slug alpha --peek --no-sync
+  printf -- '- Fixture review comments [grant: review-comment]\n' >> "$DOC_A"
+  python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "brief grants block"
+import sys; sys.path.insert(0, sys.argv[1])
+from roles import ShoalSpec
+import briefs
+spec = ShoalSpec.load(sys.argv[2])
+b = briefs.brief_for(spec.role("alpha"), spec)
+assert "STANDING GRANTS" in b and "fixture reviews" in b, b
+assert "Fixture review comments [grant: review-comment]" not in b, "covered item still asked"
+print("brief ok")
+PY2
+  python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "forged grant setup"
+import sys; sys.path.insert(0, sys.argv[1])
+from roles import ShoalSpec
+from ledger import Ledger
+spec = ShoalSpec.load(sys.argv[2])
+led = Ledger(spec.sid, root=spec.ledger_dir, sync=False)
+led.append("user", "grant", state="granted", role="alpha", scope="FORGED SCOPE", _commit=False)
+led.append("alpha", "grant", state="granted", role="alpha", scope="ROLE FORGED", _commit=False)
+led.commit_own("user", "fixture forged grant"); led.commit_own("alpha", "fixture role grant")
+print("forged written")
+PY2
+  check "unverified" $H grants --shoal t1shoal --spec "$SPEC" --no-sync
+  $H next --shoal t1shoal --spec "$SPEC" --slug alpha --peek --no-sync 2>&1 | grep -q "FORGED SCOPE" \
+    && fail "an unverified grant reached next"
+  check "does not verify" $H ledger-lint --shoal t1shoal --spec "$SPEC" --no-sync
+  check "only the maintainer grants" $H ledger-lint --shoal t1shoal --spec "$SPEC" --no-sync
+  OUT=$(SHOAL_GRANT_ALLOWED_SIGNERS="$S/none" $H grants --shoal t1shoal --spec "$SPEC" --no-sync 2>&1 || true)
+  grep -q "unverified" <<<"$OUT" && ! grep -q " active " <<<"$OUT" || fail "missing signers not fail-closed :: $OUT"
+  EOUT=$($H grant --shoal t1shoal --spec "$SPEC" --role beta --scope "already over" --until 2020-01-01T00:00:00Z --no-sync 2>&1) || fail "expired grant write :: $EOUT"
+  check "expired" $H grants --shoal t1shoal --spec "$SPEC" --no-sync
+  check "revoked $GID" $H revoke --shoal t1shoal --spec "$SPEC" --id "$GID" --no-sync
+  check "revoked" $H grants --shoal t1shoal --spec "$SPEC" --no-sync
+  $H next --shoal t1shoal --spec "$SPEC" --slug alpha --peek --no-sync 2>&1 | grep -q "STANDING GRANTS" \
+    && fail "a revoked grant still shows in next"
+  echo "grants ok"
+else
+  echo "SKIP grants (no ssh-keygen)"
+fi
 rm -rf /tmp/t1shoal
 echo "SELFTEST PASS ($S)"

@@ -325,6 +325,11 @@ def cmd_next(a) -> int:
         if banner:
             out.append(banner)
     try:
+        import grants as _g
+        out += _g.grants_lines(view, spec, slug)
+    except Exception:  # noqa: BLE001 - grants never break `next`
+        pass
+    try:
         import context as _ctx
         adv = _ctx.advisory(spec, me)
         if adv:

@@ -21,6 +21,12 @@
 # Env: SHOAL_LEASE_CMD, then GPU_LEASE_CMD. Default: "" (lease waits resolve as unknown)
 # lease_cmd = "/path/to/lease_provider.sh"
 
+# Signed standing grants (shoal grant): the maintainer's signing key (signing host only; a
+# passphrase or FIDO key, never loaded into ssh-agent) and the allowed_signers file every host
+# verifies against. Env: SHOAL_GRANT_KEY / SHOAL_GRANT_ALLOWED_SIGNERS.
+# grant_key = "~/.ssh/shoal_grant"
+# grant_allowed_signers = "~/.config/shoal/allowed_signers"
+
 # Repositories a shoal works when its spec names none (reconcile ground truth). Default: []
 # default_repos = ["<owner>/<repo>", "<owner>/<other-repo>"]
 
