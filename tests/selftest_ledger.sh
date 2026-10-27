@@ -613,6 +613,7 @@ open(p, 'w').write(json.dumps(d, indent=2) + '\n')"
   GID=$(grep -oE '^grant [0-9a-f]+' <<<"$GOUT" | cut -d' ' -f2)
   [ -n "$GID" ] || fail "no grant id :: $GOUT"
   check "active" $H grants --shoal t1shoal --spec "$SPEC" --no-sync
+  check "| grants |" $H show --shoal t1shoal --spec "$SPEC" --no-sync
   check "STANDING GRANTS" $H next --shoal t1shoal --spec "$SPEC" --slug alpha --peek --no-sync
   check "fixture reviews" $H next --shoal t1shoal --spec "$SPEC" --slug alpha --peek --no-sync
   printf -- '- Fixture review comments [grant: review-comment]\n' >> "$DOC_A"

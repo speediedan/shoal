@@ -873,6 +873,7 @@ lg = ui_herdr.legend_text(False)
 assert "half-moon" in lg and ui_herdr.MODE_TURN in lg and ui_herdr.MODE_JOB in lg and "attached" in lg
 assert "$mode" in ui_herdr.sidebar_block()
 assert any(k == "legend" for k, _ in ui_herdr.MENU)
+assert any(k == "grants" for k, _ in ui_herdr.MENU), "the palette manages standing grants"
 print("state clarity ok")
 PY2
 kill $FAKE 2>/dev/null

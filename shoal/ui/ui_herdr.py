@@ -1617,6 +1617,51 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
             args.append("--no-wake")
             cost = ""
         return confirm_run(args, cost)
+    if verb == "grants":
+        r = run_shoal(["grants", "--shoal", sid, "--json"], capture=True)
+        try:
+            doc = json.loads(r.stdout)
+        except ValueError:
+            print((r.stdout + r.stderr).strip() or "grants: no output")
+            return 1
+        rows = doc.get("grants") or []
+        if not doc.get("grants_enabled"):
+            print(f"signed grants are off for {sid} (enable: shoal upgrade --enable grants, then sign seeds)")
+        for g in rows:
+            print(f"  {g['id']}  {g['level']:<5} {g['role']:<24} {g['state']:<10} {g['scope']}")
+        print(f"{len(rows)} grant(s)" + ("" if rows else " (sign one with: shoal grant --shoal " + sid + " --scope ...)"))
+        act = _choose(["inspect one", "grant (signs here, in your terminal)", "revoke one", "done"])
+        if act is None or act == 3:
+            return 0
+        if act == 1:
+            who = pick_role(sid, fr, allow_all=True)
+            if not who:
+                return _cancelled()
+            scope = _ask("scope (what it authorizes): ")
+            if not scope:
+                return _cancelled()
+            kind = _ask("kind tag (optional): ")
+            until = _ask("until (ISO UTC, empty = until revoked): ")
+            args = ["grant", "--shoal", sid, "--scope", scope]
+            if who != "*":
+                args += ["--role", who]
+            if kind:
+                args += ["--kind", kind]
+            if until:
+                args += ["--until", until]
+            return confirm_run(args, "signing asks for your key (touch or passphrase) in this terminal")
+        if not rows:
+            print("nothing to inspect or revoke yet")
+            return 0
+        i = _choose([f"{g['id']} [{g['role']}] {g['scope']}" for g in rows])
+        if i is None:
+            return _cancelled()
+        if act == 0:
+            run_shoal(["grants", "--shoal", sid, "--inspect", rows[i]["id"]])
+            ui_term.pause()
+            return 0
+        return confirm_run(["revoke", "--shoal", sid, "--id", rows[i]["id"]],
+                           "roles holding only this grant lose the authorization at their next boundary")
     if verb == "upgrade":
         from roles import find_spec
         print("Upgrades stay a CLI step (operator-only). Preview of what this commit would roll out:\n")
@@ -1648,6 +1693,7 @@ MENU = [
     ("offer", "offer an item to a role"),
     ("withdraw", "withdraw an offer"),
     ("offline", "user-offline mode on/off"),
+    ("grants", "standing grants: list, inspect, grant, revoke (signed)"),
     ("freeze", "freeze mode on/off"),
     ("conditions", "health conditions now (refresh)"),
     ("metrics", "failure-mode metrics and report files"),
