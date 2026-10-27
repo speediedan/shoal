@@ -7,9 +7,15 @@ runs under `systemd-run --user` in its own cgroup with a `MemoryHigh` cap, survi
 session, and is followed by a tiny in-session waiter that is safe to re-arm:
 
     shoal job run  --shoal H --slug S --name suite [--memory-high 24G] [--cwd DIR] -- pytest -x tests/
+    shoal job run  --shoal H --slug S --name suite --on user@host --cwd /remote/dir -- <lease-wrapped cmd>
     shoal job wait --shoal H --slug S --name suite      # run as the background command; re-arm freely
     shoal job status --shoal H [--slug S]
     shoal job stop --shoal H --slug S --name suite
+
+With `--on`, the same transient-unit model runs on another host over ssh (the unit, its log
+and its rc file live under ~/shoal-jobs there; the local meta records the host, and
+wait/status/stop follow it over ssh). The remote cwd and everything the command needs
+(checkout, venv, the lease wrapper) must already exist there: this moves compute, not state.
 
 The command runs inside a wrapper that writes its exit code to a status file, because a
 collected transient unit forgets its result. `wait` prints exactly one verdict line on
@@ -69,6 +75,49 @@ def _systemctl(*argv: str) -> subprocess.CompletedProcess:
     return subprocess.run(["systemctl", "--user", *argv], capture_output=True, text=True, timeout=30)
 
 
+REMOTE_DIR = "~/shoal-jobs"
+
+
+def _ssh(host: str, script: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    """One non-interactive ssh call running a shell script on `host` (patchable in tests)."""
+    return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, script],
+                          capture_output=True, text=True, timeout=timeout, env=config.tool_env())
+
+
+def remote_paths(unit: str, home: str = "") -> dict[str, str]:
+    """Absolute remote paths (systemd expands no `~`); `home` from remote_home()."""
+    base = f"{home}/shoal-jobs" if home else REMOTE_DIR
+    return {"log": f"{base}/{unit}.log", "rc": f"{base}/{unit}.rc"}
+
+
+def remote_home(host: str) -> str:
+    try:
+        r = _ssh(host, 'printf %s "$HOME"', timeout=30)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def remote_state(host: str, unit: str) -> dict[str, str]:
+    """{ActiveState, LoadState, rc} for a remote unit in one ssh call; {} when unreachable."""
+    rp = remote_paths(unit)
+    script = (f"systemctl --user show {shlex.quote(unit)}.service "
+              f"-p LoadState,ActiveState 2>/dev/null; echo ---; cat {rp['rc']} 2>/dev/null || true")
+    try:
+        r = _ssh(host, script, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if r.returncode != 0:
+        return {}
+    show, _, rc = r.stdout.partition("---\n")
+    d = {}
+    for line in show.splitlines():
+        k, _, v = line.partition("=")
+        d[k] = v
+    d["rc"] = rc.strip()
+    return d
+
+
 def unit_state(unit: str) -> dict[str, str]:
     r = _systemctl("show", f"{unit}.service", "-p", "LoadState,ActiveState,SubState,Result,ExecMainStatus")
     d = {}
@@ -125,6 +174,60 @@ def job_meta(sid: str, name: str, slug: str = "") -> dict:
     return {}
 
 
+def _run_remote(a, cmd: list[str], unit: str, p: dict) -> int:
+    host = a.on
+    cwd = a.cwd or ""
+    if not cwd:
+        print("ERROR: job run --on needs --cwd (a directory that already exists on the remote host)")
+        return 1
+    home = "" if a.dry_run else remote_home(host)
+    if not a.dry_run and not home:
+        print(f"ERROR: ssh to {host} failed (no home directory answer); is the host reachable non-interactively?")
+        return 2
+    rp = remote_paths(unit, home)
+    st = remote_state(host, unit)
+    if st.get("ActiveState") in ("active", "activating", "reloading"):
+        print(f"JOB-ALREADY-RUNNING {unit} on {host} (follow it with `shoal job wait --shoal {a.sid} --slug {a.slug} --name {a.name}`)")
+        return 4
+    inner = f'"$@"; rc=$?; echo "$rc" > {rp["rc"]}; exit "$rc"'
+    rargv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
+             "-p", f"WorkingDirectory={cwd}",
+             "-p", f"StandardOutput=append:{rp['log']}", "-p", f"StandardError=append:{rp['log']}"]
+    if a.memory_high:
+        rargv += ["-p", f"MemoryHigh={a.memory_high}"]
+    if a.memory_max:
+        rargv += ["-p", f"MemoryMax={a.memory_max}"]
+    for kv in a.env or []:
+        rargv += ["-E", kv]
+    rargv += ["/bin/bash", "-c", inner, "shoal-job"] + cmd
+    launch = " ".join(shlex.quote(x) for x in rargv)
+    script = (f"test -d {shlex.quote(cwd)} || {{ echo 'no such remote cwd: {cwd}' >&2; exit 3; }}; "
+              f"mkdir -p {shlex.quote(os.path.dirname(rp['log']))} && rm -f {rp['rc']} && "
+              f"printf '\\n### job {unit} start on %s\\n' \"$(date -u +%FT%TZ)\" >> {rp['log']} && {launch}")
+    if a.dry_run:
+        print(f"[dry-run] ssh {host} {script}")
+        return 0
+    try:
+        r = _ssh(host, script)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"ERROR: ssh to {host} failed: {exc}")
+        return 2
+    if r.returncode != 0:
+        print(f"ERROR: remote start on {host} failed rc={r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
+        return 2
+    os.makedirs(p["sdir"], exist_ok=True)
+    meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
+            "started_utc": now_iso(), "host": host, "log": rp["log"], "rc_file": rp["rc"],
+            "memory_high": a.memory_high, "memory_max": a.memory_max}
+    with open(p["meta"], "w") as fh:
+        json.dump(meta, fh, indent=1)
+    _emit(a.sid, a.slug, "job-start", f"{unit} on {host} {' '.join(cmd)[:100]}")
+    print(f"JOB-STARTED {unit} on {host} log={host}:{rp['log']}\n"
+          f"follow with (background command, re-arm freely): "
+          f"{config.cli()} job wait --shoal {a.sid} --slug {a.slug} --name {a.name}")
+    return 0
+
+
 def cmd_run(a) -> int:
     cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
     if not cmd:
@@ -143,6 +246,8 @@ def cmd_run(a) -> int:
         return 5
     unit = unit_name(a.sid, a.slug, a.name)
     p = paths(a.sid, unit)
+    if getattr(a, "on", ""):
+        return _run_remote(a, cmd, unit, p)
     st = unit_state(unit)
     if st.get("ActiveState") in ("active", "activating", "reloading"):
         print(f"JOB-ALREADY-RUNNING {unit} (follow it with `shoal job wait --shoal {a.sid} --slug {a.slug} --name {a.name}`)")
@@ -193,8 +298,56 @@ def resolve(a) -> tuple[str, dict[str, str]]:
     return unit, paths(a.sid, unit)
 
 
+def _meta_for(a, unit: str) -> dict:
+    try:
+        return json.load(open(paths(a.sid, unit)["meta"]))
+    except (OSError, ValueError):
+        return {}
+
+
+def _wait_remote(a, unit: str, meta: dict) -> int:
+    host = meta["host"]
+    rp = {"log": meta.get("log") or remote_paths(unit)["log"]}
+    deadline = time.time() + a.timeout_min * 60 if a.timeout_min else None
+    misses = 0
+    print(f"{now_iso()} waiting on {unit} on {host} (pid {os.getpid()})")
+    while True:
+        st = remote_state(host, unit)
+        if not st:
+            misses += 1
+            if misses >= 10:
+                print(f"JOB-VERDICT {unit} UNREACHABLE ({host} answered no ssh in {misses} polls; "
+                      f"the job may still be running there)")
+                return 6
+        else:
+            misses = 0
+            if st.get("ActiveState") not in ("active", "activating", "deactivating", "reloading"):
+                rc = int(st["rc"]) if (st.get("rc") or "").lstrip("-").isdigit() else None
+                if rc is not None:
+                    verdict = f"JOB-VERDICT {unit} result={'success' if rc == 0 else 'failed'} exit={rc}"
+                elif st.get("LoadState") == "not-found" and not meta:
+                    verdict = f"JOB-VERDICT {unit} NOT-FOUND (never started there)"
+                else:
+                    verdict = f"JOB-VERDICT {unit} UNIT-GONE-NO-STATUS (see {host} journal for {unit}.service)"
+                print(verdict)
+                try:
+                    r = _ssh(host, f"tail -n {int(a.tail)} {rp['log']} 2>/dev/null", timeout=30)
+                    print(f"--- log tail ({host}:{rp['log']}):\n{r.stdout.rstrip() or '(no log)'}")
+                except (OSError, subprocess.TimeoutExpired):
+                    print("--- log tail: (unreachable)")
+                _emit(a.sid, a.slug or "?", "job-verdict", verdict[len("JOB-VERDICT "):][:160])
+                return 0 if rc == 0 else 1
+        if deadline and time.time() > deadline:
+            print(f"JOB-VERDICT {unit} TIMEOUT after {a.timeout_min:g} min (job still running; re-arm to keep following)")
+            return 5
+        time.sleep(a.poll)
+
+
 def cmd_wait(a) -> int:
     unit, p = resolve(a)
+    meta = _meta_for(a, unit)
+    if meta.get("host"):
+        return _wait_remote(a, unit, meta)
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except Exception:
@@ -244,6 +397,12 @@ def cmd_status(a) -> int:
             m = json.load(fh)
         if a.slug and m.get("slug") != a.slug:
             continue
+        if m.get("host"):
+            st = remote_state(m["host"], m["unit"])
+            where = f" on {m['host']}"
+            print(f"{m['unit']}{where}: {st.get('ActiveState', 'unreachable')} rc={st.get('rc') or '-'} "
+                  f"started={m['started_utc']} :: {' '.join(m['cmd'])[:80]}")
+            continue
         st = unit_state(m["unit"])
         rc = "-"
         try:
@@ -259,6 +418,18 @@ def cmd_status(a) -> int:
 
 def cmd_stop(a) -> int:
     unit, _ = resolve(a)
+    meta = _meta_for(a, unit)
+    if meta.get("host"):
+        if a.dry_run:
+            print(f"[dry-run] ssh {meta['host']} systemctl --user stop {unit}.service")
+            return 0
+        try:
+            r = _ssh(meta["host"], f"systemctl --user stop {shlex.quote(unit)}.service")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"ERROR: ssh to {meta['host']} failed: {exc}")
+            return 2
+        print(f"stopped {unit} on {meta['host']}" if r.returncode == 0 else f"ERROR: {r.stderr.strip()[-200:]}")
+        return r.returncode
     if a.dry_run:
         print(f"[dry-run] systemctl --user stop {unit}.service")
         return 0
@@ -282,6 +453,8 @@ def add_parsers(sub) -> None:
     q.add_argument("--memory-high", default="24G", help="MemoryHigh cap (throttles, never kills); '' = none")
     q.add_argument("--memory-max", default="", help="MemoryMax (OOM-kills inside the unit only); default none")
     q.add_argument("--cwd", default="")
+    q.add_argument("--on", default="", help="ssh target (user@host): run the unit there instead; "
+                                            "--cwd must exist on that host, lease wrapping is the command's job")
     q.add_argument("--env", action="append", help="K=V passed into the unit (repeatable)")
     q.add_argument("--dry-run", action="store_true")
     q.add_argument("cmd", nargs="...")
