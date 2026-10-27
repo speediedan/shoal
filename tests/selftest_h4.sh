@@ -143,6 +143,26 @@ for t in ('job:ok-long','job:ok','job:never'): print(t, health.target_pending(t,
 grep -q "job:ok-long True" <<<"$TP" && grep -q "job:ok False" <<<"$TP" && grep -q "job:never None" <<<"$TP" \
   || fail "job wait target misread: $TP"
 check "result=success exit=0" $H job wait --shoal $SID --slug tl --name ok-long --poll 1
+# a remote job (--on): the ssh stub runs the script locally with a scratch HOME as the "remote" home,
+# so the same transient-unit machinery is exercised over the ssh boundary (and the unit name differs
+# only by job name, so the stub-run unit coexists with the local ones)
+mkdir -p "$S/sshstub" "$S/remote-home/work"
+cat > "$S/sshstub/ssh" <<'SH'
+#!/bin/sh
+while [ $# -gt 1 ]; do shift; done
+HOME="$SSH_STUB_HOME" exec /bin/bash -c "$1"
+SH
+chmod +x "$S/sshstub/ssh"
+export SSH_STUB_HOME="$S/remote-home"
+check "dry-run.*ssh fakehost" env PATH="$S/sshstub:$PATH" $H job run --shoal $SID --slug tl --name rmt --on fakehost --cwd "$S/remote-home/work" --dry-run -- true
+check "JOB-STARTED .* on fakehost" env PATH="$S/sshstub:$PATH" $H job run --shoal $SID --slug tl --name rmt --on fakehost --cwd "$S/remote-home/work" -- bash -c 'echo remote-ok; sleep 1'
+[ -f "$S/remote-home/shoal-jobs/shoal-$SID-tl-rmt.log" ] || fail "remote job log not under the remote home"
+check "result=success exit=0" env PATH="$S/sshstub:$PATH" $H job wait --shoal $SID --slug tl --name rmt --poll 1
+check "remote-ok" env PATH="$S/sshstub:$PATH" $H job wait --shoal $SID --slug tl --name rmt --poll 1
+check "on fakehost" env PATH="$S/sshstub:$PATH" $H job status --shoal $SID
+OUT=$(env PATH="$S/sshstub:$PATH" $H job run --shoal $SID --slug tl --name nobad --on fakehost --cwd "$S/remote-home/absent" -- true 2>&1 || true)
+grep -q "no such remote cwd\|remote start on fakehost failed" <<<"$OUT" || fail "missing remote cwd not refused :: $OUT"
+echo "remote job ok"
 fi
 # a job name resolves to its `shoal-` unit
 python3 - "$SHOALD" "$SID" <<'PY' || fail "job unit not resolved by name"

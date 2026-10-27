@@ -282,7 +282,12 @@ only when superseded, and an empty query is an error, never green.
 
 **Placement.** Anything whose loss costs work runs as a job unit (`job run ... -- <cmd>`) followed
 by a `job wait` background waiter, because a harness may reap background commands and a job unit
-survives that. Watchers stay small and idempotent: re-arming never duplicates a side effect. A
+survives that. With `--on user@host` the same unit runs on another host over ssh (the unit, log and rc
+file under `~/shoal-jobs` there; the local meta records the host and `wait`, `status` and `stop` follow it
+over ssh; the remote cwd, checkout, venv and any lease wrapping are the caller's to have in place: this
+moves compute, not state), which is how a serialized local resource (`cpu-heavy`, the one big GPU) is
+relieved by an idle second host without moving any role. Watchers stay small and idempotent: re-arming
+never duplicates a side effect. A
 `killed` notification is itself a wake: the role runs `next`, acts, re-arms and proves the new pid.
 
 ## 7. Health quorum (`health`)
