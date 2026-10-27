@@ -418,7 +418,9 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 `ui doctor`'s plugin line names the path the plugin is really linked from.
 
 **Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
-- **The chooser.** A full-screen start screen (the whole terminal window): it asks which host serves the view,
+- **The chooser.** A full-screen start screen (the whole terminal window, big fish around the centered logo and
+  menu; it re-centers on resize within a tick, asks an xterm-style terminal to grow once when below the menu's
+  minimum size, and shows a too-small guard until it fits): it asks which host serves the view,
   this host (`local`) first, then every host with an ssh route, each marked when its cached probe fails. Arrow
   keys or `j`/`k` move the selection (the last choice that worked starts highlighted,
   `$XDG_STATE_HOME/shoal/launch.last`; a host that just failed is never remembered), Enter chooses, a digit

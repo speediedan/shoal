@@ -108,6 +108,108 @@ _BANDS = ((("><(((*>", 0.03), ("o", 0.22), ("<><", 0.34), ("O", 0.58), ("><((*>"
           (("<*)))><", 0.08), (".", 0.27), ("><>", 0.40), ("o", 0.53), ("<><", 0.62), ("><((((*>", 0.80)))
 _MENU_W = 54
 _SIDE_GAP = 4
+# The big fish, after the outline style at inkmeascii.com/ascii-art/fish but moderate (maintainer,
+# 2026-10-27): right- and left-facing, about 24x7, plus a smaller one. Plain ASCII on purpose.
+_BIG_RIGHT = (
+    "      _..-''-.._        ",
+    "   .-'          '-.     ",
+    "  /    .-''-.    o \\    ",
+    " <    / .--.  \\     >   ",
+    "  \\   \\(____)      /    ",
+    "   '-.._\\____/ _..-'    ",
+    "        ~~~~~~          ",
+)
+_BIG_LEFT = (
+    "        _..-''-.._      ",
+    "     .-'          '-.   ",
+    "    / o    .-''-.    \\  ",
+    "   <     /  .--. \\    > ",
+    "    \\      (____)/   /  ",
+    "    '-.._  \\____/_..-'  ",
+    "          ~~~~~~        ",
+)
+_MED_RIGHT = (
+    "    _..--.._    ",
+    " .-'        '-. ",
+    "/   .-''-.  o \\ ",
+    "\\  (____)    >  ",
+    " '-..____..-'   ",
+)
+# (fish, row fraction, column fraction) anchors around the centered block, tried in order
+_ANCHORS = ((_BIG_LEFT, 0.02, 0.01), (_BIG_RIGHT, 0.03, 0.97), (_BIG_RIGHT, 0.40, 0.00),
+            (_BIG_LEFT, 0.42, 0.99), (_MED_RIGHT, 0.80, 0.04), (_BIG_LEFT, 0.78, 0.96),
+            (_MED_RIGHT, 0.62, 0.55), (_MED_RIGHT, 0.18, 0.62))
+_MIN_COLS = 48
+
+
+def _cells(rows: list[list[Seg]], width: int) -> list[list[list]]:
+    out = []
+    for segs in rows:
+        row: list[list] = []
+        for text, sgr in segs:
+            row += [[ch, sgr] for ch in text]
+        out.append((row + [[" ", ""]] * width)[:width])
+    return out
+
+
+def _scene(content: list[list[Seg]], width: int, lines: int, color: bool) -> str:
+    """The full-screen page: content centered both ways, big fish stamped into the space around
+    it (never over it), small bands only when a side has no room for a big fish. Returns exactly
+    `lines` painted rows when content fits, else the content rows (the caller guards small terms)."""
+    if lines < len(content):
+        return "\n".join(_paint(r, color) for r in content)
+    top = (lines - len(content)) // 2
+    canvas = [[[" ", ""] for _ in range(width)] for _ in range(lines)]
+    body = _cells(content, width)
+    # Per-row protected span (first to last ink, one cell of margin): text has internal spaces,
+    # so "stamp only on blanks" alone would let fish fragments land between words.
+    spans: dict[int, tuple[int, int]] = {}
+    for i, row in enumerate(body):
+        ink = [j for j, c in enumerate(row) if c[0] != " "]
+        if ink:
+            spans[top + i] = (max(0, ink[0] - 1), min(width, ink[-1] + 2))
+        canvas[top + i] = row
+    placed = []
+    for n, (fish, rf, cf) in enumerate(_ANCHORS):
+        fh, fw = len(fish), max(len(x) for x in fish)
+        fy, fx = int(rf * (lines - fh)), int(cf * (width - fw))
+        if fy < 0 or fx < 0 or fy + fh > lines or fx + fw > width:
+            continue
+        # Stamps skip each content row's protected span, so fish swim in the margins around
+        # the block and in its blank rows, never into its text.
+        if any(not (fy + fh <= py or fy >= py + ph or fx + fw <= px or fx >= px + pw)
+               for py, px, ph, pw in placed):
+            continue  # fish do not overlap each other either
+        ink = [(dy, dx) for dy, ln in enumerate(fish) for dx, ch in enumerate(ln) if ch != " "]
+        free = sum(1 for dy, dx in ink
+                   if canvas[fy + dy][fx + dx][0] == " "
+                   and not (spans.get(fy + dy) and spans[fy + dy][0] <= fx + dx < spans[fy + dy][1]))
+        if free < 0.6 * len(ink):
+            continue  # mostly hidden behind the block: a fragment reads as noise, skip the fish
+        placed.append((fy, fx, fh, fw))
+        sgr = _FISH_COLORS[n % len(_FISH_COLORS)]
+        for dy, ln in enumerate(fish):
+            span = spans.get(fy + dy)
+            for dx, ch in enumerate(ln):
+                x = fx + dx
+                if ch != " " and canvas[fy + dy][x][0] == " " and not (span and span[0] <= x < span[1]):
+                    canvas[fy + dy][x] = [ch, sgr]
+    rendered = []
+    for row in canvas:
+        segs: list[Seg] = []
+        for ch, sgr in row:
+            if segs and segs[-1][1] == sgr:
+                segs[-1] = (segs[-1][0] + ch, sgr)
+            else:
+                segs.append((ch, sgr))
+        rendered.append(_paint(segs, color))
+    return "\n".join(rendered)
+
+
+def min_size(n_rows: int) -> tuple[int, int]:
+    """The smallest (cols, lines) the centered start screen fits: block header width, and the
+    header, tagline, question, menu and notes stacked with a line of air around them."""
+    return _MIN_COLS, 15 + 2 * max(1, n_rows)
 
 Seg = tuple[str, str]  # (text, SGR; "" for none)
 
@@ -208,7 +310,7 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
         menu += [[(mark, "1;93"), (" ", ""), (f"{kind:<7} ", "1;7" if sel else ""),
                   (body, "7" if sel else "2"), (tail, "91"), (gap, "7" if sel else ""), (key, "1;91")], []]
     menu = menu[:-1]
-    sides = width >= menu_w + 2 * (len(_LEFT_FISH[0]) + _SIDE_GAP)
+    sides = not lines and width >= menu_w + 2 * (len(_LEFT_FISH[0]) + _SIDE_GAP)  # full screen: big fish instead
     left, right = (_art(_LEFT_FISH, n), _art(_RIGHT_FISH, n + 1)) if sides else ([], [])
     tall = max(len(menu), len(left))
     m0, a0 = (tall - len(menu)) // 2, (tall - len(left)) // 2
@@ -228,24 +330,32 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
                  "remote: that host's Herdr server, drawn here", keys):
         if len(note) <= width:
             out.append(_centered([(note, "2")], width))
+    if lines:
+        return _scene(out[1:], width, lines, color)  # full screen: big fish around the block, no edge bands
     bottom, _ = _band(_BANDS[1], width, n + 2)
-    if lines and lines > len(out) + 1:
-        pad = lines - len(out) - 1
-        out = out[:1] + [[]] * (pad // 2) + out[1:] + [[]] * (pad - pad // 2)
     out.append(bottom)
     return "\n".join(_paint(segs, color) for segs in out)
 
 
 def _next_key(getchar) -> str:
-    """One key from a char callable: 'up', 'down', 'enter', 'esc', or the character itself."""
+    """One key from a char callable: 'up', 'down', 'enter', 'esc', '' on a poll timeout
+    (the caller redraws, which is how a resize re-centers), or the character itself."""
     ch = getchar()
+    if ch == "":
+        return ""
     if ch in ("\r", "\n"):
         return "enter"
     if ch == "\x03":  # Ctrl-C in cbreak mode
         return "esc"
     if ch != "\x1b":
         return ch
-    if getchar() != "[":
+    for _ in range(5):  # the rest of an escape sequence must not be lost to a poll timeout
+        nxt = getchar()
+        if nxt:
+            break
+    else:
+        return "esc"
+    if nxt != "[":
         return "esc"
     return {"A": "up", "B": "down"}.get(getchar(), "esc")
 
@@ -259,6 +369,8 @@ def _choose_keys(cands: list[str], rows, selected: int, getchar, draw, line_read
             k = _next_key(getchar)
         except (EOFError, StopIteration):
             return None
+        if k == "":
+            continue  # poll timeout: redraw at the (possibly new) size
         if k in ("up", "k"):
             selected = max(1, selected - 1)
         elif k in ("down", "j"):
@@ -283,11 +395,29 @@ def _choose_interactive(cands: list[str], rows, selected: int) -> str | None:
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     out = sys.stdout
+    need = min_size(len(rows))
+    state: dict = {"drawn": None, "asked": False}
 
     def draw(sel: int) -> None:
         size = shutil.get_terminal_size((80, 24))
-        page = dashboard(rows, sel, cols=size.columns, lines=size.lines - 1)
-        out.write("\x1b[H" + page + "\x1b[J")
+        small = size.columns < need[0] or size.lines < need[1]
+        key = (sel, size.columns, size.lines, small)
+        if key == state["drawn"]:
+            return  # a poll tick with nothing changed: no repaint, no flicker
+        state["drawn"] = key
+        if small:
+            if not state["asked"]:
+                state["asked"] = True
+                # Ask an xterm-style terminal to grow to the minimum. Many ignore this; a
+                # terminal's window size is ultimately its owner's, so the guard page below
+                # is the floor, and the chooser resumes centered the moment it fits.
+                out.write(f"\x1b[8;{need[1]};{need[0]}t")
+            msg = f"window too small: the shoal menu needs at least {need[0]}x{need[1]} (now {size.columns}x{size.lines})"
+            page = "\n" * max(0, size.lines // 2 - 1) + " " * max(0, (size.columns - len(msg)) // 2) + msg
+            out.write("\x1b[H\x1b[2J" + page)
+        else:
+            page = dashboard(rows, sel, cols=size.columns, lines=size.lines - 1)
+            out.write("\x1b[H" + page + "\x1b[J")
         out.flush()
 
     def line_read() -> str:
@@ -302,12 +432,16 @@ def _choose_interactive(cands: list[str], rows, selected: int) -> str | None:
         finally:
             tty.setcbreak(fd)
 
+    def getchar() -> str:
+        import select
+        r, _, _ = select.select([fd], [], [], 0.1)  # poll, so a resize redraws within a tick
+        return os.read(fd, 1).decode(errors="ignore") if r else ""
+
     try:
         tty.setcbreak(fd)
         out.write("\x1b[?1049h\x1b[?25l")
         out.flush()
-        return _choose_keys(cands, rows, selected,
-                            lambda: sys.stdin.read(1), draw, line_read)
+        return _choose_keys(cands, rows, selected, getchar, draw, line_read)
     finally:
         out.write("\x1b[?25h\x1b[?1049l")
         out.flush()
