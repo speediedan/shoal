@@ -1086,8 +1086,19 @@ assert "\\/ o \\" in plain and "/ o \\/" in plain and "><" in plain, "side fish 
 assert all(len(l) <= 200 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
 full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=False, uni=True)
 fl = full.splitlines()
-assert len(fl) == 40 and "><" in fl[0] and "><" in fl[-1], "full screen: fish bands top and bottom, page fills the rows"
+assert full.count("\n") == 39, "full screen: the page fills the rows"
 assert max(len(l) for l in fl) > 96, "full screen: the page fills the columns too"
+assert full.count("_..-") >= 6, "big fish swim around the block"
+for cols, lines in ((100, 30), (80, 24), (60, 20)):
+    s = ui_launch.dashboard(rows, 1, cols=cols, lines=lines, color=False, uni=True)
+    for text in ("which host serves the view?", "here, this host", "other-host.invalid", "stigmergic"):
+        assert text in s, f"{cols}x{lines}: fish ate {text!r}"
+colored_full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=True, uni=True)
+assert len(set(re.findall(r"\x1b\[(\d+)m", colored_full)) & set(ui_launch._FISH_COLORS)) >= 3, "each big fish its own color"
+mw, mh = ui_launch.min_size(2)
+assert mw >= 48 and mh >= 18, "the centered menu has a stated minimum"
+feed = iter(["", "", "\x1b", "[", "B", "\r"])
+assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), lambda s: None, lambda: "") == "other", "poll timeouts redraw, never cancel"
 drawn = []
 feed = iter("\x1b[B\r")
 assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), drawn.append, lambda: "") == "other"
