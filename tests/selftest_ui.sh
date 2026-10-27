@@ -1082,7 +1082,21 @@ assert len({len(r) for r in ui_launch._HEADER}) == 1, "header rows share one wid
 plain = ui_launch.dashboard(rows, 2, cols=200, color=False, uni=True)
 assert "███████╗" in plain and "\x1b[" not in plain and "▸ remote  other-host.invalid  (unreachable now)" in plain, plain
 assert "\\/ o \\" in plain and "/ o \\/" in plain and "><" in plain, "side fish face the menu"
-assert all(len(l) <= 96 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
+assert all(len(l) <= 200 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
+full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=False, uni=True)
+fl = full.splitlines()
+assert len(fl) == 40 and "><" in fl[0] and "><" in fl[-1], "full screen: fish bands top and bottom, page fills the rows"
+assert max(len(l) for l in fl) > 96, "full screen: the page fills the columns too"
+drawn = []
+feed = iter("\x1b[B\r")
+assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), drawn.append, lambda: "") == "other"
+assert drawn == [1, 2], drawn
+feed = iter("jkq")
+assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), lambda s: None, lambda: "") is None
+feed = iter("t")
+assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), lambda s: None, lambda: "me@typed.example") == "me@typed.example"
+feed = iter("2")
+assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), lambda s: None, lambda: "") == "other"
 colored = ui_launch.dashboard(rows, 1, cols=100, color=True, uni=True)
 assert len(set(re.findall(r"\x1b\[([\d;]+)m", colored))) >= 8, "each fish its own color, the header shaded"
 narrow = ui_launch.dashboard(rows, 1, cols=40, color=False, uni=True)

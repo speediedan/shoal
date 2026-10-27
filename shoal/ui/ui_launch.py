@@ -164,18 +164,20 @@ def unicode_ok(stream=None) -> bool:
 
 
 def layout(cols: int | None = None) -> tuple[int, int]:
-    """(page width, menu width) for a terminal of cols columns (page capped at 96)."""
+    """(page width, menu width) for a terminal of cols columns: the page fills the window."""
     if cols is None:
         cols = shutil.get_terminal_size((80, 24)).columns
-    width = max(24, min(cols, 96))
+    width = max(24, cols)
     return width, min(_MENU_W, width - 2)
 
 
 def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None = None,
-              color: bool | None = None, uni: bool | None = None) -> str:
-    """The launch chooser's start screen for rows of (kind, where, unreachable), keys 1..n, the default marked.
-    Sized to the terminal: the block header from 48 columns (else a spaced title), side fish beside the menu from
-    80. Colors only on a terminal and never under NO_COLOR; box-drawing only where the stream can encode it.
+              color: bool | None = None, uni: bool | None = None, lines: int | None = None) -> str:
+    """The launch chooser's start screen for rows of (kind, where, unreachable), keys 1..n, row `default`
+    selected (marked, and reversed where color is on). Full screen: the page fills the terminal's columns,
+    and with `lines` its rows too (top fish band first, bottom band last, the rest centered between). The
+    block header from 48 columns (else a spaced title), side fish beside the menu from 80. Colors only on
+    a terminal and never under NO_COLOR; box-drawing only where the stream can encode it.
     Pure and deterministic so tests can pin the shape."""
     width, menu_w = layout(cols)
     if color is None:
@@ -202,8 +204,9 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
         room = max(4, menu_w - 2 - 8 - len(key) - 2)
         body = where[:max(1, room - len(tail))]
         gap = " " * max(1, menu_w - 2 - 8 - len(body) - len(tail) - len(key))
-        menu += [[(mark, "1;93"), (" ", ""), (f"{kind:<7} ", "1" if i == default else ""),
-                  (body, "" if i == default else "2"), (tail, "91"), (gap, ""), (key, "1;91")], []]
+        sel = i == default
+        menu += [[(mark, "1;93"), (" ", ""), (f"{kind:<7} ", "1;7" if sel else ""),
+                  (body, "7" if sel else "2"), (tail, "91"), (gap, "7" if sel else ""), (key, "1;91")], []]
     menu = menu[:-1]
     sides = width >= menu_w + 2 * (len(_LEFT_FISH[0]) + _SIDE_GAP)
     left, right = (_art(_LEFT_FISH, n), _art(_RIGHT_FISH, n + 1)) if sides else ([], [])
@@ -219,22 +222,112 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
             row = la + [gap] + row + [gap] + ra
         out.append(_centered(row, width))
     out.append([])
+    keys = f"↑↓ or j/k move{dot}enter chooses{dot}t types an ssh target{dot}q quits" if uni else \
+        f"up/down or j/k move{dot}enter chooses{dot}t types an ssh target{dot}q quits"
     for note in ("local: this host's Herdr server, other hosts' roles over ssh",
-                 "remote: that host's Herdr server, drawn here",
-                 f"enter takes the marked host{dot}q quits{dot}or type an ssh target"):
+                 "remote: that host's Herdr server, drawn here", keys):
         if len(note) <= width:
             out.append(_centered([(note, "2")], width))
     bottom, _ = _band(_BANDS[1], width, n + 2)
+    if lines and lines > len(out) + 1:
+        pad = lines - len(out) - 1
+        out = out[:1] + [[]] * (pad // 2) + out[1:] + [[]] * (pad - pad // 2)
     out.append(bottom)
     return "\n".join(_paint(segs, color) for segs in out)
 
 
+def _next_key(getchar) -> str:
+    """One key from a char callable: 'up', 'down', 'enter', 'esc', or the character itself."""
+    ch = getchar()
+    if ch in ("\r", "\n"):
+        return "enter"
+    if ch == "\x03":  # Ctrl-C in cbreak mode
+        return "esc"
+    if ch != "\x1b":
+        return ch
+    if getchar() != "[":
+        return "esc"
+    return {"A": "up", "B": "down"}.get(getchar(), "esc")
+
+
+def _choose_keys(cands: list[str], rows, selected: int, getchar, draw, line_read) -> str | None:
+    """The selection loop over an injected key source (selected is 1-based, the default starts highlighted).
+    draw(selected) paints; line_read() collects a typed ssh target after `t`. Pure of terminal handling."""
+    while True:
+        draw(selected)
+        try:
+            k = _next_key(getchar)
+        except (EOFError, StopIteration):
+            return None
+        if k in ("up", "k"):
+            selected = max(1, selected - 1)
+        elif k in ("down", "j"):
+            selected = min(len(cands), selected + 1)
+        elif k == "enter":
+            return cands[selected - 1]
+        elif k in ("esc", "q", "Q"):
+            return None
+        elif k in ("t", "/"):
+            typed = line_read()
+            if typed:
+                return typed
+        elif k.isdigit() and 1 <= int(k) <= len(cands):
+            return cands[int(k) - 1]
+
+
+def _choose_interactive(cands: list[str], rows, selected: int) -> str | None:
+    """Full-screen selection on the alternate screen (stdlib termios only). Raises on any terminal
+    trouble; the caller restores and falls back to the numbered prompt."""
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    out = sys.stdout
+
+    def draw(sel: int) -> None:
+        size = shutil.get_terminal_size((80, 24))
+        page = dashboard(rows, sel, cols=size.columns, lines=size.lines - 1)
+        out.write("\x1b[H" + page + "\x1b[J")
+        out.flush()
+
+    def line_read() -> str:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        try:
+            size = shutil.get_terminal_size((80, 24))
+            out.write(f"\x1b[{size.lines};1H\x1b[2Kssh target: ")
+            out.flush()
+            return input().strip()
+        except EOFError:
+            return ""
+        finally:
+            tty.setcbreak(fd)
+
+    try:
+        tty.setcbreak(fd)
+        out.write("\x1b[?1049h\x1b[?25l")
+        out.flush()
+        return _choose_keys(cands, rows, selected,
+                            lambda: sys.stdin.read(1), draw, line_read)
+    finally:
+        out.write("\x1b[?25h\x1b[?1049l")
+        out.flush()
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
 def choose(read=input) -> str | None:
-    """The numbered chooser; None when cancelled (EOF or q)."""
+    """The full-screen chooser: arrow keys or j/k move (the last choice starts highlighted), enter
+    chooses, t types an ssh target, q quits. Off a terminal (or if the screen fails), the numbered
+    prompt. None when cancelled."""
     cands = candidates()
     last = last_choice()
     default = cands.index(last) + 1 if last in cands else 1
-    print(dashboard([entry(c) for c in cands], default))
+    rows = [entry(c) for c in cands]
+    if read is input and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            return _choose_interactive(cands, rows, default)
+        except Exception:  # noqa: BLE001 - a chooser must never strand the launcher
+            pass
+    print(dashboard(rows, default))
     width, menu_w = layout()
     try:
         pick = read(" " * max(0, (width - menu_w) // 2) + f"host [{default}]: ").strip()
