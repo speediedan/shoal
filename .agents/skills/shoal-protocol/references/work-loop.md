@@ -1,0 +1,98 @@
+# The work loop
+
+## At every boundary
+
+1. **READ** `shoal next --shoal <id> --slug <you>`. Run it unpiped: MAIL and banners print first,
+   and this call marks your mail read, so a `next` piped through `head` or `grep` loses messages
+   unseen. Use `--peek` only when reading on someone else's behalf.
+2. **WRITE ONE** `shoal queue --shoal <id> --slug <you> ...`:
+   - `--active <item> --next <a,b,c>`: claims the active item and declares your queue version;
+   - `--done <item> --url <evidence>`: records completion with the evidence;
+   - `--pass <item>:<class>[:suggest=<role>]`: declines an item at the boundary;
+   - `--wait <sub> --holder <who> --target <kind:ref> [--rescan-min N] [--blocked-on <role>:<item>]`;
+   - `--idle`: nothing actionable (an empty queue, or every next item blocked);
+   - `--blocked ITEM=<blocker>` (repeatable; `ITEM=` clears): why a next item cannot start. The
+     blocker is `<role>:<repo#n>` (that role sees `BLOCKING`), `ask[:<n>]`, `user`,
+     `upstream:<target>`, `lease:<key>` or `hold:<why>`. Recorded blockers carry forward while the
+     item stays in `next`. Where the group verifies blockers, prefer a checkable one (a peer item,
+     an upstream target, a lease): it clears itself. An `ask` or `user` blocker needs the ask
+     recorded (`--ask`). A `hold` expires and must be re-verified; re-recording it is that check, so
+     re-record only after re-checking what it names;
+   - `--ask "<question>"`, `--answered <n>`, `--drop-ask <n> --drop-reason <why>`: see
+     `asks-and-offline.md`.
+3. Keep working the active item in the same turn.
+
+## What `next` can tell you, and what to do
+
+| line | action |
+| --- | --- |
+| `MAIL` | read it; act at this boundary (a maintainer message is printed in full) |
+| `FREEZE ACTIVE` | start no job units, local suites or gated builds; checkpoint, persist your plan_state, push, and sleep |
+| `FREEZE LIFTED` | the freeze is over: resume normal work, including anything a freeze message told you to hold |
+| `NEXT BLOCKED` | a next item's recorded blocker: re-check it at each boundary and clear it (`--blocked ITEM=`) once gone |
+| `BLOCKER STALE` | that blocker has cleared or expired and no longer lets you idle: start the item, or re-check and record what blocks it now |
+| `BOARD` | an eligible candidate: when your next items are all blocked, take one rather than idling behind them, or pass it with a reason |
+| `USER OFFLINE` | never wait on the maintainer; record asks with `queue --ask`; stack work; take unblocked items |
+| `ASKS TO RAISE` | the maintainer is online: follow `asks-and-offline.md` now |
+| `DROPPED ASKS` | disclose each to the maintainer in your next question set |
+| `OFFER` | an item offered to you, with its priority and note |
+| `TAKEN` / `GONE` | someone else claimed or finished an item in your queue: drop it (or `lost-race` on your active item) |
+| `HELD-UNSCHEDULED` | schedule the claim, or release it with `--kind handoff` |
+| `BLOCKING` | another role waits on your item: schedule it or pass it with a reason |
+| `RESCAN EXPIRED` | your wait is unproven: re-verify it, re-raise the ask, or pivot to the next unblocked item |
+| `AUX` | you are the residual lane: stay out of the named lanes' work |
+| `BOARD` | ranked candidates when your queue is short (score, why, excerpt) |
+| `WATCH ... NOT RUNNING` | re-arm your watcher after this boundary |
+
+## Sleep postures
+
+Sleep only on a real wait or an empty queue:
+- **Waiting:** arm the waiter first, then `queue --wait <sub> --holder <who> --target <kind:ref>`.
+  The substates are `local-ci`, `remote-ci`, `session-blocked`, `upstream`, `user-auth`,
+  `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
+  (`job:<name>`, `lease:<key>`, `gh-run:<owner/repo>:<id>`, `gh-pr:<owner/repo>#<n>`,
+  `gh-issue:<owner/repo>#<n>`, `az-build:<id>`). A malformed target is refused, and so is one that
+  is already resolved (a merged PR, a finished run): there is nothing left to wait on.
+- **Which substate:** `session-blocked` is for another role in this shoal (`--blocked-on
+  <role>:<item>`, never yourself). Your item waiting on something outside the shoal, such as an
+  upstream issue or release, is `upstream` with a `gh-issue:` or `gh-pr:` target.
+- **A wait covers the active item only.** If a next item is workable, work it rather than parking
+  it behind the wait. A wait other than `local-ci` with a next item that has no recorded blocker is
+  refused at the write, exactly like idle (`features.waitgate`): pop the item, or record its blocker.
+- **Idle:** `queue --idle`, only when nothing is actionable: an empty queue, or every next item
+  with a recorded blocker (`--blocked`). Otherwise the write is refused. A blocker that later goes
+  stale shows in `next` as `BLOCKER STALE` and raises the health condition `parked-work`.
+  A GPU or cpu-heavy lease held by someone else is a wait (`--wait local-ci --target lease:<key>`),
+  not a reason to idle.
+
+**Every wait expires.** Rescans are capped (4 h for maintainer and peer waits, 3 h for CI, 12 h
+for `upstream`). A `session-blocked` wait names its blocker with `--blocked-on <role>:<item>`.
+`next` prints `WAIT TARGET RESOLVED` or `WAIT TARGET UNVERIFIABLE` when the target no longer
+holds the wait: act on it the same turn. A `user-*` wait exists
+only together with a raised, recorded ask.
+
+## Bounded context
+
+Every wake re-reads your whole context, so a long-lived session gets more expensive to wake. When
+`next` or a wake prints `CONTEXT <n>k (limit <m>k)`, hand over at your next quiet boundary (nothing
+mid-flight): refresh your start doc so a fresh session can continue from it alone (current state,
+decisions taken, next steps), update its `Last updated: <UTC>` line, then end the turn with
+`queue --idle --restart-ready` (or your wait plus `--restart-ready`). The flag is refused for a doc not
+refreshed since the advisory or missing a required section; `shoal doc-check <doc>` says which (the
+contract: shoal `docs/start-doc.md`). The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
+yourself, and never mark `--restart-ready` with an item active.
+
+## Wakes
+
+You are woken by new work while you are idle, a change to your active item, a wait you armed, or a
+health wake. Every wake text starts with the offline banner when the maintainer is away. Handle a
+watcher notification with status `killed` exactly like a wake: `next`, act, re-arm, and prove the new
+pid in the same turn (two separate commands, `cat` the sidecar then `ps -p <that number>`, never
+`$(...)`; see `watchers-and-waits.md`).
+
+## Work that must survive
+
+Long local work (test suites, renders) never runs as a harness background command, because a
+harness can reap those. Run it as a job unit (`shoal job run --shoal <id> --slug <you> --name <n> --
+<cmd>`) and wait on it with a background `shoal job wait`. Work needing a shared resource runs under
+the lease provider (`providers.md`).

@@ -18,6 +18,9 @@ shoal/            the package; cli.py is the entry point (shoal.cli:main)
 tests/            the selftest suites and the hermetic wrapper
 docs/             architecture, operator cheat-sheet, providers, decisions, guards, public gate
 plugins/          agent skills (shoal-protocol for role sessions, shoal-operator for operators)
+.agents/skills/   vendored copies of the plugin skills, for harnesses that scan a repo's
+                  `.agents/skills` (Codex). Edit under `plugins/`, then copy over; a selftest
+                  checks the two trees match.
 config/           host.example.toml; host.toml is local and gitignored
 ```
 
