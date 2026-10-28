@@ -250,10 +250,17 @@ def cmd_msg(a) -> int:
     if spec is not None and a.to not in ("*", "user") and not to_ext and spec.role(a.to) is None:
         print(f"ERROR: unknown target {a.to!r} (roles: {[r.slug for r in spec.roles]}, or * / user)")
         return 1
+    if a.kind == "request":
+        target = spec.role(a.to) if spec is not None else None
+        if target is None or not target.session or by == a.to:
+            print("ERROR: a request needs one live role as its recipient, distinct from its sender; "
+                  "use queue --ask for the maintainer, or an offer/handoff for project work")
+            return 1
     if a.dry_run:
         print(f"[dry-run] msg {by}->{a.to} [{a.kind}] {a.text[:80]}")
         return 0
-    ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re, ack=(True if a.ack else None),
+    ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re,
+                    ack=(True if a.ack or a.kind == "request" else None),
                     wake=(True if getattr(a, "wake", False) else None))
     print(f"msg {by}->{a.to} [{a.kind}] [{ev['id']}]")
     target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") and not to_ext else None
@@ -504,7 +511,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--text", required=True)
     p.add_argument("--wake", action="store_true",
                    help="wake the target now (honoured only when sent by user; msgs are otherwise mail)")
-    p.add_argument("--kind", default="info")
+    p.add_argument("--kind", default="info", help="request: operational response tracked by the health ladder; info: plain mail")
     p.add_argument("--re", default="", help="event id this answers (acks)")
     p.add_argument("--ack", action="store_true", help="ask the target to ack")
     p.set_defaults(func=cmd_msg)

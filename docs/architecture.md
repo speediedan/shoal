@@ -302,7 +302,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 
 | condition | evidence | ladder (minutes) |
 | --- | --- | --- |
-| `unacked-work` | an offer or wake request to an idle role, or a `--now` offer, newer than its last queue version | wake 10, wake 30, page 60 |
+| `unacked-work` | an unacknowledged operational request in any posture, an offer to an idle role, a `--now` offer, or an outstanding wake request | wake 10, wake 30, page 60 |
 | `wait-resolved` | a checkable wait target is no longer pending | wake 15, page 60 |
 | `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
@@ -434,6 +434,20 @@ maintainer's phone through the ntfy app. Pages are deferred while the maintainer
 
 The lanes and pipeline sensors route through the same adapters: pipeline starvation wakes the
 roles waiting on remote CI, and a harness server respawn wakes every opencode role.
+
+### Bounded operational requests
+
+`msg --kind request --to <role>` records an acknowledgment-required operational request to one
+live role. It does not assign project work or grant authority. Plain mail stays non-waking. The
+existing `unacked-work` health ladder tracks a request even when its recipient waits on a long CI
+job, with the same bounded wake/page policy as offers. The recipient answers with a message linked
+by `--re <request-id>` before returning to a long wait, including when the action needs its own
+maintainer grant. Only a response from that recipient clears it: a mail cursor, queue write or
+third-party response cannot. No new timer, health condition or persistent flag is introduced. A matching `job wait` monitor
+also yields at the role's declared rescan deadline, with exit 75 and `RESCAN-DUE`; the job unit
+continues. This frees the session to read retained wakes, revalidate the wait and re-arm the monitor,
+instead of keeping a background task in flight indefinitely. Local and SSH job monitors share this
+rule. A completed job still reports its actual verdict before the rescan check.
 
 ## 8. Host configuration and providers
 

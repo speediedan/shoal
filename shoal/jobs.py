@@ -305,6 +305,26 @@ def _meta_for(a, unit: str) -> dict:
         return {}
 
 
+def yield_for_rescan(a, unit: str) -> bool:
+    """A monitor must not keep its session uninterruptible past that session's rescan promise."""
+    if not a.slug:
+        return False
+    from state import wait_status
+    status, proof = wait_status(a.sid, a.slug)
+    if status != "stale" or not proof or proof.get("sub") not in ("local-ci", "remote-ci"):
+        return False
+    kind, _, ref = str(proof.get("target") or "").partition(":")
+    if kind != "job":
+        return False
+    expected = ref.removesuffix(".service") if ref.startswith("shoal-") else find_unit(a.sid, a.slug, ref)
+    if expected != unit.removesuffix(".service"):
+        return False
+    text = f"{unit} RESCAN-DUE: monitor yielded; job unit was not stopped. Revalidate and write a fresh queue/wait."
+    print("JOB-WAIT-VERDICT " + text)
+    _emit(a.sid, a.slug, "job-wait-yield", text)
+    return True
+
+
 def _wait_remote(a, unit: str, meta: dict) -> int:
     host = meta["host"]
     rp = {"log": meta.get("log") or remote_paths(unit)["log"]}
@@ -340,6 +360,8 @@ def _wait_remote(a, unit: str, meta: dict) -> int:
         if deadline and time.time() > deadline:
             print(f"JOB-VERDICT {unit} TIMEOUT after {a.timeout_min:g} min (job still running; re-arm to keep following)")
             return 5
+        if yield_for_rescan(a, unit):
+            return 75
         time.sleep(a.poll)
 
 
@@ -380,6 +402,8 @@ def cmd_wait(a) -> int:
         if deadline and time.time() > deadline:
             print(f"JOB-VERDICT {unit} TIMEOUT after {a.timeout_min:g} min (job still running; re-arm to keep following)")
             return 5
+        if yield_for_rescan(a, unit):
+            return 75
         time.sleep(a.poll)
 
 

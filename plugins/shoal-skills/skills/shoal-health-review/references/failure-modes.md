@@ -207,6 +207,29 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   - Selftest H4 section 32, with negative controls.
 - **Status:** fixed.
 
+## FM-19: an operational request waits behind an unrelated CI wait
+- **Signature:** resources are free, a lane waits for a mode-owner decision, and that owner's plain
+  peer mail remains unread while it waits for a future CI run. Watchers are live; no lease cycle exists.
+- **Cause:** informational mail has no wake semantics, so the administrative dependency is unrepresented.
+- **Fix:** operational requests use `msg --kind request`, automatically requesting acknowledgment.
+  The existing `unacked-work` ladder tracks them regardless of recipient posture. A linked response
+  from the actual recipient clears them; a queue write or unrelated reply does not.
+- **Metric:** `unacked-work` health-condition intervals keyed `request:<event-id>` measure outstanding
+  age, request-to-response latency and escalation cost. Compare those with idle host-resource intervals.
+- **Status:** guarded for typed requests; historical plain mail still requires operator review.
+
+## FM-20: a job monitor outlives its session's rescan promise
+- **Signature:** a session is between turns, but one background `shoal job wait` stays in flight
+  beyond `rescan_utc`; health wakes are retained and repeatedly deferred instead of being read.
+- **Cause:** the job's lifetime and its observer's lifetime were coupled, though only the observer
+  needed to yield for the role to revalidate its wait and answer operational requests.
+- **Fix:** local and SSH `job wait` monitors yield at a stale matching job wait proof, returning
+  exit 75 with `RESCAN-DUE`. The productive job unit continues. The role reads `next`, revalidates,
+  writes its queue/wait and re-arms as needed. A completed unit's actual verdict takes precedence.
+- **Metric:** `watch_event.kind=job-wait-yield`, compared with expired-rescan duration and deferred
+  wake latency. A yield is not a failed computation or a resource release.
+- **Status:** guarded for new monitors; an already-running old monitor needs a scoped operator action.
+
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
 the unit ended. The durations came from runners yielding to CI and from lease queueing. Check the

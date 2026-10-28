@@ -665,6 +665,10 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         sub = st.get("sub", "")
         between = session_between_turns(role, cbusy, spec.dir)
         # unacked work
+        for request in view.unacked_to(slug):
+            out.append({"slug": slug, "condition": "unacked-work", "key": f"request:{request['id']}",
+                        "since": request["ts"], "detail": f"operational request {request['id']} from "
+                        f"{request['by']} needs a linked acknowledgment (msg --re {request['id']})"})
         for o in view.queue(slug):
             if o["ts"] < boundary:  # strictly older: a same-second offer cannot have been seen
                 continue
