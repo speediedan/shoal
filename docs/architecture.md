@@ -652,6 +652,16 @@ and the contract are in [`ui.md`](ui.md).
     confirm, and log them to `ui-actions.jsonl`.
   - The adapter never calls `pane.send_*`, `agent.prompt` or `pane.close`, and the UI selftest
     enforces this.
+- **Standalone picker** (`Backend.sessions`, `shoal/ui/ui_sessions.py`, `ui_herdr.cmd_pick`): the
+  menu enumerates the backend registry and uses one normalized discovery hook per ecosystem, so a
+  future ACP backend needs no menu branch. Unsupported discovery contributes no candidates. It lists Claude background
+  sessions, OpenChamber sessions, recent interactive Codex threads through `thread/list`, and Muse
+  root sessions through `session/list`. Short-lived local stdio servers are bounded and reaped;
+  listing never starts, resumes or locks a session or requests inference. Role/internal sessions
+  and harness subagents are excluded. Interactive picks retain stable job ids and available model
+  metadata. Palette and plugin popups pass `--pause`, keeping empty-list and server errors visible
+  until dismissed; intentional cancellation closes normally. Explicit `--harness`/`--id` remains
+  available for sessions outside the discovered lists.
 - **Launch chooser** (`shoal/ui/ui_launch.py`): a compact composition of the SHOAL logo and three
   colored ASCII fish sits above the host menu. The complete composition stays centered when the
   window resizes; fish positions follow the logo, rather than the window edges. Kitty graphics accepts

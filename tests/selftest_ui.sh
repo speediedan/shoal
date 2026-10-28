@@ -922,6 +922,117 @@ assert ui_herdr.standalone_state({"harness": "muse", "session": "mu-absent"}, ro
 print("standalone state ok")
 PY2
 
+echo "== 3b standalone picker: local Codex/Muse lists, metadata, errors and popup lifetime"
+python3 - "$SHOALD" "$S" <<'PY2' || fail "standalone picker"
+import contextlib, io, json, os, pathlib, subprocess, sys, time, types
+from unittest.mock import patch
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import backends, ui_herdr, ui_sessions, ui_status, ui_term, config
+scratch = pathlib.Path(sys.argv[2])
+server = scratch / "session-list-server"
+log = scratch / "session-list-methods"
+server.write_text("#!" + sys.executable + "\n" + '''import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request['method']
+    with open(os.environ['PICKER_TEST_LOG'], 'a') as f: f.write(method + '\\n')
+    assert method in ('initialize', 'initialized', 'thread/list', 'session/list'), method
+    if 'id' not in request: continue
+    if method == 'initialize':
+        assert request['params']['clientInfo']['name'] == 'shoal'
+        result = {}
+    else:
+        if method == 'thread/list':
+            assert not os.environ.get('OPENAI_API_KEY')
+            result = {'data': [{'id': 'cd-seat', 'name': 'codex-seat', 'cwd': '/tmp/example'},
+                               {'id': 'role-id', 'name': 'worker-r2', 'cwd': '/tmp/example'}]}
+        else:
+            assert not os.environ.get('META_API_KEY')
+            result = {'sessions': [{'sessionId': 'mu-seat', 'name': 'muse-seat', 'kind': 'root',
+                                   'workspaceRoot': '/tmp/example', 'modelId': 'example-model'},
+                                  {'sessionId': 'child', 'name': 'child', 'kind': 'subagent'}]}
+    print(json.dumps({'method': 'notice', 'params': {}}), flush=True)
+    print(json.dumps({'id': request['id'], 'result': result}), flush=True)
+''')
+server.chmod(0o755)
+env = {'SHOAL_CODEX_BIN': str(server), 'SHOAL_MUSE_BIN': str(server), 'PICKER_TEST_LOG': str(log),
+       'OPENAI_API_KEY': 'synthetic-token', 'META_API_KEY': 'synthetic-token'}
+# Each harness inherits its normal subscription environment with its own inference key removed.
+with patch.dict(os.environ, env):
+    codex = ui_sessions.stored_sessions('codex')
+    muse = ui_sessions.stored_sessions('muse')
+assert codex[0]['session'] == 'cd-seat' and codex[0]['label'] == 'codex-seat'
+assert [e['session'] for e in muse] == ['mu-seat'] and muse[0]['model'] == 'example-model'
+assert set(log.read_text().splitlines()) == {'initialize', 'initialized', 'thread/list', 'session/list'}
+# A failed provider cannot hide another provider's sessions.
+claude = {'sessionId':'cl-seat', 'pid':123, 'id':'job-123', 'name':'claude-seat', 'state':'working'}
+with patch.object(backends.ClaudeBackend, '_agents', return_value=[claude]), \
+     patch.object(ui_herdr, 'role_slugs', return_value={'worker'}), \
+     patch.object(ui_herdr.subprocess, 'run', return_value=types.SimpleNamespace(stdout='{}', returncode=0)), \
+     patch.object(ui_sessions, 'stored_sessions', side_effect=lambda h: codex if h == 'codex' else muse):
+    cands = ui_herdr.candidates_standalone({'role-id'})
+assert [e['harness'] for e in cands] == ['claude', 'codex', 'muse'], cands
+# A registered backend participates without a menu branch or a particular transport.
+class ExampleACP(backends.Backend):
+    ecosystem = 'example-acp'
+    def sessions(self):
+        return [{'session':'acp-seat', 'label':'ACP seat', 'state':'saved', 'cwd':'/tmp/example'}]
+with patch.dict(backends.BACKENDS, {'example-acp':ExampleACP}), \
+     patch.object(backends.ClaudeBackend, '_agents', return_value=[]), \
+     patch.object(ui_herdr, 'role_slugs', return_value=set()), \
+     patch.object(ui_herdr.subprocess, 'run', return_value=types.SimpleNamespace(stdout='{}', returncode=0)), \
+     patch.object(ui_sessions, 'stored_sessions', return_value=[]):
+    assert ui_herdr.candidates_standalone(set())[0]['harness'] == 'example-acp'
+assert backends.Backend().sessions() == [], 'unsupported discovery does not break other backends'
+
+with patch.object(backends.ClaudeBackend, '_agents', return_value=[]), \
+     patch.object(ui_herdr, 'role_slugs', return_value=set()), \
+     patch.object(ui_herdr.subprocess, 'run', return_value=types.SimpleNamespace(stdout='{}', returncode=0)), \
+     patch.object(ui_sessions, 'stored_sessions', side_effect=[codex, RuntimeError('listing failed')]):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf): available = ui_herdr.candidates_standalone({'role-id'})
+    assert available[0]['harness'] == 'codex' and 'muse sessions unavailable' in buf.getvalue()
+
+ns = types.SimpleNamespace(harness='', session_id='', label='', save=True, session='', pause=True)
+opened = []
+with patch.object(ui_herdr, 'candidates_standalone', return_value=cands), \
+     patch.object(ui_herdr, '_choose', return_value=0), \
+     patch.object(ui_herdr, 'load_standalone', return_value=[]), \
+     patch.object(ui_herdr, 'save_standalone'), patch.object(ui_herdr, 'Herdr'), \
+     patch.object(ui_herdr, 'open_standalone', side_effect=lambda h,e,**kw: opened.append(e) or 'opened'), \
+     patch.object(ui_term, 'pause') as pause:
+    assert ui_herdr.cmd_pick(ns) == 0
+    assert opened[0]['job'] == 'job-123', 'interactive picks preserve the stable Claude job id'
+    pause.assert_not_called()
+    with patch.object(ui_herdr, '_choose', return_value=2):
+        assert ui_herdr.cmd_pick(ns) == 0 and opened[-1]['model'] == 'example-model'
+    with patch.object(ui_herdr, '_choose', return_value=None):
+        assert ui_herdr.cmd_pick(ns) == 0
+    pause.assert_not_called()
+    with patch.object(ui_herdr, 'open_standalone', side_effect=ui_herdr.HerdrError('server unavailable')):
+        assert ui_herdr.cmd_pick(ns) == 1
+    pause.assert_called_once()
+with patch.object(ui_herdr, 'candidates_standalone', return_value=[]), patch.object(ui_term, 'pause') as pause:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf): assert ui_herdr.cmd_pick(ns) == 1
+    assert 'Codex, Muse' in buf.getvalue() and '--harness HARNESS --id ID' in buf.getvalue()
+    pause.assert_called_once()
+with patch.object(ui_herdr, 'focused_role', return_value=('', '')), \
+     patch.object(ui_herdr, '_choose', return_value=next(i for i,x in enumerate(ui_herdr.MENU) if x[0]=='pick')), \
+     patch.object(ui_herdr.subprocess, 'run', return_value=types.SimpleNamespace(returncode=0)) as run:
+    assert ui_herdr.cmd_menu(types.SimpleNamespace()) == 0
+    assert run.call_args.args[0][-3:] == ['ui', 'pick', '--pause'], 'option 12 keeps failures visible'
+start = time.monotonic()
+try:
+    ui_sessions._list([sys.executable, '-c', 'import time; time.sleep(60)'], config.tool_env(), 'thread/list', {}, timeout=0.05)
+except TimeoutError:
+    pass
+else:
+    raise AssertionError('listing timeout must be bounded')
+assert time.monotonic()-start < 4, 'timed-out listing server is reaped promptly'
+print('standalone picker ok')
+PY2
+
 echo "== 4 herdr config: managed block merges idempotently and refuses duplicate tables"
 CFG="$S/herdr-config.toml"
 printf '[theme]\nname = "nord"\n' > "$CFG"

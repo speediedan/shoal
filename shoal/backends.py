@@ -58,6 +58,12 @@ class UnsupportedError(RuntimeError):
 class Backend:
     ecosystem = "?"
 
+    def sessions(self) -> list[dict]:
+        """Discover pickable sessions without a turn or attach. Rows carry session, label,
+        cwd and state, plus optional job/model/effort. Unsupported discovery returns no rows.
+        A future ACP backend can implement this hook without changing the picker menu."""
+        return []
+
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
                effort: str = "") -> str:
@@ -150,6 +156,16 @@ def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 class OpenChamberBackend(Backend):
     ecosystem = "opencode"
+
+    def sessions(self) -> list[dict]:
+        import json
+        r = _run("openchamber", "session", "list", "--limit", "15", "--with-status", "--json", timeout=30)
+        if r.returncode:
+            raise RuntimeError(f"session list exited {r.returncode}")
+        return [{"session": s["id"], "label": str(s.get("title") or s["id"][:12])[:40],
+                 "state": (s.get("status") or {}).get("type"),
+                 "cwd": (s.get("location") or {}).get("directory")}
+                for s in json.loads(r.stdout or "{}").get("sessions", []) if s.get("id")]
 
     def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
         """opencode: a direct send to the session, whether or not its watcher is alive."""
@@ -450,6 +466,12 @@ class ClaudeBackend(Backend):
     permission mode, which cross-session delivery requires.
     """
     ecosystem = "claude"
+
+    def sessions(self) -> list[dict]:
+        return [{"session": str(e["sessionId"]), "job": str(e.get("id") or ""),
+                 "label": str(e.get("name") or e["sessionId"][:8])[:40],
+                 "state": e.get("state"), "cwd": e.get("cwd")}
+                for e in self._agents() if e.get("sessionId") and e.get("pid")]
 
     def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
         """Claude: a headless send would fork the session, so a wake goes through the role's own
@@ -791,6 +813,10 @@ class CodexBackend(Backend):
     that died is simply followed by the next wake, so revive is the ordinary wake path."""
     ecosystem = "codex"
 
+    def sessions(self) -> list[dict]:
+        import ui_sessions
+        return ui_sessions.stored_sessions(self.ecosystem)
+
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
                effort: str = "") -> str:
@@ -851,6 +877,10 @@ class MuseBackend(Backend):
     simply followed by the next wake, so revive is the ordinary wake path."""
     ecosystem = "muse"
 
+    def sessions(self) -> list[dict]:
+        import ui_sessions
+        return ui_sessions.stored_sessions(self.ecosystem)
+
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
                effort: str = "") -> str:
@@ -907,6 +937,12 @@ class MuseBackend(Backend):
         return muse.quota_hint(session_id)
 
 
+BACKENDS = {"claude": ClaudeBackend, "opencode": OpenChamberBackend, "codex": CodexBackend, "muse": MuseBackend}
+
+
+def ecosystems() -> tuple[str, ...]:
+    return tuple(BACKENDS)
+
+
 def get(ecosystem: str) -> Backend:
-    return {"opencode": OpenChamberBackend(), "claude": ClaudeBackend(), "muse": MuseBackend(),
-            "codex": CodexBackend()}[ecosystem]
+    return BACKENDS[ecosystem]()

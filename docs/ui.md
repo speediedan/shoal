@@ -321,8 +321,17 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   that wakes every role.
 
 **Standalone sessions** (`shoal ui pick [--save]`, `shoal ui forget <id>`) list Claude background
-sessions and OpenChamber sessions that are not shoal roles, and open one in its own workspace. The
-picker leaves out shoal's own sessions: matcher runs (`shoal-matcher-*`) and every incarnation of a
+sessions, OpenChamber sessions, recent interactive Codex threads, and stored Muse root sessions.
+Discovery uses each registered backend's `sessions()` hook. A future ACP backend can supply that
+hook without changing the picker; full ACP discovery conformance is deferred. Codex (`thread/list`)
+and Muse (`session/list`) are queried through bounded local stdio servers:
+listing does not resume a session, acquire its lock or request a model turn. Codex lists interactive
+sources (`cli`, `vscode`); `--harness HARNESS --id ID` also opens a known session outside those lists.
+A missing harness does not block the others; listing errors are reported. Palette option 12 and the
+plugin picker keep empty-list and server errors visible until dismissed. Escape or empty input
+cancels normally. Picking opens a card in its own workspace; the harness attaches only on Enter.
+The picker preserves Claude job ids and available model metadata and leaves out harness subagents
+and shoal's own named sessions: matcher runs (`shoal-matcher-*`) and every incarnation of a
 role (`<slug>-r<N>`, current or retired). Saved ones (`~/.config/shoal/ui-standalone.json`) come back on `ui open`, except one that was closed in the viewer:
 once a saved session has had a workspace, a later `ui open` that finds it gone (while Herdr still holds other
 labelled panes, so not a fresh server) marks it `dismissed` and leaves it closed across viewer restarts.
