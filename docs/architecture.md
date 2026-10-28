@@ -665,6 +665,30 @@ and the contract are in [`ui.md`](ui.md).
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 
+### Host resource observations and placement pilot
+
+`shoal resources sample|watch|report|balance|install` (`shoal/resource_usage.py`) maintains one
+host stream outside git, under `<data_root>/_resources/<host>/`. The stdlib sampler can run as a
+standalone file on compute-only hosts. It reads NVIDIA CSV or AMD DRM sysfs, host memory and the
+configured lease-provider contract. GPU UUIDs join device observations to leases; exclusive global
+GPU holds reserve all devices, shared global gates defer ownership to individual device claims,
+and cpu-heavy is a separate host CPU/memory isolation scope. Raw command lines are not collected.
+
+Daily JSONL contains resource samples and explicitly observed acquisition/release edges. Start
+metadata is retained; release is bounded between successful observations. Failed probes cannot
+close a lease. Short leases between samples can be missed. Reports time-weight per-device GPU
+utilization and active fraction at a stated threshold, show memory pressure, cap interpolation gaps,
+and expose coverage and open/censored intervals. They measure reservation overlap, not proven
+process ownership. Missing metrics are null, never idle zeroes. Each observed episode has a distinct
+identity, including when an unattributed claim later reappears.
+
+The placement pilot is advisory: it checks fresh lease state, memory, unreserved fitting VRAM,
+queued requests and explicit session readiness. A compute-ready host without a provisioned harness
+is not eligible for session migration. Recommendations retain the current eligible host within a
+small score margin to limit churn. The advisor acquires no lease, changes no host mode or role spec,
+and performs no handoff. `resources install --dry-run` previews one host service; `--enable` starts
+it only when the operator applies the reviewed deployment. See [resource telemetry](resources.md).
+
 ## 13. Known limitations
 
 What this design does not handle yet, and the measurement that would trigger each change, is in
