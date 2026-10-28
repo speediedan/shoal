@@ -16,8 +16,8 @@ class Resources(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.gpus = [{"uuid": "GPU-a", "utilization_pct": 0, "vram_total_mib": 32000, "vram_used_mib": 100},
-                     {"uuid": "GPU-b", "utilization_pct": 0, "vram_total_mib": 32000, "vram_used_mib": 100}]
+        self.gpus = [{"uuid": "GPU-a", "vendor": "amd", "utilization_pct": 0, "vram_total_mib": 32000, "vram_used_mib": 100},
+                     {"uuid": "GPU-b", "vendor": "amd", "utilization_pct": 0, "vram_total_mib": 32000, "vram_used_mib": 100}]
 
     def sample(self, ts, held=True, busy=0, ok=True, mode="exclusive"):
         provider = {"ok": ok, "leases": [{"key": "gpu", "held": held, "mode": mode, "pid": 123,
@@ -73,17 +73,21 @@ class Resources(unittest.TestCase):
 
     def test_idle_control_and_admission(self):
         sample = self.sample(100, held=False, busy=7)
-        answer = r.placement([sample], gpu_count=1, vram_mib=24000, now=100)
+        answer = r.placement([sample], gpu_count=1, gpu_vendor="amd", vram_mib=24000, now=100)
         self.assertEqual(answer["recommended_host"], "host-a")
         self.assertTrue(answer["advisory_only"])
-        self.assertIsNone(r.placement([self.sample(100)], gpu_count=1, now=100)["recommended_host"])
-        self.assertIsNone(r.placement([sample], gpu_count=1, now=1000)["recommended_host"])
+        self.assertIsNone(r.placement([sample], gpu_count=1, now=100)["recommended_host"],
+                          "unknown workload compatibility cannot become a cross-vendor recommendation")
+        self.assertIsNone(r.placement([sample], gpu_count=1, gpu_vendor="nvidia", now=100)["recommended_host"])
+
+        self.assertIsNone(r.placement([self.sample(100)], gpu_count=1, gpu_vendor="amd", now=100)["recommended_host"])
+        self.assertIsNone(r.placement([sample], gpu_count=1, gpu_vendor="amd", now=1000)["recommended_host"])
         self.assertIsNone(r.placement([sample], harness="missing-harness", now=100)["recommended_host"])
         self.assertIsNone(r.placement([sample], memory_gib=101, now=100)["recommended_host"])
         sample["gpus"][0]["utilization_pct"] = None
-        self.assertIsNone(r.placement([sample], gpu_count=2, now=100)["recommended_host"])
+        self.assertIsNone(r.placement([sample], gpu_count=2, gpu_vendor="amd", now=100)["recommended_host"])
         sample["queue"] = [{"key": "gpu"}]
-        self.assertIsNone(r.placement([sample], gpu_count=1, now=100)["recommended_host"])
+        self.assertIsNone(r.placement([sample], gpu_count=1, gpu_vendor="amd", now=100)["recommended_host"])
 
     def test_unknown_provider(self):
         self.assertFalse(r.lease_observation("")["ok"])
@@ -113,7 +117,7 @@ class Resources(unittest.TestCase):
             self.assertIsNone(suspended["utilization_pct"], "suspend is recorded separately, never as a fabricated zero")
             sample = self.sample(100, held=False)
             sample["gpus"] = [suspended]
-            self.assertEqual(r.placement([sample], gpu_count=1, now=100)["recommended_host"], "host-a")
+            self.assertEqual(r.placement([sample], gpu_count=1, gpu_vendor="amd", now=100)["recommended_host"], "host-a")
 
 
 if __name__ == "__main__":

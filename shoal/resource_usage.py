@@ -296,7 +296,7 @@ def efficiency(events, threshold=10, max_gap=30):
 
 
 def placement(samples, memory_gib=0, gpu_count=0, vram_mib=0, cpu_heavy=False,
-              harness="", current="", now=None, max_age=120):
+              harness="", current="", now=None, max_age=120, gpu_vendor=""):
     """Advisory only. Unknown, stale or unprovisioned hosts cannot become migration targets."""
     if not all(0 <= n < float("inf") for n in (memory_gib, gpu_count, vram_mib)) or max_age <= 0:
         raise ValueError("resource demands must be finite and nonnegative; maximum age positive")
@@ -315,6 +315,8 @@ def placement(samples, memory_gib=0, gpu_count=0, vram_mib=0, cpu_heavy=False,
         known = s["lease_provider"].get("known_keys", [])
         if gpu_count and "gpu" not in known:
             reasons.append("GPU lease key not observed")
+        if gpu_count and gpu_vendor not in ("amd", "nvidia", "any"):
+            reasons.append("GPU workload vendor compatibility not declared")
         if cpu_heavy and "cpu-heavy" not in known:
             reasons.append("CPU/memory lease key not observed")
         memory = s["memory"].get("available_bytes")
@@ -322,6 +324,7 @@ def placement(samples, memory_gib=0, gpu_count=0, vram_mib=0, cpu_heavy=False,
             reasons.append("insufficient or unknown host memory")
         reserved = {uid for r in s["leases"] if r["gpu_reserved"] for uid in r["devices"]}
         fitting = [g for g in s["gpus"] if g["uuid"] not in reserved
+                   and (gpu_vendor == "any" or g.get("vendor") == gpu_vendor)
                    and g.get("vram_total_mib") is not None and g.get("vram_used_mib") is not None
                    and g["vram_total_mib"] - g["vram_used_mib"] >= vram_mib
                    and (g.get("runtime_status") == "suspended" or
@@ -346,7 +349,7 @@ def placement(samples, memory_gib=0, gpu_count=0, vram_mib=0, cpu_heavy=False,
     if chosen and incumbent and incumbent["score"] >= chosen["score"] * 0.9:
         chosen = incumbent
     return {"v": 1, "advisory_only": True, "kind": "session" if harness else "compute",
-            "recommended_host": chosen["host"] if chosen else None, "hosts": rows}
+            "gpu_vendor": gpu_vendor or None, "recommended_host": chosen["host"] if chosen else None, "hosts": rows}
 
 
 def defaults():
@@ -389,7 +392,7 @@ def execute(a):
                  "limitation": "observed lifecycle; short leases between samples can be missed"}
     else:
         value = placement(events, a.memory_gib, a.gpus, a.vram_mib, a.cpu_heavy, a.harness, a.current,
-                          max_age=a.max_age)
+                          max_age=a.max_age, gpu_vendor=a.gpu_vendor)
     print(json.dumps(value, indent=2))
     return 0
 
@@ -425,6 +428,8 @@ def add_parser(sub):
         if name == "balance":
             q.add_argument("--memory-gib", type=float, default=0)
             q.add_argument("--gpus", type=int, default=0)
+            q.add_argument("--gpu-vendor", choices=("amd", "nvidia", "any"), default="",
+                           help="required for GPU admission; any asserts workload compatibility with both")
             q.add_argument("--vram-mib", type=float, default=0)
             q.add_argument("--cpu-heavy", action="store_true")
             q.add_argument("--harness", default="", help="require session readiness for this harness")

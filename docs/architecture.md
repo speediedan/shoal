@@ -682,7 +682,7 @@ and expose coverage and open/censored intervals. They measure reservation overla
 process ownership. Missing metrics are null, never idle zeroes. Each observed episode has a distinct
 identity, including when an unattributed claim later reappears.
 
-The placement pilot is advisory: it checks fresh lease state, memory, unreserved fitting VRAM,
+The placement pilot is advisory: it checks fresh lease state, memory, unreserved fitting VRAM and declared GPU vendor compatibility,
 queued requests and explicit session readiness. A compute-ready host without a provisioned harness
 is not eligible for session migration. Recommendations retain the current eligible host within a
 small score margin to limit churn. The advisor acquires no lease, changes no host mode or role spec,

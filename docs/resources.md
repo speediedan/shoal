@@ -8,7 +8,7 @@ shoal resources sample --lease-command '<lease-provider>'
 shoal resources install --lease-command '<lease-provider>' --dry-run
 shoal resources install --lease-command '<lease-provider>' --enable
 shoal resources report --input <host-stream-directory>
-shoal resources balance --input <host-stream-directory> --memory-gib 32 --gpus 1 --vram-mib 24000
+shoal resources balance --input <host-stream-directory> --memory-gib 32 --gpus 1 --gpu-vendor amd --vram-mib 24000
 ```
 
 Samples default to `<data_root>/_resources/<host>/events-YYYYMMDD.jsonl`. Copy or gather each host's
@@ -46,10 +46,14 @@ extrapolate through sensor failures, long gaps or a host reboot. A missing measu
 not an invented zero. Low coverage prevents conclusions about the complete lease.
 
 `balance` produces a JSON recommendation with its input timestamp and admission reasons. It rejects
-stale or future-dated observations, unknown lease state, insufficient host memory, busy/reserved or
+stale or future-dated observations, unknown lease state, insufficient host memory, undeclared or incompatible GPU vendor requirements, busy/reserved or
 undersized GPUs, and existing requests for the needed resource. An eligible current host remains
 preferred within a small score margin. This is a placement pilot, not a scheduler or authorization.
-A recommendation can become stale immediately; the job must still acquire its normal lease.
+GPU admission requires `--gpu-vendor amd|nvidia|any`; `any` explicitly asserts that the workload
+supports both platforms. Vendor compatibility does not establish every model/driver requirement.
+A recommendation can become stale immediately. Before a job starts, verify host mode and CI
+ownership, satisfy any required grant, and acquire its normal lease. These control-plane checks
+are not inferred from free hardware.
 
 For session placement, add `--harness <harness>` and collect with `--session-ready <harnesses>` only
 after verifying authentication, repository/start-doc access, ledger routes and handoff support.
