@@ -652,6 +652,16 @@ and the contract are in [`ui.md`](ui.md).
     confirm, and log them to `ui-actions.jsonl`.
   - The adapter never calls `pane.send_*`, `agent.prompt` or `pane.close`, and the UI selftest
     enforces this.
+- **Launch chooser** (`shoal/ui/ui_launch.py`): a compact composition of the SHOAL logo and three
+  colored ASCII fish sits above the host menu. The complete composition stays centered when the
+  window resizes; fish positions follow the logo, rather than the window edges. Kitty graphics accepts
+  pixels or PNG rather than SVG directly, so the chooser uses the portable ASCII fallback.
+  The tty's measured dimensions take precedence over inherited `COLUMNS` and `LINES`. Each redraw
+  positions and clears every row explicitly with wrapping disabled, so output newline settings and
+  stale cells cannot garble the menu. The minimum for two hosts is 72 columns by 23 rows, including
+  art and help. Below it, a bounded enlargement prompt replaces the chooser and requests a resize
+  once per small-window episode. Window-manager minimum sizes are not enforceable through the
+  portable terminal interface; resizing back restores the centered chooser without losing selection.
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 
