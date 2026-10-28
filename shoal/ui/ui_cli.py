@@ -11,6 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import backends  # noqa: E402
 import ui_herdr  # noqa: E402
 import ui_status  # noqa: E402
 import ui_view  # noqa: E402
@@ -103,15 +104,16 @@ def add_parsers(sub) -> None:
     q.add_argument("--pause", action="store_true")
     q.set_defaults(func=ui_herdr.cmd_act)
 
-    q = u.add_parser("pick", help="open a standalone (non-shoal) Claude or opencode session")
+    q = u.add_parser("pick", help="open a standalone session from Claude, opencode, Muse or Codex")
     session_arg(q)
-    q.add_argument("--harness", default="", choices=("", "claude", "opencode", "muse", "codex"))
+    q.add_argument("--harness", default="", choices=("", *backends.ecosystems()))
     q.add_argument("--id", dest="session_id", default="")
     q.add_argument("--label", default="")
     q.add_argument("--cwd", default="", help="with --harness/--id: the session's working directory")
     q.add_argument("--model", default="", help="the seat's model (saved; its card resumes with it)")
     q.add_argument("--effort", default="", help="the seat's effort (saved; its card resumes with it)")
     q.add_argument("--save", action="store_true", help="restore it on every `ui open`")
+    q.add_argument("--pause", action="store_true", help="keep errors visible until dismissed (popup use)")
     q.set_defaults(func=ui_herdr.cmd_pick)
 
     q = u.add_parser("legend", help="what the viewer's state icons and glyphs mean")

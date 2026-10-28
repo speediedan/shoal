@@ -97,7 +97,7 @@ title = "shoal standalone"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["bin/shoal-ui", "ui", "pick"]
+command = ["bin/shoal-ui", "ui", "pick", "--pause"]
 
 [[panes]]
 id = "metrics"

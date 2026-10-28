@@ -6,7 +6,7 @@
   shoal ui feed    [--interval S] [--once]  push role state and tokens to Herdr (read-only to shoal)
   shoal ui menu                             the operator palette (a Herdr popup)
   shoal ui act VERB ...                     one operator verb: preview (`--dry-run`), confirm, run
-  shoal ui pick    [--save]                 attach a standalone (non-shoal) Claude or opencode session
+  shoal ui pick    [--save]                 attach a standalone session from any supported harness
   shoal ui dash | tail | metrics            overview, ledger tail and metrics panes
   shoal ui herdr-config --client|--server   the managed Herdr config blocks
   shoal ui herdr-install [--dry-run]        server side: config block, plugin link, systemd units
@@ -768,30 +768,22 @@ def internal_session(name: str, role_slugs: set[str]) -> bool:
 
 
 def candidates_standalone(exclude: set[str]) -> list[dict]:
-    """Live sessions on this host that are not shoal roles: Claude background sessions and
-    OpenChamber's opencode sessions (most recently updated first). Matcher runs and old role
-    incarnations are left out."""
-    import ui_status
+    """Available sessions on this host, excluding roles, old incarnations and internal runs."""
+    import backends
     slugs = role_slugs()
     out = []
-    for e in ui_status.claude_rows():
-        sid = str(e.get("sessionId", ""))
-        if not sid or not e.get("pid") or any(sid.startswith(x) or x.startswith(sid) for x in exclude if x):
-            continue
-        if internal_session(str(e.get("name") or ""), slugs):
-            continue
-        out.append({"harness": "claude", "session": sid, "job": str(e.get("id") or ""),
-                    "label": str(e.get("name") or sid[:8])[:40], "state": e.get("state"), "cwd": e.get("cwd")})
-    try:
-        r = subprocess.run(["openchamber", "session", "list", "--limit", "15", "--with-status", "--json"],
-                           capture_output=True, text=True, timeout=30, env=config.tool_env())
-        for s in json.loads(r.stdout or "{}").get("sessions", []):
-            if s.get("id") in exclude or internal_session(str(s.get("title") or ""), slugs):
-                continue
-            out.append({"harness": "opencode", "session": s["id"], "label": str(s.get("title") or s["id"][:12])[:40],
-                        "state": (s.get("status") or {}).get("type"), "cwd": (s.get("location") or {}).get("directory")})
-    except (OSError, ValueError, subprocess.SubprocessError):
-        pass
+    for harness in backends.ecosystems():
+        try:
+            for row in backends.get(harness).sessions():
+                sid = str(row.get("session") or "")
+                label = str(row.get("label") or sid[:12])
+                if not sid or any(sid.startswith(x) or x.startswith(sid) for x in exclude if x):
+                    continue
+                if internal_session(label, slugs):
+                    continue
+                out.append(dict(row, harness=harness, session=sid, label=label[:40]))
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            print(f"{harness} sessions unavailable: {exc}")
     return out
 
 
@@ -1149,7 +1141,19 @@ def _choose(items: list[str], prompt: str = "number") -> int | None:
 
 
 def cmd_pick(a) -> int:
-    """Pick a live non-shoal session and open it in its own workspace, named after it."""
+    """Keep picker failures visible in a popup; intentional cancellation closes it."""
+    try:
+        rc = _pick(a)
+    except (HerdrError, OSError) as exc:
+        print(f"pick: {exc}")
+        rc = 1
+    if rc and getattr(a, "pause", False):
+        ui_term.pause()
+    return rc
+
+
+def _pick(a) -> int:
+    """Pick a non-shoal session and open its card without attaching the harness."""
     if a.harness and a.session_id:
         e = {"harness": a.harness, "session": a.session_id, "label": a.label or a.session_id[:12]}
         if getattr(a, "cwd", ""):
@@ -1157,14 +1161,16 @@ def cmd_pick(a) -> int:
     else:
         cands = candidates_standalone(role_sessions())
         if not cands:
-            print("no standalone sessions found (claude agents, openchamber session list)")
+            print("no standalone sessions found (Claude, opencode, Codex, Muse). "
+                  "For a known session, use `shoal ui pick --harness HARNESS --id ID --save`.")
             return 1
         print("Standalone sessions (not shoal roles):")
         i = _choose([f"{c['harness']:<8} {c['label']:<40} {c['state'] or '?':<8} {c['session'][:16]}  {c.get('cwd') or ''}"
                      for c in cands])
         if i is None:
-            return 1
-        e = {k: cands[i][k] for k in ("harness", "session", "label", "cwd")}
+            return 0
+        e = {k: cands[i][k] for k in ("harness", "session", "label", "cwd", "job", "model", "effort")
+             if cands[i].get(k) is not None}
         if a.label:
             e["label"] = a.label
     for k in ("model", "effort"):  # the seat's pair, saved so its card resumes with them (ui_view.viewer)
@@ -1767,7 +1773,7 @@ def cmd_menu(a) -> int:
     if k == "metrics":
         return subprocess.run(shoal_argv("ui", "metrics", "--pause")).returncode
     if k == "pick":
-        return subprocess.run(shoal_argv("ui", "pick")).returncode
+        return subprocess.run(shoal_argv("ui", "pick", "--pause")).returncode
     if k == "keys":
         print(keys_help())
         ui_term.pause()
