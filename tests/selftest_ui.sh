@@ -1131,6 +1131,14 @@ assert "sidebar_max_width = 18" in open(f).read(), "floor of 18 columns"
 print("launch chooser ok")
 PY2
 
+echo "== 6b repo skills: the .agents/skills vendored copies match the plugin masters"
+REPO_ROOT=$(cd "$SHOALD/.." && pwd)
+for s in shoal-protocol shoal-operator shoal-health-review; do
+  diff -rq "$REPO_ROOT/plugins/shoal-skills/skills/$s" "$REPO_ROOT/.agents/skills/$s" >/dev/null \
+    || fail ".agents/skills/$s drifted from plugins/ (edit under plugins/, then copy over)"
+done
+echo "repo skills ok"
+
 echo "== 7 Claude identity: a /clear changes the conversation id, never the job; a retired worker is still viewable"
 python3 - "$SHOALD" "$S" <<'PY2' || fail "claude identity"
 import io, json, os, sys, contextlib; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
