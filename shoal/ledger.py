@@ -75,7 +75,7 @@ def queue_next_max(spec=None) -> int:
     except (TypeError, ValueError):
         return QUEUE_NEXT_MAX
 RELEASE_KINDS = ("decline", "lost-race", "blocked", "handoff")
-MSG_KINDS = ("info", "ack", "ask", "instruct", "stall-suspect", "server-respawned",
+MSG_KINDS = ("info", "ack", "request", "ask", "instruct", "stall-suspect", "server-respawned",
              "starved", "hold", "wake-test", "health")
 OFFER_SRC = ("user", "board", "peer")
 VERB_RE = re.compile(r":(fix|review|scope|design|verify|triage|merge|doc|test|release|investigate)$")
@@ -712,8 +712,17 @@ class View:
 
     def unacked(self, slug: str) -> list[dict]:
         """msgs by slug with ack=true that have no msg re=<id> from the target."""
-        acked = {m.get("re") for m in self.msgs if m.get("re")}
-        return [m for m in self.msgs if m["by"] == slug and m.get("ack") and m["id"] not in acked]
+        return [m for m in self.msgs if m["by"] == slug and m.get("ack") and not self.acknowledged(m)]
+
+    def acknowledged(self, request: dict) -> bool:
+        """A linked response from the addressed recipient, never an unrelated writer or queue write."""
+        return any(m.get("re") == request["id"] and m.get("to") in (request["by"], "*")
+                   and (m.get("by") == request.get("to") or
+                        (request.get("to") == "*" and m.get("by") != request["by"])) for m in self.msgs)
+
+    def unacked_to(self, slug: str) -> list[dict]:
+        return [m for m in self.msgs if m.get("to") == slug and m.get("kind") == "request"
+                and m.get("ack") and not self.acknowledged(m)]
 
     def role_state(self, slug: str) -> dict | None:
         return self.states.get(slug)
@@ -817,6 +826,9 @@ def render_role(view: View, slug: str, candidates: list[dict] | None = None,
     if qv is not None:
         L.append(f"queue v{qv.get('version')}: active={qv.get('active') or '-'} next={','.join(qv.get('next') or []) or '-'}"
                  + (f" asks={len(qv['asks'])}" if qv.get("asks") else ""))
+    for request in view.unacked_to(slug):
+        L.append(f"REQUEST NEEDS ACK {request['id']} from {request['by']}: "
+                 f"reply with msg --re {request['id']} ({short(request.get('text', ''), 100)})")
     for h in view.held_unscheduled(slug):
         L.append(f"HELD-UNSCHEDULED {h}: claimed but in neither active nor next (schedule or release it)")
     for b in view.blocked_by(slug):

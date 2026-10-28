@@ -65,3 +65,11 @@ Two health timers, run by the operator, evaluate every role on a schedule. They 
 unacknowledged work, resolved or expired waits, dead watchers, a turn that ended while `active`,
 blocking items left unscheduled, and a dead relay. They wake you through your harness's adapter,
 and page the maintainer when a wake has no effect. You never need a self-check timer of your own.
+
+
+### A job monitor can yield before its job ends
+
+`shoal job wait` yields with exit 75 and `RESCAN-DUE` when the role's matching job wait proof
+expires. The job unit keeps running: this is a revalidation boundary, not a failed computation.
+Run `next`, inspect the live target, write a fresh queue/wait and re-arm the monitor if still needed.
+Do not mark the job failed or start duplicate work from this observer verdict.

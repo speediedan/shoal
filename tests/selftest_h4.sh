@@ -1513,5 +1513,67 @@ for r in d["roles"]:
 json.dump(d,open(p,"w"),indent=1)
 PY2
 
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "operational request acknowledgment"
+import sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import health
+from ledger import Ledger, View
+from roles import ShoalSpec, is_wake_relay
+spec = ShoalSpec.load(sys.argv[2])
+role = next(r for r in spec.roles if not is_wake_relay(r))
+role.session = role.session or "synthetic-session"
+role.server = ""
+view = View(Ledger(spec.sid, root=spec.ledger_dir), spec)
+request = {"id":"request-fixture", "type":"msg", "by":"source", "to":role.slug,
+           "kind":"request", "ack":True, "text":"open a resource window", "ts":"2000-01-01T00:00:00Z"}
+view.msgs.append(request)
+with patch.object(health, "session_between_turns", return_value=True):
+    assert any(c["key"] == "request:request-fixture" for c in health.evaluate(spec, view, {})), "CI posture never hides a request"
+    view.msgs.append({"id":"forged", "by":"other", "to":"source", "re":request["id"]})
+    assert view.unacked_to(role.slug) == [request], "a third party cannot acknowledge a unicast request"
+    view.msgs.append({"id":"answer", "by":role.slug, "to":"source", "re":request["id"], "kind":"ack"})
+    assert not view.unacked_to(role.slug) and not view.unacked("source")
+    assert not any(c["key"] == "request:request-fixture" for c in health.evaluate(spec, view, {}))
+# The writer makes requests acknowledgment-required and refuses unavailable recipients.
+import ledger_cli, types, contextlib, io
+recorded = []
+class FakeLedger:
+    def append(self, by, event_type, **fields):
+        recorded.append(fields)
+        return dict(fields, id="new-request", by=by)
+a = types.SimpleNamespace(to=role.slug, text="resource window decision", kind="request", re="", ack=False,
+                          wake=False, dry_run=False)
+with patch.object(ledger_cli, "_spec", return_value=spec), \
+     patch.object(ledger_cli, "_ledger", return_value=FakeLedger()), \
+     patch.object(ledger_cli, "_writer", return_value="user"), contextlib.redirect_stdout(io.StringIO()):
+    assert ledger_cli.cmd_msg(a) == 0 and recorded[-1]["ack"] is True
+    saved = role.session
+    role.session = ""
+    assert ledger_cli.cmd_msg(a) == 1 and len(recorded) == 1
+    role.session = saved
+# A stale matching wait releases only the local monitor, never its productive unit.
+import jobs
+unit = jobs.find_unit("h4selftest", "owner", "suite")
+args = types.SimpleNamespace(sid="h4selftest", slug="owner", name="suite", unit="", timeout_min=0, poll=1, tail=0)
+proof = {"sub":"local-ci", "target":"job:suite", "rescan_utc":"2000-01-01T00:00:00Z"}
+with patch("state.wait_status", return_value=("stale",proof)), \
+     patch.object(jobs, "resolve", return_value=(unit, {})), \
+     patch.object(jobs, "_meta_for", return_value={}), \
+     patch.object(jobs, "unit_state", return_value={"ActiveState":"active"}), \
+     patch.object(jobs, "_emit"), patch.object(jobs, "_systemctl") as control, \
+     contextlib.redirect_stdout(io.StringIO()) as output:
+    assert jobs.cmd_wait(args) == 75
+    assert "RESCAN-DUE" in output.getvalue() and "not stopped" in output.getvalue()
+    control.assert_not_called()
+    with patch.object(jobs, "remote_state", return_value={"ActiveState":"active"}):
+        assert jobs._wait_remote(args, unit, {"host":"other-host.invalid", "log":"example.log"}) == 75
+    with patch("state.wait_status", return_value=("covered",proof)):
+        assert not jobs.yield_for_rescan(args, unit)
+    with patch("state.wait_status", return_value=("stale",dict(proof,target="job:another"))):
+        assert not jobs.yield_for_rescan(args, unit)
+print("operational request acknowledgment ok")
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

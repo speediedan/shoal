@@ -75,3 +75,17 @@ The maintainer's offers always outrank the board.
   commit by path (`git commit -- <paths>`): a plain `git commit` takes everything anyone has
   staged.
 
+
+
+## Operational requests need a response
+
+Use `msg --kind request --to <role> --text "<request>"` when a shared operational decision needs
+that role's response, such as opening a host window. This uses the existing acknowledgment fields
+and health's `unacked-work` ladder even while the recipient waits on CI. It does not assign board
+items or grant authority. Ordinary `info` mail still never wakes a role directly.
+
+At the next safe boundary, acknowledge with `msg --kind ack --to <sender> --re <request-id>
+--text "<decision or explicit blocker>"` before another long wait. A request that needs a grant is
+acknowledged as such, then the receiving session asks first-person for its own grant. Merely reading
+mail or writing a queue is not a reply. Use `queue --ask` for the maintainer and offers/handoffs for
+project work; a request is addressed to one live peer, not a broadcast or a parked role.
