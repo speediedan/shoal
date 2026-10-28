@@ -1077,26 +1077,41 @@ with contextlib.redirect_stdout(buf):
     got = ui_launch.choose(read=lambda p: "")
 import re
 assert got == "other-host.invalid" and re.search(r"> remote +other-host\.invalid  \(unreachable now\) +2", buf.getvalue()), buf.getvalue()
-# the start screen: block header, the menu with keys, fish facing it; capped, colored only when asked
+# The start screen: three whole fish grouped around the logo and the centered menu.
 rows = [("local", "here, this host", False), ("remote", "other-host.invalid", True)]
 assert len({len(r) for r in ui_launch._HEADER}) == 1, "header rows share one width"
 plain = ui_launch.dashboard(rows, 2, cols=200, color=False, uni=True)
 assert "███████╗" in plain and "\x1b[" not in plain and "▸ remote  other-host.invalid  (unreachable now)" in plain, plain
-assert "\\/ o \\" in plain and "/ o \\/" in plain and "><" in plain, "side fish face the menu"
+assert all(fish[1].strip() in plain for fish in ui_launch._FISH), "three whole small fish"
 assert all(len(l) <= 200 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
 full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=False, uni=True)
 fl = full.splitlines()
 assert full.count("\n") == 39, "full screen: the page fills the rows"
-assert max(len(l) for l in fl) > 96, "full screen: the page fills the columns too"
-assert full.count("_..-") >= 6, "big fish swim around the block"
+assert max(len(l) for l in fl) < 110, "fish stay near the centered logo, away from the edges"
+for fish in ui_launch._FISH:
+    assert full.count(fish[1].strip()) == 1, "exactly three complete fish"
+for cols, lines in ((72, 23), (90, 30), (160, 50)):
+    picture = ui_launch.dashboard(rows, 1, cols=cols, lines=lines, color=False, uni=True).split("\n")
+    assert len(picture) == lines and all(len(row) <= cols for row in picture)
+    for fish in ui_launch._FISH:
+        assert sum(fish[1].strip() in row for row in picture) == 1
+    first = next(i for i, row in enumerate(picture) if row.strip())
+    last = max(i for i, row in enumerate(picture) if row.strip())
+    assert abs(first - (lines - 1 - last)) <= 1, "composition stays vertically centered"
 for cols, lines in ((100, 30), (80, 24), (60, 20)):
     s = ui_launch.dashboard(rows, 1, cols=cols, lines=lines, color=False, uni=True)
     for text in ("which host serves the view?", "here, this host", "other-host.invalid", "stigmergic"):
         assert text in s, f"{cols}x{lines}: fish ate {text!r}"
 colored_full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=True, uni=True)
-assert len(set(re.findall(r"\x1b\[(\d+)m", colored_full)) & set(ui_launch._FISH_COLORS)) >= 3, "each big fish its own color"
+assert len(set(re.findall(r"\x1b\[(\d+)m", colored_full)) & set(ui_launch._FISH_COLORS)) >= 3, "each small fish its own color"
 mw, mh = ui_launch.min_size(2)
-assert mw >= 48 and mh >= 18, "the centered menu has a stated minimum"
+assert (mw, mh) == (72, 23), "minimum includes all art, menu and help text"
+from unittest.mock import patch
+with patch.object(ui_launch.os, "get_terminal_size", return_value=os.terminal_size((90, 30))), \
+     patch.dict(os.environ, {"COLUMNS": "200", "LINES": "50"}):
+    assert ui_launch.terminal_size() == (90, 30), "tty dimensions override stale inherited environment"
+assert "\n" not in ui_launch._frame(full), "raw tty rendering never relies on newline conversion"
+assert "\x1b[40;1H\x1b[2K" in ui_launch._frame(full), "each row is positioned and cleared explicitly"
 feed = iter(["", "", "\x1b", "[", "B", "\r"])
 assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), lambda s: None, lambda: "") == "other", "poll timeouts redraw, never cancel"
 drawn = []
@@ -1112,7 +1127,7 @@ assert ui_launch._choose_keys(["local", "other"], rows, 1, lambda: next(feed), l
 colored = ui_launch.dashboard(rows, 1, cols=100, color=True, uni=True)
 assert len(set(re.findall(r"\x1b\[([\d;]+)m", colored))) >= 8, "each fish its own color, the header shaded"
 narrow = ui_launch.dashboard(rows, 1, cols=40, color=False, uni=True)
-assert "S H O A L" in narrow and "███" not in narrow and "\\/ o \\" not in narrow, narrow
+assert "S H O A L" in narrow and "███" not in narrow and "_..-" not in narrow, narrow
 assert all(len(l) <= 40 for l in narrow.splitlines()), [len(l) for l in narrow.splitlines()]
 plain_ascii = ui_launch.dashboard(rows, 1, cols=100, color=False, uni=False)
 assert plain_ascii.isascii() and "> local" in plain_ascii, "a stream that cannot encode box drawing gets ASCII"
@@ -1128,6 +1143,64 @@ ui_launch.resolve_sidebar(f, cols=200)
 assert "sidebar_max_width = 50" in open(f).read(), open(f).read()
 ui_launch.resolve_sidebar(f, cols=40)
 assert "sidebar_max_width = 18" in open(f).read(), "floor of 18 columns"
+# A real PTY reproduces inherited dimensions and disabled output newline conversion.
+# Resize while selected, shrink below minimum, recover, then cancel an empty typed target.
+import fcntl, pty, select, struct, subprocess, termios, time
+master, slave = pty.openpty()
+attrs = termios.tcgetattr(slave)
+attrs[1] &= ~termios.OPOST
+termios.tcsetattr(slave, termios.TCSANOW, attrs)
+def resize(cols, lines):
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", lines, cols, 0, 0))
+resize(80, 24)
+child = """import sys
+sys.path.insert(0, sys.argv[1])
+import ui_launch
+rows = [('local', 'this host', False), ('remote', 'other-host.invalid', False)]
+print('RESULT', ui_launch._choose_interactive(['local', 'other'], rows, 1), flush=True)
+"""
+env = dict(os.environ, COLUMNS="200", LINES="60")
+env.pop("NO_COLOR", None)
+p = subprocess.Popen([sys.executable, "-c", child, os.path.dirname(ui_launch.__file__)],
+                     stdin=slave, stdout=slave, stderr=slave, env=env)
+def read_until(marker):
+    output = b""
+    deadline = time.monotonic() + 8
+    while marker not in output and time.monotonic() < deadline:
+        if select.select([master], [], [], 0.1)[0]:
+            output += os.read(master, 65536)
+    assert marker in output, (marker, output[-2000:])
+    return output
+try:
+    initial = read_until(b"\x1b[J")
+    assert b"which host serves" in initial and b"Enlarge" not in initial
+    assert b"\x1b[24;1H\x1b[2K" in initial and b"\n" not in initial
+    os.write(master, b"j")
+    selected_frame = read_until(b"\x1b[J")
+    assert b"\x1b[1;7mremote" in selected_frame, "selection changes in the PTY"
+    resize(32, 8)
+    small = read_until(b"\x1b[J")
+    assert b"Enlarge window to 72x23" in small and b"which host serves" not in small
+    assert small.count(b"\x1b[8;23;72t") == 1, "one resize request, no loop"
+    resize(110, 36)
+    recovered = read_until(b"\x1b[J")
+    assert b"\x1b[36;1H\x1b[2K" in recovered and b"\x1b[1;7mremote" in recovered
+    os.write(master, b"t")
+    read_until(b"ssh target: ")
+    os.write(master, b"\n")
+    assert b"which host serves" in read_until(b"\x1b[J"), "empty target repaints the overwritten frame"
+    os.write(master, b"q")
+    final = read_until(b"RESULT None")
+    assert b"\x1b[?7h" in final and b"\x1b[?1049l" in final
+    assert p.wait(timeout=5) == 0
+    restored = termios.tcgetattr(slave)
+    assert restored == attrs, "chooser restores the tty settings it inherited"
+finally:
+    if p.poll() is None:
+        p.terminate()
+        p.wait(timeout=5)
+    os.close(master)
+    os.close(slave)
 print("launch chooser ok")
 PY2
 
