@@ -98,20 +98,40 @@ _HEADER = (
 _HEADER_SGR = ("1;96", "1;96", "1;36", "1;36", "1;94", "1;94")  # blocks shade from cyan to blue
 _OUTLINE_SGR = "34"
 _TAGLINE = "stigmergic · heterogeneous · open · agent · lattice"
-_FISH_COLORS = ("96", "93", "95")
-# Three small ASCII fish, placed relative to the logo rather than the window edges.
-_FISH = (
-    ("   /\\    ", "><( o)>  ", "   \\/    "),
-    ("    /\\   ", "  <(o )><", "    \\/   "),
-    ("    __   ", "><('o )> ", "    \\/   "),
-)
+_FISH_COLORS = ("38;5;209", "38;5;80", "38;5;141")
+# Original ASCII outline: a full fish, not a few punctuation marks that resemble broken text.
+_ASCII_RIGHT = tuple(row.ljust(36) for row in r"""                 .-.
+              .-'   `-.
+    __      .'         `.
+   /  `-.__/             \
+  /       /         o     \
+  \      |                 >
+   >     |       .---.    /
+  /      |      /    |  .'
+  \       \    /     |.'
+   \__.-'  `-._    .-'
+              /`--'\
+              \ __ /
+               '--'""".splitlines())
+_MIRROR = str.maketrans("/\\()<>[]{}'`", "\\/)(><][}{`'")
+_ASCII_LEFT = tuple(row[::-1].translate(_MIRROR) for row in _ASCII_RIGHT)
+_FISH = (_ASCII_RIGHT, _ASCII_RIGHT, _ASCII_LEFT)
 _MENU_W = 54
 _MIN_COLS = 72
+_ASCII_COLS = len(_HEADER[0]) + 2 * (36 + 3) + 2
 
 
 def min_size(n_rows: int) -> tuple[int, int]:
-    """The logo, three fish, menu and all help text, with one blank row above and below."""
+    """Native compact splash. Optional ASCII art never forces a giant minimum window."""
     return _MIN_COLS, 19 + 2 * max(1, n_rows)
+
+
+def art_mode(cols: int, lines: int | None, n_rows: int, requested: str) -> str:
+    if requested == "images":
+        return "images" if cols >= _MIN_COLS and (lines is None or lines >= min_size(n_rows)[1]) else "none"
+    if requested == "ascii" and cols >= _ASCII_COLS and (lines is None or lines >= 36 + 2 * max(1, n_rows)):
+        return "ascii"
+    return "none"
 
 Seg = tuple[str, str]  # (text, SGR; "" for none)
 
@@ -139,26 +159,56 @@ def _header_row(row: str, i: int) -> list[Seg]:
     return segs
 
 
-def _logo(width: int, uni: bool) -> list[list[Seg]]:
-    """A compact composition that moves as one with the menu on every resize."""
+def _logo(width: int, uni: bool, art: str = "none") -> list[list[Seg]]:
+    """Non-overlapping cell stamps keep every ASCII outline intact."""
     header = [_header_row(r, i) for i, r in enumerate(_HEADER)] if uni else [[("S H O A L", "1;96")]]
     hw = max(_width(r) for r in header)
     hx = (width - hw) // 2
-    canvas: list[list[Seg]] = [[] for _ in range(4 + len(header))]
-    stamps = [(4 + i, hx, row) for i, row in enumerate(header)]
-    # A triangle around the title: above, left, and right. Keep each fish whole.
-    anchors = ((0, width // 2 + 6), (4, hx - 12), (6 if uni else 4, hx + hw + 3))
-    if width < _MIN_COLS:
-        anchors = ((0, max(0, width // 2 - 15)), (0, width // 2 - 4), (0, width // 2 + 7))
-    for fish, sgr, (y, x) in zip(_FISH, _FISH_COLORS, anchors):
-        for dy, text in enumerate(fish):
-            if 0 <= x and x + len(text) <= width:
-                stamps.append((y + dy, x, [(text, sgr)]))
-    for y, x, segs in sorted(stamps, key=lambda stamp: stamp[:2]):
-        while len(canvas) <= y:
-            canvas.append([])
-        canvas[y] += [(" " * max(0, x - _width(canvas[y])), "")] + segs
-    return canvas
+    if art == "ascii":
+        height, hy = 27, 14 + (13 - len(header)) // 2
+    elif art == "images":
+        height, hy = 10, 4 + (6 - len(header)) // 2
+    else:
+        height, hy = len(header), 0
+    canvas = [[(" ", "") for _ in range(width)] for _ in range(height)]
+
+    def stamp(y, x, segs):
+        for text, sgr in segs:
+            for ch in text:
+                if not (0 <= y < height and 0 <= x < width):
+                    raise ValueError("splash stamp outside frame")
+                if ch != " ":
+                    if canvas[y][x][0] != " ":
+                        raise ValueError("overlapping splash stamps")
+                    canvas[y][x] = ch, sgr
+                x += 1
+
+    for i, row in enumerate(header):
+        stamp(hy + i, hx, row)
+    if art == "ascii":
+        anchors = ((0, (width - 36) // 2), (14, hx - 39), (14, hx + hw + 3))
+        for fish, sgr, (y, x) in zip(_FISH, _FISH_COLORS, anchors):
+            for dy, row in enumerate(fish):
+                stamp(y + dy, x, [(row, sgr)])
+    result = []
+    for row in canvas:
+        segs: list[Seg] = []
+        for ch, sgr in row:
+            if segs and segs[-1][1] == sgr:
+                segs[-1] = segs[-1][0] + ch, sgr
+            else:
+                segs.append((ch, sgr))
+        result.append(segs)
+    return result
+
+
+def image_rectangles(cols: int, lines: int, n_rows: int) -> list[tuple[int, int, int, int]]:
+    """Cell rectangles relative to the same compact composition as the text."""
+    top = max(0, (lines - (10 + 2 * max(1, n_rows) + 7)) // 2)
+    hx = (cols - len(_HEADER[0])) // 2
+    return [(cols // 2 + 4, top, 8, 4),
+            (hx - 14, top + 4, 12, 6),
+            (hx + len(_HEADER[0]) + 2, top + 4, 12, 6)]
 
 
 def terminal_size() -> os.terminal_size:
@@ -196,10 +246,11 @@ def layout(cols: int | None = None) -> tuple[int, int]:
 
 
 def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None = None,
-              color: bool | None = None, uni: bool | None = None, lines: int | None = None) -> str:
+              color: bool | None = None, uni: bool | None = None, lines: int | None = None, art: str = "ascii") -> str:
     """The launch chooser's start screen for rows of (kind, where, unreachable), keys 1..n, row `default`
-    selected (marked, and reversed where color is on). The logo and three fish form one centered
-    composition above the menu, with vertical centering when `lines` is supplied. A narrow fallback
+    selected (marked, and reversed where color is on). Art is explicit: image rectangles are reserved
+    only after an interactive probe, while large ASCII fish are omitted when they do not fit. The
+    logo/menu composition stays centered, with vertical centering when `lines` is supplied. A narrow fallback
     uses a spaced title. Colors only on
     a terminal and never under NO_COLOR; box-drawing only where the stream can encode it.
     Pure and deterministic so tests can pin the shape."""
@@ -210,7 +261,8 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
         uni = unicode_ok()
     dot = " · " if uni else " | "
     out: list[list[Seg]] = []
-    out += _logo(width, uni and width >= len(_HEADER[0]) + 4)
+    mode = art_mode(width, lines, len(rows), art)
+    out += _logo(width, uni and width >= len(_HEADER[0]) + 4, mode)
     tag = _TAGLINE if uni else _TAGLINE.replace("·", "|")
     if len(tag) <= width:
         out.append(_centered([(tag, "33")], width))
@@ -230,8 +282,8 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
     for row in menu:
         out.append(_centered(row + [(" " * (menu_w - _width(row)), "")], width))
     out.append([])
-    keys = f"↑↓ or j/k move{dot}enter chooses{dot}t types an ssh target{dot}q quits" if uni else \
-        f"up/down or j/k move{dot}enter chooses{dot}t types an ssh target{dot}q quits"
+    keys = f"↑↓ / j k move{dot}Enter choose{dot}t type SSH target{dot}q quit" if uni else \
+        f"j/k move{dot}Enter choose{dot}t type SSH target{dot}q quit"
     for note in ("local: this host's Herdr server, other hosts' roles over ssh",
                  "remote: that host's Herdr server, drawn here", keys):
         if len(note) <= width:
@@ -294,68 +346,96 @@ def _choose_keys(cands: list[str], rows, selected: int, getchar, draw, line_read
 
 
 def _choose_interactive(cands: list[str], rows, selected: int) -> str | None:
-    """Full-screen selection on the alternate screen (stdlib termios only). Raises on any terminal
-    trouble; the caller restores and falls back to the numbered prompt."""
+    """One tty input owner handles both keyboard input and bounded graphics negotiation."""
     import termios
     import tty
+    from splash_graphics import SplashGraphics, TerminalInput
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     out = sys.stdout
+    reader = TerminalInput(fd)
+    graphics = SplashGraphics(reader, out)
     need = min_size(len(rows))
-    state: dict = {"drawn": None, "asked": False}
+    state: dict = {"drawn": None, "asked": False, "selected": selected}
+    requested = config.env("SPLASH_ART", "auto") or "auto"
+    requested = requested if requested in ("auto", "ascii", "none") else "auto"
+    art = "none"
 
     def draw(sel: int) -> None:
+        state["selected"] = sel
         size = terminal_size()
         small = size.columns < need[0] or size.lines < need[1]
-        key = (sel, size.columns, size.lines, small)
+        mode = art_mode(size.columns, size.lines, len(rows), art)
+        key = (sel, size.columns, size.lines, small, mode)
         if key == state["drawn"]:
-            return  # a poll tick with nothing changed: no repaint, no flicker
+            return
         state["drawn"] = key
-        if small:
-            if not state["asked"]:
-                state["asked"] = True
-                # Ask an xterm-style terminal to grow to the minimum. Many ignore this; a
-                # terminal's window size is ultimately its owner's, so the guard page below
-                # is the floor, and the chooser resumes centered the moment it fits.
-                out.write(f"\x1b[8;{need[1]};{need[0]}t")
-            from textwrap import wrap
-            msg = f"Enlarge window to {need[0]}x{need[1]} (now {size.columns}x{size.lines}). q quits."
-            text = wrap(msg, max(1, size.columns - 2))[:size.lines]
-            top = max(0, (size.lines - len(text)) // 2)
-            page = "\n" * top + "\n".join(line.center(size.columns) for line in text)
-        else:
-            state["asked"] = False
-            page = dashboard(rows, sel, cols=size.columns, lines=size.lines)
-        out.write(_frame(page))
-        out.flush()
+        out.write("\x1b[?2026h")  # synchronized update where supported, ignored elsewhere
+        try:
+            graphics.hide()
+            if small:
+                if not state["asked"]:
+                    state["asked"] = True
+                    out.write(f"\x1b[8;{need[1]};{need[0]}t")
+                from textwrap import wrap
+                msg = f"Enlarge window to {need[0]}x{need[1]} (now {size.columns}x{size.lines}). q quits."
+                text = wrap(msg, max(1, size.columns - 2))[:size.lines]
+                top = max(0, (size.lines - len(text)) // 2)
+                page = "\n" * top + "\n".join(line.center(size.columns) for line in text)
+            else:
+                state["asked"] = False
+                page = dashboard(rows, sel, cols=size.columns, lines=size.lines, art=mode)
+            out.write(_frame(page))
+            if mode == "images" and not small:
+                graphics.place(image_rectangles(size.columns, size.lines, len(rows)))
+        finally:
+            out.write("\x1b[?2026l")
+            out.flush()
 
     def line_read() -> str:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        # Do not hand input() a tty after the probe already queued typed characters.
+        # This editor shares the same input owner and cannot lose a rapid `t<target><Enter>`.
+        value: list[str] = []
         try:
-            size = terminal_size()
-            out.write(f"\x1b[{size.lines};1H\x1b[2Kssh target: ")
-            out.flush()
-            return input().strip()
+            while True:
+                draw(state["selected"])
+                size = terminal_size()
+                room = max(0, size.columns - len("ssh target: ") - 1)
+                text = "".join(value)
+                tail = text[-room:] if room else ""
+                out.write(f"\x1b[{size.lines};1H\x1b[2Kssh target: {tail}")
+                out.flush()
+                key = _next_key(reader.getchar)
+                if key == "enter":
+                    return text.strip()
+                if key == "esc":
+                    return ""
+                if key in ("\x7f", "\b"):
+                    if value:
+                        value.pop()
+                elif len(key) == 1 and key.isprintable() and len(value) < 1024:
+                    value.append(key)
         except EOFError:
             return ""
         finally:
-            tty.setcbreak(fd)
-            state["drawn"] = None  # the typed-target prompt overwrote the last frame
-
-    def getchar() -> str:
-        import select
-        r, _, _ = select.select([fd], [], [], 0.1)  # poll, so a resize redraws within a tick
-        return os.read(fd, 1).decode(errors="ignore") if r else ""
+            state["drawn"] = None
 
     try:
         tty.setcbreak(fd)
         out.write("\x1b[?1049h\x1b[?25l\x1b[?7l")
         out.flush()
-        return _choose_keys(cands, rows, selected, getchar, draw, line_read)
+        if requested == "auto" and os.environ.get("TERM") != "dumb" and graphics.start():
+            art = "images"
+        else:
+            art = "ascii" if requested != "none" else "none"
+        return _choose_keys(cands, rows, selected, reader.getchar, draw, line_read)
     finally:
-        out.write("\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l")
-        out.flush()
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        try:
+            graphics.close()
+            out.write("\x1b[0m\x1b[?2026l\x1b[?7h\x1b[?25h\x1b[?1049l")
+            out.flush()
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 def choose(read=input) -> str | None:

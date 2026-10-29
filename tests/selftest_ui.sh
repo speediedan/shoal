@@ -1188,35 +1188,29 @@ with contextlib.redirect_stdout(buf):
     got = ui_launch.choose(read=lambda p: "")
 import re
 assert got == "other-host.invalid" and re.search(r"> remote +other-host\.invalid  \(unreachable now\) +2", buf.getvalue()), buf.getvalue()
-# The start screen: three whole fish grouped around the logo and the centered menu.
+# Original 36x13 ASCII outlines fit as a whole composition, or are omitted.
 rows = [("local", "here, this host", False), ("remote", "other-host.invalid", True)]
-assert len({len(r) for r in ui_launch._HEADER}) == 1, "header rows share one width"
-plain = ui_launch.dashboard(rows, 2, cols=200, color=False, uni=True)
+assert len({len(r) for r in ui_launch._HEADER}) == 1
+plain = ui_launch.dashboard(rows, 2, cols=200, lines=50, color=False, uni=True)
 assert "███████╗" in plain and "\x1b[" not in plain and "▸ remote  other-host.invalid  (unreachable now)" in plain, plain
-assert all(fish[1].strip() in plain for fish in ui_launch._FISH), "three whole small fish"
-assert all(len(l) <= 200 for l in plain.splitlines()), [len(l) for l in plain.splitlines()]
-full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=False, uni=True)
-fl = full.splitlines()
-assert full.count("\n") == 39, "full screen: the page fills the rows"
-assert max(len(l) for l in fl) < 110, "fish stay near the centered logo, away from the edges"
-for fish in ui_launch._FISH:
-    assert full.count(fish[1].strip()) == 1, "exactly three complete fish"
+assert all(len(row) <= 200 for row in plain.split("\n"))
 for cols, lines in ((72, 23), (90, 30), (160, 50)):
     picture = ui_launch.dashboard(rows, 1, cols=cols, lines=lines, color=False, uni=True).split("\n")
     assert len(picture) == lines and all(len(row) <= cols for row in picture)
-    for fish in ui_launch._FISH:
-        assert sum(fish[1].strip() in row for row in picture) == 1
     first = next(i for i, row in enumerate(picture) if row.strip())
     last = max(i for i, row in enumerate(picture) if row.strip())
-    assert abs(first - (lines - 1 - last)) <= 1, "composition stays vertically centered"
+    assert abs(first - (lines - 1 - last)) <= 1
+    if cols < ui_launch._ASCII_COLS or lines < 40:
+        assert not any(".---." in row for row in picture), "no tiny or partial fish"
 for cols, lines in ((100, 30), (80, 24), (60, 20)):
-    s = ui_launch.dashboard(rows, 1, cols=cols, lines=lines, color=False, uni=True)
+    page = ui_launch.dashboard(rows, 1, cols=cols, lines=lines, color=False, uni=True)
     for text in ("which host serves the view?", "here, this host", "other-host.invalid", "stigmergic"):
-        assert text in s, f"{cols}x{lines}: fish ate {text!r}"
-colored_full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=True, uni=True)
-assert len(set(re.findall(r"\x1b\[(\d+)m", colored_full)) & set(ui_launch._FISH_COLORS)) >= 3, "each small fish its own color"
+        assert text in page, (cols, lines, text)
+colored_full = ui_launch.dashboard(rows, 1, cols=160, lines=50, color=True, uni=True)
+assert set(ui_launch._FISH_COLORS) <= set(re.findall(r"\x1b\[([\d;]+)m", colored_full))
+full = ui_launch.dashboard(rows, 1, cols=120, lines=40, color=False, uni=True)
 mw, mh = ui_launch.min_size(2)
-assert (mw, mh) == (72, 23), "minimum includes all art, menu and help text"
+assert (mw, mh) == (72, 23), "compact minimum, optional art never forces a giant window"
 from unittest.mock import patch
 with patch.object(ui_launch.os, "get_terminal_size", return_value=os.terminal_size((90, 30))), \
      patch.dict(os.environ, {"COLUMNS": "200", "LINES": "50"}):
@@ -1314,6 +1308,8 @@ finally:
     os.close(slave)
 print("launch chooser ok")
 PY2
+
+python3 "$TESTD/test_splash_graphics.py" || fail "splash graphics"
 
 echo "== 6b repo skills: the .agents/skills vendored copies match the plugin masters"
 REPO_ROOT=$(cd "$SHOALD/.." && pwd)
