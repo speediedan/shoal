@@ -58,6 +58,7 @@ JSON
 $H ledger-init --spec "$SPEC" >/dev/null
 
 python3 "$TESTD/test_resource_usage.py" || fail "resource usage telemetry and placement"
+python3 "$TESTD/test_role_time.py" || fail "role time accounting"
 
 echo "== 1 working context: scope derives, migrate converts and removes scope"
 check '"tl-4-migration": 3.0' $H context show --shoal $SID --spec "$SPEC" --slug tl

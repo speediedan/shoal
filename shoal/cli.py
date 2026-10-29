@@ -81,6 +81,7 @@ import park as _park  # noqa: E402
 import grants as _grants  # noqa: E402
 import startdoc as _startdoc  # noqa: E402
 import resource_usage as _resource_usage  # noqa: E402
+import role_time as _role_time  # noqa: E402
 from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    is_wake_relay, home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
@@ -1210,6 +1211,7 @@ def main(argv: list[str] | None = None) -> int:
     _grants.add_parsers(sub)
     _startdoc.add_parser(sub)
     _resource_usage.add_parser(sub)
+    _role_time.add_parser(sub)
     _ui_parsers(sub)
 
     p = sub.add_parser("watch", help="systemd-timer watchers that fire into the ledger")
