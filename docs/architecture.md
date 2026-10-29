@@ -537,7 +537,41 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
   `unresolved` bucket, never a row.
 - **Reports** (`report`, and a weekly timer): outcomes, time in state, transition quality, wait
   discipline, wake efficiency, ledger economics, health actions, job units, digest refreshes, host
-  memory-pressure fires and harness reaps, and a verdict section.
+  memory-pressure fires and harness reaps, and a verdict section. Time in state there is ledger
+  posture time, not work time (see below).
+
+### Role time accounting
+
+`shoal/role_time.py` (`shoal role-time report`) charges every second of a configured foreground
+role's membership to exactly one class and event: work, a non-idle wait, idle, unknown or excluded.
+Average Active Roles (AAR) is work plus non-idle waits per elapsed second; Role Work Fraction is work
+over eligible (non-excluded) role-time. Unknown time is never redistributed: reports carry lower
+and upper bounds and coverage. The module is pure: adapters build observation snapshots from
+host-local caches and the ledger clone, and it never fetches, probes a harness, calls a provider,
+wakes a role or runs a model turn.
+
+- **Work comes from the native turn state**, not ledger posture: the ledger records the posture a
+  role sleeps in at the end of a turn (§4), so a turn inside an unchanged `waiting` posture is work.
+  Ledger `active` with no turn running accrues no work. A positively identified blocking phase
+  inside a turn is a wait; an open native question is `wait:user-prompt`.
+- **Between turns the ledger classifies**: waiting substates map to wait events (a `lease:` target
+  wins over the nominal CI substate), `queue-empty` is idle unless a refill is requested, explicit
+  `paused` and `offline` are excluded, and an idle posture is classified by its queue. Any runnable
+  item (no blocker, or a resolved or expired one under `blockers.py`) makes the role idle
+  `ready-work`; only when every item is non-runnable is the role in a blocker wait, with the
+  blockers' shared kind, `mixed`, or `unverified`. Park is excluded; freeze and user-offline are
+  not exclusions.
+- **Freshness and validity are separate**: each source carries its last successful read and a
+  budget; past it the time is unknown. Wait and blocker expiry change the attribution, not the
+  coverage. Intervals split at every source deadline and blocker expiry.
+- **Two clocks**: `account()` is the reconciled event-time view; `Accumulator` is the live
+  observation-time view, which never backdates a late record (it counts it), zero-initializes every
+  role, class and event series, checkpoints atomically, charges a restart gap to `unknown:gap` and
+  starts a new epoch when its checkpoint is lost. Its Prometheus text carries no host or session
+  label, so a handoff does not split a role's series.
+- The report reads observation JSONL (membership and snapshot lines; line order is append order for
+  same-time records). The classification policy version travels with every report. Adapters that
+  build these records from the ledger and from per-host native session status are separate work.
 
 ## 10. Live upgrades
 
