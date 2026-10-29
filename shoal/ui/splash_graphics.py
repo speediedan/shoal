@@ -14,6 +14,7 @@ import zlib
 
 ESC = "\x1b"
 ST = b"\x1b\\"
+ASSET_NAMES = tuple(f"fish-{name}.png" for name in ("coral", "teal", "violet", "seahorse", "blowfish"))
 _DA = re.compile(rb"\x1b\[[?>]?[0-9;:]*c")
 
 
@@ -131,7 +132,7 @@ class SplashGraphics:
             self.reader.wait(lambda: self.base in self.reader.query_reports or self.reader.da, timeout)
             if self.reader.query_reports.get(self.base) != "OK":
                 return False
-            for index, name in enumerate(("fish-coral.png", "fish-teal.png", "fish-violet.png"), 1):
+            for index, name in enumerate(ASSET_NAMES, 1):
                 data = (self.directory / name).read_bytes()
                 if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 8 * 1024 * 1024:
                     raise ValueError("invalid splash PNG")

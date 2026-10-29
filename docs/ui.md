@@ -427,7 +427,7 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 `ui doctor`'s plugin line names the path the plugin is really linked from.
 
 **Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
-- **The chooser.** A full-screen start screen with three transparent colorful fish around the SHOAL
+- **The chooser.** A full-screen start screen with five transparent colorful creatures (three fish, a seahorse and a blowfish) around the SHOAL
   logo above the menu. A Kitty graphics PNG capability probe enables images behind the text, including
   over SSH when the complete terminal path supports it. The fish are uploaded once and repositioned
   on resize. Unsupported paths use three colored ASCII fish, one reversed, only when all three fit

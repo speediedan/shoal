@@ -82,22 +82,22 @@ class SplashTests(unittest.TestCase):
     def test_chunks_placements_cache_and_scoped_cleanup(self):
         with tempfile.TemporaryDirectory() as d:
             data = sg.probe_png() + b"padding" * 1000
-            for name in ("coral", "teal", "violet"):
-                (Path(d) / f"fish-{name}.png").write_bytes(data)
+            for name in sg.ASSET_NAMES:
+                (Path(d) / name).write_bytes(data)
             r = sg.TerminalInput(-1)
             out = Terminal(r)
             g = sg.SplashGraphics(r, out, Path(d))
             self.assertTrue(g.start(timeout=0))
-            self.assertEqual(out.uploads, [data] * 3)
+            self.assertEqual(out.uploads, [data] * len(sg.ASSET_NAMES))
             for size in ((72, 23), (160, 50), (90, 30)):
                 g.hide()
                 g.place(ui.image_rectangles(*size, 2))
-            self.assertEqual(len(out.uploads), 3, "selection/resize reuses uploaded data")
+            self.assertEqual(len(out.uploads), len(sg.ASSET_NAMES), "selection/resize reuses uploaded data")
             self.assertIn("z=-1,C=1,q=2", out.getvalue())
             self.assertIn("d=i,i=301", out.getvalue())
             g.close()
             self.assertFalse(g.ids)
-            for image_id in (301, 302, 303):
+            for image_id in range(301, 301 + len(sg.ASSET_NAMES)):
                 self.assertIn(f"a=d,d=I,i={image_id},q=2", out.getvalue())
             self.assertNotIn("d=A", out.getvalue())
             self.assertNotIn("d=a", out.getvalue())
@@ -129,8 +129,12 @@ class SplashTests(unittest.TestCase):
             page = ui.dashboard(rows, 1, cols=cols, lines=lines, color=False, art="ascii")
             self.assertNotIn(".---.", page, "incomplete fish are hidden")
             self.assertIn("which host serves", page)
-            for x, y, w, h in ui.image_rectangles(cols, lines, 2):
+            rects = ui.image_rectangles(cols, lines, 2)
+            self.assertEqual(len(rects), len(sg.ASSET_NAMES))
+            for i, (x, y, w, h) in enumerate(rects):
                 self.assertTrue(0 <= x < x + w <= cols and 0 <= y < y + h <= lines)
+                for xx, yy, ww, hh in rects[:i]:
+                    self.assertTrue(x + w <= xx or xx + ww <= x or y + h <= yy or yy + hh <= y)
         self.assertNotEqual(ui._FISH[0], ui._FISH[2])
         self.assertEqual({len(row) for f in ui._FISH for row in f}, {36})
 
@@ -153,8 +157,8 @@ rows = [('local', 'here', False), ('remote', 'other.invalid', False)]
 print('RESULT', ui_launch._choose_interactive(['local', 'other'], rows, 1), flush=True)
 """
         with tempfile.TemporaryDirectory() as d:
-            for name in ("coral", "teal", "violet"):
-                (Path(d) / f"fish-{name}.png").write_bytes(sg.probe_png())
+            for name in sg.ASSET_NAMES:
+                (Path(d) / name).write_bytes(sg.probe_png())
             env = dict(os.environ, TERM="xterm-kitty", SHOAL_SPLASH_ART="auto")
             env.pop("NO_COLOR", None)
             p = subprocess.Popen([sys.executable, "-c", child, str(Path(ui.__file__).parent), d],
@@ -195,22 +199,22 @@ print('RESULT', ui_launch._choose_interactive(['local', 'other'], rows, 1), flus
             try:
                 until(lambda: b"\x1b[1;7mremote" in output)
                 self.assertTrue(typed)
-                self.assertEqual(len(uploads), 3)
-                until(lambda: output.count(b"a=p,") >= 6)
+                self.assertEqual(len(uploads), len(sg.ASSET_NAMES))
+                until(lambda: output.count(b"a=p,") >= 2 * len(sg.ASSET_NAMES))
                 before = output.count(b"a=p,")
                 resize(120, 40)
-                until(lambda: output.count(b"a=p,") >= before + 3)
-                self.assertEqual(len(uploads), 3)
+                until(lambda: output.count(b"a=p,") >= before + len(sg.ASSET_NAMES))
+                self.assertEqual(len(uploads), len(sg.ASSET_NAMES))
                 resize(32, 8)
                 until(lambda: b"Enlarge window to 72x23" in output)
                 resize(80, 24)
                 before = output.count(b"a=p,")
-                until(lambda: output.count(b"a=p,") >= before + 3)
+                until(lambda: output.count(b"a=p,") >= before + len(sg.ASSET_NAMES))
                 os.write(master, b"tguest@target.invalid\r")
                 until(lambda: b"RESULT guest@target.invalid" in output)
                 self.assertEqual(p.wait(timeout=5), 0)
                 self.assertEqual(termios.tcgetattr(slave), attrs)
-                for image_id in (301, 302, 303):
+                for image_id in range(301, 301 + len(sg.ASSET_NAMES)):
                     self.assertIn(f"a=d,d=I,i={image_id},q=2".encode(), output)
             finally:
                 if p.poll() is None:
@@ -221,8 +225,8 @@ print('RESULT', ui_launch._choose_interactive(['local', 'other'], rows, 1), flus
 
     def test_packaged_png_integrity(self):
         directory = Path(ui.__file__).with_name("assets")
-        for name in ("coral", "teal", "violet"):
-            data = (directory / f"fish-{name}.png").read_bytes()
+        for name in sg.ASSET_NAMES:
+            data = (directory / name).read_bytes()
             self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
             pos, compressed = 8, bytearray()
             while pos < len(data):

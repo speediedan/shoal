@@ -710,7 +710,14 @@ and the contract are in [`ui.md`](ui.md).
   metadata. Palette and plugin popups pass `--pause`, keeping empty-list and server errors visible
   until dismissed; intentional cancellation closes normally. Explicit `--harness`/`--id` remains
   available for sessions outside the discovered lists.
-- **Launch chooser** (`shoal/ui/ui_launch.py`, `splash_graphics.py`): three transparent PNG fish
+- **Question classification:** role and standalone Claude cards use the same confirmed prompt
+  detector (`health.claude_prompt_open`, exposed by `ui_status.pending_question`). A live standalone
+  session with an open prompt displays `QUESTION`, even with idle tempo or active subagents; Herdr's
+  transport state remains `blocked`. Answered prompts clear that label. Raw `blocked` alone is not
+  proof of an open question, and dead sessions stay dead. Role CI/job waits retain their primary
+  wait label with question attention separate. Other harnesses retain their existing probes until
+  they expose an equally reliable structured prompt signal.
+- **Launch chooser** (`shoal/ui/ui_launch.py`, `splash_graphics.py`): five transparent PNG creatures (three fish, a seahorse and a blowfish)
   sit around the SHOAL logo above the host menu, behind text at Kitty graphics z-index -1. An
   actual PNG query followed by a device-attributes fence selects image mode, with a bounded wait;
   terminal names alone are not proof of graphics support. PNGs travel in 4096-byte base64 chunks

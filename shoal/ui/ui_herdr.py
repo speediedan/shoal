@@ -893,6 +893,8 @@ def standalone_state(e: dict, rows: list[dict]) -> tuple[str, str]:
     if harness == "claude":
         row = ui_status.claude_session(rows, e["session"], e.get("job", "")) or {}
         st = ui_status.claude_turn(row) if row else "unknown"
+        if row and st != "dead" and ui_status.pending_question(row, e["session"]):
+            return "QUESTION", "blocked"
         return st, {"working": "working", "blocked": "blocked"}.get(st, "idle")
     if harness in ("muse", "codex", "opencode"):
         try:

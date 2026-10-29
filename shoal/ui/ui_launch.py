@@ -206,9 +206,11 @@ def image_rectangles(cols: int, lines: int, n_rows: int) -> list[tuple[int, int,
     """Cell rectangles relative to the same compact composition as the text."""
     top = max(0, (lines - (10 + 2 * max(1, n_rows) + 7)) // 2)
     hx = (cols - len(_HEADER[0])) // 2
-    return [(cols // 2 + 4, top, 8, 4),
+    return [(cols // 2 - 4, top, 8, 4),
             (hx - 14, top + 4, 12, 6),
-            (hx + len(_HEADER[0]) + 2, top + 4, 12, 6)]
+            (hx + len(_HEADER[0]) + 2, top + 4, 12, 6),
+            (cols // 2 - 17, top, 6, 4),
+            (cols // 2 + 9, top, 8, 4)]
 
 
 def terminal_size() -> os.terminal_size:
