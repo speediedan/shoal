@@ -70,6 +70,23 @@ assert r["far"]["session"] == "remote" and r["far"]["watcher"] == "remote", r["f
 assert r["far"]["can_progress"]["ok"], r["far"]
 print("contract ok")
 PY
+# A native prompt remains actionable when the harness tempo reads idle; an answer clears it.
+python3 - "$SHOALD" "$ROOT" "$SID" <<'PY2' || fail "idle prompt classification"
+import sys, os, json
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_status
+fake = json.loads(os.environ["SHOAL_FAKE_SESSIONS"])
+row = fake["claude"][0]
+row["tempo"] = "idle"
+for pending in (True, False):
+    row["waitingFor"] = "input needed" if pending else None
+    os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps(fake)
+    doc = ui_status.status([sys.argv[3]], root=sys.argv[2], opencode_probe=False)
+    role = next(r for r in doc["shoals"][0]["roles"] if r["slug"] == "cl")
+    assert role["session"] == "idle"
+    assert ("blocked-on-question" in role["can_progress"]["reasons"]) == pending, role
+print("idle prompt classification ok")
+PY2
 # the overview table carries each role's ecosystem (claude, opencode, codex, muse) as its own column
 TXT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 200) || fail "ui status text rc"
 grep -Eq '\| role +\| host +\| ecosystem +\| posture' <<<"$TXT" || fail "overview table has no host and ecosystem columns: $TXT"
@@ -417,6 +434,16 @@ import ui_herdr
 mk = lambda s, n, r: {"session": s, "needs_you": n, "can_progress": {"reasons": r}}
 assert ui_herdr.herdr_state(mk("working", True, ["waiting-on-you"])) == "working"  # busy wins over needs-you
 assert ui_herdr.herdr_state(mk("blocked", True, ["blocked-on-question"])) == "blocked"
+# Standalone cards use the same confirmed question detector as role cards, including idle
+# tempo and active subagents. Answering clears QUESTION; raw blocked alone does not imply it.
+entry = {"harness": "claude", "session": "fixture-session", "job": "fixture-job"}
+base = {"sessionId": "fixture-session", "id": "fixture-job", "pid": 123, "state": "blocked"}
+for tempo in ("blocked", "active", "idle"):
+    row = dict(base, tempo=tempo, waitingFor="input needed")
+    assert ui_herdr.standalone_state(entry, [row]) == ("QUESTION", "blocked")
+assert ui_herdr.standalone_state(entry, [dict(base, state="done", tempo="idle")]) == ("idle", "idle")
+assert ui_herdr.standalone_state(entry, [base]) == ("blocked", "blocked")
+assert ui_herdr.standalone_state(entry, [dict(base, pid=None, waitingFor="input needed")])[0] == "dead"
 # the feeder never waits on the provider probes behind conditions: a missing or stale cache returns at once
 import json as _j, os as _o, tempfile, time as _t, types
 cd = tempfile.mkdtemp(); st = types.SimpleNamespace(sid="condtest", ledger_dir="/nonexistent")
@@ -914,7 +941,7 @@ os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({
     "muse": {"mu-busy": "mu-busy status:busy attached", "mu-idle": "mu-idle status:idle last:ok rc:0"},
     "opencode": {"ses_oc9": "ses_oc9 status:busy directory:/x"}})
 rows = ui_status.claude_rows()
-assert ui_herdr.standalone_state({"harness": "claude", "session": "c1a2b3c4-0000"}, rows) == ("blocked", "blocked")
+assert ui_herdr.standalone_state({"harness": "claude", "session": "c1a2b3c4-0000"}, rows) == ("QUESTION", "blocked")
 assert ui_herdr.standalone_state({"harness": "muse", "session": "mu-busy"}, rows) == ("working", "working")
 assert ui_herdr.standalone_state({"harness": "muse", "session": "mu-idle"}, rows) == ("idle", "idle")
 assert ui_herdr.standalone_state({"harness": "opencode", "session": "ses_oc9"}, rows) == ("working", "working")

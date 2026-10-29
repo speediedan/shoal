@@ -255,19 +255,15 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             reasons.append("dormant")
         elif sess == "dead":
             reasons.append("dead-worker")
-        if sess == "blocked":
-            # a Claude job reads blocked both on a real prompt (AskUserQuestion) and when the session
-            # ended its turn saying it waits on the maintainer; only the first has a prompt to answer
-            e = claude_session(rows, role.session) if role.ecosystem == "claude" else None
-            reasons.append("blocked-on-question" if pending_question(e or {}, role.session)
-                           else "blocked-says-waiting")
-        elif sess == "working" and role.ecosystem == "claude" and not is_wake_relay(role):
-            # a prompt can be open while the job still reads working: its own subagents keep the tempo
-            # `active` (measured 2026-10-14: jlens-research showed active with an AskUserQuestion open and
-            # three research agents running). The prompt is the maintainer's to answer either way.
-            e = claude_session(rows, role.session)
-            if pending_question(e or {}, role.session):
-                reasons.append("blocked-on-question")
+        # A confirmed prompt can coexist with any live turn state, including idle tempo or
+        # active subagents. Share the detector with standalone cards; raw blocked is not proof.
+        e = claude_session(rows, role.session) if role.ecosystem == "claude" else None
+        question = (role.ecosystem == "claude" and sess in ("blocked", "working", "idle")
+                    and pending_question(e or {}, role.session))
+        if question:
+            reasons.append("blocked-on-question")
+        elif sess == "blocked":
+            reasons.append("blocked-says-waiting")
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
         # turn's end, and a dead worker is reported as dead-worker instead
         if not remote and not is_wake_relay(role) and sess != "dead" and \
