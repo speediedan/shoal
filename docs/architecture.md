@@ -710,16 +710,25 @@ and the contract are in [`ui.md`](ui.md).
   metadata. Palette and plugin popups pass `--pause`, keeping empty-list and server errors visible
   until dismissed; intentional cancellation closes normally. Explicit `--harness`/`--id` remains
   available for sessions outside the discovered lists.
-- **Launch chooser** (`shoal/ui/ui_launch.py`): a compact composition of the SHOAL logo and three
-  colored ASCII fish sits above the host menu. The complete composition stays centered when the
-  window resizes; fish positions follow the logo, rather than the window edges. Kitty graphics accepts
-  pixels or PNG rather than SVG directly, so the chooser uses the portable ASCII fallback.
-  The tty's measured dimensions take precedence over inherited `COLUMNS` and `LINES`. Each redraw
-  positions and clears every row explicitly with wrapping disabled, so output newline settings and
-  stale cells cannot garble the menu. The minimum for two hosts is 72 columns by 23 rows, including
-  art and help. Below it, a bounded enlargement prompt replaces the chooser and requests a resize
-  once per small-window episode. Window-manager minimum sizes are not enforceable through the
-  portable terminal interface; resizing back restores the centered chooser without losing selection.
+- **Launch chooser** (`shoal/ui/ui_launch.py`, `splash_graphics.py`): three transparent PNG fish
+  sit around the SHOAL logo above the host menu, behind text at Kitty graphics z-index -1. An
+  actual PNG query followed by a device-attributes fence selects image mode, with a bounded wait;
+  terminal names alone are not proof of graphics support. PNGs travel in 4096-byte base64 chunks
+  over the tty, so SSH needs no shared files or image helper. Successful uploads use fresh
+  terminal-assigned ids, are cached across redraws and have only their own allocations deleted
+  on exit or partial failure. One input owner consumes fragmented and late graphics replies while
+  preserving keyboard input, including a target typed during negotiation.
+  Unsupported or silent terminals fall back to three original 36-by-13 ASCII fish, in different
+  colors with one facing left, only when all three fit intact (121 columns by 40 rows for two
+  hosts). Smaller windows omit fish. `SHOAL_SPLASH_ART=ascii|none` bypasses the probe; `auto`
+  is the default. Wheel package data includes both UI modules and the PNG assets.
+  The complete composition stays centered on resize, with fish positions following the logo.
+  Measured tty dimensions override inherited `COLUMNS` and `LINES`. Each redraw explicitly
+  positions and clears every row with wrapping disabled, independent of output newline settings.
+  The compact minimum for two hosts is 72 columns by 23 rows, including image space and help.
+  Below it, a bounded enlargement prompt replaces the chooser and requests a resize once per
+  small-window episode. Window-manager minimum sizes are not enforceable through the portable
+  terminal interface; resizing back restores the centered chooser without losing selection.
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 

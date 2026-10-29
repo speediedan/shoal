@@ -427,17 +427,25 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 `ui doctor`'s plugin line names the path the plugin is really linked from.
 
 **Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
-- **The chooser.** A full-screen start screen with three small colored ASCII fish grouped around the SHOAL
-  logo above the menu. The whole composition re-centers within a tick on resize, using measured tty dimensions
-  even when inherited `COLUMNS` and `LINES` are stale. Explicit row positioning and clearing prevent stale
-  text or line wrapping from garbling the menu. For two hosts, the minimum is 72 columns by 23 rows; below
-  that, a bounded guard asks for more room and requests terminal enlargement once per small-window episode.
-  A hard window minimum depends on the terminal and window manager. It asks which host serves the view,
-  this host (`local`) first, then every host with an ssh route, each marked when its cached probe fails. Arrow
-  keys or `j`/`k` move the selection (the last choice that worked starts highlighted,
-  `$XDG_STATE_HOME/shoal/launch.last`; a host that just failed is never remembered), Enter chooses, a digit
-  jumps straight to its host, `t` types an ssh target, `q` quits. Off a terminal it falls back to a numbered
-  prompt. `--server` never asks, and neither does a launch without a terminal (it takes the last choice, else local).
+- **The chooser.** A full-screen start screen with three transparent colorful fish around the SHOAL
+  logo above the menu. A Kitty graphics PNG capability probe enables images behind the text, including
+  over SSH when the complete terminal path supports it. The fish are uploaded once and repositioned
+  on resize. Unsupported paths use three colored ASCII fish, one reversed, only when all three fit
+  intact: at least 121 columns by 40 rows for two hosts. Smaller windows show the logo/menu without fish.
+  Set `SHOAL_SPLASH_ART=ascii` to inspect the fallback, or `SHOAL_SPLASH_ART=none` to disable art;
+  `auto` is the default. Images require no external helper.
+  The whole composition re-centers within a tick on resize using measured tty dimensions, even when
+  inherited `COLUMNS` and `LINES` are stale. Explicit row positioning and clearing prevent stale text
+  or line wrapping from garbling the menu. For two hosts, the compact minimum is 72 columns by 23 rows;
+  below that, a bounded guard asks for room and requests terminal enlargement once per small-window
+  episode. A hard window minimum depends on the terminal and window manager.
+  It asks which host serves the view, this host (`local`) first, then every host with an ssh route,
+  each marked when its cached probe fails. Arrow keys or `j`/`k` move the selection (the last choice
+  that worked starts highlighted, `$XDG_STATE_HOME/shoal/launch.last`; a host that just failed is
+  never remembered), Enter chooses, a digit jumps straight to its host, `t` types an ssh target,
+  `q` quits. Typing during graphics negotiation is preserved. Off a terminal it falls back to a
+  numbered prompt. `--server` never asks, and neither does a launch without a terminal (it takes
+  the last choice, else local).
 - **No configuration beyond the routes,** by design until Herdr machines are in use.
 - **local:**
   - a host provisioned for the local view keeps its file;

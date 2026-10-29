@@ -26,4 +26,4 @@ shoal = "shoal.cli:main"
 packages = ["shoal", "shoal.telemetry"]
 
 [tool.setuptools.package-data]
-shoal = ["scripts/*.sh"]
+shoal = ["scripts/*.sh", "ui/*.py", "ui/assets/*.png"]
