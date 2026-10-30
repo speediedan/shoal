@@ -570,8 +570,26 @@ wakes a role or runs a model turn.
   starts a new epoch when its checkpoint is lost. Its Prometheus text carries no host or session
   label, so a handoff does not split a role's series.
 - The report reads observation JSONL (membership and snapshot lines; line order is append order for
-  same-time records). The classification policy version travels with every report. Adapters that
-  build these records from the ledger and from per-host native session status are separate work.
+  same-time records). The classification policy version travels with every report.
+- **Adapters** (`shoal/role_time_adapters.py`) build those records and stay read-only toward every
+  role: no queue write, no wake, no model turn, no live provider call. `shoal role-time
+  native-status --spec S` probes the sessions running on the current host and writes a per-host
+  cache (`resources watch --role-time-spec S` refreshes the same cache each sample): Claude through
+  `health.claude_liveness`, Codex and Muse through their exec lock plus durable-session-file
+  activity, opencode through its status line. An attached but idle interactive client is never work:
+  quiet reads as between turns, moving or unreadable activity is a raw state the classifier charges
+  to unknown. `shoal role-time observe --spec S [--watch S] [--prom-dir DIR]` is the home-side
+  integrator: it folds the ledger clone (freshness is the clone's last fetch, `.git/FETCH_HEAD`
+  mtime, believed for 180 s; `--pull` refreshes it on an interval), runs `blockers.check(...,
+  live=False)` with each blocker's expiry and evidence kind, merges local probes with any
+  `--native-cache` files from other hosts (freshest source timestamp wins; a stale cache is unknown
+  time, visible in coverage), appends observation JSONL under the shoal's state directory, and
+  writes the accumulator's Prometheus text atomically with source-timestamp, eligibility and
+  observation-error series beside the counters. Population comes from spec and generation history:
+  `fill: none` roles are background unless `features.role_time.foreground` names them, and
+  `features.role_time.background` forces a role out. Membership lines are append-only, so they are
+  written once per observation file: after a generation change, start a new file for exact
+  reconciled spans (the live accumulator follows current membership every tick either way).
 
 ## 10. Live upgrades
 
@@ -773,6 +791,12 @@ is not eligible for session migration. Recommendations retain the current eligib
 small score margin to limit churn. The advisor acquires no lease, changes no host mode or role spec,
 and performs no handoff. `resources install --dry-run` previews one host service; `--enable` starts
 it only when the operator applies the reviewed deployment. See [resource telemetry](resources.md).
+
+`sample` and `watch` also accept `--prom-out FILE`, writing each sample's GPU and lease projection
+(utilization, VRAM, held reservations, queue lengths, sample timestamp) as Prometheus text for a
+textfile collector, and `--role-time-spec SPEC`, refreshing that shoal's role-time native status
+cache each sample on hosts that run sessions (a copied standalone sampler skips it). `install`
+carries both flags into the generated unit.
 
 ## 13. Known limitations
 

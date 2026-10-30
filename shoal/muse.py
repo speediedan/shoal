@@ -189,9 +189,9 @@ def native_session_dir(session: str) -> str:
 
 
 def activity_age(session: str):
-    """Seconds since the session's journal last changed (Muse appends to it as a turn runs), or None when it
-    cannot be read. `busy()` is also true for a client that is merely attached and waiting for the maintainer,
-    which a viewer must not draw as working."""
+    """Seconds since the durable record changed, or None when unreadable. Current Muse uses
+    sessions/YYYY/MM/DD/<id>/session.jsonl; older .msp-view-v1 journals remain a fallback.
+    An interactive attachment alone is not evidence of a productive turn."""
     native = native_session_dir(session)
     if native:
         try:
