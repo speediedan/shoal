@@ -704,6 +704,17 @@ and the contract are in [`ui.md`](ui.md).
   Clients that take a model and effort per run (Muse, Codex) get the seat's own pair: a role's
   from its spec, a standalone seat's from its registry entry (saved by `ui pick --model/--effort`,
   which `muse-new`/`codex-new --pick` pass through), re-read on every attach like the entry's ids.
+  Muse role cards always open a live observer, both during and between turns. The observer reads
+  public output and tool activity incrementally without owning either session lock; `q`, Escape
+  or Ctrl+C returns to the card. An explicit `i` opens native interaction only after acquiring the
+  same lock as automated turns. It refuses while busy; `/exit` releases native ownership and
+  returns to observation. Standalone Muse cards retain native resume when idle. Native
+  `--no-session-log` replay is not used: it permits unsaved divergent turns and does not follow
+  ongoing work. Modern Muse journal freshness uses `sessions/YYYY/MM/DD/<id>/session.jsonl`;
+  a native lock pid must own the locked file and an interactive resume process before it counts
+  as an attached viewer. An exec owner is a running turn, not an interactive attachment. Quiet
+  attachments read idle, and attachments without readable activity read unknown in role status.
+  Key readers preserve pending input across refreshes instead of flushing a just-typed Enter.
 - **Herdr adapter** (`shoal/ui/ui_herdr.py`, `plugins/shoal-herdr/`):
   - Layout: one workspace per shoal (an overview tab and a roles tab of cards) and a `standalone`
     workspace for non-shoal sessions. `ui open` is idempotent and re-applies a whole tab with

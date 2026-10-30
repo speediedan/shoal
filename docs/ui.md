@@ -14,11 +14,18 @@ Three rules hold for every piece:
 2. **The UI owns no session.**
    - Panes run the harness's own client on a session that already exists (`claude attach <id>`, or
      the opencode TUI as a client of OpenChamber's running server).
-   - The UI never resumes a session (a resume of a running Claude session forks it), never starts an
-     opencode server, and never restarts a role.
+   - The UI never resumes a running Claude session (that forks it), never starts an opencode
+     server, and never restarts a role. Muse observation owns no session; native interaction is
+     a separate explicit action while idle.
 3. **Every write is a shoal verb.** Actions run `shoal msg`, `offer`, `withdraw`, `offline` or
    `freeze` after a `--dry-run` preview and an explicit confirm, and are logged to
    `<data_root>/ui-actions.jsonl`. The adapter never types into a pane.
+
+Muse role cards open a live read-only observer on Enter, even when the role is idle. It leaves
+automated wakes enabled and shows public output and tool activity. Press `q`, Escape or Ctrl+C
+to return to the card. Native interaction is a separate `i` action inside that view, available
+only while idle; `/exit` quits native Muse and releases its exclusive ownership. A running turn
+is never stopped to attach. Standalone Muse cards retain their native interaction when idle.
 
 ## The read model: `shoal ui status`
 

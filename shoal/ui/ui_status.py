@@ -189,7 +189,11 @@ def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = 
             s = get_backend(role.ecosystem).status(role.session, repo_dir or os.getcwd())
         except Exception:  # noqa: BLE001
             return "unknown"
-        return "idle" if "status:idle" in s else "working" if "status:busy" in s else "unknown"
+        if "status:idle" in s or "attached quiet" in s:
+            return "idle"
+        if "attached" in s and "attached active" not in s:
+            return "unknown"  # attachment without readable activity is not evidence of work
+        return "working" if "status:busy" in s else "unknown"
     if role.ecosystem == "opencode" and opencode_probe:
         try:
             from backends import get as get_backend

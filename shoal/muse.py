@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Muse Code (`muse`, Meta's coding-agent CLI) as a shoal harness: ONE `muse exec` PROCESS PER WAKE.
 
-Why exec per wake and not a long-lived `muse serve` host (design: distributed-insight
-project_admin/shoal/design/muse-code-support, validated 2026-10-15): sessions are durable files, so a
+Why exec per wake instead of a long-lived `muse serve` host: sessions are durable files, so a
 second `muse exec --session-id <uuid>` continues the same session; an idle role costs no process and no
-tokens; `muse serve` serves exactly one client over stdio, so several shoal CLIs could not share a host;
+tokens. This adapter uses stdio, not newer Muse versions' multi-client socket transport;
 and shoal, not the role, runs the persistent watcher, so a Muse role never needs permission to start a
 detached process.
 
@@ -25,6 +24,7 @@ per token, and the maintainer chose the subscription (override with SHOAL_MUSE_A
 from __future__ import annotations
 
 import fcntl
+import glob
 import json
 import os
 import re
@@ -90,6 +90,35 @@ def attached_client(session: str) -> int:
     """Pid of an interactive Muse client (`muse resume <session>`) holding the session, else 0. Muse
     refuses a second owner ("session ... is already in use"), so an exec turn started under an attached
     client fails and its wake is lost (measured 2026-10-15, fts-core): the watcher must hold the wake."""
+    # New clients can resume by name or through a wrapper without the UUID in argv.
+    # The native lock identifies their session; never trust a stale pid file alone.
+    native = native_session_dir(session)
+    if native:
+        try:
+            path = os.path.join(native, ".session.lock")
+            with open(path) as fh:
+                match = re.search(r"^pid=(\d+)$", fh.read(4096), re.M)
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pid = int(match.group(1)) if match else 0
+                    if pid and os.stat(f"/proc/{pid}").st_uid == os.getuid():
+                        with open(f"/proc/{pid}/cmdline", "rb") as cmd:
+                            argv = cmd.read().split(b"\0")
+                        if (b"resume" in argv and b"--no-session-log" not in argv
+                                and any(os.path.basename(a).startswith(b"muse") for a in argv[:2])):
+                            target = os.fstat(fh.fileno())
+                            for fd in os.listdir(f"/proc/{pid}/fd"):
+                                try:
+                                    held = os.stat(f"/proc/{pid}/fd/{fd}")
+                                    if (held.st_dev, held.st_ino) == (target.st_dev, target.st_ino):
+                                        return pid
+                                except OSError:
+                                    pass
+                else:
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+        except (OSError, ValueError):
+            pass
     me = os.getpid()
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit() and int(p) != me]
@@ -104,7 +133,7 @@ def attached_client(session: str) -> int:
         # the native binary is argv[0]; a wrapper or interpreter (a script named muse...) puts it second
         for i in (0, 1):
             if (len(argv) > i + 2 and os.path.basename(argv[i]).startswith("muse") and argv[i + 1] == "resume"
-                    and session in argv[i + 2:]):
+                    and session in argv[i + 2:] and "--no-session-log" not in argv):
                 return int(p)
     return 0
 
@@ -141,20 +170,39 @@ def last_run(session: str) -> dict:
 ACTIVE_WINDOW_S = 120  # a session whose journal changed within this long is mid-turn, not just held open
 
 
-def activity_age(session: str):
-    """Seconds since the session's durable record last changed (Muse appends to it as a turn runs), or None
-    when it cannot be read. `busy()` is also true for a client that is merely attached and waiting for the
-    maintainer, which a viewer must not draw as working. The durable record is
-    `sessions/YYYY/MM/DD/<session>/session.jsonl` in current Muse; the `.msp-view-v1` journal is the older
-    layout and stays as a fallback (measured 2026-10-30: a current session has no `.msp-view-v1` entry, so the
-    journal-only read returned None and an attached viewer read as neither active nor quiet)."""
-    import glob
-    root = config.env("MUSE_DATA") or os.path.expanduser("~/.local/share/muse/sessions")
+def native_session_dir(session: str) -> str:
+    """Find a durable session without invoking Muse or depending on a listing service."""
+    if not UUID_RE.fullmatch(session):
+        return ""
+    root = config.env("MUSE_DATA") or os.path.join(
+        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "muse", "sessions")
+    # UUIDv7 embeds its creation date: try the direct path before the bounded date layout scan.
     try:
-        files = glob.glob(os.path.join(root, "*", "*", "*", glob.escape(session), "session.jsonl"))
-        if not files:
-            files = [os.path.join(d, f) for d in (os.path.join(root, ".msp-view-v1", session),)
-                     for f in os.listdir(d) if f.startswith("journal")]
+        date = time.gmtime(int(session[:8] + session[9:13], 16) / 1000)
+        direct = os.path.join(root, time.strftime("%Y/%m/%d", date), session)
+        if os.path.isdir(direct):
+            return direct
+    except (OverflowError, OSError, ValueError):
+        pass
+    matches = glob.glob(os.path.join(root, "*", "*", "*", session))
+    return next((p for p in matches if os.path.isdir(p)), "")
+
+
+def activity_age(session: str):
+    """Seconds since the durable record changed, or None when unreadable. Current Muse uses
+    sessions/YYYY/MM/DD/<id>/session.jsonl; older .msp-view-v1 journals remain a fallback.
+    An interactive attachment alone is not evidence of a productive turn."""
+    native = native_session_dir(session)
+    if native:
+        try:
+            return max(0.0, time.time() - os.path.getmtime(os.path.join(native, "session.jsonl")))
+        except OSError:
+            pass
+    root = config.env("MUSE_DATA") or os.path.join(
+        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "muse", "sessions")
+    try:
+        files = [os.path.join(d, f) for d in (os.path.join(root, ".msp-view-v1", session),)
+                 for f in os.listdir(d) if f.startswith("journal")]
         return max(0.0, time.time() - max(os.path.getmtime(f) for f in files))
     except (OSError, ValueError):
         return None
@@ -322,32 +370,104 @@ def messages(session: str, limit: int = 20) -> str:
     return "\n".join(out[-limit:])
 
 
+def interactive_view(session: str, model: str = "", effort: str = "") -> int:
+    """Explicit native access, serialized with start_run so a watcher cannot win the attach race."""
+    with open(os.path.join(sdir(session, create=True), "lock"), "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BusyError("a turn is running; the live view remains available")
+        if attached_client(session):
+            raise BusyError("a native client already owns this session; the live view remains available")
+        print("Native interactive mode pauses automatic wakes until you exit Muse (/exit).", flush=True)
+        return subprocess.run([muse_bin(), "resume", session, *interactive_flags(model, effort)],
+                              env=turn_env()).returncode
+
+
+def observer_argv(session: str, model: str = "", effort: str = "") -> list[str]:
+    """A role always opens an observer, including between turns. Native access requires an explicit key."""
+    return [sys.executable, CLI, "muse-tail", "--session", session, "--allow-interactive",
+            "--model", model, "--effort", effort]
+
+
+def _display_record(pl: dict, streaming: bool) -> bool:
+    """Render only public output and tool names, never prompts, tool results or reasoning records."""
+    kind = pl.get("kind")
+    if kind == "run_started":
+        print("\n--- turn started ---", flush=True)
+        return False
+    if kind == "run_output_delta" and isinstance(pl.get("text"), str):
+        print(_safe_text(pl["text"]), end="", flush=True)
+        return True
+    if kind == "run_terminal":
+        if not streaming:
+            print(_safe_text(str(pl.get("text") or pl.get("reason") or "")), flush=True)
+        print(f"\n--- turn {_safe_text(str(pl.get('terminal') or 'ended'))} ---", flush=True)
+        return False
+    if kind == "task_lifecycle":
+        event = pl.get("event") or {}
+        op = event.get("operation") if isinstance(event, dict) else None
+        if isinstance(op, str) and op.startswith("tool:"):
+            print(f"\n[{_safe_text(op)}]", flush=True)
+    return streaming
+
+
+def _safe_text(text: str) -> str:
+    # A transcript is data. Do not replay terminal escapes, OSC commands or cursor controls.
+    return "".join(c for c in text if c in "\n\t" or (c.isprintable() and c != "\x7f"))
+
+
 def cmd_muse_tail(a) -> int:
-    """A read-only view of a session's turns: past results, then new ones as they arrive. Never starts or
-    resumes anything."""
-    d = sdir(a.session)
-    print(f"muse session {a.session} (read-only view; `muse resume {a.session}` takes it over when no turn runs)")
-    shown = 0
-    path = os.path.join(d, "run.jsonl")
+    """Follow public turn output without taking either session lock. q/Escape/Ctrl+C returns to the card."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ui"))
+    from ui_view import _getkey
+    print(f"Muse {a.session}: live read-only view. Automatic wakes remain enabled.")
+    interactive = getattr(a, "allow_interactive", False)
+    keys = "[q/esc/ctrl+c] back to card" + ("   [i] native interactive (only when idle; /exit releases it)" if interactive else "")
+    print(keys, flush=True)
+    offset, streaming, inode, last_state = 0, False, None, ""
+    path = os.path.join(sdir(a.session), "run.jsonl")
     try:
         while True:
-            if os.path.exists(path):
-                with open(path) as fh:
-                    lines = fh.readlines()
-                for line in lines[shown:]:
-                    try:
-                        pl = json.loads(line).get("payload") or {}
-                    except ValueError:
-                        continue
-                    if pl.get("kind") == "run_terminal":
-                        print(f"\n--- turn {pl.get('terminal')} ---\n{pl.get('text') or pl.get('reason') or ''}")
-                    elif pl.get("kind") == "run_started":
-                        print("\n--- turn started ---")
-                shown = len(lines)
+            before = offset
+            try:
+                with open(path, "rb") as fh:
+                    st = os.fstat(fh.fileno())
+                    if inode != st.st_ino or offset > st.st_size:
+                        offset, streaming, inode = 0, False, st.st_ino
+                        if st.st_size > 262144:
+                            fh.seek(st.st_size - 262144)
+                            fh.readline()  # bounded initial history, starting at a complete record
+                            offset = fh.tell()
+                    fh.seek(offset)
+                    while True:
+                        line = fh.readline()
+                        if not line.endswith(b"\n"):
+                            break  # a writer can be between writes of one JSON record
+                        offset = fh.tell()
+                        try:
+                            pl = json.loads(line).get("payload") or {}
+                        except (ValueError, AttributeError):
+                            continue
+                        if isinstance(pl, dict):
+                            streaming = _display_record(pl, streaming)
+            except OSError:
+                pass
             if a.once:
                 return 0
-            print(f"\r[{'running' if busy(a.session) else 'idle'}]", end="", flush=True)
-            time.sleep(2)
+            state = "running" if busy(a.session) else "idle"
+            if state != last_state or offset != before:
+                print(f"\n[{state}] {keys}", flush=True)
+                last_state = state
+            k = _getkey(2)
+            if k in ("q", "Q", "\x1b", "\x03"):
+                return 0
+            if k in ("i", "I") and interactive:
+                try:
+                    interactive_view(a.session, getattr(a, "model", ""), getattr(a, "effort", ""))
+                except BusyError as exc:
+                    print(f"\n{exc}", flush=True)
+                print("\nBack to live read-only view. " + keys, flush=True)
     except KeyboardInterrupt:
         return 0
 
@@ -498,4 +618,7 @@ def add_parsers(sub) -> None:
     q = sub.add_parser("muse-tail", help="read-only view of a Muse session's turns")
     q.add_argument("--session", required=True)
     q.add_argument("--once", action="store_true")
+    q.add_argument("--allow-interactive", action="store_true", help="offer explicit native access with i while idle")
+    q.add_argument("--model", default="")
+    q.add_argument("--effort", default="")
     q.set_defaults(func=cmd_muse_tail)

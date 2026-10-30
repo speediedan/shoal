@@ -38,6 +38,7 @@ Keep durable metrics in the ledger or telemetry, never in the state dir alone.
 | 12 | none (snapshot only) | the instruction sync status, and `git status` of the versioned files | no |
 | 13 | none | a liveness probe error is not emitted | no |
 | 14 | `FM14:wakes_no_path`, `FM14:respawns`, `FM14:relay_relaunches` | telemetry health actions: a wake whose channel was `no-adapter`; a `; respawned` channel; a `relaunch` step | yes (the no-path count) |
+| 21 | pending event count/age beside quiet attached viewers | ledger offers/requests, watcher deferral logs, native journal mtime and verified lock owner | snapshot only; historical viewer duration unavailable |
 | all | `pages:total`, `wake:<condition>`, per-role idle hours, job end-to-verdict latency | telemetry and ledger | yes |
 
 ## Gaps, and the smallest addition for each

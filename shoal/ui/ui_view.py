@@ -5,8 +5,9 @@
   shoal view --harness claude|opencode --session ID     any standalone session (not in a shoal)
              [--label NAME] [--stub] [--dry-run]
 
-The viewer never creates, resumes, stops or messages a session (`Backend.view_argv`), so viewing is
-never a wake and costs no tokens; detaching or closing the terminal leaves the session running. The
+Viewing never creates, stops or messages a session, so it is never a wake and costs no tokens.
+Muse roles open a lock-free observer; native interaction is a separate, explicit idle-only action.
+Detaching or closing the observer leaves the session running. The
 session id is resolved from the live spec on every call (ids change on restart) and checked against
 the harness's own listing before anything runs.
 
@@ -37,17 +38,17 @@ STRIP_PREFIXES = ("HERDR_", "ZELLIJ")
 CARD_REFRESH_S = 15
 # measured 2026-10-12 under a pty: Ctrl+Z ends `claude attach` (exit 0) and Ctrl+C ends the opencode
 # client; the session keeps running either way, and the card comes back
-DETACH_HINT = "detach once attached: ctrl+z (claude) or ctrl+c (opencode); the session keeps running"
+DETACH_HINT = "back: ctrl+z (claude), ctrl+c (opencode), q/esc (Muse live view); native Muse: /exit"
 
 
 class ViewError(RuntimeError):
     pass
 
 
-def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(STRIP_PREFIXES)}
+def clean_env(extra: dict[str, str] | None = None, *, base: dict | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
     env.update(extra or {})
-    return env
+    return {k: v for k, v in env.items() if not k.startswith(STRIP_PREFIXES)}
 
 
 def resolve_role(sid: str, slug: str, spec_path: str = ""):
@@ -126,21 +127,30 @@ def verify_listed(harness: str, session: str, job: str = "") -> str:
     return ""  # opencode: the server rejects an unknown session id itself
 
 
-def viewer(harness: str, session: str, label: str = "", model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
+def viewer(harness: str, session: str, label: str = "", model: str = "", effort: str = "",
+           observe: bool = False) -> tuple[list[str], dict[str, str]]:
     from backends import get as get_backend
     if label and not (model and effort):
         saved_model, saved_effort = registry_view_args(harness, session, label)
         model, effort = model or saved_model, effort or saved_effort
+    if harness == "muse" and observe:
+        import muse
+        return muse.observer_argv(session, model, effort), clean_env(base=muse.turn_env())
     argv, extra = get_backend(harness).view_argv(session, model, effort)
+    if harness == "muse":
+        import muse
+        return argv, clean_env(base=muse.turn_env())
     return argv, clean_env(extra)
 
 
-def run_viewer(harness: str, session: str, label: str, job: str = "", model: str = "", effort: str = "") -> int:
+def run_viewer(harness: str, session: str, label: str, job: str = "", model: str = "", effort: str = "",
+               observe: bool = False) -> int:
     why = verify_listed(harness, session, job)
     if why:
         print(f"shoal view: {label}: {why}")
         return 1
-    argv, env = viewer(harness, session if not job else job, label, model, effort)
+    argv, env = viewer(harness, session if not job else job, label, model, effort,
+                       **({"observe": True} if observe else {}))
     print(f"shoal view: {label} -> {harness} {session} (detach to come back; the session keeps running)")
     binary = os.path.realpath(argv[0]) if harness == "claude" else ""
     started = time.time()
@@ -227,7 +237,9 @@ def _getkey(timeout: float) -> str:
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setcbreak(fd)
+        # TCSAFLUSH (setcbreak's default) drops a key typed just before a refresh/prompt.
+        # Cards and observers must preserve that pending Enter or detach key.
+        tty.setcbreak(fd, termios.TCSANOW)
         r, _, _ = select.select([sys.stdin], [], [], timeout)
         return sys.stdin.read(1) if r else ""
     finally:
@@ -450,11 +462,12 @@ def cmd_view(a) -> int:
                 return 0
             return remote_attach(host_of(role, spec), spec.sid, role.slug)
         if a.dry_run:
-            argv, env = viewer(role.ecosystem, role.session, model=role.model, effort=role.effort)
+            argv, env = viewer(role.ecosystem, role.session, model=role.model, effort=role.effort,
+                               observe=role.ecosystem == "muse")
             print(json.dumps({"argv": argv, "env_extra": sorted(k for k in env if k not in os.environ)}))
             return 0
         return run_viewer(role.ecosystem, role.session, f"{spec.sid}/{role.slug}",
-                          model=role.model, effort=role.effort)
+                          model=role.model, effort=role.effort, observe=role.ecosystem == "muse")
     except Exception as exc:  # noqa: BLE001
         print(f"shoal view: {exc}")
         return 1
