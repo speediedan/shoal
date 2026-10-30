@@ -132,6 +132,29 @@ class LedgerAdapter(unittest.TestCase):
             snap = {"t": NOW, "native": ad._native("between", NOW), "ledger": led_p, "lifecycle": {}}
             self.assertEqual(rt.classify(snap, NOW)[:2], ("idle", "ready-work"))
 
+    def test_next_items_are_item_keys_so_blockers_match(self):
+        # live queues carry `<owner>/<repo>#<n>:<verb>`; blockers are keyed by item key. Without
+        # normalizing, every blocked item read as runnable (measured on a live ledger, 2026-10-30).
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            ldir = Path(root) / "shoals" / SID / "ledger"
+            ev = json.dumps
+            from ledger import item_key
+            key = item_key("someone/r#8:fix")  # what the queue writer stores as the blocker key
+            (ldir / "peer.jsonl").write_text(
+                ev({"ts": iso(NOW - 150), "by": "peer", "type": "state", "id": "s2", "state": "idle",
+                    "session": "p1"}) + "\n" +
+                ev({"ts": iso(NOW - 150), "by": "peer", "type": "queue", "id": "q2", "version": 1,
+                    "next": ["someone/r#8:fix"], "posture": "idle",
+                    "next_blocked": {key: "hold:release-window"},
+                    "next_blocked_meta": {key: {"since": iso(NOW - 60), "first": iso(NOW - 60),
+                                                "n": 0}}}) + "\n")
+            spec, view = load(sp)
+            led = ad.ledger_part(spec, view, "peer", NOW - 10)
+            self.assertEqual(led["next"], [key])
+            snap = {"t": NOW, "native": ad._native("between", NOW), "ledger": led, "lifecycle": {}}
+            self.assertEqual(rt.classify(snap, NOW)[:2], ("wait", "hold"))
+
     def test_blocker_resolves_when_the_named_item_is_done(self):
         with tempfile.TemporaryDirectory() as td:
             sp, root = make_world(td)

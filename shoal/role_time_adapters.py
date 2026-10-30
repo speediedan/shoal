@@ -177,11 +177,13 @@ def ledger_part(spec, view, slug, fetched_at, budget_s=LEDGER_BUDGET_S):
     st = view.role_state(slug) or {}
     q = view.current_queue(slug) or {}
     state = str(st.get("state") or q.get("posture") or "")
-    nxt = [str(x) for x in (q.get("next") or [])]
+    # queue items arrive as `<owner>/<repo>#<n>:<verb>` while blockers are keyed by item key:
+    # both sides of the snapshot use item keys, or a blocked item would read as runnable
+    nxt = [item_key(str(x)) for x in (q.get("next") or [])]
     return {"observed_at": fetched_at, "budget_s": float(budget_s), "state": state,
             "sub": str(st.get("sub") or ""), "target": str(st.get("target") or ""),
             "refill_requested": bool(q.get("asks")),
-            "active": str(q.get("active") or ""), "next": nxt,
+            "active": item_key(str(q.get("active"))) if q.get("active") else "", "next": nxt,
             "blockers": _blocker_records(spec, view, slug, q)}
 
 
