@@ -170,9 +170,25 @@ def _esc(v):
     return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+def _lease_scope(key):
+    """The scope a lease key reserves (the same mapping normalized_leases applies to held rows),
+    so a known key with nothing held can still be drawn at zero in its own scope."""
+    key = str(key or "")
+    if key == "gpu":
+        return "host_gpu"
+    if key.startswith("gpu@"):
+        return "device_gpu"
+    if key == "cpu-heavy":
+        return "host_cpu_memory"
+    return "other"
+
+
 def render_prometheus(sample):
     """The GPU and lease projection of one resource sample, as Prometheus text for a textfile
-    collector. Missing measurements stay missing (no series), never fabricated zeroes."""
+    collector. Missing measurements stay missing (no series), never fabricated zeroes: a suspended
+    GPU's utilization is unmeasurable, so it gets a runtime-suspended series instead of a zero.
+    Lease counts are different: zero held (or queued) for a key the provider knows is a measured
+    fact, and is emitted, so an idle host is represented rather than absent."""
     host = _esc(sample.get("host", ""))
     L = ["# HELP shoal_resources_sample_timestamp_seconds Time of the last host resource sample.",
          "# TYPE shoal_resources_sample_timestamp_seconds gauge",
@@ -180,7 +196,9 @@ def render_prometheus(sample):
     L += ["# HELP shoal_gpu_utilization_percent GPU busy percent at sample time.",
           "# TYPE shoal_gpu_utilization_percent gauge",
           "# HELP shoal_gpu_vram_used_bytes GPU VRAM in use.", "# TYPE shoal_gpu_vram_used_bytes gauge",
-          "# HELP shoal_gpu_vram_total_bytes GPU VRAM installed.", "# TYPE shoal_gpu_vram_total_bytes gauge"]
+          "# HELP shoal_gpu_vram_total_bytes GPU VRAM installed.", "# TYPE shoal_gpu_vram_total_bytes gauge",
+          "# HELP shoal_gpu_runtime_suspended GPU runtime-suspended (1) or not (0); utilization is unmeasurable while suspended.",
+          "# TYPE shoal_gpu_runtime_suspended gauge"]
     for g in sample.get("gpus", []):
         lab = f'host="{host}",uuid="{_esc(g.get("uuid", ""))}",vendor="{_esc(g.get("vendor", ""))}"'
         if g.get("utilization_pct") is not None:
@@ -189,19 +207,24 @@ def render_prometheus(sample):
             L.append(f'shoal_gpu_vram_used_bytes{{{lab}}} {float(g["vram_used_mib"]) * 1048576:.0f}')
         if g.get("vram_total_mib") is not None:
             L.append(f'shoal_gpu_vram_total_bytes{{{lab}}} {float(g["vram_total_mib"]) * 1048576:.0f}')
-    L += ["# HELP shoal_lease_reservations Held lease reservations by key and scope.",
+        if g.get("runtime_status") is not None:
+            L.append(f'shoal_gpu_runtime_suspended{{{lab}}} {1 if g["runtime_status"] == "suspended" else 0}')
+    known = [str(k) for k in ((sample.get("lease_provider") or {}).get("known_keys") or [])]
+    L += ["# HELP shoal_lease_reservations Held lease reservations by key and scope (0 for a known key with none held).",
           "# TYPE shoal_lease_reservations gauge"]
     counts = {}
     for row in sample.get("leases", []):
         counts[(row.get("key", ""), row.get("scope", ""))] = counts.get((row.get("key", ""), row.get("scope", "")), 0) + 1
+    for key in known:
+        counts.setdefault((key, _lease_scope(key)), 0)
     for (key, scope), n in sorted(counts.items()):
         L.append(f'shoal_lease_reservations{{host="{host}",key="{_esc(key)}",scope="{_esc(scope)}"}} {n}')
-    L += ["# HELP shoal_lease_queue_length Lease requests queued by key.",
+    L += ["# HELP shoal_lease_queue_length Lease requests queued by key (0 for a known key with none queued).",
           "# TYPE shoal_lease_queue_length gauge"]
     qcounts = {}
     for row in sample.get("queue", []):
         qcounts[row.get("key", "")] = qcounts.get(row.get("key", ""), 0) + 1
-    for key in sorted(set(qcounts) | {k for k, _s in counts}):
+    for key in sorted(set(qcounts) | {k for k, _s in counts} | set(known)):
         L.append(f'shoal_lease_queue_length{{host="{host}",key="{_esc(key)}"}} {qcounts.get(key, 0)}')
     return "\n".join(L) + "\n"
 

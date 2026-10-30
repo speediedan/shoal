@@ -793,7 +793,7 @@ and performs no handoff. `resources install --dry-run` previews one host service
 it only when the operator applies the reviewed deployment. See [resource telemetry](resources.md).
 
 `sample` and `watch` also accept `--prom-out FILE`, writing each sample's GPU and lease projection
-(utilization, VRAM, held reservations, queue lengths, sample timestamp) as Prometheus text for a
+(utilization, VRAM, runtime-suspended state, held reservations and queue lengths with measured zeros for known idle keys, sample timestamp) as Prometheus text for a
 textfile collector, and `--role-time-spec SPEC`, refreshing that shoal's role-time native status
 cache each sample on hosts that run sessions (a copied standalone sampler skips it). `install`
 carries both flags into the generated unit.
