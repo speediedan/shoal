@@ -11,6 +11,10 @@ map.
      read `status`: it reads `busy` while any background task runs, including the role's own
      watcher.
    - opencode: the server's session status (`status:idle` or busy).
+   - Muse: a held automated turn lock is work in progress; an interactive attachment alone is
+     not. Compare `attached active|quiet` with the native `session.jsonl` mtime. Unknown activity
+     is not work. Role cards should be in the live observer; native interaction holds wakes until
+     `/exit`. Do not stop a productive turn merely to attach (FM-21).
 2. **Is it making progress?**
    - When it last wrote to the ledger (`shoal show`, last event).
    - The tail of its transcript: a recent tool call, and no long-pending tool call or question.

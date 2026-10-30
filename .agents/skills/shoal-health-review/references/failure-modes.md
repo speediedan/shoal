@@ -230,6 +230,21 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   wake latency. A yield is not a failed computation or a resource release.
 - **Status:** guarded for new monitors; an already-running old monitor needs a scoped operator action.
 
+## FM-21: an idle native viewer holds automated role wakes
+- **Signature:** offers or wake requests remain pending, the watcher is alive, and Muse reports
+  `attached quiet` (or attachment with unknown activity) rather than a productive turn.
+- **Detection:** compare the pending event time and watcher deferral with native journal mtime,
+  native lock ownership and the exact interactive resume process. Attachment alone is not work.
+- **Fix:** role cards always enter a lock-free live observer; native interaction requires an
+  explicit idle-only action serialized with the automated turn lock. Modern journal discovery
+  restores activity estimates; unreadable role activity stays unknown. Key readers retain a
+  pending Enter across refresh and the observer has q/Escape/Ctrl+C return keys.
+- **Metric:** snapshot count and age of pending offers/requests beside quiet attached viewers,
+  derived from ledger timestamps, watcher deferral logs and native journal mtime. A snapshot
+  alone cannot reconstruct historical viewer-held duration.
+- **Status:** guarded for role-card observation. Explicit native interaction and clients launched
+  outside SHOAL still require `/exit` before automatic wakes can proceed.
+
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after
 the unit ended. The durations came from runners yielding to CI and from lease queueing. Check the

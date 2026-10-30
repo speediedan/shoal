@@ -1337,6 +1337,7 @@ print("launch chooser ok")
 PY2
 
 python3 "$TESTD/test_splash_graphics.py" || fail "splash graphics"
+python3 "$TESTD/test_muse_view.py" || fail "Muse role viewing"
 
 echo "== 6b repo skills: the .agents/skills vendored copies match the plugin masters"
 REPO_ROOT=$(cd "$SHOALD/.." && pwd)

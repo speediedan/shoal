@@ -13,7 +13,7 @@ next wake continues the same session. There is no daemon: an idle role costs no 
 | who runs the watcher | the role (`--wake relay`) | the role (`--wake send:<id>`) | **shoal**, at launch (`--wake exec:<id>`) |
 | wake | message through the relay | `openchamber session send` | a new turn (`muse exec`) |
 | busy | `claude agents --json` tempo | `openchamber session status` | a per-session lock (`lock`) |
-| attach | `claude attach` | the opencode TUI | `muse resume <id>` (takes the session over: only while no turn runs) |
+| attach | `claude attach` | the opencode TUI | live observer for roles; explicit native interaction only while idle |
 | questions | prompted | prompted | none: `--yolo` withholds `request_user_input`; asks go through `queue --ask` |
 
 ## Interactive sessions (standalone)
@@ -31,8 +31,19 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   --model/--effort` saves the pair on the seat's registry entry (through `ui pick`), and the viewer re-reads
   it on every attach, so a seat created at `xhigh` resumes at `xhigh`. Approvals stay on (a person is
   at the keyboard). `SHOAL_MUSE_VIEW_ARGS` replaces the whole flag list.
-- While an exec turn runs on the same session the viewer shows the read-only tail instead of taking it over, so
-  the two modes can share one session id but never run at once.
+- Standalone cards show the read-only live view while an exec turn runs, then can be reopened
+  in native mode after that turn. A role card always opens the live observer, including between
+  turns: leaving it open never holds automated wakes. It shows public output, tool names and
+  turn completion without replaying prompts, tool results or reasoning records. `q`, Escape or
+  Ctrl+C returns to the card. Enter in the card opens it again.
+- In a role's observer, `i` explicitly requests native interaction. This acquires the same lock
+  automated turns use before launching `muse resume`, so a concurrent wake cannot race the
+  attach. A busy session stays in the observer. Native mode pauses automatic wakes until you
+  quit Muse with `/exit`; the observer then returns. Model/effort remain the role's own pair.
+- Native `resume --no-session-log` is a replay with unsaved new turns, not a live spectator.
+  It neither follows durable appends nor prevents divergent unrecorded work, so SHOAL does not
+  use it as a viewer. Newer Muse versions advertise `serve --listen` multi-client sockets;
+  this exec-per-wake adapter does not use that transport.
 - **Native peer messaging** (Muse "session messaging") works between live interactive, named sessions of one
   user on one machine: ask the session to list its peers, then send by exact name. Headless (`muse exec`) and
   `--no-session-log` sessions are not peers. The receiver is asked to approve the sender (allow once or for the
@@ -44,7 +55,8 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   `muse resume <id>` is open fails with "session ... is already in use" (measured 2026-10-15, fts-core, and the
   wake was lost). So an attached client counts as busy: the watcher holds the wake (it goes out at the first idle
   tick after you detach), `start_run` refuses and the runner exits 75, and the status line reads
-  `status:busy attached`. Detach (quit the Muse client) when you finish talking to a role.
+  `status:busy attached`. Ordinary role observation no longer opens this exclusive client.
+  Quit native interaction with `/exit` when finished; never kill the running turn to view it.
 - Interactive seats are not shoal roles: they are not woken by `exec:` and have no ledger watcher. Making an
   interactive pane a ledger-woken role (a wake typed into the pane) is deliberately not built yet.
 
@@ -54,6 +66,12 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
 it and the runner inherits it), `run.jsonl` (every JSONL record), `run.err`, `last.json` (started, ended, rc, terminal,
 reason, text, error), `prompt-*.txt`, `runner.log`. `shoal muse-tail --session <id>` reads it; `shoal muse-run` is the
 runner (internal).
+
+Modern native journal activity is read from `sessions/YYYY/MM/DD/<id>/session.jsonl` under
+`SHOAL_MUSE_DATA`, or the XDG Muse data directory. The older journal layout remains a fallback.
+A native `.session.lock` supplies a pid only while locked, with matching process identity and
+file ownership; stale text is not ownership. Native `exec` processes do not count as interactive
+viewers. Journal age remains a work estimate; an unreadable journal is unknown, not proof of work.
 
 ## Environment
 
