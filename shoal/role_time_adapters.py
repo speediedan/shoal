@@ -450,12 +450,14 @@ class Observer:
 
     def __init__(self, spec_path, obs_path=None, checkpoint_path=None, prom_path=None,
                  cache_paths=(), probe=True, pull=False, pull_interval_s=120.0,
-                 ledger_budget_s=LEDGER_BUDGET_S):
+                 ledger_budget_s=LEDGER_BUDGET_S, state_root=None):
         from roles import ShoalSpec, state_dir
         self.spec_path = spec_path
         spec0 = ShoalSpec.load(spec_path)
         self.sid = spec0.sid
-        base = state_dir(self.sid)
+        # a deployment with a durable state root keeps observations and the checkpoint out of any
+        # scratch area; the default is the shoal's usual state directory
+        base = os.path.join(state_root, self.sid) if state_root else state_dir(self.sid)
         self.obs_path = obs_path or os.path.join(base, "role-time-observations.jsonl")
         self.checkpoint_path = checkpoint_path or os.path.join(base, "role-time-accumulator.json")
         self.state_path = self.obs_path + ".state.json"
@@ -597,7 +599,8 @@ def cmd_observe(a):
             return 2
         observers.append(Observer(spec_path, prom_path=prom, cache_paths=a.native_cache,
                                   probe=not a.no_probe, pull=a.pull, pull_interval_s=a.pull_interval,
-                                  ledger_budget_s=a.ledger_budget))
+                                  ledger_budget_s=a.ledger_budget,
+                                  state_root=a.state_dir or None))
     while True:
         t0 = time.time()
         rc = 0
@@ -637,6 +640,9 @@ def add_subcommands(s):
     o.add_argument("--pull-interval", type=_positive, default=120.0)
     o.add_argument("--ledger-budget", type=_positive, default=LEDGER_BUDGET_S,
                    help="seconds a ledger fetch may be believed")
+    o.add_argument("--state-dir", default="",
+                   help="durable root for observations and checkpoints (<dir>/<shoal>/...); "
+                        "default: each shoal's state directory")
     o.set_defaults(func=cmd_observe)
 
 

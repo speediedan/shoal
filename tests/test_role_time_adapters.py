@@ -269,6 +269,17 @@ class ObserverEndToEnd(unittest.TestCase):
             self.assertAlmostEqual(ob2.acc.counters["worker"][("wait", "remote-ci")], 30.0)
 
 
+class StateRoot(unittest.TestCase):
+    def test_state_root_holds_observations_and_checkpoint(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td)
+            ob = ad.Observer(sp, probe=False, state_root=str(Path(td) / "state"))
+            ob.tick(NOW)
+            base = Path(td) / "state" / SID
+            self.assertTrue((base / "role-time-observations.jsonl").is_file())
+            self.assertTrue((base / "role-time-accumulator.json").is_file())
+
+
 class ResourceProjection(unittest.TestCase):
     def test_render_keeps_missing_measurements_missing(self):
         s = {"host": "h1", "ts": 100.0,
