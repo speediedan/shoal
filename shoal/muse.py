@@ -142,13 +142,19 @@ ACTIVE_WINDOW_S = 120  # a session whose journal changed within this long is mid
 
 
 def activity_age(session: str):
-    """Seconds since the session's journal last changed (Muse appends to it as a turn runs), or None when it
-    cannot be read. `busy()` is also true for a client that is merely attached and waiting for the maintainer,
-    which a viewer must not draw as working."""
+    """Seconds since the session's durable record last changed (Muse appends to it as a turn runs), or None
+    when it cannot be read. `busy()` is also true for a client that is merely attached and waiting for the
+    maintainer, which a viewer must not draw as working. The durable record is
+    `sessions/YYYY/MM/DD/<session>/session.jsonl` in current Muse; the `.msp-view-v1` journal is the older
+    layout and stays as a fallback (measured 2026-10-30: a current session has no `.msp-view-v1` entry, so the
+    journal-only read returned None and an attached viewer read as neither active nor quiet)."""
+    import glob
     root = config.env("MUSE_DATA") or os.path.expanduser("~/.local/share/muse/sessions")
     try:
-        files = [os.path.join(d, f) for d in (os.path.join(root, ".msp-view-v1", session),)
-                 for f in os.listdir(d) if f.startswith("journal")]
+        files = glob.glob(os.path.join(root, "*", "*", "*", glob.escape(session), "session.jsonl"))
+        if not files:
+            files = [os.path.join(d, f) for d in (os.path.join(root, ".msp-view-v1", session),)
+                     for f in os.listdir(d) if f.startswith("journal")]
         return max(0.0, time.time() - max(os.path.getmtime(f) for f in files))
     except (OSError, ValueError):
         return None

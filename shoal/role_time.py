@@ -450,3 +450,5 @@ def add_parser(sub):
     r.add_argument("--timeline", action="store_true", help="include merged per-role class/event segments")
     r.add_argument("--json", action="store_true")
     r.set_defaults(func=cmd_report)
+    import role_time_adapters  # the impure edge registers its verbs here (deferred: it imports us)
+    role_time_adapters.add_subcommands(s)

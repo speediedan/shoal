@@ -166,6 +166,54 @@ def snapshot(host, lease_command, session_ready=(), now=None):
                              "session_ready": [name for name in session_ready if name in harnesses and config]}}
 
 
+def _esc(v):
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def render_prometheus(sample):
+    """The GPU and lease projection of one resource sample, as Prometheus text for a textfile
+    collector. Missing measurements stay missing (no series), never fabricated zeroes."""
+    host = _esc(sample.get("host", ""))
+    L = ["# HELP shoal_resources_sample_timestamp_seconds Time of the last host resource sample.",
+         "# TYPE shoal_resources_sample_timestamp_seconds gauge",
+         f'shoal_resources_sample_timestamp_seconds{{host="{host}"}} {float(sample.get("ts") or 0):.3f}']
+    L += ["# HELP shoal_gpu_utilization_percent GPU busy percent at sample time.",
+          "# TYPE shoal_gpu_utilization_percent gauge",
+          "# HELP shoal_gpu_vram_used_bytes GPU VRAM in use.", "# TYPE shoal_gpu_vram_used_bytes gauge",
+          "# HELP shoal_gpu_vram_total_bytes GPU VRAM installed.", "# TYPE shoal_gpu_vram_total_bytes gauge"]
+    for g in sample.get("gpus", []):
+        lab = f'host="{host}",uuid="{_esc(g.get("uuid", ""))}",vendor="{_esc(g.get("vendor", ""))}"'
+        if g.get("utilization_pct") is not None:
+            L.append(f'shoal_gpu_utilization_percent{{{lab}}} {float(g["utilization_pct"]):.3f}')
+        if g.get("vram_used_mib") is not None:
+            L.append(f'shoal_gpu_vram_used_bytes{{{lab}}} {float(g["vram_used_mib"]) * 1048576:.0f}')
+        if g.get("vram_total_mib") is not None:
+            L.append(f'shoal_gpu_vram_total_bytes{{{lab}}} {float(g["vram_total_mib"]) * 1048576:.0f}')
+    L += ["# HELP shoal_lease_reservations Held lease reservations by key and scope.",
+          "# TYPE shoal_lease_reservations gauge"]
+    counts = {}
+    for row in sample.get("leases", []):
+        counts[(row.get("key", ""), row.get("scope", ""))] = counts.get((row.get("key", ""), row.get("scope", "")), 0) + 1
+    for (key, scope), n in sorted(counts.items()):
+        L.append(f'shoal_lease_reservations{{host="{host}",key="{_esc(key)}",scope="{_esc(scope)}"}} {n}')
+    L += ["# HELP shoal_lease_queue_length Lease requests queued by key.",
+          "# TYPE shoal_lease_queue_length gauge"]
+    qcounts = {}
+    for row in sample.get("queue", []):
+        qcounts[row.get("key", "")] = qcounts.get(row.get("key", ""), 0) + 1
+    for key in sorted(set(qcounts) | {k for k, _s in counts}):
+        L.append(f'shoal_lease_queue_length{{host="{host}",key="{_esc(key)}"}} {qcounts.get(key, 0)}')
+    return "\n".join(L) + "\n"
+
+
+def _atomic_write(path, text):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + f".tmp{os.getpid()}")
+    tmp.write_text(text)
+    os.replace(tmp, p)
+
+
 def append_sample(root, sample):
     """Keep observed lifecycle edges with explicit bounds; failed probes never close a lease."""
     directory = Path(root) / sample["host"]
@@ -364,6 +412,18 @@ def execute(a):
         while True:
             s = snapshot(a.host, a.lease_command, a.session_ready.split(",") if a.session_ready else ())
             append_sample(a.directory, s)
+            if getattr(a, "prom_out", ""):
+                _atomic_write(a.prom_out, render_prometheus(s))
+            for spec_path in getattr(a, "role_time_spec", []) or []:
+                # role-time native status rides this loop on hosts that run sessions; a copied
+                # standalone sampler (no shoal package beside it) simply skips it
+                try:
+                    import role_time_adapters
+                    from roles import ShoalSpec
+                    role_time_adapters.write_native_cache(ShoalSpec.load(spec_path), now=s["ts"])
+                except Exception as exc:  # noqa: BLE001 - telemetry extras never stop the sampler
+                    print(json.dumps({"role_time_native_status_error": str(exc)[:200],
+                                      "spec": spec_path}), file=sys.stderr, flush=True)
             print(json.dumps(s), flush=True)
             if a.resource_cmd == "sample":
                 return 0
@@ -372,6 +432,10 @@ def execute(a):
         argv = [sys.executable, str(Path(__file__).resolve()), "watch", "--directory", a.directory,
                 "--host", a.host, "--lease-command", a.lease_command, "--interval", str(a.interval),
                 "--session-ready", a.session_ready]
+        if getattr(a, "prom_out", ""):
+            argv += ["--prom-out", a.prom_out]
+        for spec_path in getattr(a, "role_time_spec", []) or []:
+            argv += ["--role-time-spec", spec_path]
         quote = lambda x: json.dumps(str(x).replace("%", "%%"))
         text = ("[Unit]\nDescription=SHOAL host resource observations\n[Service]\nType=simple\n"
                 + "ExecStart=" + " ".join(quote(x) for x in argv) + "\nRestart=on-failure\nRestartSec=5\n"
@@ -415,6 +479,9 @@ def add_parser(sub):
         if name in ("sample", "watch", "install"):
             q.add_argument("--lease-command", default=d["lease_command"])
             q.add_argument("--session-ready", default="", help="harnesses with completed session preflight, comma separated")
+            q.add_argument("--prom-out", default="", help="also write the GPU/lease projection as Prometheus text here")
+            q.add_argument("--role-time-spec", action="append", default=[],
+                           help="also refresh the role-time native status cache for this spec (repeatable)")
         if name in ("watch", "install"):
             q.add_argument("--interval", type=positive, default=15)
         if name == "install":
