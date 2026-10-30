@@ -1,0 +1,299 @@
+"""Role time adapters on a synthetic ledger clone: no network, no live harness, no provider call.
+Ledger events are written as raw JSONL exactly as the writers append them; blocker ages are
+relative to the real clock because blockers.check reads it."""
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import time
+import types
+import unittest
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shoal"))
+os.environ.pop("SHOAL_HEALTH_SHIFT_MIN", None)
+import muse as muse_h  # noqa: E402
+import resource_usage as ru  # noqa: E402
+import role_time as rt  # noqa: E402
+import role_time_adapters as ad  # noqa: E402
+from ledger import Ledger, View  # noqa: E402
+from roles import Role, ShoalSpec  # noqa: E402
+
+SID = "testgrp"
+NOW = time.time()
+
+
+def iso(epoch):
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def make_world(td, now=NOW):
+    """(spec path, ledger root) with a worker waiting on remote-ci, an offered peer, a background
+    fill-none role and a parked role; FETCH_HEAD fetched 10 s ago."""
+    root = Path(td) / "clone"
+    ldir = root / "shoals" / SID / "ledger"
+    ldir.mkdir(parents=True)
+    (root / ".git").mkdir()
+    fh = root / ".git" / "FETCH_HEAD"
+    fh.write_text("deadbeef\t\tbranch 'main' of example\n")
+    os.utime(fh, (now - 10, now - 10))
+    roles = [Role(slug="worker", ecosystem="muse", title="worker", doc="/x/w.md", fill="self",
+                  session="11111111-2222-3333-4444-555555555555"),
+             Role(slug="peer", ecosystem="claude", title="peer", doc="/x/p.md", fill="assigned",
+                  session="aaaa1111"),
+             Role(slug="observer", ecosystem="opencode", title="obs", doc="/x/o.md", fill="none",
+                  session="obs1"),
+             Role(slug="parked-one", ecosystem="muse", title="park", doc="/x/k.md", fill="assigned",
+                  session="", parked={"at": iso(now - 100), "by": "user", "note": "x"})]
+    gens = [{"gen": "r1", "incarnation": 0, "started_utc": iso(now - 86400),
+             "ended_utc": iso(now - 43200), "sessions": {"worker": "w0", "peer": "p0"}, "run": {}},
+            {"gen": "r2", "incarnation": 1, "started_utc": iso(now - 43200), "ended_utc": "",
+             "sessions": {"worker": "w1", "peer": "p1", "parked-one": "k1"}, "run": {}}]
+    spec = ShoalSpec(sid=SID, dir=str(Path(td)), incarnation=1, roles=roles,
+                     generations=gens, ledger={"repo": "example.invalid/x.git", "dir": str(root)},
+                     features={"blockers": True})
+    spec_path = root / "shoals" / SID / "shoal.json"
+    spec.save(str(spec_path))
+    ev = json.dumps
+    (ldir / "user.jsonl").write_text(
+        ev({"ts": iso(now - 300), "by": "user", "type": "offer", "id": "o1", "to": "peer",
+            "item": "o/r#9"}) + "\n")
+    (ldir / "worker.jsonl").write_text(
+        ev({"ts": iso(now - 200), "by": "worker", "type": "state", "id": "s1", "state": "waiting",
+            "sub": "remote-ci", "target": "job:ci", "session": "w1"}) + "\n" +
+        ev({"ts": iso(now - 200), "by": "worker", "type": "queue", "id": "q1", "version": 3,
+            "next": ["o/r#7"], "asks": ["more work when ready?"], "posture": "waiting",
+            "next_blocked": {"o/r#7": "peer:o/r#9"},
+            "next_blocked_meta": {"o/r#7": {"since": iso(now - 60), "first": iso(now - 60),
+                                            "n": 0}}}) + "\n")
+    (ldir / "peer.jsonl").write_text(
+        ev({"ts": iso(now - 150), "by": "peer", "type": "state", "id": "s2", "state": "idle",
+            "session": "p1"}) + "\n" +
+        ev({"ts": iso(now - 150), "by": "peer", "type": "queue", "id": "q2", "version": 1,
+            "next": ["o/r#8"], "posture": "idle",
+            "next_blocked": {"o/r#8": "hold:release-window"},
+            "next_blocked_meta": {"o/r#8": {"since": iso(now - 13 * 3600),
+                                            "first": iso(now - 13 * 3600), "n": 0}}}) + "\n")
+    return str(spec_path), str(root)
+
+
+def load(spec_path):
+    spec = ShoalSpec.load(spec_path)
+    return spec, View(Ledger(SID, root=spec.ledger_dir, sync=False), spec)
+
+
+class LedgerAdapter(unittest.TestCase):
+    def test_fetch_time_is_fetch_head_not_newest_event(self):
+        with tempfile.TemporaryDirectory() as td:
+            _sp, root = make_world(td)
+            self.assertAlmostEqual(ad.ledger_fetched_at(root), NOW - 10, delta=2)
+            self.assertIsNone(ad.ledger_fetched_at(str(Path(td) / "nofetch")))
+
+    def test_foreground_and_membership(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td)
+            spec, _view = load(sp)
+            fg, bg = ad.foreground_roles(spec)
+            self.assertEqual({r.slug for r in fg}, {"worker", "peer", "parked-one"})
+            self.assertEqual(bg, {"observer"})
+            spans = ad.membership_spans(spec)
+            self.assertEqual(len(spans["worker"]), 1)  # touching generations merge
+            self.assertAlmostEqual(spans["worker"][0][0], NOW - 86400, delta=2)
+            self.assertIsNone(spans["worker"][0][1])
+            self.assertAlmostEqual(spans["parked-one"][0][0], NOW - 43200, delta=2)
+            spec.features = {"role_time": {"foreground": ["observer"], "background": ["peer"]}}
+            fg, bg = ad.foreground_roles(spec)
+            self.assertIn("observer", {r.slug for r in fg})
+            self.assertIn("peer", bg)
+            spec.retired_utc = iso(NOW - 50)
+            spec.features = {}
+            self.assertAlmostEqual(ad.membership_spans(spec)["worker"][0][1], NOW - 50, delta=2)
+
+    def test_ledger_part_posture_blockers_and_refill(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            spec, view = load(sp)
+            led = ad.ledger_part(spec, view, "worker", ad.ledger_fetched_at(root))
+            self.assertEqual((led["state"], led["sub"], led["target"]), ("waiting", "remote-ci", "job:ci"))
+            self.assertTrue(led["refill_requested"])  # the recorded ask is the refill request
+            b = led["blockers"]["o/r#7"]
+            self.assertEqual((b["status"], b["evidence"]), ("live", "ledger"))
+            self.assertAlmostEqual(b["expires_at"], NOW - 60 + 720 * 60, delta=2)
+            led_p = ad.ledger_part(spec, view, "peer", NOW - 10)
+            self.assertFalse(led_p["refill_requested"])
+            # a hold recorded 13 h ago is past its 4 h horizon: expired, age-only evidence
+            self.assertEqual(led_p["blockers"]["o/r#8"]["status"], "expired")
+            self.assertEqual(led_p["blockers"]["o/r#8"]["evidence"], "age-only")
+            self.assertIsNone(led_p["blockers"]["o/r#8"]["expires_at"])
+            # peer is therefore idle with ready work, not in a hold wait
+            snap = {"t": NOW, "native": ad._native("between", NOW), "ledger": led_p, "lifecycle": {}}
+            self.assertEqual(rt.classify(snap, NOW)[:2], ("idle", "ready-work"))
+
+    def test_next_items_are_item_keys_so_blockers_match(self):
+        # live queues carry `<owner>/<repo>#<n>:<verb>`; blockers are keyed by item key. Without
+        # normalizing, every blocked item read as runnable (measured on a live ledger, 2026-10-30).
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            ldir = Path(root) / "shoals" / SID / "ledger"
+            ev = json.dumps
+            from ledger import item_key
+            key = item_key("someone/r#8:fix")  # what the queue writer stores as the blocker key
+            (ldir / "peer.jsonl").write_text(
+                ev({"ts": iso(NOW - 150), "by": "peer", "type": "state", "id": "s2", "state": "idle",
+                    "session": "p1"}) + "\n" +
+                ev({"ts": iso(NOW - 150), "by": "peer", "type": "queue", "id": "q2", "version": 1,
+                    "next": ["someone/r#8:fix"], "posture": "idle",
+                    "next_blocked": {key: "hold:release-window"},
+                    "next_blocked_meta": {key: {"since": iso(NOW - 60), "first": iso(NOW - 60),
+                                                "n": 0}}}) + "\n")
+            spec, view = load(sp)
+            led = ad.ledger_part(spec, view, "peer", NOW - 10)
+            self.assertEqual(led["next"], [key])
+            snap = {"t": NOW, "native": ad._native("between", NOW), "ledger": led, "lifecycle": {}}
+            self.assertEqual(rt.classify(snap, NOW)[:2], ("wait", "hold"))
+
+    def test_blocker_resolves_when_the_named_item_is_done(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            ldir = Path(root) / "shoals" / SID / "ledger"
+            with open(ldir / "peer.jsonl", "a") as fh:
+                fh.write(json.dumps({"ts": iso(NOW - 5), "by": "peer", "type": "done", "id": "d1",
+                                     "item": "o/r#9"}) + "\n")
+            spec, view = load(sp)
+            b = ad.ledger_part(spec, view, "worker", NOW - 10)["blockers"]["o/r#7"]
+            self.assertEqual(b["status"], "resolved")
+
+    def test_snapshots_classify_end_to_end(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            spec, view = load(sp)
+            natives = {"worker": ad._native("between", NOW), "peer": ad._native("turn", NOW)}
+            snaps = ad.build_snapshots(spec, view, NOW - 10, natives, NOW)
+            self.assertEqual(rt.classify(snaps["worker"], NOW)[:2], ("wait", "remote-ci"))
+            self.assertEqual(rt.classify(snaps["peer"], NOW)[:2], ("work", "turn"))
+            # parked needs no native lookup; the background role is not in the population
+            self.assertEqual(rt.classify(snaps["parked-one"], NOW)[:2], ("excluded", "parked"))
+            self.assertNotIn("observer", snaps)
+            # a stale clone reads unknown between turns, even with a fresh native source
+            snaps = ad.build_snapshots(spec, view, NOW - 10000, natives, NOW)
+            self.assertEqual(rt.classify(snaps["worker"], NOW)[:2], ("unknown", "stale-source"))
+            self.assertEqual(rt.classify(snaps["peer"], NOW)[:2], ("work", "turn"))
+
+
+class NativeProbes(unittest.TestCase):
+    def test_muse_activity_age_reads_the_durable_session_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            sess = "11111111-2222-3333-4444-555555555555"
+            p = Path(td) / "2026" / "01" / "02" / sess / "session.jsonl"
+            p.parent.mkdir(parents=True)
+            p.write_text("{}\n")
+            os.utime(p, (NOW - 5, NOW - 5))
+            old = "99999999-8888-7777-6666-555555555555"
+            j = Path(td) / ".msp-view-v1" / old / "journal-00000000.bin"
+            j.parent.mkdir(parents=True)
+            j.write_text("x")
+            os.utime(j, (NOW - 7, NOW - 7))
+            with mock.patch.dict(os.environ, {"SHOAL_MUSE_DATA": td}):
+                self.assertAlmostEqual(muse_h.activity_age(sess), time.time() - NOW + 5, delta=3)
+                self.assertAlmostEqual(muse_h.activity_age(old), time.time() - NOW + 7, delta=3)
+                self.assertIsNone(muse_h.activity_age("00000000-0000-0000-0000-000000000000"))
+
+    def _fake_mod(self, td, attached=0, age=None, last=None):
+        d = Path(td) / "state"
+        d.mkdir(exist_ok=True)
+        (d / "lock").write_text("")
+        return types.SimpleNamespace(
+            ACTIVE_WINDOW_S=120, sdir=lambda s, create=False: str(d),
+            attached_client=lambda s: attached, activity_age=lambda s: age,
+            last_run=lambda s: last if last is not None else {"started": "t0"})
+
+    def test_lock_harness_attached_is_never_work(self):
+        role = Role(slug="r", ecosystem="muse", title="r", doc="/x", session="s1")
+        with tempfile.TemporaryDirectory() as td:
+            mod = self._fake_mod(td)
+            fh = open(Path(td) / "state" / "lock", "a+")
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                self.assertEqual(ad._probe_lock_harness(mod, role, NOW, "muse")["state"], "turn")
+            finally:
+                fh.close()
+            # attached: quiet is between turns; moving or unknown is raw `attached` (unknown time)
+            for age, want in ((600.0, "between"), (5.0, "attached"), (None, "attached")):
+                got = ad._probe_lock_harness(self._fake_mod(td, attached=4242, age=age), role, NOW, "muse")
+                self.assertEqual(got["state"], want)
+            snap = {"t": NOW, "native": ad._native("attached", NOW), "ledger": None, "lifecycle": {}}
+            self.assertEqual(rt.classify(snap, NOW)[:2], ("unknown", "unmapped-state"))
+            self.assertEqual(ad._probe_lock_harness(self._fake_mod(td), role, NOW, "muse")["state"],
+                             "between")
+
+
+class ObserverEndToEnd(unittest.TestCase):
+    def test_two_ticks_journal_prometheus_and_reconciliation(self):
+        with tempfile.TemporaryDirectory() as td:
+            now = time.time()
+            sp, _root = make_world(td, now=now)
+            cache = Path(td) / "native.json"
+            cache.write_text(json.dumps({
+                "v": 1, "shoal": SID, "host": "h", "written_at": now,
+                "roles": {"worker": {"native": ad._native("between", now)},
+                          "peer": {"native": ad._native("between", now)}}, "errors": {}}))
+            obs_path = str(Path(td) / "obs.jsonl")
+            prom_path = str(Path(td) / "out" / "role_time.prom")
+            ob = ad.Observer(sp, obs_path=obs_path, checkpoint_path=str(Path(td) / "acc.json"),
+                             prom_path=prom_path, cache_paths=[str(cache)], probe=False)
+            ob.tick(now)
+            ob.tick(now + 30)
+            lines = [json.loads(x) for x in Path(obs_path).read_text().splitlines()]
+            # membership is written once per role; one snapshot per role per tick
+            self.assertEqual(sum(1 for x in lines if x.get("type") == "membership"), 3)
+            self.assertEqual(sum(1 for x in lines if x.get("type") == "snapshot"), 6)
+            prom = Path(prom_path).read_text()
+            self.assertIn('role="worker",class="wait",event="remote-ci"} 30.000', prom)
+            self.assertIn('role="worker",class="work",event="turn"} 0.000', prom)  # zero-initialized
+            self.assertIn("shoal_role_source_timestamp_seconds", prom)
+            self.assertIn("shoal_role_time_exporter_last_success_timestamp_seconds", prom)
+            self.assertNotIn("host=", prom.split("shoal_role_time_seconds_total")[1].split("\n")[0])
+            # the reconciled event-time view of the same window agrees with the live accumulator
+            obs, mem = rt.load_observations(obs_path)
+            per, _segs = rt.account(obs, mem, now, now + 30)
+            self.assertAlmostEqual(per["worker"][("wait", "remote-ci")], 30.0)
+            self.assertAlmostEqual(ob.acc.counters["worker"][("wait", "remote-ci")], 30.0)
+            self.assertAlmostEqual(per["parked-one"][("excluded", "parked")], 30.0)
+            # a restarted observer resumes the checkpoint instead of double counting
+            ob2 = ad.Observer(sp, obs_path=obs_path, checkpoint_path=str(Path(td) / "acc.json"),
+                              prom_path=prom_path, cache_paths=[str(cache)], probe=False)
+            ob2.tick(now + 30)
+            self.assertAlmostEqual(ob2.acc.counters["worker"][("wait", "remote-ci")], 30.0)
+
+
+class StateRoot(unittest.TestCase):
+    def test_state_root_holds_observations_and_checkpoint(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td)
+            ob = ad.Observer(sp, probe=False, state_root=str(Path(td) / "state"))
+            ob.tick(NOW)
+            base = Path(td) / "state" / SID
+            self.assertTrue((base / "role-time-observations.jsonl").is_file())
+            self.assertTrue((base / "role-time-accumulator.json").is_file())
+
+
+class ResourceProjection(unittest.TestCase):
+    def test_render_keeps_missing_measurements_missing(self):
+        s = {"host": "h1", "ts": 100.0,
+             "gpus": [{"uuid": "GPU-1", "vendor": "amd", "utilization_pct": None,
+                       "vram_used_mib": 2048.0, "vram_total_mib": 16384.0}],
+             "leases": [{"key": "gpu", "scope": "host_gpu"}],
+             "queue": [{"key": "gpu"}, {"key": "gpu"}]}
+        text = ru.render_prometheus(s)
+        self.assertNotIn("shoal_gpu_utilization_percent{", text)
+        self.assertIn("shoal_gpu_vram_used_bytes{" + 'host="h1"', text)
+        self.assertIn("2147483648", text)
+        self.assertIn('shoal_lease_reservations{host="h1",key="gpu",scope="host_gpu"} 1', text)
+        self.assertIn('shoal_lease_queue_length{host="h1",key="gpu"} 2', text)
+
+
+if __name__ == "__main__":
+    unittest.main()

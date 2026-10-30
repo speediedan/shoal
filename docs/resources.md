@@ -20,6 +20,12 @@ python3 resource_usage.py sample --host <host> --directory <output-root> --lease
 python3 resource_usage.py watch --host <host> --directory <output-root> --lease-command '<lease-provider>'
 ```
 
+With `--prom-out <file>`, `sample` and `watch` also write each sample's GPU and lease projection
+(utilization, VRAM, held reservations, queue lengths) as Prometheus text for a textfile collector;
+a missing measurement gets no series. With `--role-time-spec <spec>` (repeatable) they also refresh
+that shoal's role-time native status cache each sample (architecture doc §9). `install` carries
+both flags into the generated unit.
+
 The default cadence is 15 seconds. The service is `shoal-resources.service`, shared across groups.
 Its dry run prints the exact unit before installation. Hardware observations use stable NVIDIA UUIDs
 or AMD discrete-GPU `unique_id`, normalized as `GPU-<16 hex digits>`. Integrated GPUs without an

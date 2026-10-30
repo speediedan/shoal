@@ -1,0 +1,649 @@
+"""Adapters that build `role_time` observation records from the ledger clone and from host-local
+native session status (architecture doc §9, role time accounting).
+
+`role_time.py` is pure; this module is the impure edge, and it stays read-only toward every role:
+it never writes a queue, never wakes a session, never runs a model turn and never calls a wait
+provider live (`blockers.check(..., live=False)`: age-only evidence, labelled as such). Two entry
+points:
+
+- `shoal role-time native-status --spec S [--watch S]`: probe the sessions that run on THIS host
+  and write a small JSON cache (also run from `shoal resources watch --role-time-spec S`). Native
+  turn state must be observed where the session runs; another host's cache file is only ever read,
+  with its own write timestamp, so a stale or absent cache becomes unknown time, never work.
+- `shoal role-time observe --spec S [...] [--watch S] [--prom-dir DIR]`: the home-side integrator.
+  Each tick folds the ledger clone (freshness is the clone's last fetch, `.git/FETCH_HEAD` mtime,
+  never the newest event), merges local probes with any `--native-cache` files, appends observation
+  JSONL for `shoal role-time report`, and feeds the checkpointed `Accumulator`, whose Prometheus
+  text is written atomically (temp file plus rename) for a textfile collector.
+
+Population comes from spec and generation history, not from ledger writers: `fill: none` roles are
+background unless `features.role_time.foreground` names them, and `features.role_time.background`
+can force a role out. Membership lines are append-only facts, so each role's spans are written to
+an observation file once, as first seen; after a generation change, start a new observation file
+for exact reconciled spans (the live accumulator stays exact either way: it follows current
+membership every tick). Attached-but-idle harness viewers are not work: an attached Codex/Muse
+client whose durable session file is moving (or unreadable) is reported as the raw state
+`attached`, which the classifier charges to unknown, and only a quiet attached client reads as
+between turns.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import blockers  # noqa: E402
+import role_time as rt  # noqa: E402
+from ledger import Ledger, View, item_key  # noqa: E402
+
+LEDGER_BUDGET_S = 180.0   # three periods of the existing 120 s ledger pull cadence, plus margin
+NATIVE_BUDGET_S = 90.0    # three periods of a 30 s probe tick (subprocess probes included)
+CACHE_V = 1
+
+
+def _epoch(v) -> float | None:
+    """Epoch seconds for an ISO-8601 string (Z or offset; naive reads as UTC) or a number."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        t = dt.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    return t.timestamp()
+
+
+def ledger_fetched_at(root: str) -> float | None:
+    """When the ledger clone last fetched successfully: the FETCH_HEAD mtime, or None when the
+    clone carries no fetch record (freshness is then unknown, never assumed)."""
+    dot = os.path.join(root, ".git")
+    cands = [os.path.join(dot, "FETCH_HEAD")]
+    if os.path.isfile(dot):  # a linked worktree: `gitdir: <path>` plus a commondir pointer
+        try:
+            with open(dot) as fh:
+                gd = fh.read().strip().removeprefix("gitdir:").strip()
+            cands.append(os.path.join(gd, "FETCH_HEAD"))
+            with open(os.path.join(gd, "commondir")) as fh:
+                cd = fh.read().strip()
+            cands.append(os.path.join(gd, cd, "FETCH_HEAD"))
+        except OSError:
+            pass
+    for p in cands:
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            continue
+    return None
+
+
+def _role_time_cfg(spec) -> dict:
+    c = (getattr(spec, "features", None) or {}).get("role_time")
+    return c if isinstance(c, dict) else {}
+
+
+def foreground_roles(spec):
+    """(foreground [Role], background {slug}) for accounting: `fill: none` is background, with
+    `features.role_time.foreground` / `.background` slug lists as explicit overrides."""
+    cfg = _role_time_cfg(spec)
+    force_in = set(cfg.get("foreground") or [])
+    force_out = set(cfg.get("background") or [])
+    fg, bg = [], set()
+    for r in spec.roles:
+        if r.slug in force_out or (r.fill == "none" and r.slug not in force_in):
+            bg.add(r.slug)
+        else:
+            fg.append(r)
+    return fg, bg
+
+
+def membership_spans(spec, fallback_start: float | None = None):
+    """{slug: [(start, end-or-None)]} for foreground roles, from generation history: a role is a
+    member for each generation whose sessions or seqs name it, from that generation's start to its
+    end (or the next generation's start, or the shoal's retirement). Roles no generation names get
+    one open span from `fallback_start` (the first ledger event, else now): visible, not invented
+    further back than the evidence."""
+    fg, _ = foreground_roles(spec)
+    retired = _epoch(getattr(spec, "retired_utc", "") or "")
+    gens = list(getattr(spec, "generations", []) or [])
+    spans: dict[str, list] = {r.slug: [] for r in fg}
+    for i, g in enumerate(gens):
+        start = _epoch(g.get("started_utc"))
+        if start is None:
+            continue
+        end = _epoch(g.get("ended_utc"))
+        if end is None and i + 1 < len(gens):
+            end = _epoch(gens[i + 1].get("started_utc"))
+        if end is None:
+            end = retired
+        members = set(g.get("sessions") or {}) | set(g.get("seqs") or {})
+        for slug in members & set(spans):
+            if end is None or end > start:
+                spans[slug].append((start, end))
+    fb = fallback_start if fallback_start is not None else time.time()
+    for slug, ss in spans.items():
+        if not ss:
+            ss.append((fb, retired))
+        ss.sort()
+        merged = []
+        for s, e in ss:  # merge touching or overlapping generation spans into one lifetime
+            if merged and (merged[-1][1] is None or s <= merged[-1][1]):
+                ps, pe = merged[-1]
+                merged[-1] = (ps, None if pe is None or e is None else max(pe, e))
+            else:
+                merged.append((s, e))
+        spans[slug] = merged
+    return spans
+
+
+def _is_member(spans, slug, now) -> bool:
+    return any(s <= now and (e is None or now < e) for s, e in spans.get(slug, []))
+
+
+# ---- the ledger half of a snapshot -------------------------------------------------
+
+def _blocker_records(spec, view, slug, q):
+    """Per-item blocker validity for the snapshot: `blockers.check` with `live=False` (no provider
+    call from an accounting loop), the expiry the integrator must split at, and the evidence kind.
+    Role and ask blockers are judged from the ledger itself; the rest are age-only here."""
+    if not q:
+        return {}
+    cfg = blockers.cfg(spec) or blockers.DEFAULTS
+    meta = q.get("next_blocked_meta") or {}
+    out = {}
+    for item, b in (q.get("next_blocked") or {}).items():
+        k = item_key(item)
+        b = str(b)
+        status, _why = blockers.check(spec, view, slug, q, k, b, meta.get(k) or meta.get(item), live=False)
+        since = _epoch((meta.get(k) or meta.get(item) or {}).get("since") or q.get("ts"))
+        ttl_min = cfg["hold_ttl_min"] if blockers.kind(b) == "hold" else cfg["peer_ttl_min"]
+        out[k] = {"blocker": b, "status": status,
+                  "expires_at": (since + ttl_min * 60.0) if since is not None and status == "live" else None,
+                  "evidence": "ledger" if blockers.kind(b) in ("role", "ask") else "age-only"}
+    return out
+
+
+def ledger_part(spec, view, slug, fetched_at, budget_s=LEDGER_BUDGET_S):
+    """The snapshot's `ledger` source: the role's declared sleep posture (last `state` event, else
+    its queue version's posture) and queue, as of the clone's last fetch. A refill is a recorded
+    request, not an empty queue: an open ask on the current queue version is that record."""
+    st = view.role_state(slug) or {}
+    q = view.current_queue(slug) or {}
+    state = str(st.get("state") or q.get("posture") or "")
+    # queue items arrive as `<owner>/<repo>#<n>:<verb>` while blockers are keyed by item key:
+    # both sides of the snapshot use item keys, or a blocked item would read as runnable
+    nxt = [item_key(str(x)) for x in (q.get("next") or [])]
+    return {"observed_at": fetched_at, "budget_s": float(budget_s), "state": state,
+            "sub": str(st.get("sub") or ""), "target": str(st.get("target") or ""),
+            "refill_requested": bool(q.get("asks")),
+            "active": item_key(str(q.get("active"))) if q.get("active") else "", "next": nxt,
+            "blockers": _blocker_records(spec, view, slug, q)}
+
+
+def lifecycle_part(spec, role, view):
+    """Park and planned handover from lifecycle evidence. A parked role needs no native lookup to
+    be excluded; `restart_ready` on its last queue version with no session yet is a handover."""
+    parked = bool(getattr(role, "parked", None)) and not role.session
+    q = view.current_queue(role.slug) or {}
+    handover = bool(not role.session and not parked and q.get("restart_ready"))
+    return {"parked": parked, "handover": handover, "conflict": ""}
+
+
+# ---- native turn state, probed where the session runs ------------------------------
+
+def _native(state, now, raw="", budget_s=NATIVE_BUDGET_S, observed=True):
+    return {"state": state, "observed_at": float(now) if observed else None,
+            "budget_s": float(budget_s), "wait_event": "", "raw": str(raw)[:120]}
+
+
+def _lock_held(path) -> bool:
+    """True when another process holds the harness session lock (an exec turn). A missing lock
+    file is not held; taking the test lock ourselves proves the opposite, so release at once."""
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "a+") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    except OSError:
+        return False
+    return False
+
+
+def _match(cbusy, session):
+    for k, v in cbusy.items():
+        if k == session or (len(k) >= 8 and (k.startswith(session) or session.startswith(k))):
+            return v
+    return None
+
+
+def _probe_claude(roles, now):
+    """One harness listing for every local Claude role; `health.claude_liveness` (the job tempo
+    file) is the turn signal, never the raw CLI state a background watcher holds at working."""
+    import health
+    from backends import claude_find
+    cbusy = health.claude_busy()
+    rows = list(getattr(health, "_CLAUDE_ROWS", []))
+    out = {}
+    for role in roles:
+        if not role.session:
+            out[role.slug] = _native("absent", now, "no session in spec")
+            continue
+        st = _match(cbusy, role.session)
+        if st == "busy":
+            out[role.slug] = _native("turn", now, "claude tempo active")
+        elif st == "idle":
+            out[role.slug] = _native("between", now, "claude tempo idle")
+        elif st == "blocked":
+            row = claude_find(rows, role.session) or {}
+            if health.claude_prompt_open(row, role.session):
+                out[role.slug] = _native("prompt", now, "claude question open")
+            else:
+                out[role.slug] = _native("between", now, "claude blocked, no open question")
+        elif not cbusy:
+            out[role.slug] = _native("unknown", now, "claude listing empty or failed", observed=False)
+        elif health.claude_worker_gone(role, cbusy):
+            out[role.slug] = _native("absent", now, "claude worker gone")
+        else:
+            out[role.slug] = _native("not-listed", now, "claude session not listed")
+    return out
+
+
+def _probe_lock_harness(mod, role, now, label):
+    """Codex and Muse share a shape: one exec process per turn holds a session lock, and an
+    interactive client may merely be attached. The lock with no client is a turn. An attached
+    client is never counted as work: quiet (its durable session file has not moved inside the
+    harness's active window) is between turns, and moving or unreadable is the raw state
+    `attached`, which accounting charges to unknown rather than guessing."""
+    session = role.session
+    if not session:
+        return _native("absent", now, "no session in spec")
+    attached = bool(mod.attached_client(session))
+    held = _lock_held(os.path.join(mod.sdir(session), "lock"))
+    if held and not attached:
+        last = mod.last_run(session)
+        return _native("turn", now, f"{label} exec lock held since {last.get('started') or '?'}")
+    if attached:
+        age = mod.activity_age(session)
+        window = float(getattr(mod, "ACTIVE_WINDOW_S", 120))
+        if age is not None and age > window:
+            return _native("between", now, f"{label} attached, session file quiet {age:.0f}s")
+        return _native("attached", now,
+                       f"{label} attached, activity {'unknown' if age is None else f'{age:.0f}s ago'}")
+    if mod.last_run(session) or os.path.isdir(mod.sdir(session)):
+        return _native("between", now, f"{label} no lock held")
+    return _native("absent", now, f"{label} never run on this host")
+
+
+def _probe_opencode(spec, role, now):
+    from backends import get as get_backend
+    if not role.session:
+        return _native("absent", now, "no session in spec")
+    s = get_backend("opencode").status(role.session, spec.dir or "")
+    if not s:
+        return _native("unknown", now, "opencode status empty", observed=False)
+    if "status:busy" in s:
+        return _native("turn", now, s)
+    if "status:idle" in s:
+        return _native("between", now, s)
+    return _native(s.split()[0][:40] if s.split() else "unknown", now, s)
+
+
+def probe_native(spec, roles, now=None):
+    """{slug: native} for the given roles that run on THIS host, plus ({slug: probe_ms},
+    {slug: error}). A probe failure is a missing source (unknown time), never a guessed state.
+    Roles on other hosts are omitted: their own host's cache is the source."""
+    from roles import is_local
+    now = time.time() if now is None else float(now)
+    local = [r for r in roles if is_local(r, spec)]
+    out, ms, errs = {}, {}, {}
+    claude_roles = [r for r in local if r.ecosystem == "claude"]
+    if claude_roles:
+        t0 = time.perf_counter()
+        try:
+            batch = _probe_claude(claude_roles, now)
+            took = (time.perf_counter() - t0) * 1000.0
+            for r in claude_roles:
+                out[r.slug] = batch[r.slug]
+                ms[r.slug] = round(took, 1)
+        except Exception as exc:  # noqa: BLE001 - a failed listing is missing evidence, per role
+            for r in claude_roles:
+                out[r.slug] = _native("unknown", now, f"claude probe failed: {exc}", observed=False)
+                errs[r.slug] = str(exc)[:120]
+    for role in local:
+        if role.ecosystem == "claude":
+            continue
+        t0 = time.perf_counter()
+        try:
+            if role.ecosystem == "muse":
+                import muse as muse_h
+                out[role.slug] = _probe_lock_harness(muse_h, role, now, "muse")
+            elif role.ecosystem == "codex":
+                import codex_harness as codex_h
+                out[role.slug] = _probe_lock_harness(codex_h, role, now, "codex")
+            elif role.ecosystem == "opencode":
+                out[role.slug] = _probe_opencode(spec, role, now)
+            else:
+                out[role.slug] = _native(str(role.ecosystem), now, "no native probe for this ecosystem")
+        except Exception as exc:  # noqa: BLE001
+            out[role.slug] = _native("unknown", now, f"{role.ecosystem} probe failed: {exc}", observed=False)
+            errs[role.slug] = str(exc)[:120]
+        ms[role.slug] = round((time.perf_counter() - t0) * 1000.0, 1)
+    return out, ms, errs
+
+
+# ---- the per-host native status cache ------------------------------------------------
+
+def default_cache_path(sid):
+    from roles import state_dir
+    return os.path.join(state_dir(sid), "role-time-native.json")
+
+
+def _atomic_write(path, text):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def write_native_cache(spec, path=None, now=None):
+    """Probe this host's sessions for one spec and write the cache atomically. Returns the cache
+    document. Only local roles appear: absence from the cache is itself information."""
+    import socket
+    now = time.time() if now is None else float(now)
+    path = path or default_cache_path(spec.sid)
+    fg, _bg = foreground_roles(spec)
+    natives, ms, errs = probe_native(spec, fg, now)
+    doc = {"v": CACHE_V, "shoal": spec.sid, "host": socket.gethostname(), "written_at": now,
+           "roles": {slug: {"native": n, "probe_ms": ms.get(slug)} for slug, n in sorted(natives.items())},
+           "errors": errs}
+    _atomic_write(path, json.dumps(doc, indent=1, sort_keys=True) + "\n")
+    return doc
+
+
+def read_native_caches(paths, sid):
+    """{slug: native} merged from cache files for one shoal; the freshest `observed_at` wins.
+    A corrupt or foreign-shoal file contributes nothing."""
+    out: dict[str, dict] = {}
+    for p in paths or []:
+        try:
+            with open(p) as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if doc.get("v") != CACHE_V or doc.get("shoal") != sid:
+            continue
+        for slug, row in (doc.get("roles") or {}).items():
+            n = (row or {}).get("native") or {}
+            prev = out.get(slug)
+            if prev is None or (n.get("observed_at") or 0) >= (prev.get("observed_at") or 0):
+                out[slug] = n
+    return out
+
+
+# ---- the home-side integrator --------------------------------------------------------
+
+def build_snapshots(spec, view, fetched_at, natives, now, seq0=0, ledger_budget_s=LEDGER_BUDGET_S):
+    """One snapshot per foreground role at observation time `now`. `natives` maps slug to a native
+    source dict; a role with none gets no native source at all, so its time reads unknown."""
+    from roles import host_of
+    fg, _bg = foreground_roles(spec)
+    out = {}
+    for i, role in enumerate(fg):
+        out[role.slug] = {"t": float(now), "seq": int(seq0) + i, "host": host_of(role, spec),
+                          "session_tag": role.tag, "lifecycle": lifecycle_part(spec, role, view),
+                          "native": natives.get(role.slug),
+                          "ledger": ledger_part(spec, view, role.slug, fetched_at, ledger_budget_s)}
+    return out
+
+
+def _render_extra(acc, snaps, errors, now):
+    """Source freshness, eligibility and observation-error series beside the accumulator's own
+    counters, so a missing or stale source is visible in the same scrape as the time it lost."""
+    sh = rt._esc(acc.shoal)
+    L = ["# HELP shoal_role_source_timestamp_seconds Last successful read of one role-time source.",
+         "# TYPE shoal_role_source_timestamp_seconds gauge"]
+    for slug in sorted(snaps):
+        for source in ("native", "ledger"):
+            src = snaps[slug].get(source) or {}
+            if src.get("observed_at") is not None:
+                L.append(f'shoal_role_source_timestamp_seconds{{shoal="{sh}",role="{rt._esc(slug)}",'
+                         f'source="{source}"}} {float(src["observed_at"]):.3f}')
+    L += ["# HELP shoal_role_eligible Role is a member and not currently excluded.",
+          "# TYPE shoal_role_eligible gauge"]
+    for slug in sorted(acc.counters):
+        cur = acc.state.get(slug, ("unknown", "no-observation"))
+        L.append(f'shoal_role_eligible{{shoal="{sh}",role="{rt._esc(slug)}"}} '
+                 f'{1 if acc.member[slug] and cur[0] != "excluded" else 0}')
+    L += ["# HELP shoal_role_observation_errors_total Ticks where one source was missing or failed.",
+          "# TYPE shoal_role_observation_errors_total counter"]
+    for slug in sorted(acc.counters):
+        for source in ("native", "ledger"):
+            L.append(f'shoal_role_observation_errors_total{{shoal="{sh}",role="{rt._esc(slug)}",'
+                     f'source="{source}"}} {int((errors.get(slug) or {}).get(source, 0))}')
+    L += ["# HELP shoal_role_time_exporter_last_success_timestamp_seconds Last completed observe tick.",
+          "# TYPE shoal_role_time_exporter_last_success_timestamp_seconds gauge",
+          f'shoal_role_time_exporter_last_success_timestamp_seconds{{shoal="{sh}"}} {float(now):.3f}']
+    return "\n".join(L) + "\n"
+
+
+class Observer:
+    """One shoal's live integrator: ledger fold plus native sources in, observation JSONL and
+    Prometheus text out. State beside the observation file (append counter, membership as written,
+    observation-error counts) and the accumulator checkpoint survive restarts; the accumulator
+    itself charges any unobserved restart interval to unknown."""
+
+    def __init__(self, spec_path, obs_path=None, checkpoint_path=None, prom_path=None,
+                 cache_paths=(), probe=True, pull=False, pull_interval_s=120.0,
+                 ledger_budget_s=LEDGER_BUDGET_S, state_root=None):
+        from roles import ShoalSpec, state_dir
+        self.spec_path = spec_path
+        spec0 = ShoalSpec.load(spec_path)
+        self.sid = spec0.sid
+        # a deployment with a durable state root keeps observations and the checkpoint out of any
+        # scratch area; the default is the shoal's usual state directory
+        base = os.path.join(state_root, self.sid) if state_root else state_dir(self.sid)
+        self.obs_path = obs_path or os.path.join(base, "role-time-observations.jsonl")
+        self.checkpoint_path = checkpoint_path or os.path.join(base, "role-time-accumulator.json")
+        self.state_path = self.obs_path + ".state.json"
+        self.prom_path = prom_path
+        self.cache_paths = list(cache_paths or [])
+        self.probe = probe
+        self.pull = pull
+        self.pull_interval_s = float(pull_interval_s)
+        self.ledger_budget_s = float(ledger_budget_s)
+        self.acc = None
+        self.last_pull = 0.0
+        self.state = self._load_state()
+
+    def _load_state(self):
+        try:
+            with open(self.state_path) as fh:
+                d = json.load(fh)
+            if d.get("v") == 1 and d.get("shoal") == self.sid:
+                return d
+        except (OSError, ValueError):
+            pass
+        return {"v": 1, "shoal": self.sid, "seq": 0, "membership": {}, "errors": {}}
+
+    def _save_state(self):
+        _atomic_write(self.state_path, json.dumps(self.state, sort_keys=True) + "\n")
+
+    def tick(self, now=None):
+        """One observation tick. Returns (snapshots, fetched_at)."""
+        from ledger import LedgerError
+        from roles import ShoalSpec
+        now = time.time() if now is None else float(now)
+        spec = ShoalSpec.load(self.spec_path)  # re-read: parks, sessions and generations move
+        led = Ledger(spec.sid, root=spec.ledger_dir, sync=self.pull)
+        if self.pull and now - self.last_pull >= self.pull_interval_s:
+            try:
+                led.pull()
+                self.last_pull = now
+            except LedgerError:
+                pass  # keep the local clone; its fetch timestamp now tells the truth about age
+        fetched = ledger_fetched_at(spec.ledger_dir)
+        view = View(led, spec)
+        fg, _bg = foreground_roles(spec)
+        natives = read_native_caches(self.cache_paths, spec.sid)
+        if self.probe:
+            probed, _ms, _errs = probe_native(spec, fg, now)
+            for slug, n in probed.items():  # a direct local probe is fresher than any cache
+                if slug not in natives or (n.get("observed_at") or 0) >= (natives[slug].get("observed_at") or 0):
+                    natives[slug] = n
+        first_ts = None
+        evs = led.events()
+        if evs:
+            first_ts = _epoch(evs[0].get("ts"))
+        spans = membership_spans(spec, fallback_start=first_ts if first_ts is not None else now)
+        seq0 = int(self.state.get("seq", 0))
+        snaps = build_snapshots(spec, view, fetched, natives, now, seq0, self.ledger_budget_s)
+        errors = self.state.setdefault("errors", {})
+        for slug, snap in snaps.items():
+            e = errors.setdefault(slug, {"native": 0, "ledger": 0})
+            if not snap.get("native") or snap["native"].get("observed_at") is None:
+                e["native"] += 1
+            if fetched is None:
+                e["ledger"] += 1
+        lines = []
+        written = self.state.setdefault("membership", {})
+        for slug in sorted(spans):
+            if slug not in written:  # membership is an append-only fact: written once per file
+                rows = [[s, e] for s, e in spans[slug]]
+                written[slug] = rows
+                lines.append({"type": "membership", "role": slug, "spans": rows})
+        for slug in sorted(snaps):
+            lines.append(dict(snaps[slug], type="snapshot", role=slug))
+        d = os.path.dirname(self.obs_path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(self.obs_path, "a") as fh:
+            for row in lines:
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        self.state["seq"] = seq0 + len(snaps)
+        if self.acc is None:
+            self.acc = rt.Accumulator.load(self.checkpoint_path, spec.sid,
+                                           [r.slug for r in fg], now=now)
+        members = {r.slug for r in fg if _is_member(spans, r.slug, now)}
+        for slug in list(self.acc.counters):
+            want = slug in members
+            if self.acc.member.get(slug, True) != want:
+                self.acc.set_member(slug, want, now)
+        for slug in sorted(snaps):
+            self.acc.ensure(slug, now)
+            if slug in members and not self.acc.member.get(slug, True):
+                self.acc.set_member(slug, True, now)
+            self.acc.observe(slug, snaps[slug])
+        self.acc.advance_all(now)
+        self.acc.save(self.checkpoint_path)
+        self._save_state()
+        if self.prom_path:
+            text = self.acc.render_prometheus(expected=members) + _render_extra(self.acc, snaps, errors, now)
+            _atomic_write(self.prom_path, text)
+        return snaps, fetched
+
+
+# ---- CLI -----------------------------------------------------------------------------
+
+def _positive(v):
+    f = float(v)
+    if not 0 < f < float("inf"):
+        raise argparse.ArgumentTypeError("must be positive and finite")
+    return f
+
+
+def cmd_native_status(a):
+    from roles import ShoalSpec
+    while True:
+        t0 = time.time()
+        try:
+            spec = ShoalSpec.load(a.spec)
+            doc = write_native_cache(spec, a.out or None, t0)
+            states = {s: r["native"]["state"] for s, r in doc["roles"].items()}
+            print(f"role-time native-status {spec.sid}: {states or 'no local roles'}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - a watcher reports and retries, it does not die
+            print(f"role-time native-status: {exc}", file=sys.stderr, flush=True)
+            if not a.watch:
+                return 1
+        if not a.watch:
+            return 0
+        time.sleep(max(0.0, a.watch - (time.time() - t0)))
+
+
+def cmd_observe(a):
+    observers = []
+    for spec_path in a.spec:
+        from roles import ShoalSpec
+        sid = ShoalSpec.load(spec_path).sid
+        prom = a.prom_out or (os.path.join(a.prom_dir, f"shoal_role_time_{sid}.prom") if a.prom_dir else None)
+        if a.prom_out and len(a.spec) > 1:
+            print("role-time observe: --prom-out names one file; use --prom-dir for several specs",
+                  file=sys.stderr)
+            return 2
+        observers.append(Observer(spec_path, prom_path=prom, cache_paths=a.native_cache,
+                                  probe=not a.no_probe, pull=a.pull, pull_interval_s=a.pull_interval,
+                                  ledger_budget_s=a.ledger_budget,
+                                  state_root=a.state_dir or None))
+    while True:
+        t0 = time.time()
+        rc = 0
+        for ob in observers:
+            try:
+                snaps, fetched = ob.tick(t0)
+                cls = {s: "/".join(rt.classify(sn, t0)[:2]) for s, sn in sorted(snaps.items())}
+                age = "unknown" if fetched is None else f"{t0 - fetched:.0f}s"
+                print(f"role-time observe {ob.sid}: ledger fetched {age} ago; {cls}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - one bad shoal must not stop the exporter
+                print(f"role-time observe {ob.sid}: {exc}", file=sys.stderr, flush=True)
+                rc = 1
+        if not a.watch:
+            return rc
+        time.sleep(max(0.0, a.watch - (time.time() - t0)))
+
+
+def add_subcommands(s):
+    """The adapter verbs under `shoal role-time` (registered by role_time.add_parser)."""
+    n = s.add_parser("native-status",
+                     help="probe this host's native session status and write the per-host cache")
+    n.add_argument("--spec", required=True, help="the shoal spec (shoal.json)")
+    n.add_argument("--out", default="", help="cache file (default: the shoal state dir)")
+    n.add_argument("--watch", type=_positive, default=0, help="repeat every S seconds")
+    n.set_defaults(func=cmd_native_status)
+    o = s.add_parser("observe",
+                     help="fold ledger plus native status into observation JSONL and Prometheus text")
+    o.add_argument("--spec", action="append", required=True, help="a shoal spec (repeatable)")
+    o.add_argument("--watch", type=_positive, default=0, help="repeat every S seconds")
+    o.add_argument("--prom-out", default="", help="Prometheus textfile (one spec only)")
+    o.add_argument("--prom-dir", default="", help="write shoal_role_time_<id>.prom per spec here")
+    o.add_argument("--native-cache", action="append", default=[],
+                   help="a native-status cache file, e.g. another host's (repeatable)")
+    o.add_argument("--no-probe", action="store_true",
+                   help="do not probe local sessions directly; caches only")
+    o.add_argument("--pull", action="store_true", help="pull the ledger clone on an interval")
+    o.add_argument("--pull-interval", type=_positive, default=120.0)
+    o.add_argument("--ledger-budget", type=_positive, default=LEDGER_BUDGET_S,
+                   help="seconds a ledger fetch may be believed")
+    o.add_argument("--state-dir", default="",
+                   help="durable root for observations and checkpoints (<dir>/<shoal>/...); "
+                        "default: each shoal's state directory")
+    o.set_defaults(func=cmd_observe)
+
+
+
