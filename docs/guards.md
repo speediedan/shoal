@@ -167,9 +167,9 @@ ladders.
 - **Guard:** armed means proven: the pid is alive (`ps -p`) and matches the sidecar pid, checked
   every re-arm in the same turn, as two separate commands (read the pid, then `ps -p` it; never
   `$(...)`, which needs a permission prompt under manual permissions). `next` prints `WATCH ledger-watch ... NOT RUNNING` when it is not.
-  Health condition `watcher-dead` (pid gone and the session between turns) wakes the role through
-  its harness adapter; where the harness's wake path needs the dead watcher, a relay role delivers
-  the wake instead. A `killed` notification is itself a wake.
+  Health condition `watcher-dead` (pid gone and the session between turns) re-arms a detached
+  watcher from the quorum, or wakes the role through its harness adapter (Claude Code: a direct wake
+  that resumes the session). A `killed` notification is itself a wake.
 - **Signature:** `watcher-dead` wakes; `WATCH ... NOT RUNNING` in `next`; `doctor` flags the
   ledger-watch check.
 
@@ -240,12 +240,13 @@ ladders.
 - **What goes wrong:** a session watches its own background process with a monitor that expires,
   and every expiry is a model turn spent confirming the process is fine. A session that ends kills
   its background process with it.
-- **Guard:** watchers are armed as harness background commands that wake the session on exit
-  (Claude Code: the Bash tool with `run_in_background`, no `&`, never the Monitor tool). The relay's
-  `relay-watch` runs indefinitely and writes its own tick. A dead relay is a `relay-dead` page,
-  never a wake, since nothing can wake it, and `shoal relay-launch` restarts the relay alone.
-- **Signature:** relay turns per day (target under five); a relay transcript showing one
-  background arm per relayed batch and no monitor calls.
+- **Guard:** watchers run detached and keep running across wakes (Claude Code: `--wake direct`,
+  started once with `setsid nohup`), or are armed as harness background commands that wake the
+  session on exit (the Bash tool with `run_in_background`, no `&`, never the Monitor tool). A
+  detached watcher reloads itself in place when shoal's code changes, so it is never re-armed for an
+  upgrade.
+- **Signature:** watcher re-arm turns per day per role (target near zero for a detached watcher); a
+  transcript showing no monitor calls.
 
 ## Question raised while the maintainer is offline
 

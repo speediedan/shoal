@@ -195,43 +195,39 @@ f = far()
 assert f["session"] == "idle" and f["remote_status"]["stale"] and not f["remote_status"]["ok"], f
 print("remote status merge ok")
 PY2
-# the wake relay's watch process runs where the relay role does: a relay on another host is read from that
-# host's rows (relay_alive), unknown when nothing can say, and never DEAD because this host has no watch process
-python3 - "$SPEC" "$S/relay-spec.json" <<'PY2' || fail "relay spec"
+# a spec written before the wake relay's retirement (features.relay, health.relay_fallback, a wake-relay role, local
+# and on another host whose rows still carry relay_alive): it loads, and the UI shows no relay row, condition,
+# summary field, tab-line segment or Herdr token
+python3 - "$SPEC" "$S/relay-spec.json" <<'PY2' || fail "old relay spec"
 import json, sys
 d = json.load(open(sys.argv[1]))
+d.setdefault("features", {})["relay"] = True
+h = d["features"].get("health"); d["features"]["health"] = dict(h if isinstance(h, dict) else {}, relay_fallback=True)
 d["roles"].append({"slug": "wake-relay", "ecosystem": "claude", "title": "wake-relay", "doc": d["roles"][0]["doc"],
                    "fill": "none", "session": "relay000", "server": "other-host.invalid"})
 json.dump(d, open(sys.argv[2], "w"))
 PY2
 cat > "$S/relay-rows.json" <<JSON
 {"v": 1, "shoals": [{"id": "$SID", "roles": [{"slug": "wake-relay", "session_id": "relay000", "session": "idle", "watcher": "none",
- "can_progress": {"ok": true, "reasons": []}, "needs_you": false, "context_k": null, "heartbeat_age_s": 5, "relay_alive": true}]}]}
+ "can_progress": {"ok": true, "reasons": []}, "needs_you": false, "context_k": null, "heartbeat_age_s": 5, "relay_alive": false}]}]}
 JSON
 rm -rf "$SHOAL_ROUTE_CACHE"
-STUB_SSH_RC=0 STUB_SSH_OUT="$S/relay-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$S/relay-spec.json" <<'PY2' || fail "relay read where it runs"
-import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
-import routes, ui_status, ui_herdr
-def doc():
-    return ui_status.shoal_doc(sys.argv[2], [])
-d = doc()
-assert d["relay"] == {"alive": True}, d["relay"]
-assert ui_herdr.shoal_tokens(d)["shoal_relay"] == "ok"
-# the relay's host says it is down
-rows = open(os.environ["STUB_SSH_OUT"]).read().replace('"relay_alive": true', '"relay_alive": false')
-open(os.environ["STUB_SSH_OUT"], "w").write(rows); [os.remove(os.path.join(routes._cache_dir(), f)) for f in os.listdir(routes._cache_dir())]
-d = doc()
-assert d["relay"] == {"alive": False}, d["relay"]
-assert ui_herdr.shoal_tokens(d)["shoal_relay"] == "DEAD" and "relay DEAD" in ui_status._shoal_bits(d)
-# nothing can say (the host does not answer, nothing cached): unknown, not DEAD
-os.environ["STUB_SSH_RC"] = "255"; os.environ.pop("STUB_SSH_OUT")
-[os.remove(os.path.join(routes._cache_dir(), f)) for f in os.listdir(routes._cache_dir())]
-d = doc()
-assert d["relay"] == {"alive": None}, d["relay"]
-assert ui_herdr.shoal_tokens(d)["shoal_relay"] == "?", ui_herdr.shoal_tokens(d)
-assert "relay DEAD" not in ui_status._shoal_bits(d)
-print("relay read where it runs ok")
+STUB_SSH_RC=0 STUB_SSH_OUT="$S/relay-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$S/relay-spec.json" <<'PY2' || fail "old relay spec shows a relay"
+import json, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status, ui_herdr
+from roles import ShoalSpec
+s = ShoalSpec.load(sys.argv[2])
+assert s.role("wake-relay") is None and not any(r.slug == "wake-relay" for r in ui_herdr.viewable_roles(s))
+d = ui_status.shoal_doc(sys.argv[2], [], with_conditions=True, refresh_conditions=True)
+assert "relay" not in d and all(r["slug"] != "wake-relay" for r in d["roles"]), d
+assert all("relay" not in r and "relay_alive" not in r for r in d["roles"]), d["roles"]
+assert not [c for c in (d.get("conditions") or {}).get("open", []) if "relay" in c["condition"] + c["slug"]], d["conditions"]
+assert "shoal_relay" not in ui_herdr.shoal_tokens(d) and not [b for b in ui_status._shoal_bits(d) if "relay" in b]
+doc = {"shoals": [d], "usage": {}}
+assert "relay" not in ui_status.render_text(doc, 160) and "relay" not in ui_status.render_line(doc, 200)
+print("old relay spec ok")
 PY2
+! $H ui herdr-config --client | grep -q 'shoal_relay' || fail "the Herdr client block still draws \$shoal_relay"
 # standalone sessions saved on a routed host are mirrored here (label @host) and attach over ssh; a reachable
 # host's list is the truth, an unreachable host's mirrors stay as they were
 printf '{"v": 1, "host": "other-host.invalid", "sessions": [{"harness": "claude", "session": "abcd1234-5555", "label": "lapseat", "turn": "idle", "state": "idle"}]}' > "$S/sa.json"
@@ -759,20 +755,18 @@ check "# shoal-sidebar-max: 50%" $H ui herdr-config --client
 check "sidebar_max_width = 48" $H ui set sidebar_max_width 48
 check "^sidebar_max_width = 48" $H ui herdr-config --client
 $H ui set sidebar_max_width "" >/dev/null
-# the wake relay has no card unless show_relay is true; the ledger strip takes ledger_share percent
-python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "relay hidden by default / ledger share"
+# the ledger strip takes ledger_share percent
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "ledger share"
 import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import ui_herdr, ui_status
-from roles import ShoalSpec, is_wake_relay
+from roles import ShoalSpec
 s = ShoalSpec.load(sys.argv[2])
-assert not any(is_wake_relay(r) for r in ui_herdr.viewable_roles(s))
 o = ui_herdr.overview_root(s)
 assert o["direction"] == "down" and o["ratio"] == 0.88, o
 q = {"can_progress": {"reasons": ["stopped-active"]}, "posture": "active", "sub": "", "next": []}
 assert ui_status.posture_label(q) == "ACTIVE?"
 PY2
-check "show_relay = false" $H ui set show_relay false
-$H ui set show_relay "" >/dev/null
+check "ui set: one of" $H ui set show_relay false  # the retired setting is refused
 check '^agent_panel_sort = "priority"' $H ui herdr-config --client
 check "agent_sort = spaces" $H ui set agent_sort spaces
 check '^agent_panel_sort = "spaces"' $H ui herdr-config --client

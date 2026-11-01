@@ -71,7 +71,7 @@ Measured on two real hosts first, then proven by `selftest_ledger.sh` (two clone
 - Spec saves from two hosts keep both changes: `persist_spec` pulls under the lock, applies only its own
   delta (`merge_spec`), and on a rejected push undoes only its own commit and merges again.
 - This host's health quorum, sensors and wakes skip remote roles (no false `watcher-dead`, no wake on the
-  wrong host), and `restart`, `relay-launch` and `aux-launch` refuse a remote role and print the ssh line.
+  wrong host), and `restart` and `aux-launch` refuse a remote role and print the ssh line.
 - `doctor` checks the tools the roles on this host need and the clock (`NTPSynchronized`; a laptop 115 s fast
   stamped every event wrong).
 
@@ -80,12 +80,12 @@ Measured on two real hosts first, then proven by `selftest_ledger.sh` (two clone
 - Every host with a live role writes a `host-beat` system event at most every 15 min; home pages
   `host-silent` once per episode for another host silent over 60 min (`features.health.host_beat_min`,
   `host_silent_min`). A host that never beat is not judged.
-- A Claude role off the relay's host gets the `exit` watcher (the relay reaches only its own host's
-  sessions). `upgrade` on a non-home host syncs skills and re-arms but leaves the spec's tooling and
+- A Claude role on any host is woken directly by its own detached watcher, which resumes its session on
+  that host. `upgrade` on a non-home host syncs skills and re-arms but leaves the spec's tooling and
   features to home.
 
 **Still open.** Telemetry from other hosts is not merged into `report` (fetch the remote data roots by
-hand); per-host relays; a sleeping host (a laptop) reads as `host-silent` until it beats again, with no
+hand); a sleeping host (a laptop) reads as `host-silent` until it beats again, with no
 "away" mark yet. Host-local pieces a second host reproduces: `config/host.toml` (data root, ledger clone,
 lease provider, `tool_env`), harness CLIs and logins, heartbeats, sidecars, job records and leases (local
 by construction).
@@ -192,7 +192,7 @@ server-free deployment, or the free authentication and audit trail git provides.
 
 These predate the SHOAL extraction. Each is tracked, and none blocks a single-host group.
 
-- **Waiters bound to retired sessions, and the relay-watch cursor race** (shoal#2). A restart should
+- **Waiters bound to retired sessions** (shoal#2). A restart should
   kill the previous generation's waiters itself; until then the operator kills them by pid.
 - **Pushing into harness sessions.** A socket push into a running Claude Code session is unproven, so
   a watcher's exit is the wake. Prove a push channel before relying on one.

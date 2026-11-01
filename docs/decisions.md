@@ -192,25 +192,36 @@ flagged the maintainer wait at the four-hour cap instead of never.
 - **Relying on the waiting role to nudge its peer by message:** mail does not wake, and the peer
   sees nothing until its next boundary.
 
-## A relay session wakes Claude Code roles whose watcher is dead
+## Claude Code roles are woken directly, by resuming the session
 
 **Decision.** For Claude Code roles, a health wake is a wake-request file the role's own watcher
-picks up. When that watcher is dead, a small relay session (a role with `fill=none`) delivers the
-wake as a cross-session message. The relay's own watcher runs indefinitely as a background command,
-and a dead relay pages the maintainer.
+picks up. The watcher runs detached and delivers each wake directly: a session with no worker is
+resumed (`claude --bg --resume <session> <text>`), and a live session idle at its prompt with
+nothing in flight is stopped and then resumed. When the watcher is dead, the health quorum delivers
+the same way, or re-arms the detached watcher itself. A session mid-turn, at a question, or with
+work in flight is not touched: the wake is deferred to a later tick. Direct wake is the only Claude
+wake path; `features.health.direct_wake: dead` narrows it to sessions with no worker.
 
-**Why.** An idle Claude Code session starts a turn about three seconds after a cross-session
-message, but only a Claude Code session can send one; a script cannot. The relay takes a turn only
-when a watcher is dead and a wake is due.
+**Why.** A resume of a session whose worker is gone continues it in place, under the same id and
+with most of its prompt cache (verified 2026-10-20); it forks a copy only while a worker runs, which
+is why a live session is stopped first and any copy that appears is removed. A direct-wake trial of
+about 95 hours on two live groups, with the relay fallback off, lost no wake, and both relays were
+then retired (2026-11). A direct wake costs one turn, the role's own.
 
 **Rejected alternatives.**
+- **A wake relay session** (a Claude role with `fill=none` whose waiter, `relay-watch`, exited with
+  queued wakes it then delivered as cross-session messages; retired 2026-11): two turns per wake
+  (the relay's, then the role's), and a single point of failure for every Claude role in a group.
+  Measured 2026-10-02: the background service reaped every worker, the relay among them, and
+  `relay-dead` paged for six days while every wake it would have carried went nowhere. It also
+  reached only sessions on its own host, and needed its own relaunch and re-arm machinery. Its one
+  remaining advantage, reaching a live session with background work in flight sooner than that work
+  ends, is bounded by the harness's 2 h background-command limit and did not show up as a lost wake.
 - **Paging the maintainer directly whenever a Claude Code watcher is dead:** turns a routine
   recovery into human work.
-- **Resuming the session from a script:** a resume forks a copy of the session rather than waking
-  the running one.
-- **Watching the relay's own process with an expiring monitor:** every expiry is a turn. A relay
-  built that way spent 21 turns in two hours re-arming a monitor over a healthy process and relayed
-  nothing.
+- **Resuming a session while its worker runs:** forks a copy that acts as the role beside it.
+- **Watching a process with an expiring monitor:** every expiry is a turn. A relay built that way
+  spent 21 turns in two hours re-arming a monitor over a healthy process and relayed nothing.
 
 ## Long work runs as job units, not harness background commands
 

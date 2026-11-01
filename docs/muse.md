@@ -10,8 +10,8 @@ next wake continues the same session. There is no daemon: an idle role costs no 
 | | Claude | opencode | Muse |
 |---|---|---|---|
 | a turn | the live background session | the live server session | one `muse exec` process |
-| who runs the watcher | the role (`--wake relay`) | the role (`--wake send:<id>`) | **shoal**, at launch (`--wake exec:<id>`) |
-| wake | message through the relay | `openchamber session send` | a new turn (`muse exec`) |
+| who runs the watcher | the role (`--wake direct`) | the role (`--wake send:<id>`) | **shoal**, at launch (`--wake exec:<id>`) |
+| wake | the session resumed with the wake as its prompt (`claude --bg --resume`) | `openchamber session send` | a new turn (`muse exec`) |
 | busy | `claude agents --json` tempo | `openchamber session status` | a per-session lock (`lock`) |
 | attach | `claude attach` | the opencode TUI | live observer for roles; explicit native interaction only while idle |
 | questions | prompted | prompted | none: `--yolo` withholds `request_user_input`; asks go through `queue --ask` |

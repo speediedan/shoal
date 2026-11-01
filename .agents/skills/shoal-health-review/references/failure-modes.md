@@ -144,8 +144,12 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   Retire the flag (fold it into the default) after two clean weeks on a shoal that runs it.
 - **Metric:** `FM14:wakes_no_path` (the failure), `FM14:respawns` and `FM14:relay_relaunches`
   (the repair firing).
-- **Status:** fixed in shoal. Left off in the shoal that hit it, by decision (a role there is held down
-  by a dead session); on for the next shoal.
+- **Status:** fixed in shoal (2026-10). Left off in the shoal that hit it, by decision (a role there is held
+  down by a dead session); on for the next shoal. **Retired 2026-11** with the wake relay: direct wake is the
+  only Claude wake path, and it resumes a session with no worker on its next wake (`claude --bg --resume`),
+  so a reaped worker no longer leaves a wake without a path, and there is no relay to relaunch.
+  `features.health.revive` is ignored. `FM14:wakes_no_path` still counts any `no-adapter` wake;
+  `FM14:respawns` and `FM14:relay_relaunches` read only historical events.
 
 ## FM-15: background watcher killed every 30 minutes, a turn each time (2026-10-08)
 - **Signature:** an idle Claude role takes a turn every 30 minutes that only re-arms its watcher;
@@ -159,7 +163,8 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   Lanes pick it up at their next restart or brief reload.
 - **Metric:** none yet: watcher arm-to-exit durations from the sidecars (`armed_utc` to `exit`)
   would show it; proposed for fm_report.
-- **Status:** mitigated (the 2 h cap remains).
+- **Status:** mitigated (the 2 h cap remains). Under direct wake (2026-11) a Claude watcher runs detached
+  (`--wake direct`) and has no time limit; only `direct_wake: dead` still arms the in-session watcher.
 
 ## FM-16: a detached watcher hides a dead Claude worker (2026-10-13)
 - **Signature:** a Claude role's session is gone (`claude agents --json --all`: no pid), yet health
@@ -172,7 +177,10 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   stays bound to it, so no re-arm is needed. Verified on it-arch-reviewer: respawned, woken by the relay
   and writing queue v51 within about 90 s, watcher untouched.
 - **Metric:** `FM14:respawns` counts the repairs; idle retirements appear in the daemon log.
-- **Status:** fixed.
+- **Status:** fixed, then **retired 2026-11**. With the relay gone, a detached `--wake direct` watcher
+  resumes its session itself when work arrives, so a retired worker behind a live watcher is dormant, not
+  stuck: the quorum raises nothing (waking it only to re-arm cost a cold turn), and the viewer shows it
+  `dormant`. A `--wake relay` watcher still running from before is read as `--wake direct`.
 
 ## FM-17: a pull during another writer's queue write kills the watcher (2026-10-13)
 - **Signature:** NOWATCH on a role whose watcher log ends in `LedgerError: rebase onto origin/main
@@ -205,7 +213,9 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
     ones merged).
   - Relay-mode watchers hold their wakes while the limit is in force.
   - Selftest H4 section 32, with negative controls.
-- **Status:** fixed.
+- **Status:** fixed. The relay parts (relaunch-again, the relay-watch cursor) are **retired 2026-11** with the
+  relay itself; the usage-limit hold of Claude wakes, the resume wake after the reset, and the hold in detached
+  (`--wake direct`) watchers remain.
 
 ## FM-19: an operational request waits behind an unrelated CI wait
 - **Signature:** resources are free, a lane waits for a mode-owner decision, and that owner's plain

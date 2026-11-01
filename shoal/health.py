@@ -2,7 +2,6 @@
 """shoal health quorum (architecture doc §6): watchers of the watchers, no model tokens.
 
     shoal health --spec <shoal.json> --instance a|b [--dry-run]     # what the two timers run
-    shoal relay-watch --shoal H                                     # the Claude relay's one waiter
 
 Two identical systemd timers per host (`shoal-<id>-health-a` at *:0/5, `-b` at *:2/5) run
 `health`. They share one state file under an flock, so whichever runs first acts; each run
@@ -25,12 +24,10 @@ boundary), so a new instance restarts the ladder and one instance never escalate
 
 Wakes go through direct session wake (backends.Backend.wake), one implementation per
 ecosystem: opencode -> a send to the session; Claude with a live ledger-watch -> a wake
-request file the watcher delivers (/tmp/<id>/wake-<slug>); Claude with a dead watcher -> the
-wake relay queue (/tmp/<id>/relay-queue), drained by a small Claude session through the
-harness's cross-session message. With features.health.revive a dead Claude worker is respawned
-before its wake, and a dead relay is relaunched before anyone is paged (relay-dead: relaunch at
-sighting, page 15, page 360). In user-offline mode,
-maintainer pages are deferred and delivered as one summary when the maintainer is back.
+request file the watcher delivers (/tmp/<id>/wake-<slug>); Claude with a dead watcher -> a
+direct wake (`claude --bg --resume`, after a stop when the session is idle at its prompt). In
+user-offline mode, maintainer pages are deferred and delivered as one summary when the
+maintainer is back.
 """
 from __future__ import annotations
 
@@ -42,7 +39,6 @@ import re
 import shlex
 import subprocess
 import sys
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -51,9 +47,7 @@ from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import config  # noqa: E402
 import providers  # noqa: E402
-from backends import direct_wake_mode  # noqa: E402
-from roles import (WAKE_RELAY_SLUG, ShoalSpec, find_spec, host_of, is_home, is_local, is_wake_relay, roles_dir,  # noqa: E402
-                   state_dir, wake_relay_role)
+from roles import ShoalSpec, find_spec, host_of, is_detached_wake, is_home, is_local, state_dir  # noqa: E402
 
 TOOL_PATH = config.tool_path()
 _ENV = config.tool_env()
@@ -68,7 +62,6 @@ LADDERS = {
     "wait-expired": [(0, "wake"), (60, "wake"), (120, "page")],
     "blocking-unscheduled": [(30, "wake"), (120, "page")],
     "parked-work": [(30, "wake"), (90, "wake"), (180, "page")],
-    "relay-dead": [(10, "page"), (360, "page")],
     "hold-long": [(0, "wake"), (240, "page")],
     # multi-host: a host that stopped beating has no quorum for its roles and nothing here can wake them,
     # so its silence is a page once per episode (the key carries its last beat)
@@ -92,12 +85,6 @@ WAKE_GAP_MIN = 30
 REARM_RETRY_MIN = 15
 HOST_BEAT_MIN = 15
 HOST_SILENT_MIN = 60
-# features.health.revive: a dead relay is relaunched before anyone is paged. Measured 2026-10-02: the
-# Claude background service failed its own upgrade respawn and reaped every worker, the relay among
-# them; relay-dead paged for six days while every wake it would have carried went nowhere.
-REVIVE_RELAY_LADDER = [(0, "relaunch"), (15, "page"), (360, "page")]
-RELAY_RELAUNCH_EVERY_MIN = 30  # after the ladder's relaunch, again on this period while relay-watch stays down
-RELAY_GAP_MIN = 3  # relay-watch exits to deliver; a tick younger than this is the re-arm gap, not a death
 CI_WAITS = ("remote-ci", "local-ci")
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
 
@@ -155,10 +142,6 @@ def wake_path(sid: str, slug: str) -> str:
     return os.path.join(state_dir(sid), f"wake-{slug}")
 
 
-def relay_queue_path(sid: str) -> str:
-    return os.path.join(state_dir(sid), "relay-queue")
-
-
 def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "") -> str:
     """The text of a shoal wake, prefixed with the offline banner while the maintainer is away."""
     text = (f"SHOAL-WAKE {slug}@{spec.sid} [{condition or 'request'}]: {reason} || run "
@@ -200,16 +183,6 @@ def request_wake(spec: ShoalSpec, slug: str, reason: str, condition: str = "", d
     except Exception as exc:  # noqa: BLE001
         return f"no-adapter ({str(exc)[:80]})"
     return backend.wake(spec, role, text, condition=condition, dry_run=dry_run)
-
-
-def relay_alive(sid: str) -> bool:
-    p = os.path.join(state_dir(sid), "relay-watch.pid")
-    try:
-        pid = open(p).read().strip()
-        with open(f"/proc/{pid}/cmdline", "rb") as fh:
-            return b"relay-watch" in fh.read()
-    except (OSError, ValueError):
-        return False
 
 
 def page_channels(spec: ShoalSpec) -> list[str]:
@@ -462,7 +435,7 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
 # by a message gets an API error (transcript: `"error": "rate_limit"`, `quotaLimits.resetsAt` epoch), a
 # turn started by a task notification gets a grace note and the session usually stops. Every wake or
 # relaunch spent inside the limit is lost, so health holds them until the reset and then wakes each
-# role the limit touched once (it-mvp lost its relay and stayed down 13 h otherwise).
+# role the limit touched once (a role lost its wake path and stayed down 13 h otherwise).
 LIMIT_LOOKBACK_H = 6
 LIMIT_RESET_GRACE_MIN = 2
 LIMIT_GRACE_TEXT = "[Usage limit reached"
@@ -600,8 +573,8 @@ def watcher_dormant(spec: ShoalSpec, view, role, posture: str) -> bool:
     """True when a dead watcher needs no wake now: lazy_rearm is on, the role is not active, and the
     ledger holds nothing its watcher would have woken it for (ledger_watch.actionable, board off: a
     self-fill role's board is the digest's or its next wake's). Its next real work raises its own
-    condition (unacked-work, wait-resolved, a wake request), and that wake goes direct or by relay,
-    re-arming included. Waking it only to re-arm cost a cold turn each (2026-10-20: six overnight)."""
+    condition (unacked-work, wait-resolved, a wake request), and that wake goes direct, re-arming
+    included. Waking it only to re-arm cost a cold turn each (2026-10-20: six overnight)."""
     if not lazy_rearm(spec) or posture == "active":
         return False
     try:
@@ -648,8 +621,6 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     cfg = health_cfg(spec)
     validity = float(cfg.get("validity_wake_min", 90))
     for role in spec.roles:
-        if is_wake_relay(role):
-            continue
         if not role.session:  # parked or retired: no liveness conditions at all
             continue
         if not is_local(role, spec):
@@ -702,16 +673,10 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                 "since": boundary, "detail": f"waiting {a:.0f}m on {sub} ({target or 'no target'}{seen}); "
                                 f"re-verify the wait is still valid"})
         # watcher
+        # a detached (--wake direct) watcher outlives its session's worker and resumes the session when
+        # work arrives: a retired worker is dormant, and waking it only to re-arm cost a cold turn
+        # (2026-10-20: six in one night)
         alive, sc = watcher_alive(spec.sid, slug)
-        if alive and role.ecosystem == "claude" and claude_worker_gone(role, cbusy) and direct_wake_mode(spec) == "off":
-            # a detached (--wake relay) watcher outlives its session's worker, but without direct wake it
-            # cannot deliver: the relay would message a session that is gone. Count it dead, so the ladder
-            # wakes the role and revive respawns it (measured 2026-10-13: it-arch-reviewer, retired by the
-            # daemon after 8 h idle at its prompt, sat dead behind a live watcher with no condition raised).
-            # With direct wake the watcher resumes the session when work arrives: a retired worker is
-            # dormant, and waking it only to re-arm cost a cold turn (2026-10-20: six in one night)
-            alive = False
-            between = True
         if watcher_dead(alive, posture, between) and not watcher_dormant(spec, view, role, posture):
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")
@@ -802,7 +767,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
 
 
 def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> str:
-    """Re-arm a dead DETACHED ledger-watch from the quorum, with no model turn: Claude `--wake relay`,
+    """Re-arm a dead DETACHED ledger-watch from the quorum, with no model turn: Claude `--wake direct`,
     opencode `send:` and muse/codex `exec:` watchers run setsid-detached, so shoal can start one as well as
     the role can (features.health.rearm, default on). Returns what it did, or "" when the role's watcher is
     not detached (an in-session `exit` watcher needs its role woken) or was re-armed within
@@ -812,14 +777,8 @@ def rearm_watcher(spec: ShoalSpec, role, state: dict, dry_run: bool = False) -> 
     from briefs import arming
     wake = arming(role, spec)[0]
     rearmed = state.setdefault("rearmed", {})
-    if not (wake == "relay" or wake.startswith(("send:", "exec:"))) or \
-            (age_min(rearmed.get(role.slug, "")) or 1e9) < REARM_RETRY_MIN:
+    if not is_detached_wake(wake) or (age_min(rearmed.get(role.slug, "")) or 1e9) < REARM_RETRY_MIN:
         return ""
-    if role.ecosystem == "claude" and direct_wake_mode(spec) == "off":
-        # without direct wake a watcher cannot reach a session whose worker is gone: that is revive's
-        from backends import get as get_backend
-        if get_backend("claude").session_dead(role.session) is not False:
-            return ""
     wake = wake.replace("<your-session-id>", role.session)
     argv = shlex.split(config.cli()) + ["ledger-watch", "--shoal", spec.sid, "--slug", role.slug, "--wake", wake,
                                         "--session", role.session, "--interval", "120"]
@@ -879,8 +838,7 @@ def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, stat
     `claude respawn` brings a new worker on the same conversation, idle at its prompt). An old worker's own updater
     keeps reinstalling the current version, and every reinstall restarts the background service and drops every
     attached client (measured 2026-10-22: 124 restarts in a day, driven by three workers on 2.1.292 and 2.1.304). A
-    busy stale worker (the wake relay runs relay-watch) is reported, not touched (features.health.stale_upkeep,
-    default on)."""
+    busy stale worker is reported, not touched (features.health.stale_upkeep, default on)."""
     if not health_cfg(spec).get("stale_upkeep", True):
         return
     want = claude_installed_version()
@@ -926,7 +884,7 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
     try:
         os.makedirs(state_dir(spec.sid), exist_ok=True)
         alive, sc = watcher_alive(spec.sid, role.slug)
-        if alive and (sc.get("wake") == "relay" or str(sc.get("wake", "")).startswith(("send:", "exec:"))):
+        if alive and is_detached_wake(str(sc.get("wake", ""))):
             os.kill(int(sc["pid"]), 15)  # a detached watcher: ending it wakes nobody
         if role.ecosystem == "claude" and role.session:
             from backends import get as get_backend
@@ -1016,24 +974,6 @@ def name_clash(spec: ShoalSpec, led, window_min: float) -> list[dict]:
                        f"in its config/host.toml"}]
 
 
-def relaunch_relay(spec: ShoalSpec, spec_path: str, dry_run: bool = False) -> str:
-    """features.health.revive: `relay-launch` from the quorum, without its blocking verification
-    (the next run sees relay-watch alive, or the ladder's page step fires). A relay session still
-    mid-turn is left alone: relay-launch refuses it, and that refusal is the channel reported."""
-    import argparse
-    import contextlib
-    import io
-    buf = io.StringIO()
-    a = argparse.Namespace(spec=spec_path, sid=spec.sid, force=False, verify_s=0, dry_run=dry_run)
-    try:
-        with contextlib.redirect_stdout(buf):
-            rc = cmd_relay_launch(a)
-    except Exception as exc:  # a failed launch must not stop the quorum run
-        return f"relay-launch FAILED: {exc}"
-    last = (buf.getvalue().strip().splitlines() or [""])[-1]
-    return f"relay-launch rc={rc}: {last[:160]}"
-
-
 def emit_conditions(sid: str, opened: dict[str, str], closed: dict[str, str]) -> None:
     """`health_condition` telemetry: one event per ladder key that opened or closed this run. A key
     is `<slug>|<condition>|<evidence>`. Best effort: telemetry never stops a quorum run."""
@@ -1104,21 +1044,6 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             acts.append(("health", "unpark", f"skipped ({str(exc)[:80]})"))
     lim = update_limit(spec, state)
     until = limit_until(lim)
-    relay = wake_relay_role(spec)
-    revive = bool(health_cfg(spec).get("revive"))
-    tk = os.path.join(sdir, "tick-relay-watch")
-    tick_age = age_min(open(tk).read().strip()) if os.path.exists(tk) else None
-    # relay-watch exits to deliver and the relay re-arms it within seconds: a dead relay is one whose
-    # last tick is older than that gap (measured 2026-10-14 06:22Z: a sample in the gap read dead)
-    if (spec.features or {}).get("relay") and relay is not None and relay.session and is_local(relay, spec) \
-            and not relay_alive(spec.sid) and (tick_age is None or tick_age >= RELAY_GAP_MIN):
-        # the relay has no wake adapter of its own: its death is a page, or (revive) a relaunch first.
-        # Evaluated ahead of the roles, so a relaunch is under way before this run queues their wakes.
-        since = open(tk).read().strip() if os.path.exists(tk) else iso()
-        conds.insert(0, {"slug": relay.slug, "condition": "relay-dead", "key": f"relay:{since}", "since": since,
-                         "first_seen": revive,  # revive: the ladder runs from this sighting (relaunch now, page 15 later)
-                         "detail": f"relay-watch is not running (last tick {since}): Claude roles with a dead watcher "
-                                   f"have no wake path; relaunch with `shoal relay-launch --shoal {spec.sid}`"})
     hc = health_cfg(spec)
     wake_off = set(hc.get("wake_off") or [])
     offline_hold = set(hc.get("offline_hold", OFFLINE_HOLD))
@@ -1148,22 +1073,19 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         elif c["condition"] == "turn-ended-active":
             m = float((continuation_cfg(spec) or {}).get("after_min", 5))
             steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
-        elif c["condition"] == "relay-dead" and revive:
-            steps = REVIVE_RELAY_LADDER
         elif c["condition"] == "context-restart" and __import__("context").mode(spec, c["slug"]) == "auto":
             steps = CONTEXT_AUTO_LADDER
         else:
             steps = LADDERS[c["condition"]]
         if c["condition"] in wake_off:  # features.health.wake_off: this condition pages, never wakes
             steps = [x for x in steps if x[1] != "wake"]
-        acted = False
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:
             at, action = steps[lad["step"]]
             role_ = spec.role(c["slug"])
-            if until and (action == "relaunch" or (action == "wake" and role_ is not None and role_.ecosystem == "claude")):
+            if until and action == "wake" and role_ is not None and role_.ecosystem == "claude":
                 # inside the usage limit a Claude turn errors and the wake is lost: hold the step (it runs
                 # after the reset) and remember the role for the resume wake
-                if c["slug"] not in lim.setdefault("held", []) and action == "wake":
+                if c["slug"] not in lim.setdefault("held", []):
                     lim["held"].append(c["slug"])
                 if lad.get("held") != until:
                     lad["held"] = until
@@ -1177,7 +1099,6 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 if ch and not ch.startswith("FAILED"):
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:rearm", ch))
                     lad["step"] += 1
-                    acted = True
                     break
             if action == "wake":
                 fp = f"{c['slug']}|{c['condition']}|{c.get('fp') or c['key']}"
@@ -1201,19 +1122,14 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake",
                                  f"skipped (woken for the same at {woke[fp]}; rewake_min {rewake_min:g})"))
                     lad["step"] += 1
-                    acted = True
                     break
                 if c["condition"] in REWAKE_CONDS:
                     woke[fp] = iso()
                 merged.setdefault(c["slug"], []).append((c["condition"], c["detail"], len(acts)))
                 acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", ""))
                 lad["step"] += 1
-                acted = True
                 break
-            if action == "relaunch":
-                ch = relaunch_relay(spec, spec_path, dry_run)
-                lad["relaunched"] = iso()
-            elif action == "restart":
+            if action == "restart":
                 ch = context_restart(spec, spec_path, role_, dry_run)
             elif c["condition"] in ("host-silent", "host-name-clash", "context-restart"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
@@ -1221,14 +1137,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)
             acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
             lad["step"] += 1
-            acted = True
             break  # at most one action per condition per run
-        if c["condition"] == "relay-dead" and revive and not acted and not until and lad.get("relaunched") \
-                and (age_min(lad["relaunched"]) or 0.0) >= RELAY_RELAUNCH_EVERY_MIN:
-            # a relaunch is not proof: the relay can die again before it arms (2026-10-14: r7's first turn
-            # hit the usage limit). While relay-watch stays down, relaunch again on a fixed period.
-            acts.append((c["slug"], "relay-dead relaunch-again", relaunch_relay(spec, spec_path, dry_run)))
-            lad["relaunched"] = iso()
     # one wake per role per run, carrying every condition that is due (each used to be its own turn)
     for slug_, items in merged.items():
         conds_ = "+".join(dict.fromkeys(x[0] for x in items))
@@ -1246,8 +1155,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         touched = {s for s, ts in (lim.get("affected") or {}).items() if ts >= floor} | set(lim.get("held") or [])
         for s in sorted(touched):
             r_ = spec.role(s)
-            if r_ is None or not r_.session or is_wake_relay(r_):
-                continue  # the relay comes back through its own relaunch
+            if r_ is None or not r_.session:
+                continue
             acts.append((s, "usage-limit reset:wake", request_wake(
                 spec, s, f"the account usage limit reset at {lim['reset']}: a turn that errored, a turn you "
                          f"stopped on the grace note, or a wake lost to the limit resumes now", "limit-reset", dry_run)))
@@ -1308,208 +1217,6 @@ def cmd_health(a) -> int:
     return run(spec, a.instance, dry_run=a.dry_run, spec_path=path)
 
 
-def cmd_relay_watch(a) -> int:
-    """The Claude relay's single background waiter: exits (waking the relay session) when
-    the relay queue holds undelivered wakes, printing them for the relay to send."""
-    sdir = state_dir(a.sid)
-    os.makedirs(sdir, exist_ok=True)
-    with open(os.path.join(sdir, "relay-watch.pid"), "w") as fh:
-        fh.write(str(os.getpid()))
-    qp, cp = relay_queue_path(a.sid), os.path.join(sdir, "relay-queue.cursor")
-    pp = os.path.join(sdir, "relay-queue.printed")
-    tick = os.path.join(sdir, "tick-relay-watch")
-    # The cursor moves only once the wakes were sent: printed wakes are pending until the SAME relay
-    # session re-arms (its brief: send each, then re-arm). A relay that stops first (2026-10-14 03:31Z, on
-    # the usage-limit grace note) or dies leaves them pending, and its replacement prints them again.
-    me = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    try:
-        pend = json.load(open(pp))
-    except (OSError, ValueError):
-        pend = None
-    if pend is not None:
-        if pend.get("by", "") == me:
-            with open(cp, "w") as fh:
-                fh.write(str(int(pend.get("upto", 0))))
-        os.remove(pp)
-    deadline = time.time() + a.max_hours * 3600 if a.max_hours > 0 else None
-    print(f"{iso()} relay-watch armed (pid {os.getpid()}; runs until a wake is due"
-          + (f" or {a.max_hours:g} h pass" if deadline else ", indefinitely") + ")", flush=True)
-    while True:
-        with open(tick, "w") as fh:  # self-tick: an old tick is a dead relay, never a quiet one
-            fh.write(iso() + "\n")
-        if deadline and time.time() > deadline:
-            print(f"{iso()} VERDICT RELAY-MAX-HOURS {a.max_hours:g} (nothing to relay; re-arm)")
-            return 0
-        try:
-            lines = open(qp).read().splitlines()
-        except OSError:
-            lines = []
-        cur = int(open(cp).read().strip() or 0) if os.path.exists(cp) else 0
-        if len(lines) > cur:
-            # one wake per role: the newest. Every wake says "run `shoal next`", so older ones add nothing,
-            # and a backlog replayed whole floods the roles (2026-10-14: 178 queued for five roles)
-            newest: dict[str, dict] = {}
-            merged: dict[str, int] = {}
-            for ln in lines[cur:]:
-                try:
-                    d = json.loads(ln)
-                except ValueError:
-                    continue
-                key = d.get("slug") or d.get("to", "")
-                merged[key] = merged.get(key, -1) + 1
-                newest[key] = d
-            for key, d in newest.items():
-                more = f" (+{merged[key]} older wake(s) merged)" if merged[key] else ""
-                print(f"RELAY-WAKE to={d['to']} session={d.get('session', '')} :: {d['text']}{more}")
-            with open(pp, "w") as fh:
-                json.dump({"upto": len(lines), "by": me, "ts": iso()}, fh)
-            print(f"{iso()} VERDICT RELAY-DELIVER {len(newest)} (send each with SendMessage by name, then re-arm)")
-            return 0
-        time.sleep(a.interval)
-
-
-RELAY_SLUG = WAKE_RELAY_SLUG
-# The cheapest model that runs unattended: Haiku 4.5 reports "auto mode unavailable for this model",
-# so a relay on it stops at its first permission prompt; Haiku 5.5 runs in auto mode (both measured
-# 2026-10-08 with `claude --bg`). The `haiku` alias still resolves to 4.5, so the id is explicit.
-RELAY_MODEL = "claude-haiku-5-5"
-RELAY_DOC = """# {slug} plan_state ({sid})
-
-- role: `{slug}` (infrastructure, not a worker; `fill=none`): the Claude implementation of direct
-  session wake, model haiku
-- generated by `shoal relay-init`; lives in the shoal's data directory, not the design repo
-- design: `docs/architecture.md` §7 (direct session wake) in the shoal repository
-
-## Mission
-
-Wake a Claude role whose own ledger-watch is dead, when the health quorum decides a wake is due.
-Nothing else: no project work, no claims, no messages of your own.
-
-## Current state
-
-Generated at relay-init. The relay holds no work items; its only state is its relay-watch pid and
-the relay-queue cursor under `/tmp/{sid}/`.
-
-## Loop
-
-1. Run `{cli} relay-watch --shoal {sid}` as a background command. Arm it with the Bash tool, run_in_background=true and timeout=7200000, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool. A background Bash command wakes you when it exits, and is killed at its timeout: 30 min by default, 2 h at most, so always pass the maximum (measured 2026-10-08: without it, an idle lane spent a turn every 30 min re-arming); a Monitor expires (5 min by default, 30 min at most) and every expiry costs a turn. (Measured 2026-09-23: a relay that wrapped relay-watch in `&` plus a Monitor took 21 empty turns in 2 hours, relaying nothing.)
-2. When it exits it prints one `RELAY-WAKE to=<session name> session=<id> :: <text>` line per
-   wake. For each, call SendMessage with to=<session name> and the text verbatim. Add the `[ref]`
-   from ListAgents only when two sessions share the name, choosing the one whose session id
-   starts with <id>.
-3. Re-arm relay-watch (same rule: Bash, run_in_background=true, timeout=7200000, no `&`, no Monitor) and prove its
-   pid with TWO separate commands: first `cat /tmp/{sid}/relay-watch.pid`, then `ps -p <that
-   number>`. Never use $(...) command substitution: it always needs a permission prompt.
-4. End the turn with one line: `relayed N`.
-
-Never transition yourself `offline` and never kill relay-watch: only the operator stops the relay
-(`claude stop <id>`). If your session is being closed, leave relay-watch running and end the turn.
-
-Keep the context small: read nothing else. A `killed` notification for relay-watch is a wake:
-re-arm.
-
-## Running monitors
-
-- relay-watch: `{cli} relay-watch --shoal {sid}` (pid in `/tmp/{sid}/relay-watch.pid`)
-
-## grants-needed
-
-- None pending (the relay uses no grants: it only relays wakes the quorum decided).
-"""
-
-
-def relay_doc_path(sid: str, slug: str = "") -> str:
-    return os.path.join(roles_dir(sid), slug or RELAY_SLUG, "plan_state.md")
-
-
-def cmd_relay_init(a) -> int:
-    """Generate the relay's start doc in the shoal data dir; add the role + features.relay to the spec."""
-    path = a.spec or find_spec(a.sid)
-    spec = ShoalSpec.load(path)
-    existing = wake_relay_role(spec)
-    slug = existing.slug if existing is not None else RELAY_SLUG
-    doc = relay_doc_path(spec.sid, slug)
-    text = RELAY_DOC.format(sid=spec.sid, cli=config.cli(), slug=slug)
-    have = existing is not None
-    plan = (f"relay-init {spec.sid}: doc {doc}"
-            + ("" if a.doc_only else f"; role {'present' if have else 'ADD'} ({RELAY_MODEL}, fill=none); features.relay=true"))
-    if a.dry_run:
-        print("[dry-run] " + plan)
-        return 0
-    os.makedirs(os.path.dirname(doc), exist_ok=True)
-    with open(doc, "w") as fh:
-        fh.write(text)
-    if not a.doc_only:
-        from roles import Role
-        if not have:
-            spec.roles.append(Role(slug=RELAY_SLUG, ecosystem="claude", title=RELAY_SLUG, doc=doc,
-                                   fill="none", model=RELAY_MODEL, seq=1))
-        else:
-            existing.doc = doc
-        spec.features = dict(spec.features or {}, relay=True)
-        from cli import persist_spec
-        persist_spec(spec, path, note="relay-init")
-    print(plan)
-    return 0
-
-
-def cmd_relay_launch(a) -> int:
-    """(Re)launch the relay session alone: no restart, no incarnation bump. The relay's seq
-    bumps (new tag), the new session id is recorded in the spec, and the launch counts only
-    once relay-watch is proven running."""
-    path = a.spec or find_spec(a.sid)
-    spec = ShoalSpec.load(path)
-    role = wake_relay_role(spec)
-    if role is None:
-        print(f"ERROR: no wake relay role in {spec.sid}: run `shoal relay-init --shoal {spec.sid}` first")
-        return 1
-    if not is_local(role, spec):
-        print(f"REFUSED: the relay runs on {role.server or spec.home}; launch it there: "
-              f"ssh {role.server or spec.home} shoal relay-launch --shoal {spec.sid}")
-        return 1
-    if relay_alive(spec.sid) and not a.force:
-        print(f"relay-watch already running (pid {open(os.path.join(state_dir(spec.sid), 'relay-watch.pid')).read().strip()}); "
-              f"nothing to do (--force to launch anyway)")
-        return 0
-    st = claude_busy().get(next((k for k in claude_busy() if role.session and k.startswith(role.session)), ""), "")
-    if st == "busy" and not a.force:
-        print(f"ERROR: the current relay session {role.session} is still executing a turn; stop it first "
-              f"(`claude stop {role.session[:8]}`) or pass --force")
-        return 1
-    old = role.session
-    role.seq += 1
-    plan = f"relay-launch {spec.sid}: {role.label} model={role.model} (previous session {old or '-'}; incarnation unchanged)"
-    if a.dry_run:
-        print("[dry-run] " + plan)
-        return 0
-    from cli import persist_spec, write_brief
-    from backends import get as get_backend
-    brief = open(write_brief(spec, role)).read()
-    role.session = get_backend("claude").create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
-                                                name=role.tag, model=role.model, effort=role.effort)
-    spec.record_generation()
-    persist_spec(spec, path, note=f"relay-launch {role.tag}")
-    print(plan + f" -> launched {role.session}")
-    if old and old != role.session:
-        # the replaced relay must not keep a turn alive beside the new one (2026-10-14: four earlier relay
-        # sessions were still listed working); best effort, a stop that fails changes nothing else
-        subprocess.run(["claude", "stop", old[:8]], capture_output=True, text=True, timeout=60, env=_ENV)
-    if a.verify_s <= 0:
-        print(f"RELAY LAUNCHED {role.session}: relay-watch not verified here (the health quorum checks it next run)")
-        return 0
-    t0 = time.time()
-    while time.time() - t0 < a.verify_s:
-        if relay_alive(spec.sid):
-            pid = open(os.path.join(state_dir(spec.sid), "relay-watch.pid")).read().strip()
-            print(f"RELAY LOOP ALIVE: relay-watch pid {pid} (verify it was armed as a Bash background command: "
-                  f"`claude logs {role.session}`)")
-            return 0
-        time.sleep(10)
-    print(f"RELAY LOOP INCOMPLETE: no relay-watch within {a.verify_s:g}s; check `claude logs {role.session}` "
-          f"(a pending grant ask or a failed arm)")
-    return 4
-
-
 def add_parsers(sub) -> None:
     p = sub.add_parser("health", help="health quorum run (what the two health timers execute)")
     p.add_argument("--spec", default="")
@@ -1517,22 +1224,3 @@ def add_parsers(sub) -> None:
     p.add_argument("--instance", choices=["a", "b"], default="a")
     p.add_argument("--dry-run", action="store_true", help="evaluate and print actions; wake and page nobody")
     p.set_defaults(func=cmd_health)
-    p = sub.add_parser("relay-init", help="generate the wake relay start doc (data dir) and add the role to the spec")
-    config.add_id_arg(p, required=True)
-    p.add_argument("--spec", default="")
-    p.add_argument("--doc-only", action="store_true", help="write the start doc only; leave the spec alone")
-    p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=cmd_relay_init)
-    p = sub.add_parser("relay-launch", help="(re)launch the wake relay session alone (no restart, no incarnation bump)")
-    config.add_id_arg(p, required=True)
-    p.add_argument("--spec", default="")
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--verify-s", type=float, default=300)
-    p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=cmd_relay_launch)
-    p = sub.add_parser("relay-watch", help="the Claude relay session's waiter (exits when a wake is due)")
-    config.add_id_arg(p, required=True)
-    p.add_argument("--interval", type=float, default=15)
-    p.add_argument("--max-hours", type=float, default=0,
-                   help="exit after this long with nothing to relay (default 0: run indefinitely)")
-    p.set_defaults(func=cmd_relay_watch)

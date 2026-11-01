@@ -130,7 +130,8 @@ def main():
                 C[(day(e["_t"]), f"{m.group(3)}:{m.group(1)}")] += 1
                 if m.group(3) == "page":
                     C[(day(e["_t"]), "pages:total")] += 1
-                # FM-14: a wake that found no path (dead watcher and dead relay), and the revive repairs
+                # FM-14: a wake that found no path; respawns and relay relaunches are read from historical events
+                # only (the relay and health.revive were retired 2026-11 and emit none now)
                 if m.group(3) == "wake" and " -> no-adapter" in note:
                     C[(day(e["_t"]), "FM14:wakes_no_path")] += 1
                 if "; respawned " in note:
@@ -165,7 +166,7 @@ def main():
     R = collections.Counter()            # (role, metric) -> seconds
     for r, seq in tls.items():
         if r not in roles:
-            continue  # system, operator and relay writers, and roles no longer in the spec
+            continue  # system and operator writers, and roles no longer in the spec (a retired relay among them)
         lw = last_write[r][-1]
         end = w1 if (w1 - lw).total_seconds() < 86400 else lw   # retired role: stop at its last write
         prev_meta = {}

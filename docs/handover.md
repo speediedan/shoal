@@ -29,7 +29,7 @@ shoal ui handover --list                                          # every saved 
 ```
 
 - **Live toggle:** it works on a live session. Opting in while past the limit starts the advice at once: one turn, delivered
-  directly (an idle session is stopped and resumed with the message; never by relay).
+  directly (an idle session is stopped and resumed with the message).
 - **Who drives it:** after that, the feeder (`shoal ui feed`) checks every opted-in session about every 5 minutes, with no
   model calls. It advises at most once per crossing; in `auto` mode it then resets once the doc is refreshed and the session
   is idle at its prompt.
@@ -80,7 +80,8 @@ model calls. Per session it reports:
 The turn count is what a limit means to the session: how often it would be asked to refresh its start doc. Measured
 2026-10-24 over three days on speediedl: the busiest standalone seat grew about 19k per turn, so a 500k limit would have
 handed it over every 16 to 27 turns (11 to 13 h); most roles grew 12k to 20k per turn (a fresh role reaches 500k in 21 to
-34 turns, one role at 35k per turn in 12); the wake relay grew under 3k per turn and would not reach it for 150 turns.
+34 turns, one role at 35k per turn in 12); the wake relay (since retired) grew under 3k per turn and would not reach it
+for 150 turns.
 
 The first health run on each host after midnight UTC writes yesterday's snapshot to
 `<data_root>/_context/<server>-<YYYY-MM-DD>.json` (`features.health.context_snapshot`, default on; `context-report
@@ -102,7 +103,7 @@ installed one runs its own updater, which reinstalls the current version. Every 
 and drops every attached client: measured 2026-10-22, 124 restarts in a day, driven by three old workers.
 - The quorum respawns such a worker when it is idle. That takes no turn: a new worker on the same conversation, idle at its
   prompt.
-- A busy one (the wake relay runs relay-watch) is reported once per version, to be relaunched at a quiet moment.
+- A busy one is reported once per version, to be relaunched at a quiet moment.
 - The running version comes from the background service's roster (`~/.claude/daemon/roster.json`).
 
 **Reattach.** When the background service restarts under an attached card, the card reattaches the same session, up to three

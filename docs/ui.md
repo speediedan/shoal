@@ -42,14 +42,14 @@ reader ignores fields it does not know.
  "shoals": [{
    "id": "<id>", "spec": "<path>", "incarnation": 2, "gen": "r3", "retired": false, "dir": "<path>",
    "mode": {"offline": false, "offline_until": null, "freeze": false},
-   "relay": {"alive": true}, "pages_24h": 0, "last_page": null,
+   "pages_24h": 0, "last_page": null,
    "asks_open": 0, "needs_you": 1, "stalled": 1, "violations": 0, "contested": 0,
    "tooling": {"sha": "<12>", "head": "<12>", "current": true}, "features": ["..."],
    "conditions": {"source": "health-dry-run", "ts": "<utc>", "age_s": 40,
                   "open": [{"slug": "<role>", "condition": "parked-work", "since": "<utc>", "detail": "..."}]},
    "roles": [{
      "slug": "<role>", "tag": "<role>-r3", "harness": "claude", "model": "<model>", "fill": "self",
-     "server": "", "aux": false, "relay": false, "session_id": "<id>",
+     "server": "", "aux": false, "session_id": "<id>",
      "posture": "active|wait|idle|offline|parked", "sub": "local-ci", "posture_age_s": 600,
      "wait": {"sub": "...", "target": "...", "holder": "...", "rescan_utc": "..."},
      "active": "<repo>#<n>:fix",
@@ -79,8 +79,8 @@ reader ignores fields it does not know.
 - `context-large`: the session's context is past its `context_restart_k` limit (informational; the row's
   `context_k` holds the size in thousands of tokens).
 - `dormant`: a Claude session with no worker (the background service retired it idle) behind a live
-  detached watcher, with `health.direct_wake` on. The watcher resumes it when work arrives, so it is
-  not blocking and shows as `DORMANT`.
+  detached watcher. The watcher resumes it directly when work arrives, so it is not blocking and shows
+  as `DORMANT`.
 - `blocked-on-question`: the session waits on a pending question to the maintainer.
 - `watcher-dead`: the session is between turns with no `ledger-watch`.
 - `blocker-role-cannot-take`: a next item is blocked on a role that cannot take it.
@@ -257,11 +257,6 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   why (host unreachable, connection ended, or attached elsewhere) and retries every 30 s instead of taking the session over
   (`q` gives up, `r` retries now). A role whose host has no route has no card: it stays in the overview table
   with its host, answered by mail.
-- **The relay is read where it runs.** The wake relay's watch process is visible only on its own host, so a
-  relay role on another host reports `relay_alive` in that host's rows (a live field, pulled like the rest) and
-  the shoal's `relay` is `{"alive": true|false}` from it. When nothing can say (no route, or a failed pull with
-  nothing cached) it is `{"alive": null}`: the status text and the sidebar show `relay ?` (the line shows nothing), never `DEAD`, and the
-  `relay-dead` condition is raised only by the host that runs the relay.
 - **Live state of routed remote roles.** Harness liveness and sidecars are readable only on the role's host,
   so the read model pulls that host's own rows (`shoal ui status --shoal <id> --rows-only --json`, which has
   no usage and never pulls further hosts) over the route, cached 30 s, and takes their live fields
@@ -290,7 +285,9 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   pane label, and their equal-sequence reports collided (the first won), so the later registration is kept and
   `ui pick --save` replaces a same-label entry and says so.
 - **Workspaces:** `workspace.report_metadata` tokens `shoal_mode`, `shoal_needs`, `shoal_stalled`,
-  `shoal_asks`, `shoal_pages`, `shoal_relay`, `shoal_conditions` and `shoal_tooling`.
+  `shoal_asks`, `shoal_pages`, `shoal_conditions` and `shoal_tooling`. (`shoal_relay` went with the
+  retired wake relay: a client block pasted before then still names it and draws nothing; refresh it
+  with `shoal ui herdr-config --client`.)
 - **Failure shape:** tokens carry a TTL of three intervals, so a dead feeder clears them instead of
   leaving stale data.
 - **What you get from Herdr:** its own notifications on a role that turns `blocked`, and the agent

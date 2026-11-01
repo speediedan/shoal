@@ -83,7 +83,7 @@ import startdoc as _startdoc  # noqa: E402
 import resource_usage as _resource_usage  # noqa: E402
 import role_time as _role_time  # noqa: E402
 from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
-                   is_wake_relay, home_dir, state_dir, utcnow_iso)
+                   home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
 from watchers import cmd_lanes, cmd_pipeline, shoal_emit  # noqa: E402
@@ -484,13 +484,6 @@ def verify_consumer(spec: ShoalSpec, role: Role, cap_s: int = 600, old: list[str
     t0 = time.time()
     stale_seen = ""
     while time.time() - t0 < cap_s:
-        if is_wake_relay(role):  # the relay has no ledger-watch: its effect is a live relay-watch
-            from health import relay_alive
-            if relay_alive(spec.sid):
-                print(f"RELAY LOOP ALIVE: {role.slug} relay-watch running")
-                return True
-            time.sleep(poll_s)
-            continue
         try:
             from ledger import Ledger, View
             led = Ledger(spec.sid, root=spec.ledger_dir)

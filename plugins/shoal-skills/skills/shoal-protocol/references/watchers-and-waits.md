@@ -3,12 +3,14 @@
 ## Your ledger watcher
 
 Your brief gives the exact `shoal ledger-watch` command. Arm it in the way your harness supports:
-- Claude Code in a shoal with a wake relay: a detached watcher (`--wake relay`, started once with
-  `setsid nohup ... &`, not as a background command). The relay delivers each wake to you as a
-  message between your turns, and the watcher keeps running: no re-arm after a wake, and no time limit;
-- Claude Code without a relay: a background command that re-invokes you when it exits (the Bash tool
-  with `run_in_background` and `timeout` 7200000, the 2 h maximum, never the Monitor tool, which
-  expires). Every kill costs you a turn; a kill is a wake: re-arm;
+- Claude Code (the default): a detached watcher (`--wake direct`, started once with
+  `setsid nohup ... &`, not as a background command). It delivers each wake to you directly between
+  your turns: your session is resumed with the wake as its prompt (stopped first when it sits idle at
+  its prompt). The watcher keeps running: no re-arm after a wake, and no time limit. An older brief may
+  say `--wake relay`; it means the same;
+- Claude Code under `direct_wake: dead`: a background command that re-invokes you when it exits (the
+  Bash tool with `run_in_background` and `timeout` 7200000, the 2 h maximum, never the Monitor tool,
+  which expires). Every kill costs you a turn; a kill is a wake: re-arm;
 - a detached process that sends its wake to your session id (opencode). It sends only between your
   turns and keeps running after each wake, so it needs no re-arm; arming it again while it runs prints
   `ALREADY ARMED` and changes nothing.
@@ -17,7 +19,7 @@ Your brief gives the exact `shoal ledger-watch` command. Arm it in the way your 
 - **Armed means proven.** Its pid is alive (`ps -p`) and matches the sidecar. Re-arm after every
   wake and prove it in the same turn. A lane that acted on a wake and never re-armed is deaf.
 - **Prove a pid with two separate commands.** First read it: `cat /tmp/<id>/ledger-watch-<slug>.state`
-  (the `pid=` line) or `cat /tmp/<id>/relay-watch.pid`. Then run `ps -p <that number>`. Never use
+  (the `pid=` line). Then run `ps -p <that number>`. Never use
   `$(...)` command substitution (`ps -p $(cat ...)`): it always needs a permission prompt in a
   harness with manual permissions, so the proof stalls on the maintainer.
 - **An exit is not a kill.** `ledger-watch` exits by design on every wake it delivers, and logs a
@@ -63,7 +65,7 @@ itself and wake you if the target finished while your waiter died.
 
 Two health timers, run by the operator, evaluate every role on a schedule. They look for
 unacknowledged work, resolved or expired waits, dead watchers, a turn that ended while `active`,
-blocking items left unscheduled, and a dead relay. They wake you through your harness's adapter,
+and blocking items left unscheduled. They wake you through your harness's adapter,
 and page the maintainer when a wake has no effect. You never need a self-check timer of your own.
 
 

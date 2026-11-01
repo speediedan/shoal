@@ -148,9 +148,9 @@ class Accounting(unittest.TestCase):
 
     def test_population_comes_from_membership_not_writers(self):
         obs = {"r": [snap(0, "between", "waiting", "remote-ci")],
-               "relay": [snap(0, "turn", "active")]}
+               "nonmember": [snap(0, "turn", "active")]}
         per, _ = rt.account(obs, {"r": [(0, None)]}, 0, 60)
-        self.assertNotIn("relay", per)
+        self.assertNotIn("nonmember", per)
         self.assertAlmostEqual(rt.summarize(per, 60)["AAR"], 1.0)
 
     def test_gaps_bounds_and_coverage(self):

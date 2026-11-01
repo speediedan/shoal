@@ -297,9 +297,6 @@ class OpenChamberBackend(Backend):
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-REVIVED_NOTE = ("Your session was respawned: its worker process had died (the Claude background service "
-                "restarted or retired it), so every background command it ran, your ledger-watch included, "
-                "is gone. Run `next`, re-arm your watcher, then act on this wake: ")
 RESUMED_NOTE = ("Your session was resumed for this wake: its worker had been retired (idle) or had died, so "
                 "background commands it ran inside the session are gone. A detached ledger-watch survives that; "
                 "`next` says whether yours is armed. Act on this wake: ")
@@ -382,29 +379,22 @@ def claude_current(session: str, job: str = "") -> str:
 
 
 def direct_wake_mode(spec) -> str:
-    """features.health.direct_wake: 'off', 'dead' (resume a session with no worker: no relay turn) or
-    'idle' (also stop and resume a live session idle at its prompt with nothing in flight). Default
-    'dead' when health.revive is on, else 'off'."""
+    """features.health.direct_wake: how far a direct Claude wake may go. 'idle' (the default): resume a
+    session with no worker, and stop then resume a live session idle at its prompt with nothing in
+    flight. 'dead': resume a session with no worker only; a live worker is never stopped, so its wake
+    waits until it can go. Direct wake is always on: any other value (including the retired relay-era
+    'off') reads as 'idle'."""
     h = (getattr(spec, "features", {}) or {}).get("health")
     h = h if isinstance(h, dict) else {}
-    m = str(h.get("direct_wake", "dead" if h.get("revive") else "off")).lower()
-    return m if m in ("off", "dead", "idle") else "off"
-
-
-def relay_fallback(spec) -> bool:
-    """features.health.relay_fallback: whether a wake that cannot be delivered directly goes to the wake
-    relay (two turns) or waits for a direct chance (the session wakes itself when its in-flight work
-    ends). Default: on, except in direct_wake 'idle' mode, where the relay is left for nothing."""
-    h = (getattr(spec, "features", {}) or {}).get("health")
-    h = h if isinstance(h, dict) else {}
-    return bool(h.get("relay_fallback", direct_wake_mode(spec) != "idle"))
+    m = str(h.get("direct_wake", "idle")).lower()
+    return m if m in ("dead", "idle") else "idle"
 
 
 def detached(argv: list[str]) -> list[str]:
     """argv run so that a Claude background daemon it may start outlives the caller's systemd unit.
     Under a systemd service (INVOCATION_ID set, e.g. a health timer), `claude` starts its daemon on
     demand inside the unit's cgroup, and KillMode=control-group kills it when the oneshot ends, with
-    every session it spawned (measured 2026-10-12 after a reboot: a relay relaunched by the quorum died
+    every session it spawned (measured 2026-10-12 after a reboot: a session relaunched by the quorum died
     4 s later). `systemd-run --user --scope` gives the call its own scope, which keeps the caller's
     environment, cwd and pipes."""
     sr = shutil.which("systemd-run")
@@ -459,11 +449,9 @@ class ClaudeBackend(Backend):
     headless sends would silently fork consumers. Coordinator→consumer
     traffic travels ONLY in the queue file — that is the channel, and the
     reason sends are refused rather than approximated. The health quorum's
-    Claude wake adapter is therefore not here: it is a wake-request file the
-    role's own ledger-watch delivers, else the wake relay session's
-    cross-session message (`wake` below; architecture doc §7). The
-    relay is launched by create() like every lane, so it shares their
-    permission mode, which cross-session delivery requires.
+    Claude wake adapter is therefore not a send: it is a wake-request file the
+    role's own ledger-watch delivers, else a direct wake that resumes the
+    session (`wake` and `deliver` below; architecture doc §7).
     """
     ecosystem = "claude"
 
@@ -475,53 +463,19 @@ class ClaudeBackend(Backend):
 
     def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
         """Claude: a headless send would fork the session, so a wake goes through the role's own
-        ledger-watch (a wake-request file it delivers by exiting) while that watcher is alive,
-        else through the wake relay: a small Claude session whose single waiter drains a queue
-        and delivers each wake as a cross-session message."""
+        ledger-watch (a wake-request file it delivers by exiting, or directly when detached) while that
+        watcher is alive, else directly from here (`deliver`)."""
         import json as _json
         import os as _os
-        from health import health_cfg, iso, relay_alive, relay_queue_path, state_dir, wake_path, watcher_alive
-        from roles import wake_relay_role
-        # features.health.revive: a session whose worker process is gone (the background service
-        # restarted under it, or retired it idle) is respawned before it is woken. Its background
-        # commands died with it, so an orphaned ledger-watch cannot deliver: the wake goes by relay.
-        revive = bool(health_cfg(spec).get("revive"))
-        revived = ""
+        from health import iso, state_dir, wake_path, watcher_alive
         alive, _ = watcher_alive(spec.sid, role.slug)
-        if direct_wake_mode(spec) != "off":
-            # a live detached watcher delivers the wake file itself (directly, by resume), so a retired
-            # worker needs nothing here; without one the quorum delivers it now
-            if alive:
-                if not dry_run:
-                    _os.makedirs(state_dir(spec.sid), exist_ok=True)
-                    with open(wake_path(spec.sid, role.slug), "a") as fh:
-                        fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
-                return "wake-file" + (" (dry-run)" if dry_run else "")
-            return self.deliver(spec, role, role.session, text, dry_run)
-        if revive and role.session and self.session_dead(role.session):
-            revived = f"; respawned {role.session[:8]} ({self.respawn(role.session, dry_run)})"
-            text = REVIVED_NOTE + text
-        if alive and not revived:
+        if alive:
             if not dry_run:
                 _os.makedirs(state_dir(spec.sid), exist_ok=True)
                 with open(wake_path(spec.sid, role.slug), "a") as fh:
                     fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
             return "wake-file" + (" (dry-run)" if dry_run else "")
-        if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
-            return "no-adapter (claude watcher dead, wake relay disabled)" + revived
-        pending = ""
-        if not relay_alive(spec.sid):
-            if not revive:
-                return "no-adapter (claude watcher dead, wake relay waiter dead)"
-            # the quorum relaunches a dead relay (relay-dead), and relay-watch resumes from its
-            # cursor, so a wake queued now is delivered once the relay is back; if it never comes
-            # back, this condition's own page step still fires
-            pending = " (queued; relay down, relaunch pending)"
-        if not dry_run:
-            with open(relay_queue_path(spec.sid), "a") as fh:
-                fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": role.session,
-                                      "condition": condition, "text": text}) + "\n")
-        return "wake-relay" + pending + (" (dry-run)" if dry_run else "") + revived
+        return self.deliver(spec, role, role.session, text, dry_run)
 
     def deliver(self, spec, role, session: str, text: str, dry_run: bool = False) -> str:
         """Deliver one wake to a Claude session with no turn but the target's own, where it allows that
@@ -531,9 +485,8 @@ class ClaudeBackend(Backend):
           prompt (verified 2026-10-20: same id, saved options, prompt cache mostly kept);
         - `stop+resume` (mode `idle`): a live worker idle at its prompt with nothing in flight is
           stopped and resumed the same way;
-        - `deferred (...)`: busy, at a question, or work in flight; the caller retries later (a session
-          with work in flight wakes itself when that work ends). With relay_fallback the wake relay
-          takes these instead (`wake-relay`);
+        - `deferred (...)`: busy, at a question, work in flight, or a live worker under mode `dead`; the
+          caller retries later (a session with work in flight wakes itself when that work ends);
         - `FAILED ...`: the resume did not take; the caller retries."""
         import time as _time
         from health import claude_job_state, claude_liveness, claude_prompt_open
@@ -541,8 +494,8 @@ class ClaudeBackend(Backend):
         row = self._row(session, include_stopped=True) if session else None
         full = str((row or {}).get("sessionId") or session)
         why = ""
-        if mode == "off" or row is None:
-            why = "direct wake off" if mode == "off" else "session not listed"
+        if row is None:
+            why = "session not listed"
         elif not row.get("pid"):
             return self._resume(row, full, RESUMED_NOTE + text, dry_run)
         else:
@@ -568,8 +521,6 @@ class ClaudeBackend(Backend):
                     _time.sleep(0.5)
                 _time.sleep(RESUME_SETTLE_S)
                 return "stop+" + self._resume(row, full, text, dry_run)
-        if relay_fallback(spec):
-            return self._relay(spec, role, session, text, dry_run) + f" ({why})"
         return f"deferred ({why})"
 
     def _resume(self, row: dict, session: str, text: str, dry_run: bool = False) -> str:
@@ -591,19 +542,6 @@ class ClaudeBackend(Backend):
         if r.returncode != 0:
             return f"FAILED rc={r.returncode}: {out.strip().splitlines()[-1][:120] if out.strip() else ''}"
         return "resume"
-
-    def _relay(self, spec, role, session: str, text: str, dry_run: bool = False) -> str:
-        import json as _json
-        from health import iso, relay_alive, relay_queue_path
-        from roles import wake_relay_role
-        if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
-            return "no-adapter (wake relay disabled)"
-        pending = "" if relay_alive(spec.sid) else " (queued; relay down, relaunch pending)"
-        if not dry_run:
-            with open(relay_queue_path(spec.sid), "a") as fh:
-                fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": session,
-                                      "condition": "wake", "text": text}) + "\n")
-        return "wake-relay" + pending + (" (dry-run)" if dry_run else "")
 
     def reset(self, session: str, prompt: str, label: str = "", cwd: str = "", dry_run: bool = False) -> dict:
         """Claude: a new job on the prompt, with the old job's saved options (name, model, effort from its state.json),

@@ -181,7 +181,7 @@ check "ledger lint" $H doctor --spec "$SPEC"
 check "## Ledger economics" $H report --spec "$SPEC" --gen r1 --dry-run --no-pull
 check "## Wake efficiency" $H report --spec "$SPEC" --gen r1 --dry-run --no-pull
 check "§13 wasted wakes" $H report --spec "$SPEC" --gen r1 --dry-run --no-pull
-check "ledger-watch --shoal t1shoal --slug alpha --wake exit" $H brief --spec "$SPEC" --slug alpha
+check "ledger-watch --shoal t1shoal --slug alpha --wake direct" $H brief --spec "$SPEC" --slug alpha  # Claude: direct wake by default
 check "wake send:" $H brief --spec "$SPEC" --slug beta
 check "prove the pid with TWO separate commands: first .cat /tmp/t1shoal/ledger-watch-alpha.state." $H brief --spec "$SPEC" --slug alpha
 if $H brief --spec "$SPEC" --slug alpha | grep -qE 'ps -p \$\(|ps -p plus sidecar'; then fail "brief combines the pid proof"; fi
@@ -240,8 +240,8 @@ assert not bad, bad
 PY2
 [ "$(SHOAL_DATA_ROOT="$S/new-root" python3 -c "import sys; sys.path.insert(0, '$SHOALD'); import config; print(config.data_root())")" = "$S/new-root" ] \
   || fail "SHOAL_DATA_ROOT not honoured"
-echo "== layout: shoals/<id>/shoal.json; next_max; wake relay slug"
-python3 - "$SHOALD" "$S/layout" <<'PY3' || fail "layout / next_max / wake relay checks"
+echo "== layout: shoals/<id>/shoal.json; next_max; retired wake relay ignored, relay wake alias"
+python3 - "$SHOALD" "$S/layout" <<'PY3' || fail "layout / next_max / retired relay checks"
 import os, sys
 sys.path.insert(0, sys.argv[1])
 from layout import group_dir, spec_path
@@ -253,9 +253,16 @@ class S:  # a stand-in spec
 assert queue_next_max(S({"workwake": True})) == QUEUE_NEXT_MAX == 3
 assert queue_next_max(S({"workwake": {"next_max": 5}})) == 5
 assert queue_next_max(S({"workwake": {"next_max": "x"}})) == 3
-from roles import Role, is_wake_relay
-assert is_wake_relay(Role(slug="wake-relay", ecosystem="claude", title="", doc="", fill="none"))
-assert not is_wake_relay(Role(slug="wake-relay", ecosystem="claude", title="", doc="", fill="self"))
+from roles import ShoalSpec, canon_wake, is_detached_wake
+# the retired relay role (fill=none) is dropped at load; a worker that merely shares the slug is kept
+d = {"shoal": "x", "dir": "/w", "roles": [{"slug": "a", "ecosystem": "claude"},
+                                          {"slug": "wake-relay", "ecosystem": "claude", "fill": "none", "session": "r"}]}
+assert [r.slug for r in ShoalSpec.from_dict(d).roles] == ["a"]
+d["roles"][1]["fill"] = "self"
+assert [r.slug for r in ShoalSpec.from_dict(d).roles] == ["a", "wake-relay"]
+# `relay` (the retired relay's watcher mode) is read as `direct`
+assert canon_wake("relay") == "direct" and canon_wake("send:x") == "send:x" and canon_wake("exit") == "exit"
+assert is_detached_wake("relay") and is_detached_wake("direct") and is_detached_wake("exec:s") and not is_detached_wake("exit")
 from digest import has_affinity
 assert not has_affinity({"affinity": {}}) and has_affinity({"affinity": {"repos": {"a/b": 1}}})
 print("layout ok")
@@ -548,11 +555,16 @@ from ledger import Ledger
 from roles import Role, ShoalSpec
 spec = ShoalSpec.load(sys.argv[2])
 spec.ledger = dict(spec.ledger, dir=sys.argv[3])
-spec.features = {"relay": True, "health": {"host_silent_min": 0}}
-spec.roles.append(Role(slug="wake-relay", ecosystem="claude", title="wake-relay", doc="x", fill="none", session="rrrr"))
+# relay-era keys (features.relay, health.relay_fallback) are ignored: direct wake is the one Claude path
+spec.features = {"relay": True, "health": {"host_silent_min": 0, "relay_fallback": True}}
 spec.roles.append(Role(slug="gamma", ecosystem="claude", title="gamma", doc="x", fill="assigned", session="gggg", server="hostB"))
-assert briefs.arming(spec.role("alpha"), spec)[0] == "relay"  # same host as the relay (home)
-assert briefs.arming(spec.role("gamma"), spec)[0] == "exit"   # the relay cannot reach another host's session
+assert briefs.arming(spec.role("alpha"), spec)[0] == "direct"  # home
+assert briefs.arming(spec.role("gamma"), spec)[0] == "direct"  # another host: its own watcher resumes it there
+spec.features["health"]["direct_wake"] = "dead"  # never stop a live worker: an in-session watcher wakes it
+assert briefs.arming(spec.role("alpha"), spec)[0] == "exit"
+spec.features["health"]["direct_wake"] = "off"  # the relay-era opt-out reads as the default
+assert briefs.arming(spec.role("alpha"), spec)[0] == "direct"
+spec.features["health"].pop("direct_wake")
 led = Ledger("t1shoal", root=sys.argv[3], sync=False)
 import config, os
 os.environ["SHOAL_SERVER"] = "hostB"  # hostB's quorum beats; home is not hostB, so it judges nobody

@@ -162,11 +162,10 @@ export S=<id> SPEC=<path to the group's spec>
     shoal retire --spec $SPEC --uninstall-units --note "<why>" --dry-run
     ```
 
-- The residual lane and the Claude wake relay, each started alone (no incarnation bump):
+- The residual lane, started alone (no incarnation bump):
 
     ```bash
     shoal aux-init --shoal $S && shoal aux-launch --shoal $S
-    shoal relay-init --shoal $S && shoal relay-launch --shoal $S
     ```
 
 - Timers (health quorum, digest, reconcile, reports), from the spec:
@@ -185,7 +184,7 @@ export S=<id> SPEC=<path to the group's spec>
     shoal upgrade --spec $SPEC --enable matcher.live
     shoal upgrade --spec $SPEC --enable blockers --rearm now   # verified blockers; idle checked against the board
     shoal upgrade --spec $SPEC --enable waittargets --rearm now   # CI waits need a target; watchers wake on job/lease ends
-    shoal upgrade --spec $SPEC --enable health.revive              # respawn dead Claude workers, relaunch a dead relay (FM-14)
+    shoal upgrade --spec $SPEC --set health.direct_wake='"dead"'   # Claude: never stop a live worker to wake it (default idle)
     ```
 
 ## Reports

@@ -5,7 +5,7 @@
     shoal unpark --spec S --only ROLE[,ROLE] [--dry-run]
 
 Park, in an order that wakes nothing:
-  1. refuse a remote role (park it on its own host), the wake relay, and a role with an active item unless --force (its
+  1. refuse a remote role (park it on its own host) and a role with an active item unless --force (its
      work would stop mid-item);
   2. stop its session through its backend (Claude: every job on its conversation, watched so a respawned worker is
      stopped again);
@@ -101,7 +101,7 @@ def stop_session(role, dry_run: bool = False) -> str:
 def park(spec, spec_path: str, slugs: list[str], note: str = "", until: str = "", by: str = "user",
          force: bool = False, dry_run: bool = False) -> int:
     from ledger import SYSTEM_WRITER, Ledger, View
-    from roles import is_local, is_wake_relay
+    from roles import is_local
     import providers
     if until:
         until, err = providers.normalize(until)
@@ -116,9 +116,6 @@ def park(spec, spec_path: str, slugs: list[str], note: str = "", until: str = ""
         r = spec.role(s)
         if r is None:
             print(f"park: unknown role {s!r} (spec has {[x.slug for x in spec.roles]})")
-            return 1
-        if is_wake_relay(r):
-            print(f"park: {s} is the wake relay: set `relay: false` to retire it instead")
             return 1
         if not is_local(r, spec):
             print(f"park: {s} runs on another host: park it there (shoal park --spec <its clone's spec> --only {s})")
