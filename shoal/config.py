@@ -23,6 +23,8 @@ when neither is importable the file is skipped with one warning on stderr.
   azure_project  SHOAL_AZURE_PROJECT                         ""
   azure_projects (none)                                      [azure_project] (projects an `az-build:<id>` is looked up in)
   login_shell_tools (none)                                   [] (tools whose calls run under `bash -lc`)
+  worktree_root  SHOAL_WORKTREE_ROOT                         <data_root>/_pool/worktrees (placed jobs' staged checkouts)
+  ci_envs        (none)                                      {} (named CI environments a placed job may ask for)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
@@ -294,12 +296,35 @@ def login_shell_tools() -> list[str]:
     return [str(x) for x in v] if isinstance(v, list) else []
 
 
+def worktree_root() -> str:
+    """Where `job run --place` stages a placed job's detached worktree on this host (and keeps a mirror
+    clone per repository under `.mirrors/`)."""
+    return _path(_get("worktree_root", names("WORKTREE_ROOT"), lambda: os.path.join(data_root(), "_pool", "worktrees")))
+
+
+def ci_envs() -> dict[str, dict]:
+    """`[ci_envs.<name>]` in the host config: the CI environments this host offers placed jobs, each
+    {"python": interpreter path, "repos": [owner/name it serves]} (both optional). A job that names an
+    environment (`job run --ci-env NAME`) is placed only on hosts that have it."""
+    v = file_values().get("ci_envs") or {}
+    if not isinstance(v, dict):
+        return {}
+    out = {}
+    for name, e in v.items():
+        if not isinstance(e, dict):
+            continue
+        repos = e.get("repos") or []
+        out[str(name)] = {"python": _path(str(e.get("python") or "")),
+                          "repos": [str(x) for x in repos] if isinstance(repos, list) else []}
+    return out
+
+
 def summary() -> dict:
     """Every resolved setting (doctor prints it)."""
     return {"config_file": config_path() + ("" if os.path.isfile(config_path()) else " (absent)"),
             "data_root": data_root(), "ledger_dir": ledger_dir(), "ledger_repo": ledger_repo(),
             "tool_path": tool_path(), "lease_cmd": lease_cmd(), "default_repos": default_repos(),
-            "cli": cli(), "psi_out": psi_out()}
+            "cli": cli(), "psi_out": psi_out(), "worktree_root": worktree_root(), "ci_envs": sorted(ci_envs())}
 
 
 if __name__ == "__main__":

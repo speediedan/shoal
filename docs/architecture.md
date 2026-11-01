@@ -74,6 +74,7 @@ to match against), so a group can work from other trackers or a plain file.
 | health quorum | `shoal/health.py` (`health`, timers `health-a` and `health-b`) | `health` | detect and recover stalled roles, dead watchers, stale waits |
 | session wake | `Backend.wake` in `shoal/backends.py`, one implementation per harness | always | put a wake in front of one role's session (section 7) |
 | job units | `shoal/jobs.py` (`job run`, `wait`, `status`, `stop`) | always (brief guidance with `jobs`) | long local work outside the harness |
+| pool placement | `shoal/pool.py` (pure planner), `shoal/pool_cli.py` (`pool probe`, `pool status`, `pool plan`, `job run --place`) | always (queue transfers with `placement`) | place CI jobs across this host and its `[hosts]` routes by predicted queue wait (section 6) |
 | board digest | `shoal/digest.py`, `shoal/sources.py` (`digest`, `triage`, `context`) | `digest` | one board read per group, ranked per role |
 | semantic matcher | `shoal/matcher.py`, run by the digest | `matcher` (`live: false` is shadow) | a model scores items against each lane's brief |
 | residual lane | a role with `aux: true`, `aux-init`, `aux-launch` (`shoal/aux.py`) | optional role | work no active lane covers |
@@ -281,13 +282,69 @@ only when superseded, and an empty query is an error, never green.
 
 **Placement.** Anything whose loss costs work runs as a job unit (`job run ... -- <cmd>`) followed
 by a `job wait` background waiter, because a harness may reap background commands and a job unit
-survives that. With `--on user@host` the same unit runs on another host over ssh (the unit, log and rc
+survives that. With `--on user@host` (or a `[hosts.<server>]` name, whose route's ssh options then apply) the same unit runs on another host over ssh (the unit, log and rc
 file under `~/shoal-jobs` there; the local meta records the host and `wait`, `status` and `stop` follow it
 over ssh; the remote cwd, checkout, venv and any lease wrapping are the caller's to have in place: this
 moves compute, not state), which is how a serialized local resource (`cpu-heavy`, the one big GPU) is
 relieved by an idle second host without moving any role. Watchers stay small and idempotent: re-arming
 never duplicates a side effect. A
 `killed` notification is itself a wake: the role runs `next`, acts, re-arms and proves the new pid.
+
+### Pool placement (`job run --place`, `shoal pool`)
+
+The pool is this host plus every `[hosts.<server>]` route (section 8). `job run --place auto|<host>`
+chooses where a job runs by predicted queue wait, stages it there and wraps it in that host's lease
+helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pure planner
+(unit-tested on synthetic N-host fixtures); `shoal/pool_cli.py` does the I/O.
+
+- **Probe.** `shoal pool probe --json` describes one host: the lease helper's `--status --json` (the
+  provider contract), the newest resource sample's devices (vendor, VRAM, an arch tag such as `sm_89` or
+  `gfx1100`) and memory (a live read when no sample is fresh), cores, `ci_envs`, `worktree_root`, the
+  lease helper's path, its holders' observed durations from the resource stream, and the probe time.
+  Home runs it in process and over each route's ssh (20 s timeout, cached 20 s). A failed or stale
+  probe (older than 120 s by home's receive time, so a skewed remote clock does not age it) makes the
+  host ineligible, never an error.
+- **Demand.** `--needs cpu|gpu[:N][:vendor][:vramGiB]` (a GPU job with no vendor keeps its home host's
+  vendor; above one GPU is the whole host), `--cpu-heavy`, `--memory-gib`, `--ci-env NAME`,
+  `--repo PATH [--ref SHA]` (default the checkout's HEAD), `--est MIN` (the duration prior),
+  `--priority`, and `--place <host>` to pin. A host other than home needs a SHA on a remote-tracking
+  branch and a clean tree (or an explicit `--ref`); otherwise only home is eligible.
+- **Estimates.** p50 and p90 per (repo, normalized job name, host), learned from
+  `<data_root>/_pool/history.jsonl` (one record per finished placed run, grant to exit) and shrunk toward
+  `--est`; a running job's remaining time is `max(p50 - elapsed, tail)`, the tail growing once elapsed
+  passes p90. Holders SHOAL cannot move (a CI agent) are estimated from their own observed lease
+  episodes on that host.
+- **Plan.** The host's lease queue is modelled as the helper runs it: FIFO tickets taking everything
+  they want at once, a later ticket never passing an earlier one it overlaps. Pending jobs are list
+  scheduled in (priority, submit time) order, each to the compatible host with the earliest predicted
+  finish (staging, 120 s by default, added off home); home is kept when it finishes within the margin
+  (180 s) of the best. The objective is the sum of predicted waits, plus staging per transfer.
+- **Execution.** Off home, the target fetches the repository's origin into a mirror under its
+  `worktree_root` and adds a detached worktree at the SHA; a SHA the remote does not have is refused
+  (source is never copied). The command runs as an ordinary job unit (`--on` for another host) inside
+  `<lease helper> <scope> --`: `--lease cpu-heavy` for CPU work that asked for it (a bare `--cpu-heavy`
+  would also take every GPU), `--gpus 1 [--min-vram G]` or `--gpus all` for GPU work, with
+  `GPU_LEASE_PROJECT=<unit>` so the job's waiter and hold are recognizable. Inside the lease, before
+  the command, the job takes its start claim (a directory: a move that took it first cancels this
+  start), writes a grant-time marker, exports `SHOAL_JOB_OUT` (a per-job output dir), the CI
+  environment (`SHOAL_CI_ENV`, `SHOAL_ENV_PYTHON`, its bin dir on `PATH`) and, for CPU work, empty
+  `CUDA_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES` and `HIP_VISIBLE_DEVICES`.
+- **Record.** The job meta keeps the placement (hosts considered with their predicted starts, the
+  choice, reason, SHA, lease scope, demand, submit time) and `lease_granted`, the marker's ISO UTC
+  time, so time before it is lease wait and time after it is the job's own. `job wait` records the
+  grant when it sees it, and at the verdict copies a remote job's `SHOAL_JOB_OUT` back to
+  `<data_root>/<id>/jobs/<unit>.out`, appends the run to the history and removes a successful run's
+  worktree. Each placement is a `placed` telemetry event.
+- **Queue transfer** (`features.placement`, off by default; `--place` works without it). While a
+  placed job is still queued for its lease, its `job wait` (one per job holds a supervisor lock; re-armed
+  copies only wait) re-plans every `interval_s` with this host's other queued placed jobs. On advice
+  (another fresh, compatible host would start it sooner by more than the margin, staging included, and
+  it has moved fewer than `max_moves` times) it takes the start claim where the job waits (so it can
+  never start there), stops that unit (TERM ends the waiting lease request, which removes its ticket),
+  restages and resubmits on the target with the original submit time kept, records a `moved` event and
+  follows the job there. A job whose claim is already taken is running and never moves. `shoal pool
+  status` shows each host's capacity, holders, queue and predicted drain; `shoal pool plan` shows the
+  plan and the transfers it would advise, and never moves a job itself.
 
 ## 7. Health quorum (`health`)
 
@@ -478,6 +535,8 @@ generic default.
 | `timezone` | `SHOAL_TZ` | `$TZ` or `/etc/timezone`, else UTC |
 | `default_owner` | `SHOAL_DEFAULT_OWNER` | none |
 | `azure_org`, `azure_project` | `SHOAL_AZURE_ORG`, `SHOAL_AZURE_PROJECT` | none (the pipeline sensor needs them) |
+| `worktree_root` | `SHOAL_WORKTREE_ROOT` | `<data_root>/_pool/worktrees`: where placed jobs are staged on this host |
+| `[ci_envs.<name>]` | (file only) | none: CI environments this host offers placed jobs (`python`, `repos`) |
 | `skill_homes` | `SHOAL_SKILL_HOMES` (path-separated) | the existing standard homes: `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills` |
 | `[tool_env]` | an exported variable of the same name wins | none: extra variables for every tool call and generated systemd unit (e.g. `OPENCHAMBER_DATA_DIR` for a server kept apart from a desktop app) |
 
@@ -539,8 +598,9 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 ## 9. Telemetry and reports
 
 - **Streams:** `session_transition` events from `queue` and `transition`; `watch_event`s for
-  ledger wakes, health actions (condition and ladder step), job starts and verdicts, and digest
-  refreshes; `handover` phases; one `pruned` event per removed incarnation (in the owning group's telemetry, or
+  ledger wakes, health actions (condition and ladder step), job starts and verdicts, pool placements
+  (`placed`, `moved`, `lease-granted`, each `placed` and `moved` carrying the hosts considered and
+  their predicted starts), and digest refreshes; `handover` phases; one `pruned` event per removed incarnation (in the owning group's telemetry, or
   `<data_root>/_host/telemetry/` for standalone and matcher sessions); reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
 - **Pin:** each event carries a `run` pin: the protocol skill's blob sha, the scripts' shas and the
   schema version, read from the checkout the package runs from.
@@ -666,7 +726,8 @@ A spec's `features` object switches components on per group: `workwake` (`true`,
 with `next_max`), `health` (`validity_wake_min`, `page`, `direct_wake`), `continuation` (`after_min`),
 `waitdiscipline` (`rescan_cap_min`), `jobs`, `digest`, and
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
-`private_repos`), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
+`private_repos`), `placement` (`true`, or an object with `margin_s`, `staging_s`, `max_moves`, `interval_s`,
+`max_age_s`: queue transfers of placed jobs, section 6; off until a manual trial passes), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
 incarnations, section 7; retirement condition: fold into the default after two clean weeks). An absent flag leaves the
 component off.
 
@@ -839,7 +900,7 @@ The placement pilot is advisory: it checks fresh lease state, memory, unreserved
 queued requests and explicit session readiness. A compute-ready host without a provisioned harness
 is not eligible for session migration. Recommendations retain the current eligible host within a
 small score margin to limit churn. The advisor acquires no lease, changes no host mode or role spec,
-and performs no handoff. `resources install --dry-run` previews one host service; `--enable` starts
+and performs no handoff (CI job placement, which does act, is `job run --place`: section 6). `resources install --dry-run` previews one host service; `--enable` starts
 it only when the operator applies the reviewed deployment. See [resource telemetry](resources.md).
 
 `sample` and `watch` also accept `--prom-out FILE`, writing each sample's GPU and lease projection

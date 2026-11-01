@@ -77,3 +77,15 @@
 # Default: no routes (other hosts' roles are shown, never attached).
 # [hosts.<server>]
 # ssh = "<user>@<magicdns-name>"
+
+# CI pool placement (`job run --place`, `shoal pool`): where a placed job's pushed SHA is staged as a
+# detached worktree on this host (a mirror clone per repository sits under `.mirrors/` there).
+# Env: SHOAL_WORKTREE_ROOT. Default: <data_root>/_pool/worktrees
+# worktree_root = "/path/to/scratch/worktrees"
+
+# Named CI environments this host offers placed jobs (`job run --ci-env NAME` is placed only on hosts
+# that have NAME). `python` is the interpreter (its directory is put first on PATH and exported as
+# SHOAL_ENV_PYTHON); `repos` lists the repositories it serves (empty: any). Default: none.
+# [ci_envs.<name>]
+# python = "/path/to/venvs/<name>/bin/python"
+# repos = ["<owner>/<repo>"]
