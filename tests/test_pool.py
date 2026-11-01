@@ -126,6 +126,21 @@ class Estimates(unittest.TestCase):
         self.assertGreater(4000 + r2, 2000 + r1)
 
 
+    def test_ci_budget_soft_ceiling(self):
+        est = {"p50": 7200.0, "p90": 9000.0}                    # learned longer than the 90 min budget
+        self.assertEqual(pool.remaining(est, 0), 7200.0)
+        self.assertEqual(pool.remaining(est, 0, 5400.0), 5400.0 + 720.0)   # within budget: budget + floor
+        self.assertEqual(pool.remaining(est, 6000, 5400.0), pool.remaining(est, 6000))  # past it: ordinary tail
+        # the planner caps a CI holder by its budget; a research one keeps its learned length
+        hist = [{"repo": "owner/repo", "name": "long", "host": "a", "run_s": 7200}] * 5
+        hs = hosts(probe("a", gpus=[("a-d", "nvidia", 24)], leases=[holder("gpu", "long-unit", 60)]))
+        for cls, want in (("ci", 5400 - 60 + 720), ("research", 7200 - 60)):
+            known = [{"id": "long-unit", "name": "long", "repo": "owner/repo", "class": cls,
+                      "demand": pool.demand("gpu:1"), "home": "a", "state": "running"}]
+            hv = pool.plan(hs, [], NOW, pool.Estimator(hist), known=known)["hosts"]["a"]
+            self.assertAlmostEqual(hv["holders"][0]["remaining_s"], want, delta=1, msg=cls)
+
+
 class Capacity(unittest.TestCase):
     def test_occupancy_and_stale(self):
         p = probe("a", gpus=[("d1", "nvidia", 24), ("d2", "nvidia", 8)],
@@ -297,6 +312,44 @@ class Planner(unittest.TestCase):
                    probe("b", gpus=[("b-d", "nvidia", 24)]))
         r = pool.place(hs, job(remote_block="dirty tree without --ref"), NOW)
         self.assertEqual(r["host"], "a")
+
+
+class Budget(unittest.TestCase):
+    def test_overrun_pages_once_and_never_kills(self):
+        import argparse
+        import contextlib
+        import io
+        from unittest.mock import MagicMock, patch
+        import jobs
+        import pool_cli
+        a = argparse.Namespace(sid="budgettest", slug="r1", name="suite")
+        a._pool_feature = pool.feature(None)
+        start = iso(NOW - 100 * 60)
+        meta = {"unit": "shoal-budgettest-r1-suite", "name": "suite", "slug": "r1", "class": "ci", "started_utc": start}
+        spec = MagicMock()
+        spec.role.return_value = object()
+        with tempfile.TemporaryDirectory() as d, \
+                patch.object(pool_cli.time, "time", return_value=NOW), patch.object(jobs, "_emit") as emit, \
+                patch.object(pool_cli, "save_meta"), patch("roles.ShoalSpec.load", return_value=spec), \
+                patch("ledger.Ledger") as led, patch("health.page_user") as page, \
+                patch.object(jobs, "_systemctl") as ctl, contextlib.redirect_stdout(io.StringIO()) as out:
+            pool_cli.budget_check(a, meta["unit"], meta, "")
+            pool_cli.budget_check(a, meta["unit"], meta, "")       # once per run
+            self.assertIn("JOB-OVERRUN", out.getvalue())
+            self.assertEqual(emit.call_count, 1)
+            self.assertEqual(emit.call_args.args[2], "overrun")
+            self.assertEqual(page.call_count, 1)
+            led.return_value.append.assert_called_once()
+            self.assertEqual(led.return_value.append.call_args.kwargs["to"], "r1")
+            ctl.assert_not_called()                                 # never a kill
+            # a research job has no budget; a placed CI job's budget starts at its lease grant
+            for m in (dict(meta, **{"class": "research"}), dict(meta, placement={"host": "a"}),
+                      dict(meta, placement={"host": "a"}, lease_granted=iso(NOW - 10 * 60))):
+                pool_cli.budget_check(a, m["unit"], m, "")
+            self.assertEqual(emit.call_count, 1)
+            rerun = dict(meta, placement={"host": "a"}, started_utc=iso(NOW - 99 * 60))   # a later run pages again
+            pool_cli.budget_check(a, meta["unit"], rerun, iso(NOW - 95 * 60))
+            self.assertEqual(emit.call_count, 2)
 
 
 class Builders(unittest.TestCase):

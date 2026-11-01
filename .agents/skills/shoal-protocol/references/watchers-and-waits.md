@@ -56,6 +56,10 @@ the command in that host's lease with the right scope, and prints `JOB-PLACED`. 
 `--place <host>` for exact-hardware comparisons. Follow it with `job wait` and a `job:<name>` target as
 below; the job may move to another host while still queued (`JOB-MOVED`), and its waiter follows it.
 
+**CI jobs have a runtime budget** (90 min by default, from the lease grant). Past it you are paged once
+(`JOB-OVERRUN`); the job keeps running. Split a long suite, or run long experiments as
+`--class research` inside a reservation your role owns (`shoal pool reserve`; see the operator).
+
 **Write the wait in one `queue` call, with a checkable target** (`--wait local-ci --holder "job
 <name>" --target job:<name>`). Do not follow it with a separate `shoal transition`: re-declaring a
 wait without `--target` used to erase the target, and nothing could then tell the wait had ended.

@@ -231,5 +231,7 @@ shoal upgrade --spec $SPEC --enable placement    # queue transfers of placed job
   `lease_granted`; `job status` shows `lease_granted=`.
 - Lease scope: CPU-only work takes `--lease cpu-heavy` (`--needs cpu --cpu-heavy`); a bare
   `--cpu-heavy` on the helper also reserves every GPU.
+- A `ci` job (the default `--class`) past `features.placement.ci_budget_min` (90 min) pages its role and
+  you once (`JOB-OVERRUN`, an `overrun` event); it is never killed. Long research runs use `--class research`.
 - A host whose probe fails or is stale is ineligible, never an error: check it with
   `ssh <route> shoal pool probe --json`.

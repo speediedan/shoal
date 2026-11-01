@@ -32,7 +32,8 @@ import re
 ALL = "all"
 VENDORS = ("any", "nvidia", "amd")
 DEFAULTS = {"margin_s": 180.0, "staging_s": 120.0, "max_moves": 2, "max_age_s": 120.0,
-            "interval_s": 120.0, "default_est_s": 1800.0}
+            "interval_s": 120.0, "default_est_s": 1800.0, "ci_budget_min": 90.0}
+CLASSES = ("ci", "research")
 FUTURE_SKEW_S = 30.0       # a probe dated further ahead than this is as untrustworthy as a stale one
 PRIOR_WEIGHT = 2.0         # the --est prior counts as this many observed runs
 P90_OVER_P50 = 1.5         # p90 assumed from a lone p50 (a prior or the default)
@@ -44,8 +45,8 @@ CPU_ONLY_ENV = {"CUDA_VISIBLE_DEVICES": "", "ROCR_VISIBLE_DEVICES": "", "HIP_VIS
 
 def feature(spec) -> dict:
     """features.placement: false/absent (off), true (on, defaults), or {"enabled": true, "margin_s",
-    "staging_s", "max_moves", "interval_s", "max_age_s"}. Only queue transfers need it on;
-    `job run --place` works without it."""
+    "staging_s", "max_moves", "interval_s", "max_age_s", "ci_budget_min"}. Only queue transfers need it
+    on; `job run --place` and the CI runtime budget (`ci_budget_min`, 0 = none) work without it."""
     v = (getattr(spec, "features", {}) or {}).get("placement")
     out = dict(DEFAULTS, enabled=bool(v))
     if isinstance(v, dict):
@@ -215,13 +216,26 @@ class Estimator:
         return _blend((self.holders.get(host) or {}).get(normalize_name(name)) or [], None, self.default_s)
 
 
-def remaining(est: dict, elapsed: float) -> float:
+def remaining(est: dict, elapsed: float, ceiling_s: float | None = None) -> float:
     """Predicted seconds left for a job `elapsed` seconds in: max(p50 - elapsed, tail), the tail
-    growing with time past p90."""
+    growing with time past p90. `ceiling_s` (a CI job's runtime budget) is a soft ceiling: within the
+    budget the prediction ends by the budget plus the tail floor; past it the ordinary tail applies."""
     p50, p90 = float(est["p50"]), float(est["p90"])
     elapsed = max(0.0, float(elapsed))
-    tail = max(TAIL_FLOOR_S, TAIL_FLOOR_FRAC * p50) + max(0.0, elapsed - p90) * OVERRUN_GROWTH
-    return max(p50 - elapsed, tail)
+    floor = max(TAIL_FLOOR_S, TAIL_FLOOR_FRAC * p50)
+    tail = floor + max(0.0, elapsed - p90) * OVERRUN_GROWTH
+    left = max(p50 - elapsed, tail)
+    if ceiling_s and elapsed < ceiling_s:
+        left = min(left, ceiling_s - elapsed + floor)
+    return left
+
+
+def _ceiling(job: dict | None, o: dict) -> float | None:
+    """A CI job's runtime budget in seconds (None for research work, or with no budget)."""
+    if not job or str(job.get("class") or "ci") != "ci":
+        return None
+    b = float(o.get("ci_budget_min") or 0) * 60
+    return b or None
 
 
 # ---- host capacity ----------------------------------------------------------------------------------
@@ -421,25 +435,32 @@ def simulate(host: dict, holders: list[dict], tickets: list[dict], now: float) -
     return out, drain
 
 
-def _occupant_est(host, name, known, est, now):
+def _occupant_est(host, name, known, est, o):
+    """(estimate, soft ceiling) for a holder or waiter: a known SHOAL job's from job history (a CI job
+    capped by its budget), anything else's from its own lease history on that host."""
     j = known.get(name)
     if j is not None:
-        return est.job(j.get("repo", ""), j.get("name", name), host["class"], j.get("prior_s"))
-    return est.holder(host["name"], name)
+        return est.job(j.get("repo", ""), j.get("name", name), host["class"], j.get("prior_s")), _ceiling(j, o)
+    return est.holder(host["name"], name), None
 
 
-def _fixed(host, now, est, known, movable):
+def _dur(e, ceiling):
+    return min(e["p50"], ceiling) if ceiling else e["p50"]
+
+
+def _fixed(host, now, est, known, movable, o=None):
+    o = options(o)
     holders = []
     for h in host["holders"]:
-        e = _occupant_est(host, h["name"], known, est, now)
-        rem = remaining(e, h.get("elapsed_s", 0.0))
+        e, ceil = _occupant_est(host, h["name"], known, est, o)
+        rem = remaining(e, h.get("elapsed_s", 0.0), ceil)
         holders.append(dict(h, end=now + rem, remaining_s=rem, external=h["name"] not in known, est=e))
     tickets = []
     for t in host["tickets"]:
         if t["name"] in movable:
             continue
-        e = _occupant_est(host, t["name"], known, est, now)
-        tickets.append(dict(t, id=f"ticket:{t['ticket']}", order=(0,) + _ticket_key(t["ticket"]), dur=e["p50"],
+        e, ceil = _occupant_est(host, t["name"], known, est, o)
+        tickets.append(dict(t, id=f"ticket:{t['ticket']}", order=(0,) + _ticket_key(t["ticket"]), dur=_dur(e, ceil),
                             ready=now, external=t["name"] not in known))
     return holders, tickets
 
@@ -464,8 +485,8 @@ def _predict(host, job, planned, now, est, o, known, movable, seq):
         order = (0, 2, "")
     else:
         order = (2, seq)
-    mine = dict(_job_ticket(host, job, dem), id=job["id"], dur=e["p50"], ready=ready, order=order)
-    holders, tickets = _fixed(host, now, est, known, movable)
+    mine = dict(_job_ticket(host, job, dem), id=job["id"], dur=_dur(e, _ceiling(job, o)), ready=ready, order=order)
+    holders, tickets = _fixed(host, now, est, known, movable, o)
     alltix = sorted(tickets + planned + [mine], key=lambda t: t["order"])
     res, _ = simulate(host, holders, alltix, now)
     start, end, devs = res[job["id"]]
@@ -479,6 +500,7 @@ def _job_dict(j):
     j.setdefault("priority", 0)
     j.setdefault("submit_ts", 0.0)
     j.setdefault("moves", 0)
+    j.setdefault("class", "ci")
     return j
 
 
@@ -564,17 +586,17 @@ def plan(hosts: list[dict], jobs: list[dict], now: float, est: Estimator | None 
             r.pop("_entry", None)
     views = {}
     for h in hmap.values():
-        views[h["name"]] = host_view(h, now, est, knownd, planned[h["name"]], movable)
+        views[h["name"]] = host_view(h, now, est, knownd, planned[h["name"]], movable, o)
     return {"now": now, "jobs": results, "hosts": views, "objective_s": objective, "transfers": transfers,
             "options": o}
 
 
-def host_view(host: dict, now: float, est: Estimator, known: dict, planned=(), movable=()) -> dict:
+def host_view(host: dict, now: float, est: Estimator, known: dict, planned=(), movable=(), o=None) -> dict:
     """Per host: holders with predicted ends, the queue (fixed tickets and planned jobs) with predicted
     starts, and the predicted drain."""
     if not host["fresh"]:
         return {"fresh": False, "reasons": host["reasons"], "holders": [], "queue": [], "drain": None}
-    holders, tickets = _fixed(host, now, est, known, set(movable))
+    holders, tickets = _fixed(host, now, est, known, set(movable), o)
     alltix = sorted(list(tickets) + list(planned), key=lambda t: t["order"])
     res, drain = simulate(host, holders, alltix, now)
     hv = [{"name": h["name"], "keys": h.get("keys", []), "elapsed_s": h.get("elapsed_s", 0.0),

@@ -237,7 +237,7 @@ def _run_remote(a, cmd: list[str], unit: str, p: dict) -> int:
     os.makedirs(p["sdir"], exist_ok=True)
     meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
             "started_utc": now_iso(), "host": host, "log": rp["log"], "rc_file": rp["rc"],
-            "memory_high": a.memory_high, "memory_max": a.memory_max}
+            "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci")}
     with open(p["meta"], "w") as fh:
         json.dump(meta, fh, indent=1)
     _emit(a.sid, a.slug, "job-start", f"{unit} on {host} {' '.join(cmd)[:100]}")
@@ -314,7 +314,7 @@ def _run_local(a, cmd: list[str], unit: str, p: dict) -> int:
         return 2
     meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
             "started_utc": now_iso(), "log": p["log"], "rc_file": p["rc"],
-            "memory_high": a.memory_high, "memory_max": a.memory_max}
+            "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci")}
     with open(p["meta"], "w") as fh:
         json.dump(meta, fh, indent=1)
     _emit(a.sid, a.slug, "job-start", f"{unit} {' '.join(cmd)[:120]}")
@@ -361,11 +361,14 @@ MOVED = -1000
 
 
 def _placed_poll(a, unit: str, meta: dict, granted: str) -> bool:
-    """A placed job's per-poll duties while its unit is active: record the lease grant and, as the job's
-    single supervisor under features.placement, move it while still queued. True when it moved."""
+    """Per-poll duties while a job's unit is active: a CI job's runtime budget (an `overrun` event and
+    one page past it; never a kill) and, for a placed job, recording the lease grant and, as its single
+    supervisor under features.placement, moving it while still queued. True when it moved."""
+    import pool_cli
+    if meta.get("started_utc"):
+        pool_cli.budget_check(a, unit, meta, granted)
     if not meta.get("placement"):
         return False
-    import pool_cli
     return pool_cli.supervise(a, unit, meta, granted) == "moved"
 
 
@@ -583,6 +586,10 @@ def add_parsers(sub) -> None:
                                             "--cwd must exist on that host, lease wrapping is the command's job")
     q.add_argument("--env", action="append", help="K=V passed into the unit (repeatable)")
     q.add_argument("--dry-run", action="store_true")
+    q.add_argument("--class", dest="job_class", choices=("ci", "research"), default="ci",
+                   help="ci (default): a runtime budget (features.placement.ci_budget_min, 90 min) past which "
+                        "`job wait` pages once, never kills; research: no budget, and with --place it runs "
+                        "only inside a reservation its role owns (`shoal pool reserve`)")
     g = q.add_argument_group("pool placement (architecture doc §6; omit --place for a plain job)")
     g.add_argument("--place", default="", metavar="auto|HOST",
                    help="auto: the pool host with the earliest predicted finish; HOST: pin that pool host")

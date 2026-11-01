@@ -335,6 +335,13 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   grant when it sees it, and at the verdict copies a remote job's `SHOAL_JOB_OUT` back to
   `<data_root>/<id>/jobs/<unit>.out`, appends the run to the history and removes a successful run's
   worktree. Each placement is a `placed` telemetry event.
+- **Job class and runtime budget.** `job run --class ci|research` (default `ci`, placed or not). A
+  `ci` job has a runtime budget, `features.placement.ci_budget_min` (default 90; 0 turns it off),
+  counted from `lease_granted`, or from the unit's start when no lease is used. Past it, `job wait`
+  prints `JOB-OVERRUN`, emits an `overrun` event and pages once per run: a ledger `health` msg to the
+  owning role and the user page path (`health.page_user`). It never kills the job. The planner uses the
+  budget as a soft ceiling on a CI job's predicted end (within the budget the prediction ends by the
+  budget plus the tail floor; past it the ordinary overrun tail applies). A `research` job has no budget.
 - **Queue transfer** (`features.placement`, off by default; `--place` works without it). While a
   placed job is still queued for its lease, its `job wait` (one per job holds a supervisor lock; re-armed
   copies only wait) re-plans every `interval_s` with this host's other queued placed jobs. On advice
@@ -599,7 +606,7 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 
 - **Streams:** `session_transition` events from `queue` and `transition`; `watch_event`s for
   ledger wakes, health actions (condition and ladder step), job starts and verdicts, pool placements
-  (`placed`, `moved`, `lease-granted`, each `placed` and `moved` carrying the hosts considered and
+  (`placed`, `moved`, `lease-granted`, `overrun`, each `placed` and `moved` carrying the hosts considered and
   their predicted starts), and digest refreshes; `handover` phases; one `pruned` event per removed incarnation (in the owning group's telemetry, or
   `<data_root>/_host/telemetry/` for standalone and matcher sessions); reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
 - **Pin:** each event carries a `run` pin: the protocol skill's blob sha, the scripts' shas and the
@@ -727,7 +734,8 @@ with `next_max`), `health` (`validity_wake_min`, `page`, `direct_wake`), `contin
 `waitdiscipline` (`rescan_cap_min`), `jobs`, `digest`, and
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
 `private_repos`), `placement` (`true`, or an object with `margin_s`, `staging_s`, `max_moves`, `interval_s`,
-`max_age_s`: queue transfers of placed jobs, section 6; off until a manual trial passes), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
+`max_age_s`: queue transfers of placed jobs, section 6, off until a manual trial passes; and `ci_budget_min`, the CI
+job runtime budget, read whether or not transfers are on), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
 incarnations, section 7; retirement condition: fold into the default after two clean weeks). An absent flag leaves the
 component off.
 

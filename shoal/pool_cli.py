@@ -320,7 +320,8 @@ def planner_job(meta: dict, state: str) -> dict:
     return {"id": meta["unit"], "name": meta.get("name") or meta["unit"], "repo": pl.get("repo") or "",
             "demand": pl.get("demand") or pool.demand(), "home": pl.get("home") or config.server(),
             "current": pl.get("host") or "", "state": state, "submit_ts": float(pl.get("submit_ts") or 0),
-            "priority": int(pl.get("priority") or 0), "prior_s": pl.get("prior_s"), "moves": int(pl.get("moves") or 0)}
+            "priority": int(pl.get("priority") or 0), "prior_s": pl.get("prior_s"), "moves": int(pl.get("moves") or 0),
+            "class": meta.get("class") or "ci"}
 
 
 def local_jobs(sid: str = "", skip: str = "") -> list[dict]:
@@ -481,7 +482,7 @@ def launch(req: dict, target: dict, unit: str, p: dict, home: str, dry_run: bool
     ns = argparse.Namespace(sid=req["sid"], slug=req["slug"], name=req["name"], on=target["name"] if remote else "",
                             cwd=cwd, env=list(req.get("env") or []) + [f"GPU_LEASE_PROJECT={unit}"],
                             memory_high=req.get("memory_high", ""), memory_max=req.get("memory_max", ""),
-                            dry_run=dry_run, spec="")
+                            dry_run=dry_run, spec="", job_class=req.get("class") or "ci")
     rc = jobs._run_remote(ns, wrapped, unit, p) if remote else jobs._run_local(ns, wrapped, unit, p)
     return rc, info
 
@@ -556,7 +557,7 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
                       src["identity"], src["sha"], pin, src["block"])
     prior_s = a.est * 60 if a.est else None
     job = {"id": unit, "name": a.name, "repo": src["identity"], "demand": dem, "home": home, "submit_ts": now,
-           "priority": a.priority, "prior_s": prior_s}
+           "priority": a.priority, "prior_s": prior_s, "class": a.job_class}
     known = [planner_job(m, "known") for m in placed_metas() if m["unit"] != unit]
     res = pool.place(hosts, job, time.time(), estimator(probes), f, known)
     rows = _considered(res, now)
@@ -572,7 +573,7 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
     req = {"sid": a.sid, "slug": a.slug, "name": a.name, "cmd": list(cmd), "env": list(a.env or []),
            "memory_high": a.memory_high, "memory_max": a.memory_max,
            "cwd": os.path.abspath(a.cwd or src["path"] or os.getcwd()), "repo_path": src["path"], "url": src["url"],
-           "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem}
+           "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": a.job_class}
     rc, info = launch(req, target, unit, p, home, a.dry_run)
     if rc != 0 or a.dry_run:
         return rc
@@ -586,7 +587,7 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
         "submit_ts": now, "submit_utc": utc(now), "moves": 0, "moved": [], "marker": info["marker"],
         "claim": info["claim"], "out": info["out"], "worktree": info["worktree"], "decision": decision,
         "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
-                                         "repo", "ci_env")}})
+                                         "repo", "ci_env", "class")}})
     save_meta(a.sid, unit, meta)
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {res['host']} ({res['reason']}) scope={info['scope']}",
                {"placement": decision})
@@ -651,6 +652,49 @@ def supervise(a, unit: str, meta: dict, granted: str) -> str | None:
         return None
     target = next((h for h in hosts if h["name"] == adv["to"]), None)
     return "moved" if target is not None and transfer(a, unit, meta, adv, target, _considered(res, now)) else None
+
+
+def budget_check(a, unit: str, meta: dict, granted: str) -> None:
+    """A CI job past its runtime budget (`features.placement.ci_budget_min`, default 90 min; counted from
+    `lease_granted`, or from the unit's start when no lease is used) gets one `overrun` event and one page,
+    to its role (a ledger msg) and to the user (the health page path). The job is never killed."""
+    import jobs
+    if str(meta.get("class") or "ci") != "ci" or meta.get("overrun_paged") == meta.get("started_utc"):
+        return
+    if meta.get("placement"):
+        start = meta.get("lease_granted") or (granted or "").strip()
+        if not start:
+            return  # still queued for its lease: the budget has not started
+    else:
+        start = meta.get("started_utc")
+    t0 = pool._epoch(start)
+    if not hasattr(a, "_pool_feature"):
+        a._pool_feature = _spec_feature(a.sid)
+    budget = float(a._pool_feature.get("ci_budget_min") or 0)
+    if t0 is None or not budget or time.time() - t0 < budget * 60:
+        return
+    meta["overrun_paged"] = meta.get("started_utc")
+    try:
+        save_meta(a.sid, unit, meta)
+    except OSError:
+        pass
+    slug = meta.get("slug") or a.slug or "?"
+    where = f" on {meta['host']}" if meta.get("host") else ""
+    text = (f"job {meta.get('name') or unit} ({unit}{where}) overran its CI budget: "
+            f"{(time.time() - t0) / 60:.0f} min since {start} > {budget:g} min. It keeps running (never killed); "
+            f"split it, run it as --class research inside a reservation, or raise features.placement.ci_budget_min.")
+    print(f"{jobs.now_iso()} JOB-OVERRUN {unit}: {text}")
+    jobs._emit(a.sid, slug, "overrun", text[:200], {"budget_min": budget, "since": start})
+    try:
+        from ledger import Ledger, SYSTEM_WRITER
+        from roles import ShoalSpec, find_spec
+        import health
+        spec = ShoalSpec.load(find_spec(a.sid, ""))
+        if spec.role(slug) is not None:
+            Ledger(spec.sid, root=spec.ledger_dir).append(SYSTEM_WRITER, "msg", to=slug, kind="health", text=text[:500])
+        health.page_user(spec, text, {})
+    except Exception as exc:  # noqa: BLE001 - a page that cannot be delivered never stops the waiter
+        print(f"(overrun page not delivered: {str(exc)[:160]})")
 
 
 def _claim(meta: dict) -> bool:
