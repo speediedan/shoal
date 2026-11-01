@@ -212,3 +212,24 @@ shoal kill-audit --no-record
 shoal job status --shoal $S
 shoal job stop --shoal $S --slug <role> --name <job> --dry-run
 ```
+
+## CI pool placement (architecture doc section 6)
+
+The pool is this host plus every `[hosts.<server>]` route; each pool host needs a shoal checkout, a
+`worktree_root` with room for staged worktrees, and its own lease helper in `lease_cmd`.
+
+```bash
+shoal pool probe --json                   # this host as the pool sees it (run it on each host once)
+shoal pool status                         # per host: capacity, holders (external ones marked), queue, predicted drain
+shoal pool plan --shoal $S --dry-run      # the plan over this host's queued placed jobs, and transfers it would advise
+shoal job run --shoal $S --slug <role> --name <job> --place auto --needs gpu:1:nvidia:16 \
+  --repo <checkout> --est 30 --dry-run -- <cmd>   # the decision, staging and wrapped command; nothing starts
+shoal upgrade --spec $SPEC --enable placement    # queue transfers of placed jobs (after a manual trial)
+```
+
+- A placed job's meta records the hosts considered, their predicted starts, the choice and
+  `lease_granted`; `job status` shows `lease_granted=`.
+- Lease scope: CPU-only work takes `--lease cpu-heavy` (`--needs cpu --cpu-heavy`); a bare
+  `--cpu-heavy` on the helper also reserves every GPU.
+- A host whose probe fails or is stale is ineligible, never an error: check it with
+  `ssh <route> shoal pool probe --json`.
