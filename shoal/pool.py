@@ -129,14 +129,16 @@ def parse_needs(text: str) -> dict:
 
 
 def demand(needs: str = "cpu", vendor_default: str = "any", cpu_heavy: bool = False, memory_gib: float = 0,
-           env: str = "", repo: str = "", sha: str = "", pin: str = "", remote_block: str = "") -> dict:
+           env: str = "", repo: str = "", sha: str = "", pin: str = "", remote_block: str = "",
+           job_class: str = "ci") -> dict:
     """One job's demand. `remote_block` is a reason no host but home can run it (no pushed SHA, a dirty
-    tree, nothing to stage)."""
+    tree, nothing to stage). A `ci` job never uses resources a research reservation holds."""
     d = parse_needs(needs)
     if d["gpus"] and not d["vendor"]:
         d["vendor"] = vendor_default or "any"
     d.update(cpu_heavy=bool(cpu_heavy), memory_gib=float(memory_gib or 0), env=str(env or ""),
-             repo=str(repo or ""), sha=str(sha or ""), pin=str(pin or ""), remote_block=str(remote_block or ""))
+             repo=str(repo or ""), sha=str(sha or ""), pin=str(pin or ""), remote_block=str(remote_block or ""),
+             job_class=str(job_class or "ci"))
     return d
 
 
@@ -332,19 +334,25 @@ def host_capacity(probe: dict, now: float, max_age_s: float = DEFAULTS["max_age_
         h["elapsed_s"] = max(0.0, (ts - since) + offset) if since is not None and isinstance(ts, (int, float)) else 0.0
     known = [str(r.get("key")) for r in lease.get("leases") or [] if isinstance(r, dict) and r.get("key")]
     hname = str(name or p.get("host") or "?")
+    resv = [r for r in p.get("reservations") or [] if isinstance(r, dict) and r.get("alive", True)]
     return {"name": hname, "probe_host": p.get("host"), "fresh": not reasons, "reasons": reasons,
             "lease_ok": bool(lease.get("ok")), "lease_cmd": str(p.get("lease_cmd") or ""), "keys": known,
             "gpus": gpus, "cores": p.get("cores"),
             "mem_avail_gib": float(mem) / 2 ** 30 if isinstance(mem, (int, float)) else None,
             "envs": p.get("ci_envs") if isinstance(p.get("ci_envs"), dict) else {},
             "worktree_root": str(p.get("worktree_root") or ""), "holders": holders, "tickets": tickets,
-            "class": hname, "ts": ts}
+            "class": hname, "ts": ts, "reservations": resv,
+            "reserved_devices": sorted({str(d.get("uuid")) for r in resv for d in r.get("devices") or []
+                                        if isinstance(d, dict) and d.get("uuid")}),
+            "reserved_cpu": any(r.get("cpu") for r in resv)}
 
 
-def fitting_devices(host: dict, dem: dict) -> list[str]:
-    """Device ids that satisfy the demand's vendor and VRAM, smallest first (the helper's best fit)."""
+def fitting_devices(host: dict, dem: dict, reserved_too: bool = False) -> list[str]:
+    """Device ids that satisfy the demand's vendor and VRAM, smallest first (the helper's best fit). A
+    CI job never sees a device a research reservation holds."""
     vendor, vram = dem.get("vendor") or "any", float(dem.get("min_vram_gib") or 0)
-    fit = [g for g in host["gpus"] if (vendor == "any" or g["vendor"] == vendor)
+    held = set() if reserved_too or dem.get("job_class") == "research" else set(host.get("reserved_devices") or ())
+    fit = [g for g in host["gpus"] if (vendor == "any" or g["vendor"] == vendor) and g["uuid"] not in held
            and (not vram or (g["vram_gib"] is not None and g["vram_gib"] + 1e-9 >= vram))]
     return [g["uuid"] for g in sorted(fit, key=lambda g: (g["vram_gib"] or 0, g["uuid"]))]
 
@@ -365,10 +373,16 @@ def compatible(host: dict, dem: dict, home: str) -> list[str]:
                 r.append("gpu lease key not observed")
             if dem.get("cpu_heavy") and "cpu-heavy" not in host["keys"]:
                 r.append("cpu-heavy lease key not observed")
+    ci = dem.get("job_class", "ci") != "research"
     if g == 1 and not fitting_devices(host, dem):
-        r.append(f"no {dem.get('vendor') or 'any'} GPU with {float(dem.get('min_vram_gib') or 0):g} GiB")
-    if g > 1 and (len(host["gpus"]) < g or len(fitting_devices(host, dem)) < len(host["gpus"])):
+        r.append("every fitting GPU is reserved for research" if fitting_devices(host, dem, True) else
+                 f"no {dem.get('vendor') or 'any'} GPU with {float(dem.get('min_vram_gib') or 0):g} GiB")
+    if g > 1 and (len(host["gpus"]) < g or len(fitting_devices(host, dem, True)) < len(host["gpus"])):
         r.append(f"needs {g} fitting GPUs (the whole host)")
+    elif g > 1 and ci and host.get("reserved_devices"):
+        r.append("a research reservation holds part of the host (a whole-host request would wait for it)")
+    if dem.get("cpu_heavy") and ci and host.get("reserved_cpu"):
+        r.append("cpu-heavy is reserved for research")
     if dem.get("memory_gib") and (host["mem_avail_gib"] is None or host["mem_avail_gib"] < dem["memory_gib"]):
         r.append("insufficient or unknown memory")
     if dem.get("env"):
@@ -550,16 +564,23 @@ def plan(hosts: list[dict], jobs: list[dict], now: float, est: Estimator | None 
             chosen, reason = cur, "stays queued"
             others = [r for r in ok if r["host"] != j.get("current")]
             tgt = min(others, key=lambda r: (r["start"], r["finish"], r["host"])) if others else None
-            if cur is None:
-                chosen, reason = None, "current host not verifiable (stale or incompatible probe)"
-            elif tgt is not None and tgt["start"] + o["margin_s"] < cur["start"]:
+            here = hmap.get(j.get("current") or "")
+            # a fresh current host that can no longer run the job (a research reservation took its
+            # resources) is left whenever another host can; an unverifiable one is never left blind
+            lost = cur is None and here is not None and here["fresh"]
+            cur_start = float("inf") if lost else (cur["start"] if cur else None)
+            if cur is None and not (lost and tgt is not None):
+                chosen, reason = None, ("current host can no longer run it, and no other host can" if lost else
+                                        "current host not verifiable (stale or failed probe)")
+            elif tgt is not None and tgt["start"] + o["margin_s"] < cur_start:
                 if j["moves"] >= int(o["max_moves"]):
                     reason = f"move cap reached ({j['moves']}/{int(o['max_moves'])})"
                 else:
-                    chosen, reason = tgt, "earlier predicted start elsewhere"
-                    res["transfer"] = {"from": j.get("current"), "to": tgt["host"], "from_start": cur["start"],
-                                       "to_start": tgt["start"], "gain_s": cur["start"] - tgt["start"],
-                                       "staging_s": float(o["staging_s"])}
+                    chosen, reason = tgt, ("current host can no longer run it" if lost else
+                                           "earlier predicted start elsewhere")
+                    res["transfer"] = {"from": j.get("current"), "to": tgt["host"], "from_start": cur_start,
+                                       "to_start": tgt["start"], "gain_s": cur_start - tgt["start"],
+                                       "staging_s": float(o["staging_s"]), "reason": reason}
                     transfers.append(dict(res["transfer"], id=j["id"]))
                     objective += float(o["staging_s"])
             if chosen is None:

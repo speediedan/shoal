@@ -314,6 +314,108 @@ class Planner(unittest.TestCase):
         self.assertEqual(r["host"], "a")
 
 
+class Reservations(unittest.TestCase):
+    RESV = [{"id": "r1", "for": "s/research-role", "devices": [{"uuid": "a-big", "vendor": "nvidia"}], "cpu": True,
+             "alive": True}]
+
+    def host(self, resv=None, **kw):
+        return hosts(probe("a", gpus=[("a-small", "nvidia", 8), ("a-big", "nvidia", 48)], **kw)
+                     | {"reservations": self.RESV if resv is None else resv})[0]
+
+    def test_reserved_resources_leave_the_ci_pool(self):
+        h = self.host()
+        self.assertEqual(h["reserved_devices"], ["a-big"])
+        self.assertEqual(pool.fitting_devices(h, pool.demand("gpu:1:nvidia")), ["a-small"])
+        self.assertIn("every fitting GPU is reserved for research", pool.compatible(h, pool.demand("gpu:1:nvidia:16"), "a"))
+        self.assertIn("a research reservation holds part of the host (a whole-host request would wait for it)",
+                      pool.compatible(h, pool.demand("gpu:2"), "a"))
+        self.assertIn("cpu-heavy is reserved for research", pool.compatible(h, pool.demand("cpu", cpu_heavy=True), "a"))
+        self.assertFalse(pool.compatible(h, pool.demand("gpu:1:nvidia:16", job_class="research"), "a"))
+        self.assertFalse(pool.compatible(self.host(resv=[dict(self.RESV[0], alive=False)]),
+                                         pool.demand("gpu:1:nvidia:16"), "a"))  # a dead hold reserves nothing
+
+    def test_ci_never_queues_behind_a_research_hold(self):
+        a = self.host(leases=[holder("gpu@a-big", "research:s/research-role", 60)])
+        b = hosts(probe("b", gpus=[("b-d", "nvidia", 48)], leases=[holder("gpu", "ci-agent", 0)]))[0]
+        r = pool.place([a, b], job(needs="gpu:1:nvidia:16"), NOW)
+        self.assertEqual(r["host"], "b")                          # waits for b's CI holder, not a's research hold
+        r = pool.place([a, b], job(needs="gpu:1:nvidia"), NOW)
+        self.assertEqual((r["host"], r["considered"][0]["devices"]), ("a", ["a-small"]))
+
+    def test_queued_job_leaves_a_host_a_reservation_took(self):
+        a = self.host(queue=[{"key": "gpu", "waiter": "me", "ticket": "0000000004", "want": ["a-big"]}])
+        b = hosts(probe("b", gpus=[("b-d", "nvidia", 48)], leases=[holder("gpu", "ci-agent", 0)]))[0]
+        r = pool.plan([a, b], [job("me", needs="gpu:1:nvidia:16", state="queued", current="a")], NOW)["jobs"]["me"]
+        self.assertEqual((r["transfer"]["to"], r["transfer"]["reason"]), ("b", "current host can no longer run it"))
+        stale_b = hosts(probe("b", gpus=[("b-d", "nvidia", 48)], ts=NOW - 900))[0]
+        r = pool.plan([a, stale_b], [job("me", needs="gpu:1:nvidia:16", state="queued", current="a")], NOW)["jobs"]["me"]
+        self.assertIsNone(r["transfer"])
+
+    def test_reserve_release_expire_with_a_fake_helper(self):
+        import importlib
+        import json as _json
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            helper = Path(d, "lease")
+            helper.write_text(r"""#!/bin/sh
+# a fake lease helper: --hold forks a holder, --release ends it
+pf=""; args="$*"
+while [ $# -gt 0 ]; do case "$1" in --pidfile) pf=$2; shift 2;; *) shift;; esac; done
+case "$args" in
+  *--status*) echo '{"leases":[{"key":"gpu","held":false},{"key":"cpu-heavy","held":false}],"queue":[]}' ;;
+  *--hold*) setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$pf"
+            echo "${GPU_LEASE_DEVICES%%:*}" > "$pf.device"; echo "$args" >> "$(dirname "$pf")/calls" ;;
+  *--release*) kill "$(cat "$pf")" 2>/dev/null; rm -f "$pf" "$pf.device" ;;
+esac
+""")
+            helper.chmod(0o755)
+            data = Path(d, "data")
+            cfg = Path(d, "host.toml")
+            cfg.write_text(f'data_root = "{data}"\nlease_cmd = "{helper}"\n')
+            sdir = data / "_resources" / "testhost"
+            sdir.mkdir(parents=True)
+            import time as _t
+            now = _t.time()
+            (sdir / _t.strftime("events-%Y%m%d.jsonl", _t.gmtime(now))).write_text(_json.dumps(
+                {"type": "resource_sample", "ts": now, "memory": {"available_bytes": 1 << 34},
+                 "gpus": [{"uuid": "GPU-x", "vendor": "nvidia", "vram_total_mib": 24576, "arch": "sm_89"}]}) + "\n")
+            env = {"SHOAL_CONFIG": str(cfg), "SHOAL_DATA_ROOT": str(data), "SHOAL_SERVER": "testhost"}
+            with patch.dict(os.environ, env):
+                import config
+                config._CACHE.clear()
+                import pool_reserve
+                importlib.reload(pool_reserve)
+                with self.assertRaises(ValueError):
+                    pool_reserve.reserve("gpu@GPU-nope", "s/r", "job:x")
+                with self.assertRaises(ValueError):
+                    pool_reserve.reserve("gpus:1", "not-an-owner", "job:x")
+                rec = pool_reserve.reserve("gpu@GPU-x,cpu-heavy", "s/r", "job:exp", note="probe study")
+                self.assertEqual((rec["devices"], rec["cpu"]), ([{"uuid": "GPU-x", "vendor": "nvidia"}], True))
+                calls = (data / "_pool" / "holds" / "calls").read_text()
+                self.assertIn("--gpus 1", calls)
+                self.assertIn("--lease cpu-heavy", calls)
+                rep = pool_reserve.report()
+                self.assertEqual((rep[0]["id"], rep[0]["alive"]), (rec["id"], True))
+                import pool_cli
+                self.assertEqual(pool_cli.probe()["reservations"][0]["id"], rec["id"])
+                with patch("jobs.unit_state", return_value={}):
+                    self.assertEqual(pool_reserve.expire(emit=False), [])          # the job never ran: kept
+                    rc = Path("/tmp/s/jobs/shoal-s-r-exp.rc")
+                    with patch("os.path.exists", side_effect=lambda p: p == str(rc)):
+                        gone = pool_reserve.expire(emit=False)
+                self.assertEqual([g["id"] for g in gone], [rec["id"]])
+                self.assertIn("job:exp finished", gone[0]["released"])
+                self.assertFalse(any(pool_reserve._pid_alive(h["pidfile"]) for h in rec["holds"]))
+                timed = pool_reserve.reserve("gpus:1", "s/r", pool_cli.utc(now + 3600))
+                self.assertEqual(pool_reserve.expire(now + 60, emit=False), [])
+                self.assertEqual([g["id"] for g in pool_reserve.expire(now + 7200, emit=False)], [timed["id"]])
+                third = pool_reserve.reserve("cpu-heavy", "s/r", pool_cli.utc(now + 3600))
+                self.assertEqual(pool_reserve.release(third["id"])["released"], "released")
+                self.assertIsNone(pool_reserve.release(third["id"]))
+                self.assertEqual(pool_reserve.load(), {})
+            config._CACHE.clear()
+
+
 class Budget(unittest.TestCase):
     def test_overrun_pages_once_and_never_kills(self):
         import argparse

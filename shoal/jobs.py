@@ -603,6 +603,8 @@ def add_parsers(sub) -> None:
     g.add_argument("--ref", default="", metavar="SHA", help="the commit to run (default: the checkout's HEAD)")
     g.add_argument("--est", type=float, default=0, metavar="MIN", help="duration prior in minutes")
     g.add_argument("--priority", type=int, default=0, help="planning order: lower places first (default 0)")
+    g.add_argument("--reservation", default="", metavar="ID",
+                   help="--class research: the reservation to run in (needed when the role owns several)")
     q.add_argument("cmd", nargs="...")
     q.set_defaults(func=cmd_run)
 

@@ -100,7 +100,8 @@ def gpu_arch(gpus: list[dict], kfd: str = "/sys/class/kfd/kfd/topology/nodes") -
     if any(g.get("vendor") == "amd" and not g.get("arch") for g in gpus):
         for prop in glob.glob(os.path.join(kfd, "*", "properties")):
             try:
-                kv = dict(line.split(None, 1) for line in open(prop).read().splitlines() if " " in line)
+                with open(prop) as fh:
+                    kv = dict(line.split(None, 1) for line in fh.read().splitlines() if " " in line)
                 uid, ver = int(kv.get("unique_id", "0")), int(kv.get("gfx_target_version", "0"))
             except (OSError, ValueError):
                 continue
@@ -116,7 +117,8 @@ def holder_history(host: str, now: float | None = None) -> dict[str, list[float]
     now = time.time() if now is None else now
     cache = os.path.join(pool_dir(), f"holder-history-{host}.json")
     try:
-        c = json.load(open(cache))
+        with open(cache) as fh:
+            c = json.load(fh)
         if now - float(c.get("t", 0)) < HOLDER_HISTORY_CACHE_S:
             return c.get("h") or {}
     except (OSError, ValueError):
@@ -179,11 +181,17 @@ def probe(now: float | None = None) -> dict:
         cores = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         cores = os.cpu_count()
+    try:
+        import pool_reserve
+        pool_reserve.expire(now)
+        reservations = pool_reserve.report()
+    except Exception as exc:  # noqa: BLE001 - reservations unreadable: reported, the probe still answers
+        reservations = [{"id": "?", "error": str(exc)[:160], "alive": True}]
     return {"v": 1, "type": "pool_probe", "host": host, "ts": now, "ts_utc": utc(now), "cores": cores,
             "memory": memory, "gpus": gpus, "gpu_source": src,
             "lease": {k: lease.get(k) for k in ("ok", "error", "leases", "queue") if k in lease},
             "lease_cmd": config.lease_cmd(), "ci_envs": config.ci_envs(), "worktree_root": config.worktree_root(),
-            "holder_history": holder_history(host, now)}
+            "holder_history": holder_history(host, now), "reservations": reservations}
 
 
 # ---- the pool's probes ------------------------------------------------------------------------------
@@ -290,7 +298,8 @@ def placed_metas(sid: str = "") -> list[dict]:
     out = []
     for f in sorted(glob.glob(pattern)):
         try:
-            m = json.load(open(f))
+            with open(f) as fh:
+                m = json.load(fh)
         except (OSError, ValueError):
             continue
         if isinstance(m, dict) and isinstance(m.get("placement"), dict) and m.get("unit"):
@@ -430,14 +439,32 @@ def inner_script(marker: str, claim: str, out: str, dev_env: dict, envname: str 
     return "; ".join(lines)
 
 
+def reservation_env(res: dict) -> dict:
+    """Device selectors for work inside a research reservation: its own devices, nothing else."""
+    devs = res.get("devices") or []
+    if not devs:
+        return dict(pool.CPU_ONLY_ENV)
+    nv = [d["uuid"] for d in devs if d.get("vendor") != "amd"]
+    amd = [d["uuid"] for d in devs if d.get("vendor") == "amd"]
+    return {"CUDA_VISIBLE_DEVICES": ",".join(nv), "ROCR_VISIBLE_DEVICES": ",".join(amd)}
+
+
 def wrap(cmd: list[str], dem: dict, lease_cmd: str, marker: str, claim: str, out: str,
-         envname: str = "", envd: dict | None = None) -> tuple[list[str], str]:
+         envname: str = "", envd: dict | None = None, only_devices: list[tuple[str, float]] | None = None,
+         reservation: dict | None = None) -> tuple[list[str], str]:
     """(argv, lease scope) for CMD on a target: the lease helper with the demand's scope (none for
-    plain CPU work), then the inner script, then CMD."""
+    plain CPU work), then the inner script, then CMD. `only_devices` ((uuid, MiB) pairs) narrows the
+    helper's device discovery, so a CI job cannot wait on a device a research reservation holds. Inside
+    a `reservation` the job takes no lease (the reservation holds it) and sees only its devices."""
+    if reservation is not None:
+        inner = inner_script(marker, claim, out, reservation_env(reservation), envname, envd)
+        return ["/bin/bash", "-c", inner, "shoal-place"] + list(cmd), f"reservation {reservation.get('id')}"
     largs, scope = pool.lease_args(dem)
     inner = ["/bin/bash", "-c", inner_script(marker, claim, out, pool.device_env(dem), envname, envd), "shoal-place"]
     if largs:
-        return shlex.split(lease_cmd) + largs + ["--"] + inner + list(cmd), scope
+        pre = (["env", "GPU_LEASE_DEVICES=" + ",".join(f"{u}:{int(m)}" for u, m in only_devices)]
+               if only_devices else [])
+        return pre + shlex.split(lease_cmd) + largs + ["--"] + inner + list(cmd), scope
     return inner + list(cmd), scope
 
 
@@ -477,7 +504,12 @@ def launch(req: dict, target: dict, unit: str, p: dict, home: str, dry_run: bool
     else:
         cwd, marker, claim, out = req["cwd"], p["granted"], p["claim"], p["out"]
     envd = (target.get("envs") or {}).get(req.get("ci_env") or "") or {}
-    wrapped, scope = wrap(req["cmd"], dem, target["lease_cmd"], marker, claim, out, req.get("ci_env") or "", envd)
+    only = None
+    if int(dem.get("gpus") or 0) == 1 and target.get("reserved_devices") and dem.get("job_class") != "research":
+        vram = {g["uuid"]: (g["vram_gib"] or 0) * 1024 for g in target["gpus"]}
+        only = [(u, vram.get(u, 0)) for u in pool.fitting_devices(target, dem)]
+    wrapped, scope = wrap(req["cmd"], dem, target["lease_cmd"], marker, claim, out, req.get("ci_env") or "", envd,
+                          only, req.get("reservation"))
     info.update(cwd=cwd, scope=scope, wrapped=wrapped, marker=marker, claim=claim, out=out)
     ns = argparse.Namespace(sid=req["sid"], slug=req["slug"], name=req["name"], on=target["name"] if remote else "",
                             cwd=cwd, env=list(req.get("env") or []) + [f"GPU_LEASE_PROJECT={unit}"],
@@ -499,6 +531,8 @@ def _considered(res: dict, now: float) -> list[dict]:
 def _fmt_in(s) -> str:
     if s is None:
         return "-"
+    if s == float("inf"):
+        return "never"
     s = int(round(s))
     return f"+{s // 60}m" if s < 3600 else f"+{s // 3600}h{(s % 3600) // 60:02d}m"
 
@@ -554,7 +588,9 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
     f = _spec_feature(a.sid)
     hosts = capacities(probes, time.time(), f["max_age_s"])
     dem = pool.demand(a.needs, _vendor_default(hosts, home), a.cpu_heavy, a.memory_gib, a.ci_env,
-                      src["identity"], src["sha"], pin, src["block"])
+                      src["identity"], src["sha"], pin, src["block"], a.job_class)
+    if a.job_class == "research":
+        return _run_research(a, cmd, unit, p, src, hosts, dem, now, home)
     prior_s = a.est * 60 if a.est else None
     job = {"id": unit, "name": a.name, "repo": src["identity"], "demand": dem, "home": home, "submit_ts": now,
            "priority": a.priority, "prior_s": prior_s, "class": a.job_class}
@@ -592,6 +628,64 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {res['host']} ({res['reason']}) scope={info['scope']}",
                {"placement": decision})
     print(f"JOB-PLACED {unit} on {res['host']} ({res['reason']}; predicted start {_fmt_in(res['wait_s'])})")
+    return 0
+
+
+def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
+    """A research job runs only inside a reservation its role owns, on that reservation's host, with no
+    lease of its own (the reservation holds it) and only the reservation's devices visible."""
+    import jobs
+    owner = f"{a.sid}/{a.slug}"
+    owned = [(h, r) for h in hosts for r in h.get("reservations") or []
+             if r.get("for") == owner and (not a.reservation or r.get("id") == a.reservation)]
+    if not owned:
+        mine = f" {a.reservation}" if a.reservation else ""
+        print(f"JOB-REFUSED: a research job runs only inside a reservation its role owns, and {owner} holds no "
+              f"live reservation{mine} on {'the pinned host' if a.place != 'auto' else 'any pool host'}. Take one "
+              f"first: {config.cli()} pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy "
+              f"--for {owner} --until <ISO|job:{a.name}>")
+        return 3
+    if len(owned) > 1:
+        print(f"JOB-REFUSED: {owner} owns several reservations ({', '.join(r['id'] for _h, r in owned)}); "
+              f"name one with --reservation")
+        return 3
+    target, res = owned[0]
+    if not target["fresh"]:
+        print(f"JOB-REFUSED: the reservation's host {target['name']} is ineligible ({'; '.join(target['reasons'])})")
+        return 3
+    if int(dem.get("gpus") or 0) > len(res.get("devices") or []) or (dem.get("cpu_heavy") and not res.get("cpu")):
+        print(f"JOB-REFUSED: reservation {res['id']} holds {len(res.get('devices') or [])} GPU(s)"
+              f"{' and cpu-heavy' if res.get('cpu') else ''}; the job needs {a.needs}"
+              f"{' and cpu-heavy' if dem.get('cpu_heavy') else ''}")
+        return 3
+    if target["name"] != home and src["block"]:
+        print(f"JOB-REFUSED: the reservation is on {target['name']}, and {src['block']}")
+        return 3
+    reason = f"research reservation {res['id']}"
+    print(f"PLACEMENT {unit}: {target['name']} ({reason}) scope=reservation" + (f" sha={src['sha'][:12]}" if src["sha"] else ""))
+    req = {"sid": a.sid, "slug": a.slug, "name": a.name, "cmd": list(cmd), "env": list(a.env or []),
+           "memory_high": a.memory_high, "memory_max": a.memory_max,
+           "cwd": os.path.abspath(a.cwd or src["path"] or os.getcwd()), "repo_path": src["path"], "url": src["url"],
+           "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": "research",
+           "reservation": res}
+    rc, info = launch(req, target, unit, p, home, a.dry_run)
+    if rc != 0 or a.dry_run:
+        return rc
+    meta = jobs._meta_for(a, unit)
+    decision = {"chosen": target["name"], "reason": reason, "considered": [{"host": target["name"], "eligible": True,
+                "reasons": []}], "scope": info["scope"], "sha": src["sha"], "repo": src["identity"],
+                "reservation": res["id"]}
+    meta.update(cmd=list(cmd), wrapped_cmd=info["wrapped"], lease_granted=None, placement={
+        "host": target["name"], "home": home, "reason": reason, "scope": info["scope"], "sha": src["sha"],
+        "repo": src["identity"], "url": src["url"], "demand": dem, "prior_s": a.est * 60 if a.est else None,
+        "priority": a.priority, "submit_ts": now, "submit_utc": utc(now), "moves": 0, "moved": [],
+        "max_moves": 0, "reservation": res["id"], "marker": info["marker"], "claim": info["claim"],
+        "out": info["out"], "worktree": info["worktree"], "decision": decision,
+        "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
+                                         "repo", "ci_env", "class")}})
+    save_meta(a.sid, unit, meta)
+    jobs._emit(a.sid, a.slug, "placed", f"{unit} on {target['name']} ({reason})", {"placement": decision})
+    print(f"JOB-PLACED {unit} on {target['name']} ({reason})")
     return 0
 
 
@@ -635,6 +729,8 @@ def supervise(a, unit: str, meta: dict, granted: str) -> str | None:
     if not f["enabled"]:
         return None
     pl = meta["placement"]
+    if pl.get("reservation"):
+        return None  # research work runs where its reservation is; it never moves
     now = time.time()
     last = max(float(getattr(a, "_pool_last_plan", 0) or 0), float(pl.get("last_move_ts") or pl.get("submit_ts") or 0))
     if now - last < float(f["interval_s"]):
@@ -757,8 +853,9 @@ def transfer(a, unit: str, meta: dict, adv: dict, target: dict, considered: list
             print(f"{jobs.now_iso()} JOB-MOVE-FAILED {unit}: resubmission on {src} failed too")
             return True  # the waiter re-reads the meta and reports the unit's real state
     new = jobs._meta_for(a, unit)
-    rec = {"from": src, "to": moved_to, "ts_utc": utc(), "from_start_in_s": round(adv["from_start"] - time.time()),
-           "to_start_in_s": round(adv["to_start"] - time.time()), "considered": considered}
+    rel = lambda t: round(t - time.time()) if t != float("inf") else None  # noqa: E731
+    rec = {"from": src, "to": moved_to, "ts_utc": utc(), "from_start_in_s": rel(adv["from_start"]),
+           "to_start_in_s": rel(adv["to_start"]), "reason": adv.get("reason"), "considered": considered}
     pl = dict(pl, host=moved_to, moves=int(pl.get("moves") or 0) + (moved_to != src), last_move_ts=time.time(),
               moved=list(pl.get("moved") or []) + [rec], marker=info.get("marker", pl.get("marker")),
               claim=info.get("claim", pl.get("claim")), out=info.get("out", pl.get("out")),
@@ -844,7 +941,7 @@ def cmd_status(a) -> int:
         for h in s["hosts"]:
             v = s["plan"]["hosts"].get(h["name"]) or {}
             out["hosts"].append({k: h[k] for k in ("name", "fresh", "reasons", "lease_ok", "cores", "mem_avail_gib",
-                                                   "gpus", "envs", "worktree_root")}
+                                                   "gpus", "envs", "worktree_root", "reservations")}
                                 | {"holders": v.get("holders", []), "queue": v.get("queue", []),
                                    "drain_in_s": round(v["drain"] - s["now"]) if v.get("drain") else None})
         print(json.dumps(out, indent=1, default=str))
@@ -862,6 +959,10 @@ def cmd_status(a) -> int:
             print(f"  gpu {g['uuid']} {g['vendor']} {_gib(g['vram_gib'])} {g.get('arch') or ''}".rstrip())
         if h["envs"]:
             print(f"  ci envs: {', '.join(sorted(h['envs']))}")
+        for r in h.get("reservations") or []:
+            devs = ", ".join(d.get("uuid", "?") for d in r.get("devices") or []) or "no GPU"
+            print(f"  reserved {r.get('id')} for {r.get('for')}: {devs}{' + cpu-heavy' if r.get('cpu') else ''} "
+                  f"until {r.get('until')} (out of the CI pool)")
         for x in v.get("holders", []):
             print(f"  holder {x['name']} [{','.join(x['keys'])}] {'external ' if x['external'] else ''}"
                   f"elapsed {_fmt_in(x['elapsed_s'])} remaining {_fmt_in(x['remaining_s'])} ({x['est_source']})")
@@ -905,6 +1006,8 @@ def add_parsers(sub) -> None:
     config.add_id_arg(q, default="", help="only this shoal's placed jobs in the plan")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_status)
+    import pool_reserve
+    pool_reserve.add_parsers(ps)
     q = ps.add_parser("plan", help="the plan over this host's queued placed jobs and the transfers it advises")
     config.add_id_arg(q, default="", help="only this shoal's placed jobs (and its features.placement state)")
     q.add_argument("--dry-run", action="store_true", help="accepted for symmetry: `pool plan` never moves a job")

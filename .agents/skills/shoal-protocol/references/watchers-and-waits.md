@@ -58,7 +58,11 @@ below; the job may move to another host while still queued (`JOB-MOVED`), and it
 
 **CI jobs have a runtime budget** (90 min by default, from the lease grant). Past it you are paged once
 (`JOB-OVERRUN`); the job keeps running. Split a long suite, or run long experiments as
-`--class research` inside a reservation your role owns (`shoal pool reserve`; see the operator).
+`--class research` inside a reservation your role owns. The operator (or you, where your grants allow)
+takes one with `shoal pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy --for
+<shoal>/<you> --until <ISO|job:<name>>`; a research job outside a reservation is refused. Release a
+reservation as soon as the research is done (`shoal pool release <id> --host <host>`): it is taken out
+of everyone's CI.
 
 **Write the wait in one `queue` call, with a checkable target** (`--wait local-ci --holder "job
 <name>" --target job:<name>`). Do not follow it with a separate `shoal transition`: re-declaring a

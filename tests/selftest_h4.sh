@@ -233,6 +233,11 @@ if [ "$1" = "--status" ]; then
   esac
   exit 0
 fi
+if [ "$1" = "--release" ] || [ "$2" = "--release" ]; then pf=$(eval echo "\${$#}"); kill "$(cat "$pf")" 2>/dev/null; rm -f "$pf"*; exit 0; fi
+case " $* " in *" --hold "*)   # a research hold: a background holder, its pid and grant beside the pidfile
+  for x in "$@"; do pf=$x; done
+  setsid sleep 600 </dev/null >/dev/null 2>&1 & echo $! > "$pf"; echo "${GPU_LEASE_DEVICES%%:*}" > "$pf.device"; exit 0 ;;
+esac
 echo "lease-args: $*" >&2
 while [ "$1" != "--" ]; do shift; done; shift
 if [ "$mode" = busy ]; then while [ ! -e "$LEASE_MODE_FILE.release" ]; do sleep 0.2; done; fi
@@ -334,6 +339,26 @@ touch "$PL/far.down"; rm -f "$PL"/rc/pool-probe-*
 check "farhost .*ineligible: probe failed" $PJ --name f1 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --dry-run -- true
 grep -q "PLACEMENT shoal-pooltest-pl-f1: homehost (only compatible host)" "$S/last_check.out" || fail "failed probe :: $(cat "$S/last_check.out")"
 rm -f "$PL/far.down" "$PL"/rc/pool-probe-*
+# research: only inside a reservation the role owns; a reserved device leaves the CI pool
+check "JOB-REFUSED: a research job runs only inside a reservation its role owns" \
+  $PJ --name x1 --class research --place auto --needs gpu:1 --repo "$PL/poolrepo" --dry-run -- true
+check "RESERVED r.* on farhost for pooltest/pl: GPU-far-0" $PENV $H pool reserve --host farhost --resources gpu@GPU-far-0 \
+  --for pooltest/pl --until job:x1 --note "probe study"
+RID=$(sed -n 's/^RESERVED \(r[^ ]*\) .*/\1/p' "$S/last_check.out")
+grep -q '"kind": "reserved"' "$PL/home-data/pooltest/telemetry/"events-*.jsonl || fail "no reserved telemetry event"
+rm -f "$PL"/rc/pool-probe-*
+check "reserved $RID for pooltest/pl: GPU-far-0 until job:x1 (out of the CI pool)" $PENV $H pool status
+check "farhost .*ineligible: every fitting GPU is reserved for research" \
+  $PJ --name g4 --place auto --needs gpu:1:nvidia:16 --repo "$PL/poolrepo" --dry-run -- true
+check "PLACEMENT shoal-pooltest-pl-x1: farhost (research reservation $RID) scope=reservation" \
+  $PJ --name x1 --class research --place auto --needs gpu:1 --repo "$PL/poolrepo" --dry-run -- true
+grep -q "export CUDA_VISIBLE_DEVICES=" "$S/last_check.out" && ! grep -q "bin/lease" "$S/last_check.out" \
+  || fail "a research job takes its reservation's device and no lease :: $(cat "$S/last_check.out")"
+check "JOB-REFUSED: a research job runs only inside a reservation its role owns" \
+  env SHOAL_ROUTE_CACHE="$PL/rc2" $PENV $H job run --shoal pooltest --slug other --name x2 --class research --place auto --repo "$PL/poolrepo" --dry-run -- true
+check "RELEASED $RID on farhost" $PENV $H pool release "$RID" --host farhost
+[ "$(cat "$PL/far-data/_pool/reservations.json")" = "{}" ] || fail "reservation record left behind"
+rm -f "$PL"/rc/pool-probe-*
 if ! have_systemd; then
   echo "SKIP 6c pool placement (live): $(skip_reason)"
 else

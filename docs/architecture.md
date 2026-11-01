@@ -342,6 +342,24 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   owning role and the user page path (`health.page_user`). It never kills the job. The planner uses the
   budget as a soft ceiling on a CI job's predicted end (within the budget the prediction ends by the
   budget plus the tail floor; past it the ordinary overrun tail applies). A `research` job has no budget.
+- **Research reservations** (`shoal/pool_reserve.py`). `shoal pool reserve [--host H] --resources
+  gpu@<uuid>,...|gpus:N|cpu-heavy --for <shoal>/<role> --until <ISO|job:NAME> [--note]` takes the
+  leases on H with the helper's background-holder mode (`--hold --pidfile`): one hold per device (a
+  named device is the helper's only candidate, through `GPU_LEASE_DEVICES`; `gpus:N` takes N best-fit
+  devices) and `cpu-heavy` as its own hold, so one GPU can stay with research while the rest of the
+  host stays in the CI pool. Each reservation is recorded in H's `<data_root>/_pool/reservations.json`,
+  reported by `pool probe` and `pool status`, and is a `reserved` event. `shoal pool release <id>
+  [--host H]` releases it, and so does `--until` (a time passed, or the owner's job of that name ran to
+  an exit code on H), checked by every probe and every `resources watch` sample; a reservation whose
+  holder died is dropped. The planner takes reserved devices and a reserved `cpu-heavy` out of what a
+  CI job may use: a host whose fitting GPUs are all reserved is ineligible, a whole-host request is
+  ineligible on a host with any reservation, a CI job wrapped for such a host only sees the unreserved
+  fitting devices (`GPU_LEASE_DEVICES`), and a queued job whose host a reservation took is moved when
+  another host can run it. CI never queues behind a research hold. A `research` job placed with
+  `--place` must run inside a reservation its role owns (`--reservation <id>` picks one of several),
+  on that host, with no lease of its own and only the reservation's devices visible
+  (`CUDA_VISIBLE_DEVICES` for NVIDIA, `ROCR_VISIBLE_DEVICES` for AMD); without one it is refused, and
+  it never moves.
 - **Queue transfer** (`features.placement`, off by default; `--place` works without it). While a
   placed job is still queued for its lease, its `job wait` (one per job holds a supervisor lock; re-armed
   copies only wait) re-plans every `interval_s` with this host's other queued placed jobs. On advice
@@ -606,7 +624,7 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 
 - **Streams:** `session_transition` events from `queue` and `transition`; `watch_event`s for
   ledger wakes, health actions (condition and ladder step), job starts and verdicts, pool placements
-  (`placed`, `moved`, `lease-granted`, `overrun`, each `placed` and `moved` carrying the hosts considered and
+  (`placed`, `moved`, `lease-granted`, `overrun`, `reserved`, `released`, each `placed` and `moved` carrying the hosts considered and
   their predicted starts), and digest refreshes; `handover` phases; one `pruned` event per removed incarnation (in the owning group's telemetry, or
   `<data_root>/_host/telemetry/` for standalone and matcher sessions); reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
 - **Pin:** each event carries a `run` pin: the protocol skill's blob sha, the scripts' shas and the

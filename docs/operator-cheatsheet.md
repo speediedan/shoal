@@ -225,6 +225,9 @@ shoal pool plan --shoal $S --dry-run      # the plan over this host's queued pla
 shoal job run --shoal $S --slug <role> --name <job> --place auto --needs gpu:1:nvidia:16 \
   --repo <checkout> --est 30 --dry-run -- <cmd>   # the decision, staging and wrapped command; nothing starts
 shoal upgrade --spec $SPEC --enable placement    # queue transfers of placed jobs (after a manual trial)
+shoal pool reserve --host <host> --resources gpu@<uuid> --for $S/<role> --until job:<job>   # one GPU for research
+shoal pool release <id> --host <host>            # (also released at --until, or when its holder dies)
+shoal job run --shoal $S --slug <role> --name <job> --class research --place auto -- <cmd>   # runs inside it
 ```
 
 - A placed job's meta records the hosts considered, their predicted starts, the choice and
