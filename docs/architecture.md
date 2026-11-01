@@ -940,3 +940,12 @@ carries both flags into the generated unit.
 
 What this design does not handle yet, and the measurement that would trigger each change, is in
 [`limitations.md`](limitations.md).
+
+**Open: an urgent wake waits behind a role's background job wait** (found live 2026-11-01). A Claude
+role's direct wake (`ClaudeBackend.wake`, `shoal/backends.py`) is deferred with `deferred (background
+work in flight)` while the session's job reports in-flight background work, and a role that follows a
+long job with `job wait` as its background command has that work in flight for the whole run. An
+operator's `msg --wake --kind request` to such a role is therefore deferred until the job wait exits,
+which can be hours: the message is in the ledger, but nothing puts it in front of the session. The wake
+path is unchanged for now; until a fix is designed, a request that cannot wait goes to a role that is
+not following a long job, or the operator attaches the session (`shoal view`) and prompts it directly.
