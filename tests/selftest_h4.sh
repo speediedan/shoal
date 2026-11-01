@@ -268,6 +268,8 @@ cat > "$PL/bin/ssh" <<'SH'
 #!/bin/sh
 while [ $# -gt 1 ]; do shift; done
 [ -e "$POOL_DIR/far.down" ] && { echo "ssh: connect to host farhost: Connection refused" >&2; exit 255; }
+# a far host whose shoal predates `pool probe` answers with argparse's usage dump
+[ -e "$POOL_DIR/far.old" ] && { printf 'usage: shoal [-h] {doctor,start}\n       ...\nshoal: error: argument cmd: invalid choice: %s\n' "'pool'" >&2; exit 2; }
 # the far host's own HOME, but this user's site-packages (a TOML reader on Python 3.10)
 PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}" \
 HOME="$POOL_DIR/far-home" SHOAL_CONFIG="$POOL_DIR/far.toml" SHOAL_SERVER=farhost SHOAL_DATA_ROOT="$POOL_DIR/far-data" \
@@ -345,6 +347,10 @@ touch "$PL/far.down"; rm -f "$PL"/rc/pool-probe-*
 check "farhost .*ineligible: probe failed" $PJ --name f1 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --dry-run -- true
 grep -q "PLACEMENT shoal-pooltest-pl-f1: homehost (only compatible host)" "$S/last_check.out" || fail "failed probe :: $(cat "$S/last_check.out")"
 rm -f "$PL/far.down" "$PL"/rc/pool-probe-*
+touch "$PL/far.old"
+check "farhost: INELIGIBLE (probe failed: shoal on farhost has no pool probe (update its checkout))" $PENV $H pool status
+grep -q "usage:" "$S/last_check.out" && fail "argparse usage leaked into the reason :: $(cat "$S/last_check.out")"
+rm -f "$PL/far.old" "$PL"/rc/pool-probe-*
 # research: only inside a reservation the role owns; a reserved device leaves the CI pool
 check "JOB-REFUSED: a research job runs only inside a reservation its role owns" \
   $PJ --name x1 --class research --place auto --needs gpu:1 --repo "$PL/poolrepo" --dry-run -- true

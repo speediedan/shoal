@@ -311,11 +311,12 @@ def host_capacity(probe: dict, now: float, max_age_s: float = DEFAULTS["max_age_
     p = probe if isinstance(probe, dict) else {}
     reasons = []
     if p.get("error"):
-        reasons.append(f"probe failed: {str(p['error'])[:120]}")
+        err = " ".join(str(p["error"]).split())  # one line, whatever the probe printed
+        reasons.append(f"probe failed: {err[:160]}")
     ts = p.get("ts")
     seen = p.get("fetched_ts", ts)
-    if not isinstance(ts, (int, float)) or not isinstance(seen, (int, float)) \
-            or not -FUTURE_SKEW_S <= now - seen <= max_age_s:
+    if not reasons and (not isinstance(ts, (int, float)) or not isinstance(seen, (int, float))
+                        or not -FUTURE_SKEW_S <= now - seen <= max_age_s):
         reasons.append("stale probe")
     lease = p.get("lease") or {}
     gpus = []

@@ -214,16 +214,30 @@ def remote_probe(server: str, timeout: float = PROBE_TIMEOUT_S, cache_s: float =
         out = subprocess.run(routes.ssh_argv(r) + [routes.remote_cmd(r, "pool", "probe", "--json")],
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
         if out.returncode != 0:
-            raise ValueError(f"rc={out.returncode}: {(out.stderr or out.stdout).strip()[-160:]}")
+            raise ValueError(probe_error(server, out.returncode, out.stderr or out.stdout))
         d = json.loads(out.stdout)
         if not isinstance(d, dict) or d.get("type") != "pool_probe":
             raise ValueError("not a pool probe")
     except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-        return {"host": server, "error": str(exc)[:200], "fetched_ts": time.time()}
+        return {"host": server, "error": one_line(str(exc), 200), "fetched_ts": time.time()}
     d["fetched_ts"] = time.time()
     if cache_s:
         routes._store(key, {"probe": d})
     return d
+
+
+def one_line(text: str, n: int = 160) -> str:
+    """The last non-empty line of an error, cut to `n` characters."""
+    lines = [x.strip() for x in str(text or "").splitlines() if x.strip()]
+    return (lines[-1] if lines else "")[:n]
+
+
+def probe_error(server: str, rc: int, text: str) -> str:
+    """Why a remote probe failed, in one line: a shoal too old to know `pool probe` (argparse's
+    `invalid choice`, rc 2) says so instead of dumping its usage text."""
+    if rc == 2 and "invalid choice" in str(text or ""):
+        return f"shoal on {server} has no pool probe (update its checkout)"
+    return f"rc={rc}: {one_line(text) or 'no output'}"
 
 
 def gather(only: list[str] | None = None, cache_s: float = PROBE_CACHE_S) -> dict[str, dict]:

@@ -454,6 +454,19 @@ class Budget(unittest.TestCase):
             self.assertEqual(emit.call_count, 2)
 
 
+class ProbeErrors(unittest.TestCase):
+    def test_old_shoal_and_multiline_errors_read_in_one_line(self):
+        import pool_cli
+        usage = ("usage: shoal [-h] {doctor,start,...}\n  ...\nshoal: error: argument cmd: invalid choice: 'pool' "
+                 "(choose from 'doctor', 'start')\n")
+        self.assertEqual(pool_cli.probe_error("far", 2, usage), "shoal on far has no pool probe (update its checkout)")
+        self.assertEqual(pool_cli.probe_error("far", 255, "Warning: x\nssh: connect to host far: Connection refused\n"),
+                         "rc=255: ssh: connect to host far: Connection refused")
+        self.assertEqual(pool_cli.probe_error("far", 1, ""), "rc=1: no output")
+        h = pool.host_capacity({"host": "far", "error": "line one\nline two"}, NOW)
+        self.assertEqual(h["reasons"][0], "probe failed: line one line two")
+
+
 class Builders(unittest.TestCase):
     def setUp(self):
         import pool_cli

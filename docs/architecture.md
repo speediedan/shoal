@@ -303,7 +303,8 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   lease helper's path, its holders' observed durations from the resource stream, and the probe time.
   Home runs it in process and over each route's ssh (20 s timeout, cached 20 s). A failed or stale
   probe (older than 120 s by home's receive time, so a skewed remote clock does not age it) makes the
-  host ineligible, never an error.
+  host ineligible, never an error; its reason is one line (a shoal too old to know `pool probe` reads
+  `shoal on <host> has no pool probe (update its checkout)`).
 - **Demand.** `--needs cpu|gpu[:N][:vendor][:vramGiB]` (a GPU job with no vendor keeps its home host's
   vendor; above one GPU is the whole host), `--cpu-heavy`, `--memory-gib`, `--ci-env NAME`,
   `--repo PATH [--ref SHA]` (default the checkout's HEAD), `--est MIN` (the duration prior),
