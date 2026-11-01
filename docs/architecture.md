@@ -477,7 +477,8 @@ is the only coordination path (no host-to-host connection is needed for correctn
   local roles, and `restart --only` and `aux-launch` refuse a remote role and print the
   `ssh <server> shoal ...` line. `start` and `add-role` record a remote role and launch only this host's
   roles; a full `restart` on a multi-host shoal restarts this host's roles. Mint on home, then launch each
-  remote role on its host. A remote role is watched, woken and launched by its own host.
+  remote role on its host. A remote role is watched, woken and launched by its own host. A `next --peek` from
+  another host names the role's host for its watcher instead of reading that host's stale or absent sidecar.
 - **Shared files.** Role files have one writer. `user` and `shoal` are written from any host, so the
   append-only writer files merge by union: `ledger.sync_pull` ensures the rule in the clone's
   `.git/info/attributes` (in force for every rebase) and commits it to `.gitattributes`.

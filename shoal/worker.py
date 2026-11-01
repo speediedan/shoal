@@ -453,10 +453,18 @@ def cmd_next(a) -> int:
         pass
     try:
         from ledger_watch import load_sidecar, sidecar_path
-        sc = load_sidecar(sidecar_path(spec.sid, slug))
-        pid = sc.get("pid", "")
-        alive = bool(pid) and os.path.exists(f"/proc/{pid}")
-        out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}")
+        from roles import host_of, is_local
+        role = spec.role(slug)
+        if role is not None and not is_local(role, spec):
+            # its sidecar and /proc live on its own host: a peek from here read a stale copy (or none)
+            # and reported a live watcher as NOT RUNNING (measured 2026-11-01, a role moved to another host)
+            out.append(f"WATCH ledger-watch runs on {host_of(role, spec)}: check it there "
+                       f"(ssh {host_of(role, spec)} shoal next --shoal {spec.sid} --slug {slug} --peek)")
+        else:
+            sc = load_sidecar(sidecar_path(spec.sid, slug))
+            pid = sc.get("pid", "")
+            alive = bool(pid) and os.path.exists(f"/proc/{pid}")
+            out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}")
     except Exception:
         pass
     out.append("# END EVERY TURN IN A SLEEP POSTURE: the last write of a turn is `queue --wait ..` (waiter armed) or "

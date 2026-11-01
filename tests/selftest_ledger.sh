@@ -488,6 +488,9 @@ w = health.request_wake(mh, "beta", "test", "test", dry_run=True)
 assert w.startswith("remote (skipped"), w
 print("locality ok")
 PY3
+# a peek from the home host names the remote role's host instead of reading this host's sidecar (control: local alpha)
+SHOAL_SERVER=hostA check "WATCH ledger-watch runs on hostB: check it there" $H next --shoal t1shoal --spec "$MH/shoals/t1shoal/shoal.json" --slug beta --peek --no-sync
+SHOAL_SERVER=hostA check "WATCH ledger-watch pid=" $H next --shoal t1shoal --spec "$MH/shoals/t1shoal/shoal.json" --slug alpha --peek --no-sync
 SHOAL_SERVER=hostA check "REFUSED: beta run(s) on another host" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --only beta --dry-run
 SHOAL_SERVER=hostA check "ssh hostB shoal restart" $H restart --spec "$MH/shoals/t1shoal/shoal.json" --only alpha,beta --dry-run
 # lifecycle: mint on home, launch each role on its own host

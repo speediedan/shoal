@@ -321,10 +321,11 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     force = False
     import ui_term
     watch = ui_term.CodeWatch()
-    remote = _remote_host(sid, slug, spec_path)
     import routes
     while True:
         watch.check()
+        # re-read each tick: a role moved to another host (its spec `server`) is attached there at once
+        remote = _remote_host(sid, slug, spec_path)
         routed = bool(remote) and routes.route(remote) is not None
         try:
             body = card(sid, slug, force)
