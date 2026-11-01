@@ -901,7 +901,8 @@ queued requests and explicit session readiness. A compute-ready host without a p
 is not eligible for session migration. Recommendations retain the current eligible host within a
 small score margin to limit churn. The advisor acquires no lease, changes no host mode or role spec,
 and performs no handoff (CI job placement, which does act, is `job run --place`: section 6). `resources install --dry-run` previews one host service; `--enable` starts
-it only when the operator applies the reviewed deployment. See [resource telemetry](resources.md).
+it only when the operator applies the reviewed deployment, and restarts an already-running service so the new
+unit file takes effect. See [resource telemetry](resources.md).
 
 `sample` and `watch` also accept `--prom-out FILE`, writing each sample's GPU and lease projection
 (utilization, VRAM, runtime-suspended state, held reservations and queue lengths with measured zeros for known idle keys, sample timestamp) as Prometheus text for a

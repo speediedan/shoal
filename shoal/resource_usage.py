@@ -518,7 +518,9 @@ def execute(a):
         (directory / "shoal-resources.service").write_text(text)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
         if a.enable:
-            subprocess.run(["systemctl", "--user", "enable", "--now", "shoal-resources.service"], check=True)
+            # restart, not `enable --now`: an already-active service would keep running the old ExecStart
+            subprocess.run(["systemctl", "--user", "enable", "shoal-resources.service"], check=True)
+            subprocess.run(["systemctl", "--user", "restart", "shoal-resources.service"], check=True)
         return 0
     events = load_events(a.input or [a.directory])
     if a.resource_cmd == "report":
