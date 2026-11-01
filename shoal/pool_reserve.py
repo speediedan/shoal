@@ -145,6 +145,8 @@ def reserve(resources: str, owner: str, until: str, note: str = "", timeout_min:
     """Take the holds and record the reservation; on any failure, release what was taken. Raises
     ValueError with the reason."""
     now = time.time() if now is None else now
+    if not config.pool_member():
+        raise ValueError("this host is not in the pool (pool = false): it takes no reservations")
     if not re.fullmatch(r"[^/\s]+/[^/\s]+", owner or ""):
         raise ValueError("--for must be <shoal>/<role>")
     items = parse_resources(resources)
@@ -284,6 +286,10 @@ def _remote(host: str, args: list[str], timeout: float) -> tuple[int, dict | Non
 
 def cmd_reserve(a) -> int:
     local = config.server()
+    import pool_cli
+    if a.host and a.host != local and a.host not in pool_cli.pool_names():
+        print(f"RESERVE-FAILED: {a.host} is not a pool host (pool: {', '.join(pool_cli.pool_names()) or 'none'})")
+        return 1
     if a.host and a.host != local:
         args = ["pool", "reserve", "--resources", a.resources, "--for", a.owner, "--until", a.until, "--note", a.note,
                 "--timeout-min", f"{a.timeout_min:g}", "--json", "--no-event"]

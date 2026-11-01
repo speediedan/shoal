@@ -25,6 +25,7 @@ when neither is importable the file is skipped with one warning on stderr.
   login_shell_tools (none)                                   [] (tools whose calls run under `bash -lc`)
   worktree_root  SHOAL_WORKTREE_ROOT                         <data_root>/_pool/worktrees (placed jobs' staged checkouts)
   ci_envs        (none)                                      {} (named CI environments a placed job may ask for)
+  pool           (none)                                      true (false: this host stays out of CI pool placement)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
@@ -300,6 +301,13 @@ def worktree_root() -> str:
     """Where `job run --place` stages a placed job's detached worktree on this host (and keeps a mirror
     clone per repository under `.mirrors/`)."""
     return _path(_get("worktree_root", names("WORKTREE_ROOT"), lambda: os.path.join(data_root(), "_pool", "worktrees")))
+
+
+def pool_member() -> bool:
+    """Top-level `pool = false` keeps this host out of CI pool placement (a session-only host): it is
+    never a placement candidate, here or from another host, and takes no reservations. A route's own
+    `pool = false` leaves that host out from this side without probing it."""
+    return file_values().get("pool") is not False
 
 
 def ci_envs() -> dict[str, dict]:

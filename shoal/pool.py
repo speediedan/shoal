@@ -310,7 +310,9 @@ def host_capacity(probe: dict, now: float, max_age_s: float = DEFAULTS["max_age_
     so a skewed remote clock does not age a probe."""
     p = probe if isinstance(probe, dict) else {}
     reasons = []
-    if p.get("error"):
+    if p.get("pool") is False:
+        reasons.append("not in the pool (pool = false on that host)")
+    elif p.get("error"):
         err = " ".join(str(p["error"]).split())  # one line, whatever the probe printed
         reasons.append(f"probe failed: {err[:160]}")
     ts = p.get("ts")

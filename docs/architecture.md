@@ -292,7 +292,10 @@ never duplicates a side effect. A
 
 ### Pool placement (`job run --place`, `shoal pool`)
 
-The pool is this host plus every `[hosts.<server>]` route (section 8). `job run --place auto|<host>`
+The pool is this host plus every `[hosts.<server>]` route (section 8), less any host left out with
+`pool = false`: on a route, that host is never probed from this side; at the top level of a host's own
+config, the host is never a candidate anywhere (its probe answers `pool: false` at once, and it takes
+no reservations). `pool status` names the hosts outside the pool. `job run --place auto|<host>`
 chooses where a job runs by predicted queue wait, stages it there and wraps it in that host's lease
 helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pure planner
 (unit-tested on synthetic N-host fixtures); `shoal/pool_cli.py` does the I/O.
@@ -566,6 +569,7 @@ generic default.
 | `azure_org`, `azure_project` | `SHOAL_AZURE_ORG`, `SHOAL_AZURE_PROJECT` | none (the pipeline sensor needs them) |
 | `worktree_root` | `SHOAL_WORKTREE_ROOT` | `<data_root>/_pool/worktrees`: where placed jobs are staged on this host |
 | `[ci_envs.<name>]` | (file only) | none: CI environments this host offers placed jobs (`python`, `repos`) |
+| `pool` | (file only) | `true`; `false` keeps this host out of CI pool placement (a route's own `pool = false` leaves that host out from this side) |
 | `skill_homes` | `SHOAL_SKILL_HOMES` (path-separated) | the existing standard homes: `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills` |
 | `[tool_env]` | an exported variable of the same name wins | none: extra variables for every tool call and generated systemd unit (e.g. `OPENCHAMBER_DATA_DIR` for a server kept apart from a desktop app) |
 

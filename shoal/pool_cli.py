@@ -164,6 +164,8 @@ def probe(now: float | None = None) -> dict:
     import resource_usage
     now = time.time() if now is None else now
     host = config.server()
+    if not config.pool_member():  # a host that opted out answers at once, and is never a candidate
+        return {"v": 1, "type": "pool_probe", "host": host, "ts": now, "ts_utc": utc(now), "pool": False}
     s = _latest_sample(host)
     if s and 0 <= now - float(s.get("ts") or 0) <= SAMPLE_MAX_AGE_S:
         gpus, memory, src = s.get("gpus") or [], s.get("memory") or {}, "sample"
@@ -197,8 +199,17 @@ def probe(now: float | None = None) -> dict:
 # ---- the pool's probes ------------------------------------------------------------------------------
 
 def pool_names() -> list[str]:
+    """This host (unless its config says `pool = false`) and every route not marked `pool = false`."""
     home = config.server()
-    return [home] + sorted(n for n in routes.routes() if n != home)
+    return ([home] if config.pool_member() else []) + sorted(
+        n for n, r in routes.routes().items() if n != home and r.get("pool") is not False)
+
+
+def outside_pool() -> list[str]:
+    """Hosts this host knows of that stay out of placement (named in `pool status`)."""
+    home = config.server()
+    return ([] if config.pool_member() else [home]) + sorted(
+        n for n, r in routes.routes().items() if n != home and r.get("pool") is False)
 
 
 def remote_probe(server: str, timeout: float = PROBE_TIMEOUT_S, cache_s: float = PROBE_CACHE_S) -> dict:
@@ -986,6 +997,8 @@ def cmd_status(a) -> int:
         print(json.dumps(out, indent=1, default=str))
         return 0
     print(f"pool: {len(s['hosts'])} host(s), home {home}, {utc(s['now'])}")
+    if outside_pool():
+        print(f"outside the pool (pool = false): {', '.join(outside_pool())}")
     for h in s["hosts"]:
         v = s["plan"]["hosts"].get(h["name"]) or {}
         tag = " (home)" if h["name"] == home else ""

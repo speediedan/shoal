@@ -467,6 +467,30 @@ class ProbeErrors(unittest.TestCase):
         self.assertEqual(h["reasons"][0], "probe failed: line one line two")
 
 
+class Membership(unittest.TestCase):
+    def test_pool_false_on_a_route_or_a_host(self):
+        from unittest.mock import patch
+        import config
+        import pool_cli
+        with tempfile.TemporaryDirectory() as d:
+            routes = ('[hosts.big]\nssh = "u@big"\n[hosts.laptop]\nssh = "u@laptop"\npool = false\n')
+            cfg = Path(d, "host.toml")
+            for top, names, outside in (("", ["here", "big"], ["laptop"]),
+                                        ("pool = false\n", ["big"], ["here", "laptop"])):
+                cfg.write_text(f'data_root = "{d}"\n' + top + routes)
+                config._CACHE.clear()
+                with patch.dict(os.environ, {"SHOAL_CONFIG": str(cfg), "SHOAL_SERVER": "here", "SHOAL_DATA_ROOT": d}):
+                    self.assertEqual(pool_cli.pool_names(), names)
+                    self.assertEqual(pool_cli.outside_pool(), outside)
+                    if top:
+                        p = pool_cli.probe()
+                        self.assertIs(p["pool"], False)
+                        self.assertNotIn("lease", p)                 # an opted-out host does no probe work
+                        self.assertEqual(pool.host_capacity(dict(p, fetched_ts=p["ts"]), p["ts"])["reasons"],
+                                         ["not in the pool (pool = false on that host)"])
+            config._CACHE.clear()
+
+
 class Builders(unittest.TestCase):
     def setUp(self):
         import pool_cli

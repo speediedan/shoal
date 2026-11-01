@@ -254,6 +254,9 @@ worktree_root = "$PL/home-wt"
 ssh = "tester@farhost"
 resolve = "dns"
 cli = "$(python3 -c 'import sys; print(sys.executable)') $SHOALD/cli.py"   # a login shell may find another python3
+[hosts.laptop]
+ssh = "tester@laptop"
+pool = false
 EOF
 cat > "$PL/far.toml" <<EOF
 data_root = "$PL/far-data"
@@ -306,6 +309,9 @@ OUT=$($PENV $H pool probe --json) || fail "pool probe rc :: $OUT"
 grep -q '"host": "homehost"' <<<"$OUT" && grep -q '"gpu_source": "sample"' <<<"$OUT" && grep -q '"arch": "sm_89"' <<<"$OUT" \
   || fail "pool probe misses host, sample source or arch :: $OUT"
 check "farhost: cores" $PENV $H pool status
+grep -q "^pool: 2 host(s)" "$S/last_check.out" && grep -q "outside the pool (pool = false): laptop" "$S/last_check.out" \
+  && ! grep -q "^laptop" "$S/last_check.out" || fail "a pool = false route was probed or counted :: $(cat "$S/last_check.out")"
+check "not a pool host" $PJ --name lp --place laptop --dry-run -- true
 check "holder ci-agent \[gpu\] external" $PENV $H pool status
 check "GPU-far-1 amd 32 GiB gfx1100" $PENV $H pool status
 check "ERROR: --needs must be cpu or gpu" $PJ --name bad --place auto --needs tpu --dry-run -- true
