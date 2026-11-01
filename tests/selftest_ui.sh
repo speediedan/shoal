@@ -375,6 +375,96 @@ t = ui_status.ascii_table(["a", "b"], [["x" * 50, "keep"]], 30, flex=(0,))
 assert all(len(l) <= 30 for l in t.splitlines()), t
 assert "..." in t and "keep" in t, t
 PY2
+# a dashboard or card frame taller than its pane is fitted to it: no tick scrolls, so the scrollback never
+# collects a copy of the usage table per refresh (a small VT model replays each frame)
+python3 - "$SHOALD" <<'PY2' || fail "frame fit"
+import os, re, sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+os.environ["SHOAL_UI_COLOR"] = "1"  # SGR in the body: widths must be counted without it
+import ui_status, ui_term
+
+class Screen:
+    """A small VT model: cursor home and CUP, ED 0/2/3, SGR ignored, deferred autowrap at `cols`, and a
+    line feed on the last row that scrolls the top row into the scrollback (a tty maps \\n to CR LF)."""
+    def __init__(self, cols, rows):
+        self.cols, self.rows, self.x, self.y, self.wrap, self.scrolled = cols, rows, 0, 0, False, 0
+        self.grid, self.scrollback = [[" "] * cols for _ in range(rows)], []
+    def lf(self):
+        self.x, self.wrap = 0, False
+        if self.y == self.rows - 1:
+            self.scrollback.append("".join(self.grid.pop(0)).rstrip()); self.grid.append([" "] * self.cols)
+            self.scrolled += 1
+        else:
+            self.y += 1
+    def write(self, s):
+        for m in re.finditer(r"\x1b\[([0-9;?]*)([@-~])|(\n)|(\r)|([^\x1b\n\r])", s):
+            if m.group(2):
+                p, f = m.group(1), m.group(2)
+                if f == "H":
+                    r, _, c = p.partition(";")
+                    self.y, self.x, self.wrap = int(r or 1) - 1, int(c or 1) - 1, False
+                elif f == "J":
+                    if p == "3":
+                        self.scrollback = []
+                    elif p == "2":
+                        self.grid = [[" "] * self.cols for _ in range(self.rows)]
+                    else:
+                        raise AssertionError(f"ED {p!r} not modelled")
+                elif f != "m":
+                    raise AssertionError(f"CSI {p}{f} not modelled")
+            elif m.group(3):
+                self.lf()
+            elif m.group(4):
+                self.x, self.wrap = 0, False
+            else:
+                if self.wrap:
+                    self.lf()
+                self.grid[self.y][self.x] = m.group(5)
+                if self.x == self.cols - 1:
+                    self.wrap = True
+                else:
+                    self.x += 1
+    def lines(self):
+        return ["".join(r).rstrip() for r in self.grid]
+
+now = time.time()
+win = lambda pct: [{"name": n, "used_percent": pct, "resets_at": now + 3600 * (i + 1)} for i, n in enumerate(("5h", "week", "month"))]
+usage = {"accounts": [{"provider": p, "stale": False, "age_s": 60, "rows": [{"bucket": p, "windows": win(10 * (i + 1))}]}
+                      for i, p in enumerate(("codex", "claude", "muse", "opencode-go"))]}
+roles = [{"slug": f"role-{i}", "harness": "claude", "host": "", "posture": "idle", "sub": "", "session": "idle",
+          "active": f"example/repo#{i}:fix", "next": [{"item": f"example/repo#{i + 10}:fix", "blocker": "", "stale": False}],
+          "last_write_age_s": 60 * i, "asks": [], "offers_open": 0,
+          "can_progress": {"ok": i % 2 == 0, "reasons": [] if i % 2 == 0 else ["parked-work"]}} for i in range(8)]
+conds = [{"slug": f"role-{i % 8}", "condition": "watcher-dead", "detail": f"synthetic condition {i} " + "x" * 40} for i in range(16)]
+doc = {"usage": usage, "shoals": [{"id": "example-shoal", "gen": "r1", "mode": {"offline": False, "freeze": False},
+       "tooling": {"current": True}, "needs_you": 0, "stalled": 0, "asks_open": 0, "pages_24h": 0,
+       "roles": roles, "conditions": {"open": conds}}]}
+footer = "\x1b[2m12:00:00  [r] refresh  [m] menu  [q] shell\x1b[0m"
+plain = lambda s: re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", s)
+for cols, rows in ((160, 42), (100, 24), (60, 30)):
+    body = ui_status.render_text(doc, width=cols)
+    need = sum(max(1, -(-len(plain(ln)) // cols)) for ln in body.split("\n"))
+    clipped = need > rows - 2  # the body, a blank row, the one-row footer
+    assert clipped or cols == 160, (cols, rows, need)
+    t = Screen(cols, rows)
+    for _ in range(3):  # three refresh ticks
+        t.write(ui_term.fit_frame(body, footer, cols, rows))
+    shown = t.lines()
+    assert t.scrolled == 0 and t.scrollback == [], (cols, rows, t.scrolled, t.scrollback[:3])
+    assert sum(ln.startswith("Subscription usage") for ln in shown) == 1, (cols, rows, shown)
+    assert shown[0].startswith("Subscription usage"), shown[0]
+    assert shown[-1] == plain(footer), (cols, rows, shown[-1])
+    assert any("more lines: enlarge the pane" in ln for ln in shown) == clipped, (cols, rows, need, shown)
+# the model catches the bug: the old redraw (ED 2 and home, a frame taller than the pane) scrolls, and
+# every tick leaves one more copy of the usage header in the scrollback
+cols, rows = 100, 24
+body = ui_status.render_text(doc, width=cols)
+t = Screen(cols, rows)
+for _ in range(3):
+    t.write("\x1b[2J\x1b[H" + body + "\n\n" + footer + "\n")
+assert sum(ln.startswith("Subscription usage") for ln in t.scrollback) > 1, t.scrollback
+print("frame fit ok")
+PY2
 # a popup that fits closes on Enter (not only q), and the empty asks popup closes on one key
 OUT=$(printf '\n' | python3 -c "import sys; sys.path.insert(0, '$SHOALD/ui'); import ui_term; ui_term.page('a\nb'); print('CLOSED')" 2>&1)
 grep -q CLOSED <<<"$OUT" || fail "page() did not close on Enter :: $OUT"
@@ -901,7 +991,10 @@ kill $FAKE 2>/dev/null
 # static guard: the adapter source never calls an input or close method on a pane
 grep -nE 'call\("(pane\.send_|pane\.close|agent\.prompt|agent\.send_keys|pane\.run)' "$SHOALD/ui/"*.py \
   && fail "the UI adapter calls a pane input/close method"
-unset XDG_CONFIG_HOME SHOAL_HERDR_SESSION
+unset SHOAL_HERDR_SESSION
+# an empty scratch config from here on: the picker offers every saved standalone entry, so an unset
+# XDG_CONFIG_HOME would read (and a --save would write) the operator's own registry
+export XDG_CONFIG_HOME="$S/xdg-empty"
 
 python3 - "$SHOALD" <<'PY2' || fail "picker filter / shoal tag"
 import sys
@@ -965,8 +1058,12 @@ for line in sys.stdin:
     else:
         if method == 'thread/list':
             assert not os.environ.get('OPENAI_API_KEY')
+            # omitted, sourceKinds lists interactive threads only: a `codex-new` seat (codex exec) never shows
+            assert 'exec' in request['params'].get('sourceKinds', []), request['params']
             result = {'data': [{'id': 'cd-seat', 'name': 'codex-seat', 'cwd': '/tmp/example'},
-                               {'id': 'role-id', 'name': 'worker-r2', 'cwd': '/tmp/example'}]}
+                               {'id': 'role-id', 'name': 'worker-r2', 'cwd': '/tmp/example'},
+                               {'id': 'headless', 'source': 'exec', 'cwd': '/tmp/example'},
+                               {'id': 'named-exec', 'name': 'exec-seat', 'source': 'exec', 'cwd': '/tmp/example'}]}
         else:
             assert not os.environ.get('META_API_KEY')
             result = {'sessions': [{'sessionId': 'mu-seat', 'name': 'muse-seat', 'kind': 'root',
@@ -983,6 +1080,9 @@ with patch.dict(os.environ, env):
     codex = ui_sessions.stored_sessions('codex')
     muse = ui_sessions.stored_sessions('muse')
 assert codex[0]['session'] == 'cd-seat' and codex[0]['label'] == 'codex-seat'
+# a named headless thread is a seat; an unnamed one is a role turn or a matcher run
+assert [e['session'] for e in codex] == ['cd-seat', 'role-id', 'named-exec'], codex
+assert codex[-1]['label'] == 'exec-seat', codex[-1]
 assert [e['session'] for e in muse] == ['mu-seat'] and muse[0]['model'] == 'example-model'
 assert set(log.read_text().splitlines()) == {'initialize', 'initialized', 'thread/list', 'session/list'}
 # A failed provider cannot hide another provider's sessions.
@@ -992,7 +1092,8 @@ with patch.object(backends.ClaudeBackend, '_agents', return_value=[claude]), \
      patch.object(ui_herdr.subprocess, 'run', return_value=types.SimpleNamespace(stdout='{}', returncode=0)), \
      patch.object(ui_sessions, 'stored_sessions', side_effect=lambda h: codex if h == 'codex' else muse):
     cands = ui_herdr.candidates_standalone({'role-id'})
-assert [e['harness'] for e in cands] == ['claude', 'codex', 'muse'], cands
+assert [(e['harness'], e['session']) for e in cands] == [('claude', 'cl-seat'), ('codex', 'cd-seat'), ('codex', 'named-exec'),
+                                                     ('muse', 'mu-seat')], cands
 # A registered backend participates without a menu branch or a particular transport.
 class ExampleACP(backends.Backend):
     ecosystem = 'example-acp'
@@ -1025,7 +1126,7 @@ with patch.object(ui_herdr, 'candidates_standalone', return_value=cands), \
     assert ui_herdr.cmd_pick(ns) == 0
     assert opened[0]['job'] == 'job-123', 'interactive picks preserve the stable Claude job id'
     pause.assert_not_called()
-    with patch.object(ui_herdr, '_choose', return_value=2):
+    with patch.object(ui_herdr, '_choose', return_value=3):
         assert ui_herdr.cmd_pick(ns) == 0 and opened[-1]['model'] == 'example-model'
     with patch.object(ui_herdr, '_choose', return_value=None):
         assert ui_herdr.cmd_pick(ns) == 0
@@ -1052,6 +1153,58 @@ else:
     raise AssertionError('listing timeout must be bounded')
 assert time.monotonic()-start < 4, 'timed-out listing server is reaped promptly'
 print('standalone picker ok')
+PY2
+# saved entries stay pickable when no harness lists them (a headless thread, an ended session) or they were
+# dismissed; a re-pick keeps what was saved on the seat, and model/effort pass on only within one harness
+XDG_CONFIG_HOME="$S/xdg-registry" python3 - "$SHOALD" <<'PY2' || fail "standalone registry picks"
+import contextlib, io, json, os, sys, types
+from unittest.mock import patch
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import backends, ui_herdr, ui_sessions
+saved = [{'harness': 'codex', 'session': 'cx-unlisted', 'label': 'cx-seat', 'model': 'example-codex-model',
+          'effort': 'high', 'doc': '/docs/cx.md', 'opened': True},
+         {'harness': 'claude', 'session': 'cl-dismissed-1111', 'label': 'cl-seat', 'doc': '/docs/cl.md',
+          'handover': 'pending', 'opened': True, 'dismissed': True},
+         {'harness': 'claude', 'session': 'role-held-2222', 'label': 'held-seat', 'opened': True}]
+ui_herdr.save_standalone(saved)
+nothing = [patch.object(backends.ClaudeBackend, '_agents', return_value=[]),
+           patch.object(ui_herdr, 'role_slugs', return_value=set()),
+           patch.object(ui_herdr.subprocess, 'run', return_value=types.SimpleNamespace(stdout='{}', returncode=0)),
+           patch.object(ui_sessions, 'stored_sessions', return_value=[])]
+with contextlib.ExitStack() as st:
+    for p in nothing:
+        st.enter_context(p)
+    cands = ui_herdr.candidates_standalone({'role-held'})
+assert [(c['session'], c['state']) for c in cands] == [('cx-unlisted', 'registered'), ('cl-dismissed-1111', 'dismissed')], cands
+
+def pick(cand):
+    ns = types.SimpleNamespace(harness='', session_id='', label='', save=True, session='', pause=False)
+    opened = []
+    with patch.object(ui_herdr, 'candidates_standalone', return_value=[cand]), \
+         patch.object(ui_herdr, 'role_sessions', return_value=set()), \
+         patch.object(ui_herdr, '_choose', return_value=0), patch.object(ui_herdr, 'Herdr'), \
+         patch.object(ui_herdr, 'open_standalone', side_effect=lambda h, e, **kw: opened.append(e) or 'opened'), \
+         contextlib.redirect_stdout(io.StringIO()):
+        assert ui_herdr._pick(ns) == 0
+    return opened[0], {e['session']: e for e in ui_herdr.load_standalone(raw=True)}
+
+# re-picking the dismissed entry reopens it with its doc and handover state; the dismissal is cleared
+e, reg = pick({'harness': 'claude', 'session': 'cl-dismissed-1111', 'label': 'cl-seat', 'state': 'dismissed'})
+got = reg['cl-dismissed-1111']
+assert 'dismissed' not in got and got['doc'] == '/docs/cl.md' and got['handover'] == 'pending', got
+assert e['doc'] == '/docs/cl.md', e
+# a Claude session picked into the Codex seat's label keeps the seat's doc, never its Codex model or effort
+e, reg = pick({'harness': 'claude', 'session': 'cl-new-3333', 'job': 'cl-new', 'label': 'cx-seat', 'state': 'idle'})
+got = reg['cl-new-3333']
+assert 'cx-unlisted' not in reg, 'one label, one card'
+assert 'model' not in got and 'effort' not in got, got
+assert got['doc'] == '/docs/cx.md', got
+# within one harness the seat's model and effort carry over
+ui_herdr.save_standalone(ui_herdr.load_standalone(raw=True) + [dict(saved[0], session='cx-old', label='cx2')])
+e, reg = pick({'harness': 'codex', 'session': 'cx-new', 'label': 'cx2', 'state': 'saved'})
+got = reg['cx-new']
+assert got['model'] == 'example-codex-model' and got['effort'] == 'high' and got['doc'] == '/docs/cx.md', got
+print('standalone registry picks ok')
 PY2
 
 echo "== 4 herdr config: managed block merges idempotently and refuses duplicate tables"
@@ -1369,6 +1522,30 @@ entries = [{"harness": "claude", "session": "ffff0000-1111", "label": "seat"}, {
 assert ui_herdr.record_claude_jobs(entries) and entries[0]["job"] == "abcd1234" and "job" not in entries[1], entries
 assert ui_herdr.standalone_argv(entries[0])[-2:] == ["--job", "abcd1234"], ui_herdr.standalone_argv(entries[0])
 print("claude identity ok")
+PY2
+# an interactive Claude session (a terminal seat, not --bg) cannot be attached: its card says where it runs,
+# and no attach id is guessed for it
+python3 - "$SHOALD" <<'PY2' || fail "interactive claude seat"
+import json, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"sessionId": "1111aaaa-2222", "pid": os.getpid(), "kind": "interactive", "name": "seat"}], "opencode": {}})
+import backends, ui_view
+why = ui_view.verify_listed("claude", "1111aaaa-2222")
+assert f"running interactively in pid {os.getpid()}" in why and "--bg --resume 1111aaaa-2222" in why, why
+try:
+    argv, _env = ui_view.viewer("claude", "1111aaaa-2222")
+except backends.UnsupportedError as exc:
+    assert "interactively" in str(exc), exc
+else:
+    raise AssertionError(f"an interactive session got a `claude attach` argv: {argv[1:]}")
+assert [(s["session"], s["state"]) for s in backends.get("claude").sessions()] == [("1111aaaa-2222", "interactive")]
+# an unknown id never recorded with a job: an ended interactive session, resumable in the background
+why = ui_view.verify_listed("claude", "2222bbbb-3333")
+assert "not listed" in why and "--bg --resume 2222bbbb-3333" in why, why
+# one recorded with a job is a background session that is gone: never a guess
+why = ui_view.verify_listed("claude", "2222bbbb-3333", "2222bbbb")
+assert "re-resolve, never guess" in why and "--bg --resume" not in why, why
+print("interactive claude seat ok")
 PY2
 # Claude Code updated while attached: the client's binary is gone, its reconnect fails; one fresh reattach follows
 python3 - "$SHOALD" "$S" <<'PY2' || fail "reattach after update"
