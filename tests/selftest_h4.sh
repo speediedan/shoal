@@ -324,6 +324,12 @@ grep -q -- "--lease cpu-heavy --" "$S/last_check.out" && ! grep -q -- "--cpu-hea
   && grep -q "export CUDA_VISIBLE_DEVICES=" "$S/last_check.out" && grep -q "export HIP_VISIBLE_DEVICES=" "$S/last_check.out" \
   || fail "CPU-only lease scope or device selectors wrong :: $(cat "$S/last_check.out")"
 check "scope=none" $PJ --name c2 --place homehost --needs cpu --repo "$PL/poolrepo" --dry-run -- true
+grep -q "stage on homehost" "$S/last_check.out" && fail "home staged without --ref :: $(cat "$S/last_check.out")"
+grep -q "WorkingDirectory=$PL/poolrepo " "$S/last_check.out" || fail "home without --ref runs in the checkout"
+# with --ref, home runs the named commit exactly as another host would: a mirror worktree under worktree_root
+check "\[dry-run\] stage on homehost: .*worktree add -q --detach $PL/home-wt/shoal-pooltest-pl-h0 $PSHA" \
+  $PJ --name h0 --place homehost --needs cpu --repo "$PL/poolrepo" --ref "$PSHA" --dry-run -- true
+grep -q "WorkingDirectory=$PL/home-wt/shoal-pooltest-pl-h0 " "$S/last_check.out" || fail "home --ref cwd :: $(cat "$S/last_check.out")"
 # a CI environment only the far host has; an unpushed or dirty tree stays home
 check "homehost .*ineligible: env cpuenv missing" $PJ --name e1 --place auto --ci-env cpuenv --repo "$PL/poolrepo" --dry-run -- true
 grep -q "PLACEMENT shoal-pooltest-pl-e1: farhost" "$S/last_check.out" || fail "env placement :: $(cat "$S/last_check.out")"
@@ -382,6 +388,14 @@ assert h[-1]["unit"] == "shoal-pooltest-pl-r1" and h[-1]["host"] == "farhost" an
 PY
   grep -q '"kind": "placed"' "$PL/home-data/pooltest/telemetry/"events-*.jsonl || fail "no placed telemetry event"
   check "lease_granted=20" $PENV $H job status --shoal pooltest
+  # home with --ref runs that commit, not whatever the live checkout has moved on to
+  ( cd "$PL/poolrepo" && git commit -q --allow-empty -m local-wip )
+  check "JOB-PLACED shoal-pooltest-pl-h1 on homehost" $PJ --name h1 --place homehost --needs cpu --repo "$PL/poolrepo" \
+    --ref "$PSHA" -- bash -c 'git rev-parse HEAD > "$SHOAL_JOB_OUT/head.txt"'
+  check "result=success exit=0" $PENV $H job wait --shoal pooltest --slug pl --name h1 --poll 1
+  grep -qx "$PSHA" "$PL/home-data/pooltest/jobs/shoal-pooltest-pl-h1.out/head.txt" || fail "home --ref ran another commit"
+  [ ! -e "$PL/home-wt/shoal-pooltest-pl-h1" ] || fail "home staged worktree kept after success"
+  git -C "$PL/poolrepo" reset -q --hard "$PSHA"
   # a queued job moves when another host would start it sooner (features.placement on), and its waiter follows it
   mkdir -p "$PL/spec/pooltest"
   echo '{"shoal":"pooltest","roles":[],"features":{"placement":{"interval_s":1,"staging_s":5,"margin_s":30}}}' > "$PL/spec/pooltest/shoal.json"

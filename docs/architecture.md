@@ -321,7 +321,10 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   (180 s) of the best. The objective is the sum of predicted waits, plus staging per transfer.
 - **Execution.** Off home, the target fetches the repository's origin into a mirror under its
   `worktree_root` and adds a detached worktree at the SHA; a SHA the remote does not have is refused
-  (source is never copied). The command runs as an ordinary job unit (`--on` for another host) inside
+  (source is never copied). On home the job is staged the same way when it named its commit with
+  `--ref`, so it tests the same commit wherever it lands; without `--ref` it runs in the `--cwd` or
+  `--repo` checkout as it is. A successful run's staged worktree is removed at the verdict; a failed
+  one's is kept for inspection. The command runs as an ordinary job unit (`--on` for another host) inside
   `<lease helper> <scope> --`: `--lease cpu-heavy` for CPU work that asked for it (a bare `--cpu-heavy`
   would also take every GPU), `--gpus 1 [--min-vram G]` or `--gpus all` for GPU work, with
   `GPU_LEASE_PROJECT=<unit>` so the job's waiter and hold are recognizable. Inside the lease, before

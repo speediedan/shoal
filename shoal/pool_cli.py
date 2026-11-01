@@ -472,9 +472,34 @@ def wrap(cmd: list[str], dem: dict, lease_cmd: str, marker: str, claim: str, out
     return inner + list(cmd), scope
 
 
+def _stage(host: str, remote: bool, script: str, req: dict, dry_run: bool) -> bool:
+    """Run the staging script on `host` (over ssh, or here for home); False after printing why not."""
+    import jobs
+    if dry_run:
+        print(f"[dry-run] stage on {host}: {script}")
+        return True
+    try:
+        r = (jobs._ssh(host, script, timeout=STAGE_TIMEOUT_S) if remote else
+             subprocess.run(["/bin/bash", "-c", script], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            timeout=STAGE_TIMEOUT_S, env=config.tool_env()))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"ERROR: staging on {host} failed: {exc}")
+        return False
+    if r.returncode == 9:
+        print(f"JOB-REFUSED: {req['sha'][:12]} is not on {req['url']} as seen from {host} "
+              f"(a pushed SHA is required; source is never copied)")
+        return False
+    if r.returncode != 0:
+        print(f"ERROR: staging on {host} failed rc={r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
+        return False
+    return True
+
+
 def launch(req: dict, target: dict, unit: str, p: dict, home: str, dry_run: bool = False) -> tuple[int, dict]:
-    """Stage (on a host other than home), wrap and start the job unit on `target` through the plain job
-    machinery (`_run_remote` / `_run_local`). Returns (rc, info)."""
+    """Stage, wrap and start the job unit on `target` through the plain job machinery (`_run_remote` /
+    `_run_local`). Another host always runs a staged worktree at the SHA; home does too when the job
+    named its commit (`req["stage_home"]`, from `--ref`), and otherwise runs in the checkout as it is.
+    Returns (rc, info)."""
     import jobs
     dem = req["demand"]
     remote = target["name"] != home
@@ -485,28 +510,19 @@ def launch(req: dict, target: dict, unit: str, p: dict, home: str, dry_run: bool
             print(f"ERROR: ssh to {target['name']} failed (no home directory answer)")
             return 2, info
         rp = jobs.remote_paths(unit, hdir)
-        root = target["worktree_root"].rstrip("/")
+        marker, claim, out = rp["granted"], rp["claim"], rp["out"]
+    else:
+        marker, claim, out = p["granted"], p["claim"], p["out"]
+    if remote or req.get("stage_home"):
+        root = (target["worktree_root"] or (config.worktree_root() if not remote else "")).rstrip("/")
         wt = f"{root}/{unit}"
-        script = stage_script(req["url"], req["sha"], root, req["repo"], wt)
-        if dry_run:
-            print(f"[dry-run] stage on {target['name']}: {script}")
-        else:
-            try:
-                r = jobs._ssh(target["name"], script, timeout=STAGE_TIMEOUT_S)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                print(f"ERROR: staging on {target['name']} failed: {exc}")
-                return 2, info
-            if r.returncode == 9:
-                print(f"JOB-REFUSED: {req['sha'][:12]} is not on {req['url']} as seen from {target['name']} "
-                      f"(a pushed SHA is required; source is never copied)")
-                return 2, info
-            if r.returncode != 0:
-                print(f"ERROR: staging on {target['name']} failed rc={r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
-                return 2, info
-        cwd, marker, claim, out = wt, rp["granted"], rp["claim"], rp["out"]
+        if not _stage(target["name"], remote, stage_script(req["url"], req["sha"], root, req["repo"], wt), req,
+                      dry_run):
+            return 2, info
+        cwd = wt
         info.update(worktree=wt, mirror=mirror_path(root, req["repo"]))
     else:
-        cwd, marker, claim, out = req["cwd"], p["granted"], p["claim"], p["out"]
+        cwd = req["cwd"]
     envd = (target.get("envs") or {}).get(req.get("ci_env") or "") or {}
     only = None
     if int(dem.get("gpus") or 0) == 1 and target.get("reserved_devices") and dem.get("job_class") != "research":
@@ -613,7 +629,8 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
     req = {"sid": a.sid, "slug": a.slug, "name": a.name, "cmd": list(cmd), "env": list(a.env or []),
            "memory_high": a.memory_high, "memory_max": a.memory_max,
            "cwd": os.path.abspath(a.cwd or src["path"] or os.getcwd()), "repo_path": src["path"], "url": src["url"],
-           "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": a.job_class}
+           "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": a.job_class,
+           "stage_home": bool(a.ref and src["url"])}
     rc, info = launch(req, target, unit, p, home, a.dry_run)
     if rc != 0 or a.dry_run:
         return rc
@@ -628,7 +645,7 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
         "claim": info["claim"], "out": info["out"], "worktree": info["worktree"], "mirror": info.get("mirror", ""),
         "decision": decision,
         "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
-                                         "repo", "ci_env", "class")}})
+                                         "repo", "ci_env", "class", "stage_home")}})
     save_meta(a.sid, unit, meta)
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {res['host']} ({res['reason']}) scope={info['scope']}",
                {"placement": decision})
@@ -672,7 +689,7 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
            "memory_high": a.memory_high, "memory_max": a.memory_max,
            "cwd": os.path.abspath(a.cwd or src["path"] or os.getcwd()), "repo_path": src["path"], "url": src["url"],
            "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": "research",
-           "reservation": res}
+           "reservation": res, "stage_home": bool(a.ref and src["url"])}
     rc, info = launch(req, target, unit, p, home, a.dry_run)
     if rc != 0 or a.dry_run:
         return rc
@@ -687,7 +704,7 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
         "max_moves": 0, "reservation": res["id"], "marker": info["marker"], "claim": info["claim"],
         "out": info["out"], "worktree": info["worktree"], "mirror": info.get("mirror", ""), "decision": decision,
         "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
-                                         "repo", "ci_env", "class")}})
+                                         "repo", "ci_env", "class", "stage_home")}})
     save_meta(a.sid, unit, meta)
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {target['name']} ({reason})", {"placement": decision})
     print(f"JOB-PLACED {unit} on {target['name']} ({reason})")
@@ -905,12 +922,15 @@ def on_verdict(a, unit: str, meta: dict, rc, granted: str, end_ts) -> None:
     if meta.get("host"):
         local_out = jobs.paths(a.sid, unit)["out"]
         print(f"--- {copy_back(meta['host'], pl.get('out') or jobs.remote_paths(unit)['out'], local_out)}")
-        if rc == 0 and pl.get("worktree") and pl.get("mirror"):
-            try:  # a failed run keeps its worktree for inspection
-                jobs._ssh(meta["host"], f"git -C {shlex.quote(pl['mirror'])} worktree remove --force "
-                          f"{shlex.quote(pl['worktree'])}", timeout=60)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+    if rc == 0 and pl.get("worktree") and pl.get("mirror"):
+        rm = f"git -C {shlex.quote(pl['mirror'])} worktree remove --force {shlex.quote(pl['worktree'])}"
+        try:  # a failed run keeps its worktree for inspection
+            if meta.get("host"):
+                jobs._ssh(meta["host"], rm, timeout=60)
+            else:
+                subprocess.run(["/bin/bash", "-c", rm], capture_output=True, timeout=60, env=config.tool_env())
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     if rc is not None:
         record_history(meta, rc, end_ts)
     save_meta(a.sid, unit, meta)
