@@ -77,6 +77,14 @@ class Backend:
         after its advise step and a reset by hand stays possible."""
         raise UnsupportedError(f"{self.ecosystem}: no reset yet (a new session from the start doc, by hand)")
 
+    def prune(self, session: str, job: str = "", mode: str = "purge", dry_run: bool = False) -> str:
+        """Remove an OLD incarnation from the harness's own session listing, so retired sessions stop piling up there
+        (docs/handover.md, "Pruning old incarnations"). `mode` is `purge` (remove) or `archive` (hide, recoverable);
+        each harness maps it onto what it has. This is the primitive only: which sessions are safe to prune (never a
+        current, parked, registered, live or locked one) is decided by `prune.py`, which is the only caller. Returns
+        what was done; raises UnsupportedError for a harness with no way to do it."""
+        raise UnsupportedError(f"{self.ecosystem}: no prune")
+
     def send(self, session_id: str, repo_dir: str, prompt: str,
              dry_run: bool = False, model: str = "") -> None:
         raise NotImplementedError
@@ -149,6 +157,104 @@ def opencode_server() -> tuple[str, str]:
     return cands[0] if cands else ("", "")
 
 
+def openchamber_instance() -> tuple[str, str]:
+    """(base URL, UI password) of the running OpenChamber web server, from the instance file it writes for its own
+    CLI (`<data dir>/run/openchamber-<port>.json`; data dir `$OPENCHAMBER_DATA_DIR`, else the host config's
+    `[tool_env]` value, else ~/.config/openchamber), or ("", "") when none runs. Loopback only: the file's host is the
+    bind address."""
+    import glob
+    import json as _json
+    base = (os.environ.get("OPENCHAMBER_DATA_DIR", "").strip() or config.tool_env_extra().get("OPENCHAMBER_DATA_DIR")
+            or os.path.expanduser("~/.config/openchamber"))
+    for f in sorted(glob.glob(os.path.join(base, "run", "openchamber-*.json"))):
+        try:
+            d = _json.load(open(f))
+            port = int(d.get("port") or 0)
+            pid = int(open(f[:-5] + ".pid").read().strip() or 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        if port and pid and os.path.exists(f"/proc/{pid}"):
+            return f"http://127.0.0.1:{port}", str(d.get("uiPassword") or "")
+    return "", ""
+
+
+_OC_COOKIE: dict[str, str] = {}
+
+
+def openchamber_api(method: str, path: str, body: dict | None = None, directory: str = "",
+                    timeout: float = 30) -> tuple[int, object]:
+    """One request to the OpenChamber web server's HTTP API: (status, parsed JSON body or None). Session archive is
+    OpenChamber's own (`POST /api/openchamber/sessions/archive`: opencode 2 carries `time.archived` but has no route
+    that sets it); everything under `/api/` else is opencode's own API, proxied (`DELETE /api/session/<id>`). Never
+    the opencode CLI: that starts a second server on the live store. A UI password is answered as its own CLI does
+    (`POST /auth/session`, then the session cookie). SHOAL_FAKE_OPENCHAMBER_API=<file> (tests) appends each write
+    request to the file as one JSON line and answers it as the server would; a GET is answered from `<file>.get.json`
+    ({path without query: body}) and not logged."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    fake = config.env("FAKE_OPENCHAMBER_API")
+    if fake:
+        if method == "GET":
+            try:
+                answers = _json.load(open(fake + ".get.json"))
+            except (OSError, ValueError):
+                answers = {}
+            return 200, answers.get(path.split("?", 1)[0], {"data": []})
+        with open(fake, "a") as fh:
+            fh.write(_json.dumps({"method": method, "path": path, "body": body, "directory": directory}) + "\n")
+        if path.endswith("/sessions/archive"):
+            return 200, {"archived": [{"id": i} for i in (body or {}).get("ids", [])], "failedIds": []}
+        return 204, None
+    url, pw = openchamber_instance()
+    if not url:
+        raise UnsupportedError("no OpenChamber server is running (no live instance file under its run directory)")
+
+    def call(cookie: str) -> tuple[int, object]:
+        hdr = {"Accept": "application/json"}
+        data = None
+        if body is not None:
+            data = _json.dumps(body).encode()
+            hdr["Content-Type"] = "application/json"
+        if directory:
+            hdr["x-opencode-directory"] = directory
+        if cookie:
+            hdr["Cookie"] = cookie
+        req = urllib.request.Request(url + path, data=data, method=method, headers=hdr)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw, code = r.read(), r.status
+        except urllib.error.HTTPError as exc:
+            raw, code = exc.read(), exc.code
+        try:
+            parsed = _json.loads(raw) if raw else None
+        except ValueError:
+            parsed = None
+        return code, parsed
+
+    code, parsed = call(_OC_COOKIE.get(url, ""))
+    if code == 401 and pw:
+        lc, _, sc = _login(url, pw, timeout)
+        m = re.search(r"(oc_ui_session(?:_\d+)?=[^;]+)", sc)
+        if lc < 300 and m:
+            _OC_COOKIE[url] = m.group(1)
+            code, parsed = call(m.group(1))
+    return code, parsed
+
+
+def _login(url: str, pw: str, timeout: float) -> tuple[int, object, str]:
+    import json as _json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url + "/auth/session", data=_json.dumps({"password": pw}).encode(), method="POST",
+                                 headers={"Accept": "application/json", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, None, ";".join(r.headers.get_all("Set-Cookie") or [])
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, ""
+
+
 def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(list(argv), capture_output=True, text=True,
                           timeout=timeout, env=_ENV)
@@ -176,6 +282,24 @@ class OpenChamberBackend(Backend):
             return "opencode-send"
         except Exception as exc:  # noqa: BLE001
             return f"opencode-send FAILED ({str(exc)[:80]})"
+
+    def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False,
+              directory: str = "") -> str:
+        """opencode: `archive` sets OpenChamber's archive flag (the session leaves every listing and can be restored
+        from OpenChamber's archive view); `purge` deletes the session through opencode's own API, proxied by
+        OpenChamber. Both go through the OpenChamber server (openchamber_api), never the opencode CLI."""
+        if dry_run:
+            return f"would {'delete' if mode == 'purge' else 'archive'} opencode session {session}"
+        if mode == "purge":
+            code, body = openchamber_api("DELETE", f"/api/session/{session}", directory=directory)
+            if code >= 300 and code != 404:
+                raise RuntimeError(f"delete {session}: HTTP {code} {str(body)[:120]}")
+            return f"deleted opencode session {session}" + (" (already gone)" if code == 404 else "")
+        code, body = openchamber_api("POST", "/api/openchamber/sessions/archive", {"ids": [session]})
+        failed = (body or {}).get("failedIds") if isinstance(body, dict) else None
+        if code >= 300 or failed:
+            raise RuntimeError(f"archive {session}: HTTP {code} {str(body)[:120]}")
+        return f"archived opencode session {session}"
 
     def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         """The stock opencode TUI as a CLIENT of OpenChamber's running server (`--server URL
@@ -297,9 +421,6 @@ class OpenChamberBackend(Backend):
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-REVIVED_NOTE = ("Your session was respawned: its worker process had died (the Claude background service "
-                "restarted or retired it), so every background command it ran, your ledger-watch included, "
-                "is gone. Run `next`, re-arm your watcher, then act on this wake: ")
 RESUMED_NOTE = ("Your session was resumed for this wake: its worker had been retired (idle) or had died, so "
                 "background commands it ran inside the session are gone. A detached ledger-watch survives that; "
                 "`next` says whether yours is armed. Act on this wake: ")
@@ -382,29 +503,22 @@ def claude_current(session: str, job: str = "") -> str:
 
 
 def direct_wake_mode(spec) -> str:
-    """features.health.direct_wake: 'off', 'dead' (resume a session with no worker: no relay turn) or
-    'idle' (also stop and resume a live session idle at its prompt with nothing in flight). Default
-    'dead' when health.revive is on, else 'off'."""
+    """features.health.direct_wake: how far a direct Claude wake may go. 'idle' (the default): resume a
+    session with no worker, and stop then resume a live session idle at its prompt with nothing in
+    flight. 'dead': resume a session with no worker only; a live worker is never stopped, so its wake
+    waits until it can go. Direct wake is always on: any other value (including the retired relay-era
+    'off') reads as 'idle'."""
     h = (getattr(spec, "features", {}) or {}).get("health")
     h = h if isinstance(h, dict) else {}
-    m = str(h.get("direct_wake", "dead" if h.get("revive") else "off")).lower()
-    return m if m in ("off", "dead", "idle") else "off"
-
-
-def relay_fallback(spec) -> bool:
-    """features.health.relay_fallback: whether a wake that cannot be delivered directly goes to the wake
-    relay (two turns) or waits for a direct chance (the session wakes itself when its in-flight work
-    ends). Default: on, except in direct_wake 'idle' mode, where the relay is left for nothing."""
-    h = (getattr(spec, "features", {}) or {}).get("health")
-    h = h if isinstance(h, dict) else {}
-    return bool(h.get("relay_fallback", direct_wake_mode(spec) != "idle"))
+    m = str(h.get("direct_wake", "idle")).lower()
+    return m if m in ("dead", "idle") else "idle"
 
 
 def detached(argv: list[str]) -> list[str]:
     """argv run so that a Claude background daemon it may start outlives the caller's systemd unit.
     Under a systemd service (INVOCATION_ID set, e.g. a health timer), `claude` starts its daemon on
     demand inside the unit's cgroup, and KillMode=control-group kills it when the oneshot ends, with
-    every session it spawned (measured 2026-10-12 after a reboot: a relay relaunched by the quorum died
+    every session it spawned (measured 2026-10-12 after a reboot: a session relaunched by the quorum died
     4 s later). `systemd-run --user --scope` gives the call its own scope, which keeps the caller's
     environment, cwd and pipes."""
     sr = shutil.which("systemd-run")
@@ -446,6 +560,61 @@ def parse_bg_id(text: str) -> "re.Match[str] | None":
     return m if m else None
 
 
+def claude_base() -> str:
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
+def _state_of(job: str) -> dict:
+    """A Claude job's own record (~/.claude/jobs/<job>/state.json), {} when unreadable."""
+    if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job):
+        return {}
+    try:
+        import json as _json
+        d = _json.load(open(os.path.join(claude_base(), "jobs", job, "state.json")))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def tombstone_dir(job: str) -> str:
+    """Where a pruned job's record is kept: ~/.claude/archived_sessions/jobs/<job>/ (the host's convention for jobs
+    removed by hand), so its name stays resolvable after `claude rm`."""
+    return os.path.join(claude_base(), "archived_sessions", "jobs", job)
+
+
+def tombstone(job: str, row: dict | None = None) -> str:
+    """Write the tombstone of a Claude job before it is removed: copies of state.json and timeline.jsonl (never tmp/,
+    which is what the removal frees) and an ARCHIVE_INFO.txt naming the job, its conversation and transcript. Raises
+    when it cannot be written: no tombstone, no removal."""
+    import glob
+    src = os.path.join(claude_base(), "jobs", job)
+    dst = tombstone_dir(job)
+    os.makedirs(dst, exist_ok=True)
+    for f in ("state.json", "timeline.jsonl"):
+        if os.path.isfile(os.path.join(src, f)):
+            shutil.copy2(os.path.join(src, f), os.path.join(dst, f))
+    st = _state_of(job)
+    row = row or {}
+    conv = str(row.get("sessionId") or st.get("sessionId") or "")
+    orig = str(st.get("sessionId") or "")
+    hits = glob.glob(os.path.join(claude_base(), "projects", "*", f"{conv}.jsonl")) if conv else []
+    lines = [f"name: {row.get('name') or st.get('name') or ''}", f"job_id: {job}", f"session_id: {conv}"]
+    if orig and orig != conv:
+        lines.append(f"original_session_id: {orig}")
+    lines += [f"state_at_archive: {row.get('state') or st.get('state') or ''}",
+              f"cwd: {row.get('cwd') or st.get('cwd') or ''}",
+              f"archived_at: {datetime.datetime.now().astimezone().isoformat(timespec='seconds')}",
+              f"transcript: {hits[0] if hits else '(not found)'}",
+              "archived_by: shoal prune-incarnations", "",
+              "This directory holds the job record that 'claude rm' deleted (state.json and timeline.jsonl;",
+              "the job's tmp/ was not kept). The conversation transcript listed above was left in place:",
+              "it is the readable history and it keeps the session resumable with",
+              f"  claude --resume {conv}", ""]
+    with open(os.path.join(dst, "ARCHIVE_INFO.txt"), "w") as fh:
+        fh.write("\n".join(lines))
+    return dst
+
+
 class ClaudeBackend(Backend):
     """Native `claude` binary. Launched headless via `claude --bg`.
 
@@ -459,69 +628,33 @@ class ClaudeBackend(Backend):
     headless sends would silently fork consumers. Coordinator→consumer
     traffic travels ONLY in the queue file — that is the channel, and the
     reason sends are refused rather than approximated. The health quorum's
-    Claude wake adapter is therefore not here: it is a wake-request file the
-    role's own ledger-watch delivers, else the wake relay session's
-    cross-session message (`wake` below; architecture doc §7). The
-    relay is launched by create() like every lane, so it shares their
-    permission mode, which cross-session delivery requires.
+    Claude wake adapter is therefore not a send: it is a wake-request file the
+    role's own ledger-watch delivers, else a direct wake that resumes the
+    session (`wake` and `deliver` below; architecture doc §7).
     """
     ecosystem = "claude"
 
     def sessions(self) -> list[dict]:
         return [{"session": str(e["sessionId"]), "job": str(e.get("id") or ""),
                  "label": str(e.get("name") or e["sessionId"][:8])[:40],
-                 "state": e.get("state"), "cwd": e.get("cwd")}
+                 "state": e.get("state") or e.get("kind"), "cwd": e.get("cwd")}
                 for e in self._agents() if e.get("sessionId") and e.get("pid")]
 
     def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
         """Claude: a headless send would fork the session, so a wake goes through the role's own
-        ledger-watch (a wake-request file it delivers by exiting) while that watcher is alive,
-        else through the wake relay: a small Claude session whose single waiter drains a queue
-        and delivers each wake as a cross-session message."""
+        ledger-watch (a wake-request file it delivers by exiting, or directly when detached) while that
+        watcher is alive, else directly from here (`deliver`)."""
         import json as _json
         import os as _os
-        from health import health_cfg, iso, relay_alive, relay_queue_path, state_dir, wake_path, watcher_alive
-        from roles import wake_relay_role
-        # features.health.revive: a session whose worker process is gone (the background service
-        # restarted under it, or retired it idle) is respawned before it is woken. Its background
-        # commands died with it, so an orphaned ledger-watch cannot deliver: the wake goes by relay.
-        revive = bool(health_cfg(spec).get("revive"))
-        revived = ""
+        from health import iso, state_dir, wake_path, watcher_alive
         alive, _ = watcher_alive(spec.sid, role.slug)
-        if direct_wake_mode(spec) != "off":
-            # a live detached watcher delivers the wake file itself (directly, by resume), so a retired
-            # worker needs nothing here; without one the quorum delivers it now
-            if alive:
-                if not dry_run:
-                    _os.makedirs(state_dir(spec.sid), exist_ok=True)
-                    with open(wake_path(spec.sid, role.slug), "a") as fh:
-                        fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
-                return "wake-file" + (" (dry-run)" if dry_run else "")
-            return self.deliver(spec, role, role.session, text, dry_run)
-        if revive and role.session and self.session_dead(role.session):
-            revived = f"; respawned {role.session[:8]} ({self.respawn(role.session, dry_run)})"
-            text = REVIVED_NOTE + text
-        if alive and not revived:
+        if alive:
             if not dry_run:
                 _os.makedirs(state_dir(spec.sid), exist_ok=True)
                 with open(wake_path(spec.sid, role.slug), "a") as fh:
                     fh.write(_json.dumps({"ts": iso(), "condition": condition, "text": text}) + "\n")
             return "wake-file" + (" (dry-run)" if dry_run else "")
-        if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
-            return "no-adapter (claude watcher dead, wake relay disabled)" + revived
-        pending = ""
-        if not relay_alive(spec.sid):
-            if not revive:
-                return "no-adapter (claude watcher dead, wake relay waiter dead)"
-            # the quorum relaunches a dead relay (relay-dead), and relay-watch resumes from its
-            # cursor, so a wake queued now is delivered once the relay is back; if it never comes
-            # back, this condition's own page step still fires
-            pending = " (queued; relay down, relaunch pending)"
-        if not dry_run:
-            with open(relay_queue_path(spec.sid), "a") as fh:
-                fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": role.session,
-                                      "condition": condition, "text": text}) + "\n")
-        return "wake-relay" + pending + (" (dry-run)" if dry_run else "") + revived
+        return self.deliver(spec, role, role.session, text, dry_run)
 
     def deliver(self, spec, role, session: str, text: str, dry_run: bool = False) -> str:
         """Deliver one wake to a Claude session with no turn but the target's own, where it allows that
@@ -531,9 +664,8 @@ class ClaudeBackend(Backend):
           prompt (verified 2026-10-20: same id, saved options, prompt cache mostly kept);
         - `stop+resume` (mode `idle`): a live worker idle at its prompt with nothing in flight is
           stopped and resumed the same way;
-        - `deferred (...)`: busy, at a question, or work in flight; the caller retries later (a session
-          with work in flight wakes itself when that work ends). With relay_fallback the wake relay
-          takes these instead (`wake-relay`);
+        - `deferred (...)`: busy, at a question, work in flight, or a live worker under mode `dead`; the
+          caller retries later (a session with work in flight wakes itself when that work ends);
         - `FAILED ...`: the resume did not take; the caller retries."""
         import time as _time
         from health import claude_job_state, claude_liveness, claude_prompt_open
@@ -541,8 +673,8 @@ class ClaudeBackend(Backend):
         row = self._row(session, include_stopped=True) if session else None
         full = str((row or {}).get("sessionId") or session)
         why = ""
-        if mode == "off" or row is None:
-            why = "direct wake off" if mode == "off" else "session not listed"
+        if row is None:
+            why = "session not listed"
         elif not row.get("pid"):
             return self._resume(row, full, RESUMED_NOTE + text, dry_run)
         else:
@@ -568,8 +700,6 @@ class ClaudeBackend(Backend):
                     _time.sleep(0.5)
                 _time.sleep(RESUME_SETTLE_S)
                 return "stop+" + self._resume(row, full, text, dry_run)
-        if relay_fallback(spec):
-            return self._relay(spec, role, session, text, dry_run) + f" ({why})"
         return f"deferred ({why})"
 
     def _resume(self, row: dict, session: str, text: str, dry_run: bool = False) -> str:
@@ -591,19 +721,6 @@ class ClaudeBackend(Backend):
         if r.returncode != 0:
             return f"FAILED rc={r.returncode}: {out.strip().splitlines()[-1][:120] if out.strip() else ''}"
         return "resume"
-
-    def _relay(self, spec, role, session: str, text: str, dry_run: bool = False) -> str:
-        import json as _json
-        from health import iso, relay_alive, relay_queue_path
-        from roles import wake_relay_role
-        if wake_relay_role(spec) is None or not (spec.features or {}).get("relay"):
-            return "no-adapter (wake relay disabled)"
-        pending = "" if relay_alive(spec.sid) else " (queued; relay down, relaunch pending)"
-        if not dry_run:
-            with open(relay_queue_path(spec.sid), "a") as fh:
-                fh.write(_json.dumps({"ts": iso(), "to": role.tag, "slug": role.slug, "session": session,
-                                      "condition": "wake", "text": text}) + "\n")
-        return "wake-relay" + pending + (" (dry-run)" if dry_run else "")
 
     def reset(self, session: str, prompt: str, label: str = "", cwd: str = "", dry_run: bool = False) -> dict:
         """Claude: a new job on the prompt, with the old job's saved options (name, model, effort from its state.json),
@@ -643,7 +760,9 @@ class ClaudeBackend(Backend):
         """Stop every job and verify that none comes back: the background service can respawn a stopped job's worker
         when another job on its conversation is removed (measured 2026-10-24: `claude rm` of the copy above restarted
         b193724a, and a later stop did not hold). A job seen live again is stopped once more; returns those still live.
-        Never `claude rm`: a stopped job is retired, and removing one is what woke the other."""
+        A reset never runs `claude rm`: a stopped job is retired, and removing one is what woke the other. Removal is
+        `prune` only, and only for a job no live or protected job shares a conversation with; `prune` runs this check
+        again on every job sharing the removed one's conversation."""
         import time as _time
         for j in jobs:
             self.stop(j)
@@ -659,6 +778,43 @@ class ClaudeBackend(Backend):
                     restopped.add(j)
         rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
         return [j for j in jobs if (rows.get(j) or {}).get("pid")]
+
+    def prune(self, session: str, job: str = "", mode: str = "purge", dry_run: bool = False) -> str:
+        """Claude has no archive, so either mode purges: a tombstone of the job's record first (`tombstone`), then
+        `claude rm <job>`, which deletes ~/.claude/jobs/<job>/ (its tmp/ can hold gigabytes) and never the transcript
+        under ~/.claude/projects/ (Claude Code expires that itself; `context-report` reads it). A job with a worker is
+        refused. Then every other job on the same conversation goes through the `retire` re-stop check, because a
+        removal has respawned a stopped job sharing its conversation (2026-10-24)."""
+        rows = self._agents(include_stopped=True)
+        row = claude_find(rows, session, job) or {}
+        jid = str(row.get("id") or job or session[:8])
+        if not re.fullmatch(r"[0-9a-f]{6,64}", jid):
+            raise RuntimeError(f"not a Claude job id: {jid!r}")
+        conv = str(row.get("sessionId") or session)
+        orig = str(row.get("originalSessionId") or claude_original(jid) or _state_of(jid).get("sessionId") or "")
+        sibs = [str(r.get("id")) for r in rows if str(r.get("id") or "") not in ("", jid) and (
+            _same(str(r.get("sessionId", "")), conv) or (orig and _same(str(r.get("sessionId", "")), orig))
+            or (orig and _same(str(r.get("originalSessionId") or _state_of(str(r.get("id")))
+                                   .get("sessionId") or ""), orig)))]
+        if dry_run:
+            return f"would tombstone and `claude rm` {jid}" + (f", then re-stop {', '.join(sibs)}" if sibs else "")
+        if row.get("pid"):
+            raise RuntimeError(f"job {jid} has a live worker (pid {row.get('pid')})")
+        stone = tombstone(jid, row)
+        b = tool_which("claude") or "claude"
+        r = subprocess.run([b, "rm", jid], capture_output=True, text=True, timeout=60, env=_ENV)
+        if r.returncode != 0:
+            out = ANSI_RE.sub("", r.stdout + r.stderr).strip()
+            raise RuntimeError(f"claude rm {jid} rc={r.returncode}: {out.splitlines()[-1][:120] if out else ''}")
+        did = f"purged job {jid} (tombstone {stone})"
+        if sibs:
+            try:
+                verify = float(config.env("PRUNE_VERIFY_S") or RETIRE_VERIFY_S)
+            except ValueError:
+                verify = RETIRE_VERIFY_S
+            live = self.retire(sibs, verify_s=verify)
+            did += f"; re-stopped {', '.join(sibs)}" + (f"; STILL LIVE: {', '.join(live)}" if live else "")
+        return did
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
@@ -754,6 +910,9 @@ class ClaudeBackend(Backend):
         # `claude attach` matches the job id (8 hex), not the session UUID a spec may record (restart
         # adopts the sidecar's full id): measured 2026-10-12, "No job matching '<uuid>'"
         e = self._row(session_id, include_stopped=True) or {}
+        if e.get("kind") == "interactive":
+            raise UnsupportedError(f"claude session {session_id} runs interactively in pid {e.get('pid')}: "
+                                   "`claude attach` opens background sessions only")
         job = str(e.get("id") or session_id.split("-", 1)[0][:8])
         return [tool_which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
 
@@ -866,6 +1025,16 @@ class CodexBackend(Backend):
         import codex_harness as codex
         return codex.view_argv(session_id, model, effort), {}
 
+    def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False) -> str:
+        """Codex: `archive` is `thread/archive` (a flag on the one stored rollout: nothing is copied, and
+        `codex unarchive` restores it); `purge` is `thread/delete`. Refused while a turn or a client holds it."""
+        import codex_harness as codex
+        if dry_run:
+            return f"would {'thread/delete' if mode == 'purge' else 'thread/archive'} {session}"
+        if codex.busy(session):
+            raise codex.BusyError(f"codex thread {session} is busy")
+        return codex.prune_thread(session, delete=mode == "purge")
+
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
         import codex_harness as codex
         return codex.quota_hint(session_id)
@@ -931,6 +1100,15 @@ class MuseBackend(Backend):
     def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         import muse
         return muse.view_argv(session_id, model, effort), {"MUSE_NO_AUTO_UPDATE": "1"}
+
+    def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False) -> str:
+        """Muse has no archive API: `archive` moves the session directory to `archived-sessions/` beside its store,
+        `purge` deletes it; shoal's own per-session state goes either way. Refused while `.session.lock` or shoal's
+        turn lock is held."""
+        import muse
+        if dry_run:
+            return f"would {'delete' if mode == 'purge' else 'move to archived-sessions'} muse session {session}"
+        return muse.prune_session(session, delete=mode == "purge")
 
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
         import muse

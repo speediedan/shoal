@@ -89,12 +89,13 @@ def _list(argv: list[str], env: dict, method: str, params: dict, timeout: float 
 
 
 def stored_sessions(harness: str) -> list[dict]:
-    """The 100 most recently updated root sessions; interactive Codex sources only."""
+    """The 100 most recently updated root sessions; for Codex, interactive threads and named headless ones."""
     if harness == "codex":
         import codex_harness as backend
         name, args, method = "codex", ["app-server", "--stdio"], "thread/list"
         binary = config.env("CODEX_BIN") or name
-        params = {"limit": 100, "sortKey": "updated_at"}
+        # omitted, sourceKinds means interactive sources only, which hides a seat `codex-new` made with `codex exec`
+        params = {"limit": 100, "sortKey": "updated_at", "sourceKinds": ["cli", "vscode", "exec", "appServer"]}
     else:
         import muse as backend
         name, args, method = "muse", ["serve"], "session/list"
@@ -116,6 +117,8 @@ def stored_sessions(harness: str) -> list[dict]:
             continue
         if row.get("kind") == "subagent":
             continue
+        if harness == "codex" and row.get("source") in ("exec", "appServer") and not row.get("name"):
+            continue  # an unnamed headless run (a role turn, a matcher); `codex-new` names its seat
         sid = row.get("id" if harness == "codex" else "sessionId")
         if not sid:
             continue

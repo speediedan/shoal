@@ -138,6 +138,25 @@ class SplashTests(unittest.TestCase):
         self.assertNotEqual(ui._FISH[0], ui._FISH[2])
         self.assertEqual({len(row) for f in ui._FISH for row in f}, {36})
 
+    def test_image_scale_doubles_where_the_window_has_room(self):
+        self.assertEqual(ui.min_size(2), (72, 23), "the art never raises the compact minimum")
+        for cols, lines, scale in ((72, 23, 1), (90, 30, 1.5), (92, 33, 1.5), (93, 32, 1.5),
+                                   (93, 33, 2), (120, 40, 2), (71, 23, 0), (72, 22, 0)):
+            self.assertEqual(ui.image_scale(cols, lines, 2), scale, (cols, lines))
+        base = [(w, h) for _, _, w, h in ui.image_rectangles(72, 23, 2)]
+        self.assertEqual(base, [(8, 4), (12, 6), (12, 6), (6, 4), (8, 4)])
+        rows = [("local", "here", False), ("remote", "other.invalid", False)]
+        for cols, lines in ((93, 33), (120, 40), (160, 50)):
+            rects = ui.image_rectangles(cols, lines, 2)
+            self.assertEqual([(w, h) for _, _, w, h in rects], [(2 * w, 2 * h) for w, h in base])
+            page = ui.dashboard(rows, 1, cols=cols, lines=lines, color=False, art="images").split("\n")
+            for i, (x, y, w, h) in enumerate(rects):
+                self.assertTrue(0 <= x < x + w <= cols and 0 <= y < y + h <= lines, (cols, lines, rects[i]))
+                for xx, yy, ww, hh in rects[:i]:
+                    self.assertTrue(x + w <= xx or xx + ww <= x or y + h <= yy or yy + hh <= y, (rects[i], (xx, yy)))
+                for row in page[y:y + h]:  # the composition leaves the cells under each creature blank
+                    self.assertEqual(row.ljust(cols)[x:x + w].strip(), "", (cols, lines, rects[i]))
+
     def test_positive_probe_pty_typing_resize_and_cleanup(self):
         master, slave = pty.openpty()
         attrs = termios.tcgetattr(slave)

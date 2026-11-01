@@ -266,12 +266,12 @@ def cmd_msg(a) -> int:
     target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") and not to_ext else None
     if a.to == "*" and getattr(a, "wake", False) and by == "user" and spec is not None:
         # broadcast: every role's watcher delivers a user --wake msg; a role whose watcher is dead gets it
-        # through the quorum's adapter instead (the relay, or a respawn first under health.revive)
+        # through the quorum's adapter instead (a direct wake)
         from health import request_wake, watcher_alive
-        from roles import is_local, is_wake_relay
+        from roles import is_local
         for r in spec.roles:
             # a remote role's watcher runs on its own host: its sidecar is not here to check
-            if r.session and not is_wake_relay(r) and is_local(r, spec) and not watcher_alive(spec.sid, r.slug)[0]:
+            if r.session and is_local(r, spec) and not watcher_alive(spec.sid, r.slug)[0]:
                 print(f"wake via {request_wake(spec, r.slug, 'user message ' + ev['id'] + ': ' + a.text, 'user-msg')} "
                       f"({r.slug}'s ledger-watch is not running)")
     if target is not None and getattr(a, "wake", False) and by == "user" and target.session:

@@ -29,7 +29,10 @@ shoal_test_setup() {
   # an operator often runs the suites (or `shoal upgrade`) from inside a terminal multiplexer pane:
   # nothing may reach the live herdr socket or another ledger clone from a selftest
   for v in $(env | sed -n 's/^\(HERDR_[A-Za-z0-9_]*\|ZELLIJ[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
-  for v in UI_LEDGER_ROOTS HERDR_SESSION HERDR_BIN FAKE_OPENCODE_SERVER; do unset "SHOAL_$v"; done
+  for v in UI_LEDGER_ROOTS HERDR_SESSION HERDR_BIN FAKE_OPENCODE_SERVER FAKE_OPENCHAMBER_API PRUNE_VERIFY_S; do unset "SHOAL_$v"; done
+  # nothing may reach the live OpenChamber server (its HTTP API archives and deletes sessions): its instance files
+  # are looked up under this data dir, which holds none
+  export OPENCHAMBER_DATA_DIR="$s/no-openchamber"
   mkdir -p "$s/data"
   printf 'data_root = "%s"\nledger_dir = "%s"\n' "$s/data" "$s/no-ledger-clone" > "$s/host.toml"
   export SHOAL_CONFIG="$s/host.toml"

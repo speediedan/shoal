@@ -63,6 +63,7 @@ TYPES = {
     "generation": ["event", "gen"],   # started | ended | retired (spec lifecycle)
     "reconcile": ["new_events"],      # nightly ground-truth marker
     "handover": ["slug", "phase"],    # advised | doc-refreshed | restart | first-turn (context.py)
+    "pruned": ["harness", "mode", "name"],  # one old incarnation removed from a harness listing (prune.py)
     # ledger bridge (ledger.as_telemetry): one type per ledger verb; `state`
     # arrives as session_transition with via=ledger
     "ledger_offer": ["to", "item"],

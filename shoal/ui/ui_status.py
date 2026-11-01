@@ -31,7 +31,7 @@ for _p in (PKG, HERE):
 
 import config  # noqa: E402
 from layout import GROUPS_DIR, SPEC_FILE  # noqa: E402
-from roles import ShoalSpec, is_wake_relay, state_dir  # noqa: E402
+from roles import ShoalSpec, state_dir  # noqa: E402
 
 CONTRACT_V = 1
 CONDITIONS_TTL_S = 300
@@ -253,9 +253,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     if not role.session:
         reasons.append("parked")
     else:
-        if sess == "dead" and alive and role.ecosystem == "claude" and _h.direct_wake_mode(spec) != "off":
+        if sess == "dead" and alive and role.ecosystem == "claude":
             # retired by the background service while idle; its detached watcher resumes it on work
-            # (features.health.direct_wake), so nothing is stuck and nothing is due from the maintainer
+            # (direct wake), so nothing is stuck and nothing is due from the maintainer
             reasons.append("dormant")
         elif sess == "dead":
             reasons.append("dead-worker")
@@ -270,7 +270,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             reasons.append("blocked-says-waiting")
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
         # turn's end, and a dead worker is reported as dead-worker instead
-        if not remote and not is_wake_relay(role) and sess != "dead" and \
+        if not remote and sess != "dead" and \
                 _h.watcher_dead(alive, hposture, BETWEEN.get(sess)):
             reasons.append("watcher-dead")
         for x in q.get("next") or []:
@@ -302,10 +302,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
         "model": role.model, "fill": role.fill,
-        "server": role.server or "", "host": _host_of(role, spec), "aux": bool(role.aux), "relay": is_wake_relay(role),
-        # the relay-watch process runs where the relay role does; only that host can say, so a remote row
-        # gets it from its own host's pull (routes.LIVE_FIELDS)
-        "relay_alive": _relay_alive(spec, role),
+        "server": role.server or "", "host": _host_of(role, spec), "aux": bool(role.aux),
         "session_id": role.session or None,
         "posture": posture if role.session else "parked", "sub": sub or None,
         "posture_age_s": age_s(boundary, now) if boundary else None,
@@ -403,10 +400,6 @@ def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
     out = {"source": "health-dry-run", "ts": iso(), "age_s": 0,
            "open": [{"slug": c["slug"], "condition": c["condition"], "since": c.get("since"),
                      "detail": _short(c.get("detail"), 200)} for c in inst]}
-    from roles import is_local
-    if any(is_wake_relay(r) and r.session and is_local(r, spec) for r in spec.roles) and not _h.relay_alive(spec.sid):
-        out["open"].append({"slug": "wake-relay", "condition": "relay-dead", "since": None,
-                            "detail": "relay-watch not running"})
     try:
         os.makedirs(cache_dir, exist_ok=True)
         tmp = path + f".{os.getpid()}.tmp"
@@ -416,30 +409,6 @@ def _compute_conditions(spec: ShoalSpec, view, cache_dir: str) -> dict:
     except OSError:
         pass
     return out
-
-
-def _relay_alive(spec, role):
-    """Whether the wake relay's watch process runs: probed here for a relay role on this host, None for any
-    other role and for a relay role whose host has to say (merge_remote fills it in)."""
-    if not is_wake_relay(role):
-        return None
-    from roles import is_local
-    import health as _h
-    return _h.relay_alive(spec.sid) if is_local(role, spec) else None
-
-
-def relay_word(relay: dict) -> str:
-    """ok / DEAD / ? (not readable from this host)."""
-    return {True: "ok", False: "DEAD"}.get(relay.get("alive"), "?")
-
-
-def relay_doc(roles: list[dict]):
-    """The shoal's relay state from its relay role's row: {"alive": True|False}, or {"alive": None} when the
-    relay runs on a host this one cannot read (no route, or the pull failed and nothing was cached)."""
-    row = next((x for x in roles if x["relay"]), None)
-    if row is None or not row.get("session_id"):
-        return None  # no relay role, or parked: a parked relay is no relay
-    return {"alive": row.get("relay_alive")}
 
 
 def merge_remote(spec, roles: list[dict]) -> None:
@@ -494,7 +463,6 @@ def shoal_doc(spec_path: str, rows: list[dict], with_conditions: bool = False, p
         "gen": f"r{spec.incarnation + 1}", "retired": bool(spec.retired_utc), "dir": spec.dir,
         "mode": {"offline": bool(off), "offline_until": (off or {}).get("until"),
                  "freeze": bool(frz), "limit_until": limit_until(spec.sid)},
-        "relay": relay_doc(roles),
         "pages_24h": len(pages),
         "last_page": _short(pages[-1].get("text"), 160) if pages else None,
         "asks_open": sum(len(r["asks"]) for r in roles),
@@ -745,7 +713,6 @@ def render_text(doc: dict, width: int = 0) -> str:
             out.append(f"{s['id']}: ERROR {s['error']}")
             continue
         m = s["mode"]
-        relay = s.get("relay")
         head = [s["id"], f"gen {s['gen']}"] + [x for x, on in (("OFFLINE", m["offline"]), ("FREEZE", m["freeze"])) if on]
         if s.get("multi_host") or s.get("home"):
             here = s.get("this_host", "")
@@ -757,17 +724,13 @@ def render_text(doc: dict, width: int = 0) -> str:
                 head.append("hosts " + ", ".join(f"{h}{' (here)' if h == here else ''}{beat(h)}" for h in hosts))
         if m.get("limit_until"):
             head.append(f"LIMITED until {m['limit_until'][11:16]}Z")  # the account usage limit: wakes are held
-        if relay:
-            head.append(f"relay {relay_word(relay)}")
         if not s["tooling"]["current"]:
             head.append(f"tooling {s['tooling']['sha']} != head {s['tooling']['head']}")
         out.append("  ".join(head))
         out.append(f"needs you: {s['needs_you']}   stalled: {s['stalled']}   open asks: {s['asks_open']}   "
                    f"pages (24h): {s['pages_24h']}")
         rows = []
-        for r in s["roles"]:
-            if r["relay"]:
-                continue  # parked roles (no session) still show: a held lane must read as held, not vanish
+        for r in s["roles"]:  # parked roles (no session) still show: a held lane must read as held, not vanish
             att = [ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x not in ("parked", "waiting-on-you")
                    or (x == "waiting-on-you" and not {"blocked-on-question", "blocked-says-waiting"}
                        & set(r["can_progress"]["reasons"]))]
@@ -780,7 +743,7 @@ def render_text(doc: dict, width: int = 0) -> str:
                          _age(r["last_write_age_s"]), ", ".join(att) or "-"])
         heads = ["role", "ecosystem", "posture", "session", "active", "next", "last write", "attention"]
         mh = bool(s.get("multi_host"))  # multi-host: a host column after the role (the role rows stay 8 wide)
-        hosts_ = [r["host"] for r in s["roles"] if not r["relay"]]
+        hosts_ = [r["host"] for r in s["roles"]]
         wide_h = heads[:1] + ["host"] + heads[1:] if mh else heads
         wide_r = [row[:1] + [h] + row[1:] for row, h in zip(rows, hosts_)] if mh else rows
         o = 1 if mh else 0
@@ -824,8 +787,6 @@ def _shoal_bits(s: dict) -> list[str]:
         bits.append("FRZ")
     if m.get("limit_until"):
         bits.append(f"LIMIT {m['limit_until'][11:16]}Z")
-    if s.get("relay") and s["relay"]["alive"] is False:
-        bits.append("relay DEAD")
     return bits
 
 

@@ -3,7 +3,7 @@
 
 ONE brief shape for every role (`ledger_brief`, 2026-09-20; flattened only
 since 2026-09-24), with the work-loop variant (`workwake_brief`) under
-features.workwake and the wake relay's own brief (the `wake-relay` role). Every brief points at the role's single start
+features.workwake. Every brief points at the role's single start
 document (plan_state.md) plus the shared instructions; grants-needed items
 are extracted from that document at brief time, so the doc is the only place
 grants are configured. Model/effort ride along as launch config. Every brief
@@ -18,13 +18,13 @@ import re
 import config
 from layout import group_dir
 from ledger import queue_next_max
-from roles import ShoalSpec, Role, is_wake_relay, state_dir
+from roles import ShoalSpec, Role, state_dir
 
 SHOAL_CLI = config.cli()  # the command line every brief tells a session to run
 
 
 def pid_proof(pidfile: str, sidecar: bool = False) -> str:
-    """How a session proves a watcher pid: two separate commands, never `$(...)`. A relay in
+    """How a session proves a watcher pid: two separate commands, never `$(...)`. A session in
     manual permission mode combined them as `ps -p $(cat <pidfile>)`, and command substitution
     always needs the user's approval there (measured 2026-09-28)."""
     read = (f"`cat {pidfile}` and take the number on its `pid=` line" if sidecar
@@ -113,25 +113,6 @@ def state_block(role: Role, spec: ShoalSpec) -> str:
         f"without a transition is the stall.")
 
 
-def relay_brief(role: Role, spec: ShoalSpec) -> str:
-    """The Claude wake relay (architecture doc §6): not a worker; one waiter, one tool."""
-    sid = spec.sid
-    return (
-        f"You are {role.slug} ({role.tag}) in shoal {sid}: the wake relay for Claude roles whose own watcher "
-        f"is dead. You do no project work, claim nothing, and message nobody on your own initiative. "
-        f"LOOP: run `{SHOAL_CLI} relay-watch --shoal {sid}` with the Bash tool, run_in_background=true and "
-        f"timeout=7200000, on exactly that command: no trailing `&`, no nohup, and NEVER the Monitor tool (a Monitor "
-        f"expires every 5-30 min and each expiry costs a turn; a background Bash command is killed at its timeout, 30 "
-        f"min by default and 2 h at most, so always pass the maximum: a kill is a wake, re-arm). "
-        f"When it exits it prints "
-        f"`RELAY-WAKE to=<session name> session=<id> :: <text>` lines: for EACH line call SendMessage with "
-        f"to=<session name> and message=<text> verbatim (use ListAgents to add the [ref] only when two sessions "
-        f"share the name; prefer the one whose session id starts with <id>), then re-arm relay-watch, then end "
-        f"the turn with one line: `relayed N`. Never transition yourself offline and never kill relay-watch; only "
-        f"the operator stops the relay. Never add commentary to a relayed message. Keep your context "
-        f"small: no other reading. Confirm arming: {pid_proof(os.path.join(state_dir(sid), 'relay-watch.pid'))}.")
-
-
 def watch_clause(role: Role, spec: ShoalSpec, arm: str, how_arm: str) -> str:
     """The WATCH instruction of the work-loop brief. A Muse role is different in three ways: shoal runs
     its watcher, its turns are headless `muse exec` processes (nobody answers a prompted question), and the
@@ -155,9 +136,10 @@ def watch_clause(role: Role, spec: ShoalSpec, arm: str, how_arm: str) -> str:
 
 def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
     """(--wake value, how to arm it) for a role's ledger-watch. opencode: a detached watcher that sends
-    each wake. Claude in a shoal with a wake relay: a detached watcher whose wakes the relay delivers as
-    messages, so no lane holds a background command (the harness kills those at 2 h at most, a turn per
-    kill; maintainer-approved 2026-10-13). Claude without a relay: a background Bash command (exit)."""
+    each wake. Claude: a detached watcher that delivers each wake directly (resume, or stop and resume an
+    idle session), so no lane holds a background command (the harness kills those at 2 h at most, a turn
+    per kill; maintainer-approved 2026-10-13). Claude under direct_wake `dead` (never stop a live worker):
+    a background Bash command (exit), whose exit wakes the live session."""
     sid = spec.sid
     detached = ("setsid-detached (`setsid nohup <cmd> >>/tmp/" + sid + "/ledger-watch-" + role.slug
                 + ".log 2>&1 < /dev/null &`, run once with the Bash tool, NOT as a background command and never "
@@ -170,15 +152,14 @@ def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
                                           "and keeps running, so it needs no re-arm after a wake (re-arming while it "
                                           "runs prints ALREADY ARMED); re-arm only if `next` or health says it is dead")
     from backends import direct_wake_mode
-    # detached needs a way into a live idle session: the relay, or direct_wake `idle` (stop and resume);
-    # direct_wake `dead` alone would hold a wake to a live idle session until its worker retired
-    if direct_wake_mode(spec) == "idle" or ((getattr(spec, "features", {}) or {}).get("relay")
-                                           and _relay_on_host_of(spec, role)):
-        return "relay", (detached + "; between your turns each wake reaches you as a message (resumed directly when "
-                         "your session can take it, else by the wake relay), and "
-                         "the watcher keeps running, so it needs no re-arm after a wake and is never killed at a "
-                         "time limit (re-arming while it runs prints ALREADY ARMED); re-arm only if `next` or health "
-                         "says it is dead")
+    # detached needs a way into a live idle session: direct_wake `idle` (stop and resume); under `dead`
+    # alone it would hold a wake to a live idle session until its worker retired
+    if direct_wake_mode(spec) == "idle":
+        return "direct", (detached + "; between your turns each wake reaches you as your next prompt (your session "
+                          "is resumed directly when it can take it), and "
+                          "the watcher keeps running, so it needs no re-arm after a wake and is never killed at a "
+                          "time limit (re-arming while it runs prints ALREADY ARMED); re-arm only if `next` or health "
+                          "says it is dead")
     return "exit", ("with the Bash tool, run_in_background=true and timeout=7200000 (the 2 h maximum: the default "
                     "30 min kill costs you a turn every 30 min; no trailing `&`, never the Monitor tool, which expires "
                     "and costs a turn per expiry): it re-invokes you when it exits or is killed at that timeout, and a "
@@ -256,8 +237,6 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
     ecosystem. Differences are data: fill mode, permissions, wake adapter."""
     sid = spec.sid
     feats0 = getattr(spec, "features", {}) or {}
-    if is_wake_relay(role):
-        return relay_brief(role, spec)
     if feats0.get("workwake"):
         return workwake_brief(role, spec)
     wake, how_arm = arming(role, spec)
@@ -286,7 +265,7 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
                 "`msg --to user` naming the next item you would take, then wait for the watcher.")
     else:
         fill = "FILL: none. You never claim; you observe."
-    relay = ("Nobody relays for you: status is the ledger; the maintainer reads "
+    nobody = ("Nobody relays for you: status is the ledger; the maintainer reads "
              f"`shoal show --shoal {sid}`. Stall-suspect msgs come to YOU: answer by re-verifying the wait "
              "(transition) or acting.")
     return (
@@ -301,7 +280,7 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
         f"`done --slug {role.slug} --item .. --url ..`, `release --slug {role.slug} --item .. --kind "
         f"decline|blocked|handoff --reason ..`, `msg --by {role.slug} --to <slug|*|user> --text .. [--ack]` "
         f"(answer an ack request with `--re <id> --kind ack`). No direct session sends to peers, ever. "
-        f"{fill} {relay} "
+        f"{fill} {nobody} "
         f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}. It wakes you ONLY for offers "
         f"to you, msgs to you or `*`, a lost/contested claim, a withdrawal, or board candidates when "
         f"self-filling; each event wakes at most once. Run it once with `--test` first and confirm "
@@ -349,10 +328,3 @@ if __name__ == "__main__":
     import sys
     print("\n".join(f"- {g}" for g in extract_grants(sys.argv[1])))
 
-
-def _relay_on_host_of(spec, role) -> bool:
-    """The relay delivers by cross-session message to sessions on ITS host only, so a Claude role on
-    another host gets the `exit` watcher (multi-host): with `relay` it would never be woken."""
-    from roles import host_of, wake_relay_role
-    relay = wake_relay_role(spec)
-    return relay is not None and host_of(relay, spec) == host_of(role, spec)

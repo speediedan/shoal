@@ -13,7 +13,8 @@ Transport, measured 2026-09-23:
     which uses opencode's own login and needs no key;
   - a long prompt passed as the message argument hung 600 s without creating a session,
     so the prompt is always an attached file (`-f <absolute path>`);
-  - every run's session is deleted afterwards, so the store does not fill up.
+  - every run's session is deleted afterwards (`DELETE /api/session/<id>` through OpenChamber's
+    server), so the store does not fill up.
 The direct OpenAI-compatible API is only the optional paid fallback, keyed by
 `SHOAL_MATCHER_API_KEY` in `shoal/.env` (gitignored; created by the maintainer).
 
@@ -200,9 +201,12 @@ def call_opencode(model: str, prompt: str, workdir: str, timeout: float) -> str:
         with open(os.path.join(workdir, "prompt.md"), "w") as fh:
             fh.write(prompt)
         message = f"{INSTRUCTION}\n\nThe input is in the file prompt.md in your working directory: read it first."
-    r = run([oc, "session", "send", "--session", sid, "--dir", workdir, "--model", model, "--wait",
-             "--timeout", str(max(30, int(timeout))), "--last-assistant", "--json", "--prompt", message],
-            timeout + 30)
+    try:
+        r = run([oc, "session", "send", "--session", sid, "--dir", workdir, "--model", model, "--wait",
+                 "--timeout", str(max(30, int(timeout))), "--last-assistant", "--json", "--prompt", message],
+                timeout + 30)
+    finally:
+        delete_session(sid, workdir)
     try:
         d = json.loads(r.stdout)
     except ValueError as exc:
@@ -214,6 +218,20 @@ def call_opencode(model: str, prompt: str, workdir: str, timeout: float) -> str:
         why = json.dumps(last.get("error") or d.get("error") or d.get("sessionStatus") or d)[:200]
         raise _classify(why)(f"{model}: no reply ({why})")
     return text
+
+
+def delete_session(sid: str, workdir: str) -> None:
+    """Delete a matcher run's session once its reply is in (or the send failed): one session per run would otherwise
+    pile up in the store and in every listing (63 of them were found 2026-11-01). Through OpenChamber's server
+    (`DELETE /api/session/<id>`), never the opencode CLI; a failure is reported on stderr and never fails the run
+    (`shoal prune-incarnations --matcher` sweeps leftovers)."""
+    try:
+        from backends import openchamber_api
+        code, body = openchamber_api("DELETE", f"/api/session/{sid}", directory=workdir)
+        if code >= 300 and code != 404:
+            print(f"matcher: session {sid} not deleted (HTTP {code} {str(body)[:80]})", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"matcher: session {sid} not deleted ({str(exc)[:120]})", file=sys.stderr)
 
 
 def call_openai(base_url: str, model: str, key: str, prompt: str, timeout: float) -> str:

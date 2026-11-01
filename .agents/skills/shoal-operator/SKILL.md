@@ -25,8 +25,15 @@ are in `docs/architecture.md`. Every write verb takes `--dry-run`: run it first.
 ## Restart
 
 `shoal restart --spec <spec> [--only <role>,...] --dry-run`, then for real. Grants do not carry
-over: each restarted session asks again. The residual lane and the Claude wake relay restart alone
-with `aux-launch` and `relay-launch`, without a new incarnation.
+over: each restarted session asks again. The residual lane restarts alone with `aux-launch`, without
+a new incarnation. (The Claude wake relay is retired: Claude roles are woken directly, and a spec that
+still lists a `wake-relay` role ignores it.)
+
+Old incarnations stay in each harness's session list until pruned. With `features.prune` on, a
+restart or handover prunes the role's incarnations two generations back once the new one is proven.
+For a one-off cleanup: `shoal prune-incarnations --all-specs [--standalone] [--matcher] --dry-run`,
+read the keep/prune table, then run it without `--dry-run`. It never removes a current, parked or
+registered session, a live one, or one whose worktree still exists.
 
 ## Upgrade
 

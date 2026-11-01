@@ -119,12 +119,32 @@ def verify_listed(harness: str, session: str, job: str = "") -> str:
         import ui_status
         e = ui_status.claude_session(ui_status.claude_rows(), session, job)
         if e is None:
+            if not job:  # no job ever recorded: picked as an interactive session, which is listed only while it runs
+                return (f"session {session} is not listed by `claude agents`: not running (an interactive session "
+                        f"that ended, or removed). `claude --bg --resume {session}` continues it in the background, "
+                        "then [enter] attaches; never while it runs in another terminal (that starts a copy)")
             return f"session {session} is not listed by `claude agents` (removed? re-resolve, never guess)"
+        if e.get("kind") == "interactive":
+            return interactive_where(e)
         if not e.get("pid"):
             print(f"shoal view: {e.get('id')} has no worker (state {e.get('state')}, retired idle or stopped): "
                   f"attaching wakes its worker; no turn is taken")
         return ""
     return ""  # opencode: the server rejects an unknown session id itself
+
+
+def interactive_where(row: dict) -> str:
+    """Why an interactive Claude session cannot be attached, and where it is. `claude attach` opens background
+    sessions only, and `claude --resume` (or `--bg --resume`) of a session live in another process starts a copy."""
+    pid, tty = row.get("pid"), ""
+    try:
+        tty = os.readlink(f"/proc/{pid}/fd/0")
+    except (OSError, TypeError):
+        pass
+    where = f"pid {pid}" + (f" on {tty}" if tty.startswith("/dev/") else "")
+    return (f"running interactively in {where}: `claude attach` opens background sessions only, so use that "
+            f"terminal. To view it here, end it there and run `claude --bg --resume {row.get('sessionId')}` "
+            "(never while it runs: that starts a copy)")
 
 
 def viewer(harness: str, session: str, label: str = "", model: str = "", effort: str = "",
@@ -301,10 +321,11 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     force = False
     import ui_term
     watch = ui_term.CodeWatch()
-    remote = _remote_host(sid, slug, spec_path)
     import routes
     while True:
         watch.check()
+        # re-read each tick: a role moved to another host (its spec `server`) is attached there at once
+        remote = _remote_host(sid, slug, spec_path)
         routed = bool(remote) and routes.route(remote) is not None
         try:
             body = card(sid, slug, force)
@@ -318,8 +339,8 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             keys = f"runs on {remote}: attach from that host's viewer (no route here)   [r] refresh   [q] shell"
         else:
             keys = "[enter] attach   [r] refresh   [q] shell"
-        sys.stdout.write("\x1b[2J\x1b[H" + body + "\n\n\x1b[2m" + keys
-                         + f"   (refresh every {CARD_REFRESH_S}s; viewing never wakes the role)\n{DETACH_HINT}\x1b[0m\n")
+        sys.stdout.write(ui_term.fit_frame(body, "\x1b[2m" + keys + f"   (refresh every {CARD_REFRESH_S}s; viewing "
+                                           f"never wakes the role)\n{DETACH_HINT}\x1b[0m"))
         sys.stdout.flush()
         k = _getkey(CARD_REFRESH_S)
         if k in ("q", "Q"):

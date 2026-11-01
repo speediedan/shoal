@@ -162,11 +162,21 @@ export S=<id> SPEC=<path to the group's spec>
     shoal retire --spec $SPEC --uninstall-units --note "<why>" --dry-run
     ```
 
-- The residual lane and the Claude wake relay, each started alone (no incarnation bump):
+- Prune old incarnations from each harness's session listing (guarded: never a current, parked, registered, live,
+  locked or recent session; Claude jobs leave a tombstone, the others are archived unless `--delete`). Dry-run first;
+  `features.prune` does it automatically for N-2 once N proves itself ([`handover.md`](handover.md#pruning-old-incarnations)):
+
+    ```bash
+    shoal prune-incarnations --all-specs --dry-run
+    shoal prune-incarnations --spec $SPEC [--harness claude,codex,opencode,muse] [--standalone] [--matcher] \
+      [--delete] [--min-age 24h] [--batch 10]
+    shoal upgrade --spec $SPEC --enable prune      # automatic N-2 pruning (default off)
+    ```
+
+- The residual lane, started alone (no incarnation bump):
 
     ```bash
     shoal aux-init --shoal $S && shoal aux-launch --shoal $S
-    shoal relay-init --shoal $S && shoal relay-launch --shoal $S
     ```
 
 - Timers (health quorum, digest, reconcile, reports), from the spec:
@@ -185,7 +195,7 @@ export S=<id> SPEC=<path to the group's spec>
     shoal upgrade --spec $SPEC --enable matcher.live
     shoal upgrade --spec $SPEC --enable blockers --rearm now   # verified blockers; idle checked against the board
     shoal upgrade --spec $SPEC --enable waittargets --rearm now   # CI waits need a target; watchers wake on job/lease ends
-    shoal upgrade --spec $SPEC --enable health.revive              # respawn dead Claude workers, relaunch a dead relay (FM-14)
+    shoal upgrade --spec $SPEC --set health.direct_wake='"dead"'   # Claude: never stop a live worker to wake it (default idle)
     ```
 
 ## Reports

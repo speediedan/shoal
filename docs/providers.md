@@ -69,7 +69,7 @@ How SHOAL starts a session, sends it a prompt and wakes it:
 
 | ecosystem | create | wake |
 | --- | --- | --- |
-| Claude Code | `claude --bg` with the brief | a wake file the role's own watcher reads; a relay role for dead watchers |
+| Claude Code | `claude --bg` with the brief | a wake file the role's own watcher delivers; a direct resume (`claude --bg --resume`) for dead watchers |
 | opencode (+ openchamber) | a server session, then the brief sent as its first prompt | a direct send to the session |
 | Codex | not yet implemented | not yet implemented |
 

@@ -871,7 +871,6 @@ def render_role(view: View, slug: str, candidates: list[dict] | None = None,
 
 def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] | None = None) -> str:
     """The status table: one row per role."""
-    from roles import is_wake_relay as _is_wake_relay
     n_next = queue_next_max(spec)
     grants_by_role: dict[str, int] = {}
     try:
@@ -914,15 +913,6 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
             pk = getattr(r, "parked", None) or {}
             state = "parked (no session)" + (f" since {pk['at']}" if pk.get("at") else "") + \
                 (f": {pk['note']}" if pk.get("note") else "") + (f"; until {pk['until']}" if pk.get("until") else "")
-        elif _is_wake_relay(r):
-            # the relay writes no state events (a stale one may predate this session), so its
-            # row is its waiter's liveness
-            try:
-                pid = open(os.path.join("/tmp", view.ledger.sid, "relay-watch.pid")).read().strip()
-                with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                    state = f"relaying (relay-watch pid {pid})" if b"relay-watch" in fh.read() else "relay-watch DEAD"
-            except (OSError, ValueError):
-                state = "relay-watch DEAD"
         ng = grants_by_role.get(r.slug, 0) + grants_by_role.get("*", 0)
         L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {ng or '—'} | {last} |")
     pool = [o for o in view.offers.values() if o["status"] == "open" and o["to"] == "*"]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Isolated proof of the H4 components (architecture doc §4-§6): working context, board
 # digest, batch triage, digest-driven ledger-watch wake, exit verdicts, job units, the work loop
-# (next/queue), work-only wakes, the health quorum, user-offline mode and the Claude relay.
+# (next/queue), work-only wakes, the health quorum, user-offline mode and direct Claude wakes.
 # Touches nothing live: a bare local remote, the spec and SHOAL_DATA_ROOT under a scratch dir,
 # shoal id h4selftest (state in /tmp/h4selftest). Hermetic: a synthetic board fixture (no
 # GitHub read), synthetic start docs, a scratch working dir, a scratch host config, stub
@@ -17,7 +17,7 @@ S="${1:-${TMPDIR:-/tmp}/shoal-h4-selftest-$$}"
 exec 9>"/tmp/shoal-selftest-h4selftest.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another h4selftest run holds the lock" >&2; exit 1; }
 # background watchers this test starts must never outlive it (a stray one shares the
 # sidecar and silently swallows the next run's wakes)
-cleanup() { pkill -f -- '(cli\.py|shoal) (ledger-watch|relay-watch) --shoal h4selftest' 2>/dev/null || true; }
+cleanup() { pkill -f -- '(cli\.py|shoal) ledger-watch --shoal h4selftest' 2>/dev/null || true; }
 trap cleanup EXIT
 cleanup
 rm -rf "$S" /tmp/h4selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
@@ -222,15 +222,29 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p))
 d["features"]={"digest":True,"jobs":True,"workwake":True,"waitgate":False,"health":{"validity_wake_min":90}}
 json.dump(d,open(p,"w"),indent=1)
 PY
-check "\[dry-run\] relay-init $SID: doc $S/data/$SID/roles/wake-relay/plan_state.md; role ADD" $H relay-init --shoal $SID --spec "$SPEC" --dry-run
-check "role ADD" $H relay-init --shoal $SID --spec "$SPEC"
-grep -qi "current state" "$S/data/$SID/roles/wake-relay/plan_state.md" || fail "relay doc lacks the current-state section restart verifies"
-python3 - "$SPEC" <<'PY' || fail "relay-init did not add the role / feature"
-import json,sys; d=json.load(open(sys.argv[1])); r=[x for x in d["roles"] if x["slug"]=="wake-relay"]
-assert r and r[0]["fill"]=="none" and d["features"].get("relay") is True, (r, d["features"])
-r[0]["session"]="rrrr3333"; json.dump(d,open(sys.argv[1],"w"),indent=1)
+# a spec written before the wake relay's retirement: features.relay, health.relay_fallback and a live
+# wake-relay role. It loads, and nothing launches, watches, wakes or shows the relay
+python3 - "$SPEC" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p))
+d["features"]["relay"]=True; d["features"]["health"]=dict(d["features"]["health"], relay_fallback=True)
+d["roles"].append({"slug":"wake-relay","ecosystem":"claude","title":"wake-relay","doc":"x","fill":"none","session":"rrrr3333"})
+json.dump(d,open(p,"w"),indent=1)
 PY
-check "role present" $H relay-init --shoal $SID --spec "$SPEC"
+python3 - "$SHOALD" "$SPEC" <<'PY' || fail "an old spec with the retired relay did not load cleanly"
+import sys; sys.path.insert(0, sys.argv[1])
+from roles import ShoalSpec
+import backends
+spec = ShoalSpec.load(sys.argv[2])
+assert spec.role("wake-relay") is None and all("relay" not in r.slug for r in spec.roles), [r.slug for r in spec.roles]
+assert backends.direct_wake_mode(spec) == "idle"  # relay_fallback is ignored; direct wake is always on
+PY
+OUT=$($H show --shoal $SID --spec "$SPEC" --no-sync 2>&1)
+! grep -qi "relay" <<<"$OUT" || fail "show still lists the retired relay :: $OUT"
+OUT=$(SHOAL_HEALTH_SHIFT_MIN=600 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -qi "relay" <<<"$OUT" || fail "health still judges the retired relay :: $OUT"
+for v in relay-init relay-launch relay-watch; do
+  [ "$(rc_of $H $v --shoal $SID)" = 2 ] || fail "the retired verb $v still parses"
+done
 git -C "$A" add -A >/dev/null 2>&1; git -C "$A" commit -qm spec >/dev/null 2>&1 || true
 check "QUEUE v0" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync
 I1=interpretune#9101; I2=interpretune#9102; I3=interpretune#9103; I4=interpretune#9104
@@ -317,21 +331,18 @@ check "up wait-validity step1:wake" env SHOAL_HEALTH_SHIFT_MIN=91 $H health --sp
 echo "2026-01-01T00:00:00Z" > /tmp/$SID/tick-health-b
 check "user peer-dead" $H health --spec "$SPEC" --instance a --dry-run
 
-echo "== 10 Claude relay: dead watcher -> relay queue -> relay-watch exits with the SendMessage line"
-setsid $H relay-watch --shoal $SID --interval 1 >"$S/relay.log" 2>&1 &
-RW=$!
-for i in $(seq 1 30); do [ "$(cat /tmp/$SID/relay-watch.pid 2>/dev/null)" = "$RW" ] && break; sleep 0.5; done
-python3 - "$SHOALD" "$SPEC" <<'PY' | grep -q "^wake-relay$" || fail "request_wake did not choose the wake relay"
-import sys; sys.path.insert(0,sys.argv[1])
+echo "== 10 Claude direct wake: a dead watcher is answered by a direct delivery, never a relay"
+python3 - "$SHOALD" "$SPEC" <<'PY' || fail "a dead Claude watcher should get a direct delivery"
+import json, os, sys; sys.path.insert(0, sys.argv[1])
 from roles import ShoalSpec; from health import request_wake
-print(request_wake(ShoalSpec.load(sys.argv[2]), "tl", "relay test", "watcher-dead"))
+spec = ShoalSpec.load(sys.argv[2])
+got = request_wake(spec, "tl", "direct test", "watcher-dead", dry_run=True)
+assert got == "deferred (session not listed)", got  # the empty fake world lists no session to resume
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000"}], "opencode": {}})
+got = request_wake(spec, "tl", "direct test", "watcher-dead", dry_run=True)
+assert got == "resume (dry-run)", got  # no worker: resumed directly
 PY
-sleep 3; grep -q "RELAY-WAKE to=tl-r1" "$S/relay.log" || fail "relay-watch did not deliver :: $(cat $S/relay.log)"
-grep -q "VERDICT RELAY-DELIVER 1" "$S/relay.log" || fail "relay-watch verdict missing"
-kill $RW 2>/dev/null || true
-sleep 1
-check "wake-relay relay-dead step1:page" env SHOAL_HEALTH_SHIFT_MIN=11 $H health --spec "$SPEC" --instance a --dry-run
-check "VERDICT RELAY-MAX-HOURS" timeout 30 $H relay-watch --shoal $SID --interval 1 --max-hours 0.0005
+[ ! -e /tmp/$SID/relay-queue ] || fail "a wake was queued for a relay"
 
 echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"
 $H queue --shoal $SID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --ask "ruling on #9202 scope" --no-sync >/dev/null
@@ -672,39 +683,19 @@ PY
   systemctl --user stop "shoal-$SID-busy.timer" "shoal-$SID-busy.service" 2>/dev/null || true
 fi
 # pid proof: two separate commands, never command substitution
-for slug in tl wake-relay; do
+for slug in tl; do
   OUT=$($H brief --spec "$SPEC" --slug $slug 2>&1)
   grep -q "TWO separate commands" <<<"$OUT" || fail "$slug brief lacks the two-command pid proof"
   grep -q 'never use \$(...) command substitution' <<<"$OUT" || fail "$slug brief lacks the \$(...) ban"
   ! grep -qE 'ps -p \$\(|ps -p plus sidecar' <<<"$OUT" || fail "$slug brief still combines the pid proof"
 done
-grep -qi 'never use \$(...) command substitution' "$S/data/$SID/roles/wake-relay/plan_state.md" \
-  || fail "relay doc lacks the \$(...) ban"
 
-echo "== 17 upgrade --rearm now: a stale relay-watch is killed and its re-arm verified (or WARNed)"
-RPID=/tmp/$SID/relay-watch.pid
-setsid $H relay-watch --shoal $SID --interval 1 >"$S/relay-u1.log" 2>&1 &
-RW1=$!
-for i in $(seq 1 30); do [ "$(cat $RPID 2>/dev/null)" = "$RW1" ] && break; sleep 0.5; done
-[ "$(cat $RPID 2>/dev/null)" = "$RW1" ] || fail "relay-watch never wrote its pid"
-touch -d "2001-01-01 00:00:00 UTC" $RPID   # armed long before any package change
+echo "== 17 upgrade plans no relay re-arm: only ledger-watch is re-armed, and --rearm-verify-s is gone"
 python3 -c "import json; d=json.load(open('$SPEC')); d.pop('tooling', None); json.dump(d, open('$SPEC','w'), indent=1)"
-check "relay-watch armed before .*pid $RW1 .*killed now" \
-  $H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty --dry-run
-kill -0 $RW1 2>/dev/null || fail "--dry-run killed the relay-watch"
-# stand-in for the relay session: re-arm once the old waiter dies
-( while kill -0 $RW1 2>/dev/null; do sleep 0.2; done
-  setsid $H relay-watch --shoal $SID --interval 1 >"$S/relay-u2.log" 2>&1 & echo $! > "$S/rw2.pid" ) &
-OUT=$(SHOAL_REARM_VERIFY_S=30 $H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty 2>&1 || true)
-grep -q "relay-watch: killed pid $RW1" <<<"$OUT" || fail "stale relay-watch not killed :: $OUT"
-RW2=$(cat "$S/rw2.pid" 2>/dev/null || true)
-grep -q "relay-watch re-armed: pid $RW2" <<<"$OUT" || fail "re-arm not verified (want pid $RW2) :: $OUT"
-# no re-arm within the window: a WARN with the exact re-arm line
-touch -d "2001-01-01 00:00:00 UTC" $RPID
-python3 -c "import json; d=json.load(open('$SPEC')); d.pop('tooling', None); json.dump(d, open('$SPEC','w'), indent=1)"
-OUT=$(SHOAL_REARM_VERIFY_S=2 $H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty 2>&1 || true)
-grep -q "relay-watch: killed pid $RW2" <<<"$OUT" || fail "second stale relay-watch not killed :: $OUT"
-grep -q "WARN relay-watch NOT re-armed within 2s .*relay-watch --shoal $SID" <<<"$OUT" || fail "no re-arm WARN :: $OUT"
+OUT=$($H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty --dry-run 2>&1 || true)
+grep -q "re-arm (ledger-watch): " <<<"$OUT" || fail "upgrade lost its ledger-watch re-arm class :: $OUT"
+! grep -qi "relay" <<<"$OUT" || fail "upgrade still plans a relay re-arm :: $OUT"
+[ "$(rc_of $H upgrade --spec "$SPEC" --rearm-verify-s 2 --skip-selftests --dry-run)" = 2 ] || fail "--rearm-verify-s still parses"
 
 echo "== 18 liveness from turn state; candidates shown to a role idle behind blocked next items"
 # Claude: `status` reads busy while any background task (the role's own ledge-watch) runs, so only
@@ -863,62 +854,56 @@ SHOAL_DATA_ROOT="$S/data" python3 "$FMR" --spec "$SPEC" --json | python3 -c "imp
 OUT=$(env -u SHOAL_DATA_ROOT python3 "$FMR" --spec "$SPEC" 2>&1 || true)
 grep -q "no data root" <<<"$OUT" || fail "fm_report ran without a data root :: $OUT"
 
-echo "== 22 revive (features.health.revive): dead Claude workers are respawned and a dead relay relaunched"
+echo "== 22 direct wake: a reaped Claude worker is re-armed or resumed directly; old relay-era keys change nothing"
 # the measured shape (2026-10-02): the background service reaped every worker, so `claude agents
-# --json --all` lists the role and the relay with no pid, and both waiters are gone
-rm -f /tmp/$SID/health.json /tmp/$SID/relay-watch.pid /tmp/$SID/wake-tl /tmp/$SID/ledger-watch-tl.state
-FS_REAPED='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"","state":"stopped"},{"id":"rrrr3333","sessionId":"rrrr3333-0000","status":"","state":"stopped"}],"opencode":{}}'
+# --json --all` lists the role with no pid, and its waiters are gone
+rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl /tmp/$SID/ledger-watch-tl.state
+FS_REAPED='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"","state":"stopped"}],"opencode":{}}'
 HV="$H health --spec $SPEC --instance a --dry-run"
-# watcher-dead's ladder runs from its first sighting; seed that sighting rather than run a real
-# first pass (which, with revive on, would launch a real relay session)
+# watcher-dead's ladder runs from its first sighting; seed that sighting rather than run a first pass
 SEED_TL='import datetime, json, sys; now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 json.dump({"ladders": {"tl|watcher-dead|pid:none": {"since": now, "step": 0}}}, open(sys.argv[1], "w"))'
-python3 -c "$SEED_TL" /tmp/$SID/health.json
-# negative control, feature off: the relay only pages and the role's wake has no adapter
-OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
-grep -q "wake-relay relay-dead step1:page" <<<"$OUT" || fail "relay-dead did not page with revive off :: $OUT"
-grep -q "tl watcher-dead step1:wake -> no-adapter (claude watcher dead, wake relay waiter dead)" <<<"$OUT" \
-  || fail "control: a reaped role should have no wake path with revive off :: $OUT"
-! grep -q "respawned\|relaunch" <<<"$OUT" || fail "revive acted while off :: $OUT"
-python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"].get("health")
-d["features"]["health"]=dict(h if isinstance(h,dict) else {}, revive=True, direct_wake="off"); json.dump(d,open(p,"w"),indent=1)
+# the default (direct_wake idle) and the relay-era values (`off`, revive, relay_fallback) all read the same:
+# the quorum re-arms the detached watcher instead of waking the role, and the watcher resumes the session
+for dw in "" off; do
+  python3 - "$SPEC" "$dw" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"].get("health"); h=dict(h if isinstance(h,dict) else {})
+h.pop("direct_wake", None)
+if sys.argv[2]: h.update(direct_wake=sys.argv[2], revive=True, relay_fallback=True)
+d["features"]["health"]=h; json.dump(d,open(p,"w"),indent=1)
 PY2
-python3 -c "$SEED_TL" /tmp/$SID/health.json
-OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
-grep -q "wake-relay relay-dead step1:relaunch -> relay-launch rc=0: \[dry-run\] relay-launch $SID" <<<"$OUT" \
-  || fail "dead relay not relaunched first :: $OUT"
-grep -q "tl watcher-dead step1:wake -> wake-relay (queued; relay down, relaunch pending) (dry-run); respawned aaaa1111 (dry-run)" <<<"$OUT" \
-  || fail "reaped role not respawned and queued for the relaunching relay :: $OUT"
-[ "$(grep -n 'relay-dead' <<<"$OUT" | head -1 | cut -d: -f1)" -lt "$(grep -n 'tl watcher-dead' <<<"$OUT" | head -1 | cut -d: -f1)" ] \
-  || fail "relay relaunch must precede the role wakes it will carry :: $OUT"
-# direct wake (the default with revive): the quorum re-arms the detached watcher instead of waking the
-# role, and the watcher resumes the session when work arrives; with rearm off the quorum resumes it itself
-python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("direct_wake",None); json.dump(d,open(p,"w"),indent=1)
-PY2
-python3 -c "$SEED_TL" /tmp/$SID/health.json
-OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
-grep -q "tl watcher-dead step1:rearm -> re-armed\?.* by the quorum (relay; no wake) (dry-run)\|tl watcher-dead step1:rearm -> re-arm by the quorum (relay; no wake) (dry-run)" <<<"$OUT" \
-  || fail "direct wake: a dead detached watcher should be re-armed, not woken :: $OUT"
-! grep -q "respawned aaaa1111\|tl watcher-dead step1:wake" <<<"$OUT" || fail "direct wake: re-arm must not also wake :: $OUT"
+  python3 -c "$SEED_TL" /tmp/$SID/health.json
+  OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+  grep -q "tl watcher-dead step1:rearm -> re-arm by the quorum (direct; no wake) (dry-run)" <<<"$OUT" \
+    || fail "direct wake ($dw): a dead detached watcher should be re-armed, not woken :: $OUT"
+  ! grep -qi "respawned\|relay\|tl watcher-dead step1:wake" <<<"$OUT" || fail "direct wake ($dw): re-arm must not also wake :: $OUT"
+done
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"]["rearm"]=False; json.dump(d,open(p,"w"),indent=1)
 PY2
 python3 -c "$SEED_TL" /tmp/$SID/health.json
 OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
 grep -q "tl watcher-dead step1:wake -> resume (dry-run)" <<<"$OUT" \
-  || fail "direct wake: a workerless session should be resumed directly, no relay :: $OUT"
+  || fail "direct wake: a workerless session should be resumed directly :: $OUT"
+# direct_wake dead: an in-session watcher, so the quorum wakes the role; the reaped session is resumed
 python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("rearm",None); json.dump(d,open(p,"w"),indent=1)
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("rearm",None)
+d["features"]["health"]["direct_wake"]="dead"; json.dump(d,open(p,"w"),indent=1)
 PY2
-# a live worker (pid present) is never respawned
+python3 -c "$SEED_TL" /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_SESSIONS="$FS_REAPED" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
+grep -q "tl watcher-dead step1:wake -> resume (dry-run)" <<<"$OUT" \
+  || fail "direct_wake dead: a workerless session should be resumed directly :: $OUT"
+# ... and a live worker is never stopped under `dead`: the wake waits
 FS_LIVE='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":4242}],"opencode":{}}'
 python3 -c "$SEED_TL" /tmp/$SID/health.json
 OUT=$(env SHOAL_FAKE_SESSIONS="$FS_LIVE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
-! grep -q "respawned aaaa1111" <<<"$OUT" || fail "respawned a session whose worker is alive :: $OUT"
+grep -q "tl watcher-dead step1:wake -> deferred (live worker (direct_wake dead))" <<<"$OUT" \
+  || fail "direct_wake dead: a live worker should not be stopped :: $OUT"
 python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("revive",None); json.dump(d,open(p,"w"),indent=1)
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"]["health"]
+for k in ("direct_wake", "revive", "relay_fallback"): h.pop(k, None)
+json.dump(d,open(p,"w"),indent=1)
 PY2
 rm -f /tmp/$SID/health.json
 
@@ -954,7 +939,7 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blocker
 PY2
 check "posture=idle" $Q --slug tl --idle --next ""
 # a user --wake msg to a role whose watcher is dead goes through the wake adapter (no watcher runs here)
-check "wake via no-adapter (claude watcher dead, wake relay waiter dead) (tl's ledger-watch is not running)" \
+check "wake via deferred (session not listed) (tl's ledger-watch is not running)" \
   $H msg --shoal $SID --spec "$SPEC" --to tl --wake --text "operator wake" --no-sync
 
 echo "== 24 a claude call from a systemd unit runs in its own scope; a watcher binds its own Claude session id"
@@ -1031,9 +1016,8 @@ check "ALREADY ARMED: ledger-watch pid $P_W" env SHOAL_FAKE_SESSIONS="$FS_OC_IDL
   --slug up --wake send:oc9 --session oc9 --interval 60 --sidecar "$S/sc-oc.state" --no-sync
 kill $P_W 2>/dev/null; wait $P_W 2>/dev/null || true
 
-echo "== 28 a relay (Claude, detached) watcher queues each wake for the relay, defers mid-turn, keeps running"
-rm -f /tmp/$SID/relay-queue
-python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "relay watcher primitives"
+echo "== 28 a direct (Claude, detached) watcher defers mid-turn and keeps running; \`--wake relay\` is read as direct"
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "direct watcher primitives"
 import json, os, sys; sys.path.insert(0, sys.argv[1])
 import ledger_watch as lw
 from roles import ShoalSpec
@@ -1059,19 +1043,27 @@ for row, want in (({"tempo": "blocked", "status": "idle", "state": "blocked"}, T
     got = health.session_between_turns(hr, health.claude_busy(), spec.dir)
     assert got is want, (row, got)
 assert health.watcher_dead(False, "idle", True) and not health.watcher_dead(False, "idle", False)
-assert lw.relay_deliver(spec.sid, r, "aaaa1111-0000", "LEDGER-WAKE tl: test") is True
-line = json.loads(open(f"/tmp/{spec.sid}/relay-queue").read().splitlines()[-1])
-assert line["to"] == r.tag and line["session"] == "aaaa1111-0000" and "LEDGER-WAKE" in line["text"], line
+# the watcher's delivery is the direct one: no worker -> resume; no spec or role -> no adapter (never a relay)
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000"}], "opencode": {}})
+assert lw.claude_deliver(spec.sid, spec, r, "aaaa1111-0000", "LEDGER-WAKE tl: test") == "resume (fake)"
+assert lw.claude_deliver(spec.sid, None, None, "aaaa1111-0000", "x").startswith("no-adapter")
 import briefs
-spec.features["relay"] = True
 w, how = briefs.arming(r, spec)
-assert w == "relay" and "setsid" in how and "NOT as a background command" in how, (w, how)
-spec.features.pop("relay")
-assert briefs.arming(r, spec)[0] == "exit"
+assert w == "direct" and "setsid" in how and "NOT as a background command" in how, (w, how)
 PY2
-rm -f /tmp/$SID/relay-queue
+# a watcher armed before the retirement (`--wake relay`, or re-executed in place with that argv) runs as
+# direct, and arming it again as direct finds it alive: no duplicate watcher, no re-arm wake
+SC28="$S/sc-direct.state"; rm -f "$SC28"
+setsid $H ledger-watch --shoal $SID --spec "$SPEC" --slug tl --wake relay --session aaaa1111-0000 --interval 600 \
+  --sidecar "$SC28" --no-sync --no-board >"$S/w28.log" 2>&1 &
+P28=$!
+for i in $(seq 1 30); do grep -q "^pid=$P28$" "$SC28" 2>/dev/null && break; sleep 0.5; done
+grep -q "^wake=direct$" "$SC28" || fail "a --wake relay watcher did not record wake=direct :: $(cat $SC28 2>&1)"
+check "ALREADY ARMED: ledger-watch pid $P28 for tl (direct)" $H ledger-watch --shoal $SID --spec "$SPEC" --slug tl \
+  --wake direct --session aaaa1111-0000 --interval 600 --sidecar "$SC28" --no-sync --no-board
+kill $P28 2>/dev/null; wait $P28 2>/dev/null || true
 
-echo "== 29 a live detached watcher does not hide a dead Claude worker (FM-16)"
+echo "== 29 a dead Claude worker behind a live detached watcher is dormant, not stalled (FM-16, retired by direct wake)"
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "dead worker behind a live watcher"
 import json, os, sys; sys.path.insert(0, sys.argv[1])
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "state": "done"}], "opencode": {}})
@@ -1083,7 +1075,7 @@ view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
 health.watcher_alive = lambda sid, slug: (True, {"pid": "1"})
 cbusy = {}  # the plain listing omits a session whose worker is gone
 conds = [c for c in health.evaluate(spec, view, cbusy) if c["slug"] == "tl" and c["condition"] == "watcher-dead"]
-assert conds, "no watcher-dead for a dead worker behind a live watcher"
+assert not conds, conds  # the watcher resumes the session when work arrives: waking it only to re-arm costs a turn
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "aaaa1111", "sessionId": "aaaa1111-0000", "state": "done", "pid": 9}], "opencode": {}})
 assert not [c for c in health.evaluate(spec, view, {"aaaa1111-0000": "idle"}) if c["slug"] == "tl" and c["condition"] == "watcher-dead"]
 PY2
@@ -1121,7 +1113,7 @@ assert health.claude_liveness({"tempo": "blocked", "inFlight": {"tasks": 2, "kin
 print("subagents in flight ok")
 PY2
 
-echo "== 32 usage limit: Claude wakes and relaunches held until the reset, then one resume wake; relay re-relaunch; relay-watch commits on re-arm"
+echo "== 32 usage limit: Claude wakes held until the reset, then one resume wake"
 # the measured shape (2026-10-14): tl's turn errored on the limit (resetsAt), up stopped on the grace note
 CC="$S/claude-cfg"; mkdir -p "$CC/projects/p"
 python3 - "$CC" <<'PY2'
@@ -1146,7 +1138,7 @@ print("usage-limit marks ok")
 PY2
 FS_IDLE='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":4242},{"id":"bbbb2222","sessionId":"bbbb2222-0000","status":"idle","state":"done","pid":4243}],"opencode":{}}'
 HV="$H health --spec $SPEC --instance a --dry-run"
-rm -f /tmp/$SID/health.json /tmp/$SID/relay-watch.pid /tmp/$SID/ledger-watch-tl.state /tmp/$SID/wake-tl
+rm -f /tmp/$SID/health.json /tmp/$SID/ledger-watch-tl.state /tmp/$SID/wake-tl
 SEED='import datetime, json, sys; now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 json.dump({"ladders": {"tl|watcher-dead|pid:none": {"since": now, "step": 0}}}, open(sys.argv[1], "w"))'
 python3 -c "$SEED" /tmp/$SID/health.json
@@ -1159,41 +1151,7 @@ OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SH
 grep -Eq "tl watcher-dead step1:(wake|rearm) -> " <<<"$OUT" && ! grep -q "held (usage" <<<"$OUT" || fail "the held wake did not run after the reset :: $OUT"
 grep -q "tl usage-limit reset:wake" <<<"$OUT" && grep -q "up usage-limit reset:wake" <<<"$OUT" \
   || fail "no resume wake for each role the limit touched :: $OUT"
-# the relay: relaunch held inside the limit; relaunched again while it stays down; a fresh tick is the re-arm gap
-python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["features"].get("health")
-d["features"]["health"]=dict(h if isinstance(h,dict) else {}, revive=True); json.dump(d,open(p,"w"),indent=1)
-PY2
-TICK_OLD=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
-echo "$TICK_OLD" > /tmp/$SID/tick-relay-watch; rm -f /tmp/$SID/health.json
-OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" $HV 2>&1)
-grep -q "wake-relay relay-dead step1:relaunch -> held (usage limit until" <<<"$OUT" || fail "relay relaunch inside the limit not held :: $OUT"
-python3 - /tmp/$SID/health.json "$TICK_OLD" <<'PY2'
-import datetime, json, sys
-ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump({"ladders": {f"wake-relay|relay-dead|relay:{sys.argv[2]}": {"since": sys.argv[2], "step": 2, "relaunched": ago}}}, open(sys.argv[1], "w"))
-PY2
-OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
-grep -q "wake-relay relay-dead relaunch-again -> relay-launch rc=0: \[dry-run\]" <<<"$OUT" || fail "a relay still down was not relaunched again :: $OUT"
-date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/$SID/tick-relay-watch; rm -f /tmp/$SID/health.json
-OUT=$(env SHOAL_FAKE_SESSIONS="$FS_IDLE" $HV 2>&1)
-! grep -q "relay-dead" <<<"$OUT" || fail "the re-arm gap (fresh tick) read as a dead relay :: $OUT"
-python3 - "$SPEC" <<'PY2'
-import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("revive",None); json.dump(d,open(p,"w"),indent=1)
-PY2
 rm -f /tmp/$SID/health.json
-# relay-watch: the cursor moves only when the same relay session re-arms; a backlog prints one wake per role
-Q=/tmp/$SID/relay-queue; rm -f $Q $Q.cursor $Q.printed
-for s in tl tl up; do echo "{\"ts\":\"x\",\"to\":\"$s-r1\",\"slug\":\"$s\",\"session\":\"s\",\"text\":\"wake $s\"}" >> $Q; done
-RW="$H relay-watch --shoal $SID --interval 0.1 --max-hours 0.0002"
-OUT=$(env CLAUDE_CODE_SESSION_ID=relay-1 $RW 2>&1)
-[ "$(grep -c '^RELAY-WAKE' <<<"$OUT")" = 2 ] && grep -q "+1 older wake(s) merged" <<<"$OUT" || fail "backlog not merged per role :: $OUT"
-[ ! -s $Q.cursor ] || [ "$(cat $Q.cursor)" = 0 ] || fail "cursor moved before the relay re-armed"
-OUT=$(env CLAUDE_CODE_SESSION_ID=relay-2 $RW 2>&1)
-[ "$(grep -c '^RELAY-WAKE' <<<"$OUT")" = 2 ] || fail "a replacement relay did not get the unsent wakes again :: $OUT"
-OUT=$(env CLAUDE_CODE_SESSION_ID=relay-2 $RW 2>&1)
-grep -q "RELAY-MAX-HOURS" <<<"$OUT" && [ "$(cat $Q.cursor)" = 3 ] || fail "the re-arming relay did not commit the cursor :: $OUT :: $(cat $Q.cursor 2>&1)"
-rm -f $Q $Q.cursor $Q.printed
 
 echo "== 33 muse (exec per wake): the brief and arming, the between-turns read, the restart plan, a watcher that starts a turn"
 cat > "$S/muse-stub" <<'PY2'
@@ -1252,7 +1210,7 @@ PY2
 unset SHOAL_MUSE_BIN SHOAL_MUSE_STATE
 
 echo "== 34 wake economy: dormant watchers, offline hold, return settle, wake gap, one wake per role, rewake cooldown, wake_off, direct delivery"
-rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl /tmp/$SID/wake-up /tmp/$SID/relay-queue
+rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl /tmp/$SID/wake-up
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "wake economy"
 import datetime, io, json, os, sys, contextlib
 sys.path.insert(0, sys.argv[1])
@@ -1260,7 +1218,7 @@ import health, ledger, backends, briefs
 from roles import ShoalSpec
 SPEC = sys.argv[2]
 def spec_with(**h):
-    d = json.load(open(SPEC)); d.setdefault("features", {})["health"] = h; d["features"].pop("relay", None)
+    d = json.load(open(SPEC)); d.setdefault("features", {})["health"] = h
     json.dump(d, open(SPEC, "w"), indent=1); return ShoalSpec.load(SPEC)
 def ago(m):
     return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1310,7 +1268,7 @@ assert "tl wait-expired step1:wake -> " in out, out
 # two conditions due in one run: one wake, the second merged into it
 COND[:] = [pw("y#2"), {"slug": "tl", "condition": "wait-expired", "key": "rescan:w", "since": ago(1), "detail": "expired"}]
 out, st = run(spec, {"ladders": {"tl|parked-work|parked:y#2": {"since": ago(200), "step": 0}}})
-assert "merged into the parked-work wake" in out and out.count("wake-file") + out.count("resume") + out.count("relay") <= 1, out
+assert "merged into the parked-work wake" in out and out.count("wake-file") + out.count("resume") <= 1, out
 # wake_off: parked-work only pages
 spec = spec_with(wake_off=["parked-work"])
 COND[:] = [pw("v#3")]
@@ -1319,28 +1277,29 @@ assert "tl parked-work step1:page" in out and ":wake" not in out, out
 print("wake economy ladders ok")
 # dormant: a dead watcher on an idle role with nothing actionable raises nothing (lazy_rearm)
 import importlib; importlib.reload(health)
-spec = spec_with(revive=True)
+spec = spec_with()
 v = ledger.View(ledger.Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
 r = spec.role("up")
 health.watcher_dormant  # exists
 assert health.watcher_dormant(spec, v, r, "active") is False, "an active role is never dormant"
-# direct delivery (fake sessions): no worker -> resume; busy -> deferred or relay; idle mode -> stop+resume
+# direct delivery (fake sessions): no worker -> resume; busy -> deferred; idle (the default) -> stop+resume
 be = backends.get("claude")
 def rows(**kw):
     os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict({"id": "bbbb2222", "sessionId": "bbbb2222-0000"}, **kw)], "opencode": {}})
 rows(state="done")
 assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
 rows(pid=9, tempo="active")
-assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("no-adapter (wake relay disabled) (mid-turn)")
-spec = spec_with(revive=True, direct_wake="idle")
+assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (mid-turn)", be.deliver(spec, r, "bbbb2222-0000", "w")
 rows(pid=9, tempo="idle")
 assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("stop+resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
 rows(pid=9, tempo="idle", inFlight={"tasks": 1, "queued": 0, "kinds": ["local_bash"]})
 assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", be.deliver(spec, r, "bbbb2222-0000", "w")
-# arming: direct idle makes a Claude watcher detached even with no relay; dead alone does not
-assert briefs.arming(r, spec)[0] == "relay"
-spec = spec_with(revive=True)
+# arming: direct idle (the default) makes a Claude watcher detached; dead (never stop a live worker) does not
+assert briefs.arming(r, spec)[0] == "direct"
+spec = spec_with(direct_wake="dead")
 assert briefs.arming(r, spec)[0] == "exit"
+rows(pid=9, tempo="idle")
+assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (live worker (direct_wake dead))"
 spec_with()
 print("direct delivery ok")
 PY2
@@ -1521,9 +1480,9 @@ from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 import health
 from ledger import Ledger, View
-from roles import ShoalSpec, is_wake_relay
+from roles import ShoalSpec
 spec = ShoalSpec.load(sys.argv[2])
-role = next(r for r in spec.roles if not is_wake_relay(r))
+role = spec.roles[0]
 role.session = role.session or "synthetic-session"
 role.server = ""
 view = View(Ledger(spec.sid, root=spec.ledger_dir), spec)
@@ -1576,6 +1535,15 @@ with patch("state.wait_status", return_value=("stale",proof)), \
         assert not jobs.yield_for_rescan(args, unit)
 print("operational request acknowledgment ok")
 PY2
+
+echo "== 37 prune-incarnations: every guard keeps its session, tombstone before claude rm, re-stop, per-harness archive, N-2 rule"
+python3 "$TESTD/test_prune.py" || fail "prune-incarnations (tests/test_prune.py)"
+check "name what to prune" $H prune-incarnations --dry-run
+check "unknown harness" $H prune-incarnations --spec "$SPEC" --harness nope --dry-run
+OUT=$(env XDG_CONFIG_HOME="$S/xdg-prune" CLAUDE_CONFIG_DIR="$S/cc-prune" $H prune-incarnations --spec "$SPEC" \
+      --harness claude --dry-run 2>&1) || fail "prune-incarnations dry run :: $OUT"
+grep -q "== claude: 0 listed, 0 shoal-created" <<<"$OUT" && grep -q "\[dry-run\] total: prune 0" <<<"$OUT" \
+  || fail "prune-incarnations dry-run table :: $OUT"
 
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

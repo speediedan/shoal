@@ -238,17 +238,13 @@ def disposable(h: "Herdr", pane_id: str) -> bool:
 
 
 def viewable_roles(spec) -> list:
-    """Roles that get a card. The wake relay (fill=none infrastructure) is left out unless the viewer
-    sets `show_relay`; its health is in the shoal's summary and tab line either way."""
-    import ui_status
+    """Roles that get a card: every role with a session that this host can attach."""
     import routes
-    from roles import host_of, is_local, is_wake_relay
-    show_relay = ui_status.ui_config().get("show_relay") is True
+    from roles import host_of, is_local
     # a role on another host gets a card only when this host has an ssh route to it (`[hosts.<server>]`):
     # its session can be attached only on its own host, so the card runs that host's `shoal view` over ssh.
     # Without a route it stays in the overview table, with its host, and is answered by mail.
-    return [r for r in spec.roles if r.session and (is_local(r, spec) or routes.route(host_of(r, spec)) is not None)
-            and (show_relay or not is_wake_relay(r))]
+    return [r for r in spec.roles if r.session and (is_local(r, spec) or routes.route(host_of(r, spec)) is not None)]
 
 
 def role_tabs(spec) -> list[tuple[str, list]]:
@@ -362,7 +358,6 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
                "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
-               "show_relay": "true to give the wake relay a role card (default: hidden)",
                "auto_rebalance": "true (default) | false: the feeder re-lays role tabs after a role change or a new roles_per_tab",
                "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)",
                "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)",
@@ -784,6 +779,13 @@ def candidates_standalone(exclude: set[str]) -> list[dict]:
                 out.append(dict(row, harness=harness, session=sid, label=label[:40]))
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             print(f"{harness} sessions unavailable: {exc}")
+    # a saved entry stays pickable when its harness does not list it (a headless thread, a stopped or ended
+    # Claude session, a failed listing) or it was dismissed: picking it again reopens its card
+    listed = {c["session"] for c in out}
+    for e in load_standalone(raw=True):
+        if e.get("host") or e["session"] in listed or any(e["session"].startswith(x) for x in exclude if x):
+            continue
+        out.append(dict(e, state="dismissed" if e.get("dismissed") else "registered"))
     return out
 
 
@@ -869,14 +871,12 @@ def role_tokens_for(s: dict, r: dict) -> dict[str, str]:
 
 
 def shoal_tokens(s: dict) -> dict[str, str]:
-    import ui_status
     m = s["mode"]
     c = s.get("conditions") or {}
     return {
         "shoal_mode": "OFFLINE" if m["offline"] else ("FREEZE" if m["freeze"] else "ok"),
         "shoal_needs": str(s["needs_you"]), "shoal_stalled": str(s["stalled"]),
         "shoal_asks": str(s["asks_open"]), "shoal_pages": str(s["pages_24h"]),
-        "shoal_relay": ("" if not s.get("relay") else ui_status.relay_word(s["relay"])),
         "shoal_conditions": str(len(c.get("open", []))) if c else "",
         "shoal_tooling": "" if s["tooling"]["current"] else f"{s['tooling']['sha']}->{s['tooling']['head']}",
     }
@@ -1188,8 +1188,12 @@ def _pick(a) -> int:
             if x["session"] != e["session"] and (x.get("label") or x["session"][:12]) == label:
                 print(f"replacing the saved {x['harness']} session {x['session'][:8]} that had the same label "
                       f"({label}): one label, one card")
-            if x["session"] == e["session"] or (x.get("label") or x["session"][:12]) == label:
-                for k in ("model", "effort"):  # a re-pick that names neither keeps the seat's saved pair
+            if x["session"] == e["session"]:  # a re-pick keeps everything saved on it (doc, handover state)
+                e = {**{k: v for k, v in x.items() if k != "dismissed"}, **e}
+            elif (x.get("label") or x["session"][:12]) == label:
+                # a new session in the same seat keeps the seat's settings; model and effort only within one
+                # harness (a seat moved from Codex to Claude must not carry a Codex model)
+                for k in ("doc", "handover", "handover_k") + (("model", "effort") if x["harness"] == e["harness"] else ()):
                     if k not in e and x.get(k):
                         e[k] = x[k]
         entries = [x for x in load_standalone(raw=True) if x["session"] != e["session"]
@@ -1246,13 +1250,16 @@ def cmd_dash(a) -> int:
     watch = ui_term.CodeWatch()
     while True:
         watch.check()
+        cols, rows = ui_term.screen_size()
         try:
             doc = ui_status.cached_status(a.ids or None)
-            body = ui_status.render_text(doc)
+            body = ui_status.render_text(doc, width=cols)
         except Exception as exc:  # noqa: BLE001
             body = f"status unavailable: {exc}"
-        sys.stdout.write("\x1b[2J\x1b[H" + body + f"\n\n\x1b[2m{datetime.datetime.now():%H:%M:%S}  "
-                         "[r] refresh  [m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m\n")
+        # Fit the pane: a taller frame scrolls the usage table into the scrollback on every tick.
+        sys.stdout.write(ui_term.fit_frame(body, f"\x1b[2m{datetime.datetime.now():%H:%M:%S}  [r] refresh  "
+                                           "[m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m",
+                                           cols, rows))
         sys.stdout.flush()
         k = ui_view._getkey(a.interval)
         if k in ("q", "Q"):
@@ -1872,7 +1879,7 @@ rows = [
 row_gap = 0
 rows = [
   ["state_icon", "workspace"],
-  [{ token = "$shoal_mode", rules = [{ equals = "ok", hide = true }, { equals = "OFFLINE", fg = "#89b4fa", bold = true }, { equals = "FREEZE", fg = "#f38ba8", bold = true }] }, { token = "$shoal_needs", rules = [{ equals = "0", hide = true }, { gt = 0, fg = "#fab387", bold = true }] }, { token = "$shoal_relay", rules = [{ equals = "ok", hide = true }, { equals = "DEAD", fg = "#f38ba8", bold = true }] }, { token = "$shoal_tooling", dim = true }],
+  [{ token = "$shoal_mode", rules = [{ equals = "ok", hide = true }, { equals = "OFFLINE", fg = "#89b4fa", bold = true }, { equals = "FREEZE", fg = "#f38ba8", bold = true }] }, { token = "$shoal_needs", rules = [{ equals = "0", hide = true }, { gt = 0, fg = "#fab387", bold = true }] }, { token = "$shoal_tooling", dim = true }],
   ["branch", "git_status"],
 ]
 """

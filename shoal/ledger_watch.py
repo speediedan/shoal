@@ -15,6 +15,8 @@ else wakes the session. On a wake the watcher fires ONE wake adapter and
 exits — the session re-arms as its first act after acting:
   --wake exit             print the summary, exit 0 (Claude background command / Monitor)
   --wake send:<session>   `openchamber session send` LEDGER-WAKE to that id, then exit 0
+  --wake direct           Claude, detached: resume the session directly (stop and resume when
+                          it is idle at its prompt); `relay` is read as `direct`
   --wake print            same as exit, but keep looping (operator terminal)
 Test mode (`--test`) fires the adapter once with LEDGER-WAKE-TEST and
 exits: arming counts only after the test wake is seen in-transcript.
@@ -25,7 +27,6 @@ armed_utc=, delivered=<comma ids, capped 400>, fetch_fail=, last_tick=).
 from __future__ import annotations
 
 import datetime
-import json
 import os
 import subprocess
 import sys
@@ -37,7 +38,7 @@ sys.path.insert(0, os.path.join(HERE, "telemetry"))
 from ledger import OFFER_WRITERS  # noqa: E402
 
 from ledger import Ledger, LedgerError, View, fmt_item, item_key, short  # noqa: E402
-from roles import ShoalSpec, find_spec, mail_read_since, state_dir  # noqa: E402
+from roles import ShoalSpec, canon_wake, find_spec, is_detached_wake, mail_read_since, state_dir  # noqa: E402
 import config  # noqa: E402
 
 TOOL_PATH = config.tool_path()
@@ -258,28 +259,13 @@ def claude_session_busy(session: str) -> bool:
     return st == "busy"
 
 
-def relay_deliver(sid: str, role, session: str, text: str) -> bool:
-    """Queue one wake for the wake relay, which delivers it to the session as a message. A relay that
-    is down picks the line up when it is back (relay-watch resumes from its cursor; health relaunches
-    it under features.health.revive)."""
-    from health import relay_alive, relay_queue_path, iso
-    os.makedirs(os.path.dirname(relay_queue_path(sid)), exist_ok=True)
-    tag = getattr(role, "tag", "") if role is not None else ""
-    with open(relay_queue_path(sid), "a") as fh:
-        fh.write(json.dumps({"ts": iso(), "to": tag, "slug": getattr(role, "slug", ""), "session": session,
-                             "condition": "ledger-wake", "text": text}) + "\n")
-    print(f"queued for the wake relay ({tag})" + ("" if relay_alive(sid) else ": relay down, delivered on relaunch"))
-    return True
-
-
 def claude_deliver(sid: str, spec, role, session: str, text: str) -> str:
-    """A detached Claude watcher's delivery (`--wake relay`): direct where features.health.direct_wake
-    allows it (resume a retired session, or stop and resume an idle one), else the wake relay. Returns
-    the channel, as backends.ClaudeBackend.deliver names it."""
-    from backends import direct_wake_mode, get as get_backend
-    if spec is None or role is None or direct_wake_mode(spec) == "off":
-        relay_deliver(sid, role, session, text)
-        return "wake-relay"
+    """A detached Claude watcher's delivery (`--wake direct`): resume a retired session, or stop and
+    resume an idle one (features.health.direct_wake). Returns the channel, as
+    backends.ClaudeBackend.deliver names it."""
+    if spec is None or role is None:
+        return "no-adapter (no spec or role to deliver for)"
+    from backends import get as get_backend
     return get_backend("claude").deliver(spec, role, session, text)
 
 
@@ -339,9 +325,12 @@ def cmd_ledger_watch(a) -> int:
     if own and not a.wake.startswith("exec:") and session != own and not own.startswith(session or "\0"):
         print(f"note: --session {session or '(none)'} is not this Claude session; binding {own}")
         session = own
-    persistent = (a.wake.startswith(("send:", "exec:")) or a.wake == "relay") and not a.test
+    # `relay`, the retired wake relay's mode, is read as `direct`: a watcher armed before the retirement
+    # re-executes in place with its old argv after an upgrade, and must keep delivering with no re-arm
+    a.wake = canon_wake(a.wake)
+    persistent = is_detached_wake(a.wake) and not a.test
     if persistent:
-        # a send: or relay watcher keeps running after each wake (below), so arming twice would wake
+        # a send:, exec: or direct watcher keeps running after each wake (below), so arming twice would wake
         # twice: a second arm for the same role, wake and session finds the first alive and leaves it be
         old_pid = sc.get("pid", "")
         try:
@@ -351,7 +340,7 @@ def cmd_ledger_watch(a) -> int:
             # the session the running watcher actually bound (it rebinds to its own Claude session) counts,
             # not only its argv: a role once armed with a stale id and a second arm started a duplicate
             bound = {(opt.get("--session") or "")[:8], (sc.get("session_id") or "")[:8]} - {""}
-            same = (opt.get("--slug") == slug and opt.get("--wake") == a.wake
+            same = (opt.get("--slug") == slug and canon_wake(opt.get("--wake") or "") == a.wake
                     and (a.wake.startswith(("send:", "exec:")) or (session or "")[:8] in bound))
             if old_pid and int(old_pid) != os.getpid() and "ledger-watch" in argv and same:
                 print(f"ALREADY ARMED: ledger-watch pid {old_pid} for {slug} ({a.wake}) is running and keeps "
@@ -419,15 +408,15 @@ def cmd_ledger_watch(a) -> int:
         if not new:
             save_sidecar(sc_path, sc)
             continue
-        if persistent and (claude_session_busy(session) if a.wake == "relay"
+        if persistent and (claude_session_busy(session) if a.wake == "direct"
                            else muse_session_busy(a.wake[len("exec:"):], role.ecosystem if role else "muse") if a.wake.startswith("exec:")
                            else session_busy(session, repo_dir)):
             # never wake a lane mid-turn (or, for Claude, at an open question): the events stay
             # undelivered and go out at the next idle tick
             save_sidecar(sc_path, sc)
             continue
-        if persistent and a.wake == "relay" and _limit_until(sid):
-            # inside the account usage limit a relayed wake errors in the role's turn and is lost
+        if persistent and a.wake == "direct" and _limit_until(sid):
+            # inside the account usage limit a delivered wake errors in the role's turn and is lost
             # (2026-10-14): hold the events; the first tick after the reset delivers them
             save_sidecar(sc_path, sc)
             continue
@@ -441,7 +430,7 @@ def cmd_ledger_watch(a) -> int:
                 + f" || next: `shoal show --shoal {sid} --slug {slug}`; act (claim/msg/release), transition"
                 + ("; your watcher keeps running (no re-arm)." if persistent else ", re-arm."))
         emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
-        if a.wake == "relay":
+        if a.wake == "direct":
             ch = claude_deliver(sid, spec, role, session or "", text)
             print(f"{now_iso()} delivered via {ch}", flush=True)
             if ch.startswith("deferred"):
@@ -475,7 +464,7 @@ def add_parser(sub) -> None:
     p = sub.add_parser("ledger-watch", help="the unified session watcher (wakes on offers/msgs/claims/board)")
     config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
-    p.add_argument("--wake", default="exit", help="exit | relay (Claude, detached: the wake relay delivers) | send:<session-id> (opencode, detached) | exec:<session-id> (Muse: starts one `muse exec` turn per wake, detached) | print")
+    p.add_argument("--wake", default="exit", help="exit | direct (Claude, detached: resumes the session directly; `relay` is an old name for it) | send:<session-id> (opencode, detached) | exec:<session-id> (Muse: starts one `muse exec` turn per wake, detached) | print")
     p.add_argument("--interval", type=float, default=120, help="seconds between ledger pulls (default 120)")
     p.add_argument("--board-interval", type=float, default=600, help="seconds between board reads when self-filling")
     p.add_argument("--no-board", action="store_true", help="never read the priority table")

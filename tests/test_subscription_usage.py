@@ -186,7 +186,7 @@ class UsageTests(unittest.TestCase):
             {"provider": "opencode-go", "stale": False, "rows": [{"bucket": "opencode-go", "windows": [w("5h", 0), w("week", 0), w("month", 6)]}]}]}
         self.assertEqual(u.summary(usage, compact=True), "cx 4/23/- cl 10/87/- mu 17/22/- oc 0/0/6")
         shoal = lambda sid, needs, stalled: {"id": sid, "mode": {"offline": False, "freeze": False}, "needs_you": needs,  # noqa: E731
-                                              "stalled": stalled, "asks_open": 0, "relay": {"alive": True}}
+                                              "stalled": stalled, "asks_open": 0}
         calm = {"shoals": [shoal("alpha-20261012-165047", 0, 0), shoal("beta-20260921-170946", 0, 0)], "usage": usage}
         line = ui_status.render_line(calm, 80)
         self.assertTrue(line.startswith("codex: 4%/23%/-") and "opencode: 0%/0%/6%" in line and len(line) <= 80, line)

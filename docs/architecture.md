@@ -73,13 +73,13 @@ to match against), so a group can work from other trackers or a plain file.
 | session watcher | `shoal/ledger_watch.py` (`ledger-watch`) | always (work-only waking with `workwake`) | wakes its own session |
 | health quorum | `shoal/health.py` (`health`, timers `health-a` and `health-b`) | `health` | detect and recover stalled roles, dead watchers, stale waits |
 | session wake | `Backend.wake` in `shoal/backends.py`, one implementation per harness | always | put a wake in front of one role's session (section 7) |
-| wake relay | role `wake-relay` (`fill=none`), `relay-init`, `relay-launch`, `relay-watch` | `relay` | the Claude implementation's path when a role's own watcher is dead |
 | job units | `shoal/jobs.py` (`job run`, `wait`, `status`, `stop`) | always (brief guidance with `jobs`) | long local work outside the harness |
 | board digest | `shoal/digest.py`, `shoal/sources.py` (`digest`, `triage`, `context`) | `digest` | one board read per group, ranked per role |
 | semantic matcher | `shoal/matcher.py`, run by the digest | `matcher` (`live: false` is shadow) | a model scores items against each lane's brief |
 | residual lane | a role with `aux: true`, `aux-init`, `aux-launch` (`shoal/aux.py`) | optional role | work no active lane covers |
 | wait-target providers | `shoal/providers.py` | always | resolve `--target <kind>:<ref>` to pending, resolved or unknown |
 | harness adapters | `shoal/backends.py` | always | create, message and probe sessions per harness |
+| incarnation pruning | `shoal/prune.py` (`prune-incarnations`), `Backend.prune` per harness | by hand; automatic with `prune` | remove old role incarnations from each harness's session listing, behind guards (section 7) |
 | sensors | `shoal/watchers.py` (`watch lanes`, `watch pipeline`) | always | harness server respawn, CI pipeline starvation |
 | heartbeat daemon | `shoal/heartbeat.py` | when `health` is off | stall detection without the quorum |
 | live upgrade | `shoal/upgrade.py` (`upgrade`) | always | roll new code and feature edits into a running group |
@@ -98,7 +98,7 @@ to match against), so a group can work from other trackers or a plain file.
   existing lines and never duplicating one, and commits the change: an untracked lock file makes
   every rebase, and so every pull, refuse.
 - **Data root** (`data_root`, never committed), per group under `<data_root>/<id>/`: `contexts/`,
-  `roles/<slug>/plan_state.md` (generated start docs for the wake relay and the residual lane),
+  `roles/<slug>/plan_state.md` (generated start docs for the residual lane),
   `matcher/`, `briefs/`, `telemetry/`, `reports/`, `jobs/`, `board_digest.json` and, in shadow
   mode, `board_digest.semantic.json`.
 - **Scratch** in `/tmp/<id>/`: heartbeats, wait proofs, watcher sidecars, timer ticks, wake
@@ -269,10 +269,9 @@ work only offers to them or to `*`; `fill=none` roles never claim.
 
 | type | runs as | wakes | detected dead by |
 | --- | --- | --- | --- |
-| `ledger-watch` | an in-session background command (Claude: `--wake exit`; opencode: `--wake send:<own id>`) | its own session, for work only | sidecar pid; health `watcher-dead` |
+| `ledger-watch` | setsid-detached (Claude: `--wake direct`; opencode: `--wake send:<own id>`; muse/codex: `--wake exec:<own id>`), or an in-session background command (Claude under `direct_wake: dead`: `--wake exit`) | its own session, for work only | sidecar pid; health `watcher-dead` |
 | wait waiter (CI, lease, job) | an in-session background command, head-pinned, with verdict lines | its own session | a missing verdict; health `wait-resolved`, `wait-validity` |
 | job unit and `job wait` | a `systemd-run --user` transient unit with a `MemoryHigh` cap | its own session, through the waiter | `JOB-VERDICT` line; unit state |
-| `relay-watch` | the wake relay session's single background command | the wake relay session | its pid file; health `relay-dead` page |
 | `health-a`, `health-b` | systemd user timers | roles (through adapters), the maintainer | each checks the other's tick |
 | lanes, pipeline, digest, reconcile, weekly report | systemd user timers | the health adapters (sensor fires) | `/tmp/<id>/tick-<job>` older than three intervals |
 
@@ -311,7 +310,6 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
-| `relay-dead` (`relay`) | the wake relay's waiter is gone | page 10, then every 6 hours; with `health.revive`: relaunch at sighting, page 15, then every 6 hours |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
@@ -339,39 +337,35 @@ harness implements it in its own way:
 | harness | watcher alive | watcher dead |
 | --- | --- | --- |
 | opencode | a direct send to the session | the same |
-| Claude Code | a wake-request file `/tmp/<id>/wake-<slug>`, delivered by the role's own `ledger-watch` and acknowledged by its next `queue` write | the wake relay: `relay-watch` exits with wake lines, and the `wake-relay` session delivers each as a cross-session message |
+| Claude Code | a wake-request file `/tmp/<id>/wake-<slug>`, delivered by the role's own `ledger-watch` and acknowledged by its next `queue` write | a direct wake from the quorum (below) |
 
-With `health.revive`, a Claude role whose worker process is gone is respawned first: `claude agents
---json --all` lists it with no `pid` (plain `--json` omits it), and `claude respawn` starts a new
-worker on the same conversation. Its background commands died with the old worker, so the wake goes
-by relay even if an orphaned `ledger-watch` survives. A wake queued while the relay is down is kept
-(the quorum relaunches the relay first, and `relay-watch` resumes from its cursor), and the
-condition's page step still fires if nothing answers. This covers the Claude background service
-restarting under its workers or retiring an idle one (failure mode FM-14). To keep a role down
-under `revive`, park it or mark it `offline`: a dead session alone is revived.
+Claude needs a wake path of its own because a headless send to a running Claude session forks it
+instead of waking it. A harness with no implementation returns `no-adapter`, and the condition
+escalates to a page. Adding a harness means adding its `wake`, not changing the quorum.
 
-Claude needs the relay because a headless send to a running Claude session forks it instead of
-waking it. A harness with no implementation returns `no-adapter`, and the condition escalates to a
-page. Adding a harness means adding its `wake`, not changing the quorum.
-
-**Direct Claude wake (`health.direct_wake`).** A Claude session with **no worker** can be woken with no
-relay turn: `claude --bg --resume <session> "<text>"` continues it under the same id, with its saved
-options, and the text as its prompt (verified 2026-10-20; the prompt cache is mostly kept). It forks a
-copy only while a worker is running, and shoal stops and removes any copy that appears. Modes:
+**Direct Claude wake (`health.direct_wake`), the only Claude wake path.** A Claude session with **no
+worker** is woken with no other session's turn: `claude --bg --resume <session> "<text>"` continues it
+under the same id, with its saved options, and the text as its prompt (verified 2026-10-20; the prompt
+cache is mostly kept). It forks a copy only while a worker is running, and shoal stops and removes any
+copy that appears. Modes:
 
 | `direct_wake` | a session with no worker | a live session idle at its prompt, nothing in flight | anything else (mid-turn, at a question, background work in flight) |
 | --- | --- | --- | --- |
-| `off` | `revive`'s respawn, then the relay | the relay | held, or the relay |
-| `dead` (default with `revive`) | resumed directly | the relay | the relay |
-| `idle` | resumed directly | stopped, then resumed directly | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
+| `idle` (default) | resumed directly | stopped, then resumed directly | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
+| `dead` | resumed directly | deferred (a live worker is never stopped) | deferred |
 
-`relay_fallback` (default on, off under `idle`) says whether a wake that cannot go direct takes the relay
-or waits. A Claude watcher is detached (`--wake relay`) when the host has a relay or `direct_wake` is
-`idle`; it delivers each wake through the same path, so a detached watcher outlives its worker usefully:
-a session the background service retired after 8 h idle is **dormant**, not dead, and its next work
-resumes it. **When the relay is still worth having:** only to reach a live session that cannot be
-stopped safely (background work in flight) faster than that work ends, which is at most the harness's
-2 h background-command limit. Under `idle` with `relay_fallback` off, the relay is unused.
+Under `idle` a Claude watcher is detached (`--wake direct`) and delivers each wake through the same
+path, so it outlives its worker usefully: a session the background service retired after 8 h idle is
+**dormant**, not dead, and its next work resumes it. Under `dead` the watcher is an in-session
+background command (`--wake exit`) whose exit wakes the live session. Direct wake is always on: any
+other value, including the retired `off`, reads as `idle`. `--wake relay` (the retired wake relay's
+mode) is read as `direct`, so a watcher armed before the retirement, or one that reloads itself in
+place after an upgrade, keeps delivering with no re-arm. The wake relay (a `wake-relay` Claude role
+whose `relay-watch` delivered wakes as cross-session messages, two turns per wake) is retired
+([`decisions.md`](decisions.md)); a spec that still lists its role, `features.relay`,
+`health.relay_fallback` or `health.revive` loads: the role is dropped at load and the keys are ignored
+(a workerless session is resumed on its next wake, so `revive`'s respawn has nothing left to do). To
+keep a role down, park it or mark it `offline`: a dead session alone is woken by its next work.
 
 ### When roles wake, and what that costs
 
@@ -380,14 +374,14 @@ as a cache rebuild the size of the context when cold. So the measure that matter
 Free: ledger mail without `--wake`, ledger reads, `status`, the UI, pages, watchers polling. A turn: a
 watcher's work wake (an offer, a handoff, a user `--wake` message, a resolved wait target, board
 candidates for a self-fill role), the role's own background command ending, a health wake, a
-cross-session message, a maintainer prompt. A relayed wake is two turns (the relay's, then the role's).
+cross-session message, a maintainer prompt. A direct wake is one turn (the role's own).
 
 The quorum's wakes follow these rules (all under `features.health`):
 
 | key | default | effect |
 | --- | --- | --- |
 | `lazy_rearm` | on | a dead watcher on a role that is not active and has nothing its watcher would wake it for raises no `watcher-dead`: its next real work raises its own condition |
-| `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `relay`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder |
+| `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder |
 | `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
 | `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
@@ -424,6 +418,21 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 4. The overview row carries `context_k`, and `context-large` is an informational reason.
 
 Today only Claude reports its context (the transcript's last `usage`).
+
+**Pruning old incarnations** (`shoal/prune.py`; [`handover.md`](handover.md#pruning-old-incarnations)). A restart or
+handover stops the old session but leaves it in its harness's listing, so retired `<slug>-r<N>` sessions pile up there
+(and a Claude job keeps its `tmp/`). `Backend.prune(session, job, mode)` removes one: Claude writes a tombstone of the job
+record under `~/.claude/archived_sessions/jobs/<job>/`, runs `claude rm` (the transcript stays), then re-runs the `retire`
+re-stop check on every job sharing the conversation; Codex `thread/archive` (`thread/delete` with `--delete`); opencode
+OpenChamber's archive flag over its HTTP API (opencode's `DELETE /api/session/<id>` with `--delete`); Muse moves the
+session directory to `archived-sessions/`. `prune.py` decides what is safe: only sessions shoal created (a `<stem>-r<N>`
+name or an id in a spec's generation history; standalone predecessors and `shoal-matcher-*` sessions on request), and
+never one that is (a) a current or (b) parked role session in any spec, (c) in the viewer registry, (d) live, (e) on a
+conversation a live or protected job shares, (f) holding an existing worktree or a process's cwd, (g) the job the prune
+runs in, or (h) locked or bound to a ledger-watch, nor anything younger than `--min-age`. With `features.prune` the
+role's incarnations up to N-2 are pruned once incarnation N proves itself (its `first-turn` handover event, run detached,
+or `verify_consumer` in `restart`); N-1 stays one generation as a fallback, and a park prunes nothing. Each removal is a
+`pruned` telemetry event. The matcher deletes its own session after every run.
 
 **Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
 lands, as one channel string or a list of them: `"gh-issue:<owner/repo>#<n>"` also comments on
@@ -481,10 +490,11 @@ is the only coordination path (no host-to-host connection is needed for correctn
 - **Locality.** The spec's `home` names the host for group duties; each role's `server` names its host,
   empty meaning home; an empty `home` is a single-host shoal. `roles.is_local(role, spec)` compares with
   config `server` and is the one test: health evaluates, sensors wake and `request_wake` delivers only for
-  local roles, and `restart --only`, `relay-launch` and `aux-launch` refuse a remote role and print the
+  local roles, and `restart --only` and `aux-launch` refuse a remote role and print the
   `ssh <server> shoal ...` line. `start` and `add-role` record a remote role and launch only this host's
   roles; a full `restart` on a multi-host shoal restarts this host's roles. Mint on home, then launch each
-  remote role on its host. A remote role is watched, woken and launched by its own host.
+  remote role on its host. A remote role is watched, woken and launched by its own host. A `next --peek` from
+  another host names the role's host for its watcher instead of reading that host's stale or absent sidecar.
 - **Shared files.** Role files have one writer. `user` and `shoal` are written from any host, so the
   append-only writer files merge by union: `ledger.sync_pull` ensures the rule in the clone's
   `.git/info/attributes` (in force for every rebase) and commits it to `.gitattributes`.
@@ -512,9 +522,9 @@ is the only coordination path (no host-to-host connection is needed for correctn
   `doctor` fails a host that is not NTP-synchronized.
 - **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the pipeline
   sensor, digest, reconcile and report on home only); every host with a live role writes a `host-beat`
-  system event and home pages `host-silent` for one that stops; a Claude role off the relay's host gets
-  the `exit` watcher; `upgrade` off home leaves the spec's tooling and features to home. Still open:
-  telemetry merge for reports and per-host relays ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
+  system event and home pages `host-silent` for one that stops; a Claude role's detached watcher runs
+  on its own host and resumes its session there; `upgrade` off home leaves the spec's tooling and
+  features to home. Still open: telemetry merge for reports ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
 source, harness adapters) and their contracts are in [`providers.md`](providers.md).
 
 **Harness-specific verbs**, the only non-neutral surface:
@@ -523,14 +533,15 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 | --- | --- | --- |
 | start a session | `claude --bg` with the brief | a server session, the brief as its first prompt |
 | wake own session from its watcher | the background command exits (task notification) | a send to its own session id |
-| session wake (`Backend.wake`) | wake-request file, else the wake relay | a send |
+| session wake (`Backend.wake`) | wake-request file, else a direct wake (`claude --bg --resume`) | a send |
 | liveness, between turns | `claude agents --json` turn `state` (`done` between turns, `working` mid-turn, `blocked` on a question); never `status`, which reads `busy` while any background task (the role's own `ledger-watch`) runs | the server's session status |
 
 ## 9. Telemetry and reports
 
 - **Streams:** `session_transition` events from `queue` and `transition`; `watch_event`s for
   ledger wakes, health actions (condition and ladder step), job starts and verdicts, and digest
-  refreshes; reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
+  refreshes; `handover` phases; one `pruned` event per removed incarnation (in the owning group's telemetry, or
+  `<data_root>/_host/telemetry/` for standalone and matcher sessions); reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
 - **Pin:** each event carries a `run` pin: the protocol skill's blob sha, the scripts' shas and the
   schema version, read from the checkout the package runs from.
 - **Identity:** time in state is keyed by role slug; anything unresolvable counts as one
@@ -599,7 +610,7 @@ changes anything:
 | class | what | how it arrives |
 | --- | --- | --- |
 | live | code loaded per run or invocation (health, digest, matcher, report, `next`, `queue`, `show`) | the next timer run or command |
-| re-arm | code a running watcher executes (`ledger-watch`, `relay-watch`) | `--rearm lazy` (default): at each role's next wake; `--rearm now`: one wake per stale `ledger-watch`, and the stale `relay-watch` is killed (see below) |
+| re-arm | code a running watcher executes (`ledger-watch`) | `--rearm lazy` (default): at each role's next wake (a detached watcher reloads itself in place when the code changes); `--rearm now`: one wake per stale `ledger-watch` |
 | brief | `briefs.py` text | the next restart; `next` and `queue` output carry rule changes now |
 | restart | a spec change a live session depends on (model, harness) | never done by `upgrade`; `restart --only` does it |
 | ui | the operator UI's feeder (`shoal-ui-feed`) | restarted on any module change (it keeps the protocol modules loaded); it only reads, so no session is woken |
@@ -611,13 +622,6 @@ copies of the package's skills into every `skill_homes` entry: sessions load `sh
 those copies, so a merged protocol change otherwise never reaches them. `doctor` warns while any
 copy is stale.
 
-**Relay re-arm.** A `relay-watch` is stale when its pid file (written once at spawn) is older than
-the newest change to code it runs. `--rearm now` kills it: killing a Claude background command wakes
-its session, and the relay's loop re-arms on a kill. The command then waits up to
-`--rearm-verify-s` (default `SHOAL_REARM_VERIFY_S`, else 180 seconds) for a new pid in
-`/tmp/<id>/relay-watch.pid` with a live `relay-watch` behind it, and prints a WARN with the exact
-re-arm line (and the `relay-launch` fallback) when none appears. `--dry-run` only reports it.
-
 `restart --only <slugs>` relaunches a subset. Its start-doc checks fail only on the roles it
 relaunches; a problem in a kept role's doc prints as info. Once any session has launched, the spec
 (new ids, seqs, incarnation and generation record) is saved whatever the exit code, so a launched
@@ -628,10 +632,12 @@ id (a Claude short id against its full uuid) or the launched id is unknown.
 ## 11. Feature flags
 
 A spec's `features` object switches components on per group: `workwake` (`true`, or an object
-with `next_max`), `health` (`validity_wake_min`, `page`, `revive`), `continuation` (`after_min`),
-`waitdiscipline` (`rescan_cap_min`), `relay` (the Claude wake relay; `health.revive` repairs dead Claude workers and a dead relay), `jobs`, `digest`, and
+with `next_max`), `health` (`validity_wake_min`, `page`, `direct_wake`), `continuation` (`after_min`),
+`waitdiscipline` (`rescan_cap_min`), `jobs`, `digest`, and
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
-`private_repos`). An absent flag leaves the component off.
+`private_repos`), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
+incarnations, section 7; retirement condition: fold into the default after two clean weeks). An absent flag leaves the
+component off.
 
 ## 12. Operator UI
 
@@ -701,6 +707,12 @@ and the contract are in [`ui.md`](ui.md).
   harness's own client on the live session (`claude attach`; the opencode TUI as a client of
   OpenChamber's server). It strips `HERDR_*` and `ZELLIJ*` from the client's environment and
   refuses a dead or unlisted session. `--stub` is a role card that attaches only on Enter.
+  `claude attach` opens background jobs only, so a Claude seat running interactively in a terminal
+  is not attachable: its card names the pid and tty to use instead, and the move to a background
+  job (`claude --bg --resume <id>` once that terminal has ended; never while it runs, which starts
+  a copy). Cards and the overview dashboard redraw with `ui_term.fit_frame`: each frame is clipped
+  to the pane with a marker for the cut lines and clears the scrollback, so a frame taller than its
+  pane never piles copies of its top block into the scrollback on every refresh.
   Clients that take a model and effort per run (Muse, Codex) get the seat's own pair: a role's
   from its spec, a standalone seat's from its registry entry (saved by `ui pick --model/--effort`,
   which `muse-new`/`codex-new --pick` pass through), re-read on every attach like the entry's ids.
@@ -732,8 +744,13 @@ and the contract are in [`ui.md`](ui.md).
 - **Standalone picker** (`Backend.sessions`, `shoal/ui/ui_sessions.py`, `ui_herdr.cmd_pick`): the
   menu enumerates the backend registry and uses one normalized discovery hook per ecosystem, so a
   future ACP backend needs no menu branch. Unsupported discovery contributes no candidates. It lists Claude background
-  sessions, OpenChamber sessions, recent interactive Codex threads through `thread/list`, and Muse
-  root sessions through `session/list`. Short-lived local stdio servers are bounded and reaped;
+  and live interactive sessions, OpenChamber sessions, Codex threads through `thread/list` (interactive
+  sources plus named `exec`/`appServer` threads, since `codex-new` creates its seats headlessly; unnamed
+  headless threads are role turns and matcher runs), and Muse root sessions through `session/list`.
+  Every saved registry entry that no listing returned (dismissed, stopped or ended) is offered too, as
+  `registered` or `dismissed`, so a seat can always be re-added. Re-picking a saved session keeps its
+  fields (`doc`, handover settings) and clears only `dismissed`; a new session under an old label
+  inherits its `doc` and handover settings, and its model and effort only from the same harness. Short-lived local stdio servers are bounded and reaped;
   listing never starts, resumes or locks a session or requests inference. Role/internal sessions
   and harness subagents are excluded. Interactive picks retain stable job ids and available model
   metadata. Palette and plugin popups pass `--pause`, keeping empty-list and server errors visible
@@ -754,6 +771,8 @@ and the contract are in [`ui.md`](ui.md).
   terminal-assigned ids, are cached across redraws and have only their own allocations deleted
   on exit or partial failure. One input owner consumes fragmented and late graphics replies while
   preserving keyboard input, including a target typed during negotiation.
+  The images render at twice their base cell size where the window has room, else at 1.5x, else at
+  base size (`image_scale`); the compact 72-by-23 minimum does not grow with the art.
   Unsupported or silent terminals fall back to three original 36-by-13 ASCII fish, in different
   colors with one facing left, only when all three fit intact (121 columns by 40 rows for two
   hosts). Smaller windows omit fish. `SHOAL_SPLASH_ART=ascii|none` bypasses the probe; `auto`

@@ -96,8 +96,8 @@ def idle_row(e: dict) -> dict | None:
 
 def _pseudo(e: dict):
     """The minimum of a spec and a role the direct-wake delivery reads, for a session in no shoal: deliver directly
-    (stop and resume an idle session), never by relay."""
-    spec = types.SimpleNamespace(features={"health": {"direct_wake": "idle", "relay_fallback": False}}, sid="standalone")
+    (stop and resume an idle session)."""
+    spec = types.SimpleNamespace(features={"health": {"direct_wake": "idle"}}, sid="standalone")
     role = types.SimpleNamespace(tag=e.get("label") or e["session"][:8], slug=e.get("label") or e["session"][:8])
     return spec, role
 

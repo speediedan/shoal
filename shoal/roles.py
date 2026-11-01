@@ -41,9 +41,9 @@ import config  # noqa: E402
 ECOSYSTEMS = ("opencode", "claude", "muse", "codex")
 FILL_MODES = ("self", "assigned", "none")
 
-# The helper session behind the Claude implementation of direct session wake (backends.py
-# `wake`).
-WAKE_RELAY_SLUG = "wake-relay"
+# Retired 2026-11 (docs/decisions.md): the Claude wake relay role. A spec written before then may still
+# list it; it is dropped at load, so nothing launches, watches or shows it.
+RETIRED_RELAY_SLUG = "wake-relay"
 # resolved once per process: environment, then the host config file, then a generic default
 DEFAULT_LEDGER = {"repo": config.ledger_repo(), "dir": config.ledger_dir()}
 
@@ -76,7 +76,7 @@ def contexts_dir(sid: str) -> str:
 
 def roles_dir(sid: str) -> str:
     """Per-shoal orchestration state: generated start docs for infrastructure roles
-    (e.g. `roles/wake-relay/plan_state.md`); worker roles keep their plan_state in the
+    (e.g. `roles/shoal-aux/plan_state.md`); worker roles keep their plan_state in the
     design repo, where their mission lives."""
     return os.path.join(data_dir(sid), "roles")
 
@@ -120,7 +120,7 @@ class Role:
         # from the doc's grants-needed section at brief time, never CLI.
     fill: str = "self"           # self | assigned | none. self: pops the priority
         # table when its queue is empty; assigned: works only offers addressed to
-        # it (or `*`); none: never claims (an observer role, e.g. the relay).
+        # it (or `*`); none: never claims (an observer role).
     scope: dict = dataclasses.field(default_factory=dict)  # DEPRECATED hard self-fill
         # filter {"repos", "labels_any", "labels_none"}; read only to derive `context`
         # when a spec predates it (`shoal context migrate` converts and removes it).
@@ -228,7 +228,7 @@ class ShoalSpec:
         # behaviour lands at a restart, never under running sessions (architecture doc):
         # "digest" board digest; "jobs" job-unit brief discipline; "workwake" work-only
         # wakes + the next/queue loop; "health" (true or {"validity_wake_min": 90}) the
-        # health quorum timers replacing heartbeat; "relay" the Claude wake relay role;
+        # health quorum timers replacing heartbeat;
         # "matcher" the semantic board matcher (architecture §4.1).
     tooling: dict = dataclasses.field(default_factory=dict)  # {"sha", "repo", "prev", "upgraded_utc",
         # "changed"}: the shoal/ tooling commit this shoal was last upgraded to (`shoal upgrade`);
@@ -345,7 +345,7 @@ class ShoalSpec:
         return ShoalSpec(sid=d.get("shoal", ""), dir=d.get("dir", ""),
                        gen="" if "incarnation" in d else gen,
                        incarnation=inc,
-                       roles=[Role.from_dict(r) for r in d.get("roles", [])],
+                       roles=[Role.from_dict(r) for r in d.get("roles", []) if not _retired_relay(r)],
                        repos=list(d.get("repos", []) or []),
                        generations=list(d.get("generations", []) or []),
                        retired_utc=d.get("retired_utc", "") or "",
@@ -371,6 +371,7 @@ class ShoalSpec:
         # what this process loaded, so a save can apply only ITS changes onto a copy another host
         # pushed meanwhile (cli.persist_spec): a whole-file save lost the other host's edits
         spec.base = json.loads(json.dumps(raw))
+        spec.path = path  # where it was loaded from (prune.auto runs against this file)
         return spec
 
 
@@ -399,14 +400,23 @@ def remote_command(role, spec, verb: str) -> str:
     return f"ssh {host_of(role, spec)} {config.cli()} {verb}"
 
 
-def is_wake_relay(role) -> bool:
-    """True for the wake relay role (slug `wake-relay`; always `fill=none`)."""
-    return (role is not None and getattr(role, "fill", "") == "none"
-            and role.slug == WAKE_RELAY_SLUG)
+def _retired_relay(d: dict) -> bool:
+    """True for the retired wake relay role in a spec written before its retirement (slug `wake-relay`,
+    `fill=none`): ignored at load, so an old spec still loads, and its next save drops the role."""
+    return isinstance(d, dict) and d.get("slug") == RETIRED_RELAY_SLUG and d.get("fill") == "none"
 
 
-def wake_relay_role(spec) -> "Role | None":
-    return next((r for r in spec.roles if is_wake_relay(r)), None)
+def canon_wake(wake: str) -> str:
+    """A ledger-watch `--wake` value as it is meant now. `relay` (the retired wake relay's mode) is read as
+    `direct`, so a watcher armed before the retirement, or re-executed in place with its old argv, keeps
+    delivering directly with no re-arm."""
+    return "direct" if wake == "relay" else wake
+
+
+def is_detached_wake(wake: str) -> bool:
+    """True for a watcher that runs setsid-detached and keeps running across wakes: Claude `direct`
+    (and its old name `relay`), opencode `send:`, muse/codex `exec:`."""
+    return canon_wake(wake) == "direct" or wake.startswith(("send:", "exec:"))
 
 
 def default_spec_path(sid: str) -> str:
