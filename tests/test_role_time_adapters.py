@@ -294,6 +294,27 @@ class ResourceProjection(unittest.TestCase):
         self.assertIn('shoal_lease_reservations{host="h1",key="gpu",scope="host_gpu"} 1', text)
         self.assertIn('shoal_lease_queue_length{host="h1",key="gpu"} 2', text)
 
+    def test_render_suspended_gpu_and_idle_lease_keys_are_represented(self):
+        # a runtime-suspended GPU has no measurable utilization (its counter reads EBUSY): it is
+        # drawn as suspended, never as 0 percent. A known lease key with nothing held or queued
+        # is a measured zero, so an idle host still appears in the lease panels.
+        s = {"host": "h2", "ts": 100.0,
+             "gpus": [{"uuid": "GPU-2", "vendor": "amd", "runtime_status": "suspended",
+                       "utilization_pct": None, "vram_used_mib": 57.0, "vram_total_mib": 32624.0},
+                      {"uuid": "GPU-3", "vendor": "amd", "runtime_status": "active",
+                       "utilization_pct": 25.0, "vram_used_mib": 57.0, "vram_total_mib": 32624.0}],
+             "lease_provider": {"ok": True, "known_keys": ["gpu", "cpu-heavy", "gpu@GPU-2"]},
+             "leases": [], "queue": []}
+        text = ru.render_prometheus(s)
+        self.assertIn('shoal_gpu_runtime_suspended{host="h2",uuid="GPU-2",vendor="amd"} 1', text)
+        self.assertIn('shoal_gpu_runtime_suspended{host="h2",uuid="GPU-3",vendor="amd"} 0', text)
+        self.assertNotIn('shoal_gpu_utilization_percent{host="h2",uuid="GPU-2"', text)
+        self.assertIn('shoal_gpu_utilization_percent{host="h2",uuid="GPU-3"', text)
+        self.assertIn('shoal_lease_reservations{host="h2",key="gpu",scope="host_gpu"} 0', text)
+        self.assertIn('shoal_lease_reservations{host="h2",key="gpu@GPU-2",scope="device_gpu"} 0', text)
+        self.assertIn('shoal_lease_reservations{host="h2",key="cpu-heavy",scope="host_cpu_memory"} 0', text)
+        self.assertIn('shoal_lease_queue_length{host="h2",key="gpu"} 0', text)
+
 
 if __name__ == "__main__":
     unittest.main()

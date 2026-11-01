@@ -21,7 +21,7 @@ python3 resource_usage.py watch --host <host> --directory <output-root> --lease-
 ```
 
 With `--prom-out <file>`, `sample` and `watch` also write each sample's GPU and lease projection
-(utilization, VRAM, held reservations, queue lengths) as Prometheus text for a textfile collector;
+(utilization, VRAM, runtime-suspended state, held reservations and queue lengths, with measured zeros for known idle lease keys) as Prometheus text for a textfile collector;
 a missing measurement gets no series. With `--role-time-spec <spec>` (repeatable) they also refresh
 that shoal's role-time native status cache each sample (architecture doc §9). `install` carries
 both flags into the generated unit.
