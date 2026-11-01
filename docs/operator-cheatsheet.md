@@ -238,3 +238,7 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
   you once (`JOB-OVERRUN`, an `overrun` event); it is never killed. Long research runs use `--class research`.
 - A host whose probe fails or is stale is ineligible, never an error: check it with
   `ssh <route> shoal pool probe --json`.
+- **Trial before rollout.** Point a route's `cli` at a pre-release checkout on that host, so the trial
+  runs there without upgrading its live install, then remove the line after the rollout:
+  `[hosts.<server>]` with `cli = "python3 /path/to/pre-release-checkout/shoal/cli.py"`. Run home's side
+  from the same pre-release checkout (`python3 <checkout>/shoal/cli.py pool status`).

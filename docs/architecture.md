@@ -293,7 +293,8 @@ never duplicates a side effect. A
 ### Pool placement (`job run --place`, `shoal pool`)
 
 The pool is this host plus every `[hosts.<server>]` route (section 8), less any host left out with
-`pool = false`: on a route, that host is never probed from this side; at the top level of a host's own
+`pool = false`: on a route, that host is never probed from this side (a route's `cli` can point at a
+pre-release checkout on that host for a trial before rollout: operator cheat-sheet); at the top level of a host's own
 config, the host is never a candidate anywhere (its probe answers `pool: false` at once, and it takes
 no reservations). `pool status` names the hosts outside the pool. `job run --place auto|<host>`
 chooses where a job runs by predicted queue wait, stages it there and wraps it in that host's lease
