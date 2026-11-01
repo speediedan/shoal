@@ -444,10 +444,10 @@ def view_argv(session: str, model: str = "", effort: str = "") -> list[str]:
     return ["sh", "-c", f'"$0" resume "$1"{fl} || exec "$0"{fl}', codex_bin(), session]
 
 
-def thread_name_set(thread_id: str, name: str) -> None:
-    """Give a persisted thread its user-facing name through a short-lived `codex app-server` (stdio JSON-RPC,
-    `thread/name/set`): `codex resume <name>` and `codex queue --thread <name>` then find it. The CLI has no
-    flag for this; the TUI's /rename is the interactive form."""
+def app_server(calls: list[tuple[str, dict]], timeout: float = 60) -> list[dict]:
+    """Run JSON-RPC requests, in order, against a short-lived `codex app-server` (stdio): the results, one per call.
+    The first error raises. The app-server is how a thread is named, listed, archived or deleted: the CLI's own
+    `archive`/`delete` verbs wrap the same requests."""
     import queue
     import threading
     p = subprocess.Popen([codex_bin(), "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -459,29 +459,67 @@ def thread_name_set(thread_id: str, name: str) -> None:
         p.stdin.write(json.dumps(o) + "\n")
         p.stdin.flush()
 
-    def answer(i: int) -> dict:
-        end = time.time() + 60
+    def answer(i: int, method: str) -> dict:
+        end = time.time() + timeout
         while time.time() < end:
             try:
                 j = json.loads(q.get(timeout=0.5))
             except queue.Empty:
+                if p.poll() is not None:
+                    break
                 continue
             except ValueError:
                 continue
             if j.get("id") == i:
                 if "error" in j:
-                    raise RuntimeError(f"thread/name/set: {j['error'].get('message', j['error'])}")
-                return j.get("result", {})
-        raise RuntimeError("app-server gave no answer in 60 s")
+                    raise RuntimeError(f"{method}: {j['error'].get('message', j['error'])}")
+                return j.get("result") or {}
+        raise RuntimeError(f"app-server gave no answer to {method} in {timeout:g} s")
 
     try:
         send({"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "shoal", "title": "shoal", "version": "0"}}})
-        answer(0)
+        answer(0, "initialize")
         send({"method": "initialized", "params": {}})
-        send({"method": "thread/name/set", "id": 1, "params": {"threadId": thread_id, "name": name}})
-        answer(1)
+        out = []
+        for i, (method, params) in enumerate(calls, start=1):
+            send({"method": method, "id": i, "params": params})
+            out.append(answer(i, method))
+        return out
     finally:
         p.terminate()
+
+
+def thread_name_set(thread_id: str, name: str) -> None:
+    """Give a persisted thread its user-facing name through a short-lived `codex app-server` (stdio JSON-RPC,
+    `thread/name/set`): `codex resume <name>` and `codex queue --thread <name>` then find it. The CLI has no
+    flag for this; the TUI's /rename is the interactive form."""
+    app_server([("thread/name/set", {"threadId": thread_id, "name": name})])
+
+
+def list_threads(limit: int = 1000) -> list[dict]:
+    """Every unarchived thread of every source (interactive, `codex exec`, app-server), newest first, paged through
+    `thread/list`. Role turns run as `codex exec`, which the default (interactive only) filter hides."""
+    rows: list[dict] = []
+    cursor = None
+    while len(rows) < limit:
+        params = {"limit": 100, "sortKey": "updated_at", "sourceKinds": ["cli", "vscode", "exec", "appServer"]}
+        if cursor:
+            params["cursor"] = cursor
+        page = app_server([("thread/list", params)])[0]
+        rows += [r for r in page.get("data") or [] if isinstance(r, dict)]
+        cursor = page.get("nextCursor")
+        if not cursor:
+            break
+    return rows
+
+
+def prune_thread(thread_id: str, delete: bool = False) -> str:
+    """Archive a thread (`thread/archive`: a flag on its one stored rollout, undone by `codex unarchive`), or with
+    `delete` remove it (`thread/delete`); then drop shoal's own per-thread state. Callers check that it is idle."""
+    method = "thread/delete" if delete else "thread/archive"
+    app_server([(method, {"threadId": thread_id})])
+    shutil.rmtree(sdir(thread_id), ignore_errors=True)
+    return ("deleted" if delete else "archived") + f" thread {thread_id}"
 
 
 def cmd_codex_new(a) -> int:

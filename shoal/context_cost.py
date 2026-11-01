@@ -50,19 +50,29 @@ def claude_dir() -> str:
 
 
 def names() -> dict[str, dict]:
-    """{conversation id: {"name", "job", "kind"}} from Claude's job records (current and original ids), the shoal specs
-    (roles) and the viewer registry (standalone sessions). Unknown ids are reported by id."""
+    """{conversation id: {"name", "job", "kind"}} from Claude's job records (current and original ids), the tombstones
+    of pruned jobs (~/.claude/archived_sessions/jobs/), the shoal specs (roles, and their generation history) and the
+    viewer registry (standalone sessions). A pruned incarnation keeps its name this way. Unknown ids are reported by
+    id."""
     out: dict[str, dict] = {}
-    for f in glob.glob(os.path.join(claude_dir(), "jobs", "*", "state.json")):
+    # tombstones first: a live job record of the same id (none, once pruned) wins over its tombstone
+    for f in glob.glob(os.path.join(claude_dir(), "archived_sessions", "jobs", "*", "state.json")) + \
+            glob.glob(os.path.join(claude_dir(), "jobs", "*", "state.json")):
         job = os.path.basename(os.path.dirname(f))
         try:
             st = json.load(open(f))
         except (OSError, ValueError):
             continue
         flags = st.get("respawnFlags") or []
-        nm = next((flags[i + 1] for i in range(len(flags) - 1) if flags[i] == "-n"), "")
+        nm = next((flags[i + 1] for i in range(len(flags) - 1) if flags[i] == "-n"), "") or str(st.get("name") or "")
         if st.get("sessionId"):
             out[str(st["sessionId"])] = {"name": nm or job, "job": job, "kind": "job"}
+        try:  # a tombstone also names the conversation the job held when it was pruned
+            for ln in open(os.path.join(os.path.dirname(f), "ARCHIVE_INFO.txt")):
+                if ln.startswith("session_id:") and ln.split(":", 1)[1].strip():
+                    out.setdefault(ln.split(":", 1)[1].strip(), {"name": nm or job, "job": job, "kind": "job"})
+        except OSError:
+            pass
     try:
         from backends import get as get_backend
         for r in get_backend("claude")._agents(include_stopped=True):
@@ -76,11 +86,25 @@ def names() -> dict[str, dict]:
         from roles import ShoalSpec
         for p in glob.glob(os.path.join(config.ledger_dir(), "shoals", "*", "shoal.json")):
             spec = ShoalSpec.load(p)
+            short = spec.sid.rsplit('-', 2)[0]
+            for g in spec.generations:  # retired incarnations: `<slug>-r<seq>@<shoal>` when nothing else names them
+                seqs = g.get("seqs") or {}
+                for slug, sess in (g.get("sessions") or {}).items():
+                    r = spec.role(slug)
+                    if not sess or (r is not None and r.ecosystem != "claude"):
+                        continue
+                    nm = f"{slug}-r{seqs[slug]}@{short}" if seqs.get(slug) else f"{slug}@{short}"
+                    hit = [k for k, v in out.items() if v["job"] == sess[:8] or k.startswith(sess[:8])]
+                    for k in hit:
+                        if out[k]["name"] in (out[k]["job"], ""):
+                            out[k].update(name=nm, kind="role")
+                    if not hit:  # a job id alone is its conversation's first 8 characters: report() looks it up so
+                        out[sess] = {"name": nm, "job": sess[:8], "kind": "role"}
             for r in spec.roles:
                 if r.ecosystem == "claude" and r.session:
                     for sid, v in out.items():
                         if v["job"] and (v["job"] == r.session[:8] or sid.startswith(r.session[:8])):
-                            v.update(name=f"{r.slug}@{spec.sid.rsplit('-', 2)[0]}", kind="role")
+                            v.update(name=f"{r.slug}@{short}", kind="role")
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -256,7 +280,7 @@ def report(days: float = 1.0, until: dt.datetime | None = None, everything: bool
         if not calls or (len(calls) < 3 and not everything):
             continue
         sid = os.path.basename(f)[:-6]
-        n = nm.get(sid, {})
+        n = nm.get(sid) or nm.get(sid[:8], {})
         rows.append({"id": sid, "name": n.get("name") or sid[:8], "kind": n.get("kind") or "unknown",
                      "job": n.get("job") or "", **summarize(calls, days, turns, limits)})
     rows.sort(key=lambda r: -r["cost_eq_m"])

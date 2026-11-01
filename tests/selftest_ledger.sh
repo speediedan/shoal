@@ -600,7 +600,7 @@ esac
 SH
 printf '#!/bin/sh\necho CALLED >> "%s/opencode-called"; exit 9\n' "$S" > "$S/ocstub/opencode"
 chmod +x "$S/ocstub/openchamber" "$S/ocstub/opencode"
-PATH="$S/ocstub:$PATH" python3 - "$SHOALD" "$S/mrun" <<'PY3' || fail "matcher openchamber transport"
+PATH="$S/ocstub:$PATH" SHOAL_FAKE_OPENCHAMBER_API="$S/ocapi.log" python3 - "$SHOALD" "$S/mrun" <<'PY3' || fail "matcher openchamber transport"
 import sys
 sys.path.insert(0, sys.argv[1])
 import matcher
@@ -612,6 +612,9 @@ assert open(sys.argv[2] + "/prompt.md").read() == big, "long prompt not written 
 print("transport ok")
 PY3
 [ ! -f "$S/opencode-called" ] || fail "the matcher invoked the opencode CLI"
+# each run's session is deleted afterwards, through OpenChamber's server (never left in the store)
+[ "$(grep -c '"method": "DELETE", "path": "/api/session/ses_stub1"' "$S/ocapi.log")" = 2 ] \
+  || fail "matcher sessions not deleted after each run :: $(cat "$S/ocapi.log" 2>/dev/null)"
 
 echo "== signed grants: sign, verify at read, forged excluded, revoke and expiry"
 if command -v ssh-keygen >/dev/null; then

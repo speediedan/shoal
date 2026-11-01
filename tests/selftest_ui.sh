@@ -1037,7 +1037,8 @@ print("standalone state ok")
 PY2
 
 echo "== 3b standalone picker: local Codex/Muse lists, metadata, errors and popup lifetime"
-python3 - "$SHOALD" "$S" <<'PY2' || fail "standalone picker"
+# a scratch registry: the operator's own saved seats must never reach the candidate list under test
+XDG_CONFIG_HOME="$S/xdg-picker" python3 - "$SHOALD" "$S" <<'PY2' || fail "standalone picker"
 import contextlib, io, json, os, pathlib, subprocess, sys, time, types
 from unittest.mock import patch
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]

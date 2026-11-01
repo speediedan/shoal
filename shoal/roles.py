@@ -371,6 +371,7 @@ class ShoalSpec:
         # what this process loaded, so a save can apply only ITS changes onto a copy another host
         # pushed meanwhile (cli.persist_spec): a whole-file save lost the other host's edits
         spec.base = json.loads(json.dumps(raw))
+        spec.path = path  # where it was loaded from (prune.auto runs against this file)
         return spec
 
 

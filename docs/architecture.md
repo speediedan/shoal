@@ -79,6 +79,7 @@ to match against), so a group can work from other trackers or a plain file.
 | residual lane | a role with `aux: true`, `aux-init`, `aux-launch` (`shoal/aux.py`) | optional role | work no active lane covers |
 | wait-target providers | `shoal/providers.py` | always | resolve `--target <kind>:<ref>` to pending, resolved or unknown |
 | harness adapters | `shoal/backends.py` | always | create, message and probe sessions per harness |
+| incarnation pruning | `shoal/prune.py` (`prune-incarnations`), `Backend.prune` per harness | by hand; automatic with `prune` | remove old role incarnations from each harness's session listing, behind guards (section 7) |
 | sensors | `shoal/watchers.py` (`watch lanes`, `watch pipeline`) | always | harness server respawn, CI pipeline starvation |
 | heartbeat daemon | `shoal/heartbeat.py` | when `health` is off | stall detection without the quorum |
 | live upgrade | `shoal/upgrade.py` (`upgrade`) | always | roll new code and feature edits into a running group |
@@ -418,6 +419,21 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 
 Today only Claude reports its context (the transcript's last `usage`).
 
+**Pruning old incarnations** (`shoal/prune.py`; [`handover.md`](handover.md#pruning-old-incarnations)). A restart or
+handover stops the old session but leaves it in its harness's listing, so retired `<slug>-r<N>` sessions pile up there
+(and a Claude job keeps its `tmp/`). `Backend.prune(session, job, mode)` removes one: Claude writes a tombstone of the job
+record under `~/.claude/archived_sessions/jobs/<job>/`, runs `claude rm` (the transcript stays), then re-runs the `retire`
+re-stop check on every job sharing the conversation; Codex `thread/archive` (`thread/delete` with `--delete`); opencode
+OpenChamber's archive flag over its HTTP API (opencode's `DELETE /api/session/<id>` with `--delete`); Muse moves the
+session directory to `archived-sessions/`. `prune.py` decides what is safe: only sessions shoal created (a `<stem>-r<N>`
+name or an id in a spec's generation history; standalone predecessors and `shoal-matcher-*` sessions on request), and
+never one that is (a) a current or (b) parked role session in any spec, (c) in the viewer registry, (d) live, (e) on a
+conversation a live or protected job shares, (f) holding an existing worktree or a process's cwd, (g) the job the prune
+runs in, or (h) locked or bound to a ledger-watch, nor anything younger than `--min-age`. With `features.prune` the
+role's incarnations up to N-2 are pruned once incarnation N proves itself (its `first-turn` handover event, run detached,
+or `verify_consumer` in `restart`); N-1 stays one generation as a fallback, and a park prunes nothing. Each removal is a
+`pruned` telemetry event. The matcher deletes its own session after every run.
+
 **Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
 lands, as one channel string or a list of them: `"gh-issue:<owner/repo>#<n>"` also comments on
 that issue (the inbox, reaching the maintainer through GitHub notifications), and
@@ -524,7 +540,8 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 
 - **Streams:** `session_transition` events from `queue` and `transition`; `watch_event`s for
   ledger wakes, health actions (condition and ladder step), job starts and verdicts, and digest
-  refreshes; reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
+  refreshes; `handover` phases; one `pruned` event per removed incarnation (in the owning group's telemetry, or
+  `<data_root>/_host/telemetry/` for standalone and matcher sessions); reconcile ground truth from GitHub (timer at 04:07 and 16:07); and the ledger itself.
 - **Pin:** each event carries a `run` pin: the protocol skill's blob sha, the scripts' shas and the
   schema version, read from the checkout the package runs from.
 - **Identity:** time in state is keyed by role slug; anything unresolvable counts as one
@@ -618,7 +635,9 @@ A spec's `features` object switches components on per group: `workwake` (`true`,
 with `next_max`), `health` (`validity_wake_min`, `page`, `direct_wake`), `continuation` (`after_min`),
 `waitdiscipline` (`rescan_cap_min`), `jobs`, `digest`, and
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
-`private_repos`). An absent flag leaves the component off.
+`private_repos`), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
+incarnations, section 7; retirement condition: fold into the default after two clean weeks). An absent flag leaves the
+component off.
 
 ## 12. Operator UI
 

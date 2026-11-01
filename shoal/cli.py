@@ -16,7 +16,9 @@ Subcommands:
                 --consumer-launched SLUG:ID or --defer-consumers.
   retire        close the current generation (ended_utc), mark the spec
                 retired, optionally uninstall its watcher units. Deletes no
-                session (retire-by-neglect stands).
+                session (`prune-incarnations` removes old ones, guarded).
+  prune-incarnations  remove old role incarnations from each harness's
+                session listing (prune.py; --dry-run first).
   transition    THE session-side state primitive: heartbeat + wait proof +
                 telemetry in one command (state.py).
   status        one line per role: session state, heartbeat/wait posture,
@@ -82,6 +84,7 @@ import grants as _grants  # noqa: E402
 import startdoc as _startdoc  # noqa: E402
 import resource_usage as _resource_usage  # noqa: E402
 import role_time as _role_time  # noqa: E402
+import prune as _prune  # noqa: E402
 from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
@@ -231,7 +234,9 @@ def stage_sync_plans(spec: ShoalSpec, dry_run: bool, only: list[str] | None = No
 def stage_retire(spec: ShoalSpec, old_sessions: list[str],
                  dry_run: bool) -> int:
     print("=== 0c. retire (verify silent; record, don't delete)")
-    print("no archive API exists in either ecosystem; old sessions retire by neglect after verification.")
+    print("old sessions are stopped, not removed, here; with features.prune the incarnation before the previous one is "
+          "pruned once the new one proves itself, and `shoal prune-incarnations` removes old ones by hand "
+          "(docs/handover.md).")
     be = get_backend("opencode")
     for sid in old_sessions:
         if dry_run:
@@ -677,12 +682,23 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
         print("  probe turn:", ClaudeBackend.probe_turn()[:200])
     if consumers_launched and verify_consumers and not dry_run:
         print("  effect-verification (ledger state / watcher sidecar / heartbeat within 10 min):")
+        proved = []
         for role in consumers_launched:
             if not verify_consumer(spec, role, old=old_sessions, since_utc=launch_utc):
                 rc = rc or 3
+            else:
+                proved.append(role)
             reap_stale_watchers(spec, role, old_sessions)
         spec.record_generation()
-    print("DONE. Old generation retires by neglect; live session ids + generation record saved to the spec.")
+        for role in proved:  # features.prune: the successor proved itself, so incarnations up to N-2 go (N-1 stays)
+            try:
+                did = _prune.auto(spec, role, "restart", detach=False, log=lambda m: print("  " + m))
+            except Exception as exc:  # noqa: BLE001 - a prune never fails a restart
+                did = f"prune skipped ({str(exc)[:120]})"
+            if did:
+                print(f"  {role.slug}: {did}")
+    print("DONE. Old sessions are stopped, not removed (features.prune or `shoal prune-incarnations` removes them); "
+          "live session ids + generation record saved to the spec.")
     return rc
 
 
@@ -987,7 +1003,8 @@ def cmd_retire(a: argparse.Namespace) -> int:
     persist_spec(spec, a.spec, note="retire")
     shoal_emit(spec.sid, "shoal", "script", "generation", event="retired", gen=spec.display_gen,
              incarnation=str(spec.incarnation), note=a.note or "")
-    print(f"retired {spec.sid} gen {spec.display_gen} at {spec.retired_utc} (sessions untouched; retire-by-neglect)")
+    print(f"retired {spec.sid} gen {spec.display_gen} at {spec.retired_utc} (sessions untouched; "
+          f"`shoal prune-incarnations --spec {a.spec} --dry-run` shows what can be removed)")
     if a.uninstall_units:
         cmd_uninstall_systemd(spec.sid)
     print("next: `shoal report --spec <spec> --gen <gen>` writes the incarnation report; "
@@ -1205,6 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
     _startdoc.add_parser(sub)
     _resource_usage.add_parser(sub)
     _role_time.add_parser(sub)
+    _prune.add_parser(sub)
     _ui_parsers(sub)
 
     p = sub.add_parser("watch", help="systemd-timer watchers that fire into the ledger")

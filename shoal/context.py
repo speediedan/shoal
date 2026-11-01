@@ -164,6 +164,11 @@ def note_first_turn(spec, role) -> None:
     t = tokens(role)
     emit_handover(spec, role, "first-turn", old_session=h.get("old", ""), new_session=role.session,
                   since_restart_s=_age_s(h["restart"]), fresh_context_k=t // 1000 if t is not None else "")
+    try:  # features.prune: the new incarnation took a turn, so incarnations up to N-2 go (detached; N-1 stays)
+        import prune
+        prune.auto(spec, role, "first-turn")
+    except Exception:  # noqa: BLE001 - a prune never fails a queue write
+        pass
 
 
 def advised_since(spec, role) -> str:

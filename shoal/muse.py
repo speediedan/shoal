@@ -170,12 +170,22 @@ def last_run(session: str) -> dict:
 ACTIVE_WINDOW_S = 120  # a session whose journal changed within this long is mid-turn, not just held open
 
 
+def sessions_root() -> str:
+    """Muse's durable session store: `sessions/YYYY/MM/DD/<id>/` under its data directory."""
+    return config.env("MUSE_DATA") or os.path.join(
+        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "muse", "sessions")
+
+
+def archive_root() -> str:
+    """Where a pruned session is moved: `archived-sessions/` beside `sessions/` (Muse has no archive API)."""
+    return os.path.join(os.path.dirname(sessions_root().rstrip("/")), "archived-sessions")
+
+
 def native_session_dir(session: str) -> str:
     """Find a durable session without invoking Muse or depending on a listing service."""
     if not UUID_RE.fullmatch(session):
         return ""
-    root = config.env("MUSE_DATA") or os.path.join(
-        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "muse", "sessions")
+    root = sessions_root()
     # UUIDv7 embeds its creation date: try the direct path before the bounded date layout scan.
     try:
         date = time.gmtime(int(session[:8] + session[9:13], 16) / 1000)
@@ -188,6 +198,43 @@ def native_session_dir(session: str) -> str:
     return next((p for p in matches if os.path.isdir(p)), "")
 
 
+def lock_held(path: str) -> bool:
+    """True when any process holds a lock on `path`, read from /proc/locks: the check takes no lock itself, so it
+    can never make a starting turn or client fail with "already in use"."""
+    try:
+        st = os.stat(path)
+        want = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+        with open("/proc/locks") as fh:
+            return any(want in ln.split() for ln in fh)
+    except OSError:
+        return False
+
+
+def prune_session(session: str, delete: bool = False) -> str:
+    """Move a durable session out of Muse's store into `archived-sessions/` (same YYYY/MM/DD layout), or with
+    `delete` remove it; then drop shoal's own per-session state. Refused while its `.session.lock` or shoal's turn
+    lock is held."""
+    native = native_session_dir(session)
+    if native and lock_held(os.path.join(native, ".session.lock")):
+        raise BusyError(f"muse session {session} is in use (.session.lock held)")
+    if lock_held(os.path.join(sdir(session), "lock")):
+        raise BusyError(f"muse session {session} has a turn running (shoal lock held)")
+    did = "no durable session found"
+    if native and delete:
+        shutil.rmtree(native)
+        did = f"deleted {native}"
+    elif native:
+        rel = os.path.relpath(native, sessions_root())
+        dest = os.path.join(archive_root(), rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if os.path.exists(dest):
+            raise RuntimeError(f"archive target exists: {dest}")
+        shutil.move(native, dest)
+        did = f"moved to {dest}"
+    shutil.rmtree(sdir(session), ignore_errors=True)
+    return did
+
+
 def activity_age(session: str):
     """Seconds since the durable record changed, or None when unreadable. Current Muse uses
     sessions/YYYY/MM/DD/<id>/session.jsonl; older .msp-view-v1 journals remain a fallback.
@@ -198,8 +245,7 @@ def activity_age(session: str):
             return max(0.0, time.time() - os.path.getmtime(os.path.join(native, "session.jsonl")))
         except OSError:
             pass
-    root = config.env("MUSE_DATA") or os.path.join(
-        os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "muse", "sessions")
+    root = sessions_root()
     try:
         files = [os.path.join(d, f) for d in (os.path.join(root, ".msp-view-v1", session),)
                  for f in os.listdir(d) if f.startswith("journal")]

@@ -1536,5 +1536,14 @@ with patch("state.wait_status", return_value=("stale",proof)), \
 print("operational request acknowledgment ok")
 PY2
 
+echo "== 37 prune-incarnations: every guard keeps its session, tombstone before claude rm, re-stop, per-harness archive, N-2 rule"
+python3 "$TESTD/test_prune.py" || fail "prune-incarnations (tests/test_prune.py)"
+check "name what to prune" $H prune-incarnations --dry-run
+check "unknown harness" $H prune-incarnations --spec "$SPEC" --harness nope --dry-run
+OUT=$(env XDG_CONFIG_HOME="$S/xdg-prune" CLAUDE_CONFIG_DIR="$S/cc-prune" $H prune-incarnations --spec "$SPEC" \
+      --harness claude --dry-run 2>&1) || fail "prune-incarnations dry run :: $OUT"
+grep -q "== claude: 0 listed, 0 shoal-created" <<<"$OUT" && grep -q "\[dry-run\] total: prune 0" <<<"$OUT" \
+  || fail "prune-incarnations dry-run table :: $OUT"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

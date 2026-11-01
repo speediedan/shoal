@@ -200,9 +200,11 @@ These predate the SHOAL extraction. Each is tracked, and none blocks a single-ho
   shows no stale waits and no stall-suspect pages for every role.
 - **Direction independence.** No pilot has yet run a Claude Code coordinator with opencode workers,
   which would show the protocol does not depend on which harness leads.
-- **Archiving opencode sessions.** Finished Claude Code sessions can be archived with a host script
-  that wraps `claude rm` and keeps their history. opencode has no equivalent command: the only route
-  is the OpenChamber server's HTTP endpoint, so retiring an opencode session is manual.
+- **Pruning old incarnations** (`shoal prune-incarnations`, `features.prune`; [`handover.md`](handover.md#pruning-old-incarnations)).
+  Open edges: the opencode archive and delete routes were read from OpenChamber's source and opencode's own API
+  document, and are exercised only against a fake in the selftests; Muse has no archive API, so a moved session may stay
+  in Muse's own index until Muse rebuilds it; a Claude job removed while a stopped copy shares its conversation relies on
+  the re-stop check, as a reset does. Automatic pruning is opt-in until it has run two clean weeks.
 - **Backlog sources beyond GitHub Projects.** The backlog is a GitHub Projects v2 board today. The
   intended design accepts any ordered set of tasks that meets a defined source protocol (stable item
   ids, an order, open or closed state, and text to match against); the protocol is not written yet.

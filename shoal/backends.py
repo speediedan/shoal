@@ -77,6 +77,14 @@ class Backend:
         after its advise step and a reset by hand stays possible."""
         raise UnsupportedError(f"{self.ecosystem}: no reset yet (a new session from the start doc, by hand)")
 
+    def prune(self, session: str, job: str = "", mode: str = "purge", dry_run: bool = False) -> str:
+        """Remove an OLD incarnation from the harness's own session listing, so retired sessions stop piling up there
+        (docs/handover.md, "Pruning old incarnations"). `mode` is `purge` (remove) or `archive` (hide, recoverable);
+        each harness maps it onto what it has. This is the primitive only: which sessions are safe to prune (never a
+        current, parked, registered, live or locked one) is decided by `prune.py`, which is the only caller. Returns
+        what was done; raises UnsupportedError for a harness with no way to do it."""
+        raise UnsupportedError(f"{self.ecosystem}: no prune")
+
     def send(self, session_id: str, repo_dir: str, prompt: str,
              dry_run: bool = False, model: str = "") -> None:
         raise NotImplementedError
@@ -149,6 +157,104 @@ def opencode_server() -> tuple[str, str]:
     return cands[0] if cands else ("", "")
 
 
+def openchamber_instance() -> tuple[str, str]:
+    """(base URL, UI password) of the running OpenChamber web server, from the instance file it writes for its own
+    CLI (`<data dir>/run/openchamber-<port>.json`; data dir `$OPENCHAMBER_DATA_DIR`, else the host config's
+    `[tool_env]` value, else ~/.config/openchamber), or ("", "") when none runs. Loopback only: the file's host is the
+    bind address."""
+    import glob
+    import json as _json
+    base = (os.environ.get("OPENCHAMBER_DATA_DIR", "").strip() or config.tool_env_extra().get("OPENCHAMBER_DATA_DIR")
+            or os.path.expanduser("~/.config/openchamber"))
+    for f in sorted(glob.glob(os.path.join(base, "run", "openchamber-*.json"))):
+        try:
+            d = _json.load(open(f))
+            port = int(d.get("port") or 0)
+            pid = int(open(f[:-5] + ".pid").read().strip() or 0)
+        except (OSError, ValueError, TypeError):
+            continue
+        if port and pid and os.path.exists(f"/proc/{pid}"):
+            return f"http://127.0.0.1:{port}", str(d.get("uiPassword") or "")
+    return "", ""
+
+
+_OC_COOKIE: dict[str, str] = {}
+
+
+def openchamber_api(method: str, path: str, body: dict | None = None, directory: str = "",
+                    timeout: float = 30) -> tuple[int, object]:
+    """One request to the OpenChamber web server's HTTP API: (status, parsed JSON body or None). Session archive is
+    OpenChamber's own (`POST /api/openchamber/sessions/archive`: opencode 2 carries `time.archived` but has no route
+    that sets it); everything under `/api/` else is opencode's own API, proxied (`DELETE /api/session/<id>`). Never
+    the opencode CLI: that starts a second server on the live store. A UI password is answered as its own CLI does
+    (`POST /auth/session`, then the session cookie). SHOAL_FAKE_OPENCHAMBER_API=<file> (tests) appends each write
+    request to the file as one JSON line and answers it as the server would; a GET is answered from `<file>.get.json`
+    ({path without query: body}) and not logged."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    fake = config.env("FAKE_OPENCHAMBER_API")
+    if fake:
+        if method == "GET":
+            try:
+                answers = _json.load(open(fake + ".get.json"))
+            except (OSError, ValueError):
+                answers = {}
+            return 200, answers.get(path.split("?", 1)[0], {"data": []})
+        with open(fake, "a") as fh:
+            fh.write(_json.dumps({"method": method, "path": path, "body": body, "directory": directory}) + "\n")
+        if path.endswith("/sessions/archive"):
+            return 200, {"archived": [{"id": i} for i in (body or {}).get("ids", [])], "failedIds": []}
+        return 204, None
+    url, pw = openchamber_instance()
+    if not url:
+        raise UnsupportedError("no OpenChamber server is running (no live instance file under its run directory)")
+
+    def call(cookie: str) -> tuple[int, object]:
+        hdr = {"Accept": "application/json"}
+        data = None
+        if body is not None:
+            data = _json.dumps(body).encode()
+            hdr["Content-Type"] = "application/json"
+        if directory:
+            hdr["x-opencode-directory"] = directory
+        if cookie:
+            hdr["Cookie"] = cookie
+        req = urllib.request.Request(url + path, data=data, method=method, headers=hdr)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw, code = r.read(), r.status
+        except urllib.error.HTTPError as exc:
+            raw, code = exc.read(), exc.code
+        try:
+            parsed = _json.loads(raw) if raw else None
+        except ValueError:
+            parsed = None
+        return code, parsed
+
+    code, parsed = call(_OC_COOKIE.get(url, ""))
+    if code == 401 and pw:
+        lc, _, sc = _login(url, pw, timeout)
+        m = re.search(r"(oc_ui_session(?:_\d+)?=[^;]+)", sc)
+        if lc < 300 and m:
+            _OC_COOKIE[url] = m.group(1)
+            code, parsed = call(m.group(1))
+    return code, parsed
+
+
+def _login(url: str, pw: str, timeout: float) -> tuple[int, object, str]:
+    import json as _json
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url + "/auth/session", data=_json.dumps({"password": pw}).encode(), method="POST",
+                                 headers={"Accept": "application/json", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, None, ";".join(r.headers.get_all("Set-Cookie") or [])
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, ""
+
+
 def _run(*argv: str, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(list(argv), capture_output=True, text=True,
                           timeout=timeout, env=_ENV)
@@ -176,6 +282,24 @@ class OpenChamberBackend(Backend):
             return "opencode-send"
         except Exception as exc:  # noqa: BLE001
             return f"opencode-send FAILED ({str(exc)[:80]})"
+
+    def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False,
+              directory: str = "") -> str:
+        """opencode: `archive` sets OpenChamber's archive flag (the session leaves every listing and can be restored
+        from OpenChamber's archive view); `purge` deletes the session through opencode's own API, proxied by
+        OpenChamber. Both go through the OpenChamber server (openchamber_api), never the opencode CLI."""
+        if dry_run:
+            return f"would {'delete' if mode == 'purge' else 'archive'} opencode session {session}"
+        if mode == "purge":
+            code, body = openchamber_api("DELETE", f"/api/session/{session}", directory=directory)
+            if code >= 300 and code != 404:
+                raise RuntimeError(f"delete {session}: HTTP {code} {str(body)[:120]}")
+            return f"deleted opencode session {session}" + (" (already gone)" if code == 404 else "")
+        code, body = openchamber_api("POST", "/api/openchamber/sessions/archive", {"ids": [session]})
+        failed = (body or {}).get("failedIds") if isinstance(body, dict) else None
+        if code >= 300 or failed:
+            raise RuntimeError(f"archive {session}: HTTP {code} {str(body)[:120]}")
+        return f"archived opencode session {session}"
 
     def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         """The stock opencode TUI as a CLIENT of OpenChamber's running server (`--server URL
@@ -436,6 +560,61 @@ def parse_bg_id(text: str) -> "re.Match[str] | None":
     return m if m else None
 
 
+def claude_base() -> str:
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+
+
+def _state_of(job: str) -> dict:
+    """A Claude job's own record (~/.claude/jobs/<job>/state.json), {} when unreadable."""
+    if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job):
+        return {}
+    try:
+        import json as _json
+        d = _json.load(open(os.path.join(claude_base(), "jobs", job, "state.json")))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def tombstone_dir(job: str) -> str:
+    """Where a pruned job's record is kept: ~/.claude/archived_sessions/jobs/<job>/ (the host's convention for jobs
+    removed by hand), so its name stays resolvable after `claude rm`."""
+    return os.path.join(claude_base(), "archived_sessions", "jobs", job)
+
+
+def tombstone(job: str, row: dict | None = None) -> str:
+    """Write the tombstone of a Claude job before it is removed: copies of state.json and timeline.jsonl (never tmp/,
+    which is what the removal frees) and an ARCHIVE_INFO.txt naming the job, its conversation and transcript. Raises
+    when it cannot be written: no tombstone, no removal."""
+    import glob
+    src = os.path.join(claude_base(), "jobs", job)
+    dst = tombstone_dir(job)
+    os.makedirs(dst, exist_ok=True)
+    for f in ("state.json", "timeline.jsonl"):
+        if os.path.isfile(os.path.join(src, f)):
+            shutil.copy2(os.path.join(src, f), os.path.join(dst, f))
+    st = _state_of(job)
+    row = row or {}
+    conv = str(row.get("sessionId") or st.get("sessionId") or "")
+    orig = str(st.get("sessionId") or "")
+    hits = glob.glob(os.path.join(claude_base(), "projects", "*", f"{conv}.jsonl")) if conv else []
+    lines = [f"name: {row.get('name') or st.get('name') or ''}", f"job_id: {job}", f"session_id: {conv}"]
+    if orig and orig != conv:
+        lines.append(f"original_session_id: {orig}")
+    lines += [f"state_at_archive: {row.get('state') or st.get('state') or ''}",
+              f"cwd: {row.get('cwd') or st.get('cwd') or ''}",
+              f"archived_at: {datetime.datetime.now().astimezone().isoformat(timespec='seconds')}",
+              f"transcript: {hits[0] if hits else '(not found)'}",
+              "archived_by: shoal prune-incarnations", "",
+              "This directory holds the job record that 'claude rm' deleted (state.json and timeline.jsonl;",
+              "the job's tmp/ was not kept). The conversation transcript listed above was left in place:",
+              "it is the readable history and it keeps the session resumable with",
+              f"  claude --resume {conv}", ""]
+    with open(os.path.join(dst, "ARCHIVE_INFO.txt"), "w") as fh:
+        fh.write("\n".join(lines))
+    return dst
+
+
 class ClaudeBackend(Backend):
     """Native `claude` binary. Launched headless via `claude --bg`.
 
@@ -581,7 +760,9 @@ class ClaudeBackend(Backend):
         """Stop every job and verify that none comes back: the background service can respawn a stopped job's worker
         when another job on its conversation is removed (measured 2026-10-24: `claude rm` of the copy above restarted
         b193724a, and a later stop did not hold). A job seen live again is stopped once more; returns those still live.
-        Never `claude rm`: a stopped job is retired, and removing one is what woke the other."""
+        A reset never runs `claude rm`: a stopped job is retired, and removing one is what woke the other. Removal is
+        `prune` only, and only for a job no live or protected job shares a conversation with; `prune` runs this check
+        again on every job sharing the removed one's conversation."""
         import time as _time
         for j in jobs:
             self.stop(j)
@@ -597,6 +778,43 @@ class ClaudeBackend(Backend):
                     restopped.add(j)
         rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
         return [j for j in jobs if (rows.get(j) or {}).get("pid")]
+
+    def prune(self, session: str, job: str = "", mode: str = "purge", dry_run: bool = False) -> str:
+        """Claude has no archive, so either mode purges: a tombstone of the job's record first (`tombstone`), then
+        `claude rm <job>`, which deletes ~/.claude/jobs/<job>/ (its tmp/ can hold gigabytes) and never the transcript
+        under ~/.claude/projects/ (Claude Code expires that itself; `context-report` reads it). A job with a worker is
+        refused. Then every other job on the same conversation goes through the `retire` re-stop check, because a
+        removal has respawned a stopped job sharing its conversation (2026-10-24)."""
+        rows = self._agents(include_stopped=True)
+        row = claude_find(rows, session, job) or {}
+        jid = str(row.get("id") or job or session[:8])
+        if not re.fullmatch(r"[0-9a-f]{6,64}", jid):
+            raise RuntimeError(f"not a Claude job id: {jid!r}")
+        conv = str(row.get("sessionId") or session)
+        orig = str(row.get("originalSessionId") or claude_original(jid) or _state_of(jid).get("sessionId") or "")
+        sibs = [str(r.get("id")) for r in rows if str(r.get("id") or "") not in ("", jid) and (
+            _same(str(r.get("sessionId", "")), conv) or (orig and _same(str(r.get("sessionId", "")), orig))
+            or (orig and _same(str(r.get("originalSessionId") or _state_of(str(r.get("id")))
+                                   .get("sessionId") or ""), orig)))]
+        if dry_run:
+            return f"would tombstone and `claude rm` {jid}" + (f", then re-stop {', '.join(sibs)}" if sibs else "")
+        if row.get("pid"):
+            raise RuntimeError(f"job {jid} has a live worker (pid {row.get('pid')})")
+        stone = tombstone(jid, row)
+        b = tool_which("claude") or "claude"
+        r = subprocess.run([b, "rm", jid], capture_output=True, text=True, timeout=60, env=_ENV)
+        if r.returncode != 0:
+            out = ANSI_RE.sub("", r.stdout + r.stderr).strip()
+            raise RuntimeError(f"claude rm {jid} rc={r.returncode}: {out.splitlines()[-1][:120] if out else ''}")
+        did = f"purged job {jid} (tombstone {stone})"
+        if sibs:
+            try:
+                verify = float(config.env("PRUNE_VERIFY_S") or RETIRE_VERIFY_S)
+            except ValueError:
+                verify = RETIRE_VERIFY_S
+            live = self.retire(sibs, verify_s=verify)
+            did += f"; re-stopped {', '.join(sibs)}" + (f"; STILL LIVE: {', '.join(live)}" if live else "")
+        return did
 
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
@@ -807,6 +1025,16 @@ class CodexBackend(Backend):
         import codex_harness as codex
         return codex.view_argv(session_id, model, effort), {}
 
+    def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False) -> str:
+        """Codex: `archive` is `thread/archive` (a flag on the one stored rollout: nothing is copied, and
+        `codex unarchive` restores it); `purge` is `thread/delete`. Refused while a turn or a client holds it."""
+        import codex_harness as codex
+        if dry_run:
+            return f"would {'thread/delete' if mode == 'purge' else 'thread/archive'} {session}"
+        if codex.busy(session):
+            raise codex.BusyError(f"codex thread {session} is busy")
+        return codex.prune_thread(session, delete=mode == "purge")
+
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
         import codex_harness as codex
         return codex.quota_hint(session_id)
@@ -872,6 +1100,15 @@ class MuseBackend(Backend):
     def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         import muse
         return muse.view_argv(session_id, model, effort), {"MUSE_NO_AUTO_UPDATE": "1"}
+
+    def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False) -> str:
+        """Muse has no archive API: `archive` moves the session directory to `archived-sessions/` beside its store,
+        `purge` deletes it; shoal's own per-session state goes either way. Refused while `.session.lock` or shoal's
+        turn lock is held."""
+        import muse
+        if dry_run:
+            return f"would {'delete' if mode == 'purge' else 'move to archived-sessions'} muse session {session}"
+        return muse.prune_session(session, delete=mode == "purge")
 
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
         import muse

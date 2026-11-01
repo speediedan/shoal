@@ -162,6 +162,17 @@ export S=<id> SPEC=<path to the group's spec>
     shoal retire --spec $SPEC --uninstall-units --note "<why>" --dry-run
     ```
 
+- Prune old incarnations from each harness's session listing (guarded: never a current, parked, registered, live,
+  locked or recent session; Claude jobs leave a tombstone, the others are archived unless `--delete`). Dry-run first;
+  `features.prune` does it automatically for N-2 once N proves itself ([`handover.md`](handover.md#pruning-old-incarnations)):
+
+    ```bash
+    shoal prune-incarnations --all-specs --dry-run
+    shoal prune-incarnations --spec $SPEC [--harness claude,codex,opencode,muse] [--standalone] [--matcher] \
+      [--delete] [--min-age 24h] [--batch 10]
+    shoal upgrade --spec $SPEC --enable prune      # automatic N-2 pruning (default off)
+    ```
+
 - The residual lane, started alone (no incarnation bump):
 
     ```bash
