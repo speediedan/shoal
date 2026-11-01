@@ -370,6 +370,7 @@ else
   grep -q "lease_granted=20" "$S/last_check.out" && grep -q "outputs copied to" "$S/last_check.out" \
     || fail "placed verdict lacks the grant or the copy-back :: $(cat "$S/last_check.out")"
   grep -qx "$PSHA" "$PL/home-data/pooltest/jobs/shoal-pooltest-pl-r1.out/seen.txt" || fail "job did not run at the pushed SHA"
+  [ ! -e "$PL/far-wt/shoal-pooltest-pl-r1" ] || fail "a successful run's staged worktree was kept"
   python3 - "$PL" <<'PY' || fail "placed meta"
 import json, sys
 m = json.load(open("/tmp/pooltest/jobs/shoal-pooltest-pl-r1.json"))

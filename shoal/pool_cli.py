@@ -400,11 +400,15 @@ def _safe(s: str) -> str:
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in s) or "repo"
 
 
+def mirror_path(root: str, identity: str) -> str:
+    return f"{root}/.mirrors/{_safe(identity.replace('/', '__'))}.git"
+
+
 def stage_script(url: str, sha: str, root: str, identity: str, worktree: str) -> str:
     """Fetch the repo's origin into a mirror under the worktree root and add a detached worktree at
     `sha`. Exit 9 when the SHA is not on the remote: a pushed SHA is required, source is never copied."""
     q = shlex.quote
-    mirror = f"{root}/.mirrors/{_safe(identity.replace('/', '__'))}.git"
+    mirror = mirror_path(root, identity)
     return "; ".join([
         "set -e", f"mkdir -p {q(root + '/.mirrors')}",
         f"if [ ! -d {q(mirror)} ]; then git clone -q --mirror {q(url)} {q(mirror)}; fi",
@@ -500,7 +504,7 @@ def launch(req: dict, target: dict, unit: str, p: dict, home: str, dry_run: bool
                 print(f"ERROR: staging on {target['name']} failed rc={r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
                 return 2, info
         cwd, marker, claim, out = wt, rp["granted"], rp["claim"], rp["out"]
-        info["worktree"] = wt
+        info.update(worktree=wt, mirror=mirror_path(root, req["repo"]))
     else:
         cwd, marker, claim, out = req["cwd"], p["granted"], p["claim"], p["out"]
     envd = (target.get("envs") or {}).get(req.get("ci_env") or "") or {}
@@ -621,7 +625,8 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
         "host": res["host"], "home": home, "reason": res["reason"], "scope": info["scope"], "sha": src["sha"],
         "repo": src["identity"], "url": src["url"], "demand": dem, "prior_s": prior_s, "priority": a.priority,
         "submit_ts": now, "submit_utc": utc(now), "moves": 0, "moved": [], "marker": info["marker"],
-        "claim": info["claim"], "out": info["out"], "worktree": info["worktree"], "decision": decision,
+        "claim": info["claim"], "out": info["out"], "worktree": info["worktree"], "mirror": info.get("mirror", ""),
+        "decision": decision,
         "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
                                          "repo", "ci_env", "class")}})
     save_meta(a.sid, unit, meta)
@@ -680,7 +685,7 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
         "repo": src["identity"], "url": src["url"], "demand": dem, "prior_s": a.est * 60 if a.est else None,
         "priority": a.priority, "submit_ts": now, "submit_utc": utc(now), "moves": 0, "moved": [],
         "max_moves": 0, "reservation": res["id"], "marker": info["marker"], "claim": info["claim"],
-        "out": info["out"], "worktree": info["worktree"], "decision": decision,
+        "out": info["out"], "worktree": info["worktree"], "mirror": info.get("mirror", ""), "decision": decision,
         "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
                                          "repo", "ci_env", "class")}})
     save_meta(a.sid, unit, meta)
@@ -859,7 +864,8 @@ def transfer(a, unit: str, meta: dict, adv: dict, target: dict, considered: list
     pl = dict(pl, host=moved_to, moves=int(pl.get("moves") or 0) + (moved_to != src), last_move_ts=time.time(),
               moved=list(pl.get("moved") or []) + [rec], marker=info.get("marker", pl.get("marker")),
               claim=info.get("claim", pl.get("claim")), out=info.get("out", pl.get("out")),
-              worktree=info.get("worktree", pl.get("worktree")), scope=info.get("scope", pl.get("scope")))
+              worktree=info.get("worktree", pl.get("worktree")), mirror=info.get("mirror", ""),
+              scope=info.get("scope", pl.get("scope")))
     pl.pop("moving", None)
     new.update(cmd=list(req.get("cmd") or new.get("cmd") or []), wrapped_cmd=info.get("wrapped"),
                lease_granted=None, placement=pl)
@@ -899,11 +905,10 @@ def on_verdict(a, unit: str, meta: dict, rc, granted: str, end_ts) -> None:
     if meta.get("host"):
         local_out = jobs.paths(a.sid, unit)["out"]
         print(f"--- {copy_back(meta['host'], pl.get('out') or jobs.remote_paths(unit)['out'], local_out)}")
-        if rc == 0 and pl.get("worktree"):
-            try:
-                jobs._ssh(meta["host"], f"cd / && git -C {shlex.quote(pl['worktree'])} rev-parse --git-common-dir "
-                          f">/dev/null 2>&1 && git -C \"$(git -C {shlex.quote(pl['worktree'])} rev-parse --git-common-dir)\" "
-                          f"worktree remove --force {shlex.quote(pl['worktree'])}", timeout=60)
+        if rc == 0 and pl.get("worktree") and pl.get("mirror"):
+            try:  # a failed run keeps its worktree for inspection
+                jobs._ssh(meta["host"], f"git -C {shlex.quote(pl['mirror'])} worktree remove --force "
+                          f"{shlex.quote(pl['worktree'])}", timeout=60)
             except (OSError, subprocess.TimeoutExpired):
                 pass
     if rc is not None:
