@@ -9,6 +9,7 @@ import argparse
 import csv
 import datetime as dt
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -237,8 +238,47 @@ def _atomic_write(path, text):
     os.replace(tmp, p)
 
 
-def append_sample(root, sample):
-    """Keep observed lifecycle edges with explicit bounds; failed probes never close a lease."""
+# Compressed daily event files are kept this many days, then removed.
+RETAIN_DAYS = 90
+
+
+def _day_of(name, suffix):
+    stem = name[len("events-"):-len(suffix)]
+    return stem if len(stem) == 8 and stem.isdigit() else None
+
+
+def compact_events(directory, today, retain_days=RETAIN_DAYS):
+    """Gzip every closed day's event file (any day before `today`, YYYYMMDD) and remove compressed
+    days older than `retain_days`. A late append to a day already compressed becomes one more gzip
+    member, which readers take as part of the same file. The compressed file is replaced
+    atomically, so a crash leaves either the old pair or the new file, never a torn member."""
+    directory = Path(directory)
+    for plain in sorted(directory.glob("events-*.jsonl")):
+        day = _day_of(plain.name, ".jsonl")
+        if day is None or day >= today:
+            continue
+        gz = plain.with_name(plain.name + ".gz")
+        tmp = plain.with_name(plain.name + ".gz.tmp")
+        with tmp.open("wb") as raw:
+            if gz.exists():
+                with gz.open("rb") as old:
+                    shutil.copyfileobj(old, raw)
+            with plain.open("rb") as src, gzip.GzipFile(fileobj=raw, mode="ab") as dst:
+                shutil.copyfileobj(src, dst)
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(tmp, gz)
+        plain.unlink()
+    cutoff = (dt.datetime.strptime(today, "%Y%m%d") - dt.timedelta(days=retain_days)).strftime("%Y%m%d")
+    for gz in sorted(directory.glob("events-*.jsonl.gz")):
+        day = _day_of(gz.name, ".jsonl.gz")
+        if day is not None and day < cutoff:
+            gz.unlink()
+
+
+def append_sample(root, sample, retain_days=RETAIN_DAYS):
+    """Keep observed lifecycle edges with explicit bounds; failed probes never close a lease.
+    The first sample of a new UTC day also compresses the closed days and applies retention."""
     directory = Path(root) / sample["host"]
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / "sample.lock").open("a") as lock:
@@ -271,7 +311,10 @@ def append_sample(root, sample):
             tmp.write_text(json.dumps({"ts": sample["ts"], "leases": current}))
             os.replace(tmp, state_path)
         day = dt.datetime.fromtimestamp(sample["ts"], dt.timezone.utc).strftime("%Y%m%d")
-        with (directory / f"events-{day}.jsonl").open("a") as out:
+        target = directory / f"events-{day}.jsonl"
+        if not target.exists():
+            compact_events(directory, day, retain_days)
+        with target.open("a") as out:
             for event in events:
                 out.write(json.dumps(event, sort_keys=True) + "\n")
     return events
@@ -280,9 +323,13 @@ def append_sample(root, sample):
 def load_events(paths):
     events = []
     for path in paths:
-        files = sorted(Path(path).rglob("events-*.jsonl")) if Path(path).is_dir() else [Path(path)]
+        if Path(path).is_dir():
+            files = sorted(set(Path(path).rglob("events-*.jsonl")) | set(Path(path).rglob("events-*.jsonl.gz")))
+        else:
+            files = [Path(path)]
         for file in files:
-            with file.open() as stream:
+            opener = gzip.open if file.name.endswith(".gz") else open
+            with opener(file, "rt") as stream:
                 for line in stream:
                     try:
                         value = json.loads(line)
@@ -434,7 +481,7 @@ def execute(a):
     if a.resource_cmd in ("sample", "watch"):
         while True:
             s = snapshot(a.host, a.lease_command, a.session_ready.split(",") if a.session_ready else ())
-            append_sample(a.directory, s)
+            append_sample(a.directory, s, a.retain_days)
             if getattr(a, "prom_out", ""):
                 _atomic_write(a.prom_out, render_prometheus(s))
             for spec_path in getattr(a, "role_time_spec", []) or []:
@@ -505,6 +552,9 @@ def add_parser(sub):
             q.add_argument("--prom-out", default="", help="also write the GPU/lease projection as Prometheus text here")
             q.add_argument("--role-time-spec", action="append", default=[],
                            help="also refresh the role-time native status cache for this spec (repeatable)")
+        if name in ("sample", "watch"):
+            q.add_argument("--retain-days", type=positive, default=RETAIN_DAYS,
+                           help="days compressed daily event files are kept")
         if name in ("watch", "install"):
             q.add_argument("--interval", type=positive, default=15)
         if name == "install":

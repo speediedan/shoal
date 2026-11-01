@@ -580,8 +580,11 @@ wakes a role or runs a model turn.
   role, class and event series, checkpoints atomically, charges a restart gap to `unknown:gap` and
   starts a new epoch when its checkpoint is lost. Its Prometheus text carries no host or session
   label, so a handoff does not split a role's series.
-- The report reads observation JSONL (membership and snapshot lines; line order is append order for
-  same-time records). The classification policy version travels with every report.
+- The report reads observation JSONL (segment, membership and snapshot lines; line order is append
+  order for same-time records). `--input` takes the live journal, its directory or one segment: the
+  live path reads every closed daily segment beside it (compressed or not) and then the live file.
+  The classification policy version travels with every report, beside the policies stamped in the
+  segment headers it read (`segment_policies`; journals written before rotation carry none).
 - **Adapters** (`shoal/role_time_adapters.py`) build those records and stay read-only toward every
   role: no queue write, no wake, no model turn, no live provider call. `shoal role-time
   native-status --spec S` probes the sessions running on the current host and writes a per-host
@@ -598,9 +601,14 @@ wakes a role or runs a model turn.
   writes the accumulator's Prometheus text atomically with source-timestamp, eligibility and
   observation-error series beside the counters. Population comes from spec and generation history:
   `fill: none` roles are background unless `features.role_time.foreground` names them, and
-  `features.role_time.background` forces a role out. Membership lines are append-only, so they are
-  written once per observation file: after a generation change, start a new file for exact
-  reconciled spans (the live accumulator follows current membership every tick either way).
+  `features.role_time.background` forces a role out. The journal rotates at the UTC day boundary:
+  the live file becomes `<stem>-YYYYMMDD.jsonl` and is gzip-compressed (about 37x on real journals),
+  and the new live file opens with a segment header (`{"type": "segment", "policy", "opened"}`) and
+  every role's membership spans in full, so the last membership record for a role wins when
+  segments are read together. A journal written before rotation existed closes under the day of its
+  first snapshot. Compressed segments older than `--retain-days` (default 365) are removed; a
+  closed segment left uncompressed by a crash is compressed at the next rotation. The live
+  accumulator follows current membership every tick either way.
 
 ## 10. Live upgrades
 

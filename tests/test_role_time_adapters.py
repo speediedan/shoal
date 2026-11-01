@@ -269,6 +269,64 @@ class ObserverEndToEnd(unittest.TestCase):
             self.assertAlmostEqual(ob2.acc.counters["worker"][("wait", "remote-ci")], 30.0)
 
 
+class JournalSegments(unittest.TestCase):
+    """Daily rotation, compression, retention and the merged read (data-volume budget)."""
+
+    def _observer(self, td, sp, t):
+        cache = Path(td) / "native.json"
+        cache.write_text(json.dumps({
+            "v": 1, "shoal": SID, "host": "h", "written_at": t,
+            "roles": {"worker": {"native": ad._native("between", t)}}, "errors": {}}))
+        return ad.Observer(sp, obs_path=str(Path(td) / "obs.jsonl"),
+                           checkpoint_path=str(Path(td) / "acc.json"), cache_paths=[str(cache)],
+                           probe=False)
+
+    def test_rotation_compression_merged_read_and_retention(self):
+        midnight = 1793577600.0  # a UTC midnight
+        before, after = ad._utc_day(midnight - 1), ad._utc_day(midnight)
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td, now=midnight - 20)
+            ob = self._observer(td, sp, midnight - 20)
+            ob.tick(midnight - 20)
+            ob.tick(midnight + 10)  # crosses the boundary: the first day closes
+            seg = Path(td) / f"obs-{before}.jsonl.gz"
+            self.assertTrue(seg.is_file(), "the closed day is compressed")
+            self.assertFalse((Path(td) / f"obs-{before}.jsonl").exists())
+            live = [json.loads(x) for x in (Path(td) / "obs.jsonl").read_text().splitlines()]
+            self.assertEqual(live[0]["type"], "segment")
+            self.assertEqual(live[0]["policy"], rt.POLICY_VERSION)
+            self.assertEqual(sum(1 for x in live if x.get("type") == "membership"), 3,
+                             "membership is rewritten in full at the head of each segment")
+            # the live path reads the closed segment with it; both segment headers are counted
+            policies = []
+            obs, mem = rt.load_observations(str(Path(td) / "obs.jsonl"), policies)
+            self.assertEqual(len(obs["worker"]), 2)
+            self.assertEqual(policies, [rt.POLICY_VERSION, rt.POLICY_VERSION])
+            self.assertEqual(set(mem), {"worker", "peer", "parked-one"})
+            # retention and recovery: an expired compressed day goes, a plain closed day left by
+            # a crash is compressed, at the next day's rotation
+            old = Path(td) / "obs-20200101.jsonl.gz"
+            old.write_bytes(seg.read_bytes())
+            crash_day = ad._utc_day(midnight - 2 * 86400)
+            (Path(td) / f"obs-{crash_day}.jsonl").write_text("")
+            ob.tick(midnight + 86400 + 10)
+            self.assertFalse(old.exists())
+            self.assertTrue((Path(td) / f"obs-{crash_day}.jsonl.gz").is_file())
+            self.assertTrue((Path(td) / f"obs-{after}.jsonl.gz").is_file())
+
+    def test_journal_written_before_rotation_is_named_for_its_first_day(self):
+        midnight = 1793577600.0
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td, now=midnight + 10)
+            first = midnight - 3 * 86400 + 5
+            (Path(td) / "obs.jsonl").write_text(json.dumps({"type": "snapshot", "role": "worker", "t": first}) + "\n")
+            ob = self._observer(td, sp, midnight + 10)
+            ob.tick(midnight + 10)
+            self.assertTrue((Path(td) / f"obs-{ad._utc_day(first)}.jsonl.gz").is_file())
+            obs, _mem = rt.load_observations(str(Path(td)))  # a directory reads the same set
+            self.assertEqual([s["t"] for s in obs["worker"]], [first, midnight + 10])
+
+
 class StateRoot(unittest.TestCase):
     def test_state_root_holds_observations_and_checkpoint(self):
         with tempfile.TemporaryDirectory() as td:
