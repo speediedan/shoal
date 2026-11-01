@@ -779,6 +779,13 @@ def candidates_standalone(exclude: set[str]) -> list[dict]:
                 out.append(dict(row, harness=harness, session=sid, label=label[:40]))
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             print(f"{harness} sessions unavailable: {exc}")
+    # a saved entry stays pickable when its harness does not list it (a headless thread, a stopped or ended
+    # Claude session, a failed listing) or it was dismissed: picking it again reopens its card
+    listed = {c["session"] for c in out}
+    for e in load_standalone(raw=True):
+        if e.get("host") or e["session"] in listed or any(e["session"].startswith(x) for x in exclude if x):
+            continue
+        out.append(dict(e, state="dismissed" if e.get("dismissed") else "registered"))
     return out
 
 
@@ -1181,8 +1188,12 @@ def _pick(a) -> int:
             if x["session"] != e["session"] and (x.get("label") or x["session"][:12]) == label:
                 print(f"replacing the saved {x['harness']} session {x['session'][:8]} that had the same label "
                       f"({label}): one label, one card")
-            if x["session"] == e["session"] or (x.get("label") or x["session"][:12]) == label:
-                for k in ("model", "effort"):  # a re-pick that names neither keeps the seat's saved pair
+            if x["session"] == e["session"]:  # a re-pick keeps everything saved on it (doc, handover state)
+                e = {**{k: v for k, v in x.items() if k != "dismissed"}, **e}
+            elif (x.get("label") or x["session"][:12]) == label:
+                # a new session in the same seat keeps the seat's settings; model and effort only within one
+                # harness (a seat moved from Codex to Claude must not carry a Codex model)
+                for k in ("doc", "handover", "handover_k") + (("model", "effort") if x["harness"] == e["harness"] else ()):
                     if k not in e and x.get(k):
                         e[k] = x[k]
         entries = [x for x in load_standalone(raw=True) if x["session"] != e["session"]
@@ -1239,13 +1250,16 @@ def cmd_dash(a) -> int:
     watch = ui_term.CodeWatch()
     while True:
         watch.check()
+        cols, rows = ui_term.screen_size()
         try:
             doc = ui_status.cached_status(a.ids or None)
-            body = ui_status.render_text(doc)
+            body = ui_status.render_text(doc, width=cols)
         except Exception as exc:  # noqa: BLE001
             body = f"status unavailable: {exc}"
-        sys.stdout.write("\x1b[2J\x1b[H" + body + f"\n\n\x1b[2m{datetime.datetime.now():%H:%M:%S}  "
-                         "[r] refresh  [m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m\n")
+        # Fit the pane: a taller frame scrolls the usage table into the scrollback on every tick.
+        sys.stdout.write(ui_term.fit_frame(body, f"\x1b[2m{datetime.datetime.now():%H:%M:%S}  [r] refresh  "
+                                           "[m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m",
+                                           cols, rows))
         sys.stdout.flush()
         k = ui_view._getkey(a.interval)
         if k in ("q", "Q"):

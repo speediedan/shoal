@@ -121,14 +121,34 @@ _MIN_COLS = 72
 _ASCII_COLS = len(_HEADER[0]) + 2 * (36 + 3) + 2
 
 
+_IMAGE_SCALES = (2.0, 1.5, 1.0)  # PNG creatures at double size where the window has room, else the largest that fits
+
+
 def min_size(n_rows: int) -> tuple[int, int]:
     """Native compact splash. Optional ASCII art never forces a giant minimum window."""
     return _MIN_COLS, 19 + 2 * max(1, n_rows)
 
 
+def _bands(scale: float) -> tuple[int, int]:
+    """(rows above the logo, rows of the side band beside it) for the image composition at `scale`."""
+    return round(4 * scale), round(6 * scale)
+
+
+def image_scale(cols: int, lines: int | None, n_rows: int) -> float:
+    """The largest image scale whose whole composition fits; 0.0 below the compact minimum. Scale 1
+    needs exactly `min_size`, so the minimum (and the resize request) never grows with the art."""
+    for scale in _IMAGE_SCALES:
+        top, side = _bands(scale)
+        need_cols = max(_MIN_COLS, len(_HEADER[0]) + 2 * (round(12 * scale) + 2))
+        need_lines = top + side + 9 + 2 * max(1, n_rows)
+        if cols >= need_cols and (lines is None or lines >= need_lines):
+            return scale
+    return 0.0
+
+
 def art_mode(cols: int, lines: int | None, n_rows: int, requested: str) -> str:
     if requested == "images":
-        return "images" if cols >= _MIN_COLS and (lines is None or lines >= min_size(n_rows)[1]) else "none"
+        return "images" if image_scale(cols, lines, n_rows) else "none"
     if requested == "ascii" and cols >= _ASCII_COLS and (lines is None or lines >= 36 + 2 * max(1, n_rows)):
         return "ascii"
     return "none"
@@ -159,7 +179,7 @@ def _header_row(row: str, i: int) -> list[Seg]:
     return segs
 
 
-def _logo(width: int, uni: bool, art: str = "none") -> list[list[Seg]]:
+def _logo(width: int, uni: bool, art: str = "none", scale: float = 1.0) -> list[list[Seg]]:
     """Non-overlapping cell stamps keep every ASCII outline intact."""
     header = [_header_row(r, i) for i, r in enumerate(_HEADER)] if uni else [[("S H O A L", "1;96")]]
     hw = max(_width(r) for r in header)
@@ -167,7 +187,8 @@ def _logo(width: int, uni: bool, art: str = "none") -> list[list[Seg]]:
     if art == "ascii":
         height, hy = 27, 14 + (13 - len(header)) // 2
     elif art == "images":
-        height, hy = 10, 4 + (6 - len(header)) // 2
+        top, side = _bands(scale)
+        height, hy = top + side, top + (side - len(header)) // 2
     else:
         height, hy = len(header), 0
     canvas = [[(" ", "") for _ in range(width)] for _ in range(height)]
@@ -203,14 +224,18 @@ def _logo(width: int, uni: bool, art: str = "none") -> list[list[Seg]]:
 
 
 def image_rectangles(cols: int, lines: int, n_rows: int) -> list[tuple[int, int, int, int]]:
-    """Cell rectangles relative to the same compact composition as the text."""
-    top = max(0, (lines - (10 + 2 * max(1, n_rows) + 7)) // 2)
+    """Cell rectangles relative to the same composition as the text, at `image_scale`: the compact
+    layout (8x4, 12x6, 6x4 cells) doubled in both dimensions where the window has room."""
+    s = image_scale(cols, lines, n_rows) or 1.0
+    band, side = _bands(s)
+    top = max(0, (lines - (band + side + 2 * max(1, n_rows) + 7)) // 2)
     hx = (cols - len(_HEADER[0])) // 2
-    return [(cols // 2 - 4, top, 8, 4),
-            (hx - 14, top + 4, 12, 6),
-            (hx + len(_HEADER[0]) + 2, top + 4, 12, 6),
-            (cols // 2 - 17, top, 6, 4),
-            (cols // 2 + 9, top, 8, 4)]
+    c = lambda v: round(v * s)  # noqa: E731
+    return [(cols // 2 - c(4), top, c(8), band),
+            (hx - c(12) - 2, top + band, c(12), side),
+            (hx + len(_HEADER[0]) + 2, top + band, c(12), side),
+            (cols // 2 - c(17), top, c(6), band),
+            (cols // 2 + c(9), top, c(8), band)]
 
 
 def terminal_size() -> os.terminal_size:
@@ -264,7 +289,7 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
     dot = " · " if uni else " | "
     out: list[list[Seg]] = []
     mode = art_mode(width, lines, len(rows), art)
-    out += _logo(width, uni and width >= len(_HEADER[0]) + 4, mode)
+    out += _logo(width, uni and width >= len(_HEADER[0]) + 4, mode, image_scale(width, lines, len(rows)) or 1.0)
     tag = _TAGLINE if uni else _TAGLINE.replace("·", "|")
     if len(tag) <= width:
         out.append(_centered([(tag, "33")], width))

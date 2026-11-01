@@ -458,7 +458,7 @@ class ClaudeBackend(Backend):
     def sessions(self) -> list[dict]:
         return [{"session": str(e["sessionId"]), "job": str(e.get("id") or ""),
                  "label": str(e.get("name") or e["sessionId"][:8])[:40],
-                 "state": e.get("state"), "cwd": e.get("cwd")}
+                 "state": e.get("state") or e.get("kind"), "cwd": e.get("cwd")}
                 for e in self._agents() if e.get("sessionId") and e.get("pid")]
 
     def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
@@ -692,6 +692,9 @@ class ClaudeBackend(Backend):
         # `claude attach` matches the job id (8 hex), not the session UUID a spec may record (restart
         # adopts the sidecar's full id): measured 2026-10-12, "No job matching '<uuid>'"
         e = self._row(session_id, include_stopped=True) or {}
+        if e.get("kind") == "interactive":
+            raise UnsupportedError(f"claude session {session_id} runs interactively in pid {e.get('pid')}: "
+                                   "`claude attach` opens background sessions only")
         job = str(e.get("id") or session_id.split("-", 1)[0][:8])
         return [tool_which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
 

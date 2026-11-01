@@ -433,7 +433,8 @@ the live install uses: the feeder unit and the status line name the shoal wrappe
 **Launching the view** (`shoal ui launch [--server SERVER|local] [--no-open] [--no-choose] [--shoal ID]`).
 - **The chooser.** A full-screen start screen with five transparent colorful creatures (three fish, a seahorse and a blowfish) around the SHOAL
   logo above the menu. A Kitty graphics PNG capability probe enables images behind the text, including
-  over SSH when the complete terminal path supports it. The fish are uploaded once and repositioned
+  over SSH when the complete terminal path supports it. The creatures render at twice their base size
+  when the window has room (93 by 33 for two hosts), else at 1.5x, else at base size. The fish are uploaded once and repositioned
   on resize. Unsupported paths use three colored ASCII fish, one reversed, only when all three fit
   intact: at least 121 columns by 40 rows for two hosts. Smaller windows show the logo/menu without fish.
   Set `SHOAL_SPLASH_ART=ascii` to inspect the fallback, or `SHOAL_SPLASH_ART=none` to disable art;

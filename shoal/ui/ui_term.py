@@ -14,6 +14,7 @@ Without a terminal (tests, pipes) they fall back to plain line reads.
 from __future__ import annotations
 
 import os
+import re
 import select
 import sys
 
@@ -194,6 +195,42 @@ def page(text: str) -> None:
         return
     import subprocess
     subprocess.run(["less", "-R", "-K", "-Ps[q] close   [space] [arrows] scroll"], input=text, text=True)
+
+
+_CSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def screen_size() -> tuple[int, int]:
+    """(columns, rows) of stdout's terminal; (0, 0) when it is not one (tests, pipes)."""
+    try:
+        size = os.get_terminal_size(sys.stdout.fileno())
+        return size.columns, size.lines
+    except (OSError, ValueError):
+        return 0, 0
+
+
+def fit_frame(body: str, footer: str, cols: int = 0, rows: int = 0) -> str:
+    """One full-screen redraw that never scrolls. A frame taller than the pane pushes its top lines
+    into the scrollback on every tick, and ED 2 clears only the visible screen, so the scrollback
+    collects one copy of the top block (the usage table) per refresh. The body is clipped to the
+    rows left above the footer, with a marker for what was cut; ED 3 drops copies an older frame left;
+    no newline follows the footer (one on the last row would scroll)."""
+    if not (cols and rows):
+        cols, rows = screen_size()
+    lines = body.rstrip("\n").split("\n")
+    if rows:
+        tall = lambda ln: max(1, -(-len(_CSI.sub("", ln)) // cols)) if cols else 1  # noqa: E731
+        room = rows - 1 - sum(tall(ln) for ln in footer.split("\n"))  # a blank row above the footer
+        if sum(tall(ln) for ln in lines) > room:
+            kept: list[str] = []
+            used = tall("... 99999 more lines: enlarge the pane")  # the marker's rows
+            for ln in lines:
+                used += tall(ln)
+                if used > room:
+                    break
+                kept.append(ln)
+            lines = kept + [f"\x1b[2m... {len(lines) - len(kept)} more lines: enlarge the pane\x1b[0m"]
+    return "\x1b[H\x1b[2J\x1b[3J" + "\n".join(lines) + "\n\n" + footer
 
 
 class CodeWatch:

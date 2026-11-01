@@ -687,6 +687,12 @@ and the contract are in [`ui.md`](ui.md).
   harness's own client on the live session (`claude attach`; the opencode TUI as a client of
   OpenChamber's server). It strips `HERDR_*` and `ZELLIJ*` from the client's environment and
   refuses a dead or unlisted session. `--stub` is a role card that attaches only on Enter.
+  `claude attach` opens background jobs only, so a Claude seat running interactively in a terminal
+  is not attachable: its card names the pid and tty to use instead, and the move to a background
+  job (`claude --bg --resume <id>` once that terminal has ended; never while it runs, which starts
+  a copy). Cards and the overview dashboard redraw with `ui_term.fit_frame`: each frame is clipped
+  to the pane with a marker for the cut lines and clears the scrollback, so a frame taller than its
+  pane never piles copies of its top block into the scrollback on every refresh.
   Clients that take a model and effort per run (Muse, Codex) get the seat's own pair: a role's
   from its spec, a standalone seat's from its registry entry (saved by `ui pick --model/--effort`,
   which `muse-new`/`codex-new --pick` pass through), re-read on every attach like the entry's ids.
@@ -718,8 +724,13 @@ and the contract are in [`ui.md`](ui.md).
 - **Standalone picker** (`Backend.sessions`, `shoal/ui/ui_sessions.py`, `ui_herdr.cmd_pick`): the
   menu enumerates the backend registry and uses one normalized discovery hook per ecosystem, so a
   future ACP backend needs no menu branch. Unsupported discovery contributes no candidates. It lists Claude background
-  sessions, OpenChamber sessions, recent interactive Codex threads through `thread/list`, and Muse
-  root sessions through `session/list`. Short-lived local stdio servers are bounded and reaped;
+  and live interactive sessions, OpenChamber sessions, Codex threads through `thread/list` (interactive
+  sources plus named `exec`/`appServer` threads, since `codex-new` creates its seats headlessly; unnamed
+  headless threads are role turns and matcher runs), and Muse root sessions through `session/list`.
+  Every saved registry entry that no listing returned (dismissed, stopped or ended) is offered too, as
+  `registered` or `dismissed`, so a seat can always be re-added. Re-picking a saved session keeps its
+  fields (`doc`, handover settings) and clears only `dismissed`; a new session under an old label
+  inherits its `doc` and handover settings, and its model and effort only from the same harness. Short-lived local stdio servers are bounded and reaped;
   listing never starts, resumes or locks a session or requests inference. Role/internal sessions
   and harness subagents are excluded. Interactive picks retain stable job ids and available model
   metadata. Palette and plugin popups pass `--pause`, keeping empty-list and server errors visible
@@ -740,6 +751,8 @@ and the contract are in [`ui.md`](ui.md).
   terminal-assigned ids, are cached across redraws and have only their own allocations deleted
   on exit or partial failure. One input owner consumes fragmented and late graphics replies while
   preserving keyboard input, including a target typed during negotiation.
+  The images render at twice their base cell size where the window has room, else at 1.5x, else at
+  base size (`image_scale`); the compact 72-by-23 minimum does not grow with the art.
   Unsupported or silent terminals fall back to three original 36-by-13 ASCII fish, in different
   colors with one facing left, only when all three fit intact (121 columns by 40 rows for two
   hosts). Smaller windows omit fish. `SHOAL_SPLASH_ART=ascii|none` bypasses the probe; `auto`
