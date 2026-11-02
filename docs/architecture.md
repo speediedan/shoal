@@ -855,8 +855,10 @@ refused, so a passive reader of a CLI report cannot turn stale usage into an
 apparently current account measurement.
 
 Not every provider returns every window. Missing monthly meters are marked as
-not reported, authentication failures are visible, and Muse's optional missing
-quota payload is unavailable rather than a fabricated zero. CLI account APIs
+not reported, authentication failures are visible, and a Muse response with an active
+subscription but no usage block is the server reporting no use in the current windows (the Muse
+CLI's own `server_sent_no_usage`), shown as unused since reset: never a fabricated zero, and not a
+read failure, so polling does not back off. A malformed usage block stays an error. CLI account APIs
 and local credential layouts are version-sensitive; hermetic fixtures exercise
 their boundaries and live read-only verification establishes actual coverage.
 OpenCode Go's current `percent` wire field maps to the same internal percentage

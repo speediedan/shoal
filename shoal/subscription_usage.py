@@ -108,6 +108,11 @@ def normalize(provider, data):
         if data.get("is_subs_active") is not True:
             raise UsageError("no active subscription on this login")
         usage = data.get("subs_usage")
+        if usage is None:
+            # an active subscription with no usage block: the server has no use to report in the current
+            # windows (Muse's own `muse usage` says `server_sent_no_usage`, "before your first use in a new
+            # window"), so this is a known state, shown as unused since the last reset, never a zero
+            return [{"bucket": "muse", "plan": text(data.get("subs_tier_name")), "windows": [], "idle": True}]
         if not isinstance(usage, dict):
             raise UsageError("quota omitted by login API; not a measured zero")
         windows = []
@@ -458,7 +463,7 @@ def render_lines(doc, *, color=False):
                              + (", refresh due)" if due else ")"))
             label = a["provider"] + ("/" + r["bucket"] if r["bucket"] != a["provider"] else "")
             state = severity(a, r)
-            body = f"  {label}: " + ("  ".join(cells) if cells else "? unavailable")
+            body = f"  {label}: " + ("  ".join(cells) if cells else IDLE_TEXT if r.get("idle") else "? unavailable")
             missing = [n for n in ("5h", "week", "month") if n not in {w["name"] for w in r["windows"]}]
             if cells and missing:
                 body += "  " + "/".join(missing) + " --"
@@ -475,6 +480,7 @@ def render_lines(doc, *, color=False):
 
 
 WINDOWS = ("5h", "week", "month")
+IDLE_TEXT = "unused since reset"  # a row the server reports no use for in its current windows (not a 0%)
 BAR_STEPS = (8, 5, 3)  # bar cells, widest first: the table takes the widest set that fits the terminal
 DIM, RESET_CODE = "\x1b[90m", "\x1b[0m"
 SEVERITY_CODES = {"ok": "\x1b[32m", "warning": "\x1b[33m", "critical": "\x1b[31m"}
@@ -549,7 +555,7 @@ def render_table(doc, *, color=False, width=0, glyphs=None):
                     if name in by:
                         row.append(_cell(by[name], a.get("stale"), cells, glyphs))
                     else:
-                        row.append([("? unavailable" if i == 0 and not by else "--", "")])
+                        row.append([((IDLE_TEXT if r.get("idle") else "? unavailable") if i == 0 and not by else "--", "")])
                 row.append([(_age_text(a.get("age_s")), "")])
                 body.append(row)
         w = [max([len(h)] + [len(_plain(r[i])) for r in body]) for i, h in enumerate(heads)]
@@ -610,8 +616,9 @@ def summary(doc, compact=False):
         name = (COMPACT_NAMES if compact else SHORT_NAMES).get(a["provider"], a["provider"])
         sep, unit = (" ", "") if compact else (": ", "%")
         limit = any(r.get("blocked") for r in a.get("rows", []))
+        idle = any(r.get("idle") for r in a.get("rows", []))
         if not any(n in best for n in WINDOWS):
-            parts.append(f"{name}{sep}" + ("LIMIT" if limit else "?"))
+            parts.append(f"{name}{sep}" + ("LIMIT" if limit else "idle" if idle else "?"))
         else:
             parts.append(f"{name}{'~' if a.get('stale') or due else ''}{sep}"
                          + "/".join(f"{round(best[n])}{unit}" if n in best else "-" for n in WINDOWS)
