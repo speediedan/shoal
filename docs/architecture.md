@@ -734,6 +734,36 @@ wakes a role or runs a model turn.
   closed segment left uncompressed by a crash is compressed at the next rotation. The live
   accumulator follows current membership every tick either way.
 
+### CI wait by repository (`shoal ci-wait`)
+
+`shoal/ci_wait.py` measures how long each configured repository makes a change wait for CI, and why,
+from three sources. Repositories come from `features.ci_wait.repos` in a spec; nothing in the code
+names one.
+
+- **GitHub Actions**: per workflow job, queue time (job created to started) and run time, with the
+  attempt, from `gh api` (the runs list is read one UTC day at a time, since it caps at 1,000
+  results; a run's PR comes from `commits/{sha}/pulls`, cached, because a run's own `pull_requests`
+  is often empty). A pass re-reads the last two days for late completions and reruns, and fetches
+  jobs only for runs whose `updated_at` changed since the last pass (persisted).
+- **The Azure Pipelines gate**: per build of the repository, the approval wait (the timeline's
+  `Checkpoint.Approval` record, where a serial gate queues) or, with no approval, queue to first job
+  start, plus run time. Builds link to their PR head through `triggerInfo` (`sourceVersion` is the
+  merge commit). `az` runs under `bash -lc`, so its credential stays in the login environment.
+- **Local CI**: `shoal job` records (a placed job's lease wait before `lease_granted` and run time
+  after it; the repository is the placement record's, else matched from the working directory by
+  `local.paths`, else unattributed) and the resource sampler's observed lease reservations (direct
+  test runs; the holder is matched to a repository by `local.holders`; a holder naming the gate's
+  own build is marked `gate` and not counted twice). Research jobs are not CI.
+
+Per PR head, **CI complete** is the last completion among every check counted on that head:
+GitHub jobs plus gate builds, minus the repository's `ignore` patterns (workflow, job or pipeline
+names), or exactly its `required` patterns when given. Records go to `<data_root>/_ci_wait/
+<owner>__<name>.jsonl` (append-only; the last record for a key wins) with a cursor state beside them.
+`shoal ci-wait observe --spec S` runs one incremental pass; `shoal ci-wait report --spec S [--repo
+<owner>/<name>] --since T [--json]` prints push-to-CI-complete and gate wait (p50, p95), GitHub queue
+and run time, local lease wait and run time, job-minutes per PR head and rerun share, and the counted
+checks with the most wait per PR head.
+
 ## 10. Live upgrades
 
 `shoal upgrade --spec <spec> [--dry-run]` says how each change reaches a running group before it

@@ -60,6 +60,7 @@ $H ledger-init --spec "$SPEC" >/dev/null
 python3 "$TESTD/test_resource_usage.py" || fail "resource usage telemetry and placement"
 python3 "$TESTD/test_role_time.py" || fail "role time accounting"
 python3 "$TESTD/test_role_time_adapters.py" || fail "role time adapters"
+python3 "$TESTD/test_ci_wait.py" || fail "ci wait by repository"
 
 echo "== 1 working context: scope derives, migrate converts and removes scope"
 check '"tl-4-migration": 3.0' $H context show --shoal $SID --spec "$SPEC" --slug tl
