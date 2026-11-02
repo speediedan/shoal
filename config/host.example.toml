@@ -73,7 +73,27 @@
 # attaches them by running that host's `shoal view` over ssh. One table per other host's `server` name.
 # `resolve = "tailscale"` (the default when tailscale is on PATH) looks the name up with
 # `tailscale ip -4`, so a host whose resolver does not accept tailnet DNS still reaches a MagicDNS name.
-# Optional: ssh_opts (extra ssh arguments), cli (the shoal command there; default `shoal` under bash -lc).
+# Optional: ssh_opts (extra ssh arguments), cli (the shoal command there; default `shoal` under bash -lc),
+# pool (false: leave that host out of CI pool placement without probing it, e.g. a session-only laptop).
 # Default: no routes (other hosts' roles are shown, never attached).
 # [hosts.<server>]
 # ssh = "<user>@<magicdns-name>"
+# pool = false
+# cli = "python3 /path/to/pre-release-checkout/shoal/cli.py"   # a trial of unreleased code on that host
+
+# CI pool placement (`job run --place`, `shoal pool`): where a placed job's pushed SHA is staged as a
+# detached worktree on this host (a mirror clone per repository sits under `.mirrors/` there).
+# Env: SHOAL_WORKTREE_ROOT. Default: <data_root>/_pool/worktrees
+# worktree_root = "/path/to/scratch/worktrees"
+
+# Keep this host out of CI pool placement entirely (a session-only host): it is never a placement
+# candidate, answers `pool probe` at once with pool=false, and takes no reservations. Like every
+# top-level key, it goes above the first [table] in a real host.toml. Default: true
+# pool = false
+
+# Named CI environments this host offers placed jobs (`job run --ci-env NAME` is placed only on hosts
+# that have NAME). `python` is the interpreter (its directory is put first on PATH and exported as
+# SHOAL_ENV_PYTHON); `repos` lists the repositories it serves (empty: any). Default: none.
+# [ci_envs.<name>]
+# python = "/path/to/venvs/<name>/bin/python"
+# repos = ["<owner>/<repo>"]

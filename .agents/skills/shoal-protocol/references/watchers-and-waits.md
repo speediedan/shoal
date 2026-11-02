@@ -41,6 +41,29 @@ A detached process that only writes a log is not a watcher, because an idle sess
 the log. That includes `setsid nohup shoal job wait ... &` in a harness whose background commands
 do not report back: it finishes, writes its verdict to a file, and wakes nobody.
 
+**Run CI on the best pool host.** For local CI expected to take more than a few minutes, let the
+pool place it instead of queueing behind your own host's lease:
+
+```bash
+shoal job run --shoal <id> --slug <you> --name <job> --place auto --needs cpu|gpu[:N][:vendor][:vramGiB] \
+  [--cpu-heavy] [--ci-env NAME] --repo <checkout> [--ref <sha>] --est <minutes> -- <cmd>
+```
+
+It picks the host with the earliest predicted finish (your own host on near-ties), stages your
+**pushed** SHA there (commit and push first, or pass `--ref`; a dirty or unpushed tree stays home), wraps
+the command in that host's lease with the right scope, and prints `JOB-PLACED`. Write results to
+`$SHOAL_JOB_OUT`: `job wait` copies them back to your host at the verdict. Pin a host with
+`--place <host>` for exact-hardware comparisons. Follow it with `job wait` and a `job:<name>` target as
+below; the job may move to another host while still queued (`JOB-MOVED`), and its waiter follows it.
+
+**CI jobs have a runtime budget** (90 min by default, from the lease grant). Past it you are paged once
+(`JOB-OVERRUN`); the job keeps running. Split a long suite, or run long experiments as
+`--class research` inside a reservation your role owns. The operator (or you, where your grants allow)
+takes one with `shoal pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy --for
+<shoal>/<you> --until <ISO|job:<name>>`; a research job outside a reservation is refused. Release a
+reservation as soon as the research is done (`shoal pool release <id> --host <host>`): it is taken out
+of everyone's CI.
+
 **Write the wait in one `queue` call, with a checkable target** (`--wait local-ci --holder "job
 <name>" --target job:<name>`). Do not follow it with a separate `shoal transition`: re-declaring a
 wait without `--target` used to erase the target, and nothing could then tell the wait had ended.

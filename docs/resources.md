@@ -29,7 +29,8 @@ a missing measurement gets no series. With `--role-time-spec <spec>` (repeatable
 that shoal's role-time native status cache each sample (architecture doc §9). `install` carries
 both flags into the generated unit.
 
-The default cadence is 15 seconds. The service is `shoal-resources.service`, shared across groups.
+`install --enable` reloads systemd, enables the service and restarts it, so a reinstall (new flags, a moved
+checkout) replaces a running sampler instead of leaving the old process in place. The default cadence is 15 seconds. The service is `shoal-resources.service`, shared across groups.
 Its dry run prints the exact unit before installation. Hardware observations use stable NVIDIA UUIDs
 or AMD discrete-GPU `unique_id`, normalized as `GPU-<16 hex digits>`. Integrated GPUs without an
 allocatable identity are excluded. Runtime suspension is recorded separately from utilization: a

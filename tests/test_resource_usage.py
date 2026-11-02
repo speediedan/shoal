@@ -139,6 +139,25 @@ class Resources(unittest.TestCase):
             sample["gpus"] = [suspended]
             self.assertEqual(r.placement([sample], gpu_count=1, gpu_vendor="amd", now=100)["recommended_host"], "host-a")
 
+    def test_install_enable_restarts_a_running_service(self):
+        """--enable must restart an already-active unit: `enable --now` leaves the old process (and its
+        old ExecStart) running after the unit file is rewritten."""
+        import argparse
+        a = argparse.Namespace(resource_cmd="install", directory=str(self.root / "out"), host="host-a",
+                               lease_command="", interval=15, session_ready="", prom_out="", role_time_spec=[],
+                               dry_run=False, enable=True)
+        with patch.object(r.Path, "home", return_value=self.root), patch.object(r.subprocess, "run") as run:
+            self.assertEqual(r.execute(a), 0)
+        calls = [c.args[0] for c in run.call_args_list]
+        self.assertEqual(calls, [["systemctl", "--user", "daemon-reload"],
+                                 ["systemctl", "--user", "enable", "shoal-resources.service"],
+                                 ["systemctl", "--user", "restart", "shoal-resources.service"]])
+        self.assertIn("ExecStart=", (self.root / ".config/systemd/user/shoal-resources.service").read_text())
+        a.enable = False
+        with patch.object(r.Path, "home", return_value=self.root), patch.object(r.subprocess, "run") as run:
+            r.execute(a)
+        self.assertEqual([c.args[0] for c in run.call_args_list], [["systemctl", "--user", "daemon-reload"]])
+
 
 if __name__ == "__main__":
     unittest.main()

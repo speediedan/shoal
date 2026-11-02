@@ -216,6 +216,222 @@ PV_GPU=$(cd "$SHOALD" && env -u SHOAL_LEASE_CMD GPU_LEASE_CMD="$S/lease_stub.sh"
 import providers; print(providers.resolve('lease:gpu', 'tl', 'x')[0])")
 [ "$PV_GPU" = True ] || fail "GPU_LEASE_CMD fallback not honoured :: $PV_GPU"
 
+echo "== 6c pool placement: job run --place over two fake hosts (probe over an ssh stub, dry-run, live, transfer)"
+python3 "$TESTD/test_pool.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_pool.py"; fail "pool planner unit tests (tests/test_pool.py)"; }
+pool_clean() { have_systemd && systemctl --user stop 'shoal-pooltest-*' 2>/dev/null; rm -rf /tmp/pooltest; }
+pool_clean
+PL="$S/pool"; mkdir -p "$PL/home-data" "$PL/far-data" "$PL/far-home" "$PL/bin" "$PL/rc"
+# a lease provider per host: --status --json from a mode file; a wrapped command runs at once (free) or waits
+# for a release file (busy), as the real helper's FIFO wait would
+cat > "$PL/bin/lease" <<'SH'
+#!/bin/sh
+mode=$(cat "$LEASE_MODE_FILE" 2>/dev/null || echo free)
+if [ "$1" = "--status" ]; then
+  case "$mode" in
+    busy) echo '{"leases":[{"key":"gpu","held":true,"mode":"exclusive","holder":"ci-agent","pid":7,"since":"'"$(date -u -d '-30 seconds' +%FT%TZ)"'"},{"key":"cpu-heavy","held":false}],"queue":[]}' ;;
+    *)    echo '{"leases":[{"key":"gpu","held":false},{"key":"cpu-heavy","held":false}],"queue":[]}' ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "--release" ] || [ "$2" = "--release" ]; then pf=$(eval echo "\${$#}"); kill "$(cat "$pf")" 2>/dev/null; rm -f "$pf"*; exit 0; fi
+case " $* " in *" --hold "*)   # a research hold: a background holder, its pid and grant beside the pidfile
+  for x in "$@"; do pf=$x; done
+  setsid sleep 600 </dev/null >/dev/null 2>&1 & echo $! > "$pf"; echo "${GPU_LEASE_DEVICES%%:*}" > "$pf.device"; exit 0 ;;
+esac
+echo "lease-args: $*" >&2
+while [ "$1" != "--" ]; do shift; done; shift
+if [ "$mode" = busy ]; then while [ ! -e "$LEASE_MODE_FILE.release" ]; do sleep 0.2; done; fi
+exec "$@"
+SH
+chmod +x "$PL/bin/lease"
+# one host's view: its config, data root and lease mode; the far host is reached only through the ssh stub
+cat > "$PL/home.toml" <<EOF
+data_root = "$PL/home-data"
+ledger_dir = "$S/no-ledger-clone"
+lease_cmd = "env LEASE_MODE_FILE=$PL/home.mode $PL/bin/lease"
+worktree_root = "$PL/home-wt"
+[hosts.farhost]
+ssh = "tester@farhost"
+resolve = "dns"
+cli = "$(python3 -c 'import sys; print(sys.executable)') $SHOALD/cli.py"   # a login shell may find another python3
+[hosts.laptop]
+ssh = "tester@laptop"
+pool = false
+EOF
+cat > "$PL/far.toml" <<EOF
+data_root = "$PL/far-data"
+ledger_dir = "$S/no-ledger-clone"
+lease_cmd = "env LEASE_MODE_FILE=$PL/far.mode $PL/bin/lease"
+worktree_root = "$PL/far-wt"
+[ci_envs.cpuenv]
+python = "/usr/bin/python3"
+repos = ["selftest/poolrepo"]
+EOF
+cat > "$PL/bin/ssh" <<'SH'
+#!/bin/sh
+while [ $# -gt 1 ]; do shift; done
+[ -e "$POOL_DIR/far.down" ] && { echo "ssh: connect to host farhost: Connection refused" >&2; exit 255; }
+# a far host whose shoal predates `pool probe` answers with argparse's usage dump
+[ -e "$POOL_DIR/far.old" ] && { printf 'usage: shoal [-h] {doctor,start}\n       ...\nshoal: error: argument cmd: invalid choice: %s\n' "'pool'" >&2; exit 2; }
+# the far host's own HOME, but this user's site-packages (a TOML reader on Python 3.10)
+PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}" \
+HOME="$POOL_DIR/far-home" SHOAL_CONFIG="$POOL_DIR/far.toml" SHOAL_SERVER=farhost SHOAL_DATA_ROOT="$POOL_DIR/far-data" \
+  exec /bin/bash -c "$1"
+SH
+chmod +x "$PL/bin/ssh"
+echo busy > "$PL/home.mode"; echo free > "$PL/far.mode"
+# fresh synthetic resource samples (devices with arch tags, memory), so no probe reads this host's GPUs
+pool_samples() {
+  python3 - "$PL" <<'PY'
+import json, os, sys, time
+pl, now = sys.argv[1], time.time()
+for host, gpus in (("homehost", [("GPU-home-0", "nvidia", 24576, "sm_89")]),
+                   ("farhost", [("GPU-far-0", "nvidia", 32768, "sm_80"), ("GPU-far-1", "amd", 32768, "gfx1100")])):
+    d = os.path.join(pl, ("home" if host == "homehost" else "far") + "-data", "_resources", host)
+    os.makedirs(d, exist_ok=True)
+    s = {"v": 1, "type": "resource_sample", "host": host, "ts": now,
+         "gpus": [{"uuid": u, "vendor": v, "vram_total_mib": m, "vram_used_mib": 0, "arch": a} for u, v, m, a in gpus],
+         "memory": {"total_bytes": 64 << 30, "available_bytes": 48 << 30}}
+    with open(os.path.join(d, time.strftime("events-%Y%m%d.jsonl", time.gmtime(now))), "a") as fh:
+        fh.write(json.dumps(s) + "\n")
+PY
+}
+pool_samples
+# the checkout: a pushed commit on an origin both hosts can fetch
+# (a file:// URL, so its identity is owner/name like a hosted remote's)
+git init -q --bare "$PL/selftest/poolrepo.git"
+git clone -q "file://$PL/selftest/poolrepo.git" "$PL/poolrepo" 2>/dev/null
+( cd "$PL/poolrepo" && echo a > f && git add f && git commit -q -m one && git push -q origin HEAD 2>/dev/null )
+PSHA=$(git -C "$PL/poolrepo" rev-parse HEAD)
+PENV="env SHOAL_CONFIG=$PL/home.toml SHOAL_SERVER=homehost SHOAL_DATA_ROOT=$PL/home-data SHOAL_SSH=$PL/bin/ssh POOL_DIR=$PL SHOAL_ROUTE_CACHE=$PL/rc"
+PJ="$PENV $H job run --shoal pooltest --slug pl"
+OUT=$($PENV $H pool probe --json) || fail "pool probe rc :: $OUT"
+grep -q '"host": "homehost"' <<<"$OUT" && grep -q '"gpu_source": "sample"' <<<"$OUT" && grep -q '"arch": "sm_89"' <<<"$OUT" \
+  || fail "pool probe misses host, sample source or arch :: $OUT"
+check "farhost: cores" $PENV $H pool status
+grep -q "^pool: 2 host(s)" "$S/last_check.out" && grep -q "outside the pool (pool = false): laptop" "$S/last_check.out" \
+  && ! grep -q "^laptop" "$S/last_check.out" || fail "a pool = false route was probed or counted :: $(cat "$S/last_check.out")"
+check "not a pool host" $PJ --name lp --place laptop --dry-run -- true
+check "holder ci-agent \[gpu\] external" $PENV $H pool status
+check "GPU-far-1 amd 32 GiB gfx1100" $PENV $H pool status
+check "ERROR: --needs must be cpu or gpu" $PJ --name bad --place auto --needs tpu --dry-run -- true
+check "not a pool host" $PJ --name bad --place nowhere --dry-run -- true
+check "exclusive" $PJ --name bad --place auto --on farhost --dry-run -- true
+# the home host is busy behind a CI holder: auto places the GPU job on the free far host, staged from the pushed SHA
+check "PLACEMENT shoal-pooltest-pl-g1: farhost (earliest predicted finish) scope=gpu:1 min-vram 16GiB" \
+  $PJ --name g1 --place auto --needs gpu:1:nvidia:16 --repo "$PL/poolrepo" --est 20 --dry-run -- python3 -c pass
+grep -q "\[dry-run\] stage on farhost: .*worktree add -q --detach .*$PSHA" "$S/last_check.out" || fail "no staging step :: $(cat "$S/last_check.out")"
+grep -q -- "--gpus 1 --min-vram 16 --" "$S/last_check.out" || fail "GPU lease scope missing :: $(cat "$S/last_check.out")"
+grep -q "dry-run.*ssh farhost" "$S/last_check.out" || fail "no remote launch :: $(cat "$S/last_check.out")"
+# a vendor or VRAM only one host has
+check "homehost .*ineligible: no amd GPU" $PJ --name g2 --place auto --needs gpu:1:amd --repo "$PL/poolrepo" --dry-run -- true
+check "PLACEMENT shoal-pooltest-pl-g3: none" $PJ --name g3 --place auto --needs gpu:1:any:64 --repo "$PL/poolrepo" --dry-run -- true
+# CPU-only: no GPU key (only --lease cpu-heavy, and only when asked), no visible devices
+check "scope=cpu-heavy" $PJ --name c1 --place farhost --needs cpu --cpu-heavy --repo "$PL/poolrepo" --dry-run -- true
+grep -q -- "--lease cpu-heavy --" "$S/last_check.out" && ! grep -q -- "--cpu-heavy" "$S/last_check.out" \
+  && grep -q "export CUDA_VISIBLE_DEVICES=" "$S/last_check.out" && grep -q "export HIP_VISIBLE_DEVICES=" "$S/last_check.out" \
+  || fail "CPU-only lease scope or device selectors wrong :: $(cat "$S/last_check.out")"
+check "scope=none" $PJ --name c2 --place homehost --needs cpu --repo "$PL/poolrepo" --dry-run -- true
+grep -q "stage on homehost" "$S/last_check.out" && fail "home staged without --ref :: $(cat "$S/last_check.out")"
+grep -q "WorkingDirectory=$PL/poolrepo " "$S/last_check.out" || fail "home without --ref runs in the checkout"
+# with --ref, home runs the named commit exactly as another host would: a mirror worktree under worktree_root
+check "\[dry-run\] stage on homehost: .*worktree add -q --detach $PL/home-wt/shoal-pooltest-pl-h0 $PSHA" \
+  $PJ --name h0 --place homehost --needs cpu --repo "$PL/poolrepo" --ref "$PSHA" --dry-run -- true
+grep -q "WorkingDirectory=$PL/home-wt/shoal-pooltest-pl-h0 " "$S/last_check.out" || fail "home --ref cwd :: $(cat "$S/last_check.out")"
+# a CI environment only the far host has; an unpushed or dirty tree stays home
+check "homehost .*ineligible: env cpuenv missing" $PJ --name e1 --place auto --ci-env cpuenv --repo "$PL/poolrepo" --dry-run -- true
+grep -q "PLACEMENT shoal-pooltest-pl-e1: farhost" "$S/last_check.out" || fail "env placement :: $(cat "$S/last_check.out")"
+echo b > "$PL/poolrepo/f"
+check "farhost .*ineligible: dirty tree without --ref" $PJ --name d1 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --dry-run -- true
+check "PLACEMENT shoal-pooltest-pl-d2: farhost" $PJ --name d2 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --ref "$PSHA" --dry-run -- true
+git -C "$PL/poolrepo" checkout -q f
+( cd "$PL/poolrepo" && git commit -q --allow-empty -m local-only )
+check "farhost .*ineligible: the SHA is on no remote-tracking branch" $PJ --name d3 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --dry-run -- true
+git -C "$PL/poolrepo" reset -q --hard "$PSHA"
+# a host whose probe fails is ineligible, never an error
+touch "$PL/far.down"; rm -f "$PL"/rc/pool-probe-*
+check "farhost .*ineligible: probe failed" $PJ --name f1 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --dry-run -- true
+grep -q "PLACEMENT shoal-pooltest-pl-f1: homehost (only compatible host)" "$S/last_check.out" || fail "failed probe :: $(cat "$S/last_check.out")"
+rm -f "$PL/far.down" "$PL"/rc/pool-probe-*
+touch "$PL/far.old"
+check "farhost: INELIGIBLE (probe failed: shoal on farhost has no pool probe (update its checkout))" $PENV $H pool status
+grep -q "usage:" "$S/last_check.out" && fail "argparse usage leaked into the reason :: $(cat "$S/last_check.out")"
+rm -f "$PL/far.old" "$PL"/rc/pool-probe-*
+# research: only inside a reservation the role owns; a reserved device leaves the CI pool
+check "JOB-REFUSED: a research job runs only inside a reservation its role owns" \
+  $PJ --name x1 --class research --place auto --needs gpu:1 --repo "$PL/poolrepo" --dry-run -- true
+check "RESERVED r.* on farhost for pooltest/pl: GPU-far-0" $PENV $H pool reserve --host farhost --resources gpu@GPU-far-0 \
+  --for pooltest/pl --until job:x1 --note "probe study"
+RID=$(sed -n 's/^RESERVED \(r[^ ]*\) .*/\1/p' "$S/last_check.out")
+grep -q '"kind": "reserved"' "$PL/home-data/pooltest/telemetry/"events-*.jsonl || fail "no reserved telemetry event"
+rm -f "$PL"/rc/pool-probe-*
+check "reserved $RID for pooltest/pl: GPU-far-0 until job:x1 (out of the CI pool)" $PENV $H pool status
+check "farhost .*ineligible: every fitting GPU is reserved for research" \
+  $PJ --name g4 --place auto --needs gpu:1:nvidia:16 --repo "$PL/poolrepo" --dry-run -- true
+check "PLACEMENT shoal-pooltest-pl-x1: farhost (research reservation $RID) scope=reservation" \
+  $PJ --name x1 --class research --place auto --needs gpu:1 --repo "$PL/poolrepo" --dry-run -- true
+grep -q "export CUDA_VISIBLE_DEVICES=" "$S/last_check.out" && ! grep -q "bin/lease" "$S/last_check.out" \
+  || fail "a research job takes its reservation's device and no lease :: $(cat "$S/last_check.out")"
+check "JOB-REFUSED: a research job runs only inside a reservation its role owns" \
+  env SHOAL_ROUTE_CACHE="$PL/rc2" $PENV $H job run --shoal pooltest --slug other --name x2 --class research --place auto --repo "$PL/poolrepo" --dry-run -- true
+check "RELEASED $RID on farhost" $PENV $H pool release "$RID" --host farhost
+[ "$(cat "$PL/far-data/_pool/reservations.json")" = "{}" ] || fail "reservation record left behind"
+rm -f "$PL"/rc/pool-probe-*
+if ! have_systemd; then
+  echo "SKIP 6c pool placement (live): $(skip_reason)"
+else
+  pool_samples
+  # a placed run on the far host: staged worktree, lease grant marker, outputs copied back at the verdict
+  check "JOB-PLACED shoal-pooltest-pl-r1 on farhost" $PJ --name r1 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" \
+    -- bash -c 'test -f f && echo "$CUDA_VISIBLE_DEVICES" > "$SHOAL_JOB_OUT/seen.txt"; git rev-parse HEAD >> "$SHOAL_JOB_OUT/seen.txt"'
+  check "result=success exit=0" $PENV $H job wait --shoal pooltest --slug pl --name r1 --poll 1
+  grep -q "lease_granted=20" "$S/last_check.out" && grep -q "outputs copied to" "$S/last_check.out" \
+    || fail "placed verdict lacks the grant or the copy-back :: $(cat "$S/last_check.out")"
+  grep -qx "$PSHA" "$PL/home-data/pooltest/jobs/shoal-pooltest-pl-r1.out/seen.txt" || fail "job did not run at the pushed SHA"
+  [ ! -e "$PL/far-wt/shoal-pooltest-pl-r1" ] || fail "a successful run's staged worktree was kept"
+  python3 - "$PL" <<'PY' || fail "placed meta"
+import json, sys
+m = json.load(open("/tmp/pooltest/jobs/shoal-pooltest-pl-r1.json"))
+assert m["host"] == "farhost" and m["lease_granted"].endswith("Z"), m
+pl = m["placement"]
+assert pl["scope"] == "gpu:1" and pl["decision"]["chosen"] == "farhost" and len(pl["decision"]["considered"]) == 2, pl
+h = [json.loads(x) for x in open(sys.argv[1] + "/home-data/_pool/history.jsonl")]
+assert h[-1]["unit"] == "shoal-pooltest-pl-r1" and h[-1]["host"] == "farhost" and h[-1]["run_s"] >= 0, h
+PY
+  grep -q '"kind": "placed"' "$PL/home-data/pooltest/telemetry/"events-*.jsonl || fail "no placed telemetry event"
+  check "lease_granted=20" $PENV $H job status --shoal pooltest
+  # home with --ref runs that commit, not whatever the live checkout has moved on to
+  ( cd "$PL/poolrepo" && git commit -q --allow-empty -m local-wip )
+  check "JOB-PLACED shoal-pooltest-pl-h1 on homehost" $PJ --name h1 --place homehost --needs cpu --repo "$PL/poolrepo" \
+    --ref "$PSHA" -- bash -c 'git rev-parse HEAD > "$SHOAL_JOB_OUT/head.txt"'
+  check "result=success exit=0" $PENV $H job wait --shoal pooltest --slug pl --name h1 --poll 1
+  grep -qx "$PSHA" "$PL/home-data/pooltest/jobs/shoal-pooltest-pl-h1.out/head.txt" || fail "home --ref ran another commit"
+  [ ! -e "$PL/home-wt/shoal-pooltest-pl-h1" ] || fail "home staged worktree kept after success"
+  git -C "$PL/poolrepo" reset -q --hard "$PSHA"
+  # a queued job moves when another host would start it sooner (features.placement on), and its waiter follows it
+  mkdir -p "$PL/spec/pooltest"
+  echo '{"shoal":"pooltest","roles":[],"features":{"placement":{"interval_s":1,"staging_s":5,"margin_s":30}}}' > "$PL/spec/pooltest/shoal.json"
+  echo busy > "$PL/far.mode"; rm -f "$PL"/rc/pool-probe-*; pool_samples
+  check "JOB-PLACED shoal-pooltest-pl-t1 on homehost" $PJ --name t1 --place auto --needs gpu:1:nvidia \
+    --repo "$PL/poolrepo" --est 5 -- bash -c 'echo moved-ok > "$SHOAL_JOB_OUT/where.txt"'
+  echo free > "$PL/far.mode"; rm -f "$PL"/rc/pool-probe-*
+  check "JOB-MOVED shoal-pooltest-pl-t1 homehost -> farhost" env SHOAL_SPEC="$PL/spec/pooltest/shoal.json" \
+    $PENV $H job wait --shoal pooltest --slug pl --name t1 --poll 1 --timeout-min 2
+  grep -q "result=success exit=0" "$S/last_check.out" || fail "moved job verdict :: $(cat "$S/last_check.out")"
+  grep -q moved-ok "$PL/home-data/pooltest/jobs/shoal-pooltest-pl-t1.out/where.txt" || fail "moved job outputs"
+  python3 - <<'PY' || fail "moved meta"
+import json
+m = json.load(open("/tmp/pooltest/jobs/shoal-pooltest-pl-t1.json"))
+pl = m["placement"]
+assert m["host"] == "farhost" and pl["moves"] == 1 and pl["moved"][0]["from"] == "homehost", pl
+assert "moving" not in pl and pl["submit_utc"], pl
+PY
+  [ "$(systemctl --user show shoal-pooltest-pl-t1.service -p ActiveState --value)" != active ] || fail "home unit still waiting"
+  touch "$PL/home.mode.release"
+fi
+pool_clean
+echo "pool placement ok"
+
 echo "== 7 work loop: next reads, queue writes ONE commit (claim + posture + version)"
 python3 - "$SPEC" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p))

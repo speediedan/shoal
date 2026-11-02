@@ -484,6 +484,13 @@ def execute(a):
             append_sample(a.directory, s, a.retain_days)
             if getattr(a, "prom_out", ""):
                 _atomic_write(a.prom_out, render_prometheus(s))
+            if config is not None:
+                # research reservations expire at --until even when nobody probes the pool
+                try:
+                    import pool_reserve
+                    pool_reserve.expire(s["ts"])
+                except Exception as exc:  # noqa: BLE001 - never stops the sampler
+                    print(json.dumps({"reservation_expiry_error": str(exc)[:200]}), file=sys.stderr, flush=True)
             for spec_path in getattr(a, "role_time_spec", []) or []:
                 # role-time native status rides this loop on hosts that run sessions; a copied
                 # standalone sampler (no shoal package beside it) simply skips it
@@ -518,7 +525,9 @@ def execute(a):
         (directory / "shoal-resources.service").write_text(text)
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
         if a.enable:
-            subprocess.run(["systemctl", "--user", "enable", "--now", "shoal-resources.service"], check=True)
+            # restart, not `enable --now`: an already-active service would keep running the old ExecStart
+            subprocess.run(["systemctl", "--user", "enable", "shoal-resources.service"], check=True)
+            subprocess.run(["systemctl", "--user", "restart", "shoal-resources.service"], check=True)
         return 0
     events = load_events(a.input or [a.directory])
     if a.resource_cmd == "report":

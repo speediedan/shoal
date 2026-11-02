@@ -16,6 +16,10 @@ serializes access to shared resources by key.
 
 **Rules for a role:**
 - Wrap work that needs a shared resource in the provider (usually inside a job unit).
+- **Take only the scope you need.** CPU-only work takes `--lease cpu-heavy`, never a bare
+  `--cpu-heavy`: the bare flag also reserves every GPU, and the GPU queue waits behind your CPU suite.
+  GPU work asks for `--gpus 1 --min-vram <GiB>` unless it really needs the whole host. A long job with a
+  CPU phase and a short GPU phase is two jobs. `job run --place` picks the scope from `--needs` for you.
 - Never force-clear a lease you did not take. An unattributed hold is treated as another job's
   hold: find its owner, or wait.
 
