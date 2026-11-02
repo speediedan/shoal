@@ -433,6 +433,40 @@ def write_native_cache(spec, path=None, now=None):
     return doc
 
 
+REMOTE_FETCH_TIMEOUT_S = 10
+
+
+def fetch_remote_natives(spec, roles, dest_dir):
+    """Copy each other host's native-status cache for this shoal into `dest_dir` as
+    `role-time-native-<server>.json`, over that host's `[hosts.<server>]` route (routes.py). Only
+    hosts that run one of `roles` are read; a host's cache sits at the same state-dir path there as
+    here. A file read, never a harness probe or provider call: the remote host's own sampler keeps
+    it fresh. A failed read keeps the last copy, whose per-role `observed_at` then ages into
+    unknown time on its own. Returns {server: read ok}."""
+    import shlex
+    import subprocess
+    import routes
+    from roles import host_of, is_local, state_dir
+    out = {}
+    for server in sorted({host_of(r, spec) for r in roles if not is_local(r, spec)} - {""}):
+        r = routes.route(server)
+        doc = None
+        if r is not None:
+            path = os.path.join(state_dir(spec.sid), "role-time-native.json")
+            try:
+                p = subprocess.run(routes.ssh_argv(r) + ["cat " + shlex.quote(path)], stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=REMOTE_FETCH_TIMEOUT_S)
+                doc = json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else None
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                doc = None
+        ok = isinstance(doc, dict) and doc.get("v") == CACHE_V and doc.get("shoal") == spec.sid
+        if ok:
+            _atomic_write(os.path.join(dest_dir, f"role-time-native-{server}.json"),
+                          json.dumps(doc, indent=1, sort_keys=True) + "\n")
+        out[server] = ok
+    return out
+
+
 def read_native_caches(paths, sid):
     """{slug: native} merged from cache files for one shoal; the freshest `observed_at` wins.
     A corrupt or foreign-shoal file contributes nothing."""
@@ -469,7 +503,7 @@ def build_snapshots(spec, view, fetched_at, natives, now, seq0=0, ledger_budget_
     return out
 
 
-def _render_extra(acc, snaps, errors, now):
+def _render_extra(acc, snaps, errors, now, remote=None):
     """Source freshness, eligibility and observation-error series beside the accumulator's own
     counters, so a missing or stale source is visible in the same scrape as the time it lost."""
     sh = rt._esc(acc.shoal)
@@ -496,6 +530,11 @@ def _render_extra(acc, snaps, errors, now):
     L += ["# HELP shoal_role_time_exporter_last_success_timestamp_seconds Last completed observe tick.",
           "# TYPE shoal_role_time_exporter_last_success_timestamp_seconds gauge",
           f'shoal_role_time_exporter_last_success_timestamp_seconds{{shoal="{sh}"}} {float(now):.3f}']
+    if remote:
+        L += ["# HELP shoal_role_remote_cache_ok Last read of another host's native-status cache succeeded.",
+              "# TYPE shoal_role_remote_cache_ok gauge"]
+        for server, ok in sorted(remote.items()):
+            L.append(f'shoal_role_remote_cache_ok{{shoal="{sh}",server="{rt._esc(server)}"}} {1 if ok else 0}')
     return "\n".join(L) + "\n"
 
 
@@ -541,7 +580,8 @@ class Observer:
 
     def __init__(self, spec_path, obs_path=None, checkpoint_path=None, prom_path=None,
                  cache_paths=(), probe=True, pull=False, pull_interval_s=120.0,
-                 ledger_budget_s=LEDGER_BUDGET_S, state_root=None, retain_days=SEGMENT_RETAIN_DAYS):
+                 ledger_budget_s=LEDGER_BUDGET_S, state_root=None, retain_days=SEGMENT_RETAIN_DAYS,
+                 remote=True):
         from roles import ShoalSpec, state_dir
         self.spec_path = spec_path
         spec0 = ShoalSpec.load(spec_path)
@@ -559,6 +599,8 @@ class Observer:
         self.pull_interval_s = float(pull_interval_s)
         self.ledger_budget_s = float(ledger_budget_s)
         self.retain_days = float(retain_days)
+        self.remote = remote
+        self.remote_ok = {}
         self.acc = None
         self.last_pull = 0.0
         self.state = self._load_state()
@@ -655,7 +697,12 @@ class Observer:
         fetched = ledger_fetched_at(spec.ledger_dir)
         view = View(led, spec)
         fg, _bg = foreground_roles(spec)
-        natives = read_native_caches(self.cache_paths, spec.sid)
+        cache_paths = list(self.cache_paths)
+        if self.remote:  # other hosts' roles: their own caches, copied beside the journal
+            base = os.path.dirname(self.obs_path) or "."
+            self.remote_ok = fetch_remote_natives(spec, fg, base)
+            cache_paths += [os.path.join(base, f"role-time-native-{s}.json") for s in self.remote_ok]
+        natives = read_native_caches(cache_paths, spec.sid)
         if self.probe:
             probed, _ms, _errs = probe_native(spec, fg, now)
             for slug, n in probed.items():  # a direct local probe is fresher than any cache
@@ -725,7 +772,8 @@ class Observer:
         self.acc.save(self.checkpoint_path)
         self._save_state()
         if self.prom_path:
-            text = self.acc.render_prometheus(expected=members) + _render_extra(self.acc, snaps, errors, now)
+            text = (self.acc.render_prometheus(expected=members)
+                    + _render_extra(self.acc, snaps, errors, now, self.remote_ok))
             _atomic_write(self.prom_path, text)
         return snaps, fetched
 
@@ -770,7 +818,8 @@ def cmd_observe(a):
         observers.append(Observer(spec_path, prom_path=prom, cache_paths=a.native_cache,
                                   probe=not a.no_probe, pull=a.pull, pull_interval_s=a.pull_interval,
                                   ledger_budget_s=a.ledger_budget,
-                                  state_root=a.state_dir or None, retain_days=a.retain_days))
+                                  state_root=a.state_dir or None, retain_days=a.retain_days,
+                                  remote=not a.no_remote))
     while True:
         t0 = time.time()
         rc = 0
@@ -804,6 +853,8 @@ def add_subcommands(s):
     o.add_argument("--prom-dir", default="", help="write shoal_role_time_<id>.prom per spec here")
     o.add_argument("--native-cache", action="append", default=[],
                    help="a native-status cache file, e.g. another host's (repeatable)")
+    o.add_argument("--no-remote", action="store_true",
+                   help="do not read other hosts' native-status caches over their [hosts] routes")
     o.add_argument("--no-probe", action="store_true",
                    help="do not probe local sessions directly; caches only")
     o.add_argument("--pull", action="store_true", help="pull the ledger clone on an interval")

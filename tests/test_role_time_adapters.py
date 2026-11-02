@@ -312,6 +312,44 @@ class V5Inputs(unittest.TestCase):
                 self.assertEqual(ad._probe_claude([role], NOW, SID)["peer"]["state"], "absent")
 
 
+class RemoteNativeCaches(unittest.TestCase):
+    def test_other_hosts_cache_is_read_over_its_route(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td)
+            spec = ShoalSpec.load(sp)
+            for r in spec.roles:
+                if r.slug == "peer":
+                    r.server = "otherhost"  # this role's session runs on another host
+            spec.save(sp)
+            remote = Path(td) / "remote.json"
+            stub = Path(td) / "ssh-stub"
+            stub.write_text(f"#!/bin/sh\ncat {remote}\n")
+            stub.chmod(0o755)
+            remote.write_text(json.dumps({"v": ad.CACHE_V, "shoal": SID, "host": "otherhost", "written_at": NOW,
+                                          "roles": {"peer": {"native": ad._native("turn", NOW)}}, "errors": {}}))
+            prom = Path(td) / "rt.prom"
+            route = {"ssh": "user@otherhost"}
+            with mock.patch.dict(os.environ, {"SHOAL_SSH": str(stub)}), \
+                    mock.patch("routes.route", lambda server: route if server == "otherhost" else None):
+                ob = ad.Observer(sp, obs_path=str(Path(td) / "obs.jsonl"), checkpoint_path=str(Path(td) / "acc.json"),
+                                 prom_path=str(prom), probe=False)
+                snaps, _f = ob.tick(NOW)
+                self.assertEqual(snaps["peer"]["native"]["state"], "turn", "the other host's cache arrived")
+                self.assertTrue((Path(td) / "role-time-native-otherhost.json").is_file())
+                self.assertIn('shoal_role_remote_cache_ok{shoal="testgrp",server="otherhost"} 1', prom.read_text())
+                # a failed read keeps the last copy (it ages into unknown on its own) and says so
+                remote.write_text("not json")
+                snaps, _f = ob.tick(NOW + 5)
+                self.assertEqual(snaps["peer"]["native"]["state"], "turn")
+                self.assertIn('server="otherhost"} 0', prom.read_text())
+            # opted out: no route is read
+            ob2 = ad.Observer(sp, obs_path=str(Path(td) / "obs2.jsonl"), checkpoint_path=str(Path(td) / "acc2.json"),
+                              probe=False, remote=False)
+            ob2.tick(NOW)
+            self.assertEqual(ob2.remote_ok, {})
+
+
 class PopulationExit(unittest.TestCase):
     def test_removed_and_departed_roles_leave_the_population(self):
         with tempfile.TemporaryDirectory() as td:

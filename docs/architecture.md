@@ -613,12 +613,18 @@ wakes a role or runs a model turn.
   integrator: it folds the ledger clone (freshness is the clone's last fetch, `.git/FETCH_HEAD`
   mtime, believed for 180 s; `--pull` refreshes it on an interval), runs `blockers.check(...,
   live=False)` with each blocker's expiry and evidence kind, merges local probes with any
-  `--native-cache` files from other hosts (freshest source timestamp wins; a stale cache is unknown
-  time, visible in coverage), appends observation JSONL under the shoal's state directory, and
+  `--native-cache` files and with every other host's own cache (freshest source timestamp wins; a
+  stale cache is unknown time, visible in coverage), appends observation JSONL under the shoal's
+  state directory, and
   writes the accumulator's Prometheus text atomically with source-timestamp, eligibility and
   observation-error series beside the counters. Population comes from spec and generation history:
   `fill: none` roles are background unless `features.role_time.foreground` names them, and
-  `features.role_time.background` forces a role out. The journal rotates at the UTC day boundary:
+  `features.role_time.background` forces a role out. For roles whose session runs on another host
+  (`server`), the observer reads that host's native-status cache each tick over its `[hosts]`
+  route (§12; `ssh <route> cat <state_dir>/role-time-native.json`, a file read, never a harness
+  probe), keeps a copy beside the journal, and reports `shoal_role_remote_cache_ok{server}`; a
+  failed read keeps the last copy, whose per-role timestamps age into unknown time. A host without
+  a route is not read. `--no-remote` turns this off. The journal rotates at the UTC day boundary:
   the live file becomes `<stem>-YYYYMMDD.jsonl` and is gzip-compressed (about 37x on real journals),
   and the new live file opens with a segment header (`{"type": "segment", "policy", "opened"}`) and
   every role's membership spans in full, so the last membership record for a role wins when
