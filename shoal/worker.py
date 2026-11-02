@@ -286,23 +286,55 @@ def candidates_for(spec: ShoalSpec, view: View, slug: str, exclude: set[str], li
         return [f"(candidates unavailable: {short(str(exc), 100)})"]
 
 
+# How long a recorded priority-table read may be believed by role-time accounting.
+SOURCES_CACHE_BUDGET_S = 7200.0
+
+
+def record_sources(sid: str, slug: str, items: list[str], origin: str, now: float | None = None) -> None:
+    """Cache what a fill=self role's priority table offered when it was last read, so role-time
+    accounting can charge `wait:sources` while a fresh read was empty without calling a provider
+    itself. Written only after a successful read; never fails the caller."""
+    import json
+    import time
+    now = time.time() if now is None else float(now)
+    path = os.path.join(state_dir(sid), f"sources-{slug}.json")
+    doc = {"checked_at": now, "checked_utc": datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
+           .strftime("%Y-%m-%dT%H:%M:%SZ"), "candidates": len(items), "sources": [origin],
+           "budget_s": SOURCES_CACHE_BUDGET_S}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp{os.getpid()}"
+        with open(tmp, "w") as fh:
+            fh.write(json.dumps(doc, sort_keys=True) + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def candidate_items(spec: ShoalSpec, view: View, slug: str, exclude: set[str], limit: int = 5) -> list[str]:
     """`repo#n:verb` for the role's eligible, strong-fit candidates (digest, else the board source);
     [] when there are none or they cannot be read. The same selection `next` prints, minus the
-    weak-fit fallback, so a claim about "no eligible items" can be checked against it."""
+    weak-fit fallback, so a claim about "no eligible items" can be checked against it. A successful
+    read for a fill=self role is recorded for role-time accounting (`record_sources`)."""
     taken = view.taken() | view.offered_open() | exclude
     declined = set(view.declined(slug))
     try:
+        role = spec.role(slug)
+        self_fill = role is not None and role.fill == "self"
         if (spec.features or {}).get("digest"):
             from digest import candidates as dc
             got = dc(spec.sid, slug, taken, declined, limit=limit)
             if got is not None:
-                return [f"{c['item']}:{c['verb']}" for c in got if not c.get("weak")]
-        role = spec.role(slug)
-        if role is None or role.fill != "self":
+                out = [f"{c['item']}:{c['verb']}" for c in got if not c.get("weak")]
+                if self_fill:
+                    record_sources(spec.sid, slug, out, "digest")
+                return out
+        if not self_fill:
             return []
         from sources import candidates
-        return [f"{c['item']}:{c['verb']}" for c in candidates(spec.sources, role.scope, taken, declined, limit=limit)]
+        out = [f"{c['item']}:{c['verb']}" for c in candidates(spec.sources, role.scope, taken, declined, limit=limit)]
+        record_sources(spec.sid, slug, out, "board")
+        return out
     except Exception:  # noqa: BLE001 - a candidate read never blocks a queue write
         return []
 

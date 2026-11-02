@@ -565,13 +565,30 @@ wakes a role or runs a model turn.
   role sleeps in at the end of a turn (§4), so a turn inside an unchanged `waiting` posture is work.
   Ledger `active` with no turn running accrues no work. A positively identified blocking phase
   inside a turn is a wait; an open native question is `wait:user-prompt`.
-- **Between turns the ledger classifies**: waiting substates map to wait events (a `lease:` target
-  wins over the nominal CI substate), `queue-empty` is idle unless a refill is requested, explicit
-  `paused` and `offline` are excluded, and an idle posture is classified by its queue. Any runnable
-  item (no blocker, or a resolved or expired one under `blockers.py`) makes the role idle
-  `ready-work`; only when every item is non-runnable is the role in a blocker wait, with the
-  blockers' shared kind, `mixed`, or `unverified`. Park is excluded; freeze and user-offline are
-  not exclusions.
+- **Between turns the ledger classifies** (policy `role-time/v5`): waiting substates map to wait
+  events (a `lease:` target wins over the nominal CI substate), explicit `paused` and `offline` are
+  excluded, and an idle posture is classified by its queue. Any runnable item (no blocker, or a
+  resolved or expired one under `blockers.py`) makes the role `wait:self`: it has work it is not
+  doing. Only when every item is non-runnable is the role in a blocker wait, with the blockers'
+  shared kind, `mixed`, or `unverified`. An empty queue (or `queue-empty`) names who owes the role
+  work: a requested refill is `wait:refill`; a `fill: assigned` role is `wait:assignment`; a
+  `fill: self` role whose recorded priority table is fresh and empty is `wait:sources` (both human
+  waits); anything else stays `idle:no-work`. The table read is recorded by
+  `worker.candidate_items` after a successful read (`<state_dir>/sources-<slug>.json`, believed for
+  2 h), never fetched by the classifier. Park is excluded; freeze and user-offline are not
+  exclusions.
+- **Policy versions**: snapshots read from a journal segment stamped `role-time/v4.1`, or from a
+  journal written before segment headers, keep v4.1 semantics (`idle:ready-work`, `idle:no-work`
+  for the cases above), so an old report reads the same. The observer closes a live segment
+  written under another policy before appending, so a segment's header describes all of it.
+- **Dormant Claude sessions**: a background job whose turn ended (`done`, no worker pid) while its
+  ledger watcher is alive and armed for the same session is between turns, not missing; the probe
+  reports it as `between` and the ledger posture classifies it. The watcher sidecar is host-local,
+  so this is decided where the session runs and travels in the native cache.
+- **Population exit**: a `role-removed` system event (written by the `shoal` writer) ends the role's
+  membership at its `ts`; a role added back later keeps its later spans. A role that leaves the
+  spec without that event gets a closing membership record at the first tick that no longer finds
+  it. Membership is rewritten whenever it changes, and the last record for a role wins.
 - **Freshness and validity are separate**: each source carries its last successful read and a
   budget; past it the time is unknown. Wait and blocker expiry change the attribution, not the
   coverage. Intervals split at every source deadline and blocker expiry.

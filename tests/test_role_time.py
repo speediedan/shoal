@@ -53,7 +53,7 @@ class Classification(unittest.TestCase):
 
     def test_stale_active_posture_never_accrues_work(self):
         c, e, q, _ = rt.classify(snap(0, posture="active", active="repo#1"), 0)
-        self.assertEqual((c, e), ("idle", "ready-work"))
+        self.assertEqual((c, e), ("wait", "self"))
         self.assertIn("stale-active", q)
         self.assertEqual(self.cls(snap(0, posture="active")), ("idle", "no-work"))
 
@@ -86,10 +86,10 @@ class Blocked(unittest.TestCase):
     def test_one_live_blocker_beside_a_runnable_item_is_ready_work(self):
         c, e, q, _ = self.q({"a": {"blocker": "upstream:o/r#2", "status": "live"},
                              "b": {"blocker": "hold:x", "status": "expired"}})
-        self.assertEqual((c, e), ("idle", "ready-work"))
+        self.assertEqual((c, e), ("wait", "self"))
         self.assertIn("stale-blocked", q)
         # an unblocked next item is runnable too
-        self.assertEqual(self.q({"a": {"blocker": "lease:gpu", "status": "live"}})[:2], ("idle", "ready-work"))
+        self.assertEqual(self.q({"a": {"blocker": "lease:gpu", "status": "live"}})[:2], ("wait", "self"))
 
     def test_all_non_runnable(self):
         self.assertEqual(self.q({"a": {"blocker": "upstream:o/r#2", "status": "live"},
@@ -105,13 +105,13 @@ class Blocked(unittest.TestCase):
     def test_all_stale_is_ready_work_and_age_only_is_labelled(self):
         c, e, q, _ = self.q({"a": {"blocker": "hold:x", "status": "resolved"},
                              "b": {"blocker": "hold:y", "status": "expired"}})
-        self.assertEqual((c, e), ("idle", "ready-work"))
+        self.assertEqual((c, e), ("wait", "self"))
         _c, _e, q2, _ = self.q({"a": {"blocker": "lease:gpu", "status": "live", "evidence": "age-only"}}, nxt=("a",))
         self.assertIn("age-only-blockers", q2)
 
     def test_active_item_and_empty_queue(self):
         self.assertEqual(self.q({"a": {"blocker": "lease:gpu", "status": "live"}}, nxt=("a",), active="c")[:2],
-                         ("idle", "ready-work"))
+                         ("wait", "self"))
         self.assertEqual(self.q({}, nxt=())[:2], ("idle", "no-work"))
         self.assertEqual(self.q({}, nxt=(), refill_requested=True)[:2], ("wait", "refill"))
 
@@ -119,7 +119,51 @@ class Blocked(unittest.TestCase):
         s = snap(0, next=["a"], blockers={"a": {"blocker": "hold:x", "status": "live", "expires_at": 40}})
         per, segs = run({"r": [s]}, 100)
         self.assertEqual(per["r"][("wait", "hold")], 40)
-        self.assertEqual(per["r"][("idle", "ready-work")], 60)
+        self.assertEqual(per["r"][("wait", "self")], 60)
+
+
+class PolicyV5(unittest.TestCase):
+    """v5 names who owes an idle role its work; v4.1 snapshots keep their old answers."""
+
+    def cls(self, s):
+        return rt.classify(s, s["t"])[:2]
+
+    def test_empty_queue_by_fill_mode(self):
+        self.assertEqual(self.cls(snap(0, next=[], fill="assigned")), ("wait", "assignment"))
+        self.assertEqual(self.cls(snap(0, posture="waiting", sub="queue-empty", fill="assigned")),
+                         ("wait", "assignment"))
+        self.assertEqual(self.cls(snap(0, next=[], fill="none")), ("idle", "no-work"))
+        fresh_empty = {"observed_at": 0, "budget_s": 600, "candidates": 0}
+        self.assertEqual(self.cls(snap(0, next=[], fill="self", sources=fresh_empty)), ("wait", "sources"))
+        # an empty table only counts while its cache is fresh; a table with work, or none, is idle
+        self.assertEqual(self.cls(snap(900, next=[], fill="self", sources=fresh_empty)), ("idle", "no-work"))
+        self.assertEqual(self.cls(snap(0, next=[], fill="self", sources=dict(fresh_empty, candidates=3))),
+                         ("idle", "no-work"))
+        self.assertEqual(self.cls(snap(0, next=[], fill="self")), ("idle", "no-work"))
+        # a requested refill stays the coordination wait it always was
+        self.assertEqual(self.cls(snap(0, next=[], fill="assigned", refill_requested=True)), ("wait", "refill"))
+
+    def test_sources_wait_ends_when_the_cache_goes_stale(self):
+        s = snap(0, next=[], fill="self", sources={"observed_at": 0, "budget_s": 30, "candidates": 0})
+        per, _segs = run({"r": [s]}, 100)
+        self.assertEqual(per["r"][("wait", "sources")], 30)
+        self.assertEqual(per["r"][("idle", "no-work")], 70)
+
+    def test_legacy_snapshots_keep_v41_semantics(self):
+        legacy = {"policy": rt.LEGACY_POLICY}
+        self.assertEqual(self.cls(dict(snap(0, next=["a"]), **legacy)), ("idle", "ready-work"))
+        self.assertEqual(self.cls(dict(snap(0, next=[], fill="assigned"), **legacy)), ("idle", "no-work"))
+        self.assertEqual(self.cls(snap(0, next=["a"])), ("wait", "self"))
+
+    def test_reader_stamps_snapshots_with_their_segment_policy(self):
+        with tempfile.TemporaryDirectory() as td:
+            old = Path(td) / "obs-20260101.jsonl"
+            old.write_text(json.dumps({"type": "snapshot", "role": "r", "t": 1}) + "\n")
+            live = Path(td) / "obs.jsonl"
+            live.write_text(json.dumps({"type": "segment", "policy": rt.POLICY_VERSION, "opened": 2}) + "\n"
+                            + json.dumps({"type": "snapshot", "role": "r", "t": 2}) + "\n")
+            obs, _mem = rt.load_observations(str(live))
+            self.assertEqual([s["policy"] for s in obs["r"]], [rt.LEGACY_POLICY, rt.POLICY_VERSION])
 
 
 class Accounting(unittest.TestCase):
