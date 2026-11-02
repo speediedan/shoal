@@ -104,12 +104,36 @@ def foreground_roles(spec):
     return fg, bg
 
 
-def membership_spans(spec, fallback_start: float | None = None):
+def removals(events):
+    """{slug: removal time} from the ledger's `role-removed` system events (the latest per role)."""
+    out = {}
+    for e in events or []:
+        if e.get("type") == "system" and e.get("event") == "role-removed" and e.get("role"):
+            t = _epoch(e.get("ts"))
+            if t is not None:
+                out[e["role"]] = t
+    return out
+
+
+def _clip(spans, end):
+    """Spans cut at `end`: a span running past it ends there; a span starting at or after it (a
+    role added back later) is kept as it is."""
+    out = []
+    for s, e in spans:
+        if s < end and (e is None or e > end):
+            out.append((s, end))
+        else:
+            out.append((s, e))
+    return out
+
+
+def membership_spans(spec, fallback_start: float | None = None, removed=None):
     """{slug: [(start, end-or-None)]} for foreground roles, from generation history: a role is a
     member for each generation whose sessions or seqs name it, from that generation's start to its
     end (or the next generation's start, or the shoal's retirement). Roles no generation names get
     one open span from `fallback_start` (the first ledger event, else now): visible, not invented
-    further back than the evidence."""
+    further back than the evidence. A role with a `role-removed` event (`removed`, from `removals`)
+    leaves the population at that event."""
     fg, _ = foreground_roles(spec)
     retired = _epoch(getattr(spec, "retired_utc", "") or "")
     gens = list(getattr(spec, "generations", []) or [])
@@ -139,7 +163,7 @@ def membership_spans(spec, fallback_start: float | None = None):
                 merged[-1] = (ps, None if pe is None or e is None else max(pe, e))
             else:
                 merged.append((s, e))
-        spans[slug] = merged
+        spans[slug] = _clip(merged, removed[slug]) if removed and slug in removed else merged
     return spans
 
 
@@ -180,11 +204,27 @@ def ledger_part(spec, view, slug, fetched_at, budget_s=LEDGER_BUDGET_S):
     # queue items arrive as `<owner>/<repo>#<n>:<verb>` while blockers are keyed by item key:
     # both sides of the snapshot use item keys, or a blocked item would read as runnable
     nxt = [item_key(str(x)) for x in (q.get("next") or [])]
+    role = spec.role(slug)
+    fill = str(getattr(role, "fill", "") or "")
     return {"observed_at": fetched_at, "budget_s": float(budget_s), "state": state,
             "sub": str(st.get("sub") or ""), "target": str(st.get("target") or ""),
             "refill_requested": bool(q.get("asks")),
             "active": item_key(str(q.get("active"))) if q.get("active") else "", "next": nxt,
-            "blockers": _blocker_records(spec, view, slug, q)}
+            "blockers": _blocker_records(spec, view, slug, q), "fill": fill,
+            "sources": sources_part(spec.sid, slug) if fill == "self" else None}
+
+
+def sources_part(sid, slug):
+    """A fill=self role's last recorded priority-table read (`worker.record_sources`), as a source
+    with its own freshness budget, or None. Never reads a provider."""
+    from roles import state_dir
+    try:
+        with open(os.path.join(state_dir(sid), f"sources-{slug}.json")) as fh:
+            doc = json.load(fh)
+        return {"observed_at": float(doc["checked_at"]), "budget_s": float(doc.get("budget_s", 0)),
+                "candidates": int(doc["candidates"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def lifecycle_part(spec, role, view):
@@ -227,7 +267,21 @@ def _match(cbusy, session):
     return None
 
 
-def _probe_claude(roles, now):
+def _dormant(sid, role):
+    """A Claude background job whose turn ended (`done`, no worker pid) while its ledger watcher is
+    alive and armed for this session is between turns, waiting to be woken, not missing: the
+    ledger posture classifies it. The watcher sidecar is host-local, so this runs where the
+    session does and travels in the native cache."""
+    import health
+    if not sid:
+        return False
+    alive, sc = health.watcher_alive(sid, role.slug)
+    want = sc.get("session_id", "")
+    return alive and (not want or want == role.session
+                      or (len(want) >= 8 and (want.startswith(role.session) or role.session.startswith(want))))
+
+
+def _probe_claude(roles, now, sid=""):
     """One harness listing for every local Claude role; `health.claude_liveness` (the job tempo
     file) is the turn signal, never the raw CLI state a background watcher holds at working."""
     import health
@@ -253,7 +307,10 @@ def _probe_claude(roles, now):
         elif not cbusy:
             out[role.slug] = _native("unknown", now, "claude listing empty or failed", observed=False)
         elif health.claude_worker_gone(role, cbusy):
-            out[role.slug] = _native("absent", now, "claude worker gone")
+            if _dormant(sid, role):
+                out[role.slug] = _native("between", now, "claude job done, ledger watcher armed (dormant)")
+            else:
+                out[role.slug] = _native("absent", now, "claude worker gone")
         else:
             out[role.slug] = _native("not-listed", now, "claude session not listed")
     return out
@@ -311,7 +368,7 @@ def probe_native(spec, roles, now=None):
     if claude_roles:
         t0 = time.perf_counter()
         try:
-            batch = _probe_claude(claude_roles, now)
+            batch = _probe_claude(claude_roles, now, spec.sid)
             took = (time.perf_counter() - t0) * 1000.0
             for r in claude_roles:
                 out[r.slug] = batch[r.slug]
@@ -547,7 +604,9 @@ class Observer:
         today = _utc_day(now)
         live = os.path.exists(self.obs_path) and os.path.getsize(self.obs_path) > 0
         day = self.state.get("segment_day") or (self._first_day() if live else None) or today
-        if live and day != today:
+        # a live segment written under another classification policy closes at once, so its
+        # header keeps describing every snapshot in it (reports replay each under its own policy)
+        if live and (day != today or self.state.get("segment_policy") != rt.POLICY_VERSION):
             stem = self.obs_path[:-len(".jsonl")] if self.obs_path.endswith(".jsonl") else self.obs_path
             closed = f"{stem}-{day}.jsonl"
             if os.path.exists(closed):  # a second close of the same day (clock step): append
@@ -563,6 +622,7 @@ class Observer:
             self._sweep(today)
         if not live:
             self.state["membership"] = {}  # rewritten in full at the head of the new segment
+            self.state["segment_policy"] = rt.POLICY_VERSION
             return True
         return False
 
@@ -605,7 +665,9 @@ class Observer:
         evs = led.events()
         if evs:
             first_ts = _epoch(evs[0].get("ts"))
-        spans = membership_spans(spec, fallback_start=first_ts if first_ts is not None else now)
+        removed = removals(evs)
+        spans = membership_spans(spec, fallback_start=first_ts if first_ts is not None else now,
+                                 removed=removed)
         seq0 = int(self.state.get("seq", 0))
         snaps = build_snapshots(spec, view, fetched, natives, now, seq0, self.ledger_budget_s)
         errors = self.state.setdefault("errors", {})
@@ -623,11 +685,21 @@ class Observer:
             lines.append({"type": "segment", "policy": rt.POLICY_VERSION, "shoal": spec.sid,
                           "opened": float(now)})
         written = self.state.setdefault("membership", {})
+        # every role this journal has given spans to; a role that has left the spec is closed at
+        # its removal event, else at the first tick that no longer finds it (the last membership
+        # record for a role wins when segments are read together)
+        seen = self.state.setdefault("spans_seen", {k: v for k, v in written.items()})
+        for slug in sorted(set(seen) - set(spans)):
+            end = removed.get(slug, now)
+            rows = [[s, e] for s, e in _clip([(s, e) for s, e in seen.pop(slug)], end) if s < end]
+            lines.append({"type": "membership", "role": slug, "spans": rows, "exit": "left-spec"})
+            written.pop(slug, None)
         for slug in sorted(spans):
-            if slug not in written:  # membership is written once per segment, in full
-                rows = [[s, e] for s, e in spans[slug]]
+            rows = [[s, e] for s, e in spans[slug]]
+            if written.get(slug) != rows:  # in full per segment, and again whenever it changes
                 written[slug] = rows
                 lines.append({"type": "membership", "role": slug, "spans": rows})
+            seen[slug] = rows
         for slug in sorted(snaps):
             lines.append(dict(snaps[slug], type="snapshot", role=slug))
         with open(self.obs_path, "a") as fh:

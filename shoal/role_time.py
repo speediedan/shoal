@@ -41,20 +41,28 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import blockers  # noqa: E402
 
-POLICY_VERSION = "role-time/v4.1"
+POLICY_VERSION = "role-time/v5"
+# Snapshots from a journal segment stamped with this policy, or from a journal written before
+# segment headers existed, are classified with its semantics, so an old report reads the same.
+LEGACY_POLICY = "role-time/v4.1"
 
 WORK = ("turn",)
+# v5 adds three waits that v4.1 charged to idle: `self` (between turns with runnable ready work),
+# `assignment` (an empty queue on a fill=assigned role: nobody assigned it work) and `sources` (a
+# fill=self role whose cached priority table is empty). The last two are human waits.
 WAITS = ("local-ci", "remote-ci", "lease", "upstream", "session-blocked", "user-auth", "user-design",
-         "user-ask", "user-prompt", "hold", "handover", "refill", "mixed", "unverified")
+         "user-ask", "user-prompt", "hold", "handover", "refill", "mixed", "unverified",
+         "self", "assignment", "sources")
 IDLE = ("ready-work", "no-work")
 EXCLUDED = ("parked", "paused", "offline")
 UNKNOWN = ("missing-source", "stale-source", "session-missing", "conflicting-session", "park-conflict",
            "unmapped-state", "no-observation", "gap")
 VOCABULARY = {"work": WORK, "wait": WAITS, "idle": IDLE, "excluded": EXCLUDED, "unknown": UNKNOWN}
 # display grouping of non-idle waits (no effect on accounting)
-WAIT_GROUP = {"local-ci": "system", "remote-ci": "system", "lease": "system", "upstream": "system",
+WAIT_GROUP = {"local-ci": "system", "remote-ci": "system", "lease": "system", "upstream": "upstream",
               "session-blocked": "peer", "user-auth": "human", "user-design": "human", "user-ask": "human",
-              "user-prompt": "human", "hold": "policy", "handover": "coordination", "refill": "coordination",
+              "user-prompt": "human", "assignment": "human", "sources": "human", "self": "self",
+              "hold": "policy", "handover": "coordination", "refill": "coordination",
               "mixed": "mixed", "unverified": "unverified"}
 POSTURE_WAITS = ("local-ci", "remote-ci", "user-auth", "user-design", "session-blocked", "upstream")
 BLOCKER_EVENT = {"role": "session-blocked", "upstream": "upstream", "lease": "lease", "ask": "user-ask",
@@ -75,14 +83,38 @@ def _fresh(source, now):
     return now < deadline, "stale-source", deadline
 
 
-def _queue(ledger, now, quality):
+def _ready(v5):
+    """Between turns with runnable work: v5 charges it as the role's own wait (`wait:self`)."""
+    return ("wait", "self") if v5 else ("idle", "ready-work")
+
+
+def _empty(ledger, now, v5):
+    """Between turns with nothing to do. v5 names who owes the role work: a fill=assigned role
+    waits on assignment; a fill=self role whose cached priority table is fresh and empty waits on
+    its sources. Anything else (fill none, or no fresh table) stays idle:no-work, never unknown.
+    Returns (class, event, until)."""
+    if not v5:
+        return "idle", "no-work", INF
+    fill = ledger.get("fill") or ""
+    if fill == "assigned":
+        return "wait", "assignment", INF
+    if fill == "self":
+        src = ledger.get("sources")
+        ok, _why, dead = _fresh(src, now)
+        if ok and src.get("candidates") == 0:
+            return "wait", "sources", dead
+        return "idle", "no-work", dead if ok else INF
+    return "idle", "no-work", INF
+
+
+def _queue(ledger, now, quality, v5=True):
     """Between turns with an idle/active posture: classify by the queue and its blockers.
     Returns (class, event, until)."""
     if ledger.get("active"):
-        return "idle", "ready-work", INF
+        return (*_ready(v5), INF)
     nxt = list(ledger.get("next") or [])
     if not nxt:
-        return ("wait", "refill", INF) if ledger.get("refill_requested") else ("idle", "no-work", INF)
+        return ("wait", "refill", INF) if ledger.get("refill_requested") else _empty(ledger, now, v5)
     bl = ledger.get("blockers") or {}
     runnable, kinds, unproven, until = False, set(), False, INF
     for item in nxt:
@@ -106,7 +138,7 @@ def _queue(ledger, now, quality):
         else:
             unproven = True
     if runnable:
-        return "idle", "ready-work", until
+        return (*_ready(v5), until)
     if unproven:
         return "wait", "unverified", until
     return "wait", (kinds.pop() if len(kinds) == 1 else "mixed"), until
@@ -115,8 +147,11 @@ def _queue(ledger, now, quality):
 def classify(snap, now):
     """(class, event, quality, until) for a snapshot at time `now`. `until` is the earliest later
     time at which the result can change without a new observation (a source budget or a blocker
-    expiry); integrators split intervals there."""
+    expiry); integrators split intervals there. A snapshot read from a journal segment stamped with
+    an older policy carries it as `policy` and keeps that policy's semantics; a live snapshot has
+    none and gets the current one."""
     q = set()
+    v5 = (snap.get("policy") or POLICY_VERSION) != LEGACY_POLICY
     life = snap.get("lifecycle") or {}
     native, ledger = snap.get("native"), snap.get("ledger")
     n_ok, n_why, n_dead = _fresh(native, now)
@@ -160,15 +195,20 @@ def classify(snap, now):
         if sub in POSTURE_WAITS:
             return out("wait", sub, until)
         if sub == "queue-empty":
-            return out("wait", "refill", until) if ledger.get("refill_requested") else out("idle", "no-work", until)
+            if ledger.get("refill_requested"):
+                return out("wait", "refill", until)
+            c, e, u = _empty(ledger, now, v5)
+            return out(c, e, min(until, u))
         return out("unknown", "unmapped-state", until)
     if state == "active":
         # an `active` sleep posture with no turn running: a turn ended without its closing write
         q.add("stale-active")
-        remains = bool(ledger.get("active") or ledger.get("next"))
-        return out("idle", "ready-work" if remains else "no-work", until)
+        if ledger.get("active") or ledger.get("next"):
+            return out(*_ready(v5), until)
+        c, e, u = _empty(ledger, now, v5)
+        return out(c, e, min(until, u))
     if state == "idle":
-        c, e, u = _queue(ledger, now, q)
+        c, e, u = _queue(ledger, now, q, v5)
         return out(c, e, min(until, u))
     return out("unknown", "unmapped-state", until)
 
@@ -432,6 +472,7 @@ def load_observations(path, policies=None):
     obs, mem = {}, {}
     for f in observation_files(path):
         opener = gzip.open if f.endswith(".gz") else open
+        policy = LEGACY_POLICY  # until a segment header says otherwise: older journals carry none
         with opener(f, "rt") as fh:
             for n, line in enumerate(fh):
                 line = line.strip()
@@ -442,12 +483,13 @@ def load_observations(path, policies=None):
                 except ValueError:
                     continue  # a torn final append is not an observation
                 if d.get("type") == "segment":
+                    policy = d.get("policy") or LEGACY_POLICY
                     if policies is not None:
                         policies.append(d.get("policy"))
                 elif d.get("type") == "membership":
                     mem[d["role"]] = [(_epoch(s), None if e is None else _epoch(e)) for s, e in d["spans"]]
                 elif d.get("type") == "snapshot":
-                    d = dict(d, t=_epoch(d["t"]), seq=d.get("seq", n))
+                    d = dict(d, t=_epoch(d["t"]), seq=d.get("seq", n), policy=d.get("policy") or policy)
                     obs.setdefault(d["role"], []).append(d)
     return obs, mem
 

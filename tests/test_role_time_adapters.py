@@ -128,9 +128,9 @@ class LedgerAdapter(unittest.TestCase):
             self.assertEqual(led_p["blockers"]["o/r#8"]["status"], "expired")
             self.assertEqual(led_p["blockers"]["o/r#8"]["evidence"], "age-only")
             self.assertIsNone(led_p["blockers"]["o/r#8"]["expires_at"])
-            # peer is therefore idle with ready work, not in a hold wait
+            # peer therefore has runnable work it is not doing (v5 wait:self), not a hold wait
             snap = {"t": NOW, "native": ad._native("between", NOW), "ledger": led_p, "lifecycle": {}}
-            self.assertEqual(rt.classify(snap, NOW)[:2], ("idle", "ready-work"))
+            self.assertEqual(rt.classify(snap, NOW)[:2], ("wait", "self"))
 
     def test_next_items_are_item_keys_so_blockers_match(self):
         # live queues carry `<owner>/<repo>#<n>:<verb>`; blockers are keyed by item key. Without
@@ -269,6 +269,77 @@ class ObserverEndToEnd(unittest.TestCase):
             self.assertAlmostEqual(ob2.acc.counters["worker"][("wait", "remote-ci")], 30.0)
 
 
+class V5Inputs(unittest.TestCase):
+    """The inputs v5 needs: a fill=self role's recorded table read, and dormant Claude jobs."""
+
+    def test_sources_cache_round_trip_into_the_ledger_part(self):
+        from unittest import mock
+        import worker
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            spec, view = load(sp)
+            with mock.patch("roles.state_dir", lambda sid: td), mock.patch.object(worker, "state_dir", lambda sid: td):
+                self.assertIsNone(ad.sources_part(SID, "worker"))
+                worker.record_sources(SID, "worker", [], "board", now=NOW)
+                part = ad.sources_part(SID, "worker")
+                self.assertEqual((part["candidates"], part["observed_at"]), (0, NOW))
+                self.assertEqual(part["budget_s"], worker.SOURCES_CACHE_BUDGET_S)
+                led = ad.ledger_part(spec, view, "worker", ad.ledger_fetched_at(root))
+                self.assertEqual(led["fill"], "self")
+                self.assertEqual(led["sources"]["candidates"], 0)
+                # only fill=self roles carry a table; an assigned role's empty queue needs none
+                led_p = ad.ledger_part(spec, view, "peer", NOW)
+                self.assertEqual((led_p["fill"], led_p["sources"]), ("assigned", None))
+                snap = {"t": NOW, "native": ad._native("between", NOW), "lifecycle": {},
+                        "ledger": dict(led, next=[], active="", refill_requested=False, state="idle",
+                                       observed_at=NOW)}
+                self.assertEqual(rt.classify(snap, NOW)[:2], ("wait", "sources"))
+
+    def test_dormant_claude_job_is_between_turns_not_missing(self):
+        import types
+        from unittest import mock
+        import health
+        role = types.SimpleNamespace(slug="peer", session="0123456789abcdef")
+        with mock.patch.object(health, "claude_busy", lambda: {"another-session-id": "idle"}), \
+                mock.patch.object(health, "_CLAUDE_ROWS", [], create=True), \
+                mock.patch.object(health, "claude_worker_gone", lambda r, c: True):
+            with mock.patch.object(health, "watcher_alive", lambda sid, slug: (True, {"session_id": role.session})):
+                self.assertEqual(ad._probe_claude([role], NOW, SID)["peer"]["state"], "between")
+            with mock.patch.object(health, "watcher_alive", lambda sid, slug: (True, {"session_id": "ffffffffffffffff"})):
+                self.assertEqual(ad._probe_claude([role], NOW, SID)["peer"]["state"], "absent",
+                                 "a watcher armed for another session does not vouch for this one")
+            with mock.patch.object(health, "watcher_alive", lambda sid, slug: (False, {})):
+                self.assertEqual(ad._probe_claude([role], NOW, SID)["peer"]["state"], "absent")
+
+
+class PopulationExit(unittest.TestCase):
+    def test_removed_and_departed_roles_leave_the_population(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, root = make_world(td)
+            ldir = Path(root) / "shoals" / SID / "ledger"
+            (ldir / "shoal.jsonl").write_text(json.dumps(
+                {"ts": iso(NOW - 60), "by": "shoal", "type": "system", "event": "role-removed",
+                 "id": "x1", "role": "peer", "removed_by": "user", "note": "lane closed"}) + "\n")
+            obs = Path(td) / "obs.jsonl"
+            ob = ad.Observer(sp, obs_path=str(obs), checkpoint_path=str(Path(td) / "acc.json"), probe=False)
+            ob.tick(NOW)
+            mem = {x["role"]: x for x in map(json.loads, obs.read_text().splitlines()) if x.get("type") == "membership"}
+            self.assertAlmostEqual(mem["peer"]["spans"][-1][1], NOW - 60, delta=1)
+            self.assertFalse(ob.acc.member["peer"], "the removed role accrues no more time")
+            self.assertIsNone(mem["worker"]["spans"][-1][1])
+            # a role that leaves the spec without an event closes at the first tick that misses it
+            spec = ShoalSpec.load(sp)
+            spec.roles = [r for r in spec.roles if r.slug != "worker"]
+            spec.save(sp)
+            ob.tick(NOW + 30)
+            rows = [x for x in map(json.loads, obs.read_text().splitlines())
+                    if x.get("type") == "membership" and x["role"] == "worker"]
+            self.assertEqual(rows[-1]["exit"], "left-spec")
+            self.assertAlmostEqual(rows[-1]["spans"][-1][1], NOW + 30, delta=1)
+            _o, m = rt.load_observations(str(obs))
+            self.assertAlmostEqual(m["worker"][-1][1], NOW + 30, delta=1, msg="the last record wins")
+
+
 class JournalSegments(unittest.TestCase):
     """Daily rotation, compression, retention and the merged read (data-volume budget)."""
 
@@ -325,6 +396,24 @@ class JournalSegments(unittest.TestCase):
             self.assertTrue((Path(td) / f"obs-{ad._utc_day(first)}.jsonl.gz").is_file())
             obs, _mem = rt.load_observations(str(Path(td)))  # a directory reads the same set
             self.assertEqual([s["t"] for s in obs["worker"]], [first, midnight + 10])
+
+
+class PolicyChange(unittest.TestCase):
+    def test_a_segment_from_an_older_policy_closes_before_new_snapshots(self):
+        with tempfile.TemporaryDirectory() as td:
+            sp, _root = make_world(td)
+            obs = Path(td) / "obs.jsonl"
+            obs.write_text(json.dumps({"type": "segment", "policy": rt.LEGACY_POLICY, "opened": NOW - 20}) + "\n"
+                           + json.dumps({"type": "snapshot", "role": "worker", "t": NOW - 20}) + "\n")
+            ob = ad.Observer(sp, obs_path=str(obs), checkpoint_path=str(Path(td) / "acc.json"), probe=False)
+            ob.tick(NOW)
+            self.assertTrue((Path(td) / f"obs-{ad._utc_day(NOW)}.jsonl.gz").is_file())
+            got, _m = rt.load_observations(str(obs))
+            self.assertEqual([x["policy"] for x in got["worker"]], [rt.LEGACY_POLICY, rt.POLICY_VERSION])
+            ob.tick(NOW + 30)  # the same policy keeps appending to the same segment
+            self.assertEqual(len([x for x in got["worker"]]), 2)
+            self.assertEqual(sum(1 for x in map(json.loads, obs.read_text().splitlines())
+                                 if x.get("type") == "segment"), 1)
 
 
 class StateRoot(unittest.TestCase):
