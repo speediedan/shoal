@@ -616,6 +616,25 @@ def recovery_sections(evs, w0, w1):
     return L
 
 
+def ci_wait_section(spec, w0, w1):
+    """One line per repository configured in features.ci_wait, read from the ci-wait store (no
+    provider call here); nothing when the feature is off or the store cannot be read."""
+    try:
+        import ci_wait as cw
+        cfg = cw.feature(spec)
+        if not cfg.get("repos"):
+            return []
+        t0 = w0.timestamp() if hasattr(w0, "timestamp") else float(w0)
+        t1 = w1.timestamp() if hasattr(w1, "timestamp") else float(w1)
+        root = cw.store_dir()
+        out = ["", "## CI wait by repository (shoal ci-wait)"]
+        for c in cfg["repos"]:
+            out.append("- " + cw.line(c["repo"], cw.summarize(list(cw.load(root, c["repo"]).values()), t0, t1, c)))
+        return out
+    except Exception as exc:  # noqa: BLE001 - one section never stops the report
+        return ["", "## CI wait by repository (shoal ci-wait)", f"_unavailable: {str(exc)[:120]}_"]
+
+
 def build(spec, spec_path, w0, w1, evs, gen_label, opts):
     L = []
     tot = (w1 - w0).total_seconds()
@@ -754,6 +773,7 @@ def build(spec, spec_path, w0, w1, evs, gen_label, opts):
         L.append("")
         L.append("## GPU pool (gated pipeline, completed builds)")
         L.append("_az query failed_" if g is None else f"- builds overlapping: {g[0]} · union-busy {dur(g[1])} = {g[2]:.1f}% of window")
+    L.extend(ci_wait_section(spec, w0, w1))
     sig = signatures(evs, stale, q, recov)
     _w, _r, wper2 = wake_efficiency(evs, w1)
     _m, _k, by_to2, _a, _u = message_stats(evs)

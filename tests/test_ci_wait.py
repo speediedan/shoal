@@ -172,5 +172,34 @@ class Report(unittest.TestCase):
                              "an ignored check is not ranked either")
 
 
+class Outputs(unittest.TestCase):
+    def test_prometheus_text_and_weekly_line(self):
+        from unittest import mock
+        import datetime as dt
+        with tempfile.TemporaryDirectory() as td:
+            cw.collect(CFG, td, run=FakeRunner(), now=T0 + 5000)
+            text = cw.render_prometheus(CFG, td, T0 + 5000, {"gh:" + REPO: 2})
+            self.assertIn(f'shoal_ci_wait_pr_heads{{repo="{REPO}",window="24h"}} 1', text)
+            self.assertIn(f'shoal_ci_wait_push_to_complete_seconds{{repo="{REPO}",window="7d",quantile="0.5"}} 3990.0', text)
+            self.assertIn(f'shoal_ci_wait_gate_wait_seconds{{repo="{REPO}",window="24h",quantile="0.95"}} 2400.0', text)
+            self.assertIn(f'shoal_ci_wait_check_wait_per_head_seconds{{repo="{REPO}",check="gate: gpu-gate"}} 2400.0', text)
+            self.assertIn(f'shoal_ci_wait_source_errors_total{{repo="{REPO}",source="gh"}} 2', text)
+            self.assertNotIn("abc", text, "no SHA reaches a label")
+            line = cw.line(REPO, cw.summarize(list(cw.load(td, REPO).values()), T0, T0 + 86400, CFG["repos"][0]))
+            self.assertIn("1 PR heads", line)
+            self.assertIn("most wait: gate: gpu-gate", line)
+            # the weekly report section reads the same store
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shoal" / "telemetry"))
+            import shoal_report
+            spec = type("Spec", (), {"features": {"ci_wait": CFG}})()
+            w0 = dt.datetime.fromtimestamp(T0, dt.timezone.utc)
+            with mock.patch.object(cw, "store_dir", lambda root=None: td):
+                sec = shoal_report.ci_wait_section(spec, w0, w0 + dt.timedelta(days=1))
+            self.assertEqual(sec[1], "## CI wait by repository (shoal ci-wait)")
+            self.assertTrue(sec[2].startswith(f"- {REPO}: 1 PR heads"))
+            off = type("Spec", (), {"features": {}})()
+            self.assertEqual(shoal_report.ci_wait_section(off, w0, w0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -533,6 +533,95 @@ def _fmt_s(v):
     return "-" if v is None else (f"{v / 3600:.1f} h" if v >= 5400 else f"{v / 60:.0f} min")
 
 
+def line(repo, s):
+    """One line per repository for the weekly report."""
+    p, g, su = s["push_to_complete_s"], s["gate"], s["surface"]
+    top = s["most_wait_per_head_s"][0] if s["most_wait_per_head_s"] else None
+    return (f"{repo}: {s['pr_heads']} PR heads; push to CI complete p50 {_fmt_s(p['p50'])}, p95 {_fmt_s(p['p95'])}; "
+            f"gate wait p50 {_fmt_s(g['wait_s']['p50'])} over {g['builds']} builds; "
+            f"{su['job_minutes_per_head'] if su['job_minutes_per_head'] is not None else '-'} job-minutes per head, "
+            f"rerun share {su['rerun_share'] if su['rerun_share'] is not None else '-'}"
+            + (f"; most wait: {top[0]} ({_fmt_s(top[1])} per head)" if top else ""))
+
+
+WINDOWS = (("24h", 86400.0), ("7d", 7 * 86400.0))
+
+
+def _esc(v):
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def render_prometheus(cfg_all, root, now, errors=None):
+    """Gauges per repository over 24 h and 7 d windows ending now: quantiles do not aggregate
+    across scrapes, so the collector computes them. Labels are repository, window, source, phase
+    and the counted check names (bounded by the workflows that exist), never a SHA or PR number."""
+    L = []
+
+    def metric(name, kind, help_):
+        L.extend([f"# HELP {name} {help_}", f"# TYPE {name} {kind}"])
+
+    rows = {c["repo"]: c for c in cfg_all.get("repos") or []}
+    sums = {r: {w: summarize(list(load(root, r).values()), now - span, now, c) for w, span in WINDOWS}
+            for r, c in rows.items()}
+    metric("shoal_ci_wait_pr_heads", "gauge", "PR heads that reached CI complete in the window.")
+    for r in sums:
+        for w, s in sums[r].items():
+            L.append(f'shoal_ci_wait_pr_heads{{repo="{_esc(r)}",window="{w}"}} {s["pr_heads"]}')
+    for name, pick, help_ in (
+            ("shoal_ci_wait_push_to_complete_seconds", lambda s: s["push_to_complete_s"],
+             "Push (first check created) to CI complete per PR head, by quantile."),
+            ("shoal_ci_wait_gate_wait_seconds", lambda s: s["gate"]["wait_s"],
+             "Gate wait per build (the approval record, else queue to first job), by quantile.")):
+        metric(name, "gauge", help_)
+        for r in sums:
+            for w, s in sums[r].items():
+                for q, key in (("0.5", "p50"), ("0.95", "p95")):
+                    v = pick(s)[key]
+                    if v is not None:
+                        L.append(f'{name}{{repo="{_esc(r)}",window="{w}",quantile="{q}"}} {v:.1f}')
+    metric("shoal_ci_wait_seconds", "gauge", "Seconds of CI wait or run time in the window, by source and phase.")
+    for r in sums:
+        for w, s in sums[r].items():
+            for src, phase, v in (("github", "queue", s["github"]["queue_s_total"]),
+                                  ("github", "run", s["github"]["run_s_total"]),
+                                  ("gate", "run", s["gate"]["run_s_total"]),
+                                  ("local", "lease_wait", s["local"]["lease_wait_s_total"]),
+                                  ("local", "run", s["local"]["run_s_total"]),
+                                  ("direct", "held", s["local"]["direct_held_s_total"])):
+                L.append(f'shoal_ci_wait_seconds{{repo="{_esc(r)}",window="{w}",source="{src}",phase="{phase}"}} {v:.1f}')
+    metric("shoal_ci_wait_job_minutes_per_head", "gauge", "Counted check run minutes per PR head.")
+    metric("shoal_ci_wait_rerun_share", "gauge", "Share of counted check minutes spent on attempts after the first.")
+    for r in sums:
+        for w, s in sums[r].items():
+            su = s["surface"]
+            if su["job_minutes_per_head"] is not None:
+                L.append(f'shoal_ci_wait_job_minutes_per_head{{repo="{_esc(r)}",window="{w}"}} {su["job_minutes_per_head"]}')
+            if su["rerun_share"] is not None:
+                L.append(f'shoal_ci_wait_rerun_share{{repo="{_esc(r)}",window="{w}"}} {su["rerun_share"]}')
+    metric("shoal_ci_wait_check_wait_per_head_seconds", "gauge",
+           "Wait per PR head attributable to one counted check (7 d window, the ten largest).")
+    for r in sums:
+        for check, v in sums[r]["7d"]["most_wait_per_head_s"]:
+            L.append(f'shoal_ci_wait_check_wait_per_head_seconds{{repo="{_esc(r)}",check="{_esc(check)}"}} {v}')
+    metric("shoal_ci_wait_source_errors_total", "counter", "Collection passes where one source failed.")
+    for key, n in sorted((errors or {}).items()):
+        src, _, repo = key.partition(":")
+        L.append(f'shoal_ci_wait_source_errors_total{{repo="{_esc(repo)}",source="{_esc(src)}"}} {int(n)}')
+    metric("shoal_ci_wait_last_success_timestamp_seconds", "gauge", "Last completed collection pass.")
+    L.append(f"shoal_ci_wait_last_success_timestamp_seconds {now:.3f}")
+    return "\n".join(L) + "\n"
+
+
+def _write(path, text):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
 def cmd_report(a):
     import roles
     spec = roles.ShoalSpec.load(a.spec)
@@ -596,10 +685,23 @@ def cmd_observe(a):
         print("ci-wait: no repositories configured (features.ci_wait.repos)", file=sys.stderr)
         return 2
     root = store_dir(a.store or None)
-    got = collect(cfg, root, meta_dirs=_meta_dirs([a.spec] + list(a.jobs_spec or [])),
-                  event_dirs=_event_dirs())
-    print(f"ci-wait observe: {got}", flush=True)
-    return 0
+    while True:
+        t0 = time.time()
+        try:
+            spec = roles.ShoalSpec.load(a.spec)  # re-read: repositories and rules may change
+            cfg = feature(spec) or cfg
+            got = collect(cfg, root, meta_dirs=_meta_dirs([a.spec] + list(a.jobs_spec or [])),
+                          event_dirs=_event_dirs(), now=t0)
+            if a.prom_out:
+                _write(a.prom_out, render_prometheus(cfg, root, time.time(), _state(root).get("errors")))
+            print(f"ci-wait observe: {got}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - a watcher reports and retries, it does not die
+            print(f"ci-wait observe: {exc}", file=sys.stderr, flush=True)
+            if not a.watch:
+                return 1
+        if not a.watch:
+            return 0
+        time.sleep(max(0.0, a.watch - (time.time() - t0)))
 
 
 def add_parser(sub):
@@ -610,6 +712,8 @@ def add_parser(sub):
     o.add_argument("--jobs-spec", action="append", default=[],
                    help="another shoal whose `shoal job` records count (repeatable)")
     o.add_argument("--store", default="", help="store directory (default: <data_root>/_ci_wait)")
+    o.add_argument("--watch", type=float, default=0, help="repeat every S seconds (e.g. 3600)")
+    o.add_argument("--prom-out", default="", help="write the Prometheus text here after each pass")
     o.set_defaults(func=cmd_observe)
     r = s.add_parser("report", help="CI wait for one repository (or all configured) over a window")
     r.add_argument("--spec", required=True)
