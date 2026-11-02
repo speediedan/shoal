@@ -442,15 +442,49 @@ def _render_extra(acc, snaps, errors, now):
     return "\n".join(L) + "\n"
 
 
+# Closed, compressed daily journal segments are kept this many days, then removed.
+SEGMENT_RETAIN_DAYS = 365
+
+
+def _utc_day(t):
+    return dt.datetime.fromtimestamp(float(t), dt.timezone.utc).strftime("%Y%m%d")
+
+
+def _gzip_replace(plain):
+    """Compress one closed segment to `<plain>.gz` atomically, then remove the plain file. An
+    existing compressed copy of the same day keeps its content and gains a gzip member. A crash
+    between the replace and the removal leaves both; readers prefer the compressed copy, and the
+    next sweep removes the plain one."""
+    import gzip
+    import shutil
+    gz = plain + ".gz"
+    tmp = f"{gz}.tmp{os.getpid()}"
+    with open(plain, "rb") as src, open(tmp, "wb") as raw:
+        if os.path.exists(gz):
+            with open(gz, "rb") as old:
+                shutil.copyfileobj(old, raw)
+        with gzip.GzipFile(fileobj=raw, mode="ab") as dst:
+            shutil.copyfileobj(src, dst)
+        raw.flush()
+        os.fsync(raw.fileno())
+    os.replace(tmp, gz)
+    os.unlink(plain)
+
+
 class Observer:
     """One shoal's live integrator: ledger fold plus native sources in, observation JSONL and
     Prometheus text out. State beside the observation file (append counter, membership as written,
-    observation-error counts) and the accumulator checkpoint survive restarts; the accumulator
-    itself charges any unobserved restart interval to unknown."""
+    observation-error counts, the open segment's day) and the accumulator checkpoint survive
+    restarts; the accumulator itself charges any unobserved restart interval to unknown.
+
+    The journal rotates at the UTC day boundary: the live file becomes the closed segment
+    `<stem>-YYYYMMDD.jsonl`, is compressed, and a new live file starts with a segment header
+    (policy version) and the full membership. Compressed segments older than `retain_days` are
+    removed. `role-time report --input <live file>` reads the segments and the live file together."""
 
     def __init__(self, spec_path, obs_path=None, checkpoint_path=None, prom_path=None,
                  cache_paths=(), probe=True, pull=False, pull_interval_s=120.0,
-                 ledger_budget_s=LEDGER_BUDGET_S, state_root=None):
+                 ledger_budget_s=LEDGER_BUDGET_S, state_root=None, retain_days=SEGMENT_RETAIN_DAYS):
         from roles import ShoalSpec, state_dir
         self.spec_path = spec_path
         spec0 = ShoalSpec.load(spec_path)
@@ -467,9 +501,70 @@ class Observer:
         self.pull = pull
         self.pull_interval_s = float(pull_interval_s)
         self.ledger_budget_s = float(ledger_budget_s)
+        self.retain_days = float(retain_days)
         self.acc = None
         self.last_pull = 0.0
         self.state = self._load_state()
+
+    def _first_day(self):
+        """The UTC day of the live file's first snapshot (a journal written before rotation
+        existed spans several days and is named for its first)."""
+        try:
+            with open(self.obs_path) as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if d.get("type") == "snapshot" and d.get("t") is not None:
+                        return _utc_day(d["t"])
+        except OSError:
+            pass
+        return None
+
+    def _sweep(self, today):
+        """Compress closed segments left plain (a crash mid-rotation) and apply retention."""
+        import glob
+        stem = self.obs_path[:-len(".jsonl")] if self.obs_path.endswith(".jsonl") else self.obs_path
+        cutoff = _utc_day(dt.datetime.strptime(today, "%Y%m%d").replace(tzinfo=dt.timezone.utc).timestamp()
+                          - self.retain_days * 86400)
+        for p in sorted(glob.glob(glob.escape(stem) + "-*.jsonl*")):
+            day = rt._segment_day(p)
+            if day is None:
+                continue
+            if p.endswith(".jsonl"):
+                if os.path.exists(p + ".gz"):
+                    os.unlink(p)  # the compressed copy is complete
+                elif day < today:
+                    _gzip_replace(p)
+                    p += ".gz"
+            if p.endswith(".gz") and day < cutoff:
+                os.unlink(p)
+
+    def _rotate(self, now):
+        """Close the live segment when the UTC day changes. Returns True when a new segment
+        starts, so the caller writes its header and full membership."""
+        today = _utc_day(now)
+        live = os.path.exists(self.obs_path) and os.path.getsize(self.obs_path) > 0
+        day = self.state.get("segment_day") or (self._first_day() if live else None) or today
+        if live and day != today:
+            stem = self.obs_path[:-len(".jsonl")] if self.obs_path.endswith(".jsonl") else self.obs_path
+            closed = f"{stem}-{day}.jsonl"
+            if os.path.exists(closed):  # a second close of the same day (clock step): append
+                with open(self.obs_path, "rb") as src, open(closed, "ab") as dst:
+                    dst.write(src.read())
+                os.unlink(self.obs_path)
+            else:
+                os.replace(self.obs_path, closed)
+            _gzip_replace(closed)  # joins any compressed copy of the same day as a new member
+            live = False
+        if self.state.get("segment_day") != today or not live:
+            self.state["segment_day"] = today
+            self._sweep(today)
+        if not live:
+            self.state["membership"] = {}  # rewritten in full at the head of the new segment
+            return True
+        return False
 
     def _load_state(self):
         try:
@@ -520,18 +615,21 @@ class Observer:
                 e["native"] += 1
             if fetched is None:
                 e["ledger"] += 1
+        d = os.path.dirname(self.obs_path)
+        if d:
+            os.makedirs(d, exist_ok=True)
         lines = []
+        if self._rotate(now):
+            lines.append({"type": "segment", "policy": rt.POLICY_VERSION, "shoal": spec.sid,
+                          "opened": float(now)})
         written = self.state.setdefault("membership", {})
         for slug in sorted(spans):
-            if slug not in written:  # membership is an append-only fact: written once per file
+            if slug not in written:  # membership is written once per segment, in full
                 rows = [[s, e] for s, e in spans[slug]]
                 written[slug] = rows
                 lines.append({"type": "membership", "role": slug, "spans": rows})
         for slug in sorted(snaps):
             lines.append(dict(snaps[slug], type="snapshot", role=slug))
-        d = os.path.dirname(self.obs_path)
-        if d:
-            os.makedirs(d, exist_ok=True)
         with open(self.obs_path, "a") as fh:
             for row in lines:
                 fh.write(json.dumps(row, sort_keys=True) + "\n")
@@ -600,7 +698,7 @@ def cmd_observe(a):
         observers.append(Observer(spec_path, prom_path=prom, cache_paths=a.native_cache,
                                   probe=not a.no_probe, pull=a.pull, pull_interval_s=a.pull_interval,
                                   ledger_budget_s=a.ledger_budget,
-                                  state_root=a.state_dir or None))
+                                  state_root=a.state_dir or None, retain_days=a.retain_days))
     while True:
         t0 = time.time()
         rc = 0
@@ -643,6 +741,8 @@ def add_subcommands(s):
     o.add_argument("--state-dir", default="",
                    help="durable root for observations and checkpoints (<dir>/<shoal>/...); "
                         "default: each shoal's state directory")
+    o.add_argument("--retain-days", type=_positive, default=SEGMENT_RETAIN_DAYS,
+                   help="days closed, compressed daily journal segments are kept")
     o.set_defaults(func=cmd_observe)
 
 

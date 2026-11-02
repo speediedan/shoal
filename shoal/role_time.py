@@ -389,25 +389,66 @@ def _epoch(v):
     return t.timestamp()
 
 
-def load_observations(path):
-    """JSONL with `{"type": "membership", "role", "spans": [[start, end|null]]}` and
-    `{"type": "snapshot", "role", "t", ...}` lines. Line order is append order (`seq`)."""
+def observation_files(path):
+    """The journal files behind one `--input`, oldest first. A directory, or a live journal
+    `<stem>.jsonl`, means every closed daily segment `<stem>-YYYYMMDD.jsonl[.gz]` beside it and
+    then the live file; any other path (a single segment, compressed or not) is read alone."""
+    import glob
+    if os.path.isdir(path):
+        live = sorted(glob.glob(os.path.join(path, "*.jsonl")))
+        live = [p for p in live if not _segment_day(p)]
+        stems = [p[:-len(".jsonl")] for p in live] or [os.path.join(path, "role-time-observations")]
+    elif path.endswith(".jsonl") and not _segment_day(path):
+        live, stems = [path], [path[:-len(".jsonl")]]
+    else:
+        return [path]
+    segs = []
+    for stem in stems:
+        segs += [p for p in glob.glob(glob.escape(stem) + "-*.jsonl*") if _segment_day(p)]
+    # a day closed but not yet compressed and its compressed form never coexist for long; if both
+    # do (a crash between the two writes), the compressed copy is complete, so it wins
+    by_day = {}
+    for p in sorted(segs, key=lambda p: (_segment_day(p), p.endswith(".gz"))):
+        by_day[(os.path.dirname(p), _segment_day(p))] = p
+    return [by_day[k] for k in sorted(by_day, key=lambda k: k[1])] + [p for p in live if os.path.exists(p)]
+
+
+def _segment_day(path):
+    name = os.path.basename(path)
+    for suffix in (".jsonl.gz", ".jsonl"):
+        if name.endswith(suffix):
+            day = name[:-len(suffix)].rsplit("-", 1)[-1]
+            return day if len(day) == 8 and day.isdigit() else None
+    return None
+
+
+def load_observations(path, policies=None):
+    """JSONL with `{"type": "segment", "policy", "opened"}` (one per daily segment, newer journals
+    only), `{"type": "membership", "role", "spans": [[start, end|null]]}` and
+    `{"type": "snapshot", "role", "t", ...}` lines, across every file `observation_files` finds.
+    Line order is append order (`seq`). Membership is rewritten in full at the head of each
+    segment, so the last record for a role wins. A `policies` list collects segment policies."""
+    import gzip
     obs, mem = {}, {}
-    with open(path) as fh:
-        for n, line in enumerate(fh):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except ValueError:
-                continue  # a torn final append is not an observation
-            if d.get("type") == "membership":
-                mem.setdefault(d["role"], []).extend(
-                    (_epoch(s), None if e is None else _epoch(e)) for s, e in d["spans"])
-            elif d.get("type") == "snapshot":
-                d = dict(d, t=_epoch(d["t"]), seq=d.get("seq", n))
-                obs.setdefault(d["role"], []).append(d)
+    for f in observation_files(path):
+        opener = gzip.open if f.endswith(".gz") else open
+        with opener(f, "rt") as fh:
+            for n, line in enumerate(fh):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue  # a torn final append is not an observation
+                if d.get("type") == "segment":
+                    if policies is not None:
+                        policies.append(d.get("policy"))
+                elif d.get("type") == "membership":
+                    mem[d["role"]] = [(_epoch(s), None if e is None else _epoch(e)) for s, e in d["spans"]]
+                elif d.get("type") == "snapshot":
+                    d = dict(d, t=_epoch(d["t"]), seq=d.get("seq", n))
+                    obs.setdefault(d["role"], []).append(d)
     return obs, mem
 
 
@@ -416,13 +457,17 @@ def _pct(v):
 
 
 def cmd_report(a):
-    obs, mem = load_observations(a.input)
+    policies = []
+    obs, mem = load_observations(a.input, policies)
     t0, t1 = _epoch(a.since), _epoch(a.until)
     if t1 <= t0:
         print("role-time: --until must be after --since", file=sys.stderr)
         return 2
     per_role, segs = account(obs, mem, t0, t1, timeline=a.timeline)
-    doc = {"policy": POLICY_VERSION, "window": [t0, t1], "aggregate": summarize(per_role, t1 - t0),
+    # `policy` classified this report; `segment_policies` wrote the journal segments it read
+    # (older journals carry no segment header and contribute none)
+    doc = {"policy": POLICY_VERSION, "segment_policies": sorted({p for p in policies if p}),
+           "window": [t0, t1], "aggregate": summarize(per_role, t1 - t0),
            "roles": {r: summarize({r: acc}, t1 - t0) for r, acc in per_role.items()}}
     if a.timeline:
         doc["timeline"] = [list(s[:5]) + [list(s[5])] for s in segs]
@@ -444,7 +489,9 @@ def add_parser(sub):
     p = sub.add_parser("role-time", help="role time accounting (AAR, Role Work Fraction) from observation records")
     s = p.add_subparsers(dest="role_time_cmd", required=True)
     r = s.add_parser("report", help="reconciled event-time report over a window of an observation file")
-    r.add_argument("--input", required=True, help="observation JSONL (membership and snapshot lines)")
+    r.add_argument("--input", required=True,
+                   help="observation journal: the live JSONL (its closed daily segments beside it, "
+                        "compressed or not, are read with it), its directory, or one segment")
     r.add_argument("--since", required=True, help="window start (ISO-8601 or epoch seconds)")
     r.add_argument("--until", required=True, help="window end (ISO-8601 or epoch seconds)")
     r.add_argument("--timeline", action="store_true", help="include merged per-role class/event segments")

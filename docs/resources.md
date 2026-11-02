@@ -11,8 +11,11 @@ shoal resources report --input <host-stream-directory>
 shoal resources balance --input <host-stream-directory> --memory-gib 32 --gpus 1 --gpu-vendor amd --vram-mib 24000
 ```
 
-Samples default to `<data_root>/_resources/<host>/events-YYYYMMDD.jsonl`. Copy or gather each host's
-stream to a reporting host and repeat `--input` to combine them. `--directory` chooses another root.
+Samples default to `<data_root>/_resources/<host>/events-YYYYMMDD.jsonl`. The first sample of a new
+UTC day gzips every closed day (`events-YYYYMMDD.jsonl.gz`; a late append to a compressed day becomes
+another gzip member) and removes compressed days older than `--retain-days` (default 90). Reports
+read both forms. Copy or gather each host's stream to a reporting host and repeat `--input` to
+combine them. `--directory` chooses another root.
 The sampler file can run standalone on a compute-only host:
 
 ```bash

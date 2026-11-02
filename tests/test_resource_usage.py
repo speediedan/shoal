@@ -60,6 +60,26 @@ class Resources(unittest.TestCase):
         self.assertEqual(gpu1["active_fraction_pct"], 0)
         self.assertAlmostEqual(lease["mean_host_memory_used_pct"], 100*28/128)
 
+    def test_closed_days_compress_and_retention_drops_old_days(self):
+        day = 86400
+        host = self.root / "host-a"
+        r.append_sample(self.root, self.sample(0))                    # day 1970-01-01
+        r.append_sample(self.root, self.sample(day + 10))             # first sample of day 2
+        self.assertTrue((host / "events-19700101.jsonl.gz").exists(), "a closed day is compressed")
+        self.assertFalse((host / "events-19700101.jsonl").exists())
+        self.assertTrue((host / "events-19700102.jsonl").exists(), "the open day stays plain")
+        # a late append to a compressed day becomes one more gzip member, read back in full
+        (host / "events-19700101.jsonl").write_text(json.dumps({"ts": 5, "type": "late"}) + "\n")
+        r.append_sample(self.root, self.sample(2 * day + 10))         # day 3 compacts again
+        events = r.load_events([self.root])
+        self.assertEqual(sorted(e["type"] for e in events if e["ts"] < day),
+                         ["late", "lease_observed_acquire", "resource_sample"])
+        self.assertEqual(len([e for e in events if e.get("type") == "resource_sample"]), 3)
+        # retention: compressed days older than the window are removed, younger ones kept
+        r.append_sample(self.root, self.sample(5 * day + 10), retain_days=3)
+        self.assertFalse((host / "events-19700101.jsonl.gz").exists())
+        self.assertTrue((host / "events-19700103.jsonl.gz").exists())
+
     def test_failure_gap_and_new_episode(self):
         events = r.append_sample(self.root, self.sample(0))
         failed = self.sample(10, False, ok=False)
