@@ -155,8 +155,8 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
   carries `host`: the role's server, else the spec's home, else this host.
 - `user` (the maintainer, one for all shoals): open asks summed, and `grants_pending` summed from the
   status rows' `grants_pending` lists (0 while no row carries one; grant events are not folded).
-- `system` (`<id>:shoal`, the `shoal` writer) and `relay` (`<id>:relay`, the retired wake relay's
-  writer, only when its file exists). Both carry the shoal's home as `host`.
+- `system` (`<id>:shoal`, the `shoal` writer), with the shoal's home as `host`. The retired wake
+  relay's writer folds into it, so its historical traffic stays counted without a node of its own.
 - `external` (`ext:<slug>`): an outside seat, from an `ext-<slug>.jsonl` writer file or an `ext:<slug>`
   target. `alias_of` names `<other-shoal>:<slug>` when that slug is a role in another discovered shoal;
   the seat then takes that role's state and host.
@@ -228,15 +228,16 @@ for this host and per-host role aggregates: `roles`, `working`, `waiting`, `need
 
 **Sources and cost.** Role rows come from the status cache (`status.json`, written by the
 `shoal-ui-feed` feeder) when it is at most 45 seconds old. Otherwise the graph builds them with
-`ui_status.role_row` over its own View, with the harness listing reused for 45 seconds, the opencode
-probe off and no remote merge. With `--ledger-root` the cache is skipped. The feed keeps each ledger
+`ui_status.role_row` over its own View, running the local harness listing (`claude agents --json --all`: read-only, no wake, no
+network) at most once per 45 seconds, with the opencode probe off and no remote merge. With `--ledger-root` the cache is skipped. The feed keeps each ledger
 file's byte offset in memory and reads only whole lines appended since the last tick; the View is
 folded from those parsed events, not re-read from disk. A tick:
 
 - never pulls, commits or writes in a ledger clone, and never calls `next`;
 - never messages or wakes a role;
 - makes no provider or network call: blocker checks run with `live=False`, native turn state comes
-  only from cache files (never a probe), and job details from local job meta files;
+  only from cache files, job details from local job meta files, and the only process it may start is
+  the local harness listing above;
 - does not change `shoal-ui-feed` or its document.
 
 The document stays small: edges are aggregated, events capped, and `work_ratio_24h` is `null`

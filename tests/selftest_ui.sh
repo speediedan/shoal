@@ -1851,11 +1851,12 @@ assert d["v"] == 1 and d["kind"] == "shoal-graph" and d["cursor"], d.keys()
 assert d["windows"] == {"rate_s": 300, "recent_s": 3600, "day_s": 86400}, d["windows"]
 nodes = {n["id"]: n for n in d["nodes"]}
 kinds = {i: n["kind"] for i, n in nodes.items()}
-for i, k in {"user": "user", f"{A}:shoal": "system", f"{A}:relay": "relay", f"{A}:core": "role", f"{A}:dist-ci": "role",
+for i, k in {"user": "user", f"{A}:shoal": "system", f"{A}:core": "role", f"{A}:dist-ci": "role",
              f"{A}:tune": "role", f"{A}:research": "role", f"{B}:research": "role", f"{B}:analysis": "role",
              "ext:evolution": "external", "ext:research": "external"}.items():
     assert kinds.get(i) == k, (i, kinds.get(i))
-assert f"{B}:relay" not in nodes and not any(k == "writer" for k in kinds.values()), kinds
+# the retired wake relay's writer folds into the system node: no relay node, no writer node for it
+assert not any(k in ("relay", "writer") for k in kinds.values()) and f"{A}:wake-relay" not in nodes, kinds
 # outside seats: aliased to the role of the same slug in another shoal, or not at all
 assert nodes["ext:research"]["alias_of"] == f"{B}:research" and nodes["ext:evolution"]["alias_of"] is None
 # role state: role-time over the cached native status where there is one, the posture where there is none

@@ -5,8 +5,8 @@
   shoal ui graph-feed [--interval S] [--out PATH] [--once]
 
 Nodes are roles (their rows from the `ui status` read model, their state from `role_time.classify`
-over cached native status), the maintainer (`user`), each shoal's system writer, the retired wake
-relay when its file exists, and outside seats (`ext:<slug>`). Edges are ledger events aggregated per
+over cached native status), the maintainer (`user`), each shoal's system writer (which also carries
+the retired wake relay's historical traffic), and outside seats (`ext:<slug>`). Edges are ledger events aggregated per
 (src, dst, class) with counts over a rate window, an hour and a day, plus edges that need no event:
 `blocked-on` (a next item's blocker names another role) and `alias` (an outside seat that is a role
 in another shoal). Events are the capped tail, numbered by `seq`, with an opaque cursor of per-file
@@ -14,8 +14,9 @@ byte offsets so a client asks only for what is new. Contract and sources: docs/u
 
 READ-ONLY by construction: ledger files are only opened for reading (never pulled, committed or
 written), no role is messaged or woken, `next` is never called, and the tick makes no provider or
-network call: role rows come from the status cache when it is fresh, native turn state only from
-role-time cache files (never a probe).
+network call: role rows come from the status cache when it is fresh, else from `role_row` with a local
+harness listing (`claude agents`, read-only, at most once per ROWS_MAX_AGE_S, no wake), and native turn
+state only from role-time cache files.
 """
 from __future__ import annotations
 
@@ -166,17 +167,16 @@ def decode_cursor(c: str) -> tuple[dict[str, int], int] | None:
 # ---- node ids, item URLs, edge classes ------------------------------------------------------
 
 def node_id(sid: str, name: str, roles: set[str]) -> str:
-    """Writer or target name to node id: `user`, `<shoal>:shoal`, `<shoal>:relay`, `<shoal>:*`
-    (a broadcast target, not a node), `ext:<slug>`, else `<shoal>:<slug>`."""
+    """Writer or target name to node id: `user`, `<shoal>:shoal` (also the retired wake relay's
+    writer, folded into the system node), `<shoal>:*` (a broadcast target, not a node), `ext:<slug>`,
+    else `<shoal>:<slug>`."""
     name = str(name or "")
     if name == "user":
         return "user"
     if name in roles:
         return f"{sid}:{name}"
-    if name == "shoal":
+    if name in ("shoal", RELAY_WRITER):
         return f"{sid}:shoal"
-    if name == RELAY_WRITER:
-        return f"{sid}:relay"
     if name == "*":
         return f"{sid}:*"
     if name.startswith("ext:") or name.startswith("ext-"):
@@ -530,14 +530,10 @@ class GraphBuilder:
                 if w.startswith("ext-") and w not in slugs:
                     ext_seen.setdefault("ext:" + w[4:], set()).add(sid)
 
-            # -- the system writer and the retired wake relay
+            # -- the system writer (the retired wake relay's writer folds into it: node_id)
             nodes[f"{sid}:shoal"] = {"id": f"{sid}:shoal", "kind": "system", "shoal": sid, "label": "shoal", "host": home,
                                      "state": {"class": "work", "event": "", "group": ""},
                                      "metrics": {"pages_24h": m["pages_24h"]}}
-            if RELAY_WRITER in self.tail.writers(sid) and RELAY_WRITER not in slugs:
-                nodes[f"{sid}:relay"] = {"id": f"{sid}:relay", "kind": "relay", "shoal": sid, "label": RELAY_WRITER,
-                                         "host": home,
-                                         "state": {"class": "idle", "event": "no-work", "group": ""}, "metrics": {}}
 
             # -- roles
             counts = collections.Counter()
@@ -622,7 +618,7 @@ class GraphBuilder:
             shoals.append(sdoc)
             # metrics keyed by node id for the synthetic nodes
             for nid_, c in per.items():
-                if nid_ in nodes and nodes[nid_]["kind"] in ("system", "relay"):
+                if nid_ in nodes and nodes[nid_]["kind"] == "system":
                     nodes[nid_]["metrics"].update({k: v for k, v in c.items() if k.startswith("msgs_")})
             for nid_, c in per.items():
                 if nid_.startswith("ext:"):
