@@ -25,8 +25,8 @@ import {
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
-import { buildScene, headerText } from "./scene.js";
-import { hitNode, hitDisc, panBy, zoomAt, wheelFactor, boundsOf, fitTransform, clamp, withAlpha } from "./geom.js";
+import { buildScene, fitScene, fitText, headerText } from "./scene.js";
+import { hitNode, hitDisc, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -180,9 +180,11 @@ export default class Lattice extends View {
     cx.spawn(async (cx) => {
       try {
         if (appWindow()?.platform !== "linux") return;
-        const env = await readTextFile("/proc/self/environ");
-        let hint = rendererFromProcess(env ?? "");
-        if (!hint) hint = rendererFromProcess("", (await readTextFile("/proc/self/maps")) ?? "");
+        // the environment first (a forced or selected driver), then the loaded libraries and
+        // device nodes, where a hardware driver outranks the lavapipe ICD the loader always maps
+        const env = (await readTextFile("/proc/self/environ")) ?? "";
+        let hint = rendererFromProcess(env);
+        if (!hint) hint = rendererFromProcess(env, (await readTextFile("/proc/self/maps")) ?? "");
         if (hint) { this.renderer = hint; cx.notify(); }
       } catch (_e) {
         // no hint: auto stays at balanced
@@ -297,11 +299,26 @@ export default class Lattice extends View {
     }
     const cold = lay.pos.size === 0;
     lay.update(this.vm);
-    // a topology change glides into place at 10 Hz; anything else settles at once
-    if (!cold && lay.iters > 30 && cx && this.policy.any) this.cool(cx);
+    // positions are kept by node id: a poll with the same nodes moves nothing (and so does not
+    // refit); a changed node set glides its new and retargeted nodes into place at 10 Hz
+    if (!cold && lay.iters > 0 && cx && this.policy.any) this.cool(cx);
     else lay.run();
     this.lay = lay.result();
-    if (this.autoFit || !this.tf) this.fit();
+    if (!this.tf || this.needFit || (this.autoFit && lay.moved)) this.fit();
+  }
+
+  /** `f`: a fresh full layout of this view, fitted to the canvas. */
+  relayout(cx) {
+    this.autoFit = true;
+    const lay = this.layouts.get(this.view);
+    if (lay && this.vm) {
+      this.cooling?.cancel();
+      this.cooling = null;
+      lay.update(this.vm, { relayout: true });
+      lay.run();
+      this.lay = lay.result();
+    }
+    this.fit();
   }
 
   cool(cx) {
@@ -311,7 +328,7 @@ export default class Lattice extends View {
       if (lay) {
         lay.step(10);
         this.lay = lay.result();
-        if (this.autoFit) this.fit();
+        if (this.autoFit) this.fit(!lay.settled);
       }
       if (!lay || lay.settled) {
         this.cooling?.cancel();
@@ -326,14 +343,11 @@ export default class Lattice extends View {
     return { width: Math.max(200, w), height: Math.max(160, this.size.height) };
   }
 
-  fit() {
-    if (!this.lay) return;
-    const pts = [...this.lay.pos.values()].map((p) => ({ x: p.x, y: p.y, r: 30 }));
-    for (const s of this.lay.sats) pts.push({ x: s.x, y: s.y, r: 8 });
-    for (const c of this.lay.clusters) pts.push({ x: c.x, y: c.y, r: c.r + 26 });
-    for (const a of this.lay.anchors?.values() ?? []) pts.push({ x: a.x, y: a.y, r: 40 });
-    const size = this.canvasSize();
-    this.tf = fitTransform(boundsOf(pts), size, 30, 1.6);
+  /** Fits every node, label and cluster ring inside the canvas (quick: fewer passes, while cooling). */
+  fit(quick = false) {
+    if (!this.lay || !this.vm) return;
+    this.needFit = false;
+    this.tf = fitScene(this.vm, this.lay, this.canvasSize(), { pad: 24, top: 48, kMax: 1.6, iterations: quick ? 2 : 5 });
   }
 
   spawnPackets(fresh, cx) {
@@ -370,6 +384,7 @@ export default class Lattice extends View {
     this.pinned = null;
     this.hover = null;
     this.autoFit = true;
+    this.needFit = true;
     this.rebuild(cx);
   }
 
@@ -383,7 +398,7 @@ export default class Lattice extends View {
     if (c === "back") this.key({ keystroke: "escape" }, cx);
     else if (c === "legend") this.legend = !this.legend;
     else if (c === "motion") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
-    else if (c === "fit") { this.autoFit = true; this.fit(); }
+    else if (c === "fit") this.relayout(cx);
   }
 
   key(e, cx) {
@@ -395,8 +410,8 @@ export default class Lattice extends View {
       else if (this.vm && !this.vm.global) this.drill("global", cx);
     } else if (k === "l") this.legend = !this.legend;
     else if (k === "m") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
-    else if (k === "f" || k === "0") { this.autoFit = true; this.fit(); }
-    else if (k === "i") { this.items = !this.items; this.rebuild(cx); }
+    else if (k === "f" || k === "0") this.relayout(cx);
+    else if (k === "i") { this.items = !this.items; this.needFit = this.autoFit; this.rebuild(cx); }
     else if (k === "=" || k === "+" || k === "shift-=") { this.tf = zoomAt(this.tf, center, 1.2); this.autoFit = false; }
     else if (k === "-") { this.tf = zoomAt(this.tf, center, 1 / 1.2); this.autoFit = false; }
     else if (k === "left" || k === "right" || k === "up" || k === "down") {
@@ -538,34 +553,51 @@ export default class Lattice extends View {
   renderCard(id, at, size, pinned) {
     const c = cardLines(this.vm, id);
     if (!c) return div();
-    const W = 288;
-    const lines = 2 + c.rows.length + c.list.length + c.links.length + (c.command ? 1 : 0);
-    const H = 24 + lines * 16;
-    let x = at.x + at.r + 16;
-    if (x + W > size.width - 8) x = at.x - at.r - 16 - W;
-    const y = clamp(at.y - 20, 8, Math.max(8, size.height - H - 8));
+    const W = 300;
+    // every line is one line (a long item or blocker is cut, its full text on the line's tooltip),
+    // so the height estimate holds; a card taller than the canvas drops its last item lines
+    const textW = W - 24;
+    const fit = (t) => fitText(t, textW, 10.5);
+    // measured in Herdr app 0.1.12: a 10.5px line plus the 3px gap is about 20px; padding,
+    // border and the command chip add about 28
+    const LINE = 20, EXTRA = 28;
+    const fixed = 1 + c.rows.length + c.list.length + (c.command ? 1 : 0);
+    const room = Math.floor((size.height - 16 - EXTRA) / LINE) - fixed;
+    const links = c.links.length > room ? c.links.slice(0, Math.max(0, room - 1)) : c.links;
+    const more = c.links.length - links.length;
+    const box = placeCard(at, size, W, EXTRA + (fixed + links.length + (more ? 1 : 0)) * LINE);
     const color = c.color ?? P.ink;
-    const card = v_flex().id("card").absolute().left(clamp(x, 8, size.width - W - 8)).top(y).w(W).p(10).gap(3)
+    const line = (key, text, color2) => {
+      const short = fit(text);
+      return div().id(key).truncate().text_color(color2).when(short !== text, (el) => el.tooltip(text)).child(short);
+    };
+    const card = v_flex().id("card").absolute().left(box.x).top(box.y).w(W).max_h(box.maxH).overflow_hidden().p(10).gap(3)
       .rounded(8).bg(withAlpha(P.panelSolid, 0.95)).border(1).border_color(withAlpha(color, pinned ? 0.7 : 0.35)).text_size(10.5)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(h_flex().gap(6).items_center()
         .child(dot(color, 9))
         .child(div().text_size(12).font_semibold().text_color(P.ink).child(c.title))
-        .child(div().flex_1().text_color(P.dim).child(c.subtitle ?? ""))
+        .child(div().flex_1().min_w(0).truncate().text_color(P.dim).child(c.subtitle ?? ""))
         .when(pinned, (el) => el.child(div().text_color(P.faint).child("pinned"))));
     for (const [k, v] of c.rows) {
-      card.child(h_flex().gap(8).child(div().w(104).flex_none().text_color(P.dim).child(k)).child(div().flex_1().truncate().text_color(P.ink).child(v)));
+      card.child(h_flex().gap(8).child(div().w(104).flex_none().text_color(P.dim).child(k)).child(div().flex_1().min_w(0).truncate().text_color(P.ink).child(v)));
     }
-    for (const line of c.list) card.child(div().truncate().text_color(P.magenta).child(line));
-    c.links.forEach((l, i) => {
+    c.list.forEach((text, i) => card.child(line(`card-ask-${i}`, text, P.magenta)));
+    links.forEach((l, i) => {
       const color2 = l.stale ? P.red : l.kind === "active" ? P.teal : l.kind === "next" ? P.ink : P.dim;
-      if (pinned && l.url) card.child(Link.new(`card-link-${i}`).href(l.url).text_color(color2).child(l.text));
-      else card.child(div().truncate().text_color(color2).child(l.text));
+      if (pinned && l.url) {
+        const short = fit(l.text);
+        card.child(div().id(`card-item-${i}`).when(short !== l.text, (el) => el.tooltip(l.text))
+          .child(Link.new(`card-link-${i}`).href(l.url).text_color(color2).child(short)));
+      } else card.child(line(`card-item-${i}`, l.text, color2));
     });
+    if (more) card.child(div().text_color(P.faint).child(`+${more} more items: shoal view`));
     if (c.command) {
+      const cmd = `$ ${c.command}`;
+      const short = fitText(cmd, textW - 12, 10.5);
       card.child(div().id("card-cmd").mt(2).px(6).py(2).rounded(4).bg(withAlpha(P.steel1, 0.35)).text_color(P.steel2)
-        .when(pinned, (el) => el.cursor_pointer().on_click((_e, cx) => cx.write_to_clipboard(c.command)).tooltip("copy"))
-        .child(`$ ${c.command}`));
+        .when(pinned, (el) => el.cursor_pointer().on_click((_e, cx) => cx.write_to_clipboard(c.command)).tooltip(short === cmd ? "copy" : `copy: ${c.command}`))
+        .child(short));
     }
     return card;
   }

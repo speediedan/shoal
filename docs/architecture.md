@@ -970,7 +970,11 @@ and the contract are in [`ui.md`](ui.md).
   elements, and all motion is native (`loop`, `frames`, `transition`). Motion follows a budget
   tier (`full`, `balanced`, `low`, `off`, or `auto` from a renderer probe), because any animated
   element makes the window redraw and a frame is expensive on a software renderer; `low` and `off`
-  animate nothing, and a data poll redraws only when what is shown changed. The `source` argv
+  animate nothing, and a data poll redraws only when what is shown changed. The probe trusts a
+  forcing or selecting environment first, then the process maps hardware first (the Vulkan loader
+  maps every installed ICD, lavapipe included). Positions are kept by node id: a poll with the
+  same node set moves nothing, a changed one refines only new and retargeted nodes, and `f` relays
+  out and fits the measured scene (labels and cluster titles included) inside the canvas. The `source` argv
   must stay a read-only shoal command. Encodings key on role-time class and event; unknown values
   render as "other" or "unknown".
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any

@@ -64,26 +64,41 @@ export function resolveTier(requested, ctx = {}) {
   return { tier, auto: true, why: why.join(", ") };
 }
 
-const SOFTWARE = /(lvp_icd|lavapipe|llvmpipe|softpipe|swiftshader|libvulkan_lvp)/i;
-const HARDWARE = /(nvidia|radeon|amd_icd|intel_icd|intel_hasvk|nouveau|freedreno|panfrost|asahi|MoltenVK)/i;
+// Driver names, for an environment that selects one (VK_ICD_FILENAMES, VK_DRIVER_FILES,
+// GALLIUM_DRIVER) and for the libraries a process has loaded (/proc/self/maps).
+const SOFTWARE_ENV = /(lvp_icd|lavapipe|llvmpipe|softpipe|swrast|swiftshader)/i;
+const HARDWARE_ENV = /(nvidia|radeon|amd_icd|amdgpu|intel_icd|intel_hasvk|iris|crocus|nouveau|freedreno|panfrost|asahi|broadcom|MoltenVK)/i;
+const SOFTWARE_LIB = /(libvulkan_lvp|libvk_swiftshader|swiftshader|swrast_dri)/i;
+// The Vulkan loader maps every installed ICD while it enumerates devices (lavapipe included), so
+// a hardware ICD library alone proves little. What does: the NVIDIA driver's own libraries, or a
+// GPU device node mapped into the process (a hardware driver mmaps its buffers through it).
+const NVIDIA_LIB = /(libnvidia-|libGLX_nvidia|libEGL_nvidia)/;
+const GPU_DEVICE = /\/dev\/(nvidia\d|dri\/renderD\d|dri\/card\d)/;
+const HARDWARE_ICD = /libvulkan_(radeon|intel|intel_hasvk|nouveau|freedreno|panfrost|asahi|broadcom|powervr)|MoltenVK/i;
 
 /**
  * A renderer hint from the app process's environment (NUL or newline separated, as
- * /proc/self/environ) and, optionally, its loaded libraries (/proc/self/maps). "cpu" when a
- * software Vulkan or GL driver is selected or loaded, "gpu" when a hardware one is, else null.
- * SHOAL_LATTICE_RENDERER=cpu|gpu in the app's environment overrides both.
+ * /proc/self/environ) and, optionally, its loaded libraries (/proc/self/maps). In order:
+ *   1. SHOAL_LATTICE_RENDERER=cpu|gpu, or LIBGL_ALWAYS_SOFTWARE, forces it;
+ *   2. VK_ICD_FILENAMES / VK_DRIVER_FILES / GALLIUM_DRIVER naming a driver decides it;
+ *   3. in the maps, hardware wins: an NVIDIA library or a mapped GPU device is "gpu"; a software
+ *      driver with no hardware driver library is "cpu"; a hardware ICD with no software one is
+ *      "gpu". Every ICD mapped and no device (a GPU-less box with Mesa installed) stays null.
  */
 export function rendererFromProcess(environ = "", maps = "") {
   const env = String(environ ?? "");
   const vars = new Map(env.split(/[\0\n]/).filter(Boolean).map((kv) => { const i = kv.indexOf("="); return [kv.slice(0, i), kv.slice(i + 1)]; }));
-  if (vars.get("SHOAL_LATTICE_RENDERER") === "cpu" || vars.get("LIBGL_ALWAYS_SOFTWARE") === "1") return "cpu";
-  if (vars.get("SHOAL_LATTICE_RENDERER") === "gpu") return "gpu";
+  const forced = vars.get("SHOAL_LATTICE_RENDERER");
+  if (forced === "cpu" || forced === "gpu") return forced;
+  if (/^(1|true|yes)$/i.test(vars.get("LIBGL_ALWAYS_SOFTWARE") ?? "")) return "cpu";
   const icd = [vars.get("VK_ICD_FILENAMES"), vars.get("VK_DRIVER_FILES"), vars.get("GALLIUM_DRIVER")].filter(Boolean).join(":");
-  if (SOFTWARE.test(icd)) return "cpu";
-  if (HARDWARE.test(icd)) return "gpu";
+  if (SOFTWARE_ENV.test(icd)) return "cpu";
+  if (HARDWARE_ENV.test(icd)) return "gpu";
   const m = String(maps ?? "");
-  if (/libvulkan_lvp|swiftshader|libvk_swiftshader/i.test(m)) return "cpu";
-  if (/libnvidia-|libvulkan_radeon|libvulkan_intel|MoltenVK/i.test(m)) return "gpu";
+  if (NVIDIA_LIB.test(m) || GPU_DEVICE.test(m)) return "gpu";
+  const soft = SOFTWARE_LIB.test(m), hard = HARDWARE_ICD.test(m);
+  if (soft && !hard) return "cpu";
+  if (hard && !soft) return "gpu";
   return null;
 }
 

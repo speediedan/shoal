@@ -5,9 +5,11 @@
 // and wake relay inside, externals outside). Then a small force refinement (anchor springs plus
 // collision and short-range repulsion, a compact Fruchterman-Reingold variant with linear
 // cooling) that clears overlaps without losing the structure. Starting jitter is seeded by a hash
-// of each node id and a warm start reuses the previous positions, so the picture is stable from
-// one data tick to the next. Item satellites are placed after the refinement, as short spokes
-// fanned outward from each role: the starburst.
+// of each node id. Positions are kept by node id across data ticks: while the view's node set is
+// the same, nothing moves (states, metrics and edges never shift a node); when it changes, only the
+// new nodes and those whose target moved are refined, the rest stay pinned where they were. A full
+// layout runs cold, or on request (`f`). Item satellites are placed after the refinement, as
+// short spokes fanned outward from each role: the starburst.
 
 import { hash32, rng, clamp } from "./geom.js";
 
@@ -109,10 +111,12 @@ export function layoutTargets(vm) {
       const angs = nb.map((m) => { const t = targets.get(m.id); return Math.atan2(t.y - c.y, t.x - c.x); });
       placed.push({ id: n.id, c, a: circMean(angs), r: c.r + 66 });
     }
-    loose.forEach((id, i) => {
-      const a = -Math.PI / 2 + (i - (loose.length - 1) / 2) * 0.34;
-      placed.push({ id, c: { x: 0, y: 0 }, a, r: ringR * (i % 2 ? 0.78 : 0.54) });
-    });
+    // seeded by the id, not the list index, so one appearing or leaving does not move the others
+    for (const id of loose) {
+      const h = hash32(id);
+      const a = -Math.PI / 2 + ((h % 1000) / 999 - 0.5) * 1.5;
+      placed.push({ id, c: { x: 0, y: 0 }, a, r: ringR * ((h >>> 10) & 1 ? 0.78 : 0.54) });
+    }
     for (const p of placed) {
       targets.set(p.id, { x: p.c.x + p.r * Math.cos(p.a), y: p.c.y + p.r * Math.sin(p.a) });
       center.set(p.id, p.c);
@@ -174,8 +178,12 @@ export function layoutTargets(vm) {
   return { targets, center, clusters, bands, anchors };
 }
 
+/** A layout's identity: the view and its node set, in any order. */
+export const layoutKey = (vm) => vm.view + "|" + vm.nodes.map((n) => n.id).sort().join(",");
+
 /**
- * The incremental layout kept in mod state. `update(vm)` sets new targets and keeps positions;
+ * The incremental layout kept in mod state. `update(vm)` sets new targets and keeps positions
+ * (`moved` says whether any may change); `update(vm, {relayout: true})` starts over cold;
  * `step(n)` runs n refinement iterations; `settled` says when to stop notifying.
  */
 export class Layout {
@@ -187,30 +195,48 @@ export class Layout {
     this.sig = "";
     this.meta = null;
     this.vm = null;
+    this.targets = null; // the targets the current positions were refined toward
+    this.movable = null; // null: every node; else the ids a warm refinement may move
+    this.moved = false;
   }
 
-  update(vm) {
+  update(vm, { relayout = false } = {}) {
     const meta = layoutTargets(vm);
-    const sig = vm.view + "|" + vm.nodes.map((n) => n.id).join(",");
-    const cold = this.pos.size === 0;
+    const sig = layoutKey(vm);
+    const cold = relayout || this.pos.size === 0;
     const changed = sig !== this.sig;
-    const keep = new Map();
-    for (const n of vm.nodes) {
-      const prev = this.pos.get(n.id);
-      const t = meta.targets.get(n.id);
-      if (prev) keep.set(n.id, { x: prev.x, y: prev.y });
-      else {
-        const j = t.fixed ? { x: 0, y: 0 } : jitter(n.id, 14);
-        keep.set(n.id, { x: t.x + j.x, y: t.y + j.y });
-      }
-    }
-    this.pos = keep;
     this.meta = meta;
     this.vm = vm;
     this.sig = sig;
     this.iter = 0;
-    this.iters = cold ? 260 : changed ? 150 : 30;
-    this.t0 = cold ? 42 : changed ? 26 : 2.5;
+    if (!cold && !changed) {
+      // the same nodes: keep every position exactly
+      this.iters = 0;
+      this.movable = null;
+      this.moved = false;
+      return this;
+    }
+    const keep = new Map();
+    const movable = new Set();
+    for (const n of vm.nodes) {
+      const prev = cold ? null : this.pos.get(n.id);
+      const t = meta.targets.get(n.id);
+      const was = this.targets?.get(n.id);
+      if (prev) {
+        keep.set(n.id, { x: prev.x, y: prev.y });
+        if (!was || Math.hypot(t.x - was.x, t.y - was.y) > 0.5) movable.add(n.id);
+      } else {
+        const j = t.fixed ? { x: 0, y: 0 } : jitter(n.id, 14);
+        keep.set(n.id, { x: t.x + j.x, y: t.y + j.y });
+        movable.add(n.id);
+      }
+    }
+    this.pos = keep;
+    this.targets = new Map([...meta.targets].map(([id, t]) => [id, { x: t.x, y: t.y }]));
+    this.movable = cold ? null : movable;
+    this.moved = cold || movable.size > 0;
+    this.iters = cold ? 260 : movable.size ? 150 : 0;
+    this.t0 = cold ? 42 : 26;
     return this;
   }
 
@@ -226,6 +252,8 @@ export class Layout {
     const T = this.meta.targets;
     const N = ids.length;
     const foot = nodes.map(footprint);
+    // a warm refinement moves only the new and retargeted nodes; the rest only push them away
+    const mv = this.movable ? ids.map((id) => this.movable.has(id)) : null;
     for (let s = 0; s < n && this.iter < this.iters; s++, this.iter++) {
       const temp = this.t0 * (1 - this.iter / this.iters) + 0.02;
       const dx = new Float64Array(N);
@@ -238,6 +266,8 @@ export class Layout {
       }
       for (let i = 0; i < N; i++) {
         for (let j = i + 1; j < N; j++) {
+          const mi = !mv || mv[i], mj = !mv || mv[j];
+          if (!mi && !mj) continue;
           let ex = P[i].x - P[j].x;
           let ey = P[i].y - P[j].y;
           let d = Math.hypot(ex, ey);
@@ -248,13 +278,14 @@ export class Layout {
           }
           const min = foot[i] + foot[j] + 8;
           if (d < min) {
-            const f = ((min - d) / d) * 0.5;
-            dx[i] += ex * f; dy[i] += ey * f;
-            dx[j] -= ex * f; dy[j] -= ey * f;
+            const f = ((min - d) / d) * (mi && mj ? 0.5 : 1);
+            if (mi) { dx[i] += ex * f; dy[i] += ey * f; }
+            if (mj) { dx[j] -= ex * f; dy[j] -= ey * f; }
           }
         }
       }
       for (let i = 0; i < N; i++) {
+        if (mv && !mv[i]) continue;
         if (T.get(ids[i]).fixed) {
           this.pos.set(ids[i], { x: T.get(ids[i]).x, y: T.get(ids[i]).y });
           continue;
@@ -321,7 +352,7 @@ export function layoutGraph(vm, prev = null) {
   const l = new Layout();
   if (prev) {
     for (const [id, p] of prev) l.pos.set(id, { x: p.x, y: p.y });
-    l.sig = vm.view + "|" + vm.nodes.map((n) => n.id).join(",");
+    l.sig = layoutKey(vm);
   }
   l.update(vm);
   l.run();
