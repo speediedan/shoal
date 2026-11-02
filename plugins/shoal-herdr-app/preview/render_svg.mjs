@@ -1,9 +1,9 @@
-// render_svg.mjs: draws the shoal-lattice scene to SVG under Node, for review where the Herdr app
+// render_svg.mjs: draws the lattice-view scene to SVG under Node, for review where the Herdr app
 // cannot run. It runs the mod's own model, layout and scene modules on a graph doc (the bundled
 // fixture by default), so colors, layers and shapes match the mod; motion shows as one frame.
 //
 //   node plugins/shoal-herdr-app/preview/render_svg.mjs [--doc graph.json] [--view global|<shoal>]
-//        [--pin <node id>] [--legend] [--width 1400] [--height 860] [--out lattice.svg]
+//        [--pin <node id>] [--legend] [--motion full|balanced|low|off] [--width 1400] [--height 860] [--out lattice.svg]
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MOD = join(here, "..", "mods", "shoal-lattice");
+const MOD = join(here, "..", "mods", "lattice-view");
 const M = await import(join(MOD, "model.js"));
 const L = await import(join(MOD, "layout.js"));
 const G = await import(join(MOD, "geom.js"));
@@ -33,7 +33,7 @@ for (const c of lay.clusters) pts.push({ x: c.x, y: c.y, r: c.r + 26 });
 for (const a of lay.anchors.values()) pts.push({ x: a.x, y: a.y, r: 40 });
 const tf = G.fitTransform(G.boundsOf(pts), { width: CW, height: H }, 30, 1.6);
 const pin = opt("pin", null);
-const sc = S.buildScene(vm, lay, { width: CW, height: H, tf, selected: pin, motion: "full" });
+const sc = S.buildScene(vm, lay, { width: CW, height: H, tf, selected: pin, motion: opt("motion", "full") });
 const P = M.PALETTE;
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -80,7 +80,7 @@ for (const it of sc.items) {
 
 // header
 const hd = S.headerText(vm);
-body.push(text(16, 12, 300, 14, `SHOAL LATTICE  › ${hd.where}`, 11, P.ink, "left", "semibold"));
+body.push(text(16, 12, 300, 14, `LATTICE  › ${hd.where}`, 11, P.ink, "left", "semibold"));
 body.push(text(16, 28, 600, 12, `${hd.counts} · l: legend`, 9.5, P.dim));
 
 // pinned card
@@ -151,7 +151,7 @@ for (const s of vm.shoalsInView) {
   if (s.needsYou) rail.push(`<rect x="${CW + RAIL - 40}" y="${ry + 1}" width="16" height="14" rx="7" fill="${P.magenta}"/>` + text(CW + RAIL - 40, ry + 1, 16, 14, s.needsYou, 9.5, "#0b0b10", "center", "bold"));
   rail.push(text(CW + 22, ry + 20, 230, 13, `done ${s.done24}/24h ${s.done7}/7d   ${s.msgsPerH} msg/h`, 10, P.dim));
   rail.push(`<rect x="${CW + 22}" y="${ry + 42}" width="80" height="4" rx="2" fill="${G.withAlpha(P.steel1, 0.6)}"/><rect x="${CW + 22}" y="${ry + 42}" width="${Math.round(80 * (s.workShare ?? 0))}" height="4" rx="2" fill="${P.teal}"/>`);
-  rail.push(text(CW + 110, ry + 37, 120, 13, s.workShare == null ? "work ?" : `work ${Math.round(s.workShare * 100)}%`, 10, P.dim));
+  rail.push(text(CW + 110, ry + 37, 120, 13, s.workShare == null ? "work share n/a" : `work ${Math.round(s.workShare * 100)}%`, 10, P.dim));
   ry += 80;
 }
 line("HOSTS", 9.5, P.steel2, "semibold");
@@ -165,6 +165,6 @@ for (const h of M.hostSummaries(vm)) {
 }
 
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><defs>${defs.join("")}</defs><rect width="${W}" height="${H}" fill="${P.bgBottom}"/><g>${body.join("\n")}</g><g>${rail.join("\n")}</g></svg>\n`;
-const out = opt("out", join(tmpdir(), `shoal-lattice-${vm.view}.svg`));
+const out = opt("out", join(tmpdir(), `lattice-view-${vm.view}.svg`));
 writeFileSync(out, svg);
 console.log(out);

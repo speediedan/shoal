@@ -1,4 +1,4 @@
-// shoal-lattice: the shoal graph doc v1 as an animated, hoverable network (Herdr app mod).
+// lattice-view: the shoal graph doc v1 as an animated, hoverable network (Herdr app mod).
 //
 // A thin View. All decisions live in pure modules that also run under Node: model.js (doc to
 // view model and encodings), layout.js (deterministic layout), geom.js (curves, hit tests,
@@ -10,23 +10,27 @@
 // props:
 //   source: {kind: "exec", argv: [...], on} | {kind: "file", path, on} | {kind: "fixture", path?}
 //   mode: "full" (default) | "pulse" (one compact row per shoal, for a floating edge drawer)
-//   motion: "full" (default) | "low" | "off";  items: false hides the satellite layer
+//   motion: "auto" (default) | "full" | "balanced" | "low" | "off" (motion.js; `m` cycles)
+//   budget: {max_dots, max_pulses, frame_ms, packets} overrides for the tier
+//   renderer: "cpu" | "gpu" (a launcher hint for auto; else read from the app process)
+//   items: false hides the satellite layer
 //   poll_ms: data poll interval (default 4000)
 
 import { View, div, svg, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, Link } from "gpui-base";
-import { exec, readTextFile, appHome, props, theme, shared, setShared, nextCommand, placement } from "herdr";
+import { exec, readTextFile, appHome, props, theme, shared, setShared, nextCommand, placement, window as appWindow } from "herdr";
 import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
-  cardLines, legendEntries, shortShoal, fmtAge,
+  cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
 } from "./model.js";
 import { Layout } from "./layout.js";
+import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, headerText } from "./scene.js";
 import { hitNode, hitDisc, panBy, zoomAt, wheelFactor, boundsOf, fitTransform, clamp, withAlpha } from "./geom.js";
 
-const MOD = "shoal-lattice";
+const MOD = "lattice-view";
 const RAIL_W = 272;
-const FOCUS_KEY = "shoal-lattice.focus";
+const FOCUS_KEY = "lattice-view.focus";
 const P = PALETTE;
 const MONO = "Geist Mono";
 
@@ -121,7 +125,11 @@ export default class Lattice extends View {
     const p = props() ?? {};
     this.mode = p.mode === "pulse" ? "pulse" : "full";
     this.source = normalizeSource(p.source);
-    this.motion = ["full", "low", "off"].includes(p.motion) ? p.motion : "full";
+    this.motionReq = MOTION_CYCLE.includes(p.motion) ? p.motion : "auto";
+    this.budget = p.budget && typeof p.budget === "object" ? p.budget : null;
+    this.renderer = p.renderer === "cpu" || p.renderer === "gpu" ? p.renderer : null;
+    this.tier = { tier: "balanced", auto: true, why: "starting" };
+    this.policy = motionPolicy("balanced", this.budget);
     this.items = p.items !== false;
     this.pollMs = clamp(Number(p.poll_ms) || 4000, 1500, 60000);
     this.doc = null;
@@ -150,6 +158,7 @@ export default class Lattice extends View {
     this.focusSeen = null;
     this.pinned = typeof p.pin === "string" ? p.pin : null;
     this.handle = cx.focus_handle();
+    if (!this.renderer) this.probeRenderer(cx);
     this.load(cx);
     cx.timer.every(this.pollMs, (cx) => this.load(cx));
     if (this.mode === "full") {
@@ -164,22 +173,67 @@ export default class Lattice extends View {
     }
   }
 
+  // ---- motion
+
+  /** Once: is this window drawn by a software renderer? Reads the app process's own environment. */
+  probeRenderer(cx) {
+    cx.spawn(async (cx) => {
+      try {
+        if (appWindow()?.platform !== "linux") return;
+        const env = await readTextFile("/proc/self/environ");
+        let hint = rendererFromProcess(env ?? "");
+        if (!hint) hint = rendererFromProcess("", (await readTextFile("/proc/self/maps")) ?? "");
+        if (hint) { this.renderer = hint; cx.notify(); }
+      } catch (_e) {
+        // no hint: auto stays at balanced
+      }
+    });
+  }
+
+  /** The tier for this render: auto adapts to the renderer, pulse mode, pane size and focus. */
+  resolveMotion() {
+    const size = this.canvasSize();
+    this.tier = resolveTier(this.motionReq, {
+      renderer: this.renderer,
+      pulse: this.mode === "pulse",
+      small: this.mode !== "pulse" && (size.width < 700 || size.height < 420),
+      focused: appWindow()?.active !== false,
+    });
+    this.policy = motionPolicy(this.tier.tier, this.budget);
+    return this.policy;
+  }
+
+  /** A status dot: steady, or blinking on the policy's interval when it asks for attention. */
+  pulseDot(color, size, attention) {
+    const p = this.policy;
+    const base = div().w(size + 4).h(size + 4).flex_none().flex().items_center().justify_center().text_size(size + 3).text_color(color).line_height(`${size + 4}px`);
+    if (attention && p.pulseMode === "loop") return dot(color, size).loop("opacity", { from: 0.3, to: 1, period: 850 });
+    if (attention && p.pulseMode === "frames") return base.frames(["\u25cf", " "], p.frameMs);
+    return dot(color, size);
+  }
+
   // ---- data
 
   load(cx) {
     if (this.loading) return;
     this.loading = true;
     cx.spawn(async (cx) => {
+      const hadError = this.error;
+      let draw = false;
       try {
         const doc = await this.fetchDoc();
-        if (doc) this.accept(doc, cx);
+        if (doc) draw = this.accept(doc, cx);
         this.error = null;
       } catch (e) {
         this.error = String(e?.message ?? e).slice(0, 300);
       } finally {
         this.loading = false;
       }
-      cx.notify();
+      // a redraw is the expensive part on a software renderer: only when something shown changed
+      if (draw || this.error !== hadError) {
+        this.lastRender = Date.now();
+        cx.notify();
+      }
     });
   }
 
@@ -222,7 +276,14 @@ export default class Lattice extends View {
     this.rebuild(cx);
     const { fresh, lastSeq } = eventsSince(this.lastSeq, doc);
     this.lastSeq = lastSeq;
-    this.spawnPackets(fresh, cx);
+    const sig = visualSignature(this.vm);
+    const urgentSig = urgentSignature(this.vm);
+    const draw = shouldRender({ sig, urgentSig, lastSig: this.sig, lastUrgentSig: this.urgentSig, sinceMs: Date.now() - (this.lastRender ?? 0), renderMs: this.policy.renderMs });
+    if (draw) {
+      this.sig = sig;
+      this.urgentSig = urgentSig;
+    }
+    return this.spawnPackets(fresh, cx) || draw;
   }
 
   rebuild(cx) {
@@ -237,7 +298,7 @@ export default class Lattice extends View {
     const cold = lay.pos.size === 0;
     lay.update(this.vm);
     // a topology change glides into place at 10 Hz; anything else settles at once
-    if (!cold && lay.iters > 30 && cx && this.motion !== "off") this.cool(cx);
+    if (!cold && lay.iters > 30 && cx && this.policy.any) this.cool(cx);
     else lay.run();
     this.lay = lay.result();
     if (this.autoFit || !this.tf) this.fit();
@@ -276,7 +337,7 @@ export default class Lattice extends View {
   }
 
   spawnPackets(fresh, cx) {
-    if (this.motion === "off" || !fresh.length || !this.vm) return;
+    if (!this.policy.packets || !fresh.length || !this.vm) return false;
     const batch = ++this.batch;
     let added = 0;
     for (const e of fresh) {
@@ -289,7 +350,7 @@ export default class Lattice extends View {
       this.packets.push({ seq: e.seq, kind, src: e.src, dst, color, phase: "start", ms: kind === "packet" ? 1100 : 900, batch });
       added++;
     }
-    if (!added) return;
+    if (!added) return false;
     // two renders: drawn at the source, then given the target so .transition moves it natively
     cx.timer.after(60, (cx) => {
       for (const p of this.packets) if (p.batch === batch) p.phase = "go";
@@ -299,6 +360,7 @@ export default class Lattice extends View {
       this.packets = this.packets.filter((p) => p.batch !== batch);
       cx.notify();
     });
+    return true;
   }
 
   // ---- input
@@ -320,6 +382,7 @@ export default class Lattice extends View {
   command(c, cx) {
     if (c === "back") this.key({ keystroke: "escape" }, cx);
     else if (c === "legend") this.legend = !this.legend;
+    else if (c === "motion") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
     else if (c === "fit") { this.autoFit = true; this.fit(); }
   }
 
@@ -331,6 +394,7 @@ export default class Lattice extends View {
       else if (this.legend) this.legend = false;
       else if (this.vm && !this.vm.global) this.drill("global", cx);
     } else if (k === "l") this.legend = !this.legend;
+    else if (k === "m") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
     else if (k === "f" || k === "0") { this.autoFit = true; this.fit(); }
     else if (k === "i") { this.items = !this.items; this.rebuild(cx); }
     else if (k === "=" || k === "+" || k === "shift-=") { this.tf = zoomAt(this.tf, center, 1.2); this.autoFit = false; }
@@ -400,6 +464,7 @@ export default class Lattice extends View {
   // ---- render
 
   render(_cx) {
+    this.resolveMotion();
     if (this.mode === "pulse") return this.renderPulse();
     this.applySharedFocus();
     const size = this.canvasSize();
@@ -442,7 +507,7 @@ export default class Lattice extends View {
     }
     const sc = buildScene(this.vm, this.lay, {
       width: size.width, height: size.height, tf: this.tf, hover: this.hover, selected: this.pinned,
-      motion: this.motion, packets: this.packets,
+      policy: this.policy, packets: this.packets,
     });
     this.hits = sc.hits;
     this.discs = sc.discs;
@@ -465,9 +530,9 @@ export default class Lattice extends View {
     const h = headerText(this.vm);
     return v_flex().absolute().left(16).top(12).gap(2)
       .child(h_flex().gap(8).items_center()
-        .child(div().text_size(11).font_semibold().text_color(P.ink).child("SHOAL LATTICE"))
+        .child(div().text_size(11).font_semibold().text_color(P.ink).child("LATTICE"))
         .child(div().text_size(11).text_color(P.steel2).child(`› ${h.where}`)))
-      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${this.vm.global ? " · click a cluster to drill in" : " · esc: back"} · l: legend`));
+      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${this.vm.global ? " · click a cluster to drill in" : " · esc: back"} · l: legend · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
   }
 
   renderCard(id, at, size, pinned) {
@@ -513,7 +578,7 @@ export default class Lattice extends View {
       col.child(h_flex().gap(6).items_center()
         .child(div().w(12).text_color(s.color).child(glyph[s.style] ?? "●"))
         .child(div().w(12).text_color(s.color).child(s.badge ?? ""))
-        .child(div().text_color(s.needsYou ? P.ink : P.dim).child(`${s.label}${s.pulse ? " (pulses)" : ""}`)));
+        .child(div().text_color(s.needsYou ? P.ink : P.dim).child(`${s.label}${s.pulse && this.policy.pulseMode ? " (pulses)" : ""}`)));
     }
     const right = v_flex().gap(1);
     right.child(div().text_color(P.steel2).font_semibold().child("SHAPES"));
@@ -527,6 +592,7 @@ export default class Lattice extends View {
       .border_color(withAlpha(P.steel1, 0.6)).text_size(9.5).max_h(size.height - 80).overflow_hidden()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().text_color(P.steel2).font_semibold().child("LEGEND (l to close)"))
+      .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
       .child(h_flex().gap(14).items_start().child(v_flex().gap(1).child(div().text_color(P.steel2).font_semibold().child("STATES")).child(col)).child(right));
   }
 
@@ -562,7 +628,7 @@ export default class Lattice extends View {
       rail.child(v_flex().id(`sh-${s.id}`).gap(3).p(8).rounded(6).bg(withAlpha(s.tint, 0.06)).border(1).border_color(withAlpha(s.tint, 0.22))
         .when(vm.global, (el) => el.cursor_pointer().hover((st) => st.bg(withAlpha(s.tint, 0.12))).on_click((_e, cx) => { this.drill(s.id, cx); cx.notify(); }))
         .child(h_flex().gap(7).items_center()
-          .child(dot(s.urgentColor, 8).when(s.needsYou > 0 && this.motion !== "off", (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 })))
+          .child(this.pulseDot(s.urgentColor, 8, s.needsYou > 0))
           .child(div().font_semibold().text_color(s.tint).child(s.short))
           .child(div().flex_1().text_color(P.dim).child(s.gen))
           .when(s.needsYou > 0, (el) => el.child(div().px(5).rounded(7).bg(P.magenta).text_color("#0b0b10").font_bold().text_size(9.5).child(String(s.needsYou)))))
@@ -570,8 +636,10 @@ export default class Lattice extends View {
           .child(div().child(`done ${s.done24}/24h ${s.done7}/7d`))
           .child(div().child(`${s.msgsPerH} msg/h`)))
         .child(h_flex().gap(8).items_center()
-          .child(div().w(80).h(4).rounded(2).bg(withAlpha(P.steel1, 0.6)).child(div().h(4).rounded(2).bg(P.teal).w(Math.round(80 * clamp(share ?? 0, 0, 1)))))
-          .child(div().text_color(P.dim).child(share == null ? "work ?" : `work ${Math.round(share * 100)}%`))
+          .when(share != null, (el) => el
+            .child(div().w(80).h(4).rounded(2).bg(withAlpha(P.steel1, 0.6)).child(div().h(4).rounded(2).bg(P.teal).w(Math.round(80 * clamp(share, 0, 1)))))
+            .child(div().text_color(P.dim).child(`work ${Math.round(share * 100)}%`)))
+          .when(share == null, (el) => el.child(div().text_color(P.faint).child("work share n/a")))
           .child(div().flex_1())
           .child(sparkline(this.history.get(s.id) ?? [], 56, 14, withAlpha(s.tint, 0.9))))
         .when(s.grants > 0 || s.pages24 > 0 || s.asks > 0, (el) => el.child(div().text_color(P.dim)
@@ -604,7 +672,7 @@ export default class Lattice extends View {
           setShared(FOCUS_KEY, { shoal: s.id, node: first?.id ?? null, t: Date.now() });
           cx.notify();
         })
-        .child(dot(s.urgentColor, 9).when(s.needsYou > 0 && this.motion !== "off", (el) => el.loop("opacity", { from: 0.3, to: 1, period: 800 })))
+        .child(this.pulseDot(s.urgentColor, 9, s.needsYou > 0))
         .child(div().w(18).text_color(s.needsYou ? P.magenta : P.faint).font_bold().child(s.needsYou ? String(s.needsYou) : "·"))
         .child(div().w(70).truncate().text_color(s.tint).child(s.short))
         .child(div().w(52).text_color(P.dim).child(`${s.msgsPerH}/h`))

@@ -255,16 +255,24 @@ export const flowMs = (ratePerH) => Math.round(Math.min(420, Math.max(90, 760 / 
  * Edges grouped by color x opacity tier: one glow path and one core path each, since a path has
  * one Background. `fadeFor`: a set of edge ids to keep bright (the hovered node's); the rest fade.
  */
+/** Messages per hour as a width step: 0 under 1/h, 1 under 4/h, 2 above. */
+export const rateBand = (rate) => (num(rate) >= 4 ? 2 : num(rate) >= 1 ? 1 : 0);
+
 export function edgeBuckets(edges, keepBright = null) {
   const buckets = new Map();
   for (const e of edges) {
     const tier = keepBright && !keepBright.has(e.id) ? "fade" : e.tier;
     const cross = Boolean(e.cross) && !EDGE_DASH[e.cls];
-    const key = `${e.cls}|${tier}${cross ? "|x" : ""}`;
+    // static rate encoding: busier edges draw wider and brighter, so rate reads without motion
+    const band = tier === "fade" ? 0 : rateBand(e.rate);
+    const key = `${e.cls}|${tier}${cross ? "|x" : ""}${band ? `|r${band}` : ""}`;
     let b = buckets.get(key);
     if (!b) {
-      const st = TIER_STYLE[tier] ?? TIER_STYLE.cold;
-      b = { key, cls: e.cls, tier, cross, color: e.color, dash: EDGE_DASH[e.cls] ?? (cross ? CROSS_HOST_DASH : null), ...st, edges: [] };
+      const st = { ...(TIER_STYLE[tier] ?? TIER_STYLE.cold) };
+      st.core += band * 0.55;
+      st.coreAlpha = Math.min(1, st.coreAlpha + band * 0.08);
+      if (st.glow) st.glow += band * 1.2;
+      b = { key, cls: e.cls, tier, cross, band, color: e.color, dash: EDGE_DASH[e.cls] ?? (cross ? CROSS_HOST_DASH : null), ...st, edges: [] };
       buckets.set(key, b);
     }
     b.edges.push(e);
@@ -620,6 +628,30 @@ export function cardLines(vm, id) {
     links,
     command: n.viewArgv ? n.viewArgv.join(" ") : null,
   };
+}
+
+/**
+ * A hash of everything the view draws from the doc (node states and badges, edge tiers and rate
+ * bands, items, the rail's numbers and ages as shown). A poll whose doc hashes the same needs no
+ * redraw; on a software renderer a redraw is the expensive part.
+ */
+export function visualSignature(vm) {
+  const parts = [vm.view];
+  for (const n of vm.nodes) {
+    const v = n.visual;
+    parts.push(n.id, v.key, v.badge ?? "", v.grants ?? 0, v.needsYou ? 1 : 0, n.items.length, n.jobHost ?? "", n.host ?? "", n.label);
+  }
+  for (const e of vm.edges) parts.push(e.id, e.tier, rateBand(e.rate), e.cross ? 1 : 0, e.stale ? 1 : 0);
+  for (const b of vm.broadcasts) parts.push(b.src, b.tier);
+  for (const r of vm.needsYou) parts.push(r.id, r.text, fmtAge(r.since_s));
+  for (const s of vm.shoals) parts.push(s.id, s.gen, s.needsYou, s.msgsPerH, s.done24, s.done7, s.asks, s.grants, s.pages24, s.workShare ?? "n");
+  for (const h of hostSummaries(vm)) parts.push(h.name, h.roles, h.working, h.waiting, h.msgsPerH, h.jobsIn);
+  return hash32(parts.join("\u0001"));
+}
+
+/** A hash of what needs you: a change here redraws at once, whatever the tier. */
+export function urgentSignature(vm) {
+  return hash32(vm.needsYou.map((r) => `${r.id}:${r.key}`).join("|"));
 }
 
 export { withAlpha };

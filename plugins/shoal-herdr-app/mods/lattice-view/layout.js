@@ -107,7 +107,7 @@ export function layoutTargets(vm) {
       }
       const c = clusterOf.get(nb[0].shoal);
       const angs = nb.map((m) => { const t = targets.get(m.id); return Math.atan2(t.y - c.y, t.x - c.x); });
-      placed.push({ id: n.id, c, a: circMean(angs), r: c.r + 44 });
+      placed.push({ id: n.id, c, a: circMean(angs), r: c.r + 66 });
     }
     loose.forEach((id, i) => {
       const a = -Math.PI / 2 + (i - (loose.length - 1) / 2) * 0.34;
@@ -169,18 +169,8 @@ export function layoutTargets(vm) {
     targets.set(n.id, { x: 420 * Math.cos(a), y: 420 * Math.sin(a) });
     center.set(n.id, { x: 0, y: 0 });
   }
-  if (vm.global) {
-    // the physical servers as a row of host markers under the lattice; CI tethers end there
-    let maxY = 0, minX = Infinity, maxX = -Infinity;
-    for (const c of clusters) { maxY = Math.max(maxY, c.y + c.r); minX = Math.min(minX, c.x - c.r); maxX = Math.max(maxX, c.x + c.r); }
-    for (const t of targets.values()) maxY = Math.max(maxY, t.y + 40);
-    const names = [...(vm.hostColor?.keys() ?? [])];
-    const w = Number.isFinite(minX) ? maxX - minX : 400;
-    names.forEach((h, i) => {
-      const x = (Number.isFinite(minX) ? minX : -200) + (w * (i + 0.5)) / Math.max(names.length, 1);
-      anchors.set(h, { x, y: maxY + 70, marker: true });
-    });
-  }
+  // Global view: hosts show as per-node dots and the rail's host block, not as places on the canvas
+  // (a host pill under a cluster reads as part of it), so CI tethers there have no anchor.
   return { targets, center, clusters, bands, anchors };
 }
 
@@ -318,7 +308,8 @@ export class Layout {
     const tethers = [];
     for (const n of vm?.nodes ?? []) {
       const a = n.jobHost ? this.meta.anchors.get(n.jobHost) : null;
-      if (a) tethers.push({ id: n.id, host: n.jobHost, event: n.state?.event ?? "ci", from: pos.get(n.id), to: { x: a.x, y: a.y } });
+      // to: null means "no region for that host in this view": the scene draws a chip at the node
+      if (n.jobHost) tethers.push({ id: n.id, host: n.jobHost, event: n.state?.event ?? "ci", from: pos.get(n.id), to: a ? { x: a.x, y: a.y } : null, dir: Math.atan2(pos.get(n.id).y - (this.meta.center.get(n.id)?.y ?? 0), pos.get(n.id).x - (this.meta.center.get(n.id)?.x ?? 0)) });
     }
     const anchors = this.meta?.anchors ?? new Map();
     return { pos, sats, tethers, anchors, clusters: this.meta?.clusters ?? [], bands: this.meta?.bands ?? [], targets: this.meta?.targets ?? new Map() };

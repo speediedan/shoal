@@ -1,12 +1,12 @@
-// test_lattice.mjs: the shoal-lattice Herdr app mod's pure modules against the bundled fixture.
-// Node only, no dependencies: node tests/herdr_app/test_lattice.mjs
+// test_lattice_view.mjs: the lattice-view Herdr app mod's pure modules against the bundled fixture.
+// Node only, no dependencies: node tests/herdr_app/test_lattice_view.mjs
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const MOD = join(here, "..", "..", "plugins", "shoal-herdr-app", "mods", "shoal-lattice");
+const MOD = join(here, "..", "..", "plugins", "shoal-herdr-app", "mods", "lattice-view");
 const M = await import(join(MOD, "model.js"));
 const L = await import(join(MOD, "layout.js"));
 const G = await import(join(MOD, "geom.js"));
@@ -166,7 +166,9 @@ test("hosts: tags, bands, job-host tethers, summaries", () => {
   assert.equal(global.byId.get(`${A}:core`).jobHost, null);
   const g = L.layoutGraph(global), a = L.layoutGraph(alpha);
   assert.deepEqual(g.tethers.map((t) => [t.id, t.host]), [[bench.id, "host-b"]]);
-  assert.ok(g.anchors.get("host-b").marker);
+  assert.equal(g.tethers[0].to, null, "global view: no host region, a chip at the node instead");
+  assert.equal(g.anchors.size, 0, "no host pills in the global view");
+  assert.ok(a.tethers[0].to, "per shoal: the tether ends at the host band");
   assert.deepEqual(a.bands.map((b) => b.host).sort(), ["host-a", "host-b"]);
   assert.ok(a.anchors.get("host-b").band);
   const hs = new Map(M.hostSummaries(global).map((h) => [h.name, h]));
@@ -298,6 +300,14 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, pos
   assert.equal(hs.get("host-a").roles, 11);
   assert.equal(hs.get("host-a").msgsPerH, 40);
   assert.equal(hs.get("host-b").roles, 4);
+  // the feed folds the retired wake relay into the system node: a doc without relay nodes is fine
+  const norelay = structuredClone(d);
+  norelay.nodes = norelay.nodes.filter((x) => x.kind !== "relay");
+  for (const view of ["global", A]) {
+    const nvm = M.buildModel(norelay, view);
+    assert.ok(!nvm.nodes.some((x) => x.kind === "relay"));
+    assert.ok(finiteDeep(S.buildScene(nvm, L.layoutGraph(nvm), { width: 900, height: 600, tf: G.identity() }).items));
+  }
   // a bad cursor comes back with cursor_reset and a full tail: a new baseline, nothing replayed
   assert.equal(M.eventsSince(103, { events: [...doc.events, { seq: 200 }] }).fresh.length, 1);
   const reset = M.eventsSince(500, { cursor_reset: true, events: doc.events });
@@ -305,4 +315,109 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, pos
   assert.equal(reset.lastSeq, 103);
 });
 
-console.log(`shoal-lattice: ${n} tests passed`);
+const MO = await import(join(MOD, "motion.js"));
+
+test("motion tiers: wake sources per tier, budgets, auto resolution", () => {
+  const lay = L.layoutGraph(global);
+  const tf = G.fitTransform(G.boundsOf([...lay.pos.values()], 40), { width: 1000, height: 700 });
+  const packets = [{ seq: 1, kind: "packet", src: `${A}:core`, dst: `${A}:dist-ci`, color: "#ffffff", phase: "go", ms: 900 }];
+  const scene = (tier, budget, vm = global, l = lay) => S.buildScene(vm, l, { width: 1000, height: 700, tf, packets, policy: MO.motionPolicy(tier, budget) });
+  const loops = (sc) => sc.items.filter((i) => i.loops?.length).length;
+  const frames = (sc) => sc.items.filter((i) => i.frames);
+  const full = scene("full"), bal = scene("balanced"), low = scene("low"), off = scene("off");
+  assert.ok(loops(full) > 0 && full.items.some((i) => i.t === "spin"));
+  for (const sc of [bal, low, off]) assert.equal(loops(sc), 0, "only full uses loops (30 fps wakes)");
+  for (const sc of [bal, low, off]) assert.ok(!sc.items.some((i) => i.t === "spin"));
+  assert.ok(new Set(frames(bal).map((i) => i.frames.ms)).size === 1, "balanced: one shared frame interval");
+  assert.ok(frames(bal).every((i) => i.frames.ms >= 180));
+  const balDotEdges = new Set(frames(bal).filter((i) => i.id.startsWith("dot-")).map((i) => i.id.replace(/-\d+$/, "")));
+  assert.ok(balDotEdges.size > 0 && balDotEdges.size <= 6, "balanced: dots on the top edges only");
+  assert.ok(bal.items.some((i) => i.id.startsWith("pk-")), "balanced keeps packets");
+  assert.ok(!frames(low).some((i) => i.id.startsWith("dot-")), "low: no marching dots");
+  assert.ok(!low.items.some((i) => i.id.startsWith("pk-")), "low: no packets");
+  assert.equal(low.animated, 0, "low: zero animated elements by default (a window frame is the cost on CPU)");
+  const blink = scene("low", { frame_ms: 900 });
+  const lowPulses = frames(blink).map((i) => i.id.slice("pulse-".length));
+  assert.ok(lowPulses.length > 0 && lowPulses.every((id) => global.byId.get(id).visual.needsYou), "low + frame_ms: only needs-you blink");
+  assert.ok(frames(blink).every((i) => i.frames.ms === 900));
+  assert.equal(MO.motionPolicy("low", { frame_ms: 100 }).frameMs, 500, "low blinks no faster than 500 ms");
+  assert.equal(off.animated, 0);
+  assert.equal(frames(off).length + off.items.filter((i) => i.transitions?.length).length, 0, "off: nothing animates");
+  // low with nothing needing attention: zero animated elements
+  const calm = structuredClone(doc);
+  for (const x of calm.nodes) if (x.kind === "role" && x.state?.class !== "work") x.state = { class: "idle" };
+  const cvm = M.buildModel(calm, "global");
+  assert.equal(scene("low", null, cvm, L.layoutGraph(cvm)).animated, 0);
+  // budget overrides
+  assert.equal(frames(scene("balanced", { max_dots: 0 })).filter((i) => i.id.startsWith("dot-")).length, 0);
+  assert.ok(frames(scene("balanced", { frame_ms: 400 })).every((i) => i.frames.ms === 400));
+  assert.equal(frames(scene("low", { frame_ms: 800, max_pulses: 1 })).length, 1);
+  assert.ok(!scene("balanced", { packets: false }).items.some((i) => i.id.startsWith("pk-")));
+  assert.equal(MO.motionPolicy("off", { max_dots: 50, packets: true }).maxDots, 0);
+  // auto
+  assert.equal(MO.resolveTier("auto", {}).tier, "balanced");
+  assert.equal(MO.resolveTier("auto", { renderer: "cpu" }).tier, "low");
+  assert.equal(MO.resolveTier("auto", { renderer: "gpu" }).tier, "full");
+  assert.equal(MO.resolveTier("auto", { renderer: "gpu", pulse: true }).tier, "balanced");
+  assert.equal(MO.resolveTier("auto", { renderer: "cpu", focused: false }).tier, "off");
+  assert.equal(MO.resolveTier("low", { renderer: "gpu", focused: false }).tier, "low", "an explicit tier is kept");
+  assert.equal(MO.rendererFromProcess("A=1\0VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json\0"), "cpu");
+  assert.equal(MO.rendererFromProcess("VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json"), "gpu");
+  assert.equal(MO.rendererFromProcess("LIBGL_ALWAYS_SOFTWARE=1"), "cpu");
+  assert.equal(MO.rendererFromProcess("", "7f00 r-xp /usr/lib/libvulkan_lvp.so"), "cpu");
+  assert.equal(MO.rendererFromProcess("HOME=/x", ""), null);
+  assert.deepEqual(MO.MOTION_CYCLE, ["auto", "full", "balanced", "low", "off"]);
+  // static rate encoding: busier edges draw wider without any motion
+  const b = M.edgeBuckets([{ id: "a", cls: "msg", tier: "warm", rate: 0.2, color: "#fff" }, { id: "b", cls: "msg", tier: "warm", rate: 5, color: "#fff" }]);
+  assert.equal(b.length, 2);
+  assert.ok(b.find((x) => x.band === 2).core > b.find((x) => x.band === 0).core);
+});
+
+test("render gating: unchanged polls skip the redraw; low and off space data redraws out", () => {
+  const vm1 = M.buildModel(doc, "global");
+  const same = M.buildModel(structuredClone(doc), "global");
+  assert.equal(M.visualSignature(vm1), M.visualSignature(same));
+  const demo = { ...doc, events: [...doc.events, ...M.demoEvents(doc, 3)], ts: "2026-11-02T20:00:04Z", cursor: "next" };
+  assert.equal(M.visualSignature(M.buildModel(demo, "global")), M.visualSignature(vm1), "new events and a new ts alone change nothing drawn");
+  const d2 = structuredClone(doc);
+  d2.shoals[0].metrics.msgs_1h = 99;
+  assert.notEqual(M.visualSignature(M.buildModel(d2, "global")), M.visualSignature(vm1));
+  assert.equal(M.urgentSignature(M.buildModel(d2, "global")), M.urgentSignature(vm1));
+  const d3 = structuredClone(doc);
+  d3.nodes.find((x) => x.id === `${A}:core`).state = { class: "wait", event: "user-ask", group: "human" };
+  assert.notEqual(M.urgentSignature(M.buildModel(d3, "global")), M.urgentSignature(vm1));
+  const base = { sig: 2, urgentSig: 1, lastSig: 1, lastUrgentSig: 1, sinceMs: 4000 };
+  assert.equal(MO.shouldRender({ ...base, sig: 1 }), false, "nothing changed");
+  assert.equal(MO.shouldRender({ ...base, renderMs: 0 }), true);
+  assert.equal(MO.shouldRender({ ...base, renderMs: 15000 }), false, "low: not yet");
+  assert.equal(MO.shouldRender({ ...base, renderMs: 15000, sinceMs: 16000 }), true);
+  assert.equal(MO.shouldRender({ ...base, renderMs: 30000, urgentSig: 9 }), true, "what needs you changed: at once");
+  assert.ok(MO.motionPolicy("low").renderMs > 0 && MO.motionPolicy("off").renderMs >= MO.motionPolicy("low").renderMs && MO.motionPolicy("full").renderMs === 0);
+});
+
+test("labels: no overlaps, right ellipsis, alias labels hidden beside their role", () => {
+  assert.equal(S.fitText("short", 100, 10), "short");
+  const long = S.fitText("a-very-long-role-name-indeed", 90, 10);
+  assert.ok(long.endsWith("…") && "a-very-long-role-name-indeed".startsWith(long.slice(0, -1)), "ellipsis from the right");
+  const d = structuredClone(doc);
+  d.nodes.find((x) => x.id === `${A}:addressing`).label = "addressing-with-a-much-longer-name";
+  for (const view of ["global", A]) {
+    const vm = M.buildModel(d, view);
+    const lay = L.layoutGraph(vm);
+    const sc = S.buildScene(vm, lay, { width: 1100, height: 720, tf: G.fitTransform(G.boundsOf([...lay.pos.values()], 60), { width: 1100, height: 720 }), policy: MO.motionPolicy("off") });
+    const labels = sc.items.filter((i) => i.id.startsWith("label-"));
+    for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
+      const a = labels[i], b = labels[j];
+      const est = (x) => ({ x: x.x, y: x.y, w: x.text.length * x.size * 0.6, h: x.h });
+      const ea = est(a), eb = est(b);
+      const hit = ea.x < eb.x + eb.w && eb.x < ea.x + ea.w && ea.y < eb.y + eb.h && eb.y < ea.y + ea.h;
+      assert.ok(!hit, `${view}: ${a.id} overlaps ${b.id}`);
+    }
+    for (const n of vm.nodes.filter((x) => x.kind === "role")) assert.ok(labels.some((l) => l.id === `label-${n.id}`), `${n.id} keeps its label`);
+    const lab = labels.find((l) => l.id === `label-${A}:addressing`);
+    if (lab) assert.ok(lab.text.endsWith("…"));
+    if (view === "global") assert.ok(!labels.some((l) => l.id === "label-ext:research"), "aliased external label hidden beside its role");
+  }
+});
+
+console.log(`lattice-view: ${n} tests passed`);

@@ -11,6 +11,7 @@
 // A loop is {prop, from, to, period, easing}; a transition is {prop, duration, easing}.
 
 import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal } from "./model.js";
+import { motionPolicy, flowEdges } from "./motion.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, annularSectorCmds,
   samplesBySpacing, toScreen, withAlpha, mix, clamp,
@@ -28,14 +29,28 @@ export function dotFrames(i, L) {
 /** Node radius on screen: grows with zoom, within limits, so dense views stay legible. */
 export const screenR = (r, k) => r * clamp(Math.sqrt(k), 0.7, 1.5);
 
+/** Ellipsizes from the right to fit `maxW` px at a monospace `size` (about 0.6em per glyph). */
+export function fitText(text, maxW, size) {
+  const s = String(text ?? "");
+  const n = Math.max(2, Math.floor(maxW / (size * 0.6)));
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
+}
+const textW = (s, size) => String(s).length * size * 0.6;
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/** Pulse glyphs for stepped (frames) pulses: a blink for needs-you, a slow half-blink for work. */
+export const PULSE_GLYPH = "◯";
+export const pulseFrames = (kind) => (kind === "needs" ? [PULSE_GLYPH, " "] : [PULSE_GLYPH, PULSE_GLYPH, " ", " "]);
+
 /**
- * Builds the display list. `opts`: {width, height, tf, hover, selected, motion ("full" | "low" |
- * "off"), packets, maxDots}. Returns {items, hits, discs, nodeScreen}.
+ * Builds the display list. `opts`: {width, height, tf, hover, selected, policy (motion.js) or
+ * motion (a tier name), packets}. Returns {items, hits, discs, nodeScreen, animated}: `animated`
+ * counts elements that make the window redraw on their own (loops, frames, spins, transitions).
  */
 export function buildScene(vm, lay, opts) {
   const { width, height, tf } = opts;
-  const motion = opts.motion ?? "full";
-  const animate = motion !== "off";
+  const policy = opts.policy ?? motionPolicy(opts.motion ?? "full");
+  const animate = policy.any;
   const items = [];
   const k = tf.k;
   const S = (p) => toScreen(tf, p);
@@ -85,29 +100,36 @@ export function buildScene(vm, lay, opts) {
     if (c) discs.push({ id: c.id, x: o.x, y: o.y, r: c.r * k });
   }
 
-  // 2b. physical servers: host markers (global) and tethers from a role to the host running its CI job
-  if (vm.global) {
-    for (const [h, a] of lay.anchors ?? []) {
-      if (!a.marker) continue;
-      const p = S(a);
-      const color = vm.hostColor.get(h) ?? P.steel2;
-      const roles = vm.nodes.filter((n) => n.kind === "role" && n.host === h).length;
-      const w = 30 + h.length * 6.6 + 34;
-      items.push({ t: "box", id: `host-${h}`, x: p.x - w / 2, y: p.y - 11, w, h: 22, radius: 11, bg: withAlpha(color, 0.1), border: { w: 1, color: withAlpha(color, 0.55) }, opacity: 1 });
-      items.push({ t: "box", id: `host-dot-${h}`, x: p.x - w / 2 + 9, y: p.y - 3.5, w: 7, h: 7, radius: 3.5, bg: color, opacity: 1 });
-      items.push({ t: "text", id: `host-label-${h}`, x: p.x - w / 2 + 20, y: p.y - 7, w: w - 24, h: 14, text: `${h}  ${roles}`, size: 10, color: withAlpha(color, 0.95), align: "left", weight: "semibold" });
-    }
-  }
+  // 2b. a role whose CI job runs on another host: a tether to that host's band (per shoal), or a
+  // short chip at the node naming the host (global view, where hosts have no region)
+  const labelObstacles = [];
   for (const t of lay.tethers ?? []) {
     if (!t.from) continue;
-    const a = S(t.from), b0 = S(t.to);
-    const b = lay.anchors?.get(t.host)?.marker ? { x: b0.x, y: b0.y - 12 } : b0;
+    const a = S(t.from);
     const color = vm.hostColor.get(t.host) ?? P.steel2;
     const dim = dimOf(t.id);
-    items.push({ t: "path", id: `tether-${t.id}`, fill: false, width: 1, dash: [2, 3], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(color, 0.6 * dim)) });
-    items.push({ t: "path", id: `tether-end-${t.id}`, fill: true, cmds: circleCmds(b.x, b.y, 2.5), bg: solid(withAlpha(color, 0.9 * dim)) });
-    const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    items.push({ t: "text", id: `tether-label-${t.id}`, x: m.x - 70, y: m.y - 14, w: 140, h: 13, text: `${t.event} \u2192 ${t.host}`, size: 9, color: withAlpha(color, 0.85 * dim), align: "center" });
+    const text = `${t.event} \u2192 ${t.host}`;
+    if (t.to) {
+      const b = S(t.to);
+      items.push({ t: "path", id: `tether-${t.id}`, fill: false, width: 1, dash: [2, 3], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(color, 0.6 * dim)) });
+      items.push({ t: "path", id: `tether-end-${t.id}`, fill: true, cmds: circleCmds(b.x, b.y, 2.5), bg: solid(withAlpha(color, 0.9 * dim)) });
+      const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const r = { x: m.x - 70, y: m.y - 14, w: 140, h: 13 };
+      labelObstacles.push(r);
+      items.push({ t: "text", id: `tether-label-${t.id}`, ...r, text, size: 9, color: withAlpha(color, 0.85 * dim), align: "center" });
+    } else {
+      const dir = Number.isFinite(t.dir) ? t.dir : 0;
+      const len = 34 * clamp(Math.sqrt(k), 0.8, 1.3);
+      const b = { x: a.x + len * Math.cos(dir), y: a.y + len * Math.sin(dir) + 8 };
+      items.push({ t: "path", id: `tether-${t.id}`, fill: false, width: 1, dash: [2, 2], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(color, 0.7 * dim)) });
+      const w = textW(text, 9) + 18;
+      const right = Math.cos(dir) >= 0;
+      const r = { x: right ? b.x : b.x - w, y: b.y - 8, w, h: 16 };
+      labelObstacles.push(r);
+      items.push({ t: "box", id: `tether-chip-${t.id}`, ...r, radius: 8, bg: withAlpha(P.panelSolid, 0.85 * dim), border: { w: 1, color: withAlpha(color, 0.6 * dim) }, opacity: 1 });
+      items.push({ t: "box", id: `tether-dot-${t.id}`, x: r.x + 6, y: r.y + 5, w: 6, h: 6, radius: 3, bg: withAlpha(color, dim), opacity: 1 });
+      items.push({ t: "text", id: `tether-label-${t.id}`, x: r.x + 14, y: r.y + 1, w: w - 16, h: 14, text, size: 9, color: withAlpha(color, 0.95 * dim), align: "left" });
+    }
   }
 
   // 3. edges, batched per color x tier bucket: a glow pass under a core pass, then arrowheads
@@ -151,17 +173,24 @@ export function buildScene(vm, lay, opts) {
   for (const [color, cmds] of satFill) items.push({ t: "path", id: `sat-${si++}`, fill: true, cmds, bg: solid(color) });
 
   // 5. flow: marching dots along hot and warm edges, motion native through .frames()
-  if (animate) {
-    let budget = opts.maxDots ?? (motion === "low" ? 80 : 240);
+  // (full: every flowing edge at its own speed; balanced: the busiest few on one shared interval,
+  // so every frames element wakes the window on the same tick; low and off: none)
+  let animated = 0;
+  if (policy.maxDots > 0) {
+    let budget = policy.maxDots;
+    const allowed = Number.isFinite(policy.topEdges) ? flowEdges(vm.edges, policy) : null;
     for (const e of vm.edges) {
       if (!e.flow || budget <= 0 || !curves.has(e.id)) continue;
+      if (allowed && !allowed.has(e.id)) continue;
       if (keep && !keep.has(e.id)) continue;
       const hot = e.tier === "hot";
       const pts = samplesBySpacing(curves.get(e.id), hot ? 13 : 17, { margin: 7, max: Math.min(budget, 18) });
       const L = Math.max(3, Math.min(pts.length, hot ? 5 : 4));
+      const ms = policy.frameMs || e.flowMs;
       pts.forEach((p, i) => {
-        items.push({ t: "text", id: `dot-${e.id}-${i}`, x: p.x - 6, y: p.y - 7, w: 12, h: 14, text: dotFrames(i, L)[0], size: hot ? 10 : 8, color: withAlpha(e.color, hot ? 1 : 0.75), align: "center", frames: { list: dotFrames(i, L), ms: e.flowMs } });
+        items.push({ t: "text", id: `dot-${e.id}-${i}`, x: p.x - 6, y: p.y - 7, w: 12, h: 14, text: dotFrames(i, L)[0], size: hot ? 10 : 8, color: withAlpha(e.color, hot ? 1 : 0.75), align: "center", frames: { list: dotFrames(i, L), ms } });
       });
+      animated += pts.length;
       budget -= pts.length;
     }
   }
@@ -174,6 +203,13 @@ export function buildScene(vm, lay, opts) {
   const add = (m, key, cmds) => { if (!m.has(key)) m.set(key, []); m.get(key).push(...cmds); };
   const hits = [];
   const nodeScreen = new Map();
+  // which nodes may pulse under the policy, loudest first, at most maxPulses
+  const pulsing = new Set();
+  if (policy.pulseScope !== "none" && policy.maxPulses > 0) {
+    const want = vm.nodes.filter((n) => n.visual.halo && (policy.pulseScope === "all" || n.visual.needsYou || (policy.pulseScope === "needs+working" && n.visual.key === "working")));
+    want.sort((a, b) => (a.visual.urgency ?? 9) - (b.visual.urgency ?? 9) || (a.id < b.id ? -1 : 1));
+    for (const n of want.slice(0, policy.maxPulses)) pulsing.add(n.id);
+  }
   for (const n of vm.nodes) {
     const p0 = posOf(n.id);
     if (!p0) continue;
@@ -185,13 +221,16 @@ export function buildScene(vm, lay, opts) {
     hits.push({ id: n.id, x: p.x, y: p.y, r: Math.max(r, 7) });
     nodeScreen.set(n.id, { x: p.x, y: p.y, r });
     const hs = v.halo?.scale ?? 2.4;
+    const pulse = pulsing.has(n.id) && dim === 1;
+    const loopPulse = pulse && policy.pulseMode === "loop";
     if (v.halo) {
       const hr = r * hs;
       items.push({
         t: "box", id: `halo-${n.id}`, x: p.x - hr, y: p.y - hr, w: hr * 2, h: hr * 2, radius: hr,
-        bg: withAlpha(v.color, 0.16), opacity: animate ? v.halo.to * dim : 0.3 * dim,
-        loops: animate && dim === 1 ? [{ prop: "opacity", from: v.halo.from, to: v.halo.to, period: v.halo.period, easing: "ease-in-out" }] : [],
+        bg: withAlpha(v.color, 0.16), opacity: loopPulse ? v.halo.to * dim : (v.needsYou ? 0.55 : 0.32) * dim,
+        loops: loopPulse ? [{ prop: "opacity", from: v.halo.from, to: v.halo.to, period: v.halo.period, easing: "ease-in-out" }] : [],
       });
+      if (loopPulse) animated++;
       const ir = r * (1 + (hs - 1) * 0.45);
       items.push({ t: "box", id: `halo-in-${n.id}`, x: p.x - ir, y: p.y - ir, w: ir * 2, h: ir * 2, radius: ir, bg: withAlpha(v.color, 0.14 * dim), opacity: 1 });
     }
@@ -199,9 +238,15 @@ export function buildScene(vm, lay, opts) {
       const rr = r + 6;
       items.push({
         t: "box", id: `ring-${n.id}`, x: p.x - rr, y: p.y - rr, w: rr * 2, h: rr * 2, radius: rr,
-        border: { w: 1.5, color: withAlpha(v.color, 0.95) }, opacity: dim,
-        loops: animate && dim === 1 ? [{ prop: "opacity", from: 0.15, to: 1, period: v.ring.period, easing: "ease-in-out" }] : [],
+        border: { w: 1.5, color: withAlpha(v.color, 0.95) }, opacity: loopPulse ? dim : 0.85 * dim,
+        loops: loopPulse ? [{ prop: "opacity", from: 0.15, to: 1, period: v.ring.period, easing: "ease-in-out" }] : [],
       });
+    }
+    if (pulse && policy.pulseMode === "frames") {
+      // a stepped pulse: an outer ring glyph that blinks on the policy's shared frame interval
+      const gs = 2 * (r + 11);
+      items.push({ t: "text", id: `pulse-${n.id}`, x: p.x - gs / 2, y: p.y - gs / 2, w: gs, h: gs, text: PULSE_GLYPH, size: gs * 0.92, color: withAlpha(v.color, v.needsYou ? 0.9 : 0.5), align: "center", frames: { list: pulseFrames(v.needsYou ? "needs" : "work"), ms: policy.frameMs } });
+      animated++;
     }
     const bodyColor = v.fill > 0 ? withAlpha(v.color, v.fill * op) : withAlpha(P.void, 0.6 * op);
     if (v.shape === "circle") {
@@ -221,7 +266,10 @@ export function buildScene(vm, lay, opts) {
     }
     if (v.hatch) add(hatch, `${withAlpha(v.color, 0.75 * op)}|${v.hatch}`, shapeCmds(v.shape, p.x, p.y, r));
     if (v.border === "dashed" || v.border === "dotted") add(dashed, `${v.border}|${withAlpha(v.color, op)}`, shapeCmds(v.shape, p.x, p.y, r + 0.5));
-    if (v.spinner && animate) items.push({ t: "spin", id: `spin-${n.id}`, x: p.x - r - 5, y: p.y - r - 5, size: 2 * r + 10, color: withAlpha(v.color, 0.9 * dim), ms: 1400 });
+    if (v.spinner && policy.spinners) {
+      items.push({ t: "spin", id: `spin-${n.id}`, x: p.x - r - 5, y: p.y - r - 5, size: 2 * r + 10, color: withAlpha(v.color, 0.9 * dim), ms: 1400 });
+      animated++;
+    }
   }
   let pi = 0;
   for (const [color, cmds] of polyFill) items.push({ t: "path", id: `poly-${pi++}`, fill: true, cmds, bg: solid(color) });
@@ -239,7 +287,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   // 7. broadcast ripples (native loops on left, top, width, height and opacity, one clock)
-  if (animate) {
+  if (policy.ripples) {
     for (const b of vm.broadcasts) {
       if (b.tier !== "hot" && b.tier !== "warm") continue;
       const p0 = posOf(b.src);
@@ -259,30 +307,54 @@ export function buildScene(vm, lay, opts) {
           { prop: "opacity", from: 0.7, to: 0, period, easing: "ease-out" },
         ],
       });
+      animated++;
     }
   }
 
-  // 8. labels and badges (screen size, not zoomed)
-  for (const n of vm.nodes) {
+  // 8. labels and badges (screen size, not zoomed). Labels are placed greedily, loudest first:
+  // below the node, else above, right or left, whichever does not collide with a placed label or
+  // another node; roles always get one, quieter nodes drop theirs when there is no room.
+  const placed = [...labelObstacles];
+  const bodies = [...nodeScreen].map(([id, s]) => ({ id, x: s.x - s.r, y: s.y - s.r, w: 2 * s.r, h: 2 * s.r }));
+  const rank = (n) => (n.visual.needsYou ? 0 : n.kind === "role" ? 1 : n.kind === "user" ? 2 : 3);
+  const order = vm.nodes.filter((n) => nodeScreen.has(n.id)).sort((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : 1));
+  for (const n of order) {
     const s = nodeScreen.get(n.id);
-    if (!s) continue;
     const v = n.visual;
     const dim = dimOf(n.id);
-    const loud = v.needsYou || n.id === hover || n.id === opts.selected;
+    const focus = n.id === hover || n.id === opts.selected;
+    const loud = v.needsYou || focus;
     const isRole = n.kind === "role";
     // the writer and relay keep their shapes in the global view; their labels only add noise there
-    if (vm.global && (n.kind === "system" || n.kind === "relay")) continue;
-    const text = n.kind === "user" ? "you" : n.kind === "external" ? `${n.label}${n.alias_of ? " ⇄" : ""}` : n.label;
-    const lw = 130;
-    const ly = s.y + s.r + (v.halo && isRole ? 4 : 3) + (n.items?.length ? 6 : 0);
+    const quiet = vm.global && (n.kind === "system" || n.kind === "relay");
+    // an aliased external whose home role is in view: the alias tether says it, the label repeats it
+    const aliased = n.kind === "external" && n.alias_of && vm.byId.has(n.alias_of);
+    if ((quiet || aliased) && !focus) continue;
+    const size = isRole ? 10.5 : n.kind === "user" ? 11 : 9;
+    const text = fitText(n.kind === "user" ? "you" : n.label, isRole ? 150 : 120, size);
+    const tagW = n.hostColor ? 10 : 0;
+    const w = textW(text, size) + tagW + 4, h = 14;
+    const gap = (v.halo && isRole ? 4 : 3) + (n.items?.length ? 6 : 0);
+    const spots = [
+      { x: s.x - w / 2, y: s.y + s.r + gap },
+      { x: s.x - w / 2, y: s.y - s.r - gap - h - (v.badge ? 6 : 0) },
+      { x: s.x + s.r + 8, y: s.y - h / 2 },
+      { x: s.x - s.r - 8 - w, y: s.y - h / 2 },
+    ];
+    const free = (r) => r.x >= 2 && r.x + r.w <= width - 2 && !placed.some((q) => overlaps(q, r)) && !bodies.some((b) => b.id !== n.id && overlaps(b, r));
+    let spot = spots.map((p) => ({ ...p, w, h })).find(free);
+    if (!spot) {
+      if (!isRole && n.kind !== "user" && !focus) continue;
+      spot = { ...spots[0], w, h };
+    }
+    placed.push(spot);
     items.push({
-      t: "text", id: `label-${n.id}`, x: s.x - lw / 2, y: ly, w: lw, h: 14, text,
-      size: isRole ? 10.5 : n.kind === "user" ? 11 : 9, align: "center", weight: loud ? "semibold" : null,
+      t: "text", id: `label-${n.id}`, x: spot.x + tagW, y: spot.y, w: w - tagW + 2, h, text,
+      size, align: "left", weight: loud ? "semibold" : null,
       color: withAlpha(loud ? (v.needsYou ? mix(v.color, "#ffffff", 0.45) : P.ink) : isRole ? P.ink : P.dim, (isRole ? 0.92 : 0.75) * dim),
     });
     if (n.hostColor) {
-      const tw = Math.min(lw, text.length * (isRole ? 6.3 : 5.4));
-      items.push({ t: "box", id: `hosttag-${n.id}`, x: s.x - tw / 2 - 9, y: ly + 4, w: 6, h: 6, radius: 3, bg: withAlpha(n.hostColor, 0.95 * dim), opacity: 1 });
+      items.push({ t: "box", id: `hosttag-${n.id}`, x: spot.x + 1, y: spot.y + 4, w: 6, h: 6, radius: 3, bg: withAlpha(n.hostColor, 0.95 * dim), opacity: 1 });
     }
     if (v.grants > 0 && n.kind === "role") {
       const gs = 14, gx = s.x - s.r * 0.72 - gs + 1, gy = s.y - s.r * 0.72 - gs * 0.55;
@@ -298,7 +370,8 @@ export function buildScene(vm, lay, opts) {
   }
 
   // 9. discrete events: packets from source to target, flashes on done, one-shot ripples
-  for (const pk of opts.packets ?? []) {
+  for (const pk of policy.packets ? opts.packets ?? [] : []) {
+    animated++;
     const going = pk.phase === "go";
     if (pk.kind === "packet") {
       const a = posOf(pk.src), b = posOf(pk.dst);
@@ -325,7 +398,7 @@ export function buildScene(vm, lay, opts) {
     }
   }
 
-  return { items, hits, discs, nodeScreen };
+  return { items, hits, discs, nodeScreen, animated };
 }
 
 /** Header text for a view: breadcrumb and counts. */
