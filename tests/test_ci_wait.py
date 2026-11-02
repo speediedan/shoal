@@ -94,6 +94,9 @@ class Collection(unittest.TestCase):
             self.assertEqual(head["checks_counted"], 3)
             self.assertAlmostEqual(head["job_minutes"], (600 + 600 + 1564) / 60, places=1)
             self.assertAlmostEqual(head["rerun_minutes"], 10.0)
+            # run time per head by source: the gate's build, and the GitHub-hosted jobs counted
+            self.assertEqual((head["gate_run_s"], head["github_hosted_run_s"], head["gate_builds"]),
+                             (1564.0, 1200.0, 1))
 
     def test_a_second_pass_fetches_no_jobs_for_unchanged_runs(self):
         with tempfile.TemporaryDirectory() as td:
@@ -117,6 +120,21 @@ class Collection(unittest.TestCase):
         self.assertFalse(cw.counted(cfg, "Test full", "cpu"))
         self.assertFalse(cw.counted(CFG["repos"][0], "Auto Labeler", "label"))
         self.assertTrue(cw.counted(CFG["repos"][0], "Test full", "cpu"))
+
+
+class Hosted(unittest.TestCase):
+    def test_a_self_hosted_github_job_is_not_github_hosted_time(self):
+        wr = {"id": 5, "name": "gpu", "event": "pull_request", "head_sha": "x"}
+        jobs = [{"id": 9, "name": "g", "run_attempt": 1, "labels": ["self-hosted", "linux"],
+                 "created_at": iso(T0), "started_at": iso(T0 + 1), "completed_at": iso(T0 + 61)},
+                {"id": 8, "name": "c", "run_attempt": 1, "labels": ["ubuntu-22.04"],
+                 "created_at": iso(T0), "started_at": iso(T0 + 1), "completed_at": iso(T0 + 31)}]
+        recs = cw.gh_job_records(REPO, wr, jobs)
+        for r in recs:
+            r["pr"] = 1
+        head = cw.pr_heads(recs, CFG["repos"][0])[0]
+        self.assertEqual(head["github_hosted_run_s"], 30.0)
+        self.assertEqual(head["job_minutes"], 1.5, "every counted check still counts toward the CI surface")
 
 
 class Local(unittest.TestCase):
@@ -185,6 +203,8 @@ class Outputs(unittest.TestCase):
             self.assertIn(f'shoal_ci_wait_check_wait_per_head_seconds{{repo="{REPO}",check="gate: gpu-gate"}} 2400.0', text)
             self.assertIn(f'shoal_ci_wait_source_errors_total{{repo="{REPO}",source="gh"}} 2', text)
             self.assertNotIn("abc", text, "no SHA reaches a label")
+            self.assertIn(f'shoal_ci_wait_head_run_seconds{{repo="{REPO}",window="7d",source="gate",stat="max"}} 1564.0', text)
+            self.assertIn(f'shoal_ci_wait_head_run_seconds{{repo="{REPO}",window="24h",source="github_hosted",stat="avg"}} 1200.0', text)
             line = cw.line(REPO, cw.summarize(list(cw.load(td, REPO).values()), T0, T0 + 86400, CFG["repos"][0]))
             self.assertIn("1 PR heads", line)
             self.assertIn("most wait: gate: gpu-gate", line)
