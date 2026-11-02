@@ -1825,6 +1825,11 @@ t = time.time()
 nat = lambda st: {"native": {"state": st, "observed_at": t, "budget_s": 90.0, "wait_event": "", "raw": ""}}
 json.dump({"v": 1, "shoal": A, "host": "h", "written_at": t, "roles": {"core": nat("turn"), "dist-ci": nat("between")},
            "errors": {}}, open(f"/tmp/{A}/role-time-native.json", "w"))
+# analysis's native observation is past its budget: role-time reads unknown:stale-source, the graph its posture
+os.makedirs(f"/tmp/{B}", exist_ok=True)
+json.dump({"v": 1, "shoal": B, "host": "h", "written_at": t - 1000, "roles": {"analysis": {"native": {
+           "state": "between", "observed_at": t - 1000, "budget_s": 90.0, "wait_event": "", "raw": ""}}},
+           "errors": {}}, open(f"/tmp/{B}/role-time-native.json", "w"))
 # dist-ci's CI job: placed on a pool host and granted its lease (the job meta `job wait` keeps)
 os.makedirs(f"/tmp/{A}/jobs", exist_ok=True)
 json.dump({"unit": "shoal-uigraph-ci-1", "shoal": A, "slug": "dist-ci", "name": "ci-1", "cmd": ["true"],
@@ -1860,6 +1865,8 @@ assert (st(f"{A}:dist-ci")["class"], st(f"{A}:dist-ci")["event"], st(f"{A}:dist-
 assert (st(f"{A}:tune")["event"], st(f"{A}:tune")["group"], st(f"{A}:tune")["source"]) == ("user-auth", "human", "posture"), st(f"{A}:tune")
 assert st(f"{A}:tune")["needs_you"] and "waiting-on-you" in st(f"{A}:tune")["reasons"], st(f"{A}:tune")
 assert (st(f"{A}:research")["class"], st(f"{A}:research")["event"]) == ("excluded", "parked"), st(f"{A}:research")
+assert st(f"{B}:analysis")["source"] == "posture" and "role-time:stale-source" in st(f"{B}:analysis")["quality"], st(f"{B}:analysis")
+assert st(f"{B}:analysis")["class"] != "unknown", st(f"{B}:analysis")
 # work: item URLs from the spec's repos, done with the event's own url
 w = nodes[f"{A}:core"]["work"]
 assert w["active"] == {"item": "repo-one#101:fix", "url": "https://github.com/example-org/repo-one/issues/101"}, w

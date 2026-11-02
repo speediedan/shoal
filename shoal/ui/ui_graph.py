@@ -54,6 +54,8 @@ EVENT_TYPES = ("msg", "offer", "withdraw", "claim", "release", "done", "grant")
 EDGE_CLASSES = ("msg", "broadcast", "ask", "health", "offer", "grant", "handoff", "blocked-on", "alias")
 ASK_KINDS = ("request", "ask")
 JOB_WAITS = ("local-ci", "remote-ci", "lease")
+# role-time reads unknown when a source is past its budget; the graph shows the posture instead
+STALE_EVENTS = ("stale-source", "missing-source")
 
 
 def _epoch(ts: str) -> float | None:
@@ -326,6 +328,11 @@ def role_states(spec, view, rows: list[dict], now: float) -> dict[str, dict]:
         if snap is not None and snap.get("native"):
             c, e, q, _until = rt.classify(snap, now)
             src = "role-time"
+            if c == "unknown" and e in STALE_EVENTS:
+                # a source past its budget says nothing about the role; its posture still does
+                stale = e
+                c, e = posture_state(row)
+                q, src = (*q, f"role-time:{stale}"), "posture"
         else:
             c, e = posture_state(row)
             q, src = (), "posture"

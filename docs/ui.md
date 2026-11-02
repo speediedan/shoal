@@ -174,8 +174,11 @@ event (`turn`, `local-ci`, `remote-ci`, `lease`, `user-auth`, `user-ask`, `user-
 off it; `group` is `WAIT_GROUP` for waits, else empty; `quality` is the classifier's quality flags.
 `state.source` is `role-time` for that reading. A role with no native observation (no cache, or a
 background role) gets a best-effort reading of its status row in the same vocabulary, marked
-`source: posture`. As with role-time accounting, the ledger half is believed only while the clone's
-last fetch is fresh, so a host whose clone stopped fetching shows `unknown:stale-source`.
+`source: posture`. As in role-time accounting, a source is believed only within its budget (the
+ledger half only while the clone's last fetch is fresh). Where accounting would read
+`unknown:stale-source` or `unknown:missing-source`, the graph falls back to the posture reading
+instead, marks it `source: posture`, and adds `role-time:<event>` to `quality`, so a host whose clone
+stopped fetching still shows what its roles last declared.
 
 For `wait:local-ci`, `wait:remote-ci` and `wait:lease`, `state.job` describes the job a `job:<name>`
 wait target names, from the job meta the role-time adapter already reads (`<state dir>/jobs/<unit>.json`):
