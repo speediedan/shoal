@@ -2060,6 +2060,10 @@ assert ui_view.standalone_tick("claude", e["session"], "seat", "aaaa0001")["acti
 # a second follow writes no second backup
 reset(); d = tick()
 assert d["action"] == "followed" and len(backups()) == 1, backups()
+# a successor that has answered its first prompt reads `done` (idle, with a pid): live, and followed
+reset(); setrows([bg("aaaa0001", state="done")])
+d = tick()
+assert d["action"] == "followed" and saved()["job"] == "aaaa0001" and not d.get("stopped"), (d, saved())
 
 # 1 successor while the original still runs interactively: two live copies, a warning, nothing rewritten
 reset(); setrows([ITV, bg("aaaa0001")])

@@ -514,7 +514,8 @@ while it ran interactively in a terminal has to move to the background first. Th
 listed as a background job, the card looks for successors among `claude agents --json --all` rows: kind
 `background`; named as the entry's label or the label followed by ` (N)`; in the entry's `cwd` (when it has one);
 `interactiveLineage` in the job's `state.json` (an unreadable file is accepted and noted on the card); started after
-the entry's `seen_utc`; not referenced (session or job) by another saved entry; and not finished (`stopped`, `done`).
+the entry's `seen_utc`; not referenced (session or job) by another saved entry; and not finished (`stopped`, `failed`, `error`, `killed`, `cancelled`, `exited`). A `done` job is not
+finished: it has ended its turn and sits idle, and `claude attach` reopens it.
 `seen_utc` is refreshed by the card whenever the recorded session is listed (at most every 10 minutes). An entry
 saved before that field existed falls back to its `saved_utc` (written by `ui pick --save` from now on), else the
 first timestamp of the original session's transcript; with none of these the start time is not checked, and the card

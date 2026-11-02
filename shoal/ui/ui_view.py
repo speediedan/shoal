@@ -251,9 +251,11 @@ def _bg_name_matches(name: str, label: str) -> bool:
     return any(b == label or (len(label) == 40 and b[:40] == label) for b in bases)
 
 
-# finished background jobs (`claude agents --json --all` keeps them: measured 2026-11-02, `stopped` after `claude stop`
-# and `done`): an operator ended them, so they are never followed, only named
-FINISHED_STATES = frozenset({"stopped", "done", "failed", "error", "killed", "cancelled", "exited"})
+# finished background jobs (`claude agents --json --all` keeps them: measured 2026-11-02, `stopped` after `claude stop`):
+# an operator or a failure ended them, so they are never followed, only named. `done` is NOT finished: it is a live
+# background job that has finished its turn and sits idle (with a pid, or with no worker after the background service
+# retired it idle), the normal state of a /bg successor that answered its first prompt; `claude attach` reopens it.
+FINISHED_STATES = frozenset({"stopped", "failed", "error", "killed", "cancelled", "exited"})
 
 
 def bg_successors(rows: list[dict], entry: dict, entries: list[dict], jobs_dir: str,
