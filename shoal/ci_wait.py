@@ -154,6 +154,7 @@ def gh_job_records(repo, wf_run, jobs):
                     "attempt": int(j.get("run_attempt") or wf_run.get("run_attempt") or 1),
                     "created": created, "started": started, "completed": done,
                     "conclusion": j.get("conclusion"), "runner": j.get("runner_name") or "",
+                    "hosted": "self-hosted" not in [str(x) for x in j.get("labels") or []],
                     "queue_s": _dur(created, started), "run_s": _dur(started, done)})
     return out
 
@@ -332,10 +333,14 @@ def pr_heads(records, cfg):
         first, done = (min(starts) if starts else None), max(ends)
         mins = sum((r.get("run_s") or 0) for r in rs) / 60
         rerun = sum((r.get("run_s") or 0) for r in rs if r.get("attempt", 1) > 1) / 60
+        gate_run = sum((r.get("run_s") or 0) for r in rs if r["type"] == "az_build")
+        hosted_run = sum((r.get("run_s") or 0) for r in rs if r["type"] == "gh_job" and r.get("hosted", True))
         out.append({"type": "pr_head", "key": f"head:{sha}", "repo": rs[0]["repo"], "head_sha": sha,
                     "pr": rs[0].get("pr"), "first_seen": first, "ci_complete": done,
                     "push_to_complete_s": _dur(first, done), "job_minutes": round(mins, 2),
                     "rerun_minutes": round(rerun, 2), "checks_counted": len(rs),
+                    "gate_run_s": gate_run, "github_hosted_run_s": hosted_run,
+                    "gate_builds": sum(1 for r in rs if r["type"] == "az_build"),
                     "gate_wait_s": sum((r.get("gate_wait_s") or 0) for r in rs if r["type"] == "az_build")})
     return out
 
@@ -511,7 +516,16 @@ def summarize(records, t0, t1, cfg=None):
         waits.setdefault(f"gate: {r['pipeline']}", []).append(r.get("gate_wait_s") or 0)
     ranked = sorted(((k, sum(v) / max(n_heads, 1)) for k, v in waits.items()), key=lambda kv: -kv[1])
     mins = sum(r.get("job_minutes") or 0 for r in heads)
+
+    def stats(xs):
+        xs = [x for x in xs if x is not None]
+        return {"avg": sum(xs) / len(xs) if xs else None, "p50": _q(xs, .5), "p95": _q(xs, .95),
+                "max": max(xs) if xs else None, "n": len(xs)}
     return {"window": [t0, t1], "pr_heads": n_heads,
+            # run time per PR head: the self-hosted GPU gate (heads that had a gate build) and the
+            # GitHub-hosted CPU CI (every head), the two numbers targeted CI work moves
+            "head_run_s": {"gate": stats([r.get("gate_run_s") for r in heads if r.get("gate_builds")]),
+                           "github_hosted": stats([r.get("github_hosted_run_s") for r in heads])},
             "push_to_complete_s": {"p50": _q([r["push_to_complete_s"] for r in heads], .5),
                                    "p95": _q([r["push_to_complete_s"] for r in heads], .95)},
             "gate": {"builds": len(az), "approval_failed": sum(1 for r in az if r.get("approval_result") == "failed"),
@@ -589,6 +603,14 @@ def render_prometheus(cfg_all, root, now, errors=None):
                                   ("local", "run", s["local"]["run_s_total"]),
                                   ("direct", "held", s["local"]["direct_held_s_total"])):
                 L.append(f'shoal_ci_wait_seconds{{repo="{_esc(r)}",window="{w}",source="{src}",phase="{phase}"}} {v:.1f}')
+    metric("shoal_ci_wait_head_run_seconds", "gauge",
+           "Run time per PR head: the self-hosted GPU gate (heads with a gate build) and GitHub-hosted CPU CI.")
+    for r in sums:
+        for w, s in sums[r].items():
+            for src, st in (s.get("head_run_s") or {}).items():
+                for k in ("avg", "p50", "p95", "max"):
+                    if st.get(k) is not None:
+                        L.append(f'shoal_ci_wait_head_run_seconds{{repo="{_esc(r)}",window="{w}",source="{src}",stat="{k}"}} {st[k]:.1f}')
     metric("shoal_ci_wait_job_minutes_per_head", "gauge", "Counted check run minutes per PR head.")
     metric("shoal_ci_wait_rerun_share", "gauge", "Share of counted check minutes spent on attempts after the first.")
     for r in sums:

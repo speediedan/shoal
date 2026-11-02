@@ -483,7 +483,15 @@ def execute(a):
             s = snapshot(a.host, a.lease_command, a.session_ready.split(",") if a.session_ready else ())
             append_sample(a.directory, s, a.retain_days)
             if getattr(a, "prom_out", ""):
-                _atomic_write(a.prom_out, render_prometheus(s))
+                text = render_prometheus(s)
+                # cross-host imbalance over compatible demand rides the same file where the pool
+                # planner is importable; a copied standalone sampler simply skips it
+                try:
+                    import pool_metrics
+                    text += pool_metrics.render(s["ts"], s["host"])
+                except Exception:  # noqa: BLE001 - telemetry extras never stop the sampler
+                    pass
+                _atomic_write(a.prom_out, text)
             if config is not None:
                 # research reservations expire at --until even when nobody probes the pool
                 try:

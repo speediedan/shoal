@@ -763,11 +763,14 @@ names), or exactly its `required` patterns when given. Records go to `<data_root
 spec each pass; `--prom-out F` then writes Prometheus text atomically); `shoal ci-wait report --spec S
 [--repo <owner>/<name>] --since T [--json]` prints push-to-CI-complete and gate wait (p50, p95),
 GitHub queue and run time, local lease wait and run time, job-minutes per PR head and rerun share,
-and the counted checks with the most wait per PR head. The Prometheus text holds gauges per
+run time per PR head for the self-hosted GPU gate and for GitHub-hosted CPU CI (average, p50,
+p95, max; a GitHub job on a `self-hosted` runner is not hosted time), and the counted checks
+with the most wait per PR head. The Prometheus text holds gauges per
 repository for 24 h and 7 d windows ending at the pass (quantiles do not aggregate, so they are
 computed here): `shoal_ci_wait_pr_heads`, `shoal_ci_wait_push_to_complete_seconds` and
 `shoal_ci_wait_gate_wait_seconds` (quantiles 0.5 and 0.95), `shoal_ci_wait_seconds` by source and
-phase, `shoal_ci_wait_job_minutes_per_head`, `shoal_ci_wait_rerun_share`, and
+phase, `shoal_ci_wait_head_run_seconds` (source `gate` or `github_hosted`, stat `avg`, `p50`, `p95`,
+`max`), `shoal_ci_wait_job_minutes_per_head`, `shoal_ci_wait_rerun_share`, and
 `shoal_ci_wait_check_wait_per_head_seconds` for the ten checks with the most wait (7 d), plus
 `shoal_ci_wait_source_errors_total` and `shoal_ci_wait_last_success_timestamp_seconds`. Labels never
 carry a SHA or PR number. The weekly report (`telemetry/shoal_report.py`) adds one line per
@@ -974,6 +977,15 @@ in memory and writes `graph.json` beside the status cache each tick, reading onl
 It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call.
 
 ### Host resource observations and placement pilot
+
+Cross-host imbalance over compatible demand (`shoal/pool_metrics.py`): where the pool planner is
+importable, the resource sampler's Prometheus text also carries `shoal_pool_placed_queued{host}`
+(placed jobs queued for their lease) and `shoal_pool_waiting_compatible{host,target,key}`: those
+queued jobs that `pool.compatible(target, demand, home)` says another pool host could run, by lease
+key (a pinned job, or a vendor the target lacks, never counts). A rule then charges imbalance only
+while the target holds nothing under that key. It recomputes at most once a minute, probes hosts
+only when a placed job is queued (through the planner's probe cache), and reports a measured zero
+when none is; a copied standalone sampler skips it.
 
 `shoal resources sample|watch|report|balance|install` (`shoal/resource_usage.py`) maintains one
 host stream outside git, under `<data_root>/_resources/<host>/`. The stdlib sampler can run as a
