@@ -110,9 +110,10 @@ def names() -> dict[str, dict]:
     try:
         p = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "shoal", "ui-standalone.json")
         for e in json.load(open(p)).get("sessions", []):
-            for sid, v in out.items():
+            ej, es = str(e.get("job") or ""), str(e.get("session") or "")[:8]
+            for sid, v in out.items():  # by recorded ids only: an entry with neither names nothing
                 if e.get("harness") == "claude" and not e.get("host") and \
-                        (v["job"] == e.get("job") or sid.startswith(str(e.get("session", ""))[:8])):
+                        ((ej and v["job"] == ej) or (es and sid.startswith(es))):
                     v.update(name=e.get("label") or v["name"], kind="standalone")
     except (OSError, ValueError):
         pass

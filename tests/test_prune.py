@@ -105,6 +105,13 @@ job("9c9c9c9c", "random-chat", conv("9c9c9c9c")); row("9c9c9c9c", "random-chat")
 # standalone: seatA's current job (registered) and its predecessor of the same name
 job("5f5f5f5f", "seatA", conv("5f5f5f5f")); row("5f5f5f5f", "seatA")
 job("5e5e5e5e", "seatA", conv("5e5e5e5e")); row("5e5e5e5e", "seatA")
+# a stopped `/bg` fork of seatA: the seat's name, ids of its own; the registry records 5f5f5f5f, so it is not the seat
+job("5c5c5c5c", "seatA", conv("5c5c5c5c")); row("5c5c5c5c", "seatA")
+# a registry entry that records no id at all is matched by its label
+job("5b5b5b5b", "seatB", conv("5b5b5b5b")); row("5b5b5b5b", "seatB")
+# seatC records a session and an EMPTY job string (an interactive seat never backgrounded): "" is no id, so its
+# stopped same-name fork is not the seat
+job("5d5d5d5d", "seatC", conv("5d5d5d5d")); row("5d5d5d5d", "seatC")
 
 # ---- specs: one live shoal (pt) and one retired one (old) -------------------------------------------------------
 MU_CUR, MU_OLD, MU_LOCK = ("01a00000-0000-7000-8000-00000000000%d" % i for i in (1, 2, 3))
@@ -138,7 +145,9 @@ os.makedirs(os.path.join(LEDGER, "shoals", retired["shoal"]))
 json.dump(retired, open(os.path.join(LEDGER, "shoals", retired["shoal"], "shoal.json"), "w"))
 json.dump({"v": 1, "sessions": [
     {"harness": "claude", "session": conv("d0d0d0d0"), "job": "d0d0d0d0", "label": "old-seat", "dismissed": True},
-    {"harness": "claude", "session": conv("5f5f5f5f"), "job": "5f5f5f5f", "label": "seatA"}]},
+    {"harness": "claude", "session": conv("5f5f5f5f"), "job": "5f5f5f5f", "label": "seatA"},
+    {"harness": "claude", "label": "seatB"},
+    {"harness": "claude", "session": conv("5a5a5a5a"), "job": "", "label": "seatC"}]},
     open(os.path.join(T, "xdg", "shoal", "ui-standalone.json"), "w"))
 
 # ---- fakes ---------------------------------------------------------------------------------------------------------
@@ -249,7 +258,9 @@ try:
         ("claude", "f0f0f0f0"): ("keep", "(h) ledger-watch pid"),
         ("claude", "0a0a0a0a"): ("keep", "younger than --min-age"),
         ("claude", "5f5f5f5f"): ("keep", "(a-c) standalone seat seatA"),
-        ("claude", "5e5e5e5e"): ("prune", ""),
+        ("claude", "5e5e5e5e"): ("prune", ""), ("claude", "5c5c5c5c"): ("prune", ""),
+        ("claude", "5d5d5d5d"): ("prune", ""),
+        ("claude", "5b5b5b5b"): ("keep", "(a-c) standalone seat seatB (no recorded id: matched by label)"),
         ("codex", "t-current"): ("keep", "(a-c) current session of cx@"), ("codex", "t-old1"): ("prune", ""),
         ("codex", "t-busy"): ("keep", "(d) thread active"),
         ("opencode", "ses_cur"): ("keep", "(a-c) current session of oc@"), ("opencode", "ses_old"): ("prune", ""),
@@ -262,7 +273,7 @@ try:
         check(got[0] == verdict and reason in got[1], f"{k}: want {verdict} '{reason}', got {got}")
     for k in v:
         check(k in want, f"{k} considered but should not be (not shoal's) :: {v[k]}")
-    check(any("== claude:" in ln and "prune 3" in ln for ln in quiet), f"claude table header :: {quiet[:3]}")
+    check(any("== claude:" in ln and "prune 5" in ln for ln in quiet), f"claude table header :: {quiet[:3]}")
     # without --standalone / --matcher those are not considered
     v2 = verdicts(prune.run(all_specs=True, dry_run=True, log=quiet.append))
     check(("claude", "5e5e5e5e") not in v2 and ("opencode", "ses_m1") not in v2, "standalone/matcher without the flag")
@@ -285,8 +296,8 @@ try:
     # ---- apply: Claude purge with tombstone, re-stop, transcript untouched ---------------------------------------
     res = prune.run(all_specs=True, harnesses=("claude",), standalone=True, log=quiet.append)
     log = open(CLOG).read().splitlines()
-    check("rm a1a1a1a1" in log and "rm a1b2c3d4" in log and "rm 5e5e5e5e" in log, f"claude rm calls :: {log}")
-    check(sum(1 for ln in log if ln.startswith("rm ")) == 3, f"only the eligible jobs are removed :: {log}")
+    check("rm a1a1a1a1" in log and "rm a1b2c3d4" in log and "rm 5e5e5e5e" in log and "rm 5c5c5c5c" in log and "rm 5d5d5d5d" in log, f"claude rm calls :: {log}")
+    check(sum(1 for ln in log if ln.startswith("rm ")) == 5, f"only the eligible jobs are removed :: {log}")
     check("tombstone-before-rm a1a1a1a1" in log and "tombstone-before-rm 5e5e5e5e" in log, f"tombstone order :: {log}")
     i = log.index("rm a1a1a1a1")
     check("stop a1b2c3d4" in log[i:], f"no re-stop of the job sharing the conversation :: {log}")

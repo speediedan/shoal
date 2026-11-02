@@ -517,7 +517,8 @@ re-stop check on every job sharing the conversation; Codex `thread/archive` (`th
 OpenChamber's archive flag over its HTTP API (opencode's `DELETE /api/session/<id>` with `--delete`); Muse moves the
 session directory to `archived-sessions/`. `prune.py` decides what is safe: only sessions shoal created (a `<stem>-r<N>`
 name or an id in a spec's generation history; standalone predecessors and `shoal-matcher-*` sessions on request), and
-never one that is (a) a current or (b) parked role session in any spec, (c) in the viewer registry, (d) live, (e) on a
+never one that is (a) a current or (b) parked role session in any spec, (c) in the viewer registry (by the session
+and job ids an entry records, by label only for an entry that records neither), (d) live, (e) on a
 conversation a live or protected job shares, (f) holding an existing worktree or a process's cwd, (g) the job the prune
 runs in, or (h) locked or bound to a ledger-watch, nor anything younger than `--min-age`. With `features.prune` the
 role's incarnations up to N-2 are pruned once incarnation N proves itself (its `first-turn` handover event, run detached,
