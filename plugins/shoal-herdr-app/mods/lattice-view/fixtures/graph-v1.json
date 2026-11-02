@@ -1,0 +1,1137 @@
+{
+ "v": 1,
+ "kind": "shoal-graph",
+ "host": "host-a",
+ "ts": "2026-11-02T20:00:00Z",
+ "cursor": "<opaque>",
+ "windows": {
+  "rate_s": 300,
+  "recent_s": 3600,
+  "day_s": 86400
+ },
+ "hosts": [
+  {
+   "id": "host:host-a",
+   "name": "host-a",
+   "home": true
+  },
+  {
+   "id": "host:host-b",
+   "name": "host-b",
+   "home": false
+  }
+ ],
+ "shoals": [
+  {
+   "id": "alpha-20261101-000000",
+   "gen": "r12",
+   "retired": false,
+   "home": "host-a",
+   "mode": {
+    "offline": false,
+    "freeze": false
+   },
+   "metrics": {
+    "roles": 8,
+    "working": 1,
+    "waiting": 4,
+    "needs_you": 2,
+    "stalled": 1,
+    "asks_open": 1,
+    "pages_24h": 2,
+    "done_24h": 6,
+    "done_7d": 31,
+    "claims_24h": 8,
+    "offers_24h": 5,
+    "msgs_1h": 14,
+    "msgs_24h": 120,
+    "work_ratio_24h": 0.41
+   },
+   "grants_pending_n": 1
+  },
+  {
+   "id": "beta-20261101-000000",
+   "gen": "r3",
+   "retired": false,
+   "home": "host-b",
+   "mode": {
+    "offline": false,
+    "freeze": false
+   },
+   "metrics": {
+    "roles": 5,
+    "working": 0,
+    "waiting": 2,
+    "needs_you": 0,
+    "stalled": 1,
+    "asks_open": 0,
+    "pages_24h": 0,
+    "done_24h": 1,
+    "done_7d": 4,
+    "claims_24h": 1,
+    "offers_24h": 0,
+    "msgs_1h": 2,
+    "msgs_24h": 17,
+    "work_ratio_24h": 0.18
+   }
+  }
+ ],
+ "nodes": [
+  {
+   "id": "user",
+   "kind": "user",
+   "shoal": null,
+   "label": "you",
+   "state": {
+    "class": "work",
+    "event": "",
+    "group": "",
+    "needs_you": false
+   },
+   "work": {
+    "asks_open": 3,
+    "grants_pending": 1
+   },
+   "metrics": {
+    "msgs_out_1h": 2,
+    "msgs_in_1h": 5
+   }
+  },
+  {
+   "id": "alpha-20261101-000000:shoal",
+   "kind": "system",
+   "shoal": "alpha-20261101-000000",
+   "label": "shoal",
+   "state": {
+    "class": "work",
+    "event": "",
+    "group": ""
+   },
+   "metrics": {
+    "pages_24h": 2
+   }
+  },
+  {
+   "id": "beta-20261101-000000:shoal",
+   "kind": "system",
+   "shoal": "beta-20261101-000000",
+   "label": "shoal",
+   "state": {
+    "class": "work",
+    "event": "",
+    "group": ""
+   },
+   "metrics": {
+    "pages_24h": 0
+   }
+  },
+  {
+   "id": "alpha-20261101-000000:relay",
+   "kind": "relay",
+   "shoal": "alpha-20261101-000000",
+   "label": "wake-relay",
+   "state": {
+    "class": "idle",
+    "event": "no-work",
+    "group": ""
+   },
+   "metrics": {}
+  },
+  {
+   "id": "alpha-20261101-000000:core",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "core",
+   "label": "core",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "class": "work",
+    "event": "turn",
+    "group": "",
+    "posture": "active",
+    "sub": "",
+    "session": "working",
+    "since_s": 420,
+    "needs_you": false,
+    "reasons": []
+   },
+   "work": {
+    "active": {
+     "item": "repo-one#101:fix",
+     "url": "https://github.com/example-org/repo-one/issues/101"
+    },
+    "next": [
+     {
+      "item": "repo-one#104:review",
+      "url": "https://github.com/example-org/repo-one/issues/104",
+      "blocker": "dist-ci:repo-one#103",
+      "stale": false
+     }
+    ],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": [
+     {
+      "item": "repo-one#90",
+      "url": "https://github.com/example-org/repo-one/pull/110",
+      "ts": "2026-11-02T11:00:00Z"
+     },
+     {
+      "item": "repo-one#91",
+      "url": "https://github.com/example-org/repo-one/pull/111",
+      "ts": "2026-11-02T12:00:00Z"
+     },
+     {
+      "item": "repo-one#92",
+      "url": "https://github.com/example-org/repo-one/pull/112",
+      "ts": "2026-11-02T13:00:00Z"
+     }
+    ]
+   },
+   "metrics": {
+    "done_24h": 3,
+    "claims_24h": 4,
+    "msgs_out_1h": 6,
+    "msgs_in_1h": 4,
+    "last_write_age_s": 30,
+    "heartbeat_age_s": 20,
+    "context_k": 180
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "core"
+   ]
+  },
+  {
+   "id": "alpha-20261101-000000:dist-ci",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "dist-ci",
+   "label": "dist-ci",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "class": "wait",
+    "event": "local-ci",
+    "group": "system",
+    "posture": "wait",
+    "sub": "local-ci",
+    "session": "working",
+    "since_s": 900,
+    "needs_you": false,
+    "reasons": []
+   },
+   "work": {
+    "active": {
+     "item": "repo-one#103:fix",
+     "url": "https://github.com/example-org/repo-one/pull/103"
+    },
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": [
+     {
+      "item": "repo-one#90",
+      "url": "https://github.com/example-org/repo-one/pull/110",
+      "ts": "2026-11-02T11:00:00Z"
+     }
+    ]
+   },
+   "metrics": {
+    "done_24h": 1,
+    "claims_24h": 1,
+    "msgs_out_1h": 2,
+    "msgs_in_1h": 3,
+    "last_write_age_s": 600,
+    "heartbeat_age_s": 30,
+    "context_k": 95
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "dist-ci"
+   ]
+  },
+  {
+   "id": "alpha-20261101-000000:tune",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "tune",
+   "label": "tune",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "class": "wait",
+    "event": "user-prompt",
+    "group": "human",
+    "posture": "wait",
+    "sub": "",
+    "session": "blocked",
+    "since_s": 1500,
+    "needs_you": true,
+    "reasons": [
+     "blocked-on-question"
+    ]
+   },
+   "work": {
+    "active": {
+     "item": "repo-two#871:fix",
+     "url": "https://github.com/example-org/repo-two/issues/871"
+    },
+    "next": [
+     {
+      "item": "repo-two#872:fix",
+      "url": "https://github.com/example-org/repo-two/issues/872"
+     }
+    ],
+    "asks": [
+     "approve image push scope?"
+    ],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 1,
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 2,
+    "last_write_age_s": 1500,
+    "heartbeat_age_s": 40,
+    "context_k": 240
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "tune"
+   ]
+  },
+  {
+   "id": "alpha-20261101-000000:integration",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "integration",
+   "label": "integration",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "class": "wait",
+    "event": "user-auth",
+    "group": "human",
+    "posture": "wait",
+    "sub": "user-auth",
+    "session": "blocked",
+    "since_s": 3600,
+    "needs_you": true,
+    "reasons": [
+     "waiting-on-you"
+    ]
+   },
+   "work": {
+    "active": {
+     "item": "repo-two#882:fix",
+     "url": "https://github.com/example-org/repo-two/issues/882"
+    },
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": [],
+    "grants_pending": [
+     {
+      "item": "repo-two#882:fix",
+      "kind": "push"
+     }
+    ]
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 0,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 3600,
+    "heartbeat_age_s": 50,
+    "context_k": 120
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "integration"
+   ]
+  },
+  {
+   "id": "alpha-20261101-000000:addressing",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "addressing",
+   "label": "addressing",
+   "ecosystem": "opencode",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "class": "wait",
+    "event": "self",
+    "group": "self",
+    "posture": "idle",
+    "sub": "",
+    "session": "idle",
+    "since_s": 200,
+    "needs_you": false,
+    "reasons": []
+   },
+   "work": {
+    "active": null,
+    "next": [
+     {
+      "item": "repo-one#160:fix",
+      "url": "https://github.com/example-org/repo-one/issues/160"
+     },
+     {
+      "item": "repo-one#161:docs",
+      "url": "https://github.com/example-org/repo-one/issues/161"
+     }
+    ],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": [
+     {
+      "item": "repo-one#90",
+      "url": "https://github.com/example-org/repo-one/pull/110",
+      "ts": "2026-11-02T11:00:00Z"
+     },
+     {
+      "item": "repo-one#91",
+      "url": "https://github.com/example-org/repo-one/pull/111",
+      "ts": "2026-11-02T12:00:00Z"
+     }
+    ]
+   },
+   "metrics": {
+    "done_24h": 2,
+    "claims_24h": 2,
+    "msgs_out_1h": 3,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 200,
+    "heartbeat_age_s": 25,
+    "context_k": 60
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "addressing"
+   ]
+  },
+  {
+   "id": "alpha-20261101-000000:registry",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "registry",
+   "label": "registry",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-b",
+   "fill": "assigned",
+   "state": {
+    "class": "unknown",
+    "event": "missing-source",
+    "group": "",
+    "posture": "idle",
+    "sub": "",
+    "session": "dead",
+    "since_s": 7200,
+    "needs_you": false,
+    "reasons": [
+     "dead-worker"
+    ]
+   },
+   "work": {
+    "active": null,
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 0,
+    "msgs_in_1h": 0,
+    "last_write_age_s": 7200,
+    "heartbeat_age_s": null,
+    "context_k": null
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "registry"
+   ]
+  },
+  {
+   "id": "beta-20261101-000000:research",
+   "kind": "role",
+   "shoal": "beta-20261101-000000",
+   "slug": "research",
+   "label": "research",
+   "ecosystem": "codex",
+   "model": "<model>",
+   "host": "host-b",
+   "fill": "assigned",
+   "state": {
+    "class": "wait",
+    "event": "session-blocked",
+    "group": "peer",
+    "posture": "wait",
+    "sub": "",
+    "session": "idle",
+    "since_s": 800,
+    "needs_you": false,
+    "reasons": [
+     "blocker-role-cannot-take"
+    ]
+   },
+   "work": {
+    "active": null,
+    "next": [
+     {
+      "item": "repo-three#12:fix",
+      "url": "https://github.com/example-org/repo-three/issues/12",
+      "blocker": "role:analysis",
+      "stale": true
+     }
+    ],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": [
+     {
+      "item": "repo-one#90",
+      "url": "https://github.com/example-org/repo-one/pull/110",
+      "ts": "2026-11-02T11:00:00Z"
+     }
+    ]
+   },
+   "metrics": {
+    "done_24h": 1,
+    "claims_24h": 1,
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 0,
+    "last_write_age_s": 800,
+    "heartbeat_age_s": 35,
+    "context_k": 70
+   },
+   "view": [
+    "shoal",
+    "view",
+    "beta-20261101-000000",
+    "research"
+   ]
+  },
+  {
+   "id": "beta-20261101-000000:analysis",
+   "kind": "role",
+   "shoal": "beta-20261101-000000",
+   "slug": "analysis",
+   "label": "analysis",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-b",
+   "fill": "assigned",
+   "state": {
+    "class": "wait",
+    "event": "upstream",
+    "group": "upstream",
+    "posture": "wait",
+    "sub": "upstream",
+    "session": "idle",
+    "since_s": 5000,
+    "needs_you": false,
+    "reasons": []
+   },
+   "work": {
+    "active": {
+     "item": "repo-three#9:fix",
+     "url": "https://github.com/example-org/repo-three/issues/9"
+    },
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 0,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 5000,
+    "heartbeat_age_s": 60,
+    "context_k": 30
+   },
+   "view": [
+    "shoal",
+    "view",
+    "beta-20261101-000000",
+    "analysis"
+   ]
+  },
+  {
+   "id": "beta-20261101-000000:archive",
+   "kind": "role",
+   "shoal": "beta-20261101-000000",
+   "slug": "archive",
+   "label": "archive",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "class": "excluded",
+    "event": "parked",
+    "group": "",
+    "posture": "parked",
+    "sub": "",
+    "session": "parked",
+    "since_s": 86400,
+    "needs_you": false,
+    "reasons": [
+     "parked"
+    ]
+   },
+   "work": {
+    "active": null,
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 0,
+    "msgs_in_1h": 0,
+    "last_write_age_s": 86400,
+    "heartbeat_age_s": null,
+    "context_k": null
+   },
+   "view": [
+    "shoal",
+    "view",
+    "beta-20261101-000000",
+    "archive"
+   ]
+  },
+  {
+   "id": "ext:evolution",
+   "kind": "external",
+   "shoal": null,
+   "label": "evolution",
+   "alias_of": null,
+   "state": {
+    "class": "unknown",
+    "event": "",
+    "group": ""
+   },
+   "metrics": {
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 2
+   }
+  },
+  {
+   "id": "ext:research",
+   "kind": "external",
+   "shoal": null,
+   "label": "research",
+   "alias_of": "beta-20261101-000000:research",
+   "state": {
+    "class": "wait",
+    "event": "session-blocked",
+    "group": "peer"
+   },
+   "metrics": {
+    "msgs_out_1h": 0,
+    "msgs_in_1h": 1
+   }
+  },
+  {
+   "id": "alpha-20261101-000000:bench",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "bench",
+   "label": "bench",
+   "ecosystem": "claude",
+   "model": "<model>",
+   "host": "host-a",
+   "fill": "assigned",
+   "state": {
+    "posture": "wait",
+    "sub": "remote-ci",
+    "session": "working",
+    "since_s": 1200,
+    "needs_you": false,
+    "reasons": [],
+    "class": "wait",
+    "event": "remote-ci",
+    "group": "system",
+    "job_host": "host-b"
+   },
+   "work": {
+    "active": {
+     "item": "repo-one#130:bench",
+     "url": "https://github.com/example-org/repo-one/issues/130"
+    },
+    "next": [
+     {
+      "item": "repo-one#131:bench",
+      "url": "https://github.com/example-org/repo-one/issues/131"
+     }
+    ],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 1,
+    "claims_24h": 0,
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 600,
+    "heartbeat_age_s": 30,
+    "context_k": 50
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "bench"
+   ]
+  },
+  {
+   "id": "alpha-20261101-000000:scribe",
+   "kind": "role",
+   "shoal": "alpha-20261101-000000",
+   "slug": "scribe",
+   "label": "scribe",
+   "ecosystem": "opencode",
+   "model": "<model>",
+   "host": "host-b",
+   "fill": "assigned",
+   "state": {
+    "posture": "wait",
+    "sub": "",
+    "session": "working",
+    "since_s": 90,
+    "needs_you": false,
+    "reasons": [],
+    "class": "wait",
+    "event": "handover",
+    "group": "self"
+   },
+   "work": {
+    "active": null,
+    "next": [
+     {
+      "item": "repo-two#900:docs",
+      "url": "https://github.com/example-org/repo-two/issues/900"
+     }
+    ],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 600,
+    "heartbeat_age_s": 30,
+    "context_k": 50
+   },
+   "view": [
+    "shoal",
+    "view",
+    "alpha-20261101-000000",
+    "scribe"
+   ]
+  },
+  {
+   "id": "beta-20261101-000000:pool",
+   "kind": "role",
+   "shoal": "beta-20261101-000000",
+   "slug": "pool",
+   "label": "pool",
+   "ecosystem": "codex",
+   "model": "<model>",
+   "host": "host-b",
+   "fill": "assigned",
+   "state": {
+    "posture": "wait",
+    "sub": "lease",
+    "session": "working",
+    "since_s": 300,
+    "needs_you": false,
+    "reasons": [],
+    "class": "wait",
+    "event": "lease",
+    "group": "system"
+   },
+   "work": {
+    "active": {
+     "item": "repo-three#20:fix",
+     "url": "https://github.com/example-org/repo-three/issues/20"
+    },
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 600,
+    "heartbeat_age_s": 30,
+    "context_k": 50
+   },
+   "view": [
+    "shoal",
+    "view",
+    "beta-20261101-000000",
+    "pool"
+   ]
+  },
+  {
+   "id": "beta-20261101-000000:drift",
+   "kind": "role",
+   "shoal": "beta-20261101-000000",
+   "slug": "drift",
+   "label": "drift",
+   "ecosystem": "opencode",
+   "model": "<model>",
+   "host": "host-b",
+   "fill": "assigned",
+   "state": {
+    "posture": "wait",
+    "sub": "",
+    "session": "working",
+    "since_s": 45,
+    "needs_you": false,
+    "reasons": [],
+    "class": "wait",
+    "event": "warmup-v6",
+    "group": ""
+   },
+   "work": {
+    "active": null,
+    "next": [],
+    "asks": [],
+    "offers_open": 0,
+    "done_recent": []
+   },
+   "metrics": {
+    "done_24h": 0,
+    "claims_24h": 0,
+    "msgs_out_1h": 1,
+    "msgs_in_1h": 1,
+    "last_write_age_s": 600,
+    "heartbeat_age_s": 30,
+    "context_k": 50
+   },
+   "view": [
+    "shoal",
+    "view",
+    "beta-20261101-000000",
+    "drift"
+   ]
+  }
+ ],
+ "edges": [
+  {
+   "id": "alpha-20261101-000000:core|alpha-20261101-000000:dist-ci|msg",
+   "src": "alpha-20261101-000000:core",
+   "dst": "alpha-20261101-000000:dist-ci",
+   "class": "msg",
+   "n_rate": 2,
+   "n_1h": 4,
+   "n_24h": 18,
+   "rate_per_h": 3.5,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 40,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:dist-ci|alpha-20261101-000000:core|msg",
+   "src": "alpha-20261101-000000:dist-ci",
+   "dst": "alpha-20261101-000000:core",
+   "class": "msg",
+   "n_rate": 1,
+   "n_1h": 3,
+   "n_24h": 15,
+   "rate_per_h": 2.8,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 120,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:core|alpha-20261101-000000:*|broadcast",
+   "src": "alpha-20261101-000000:core",
+   "dst": "alpha-20261101-000000:*",
+   "class": "broadcast",
+   "n_rate": 1,
+   "n_1h": 2,
+   "n_24h": 9,
+   "rate_per_h": 1.2,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 300,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:shoal|user|health",
+   "src": "alpha-20261101-000000:shoal",
+   "dst": "user",
+   "class": "health",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 2,
+   "rate_per_h": 0.1,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 2400,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:tune|user|ask",
+   "src": "alpha-20261101-000000:tune",
+   "dst": "user",
+   "class": "ask",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 1,
+   "rate_per_h": 0.4,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 1500,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "user|alpha-20261101-000000:tune|offer",
+   "src": "user",
+   "dst": "alpha-20261101-000000:tune",
+   "class": "offer",
+   "n_rate": 0,
+   "n_1h": 0,
+   "n_24h": 2,
+   "rate_per_h": 0.1,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 9000,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "user|alpha-20261101-000000:integration|grant",
+   "src": "user",
+   "dst": "alpha-20261101-000000:integration",
+   "class": "grant",
+   "n_rate": 0,
+   "n_1h": 0,
+   "n_24h": 1,
+   "rate_per_h": 0.05,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 20000,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:core|alpha-20261101-000000:dist-ci|blocked-on",
+   "src": "alpha-20261101-000000:core",
+   "dst": "alpha-20261101-000000:dist-ci",
+   "class": "blocked-on",
+   "n_rate": 0,
+   "n_1h": 0,
+   "n_24h": 0,
+   "rate_per_h": 0,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": null,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "beta-20261101-000000:research|beta-20261101-000000:analysis|blocked-on",
+   "src": "beta-20261101-000000:research",
+   "dst": "beta-20261101-000000:analysis",
+   "class": "blocked-on",
+   "n_rate": 0,
+   "n_1h": 0,
+   "n_24h": 0,
+   "rate_per_h": 0,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": null,
+   "shoal": "beta-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:addressing|alpha-20261101-000000:core|offer",
+   "src": "alpha-20261101-000000:addressing",
+   "dst": "alpha-20261101-000000:core",
+   "class": "offer",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 3,
+   "rate_per_h": 0.3,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 1800,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "ext:evolution|alpha-20261101-000000:core|msg",
+   "src": "ext:evolution",
+   "dst": "alpha-20261101-000000:core",
+   "class": "msg",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 4,
+   "rate_per_h": 0.5,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 2000,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:core|ext:evolution|msg",
+   "src": "alpha-20261101-000000:core",
+   "dst": "ext:evolution",
+   "class": "msg",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 5,
+   "rate_per_h": 0.6,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 1900,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:dist-ci|ext:research|msg",
+   "src": "alpha-20261101-000000:dist-ci",
+   "dst": "ext:research",
+   "class": "msg",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 2,
+   "rate_per_h": 0.2,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 2600,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "ext:research|beta-20261101-000000:research|alias",
+   "src": "ext:research",
+   "dst": "beta-20261101-000000:research",
+   "class": "alias",
+   "n_rate": 0,
+   "n_1h": 0,
+   "n_24h": 0,
+   "rate_per_h": 0,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": null,
+   "shoal": null
+  },
+  {
+   "id": "beta-20261101-000000:analysis|beta-20261101-000000:research|msg",
+   "src": "beta-20261101-000000:analysis",
+   "dst": "beta-20261101-000000:research",
+   "class": "msg",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 3,
+   "rate_per_h": 0.4,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 2200,
+   "shoal": "beta-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:core|alpha-20261101-000000:scribe|msg",
+   "src": "alpha-20261101-000000:core",
+   "dst": "alpha-20261101-000000:scribe",
+   "class": "msg",
+   "n_rate": 1,
+   "n_1h": 3,
+   "n_24h": 12,
+   "rate_per_h": 2.4,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 90,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "alpha-20261101-000000:bench|alpha-20261101-000000:core|msg",
+   "src": "alpha-20261101-000000:bench",
+   "dst": "alpha-20261101-000000:core",
+   "class": "msg",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 6,
+   "rate_per_h": 0.8,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 1300,
+   "shoal": "alpha-20261101-000000"
+  },
+  {
+   "id": "beta-20261101-000000:pool|beta-20261101-000000:research|offer",
+   "src": "beta-20261101-000000:pool",
+   "dst": "beta-20261101-000000:research",
+   "class": "offer",
+   "n_rate": 0,
+   "n_1h": 1,
+   "n_24h": 2,
+   "rate_per_h": 0.3,
+   "last_ts": "2026-11-02T20:00:00Z",
+   "last_age_s": 2000,
+   "shoal": "beta-20261101-000000"
+  }
+ ],
+ "events": [
+  {
+   "seq": 101,
+   "ts": "2026-11-02T19:59:20Z",
+   "shoal": "alpha-20261101-000000",
+   "src": "alpha-20261101-000000:core",
+   "dst": "alpha-20261101-000000:dist-ci",
+   "type": "msg",
+   "class": "msg",
+   "kind": "info",
+   "item": "",
+   "summary": "PR 103 rebased; please rerun the GPU leg"
+  },
+  {
+   "seq": 102,
+   "ts": "2026-11-02T19:59:40Z",
+   "shoal": "alpha-20261101-000000",
+   "src": "alpha-20261101-000000:core",
+   "dst": "alpha-20261101-000000:*",
+   "type": "msg",
+   "class": "broadcast",
+   "kind": "info",
+   "item": "",
+   "summary": "queue v12: active repo-one#101:fix"
+  },
+  {
+   "seq": 103,
+   "ts": "2026-11-02T19:59:55Z",
+   "shoal": "alpha-20261101-000000",
+   "src": "alpha-20261101-000000:core",
+   "dst": null,
+   "type": "done",
+   "class": "done",
+   "kind": "fix",
+   "item": "repo-one#99",
+   "summary": "done repo-one#99 fix",
+   "url": "https://github.com/example-org/repo-one/pull/120"
+  }
+ ]
+}

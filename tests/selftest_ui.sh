@@ -1994,4 +1994,12 @@ check "top edges" $H ui graph --ledger-root "$GR"
 rm -rf "/tmp/$GA" "/tmp/$GB"
 echo "graph feed ok"
 
+# the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
+if command -v node >/dev/null 2>&1; then
+  node "$TESTD/herdr_app/test_lattice_view.mjs" >"$S/lattice-view.out" 2>&1 || fail "herdr-app lattice-view: $(tail -c 800 "$S/lattice-view.out")"
+  echo "herdr-app lattice-view ok"
+else
+  echo "herdr-app lattice-view: skipped (node not on PATH)"
+fi
+
 echo "SELFTEST PASS ($S)"
