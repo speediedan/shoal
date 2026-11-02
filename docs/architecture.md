@@ -659,8 +659,11 @@ wakes a role or runs a model turn.
   role sleeps in at the end of a turn (§4), so a turn inside an unchanged `waiting` posture is work.
   Ledger `active` with no turn running accrues no work. A positively identified blocking phase
   inside a turn is a wait; an open native question is `wait:user-prompt`.
-- **Between turns the ledger classifies** (policy `role-time/v5`): waiting substates map to wait
-  events (a `lease:` target wins over the nominal CI substate), explicit `paused` and `offline` are
+- **Between turns the ledger classifies** (policy `role-time/v5.1`): waiting substates map to wait
+  events (a `lease:` target wins over the nominal CI substate; a `local-ci` wait on a `job:<name>`
+  started with placement whose lease has not been granted yet is `wait:lease`: the home job meta's
+  `lease_granted` decides, which the role's `job wait` supervisor copies back for a remote job, with
+  this host's grant marker as a fallback for a local one), explicit `paused` and `offline` are
   excluded, and an idle posture is classified by its queue. Any runnable item (no blocker, or a
   resolved or expired one under `blockers.py`) makes the role `wait:self`: it has work it is not
   doing. Only when every item is non-runnable is the role in a blocker wait, with the blockers'
@@ -671,10 +674,14 @@ wakes a role or runs a model turn.
   `worker.candidate_items` after a successful read (`<state_dir>/sources-<slug>.json`, believed for
   2 h), never fetched by the classifier. Park is excluded; freeze and user-offline are not
   exclusions.
-- **Policy versions**: snapshots read from a journal segment stamped `role-time/v4.1`, or from a
+- **Policy versions**: snapshots from a `role-time/v5` segment keep v5 semantics (without the two
+  v5.1 rules above); snapshots read from a journal segment stamped `role-time/v4.1`, or from a
   journal written before segment headers, keep v4.1 semantics (`idle:ready-work`, `idle:no-work`
   for the cases above), so an old report reads the same. The observer closes a live segment
   written under another policy before appending, so a segment's header describes all of it.
+- **Session-less roles** (v5.1): a role with no session recorded in the spec (not a missing process)
+  whose declared posture is `paused` or `offline` is excluded; one that is idle with no session stays
+  `unknown:session-missing`, so a role that should be running but is not stays visible.
 - **Dormant Claude sessions**: a background job whose turn ended (`done`, no worker pid) while its
   ledger watcher is alive and armed for the same session is between turns, not missing; the probe
   reports it as `between` and the ledger posture classifies it. The watcher sidecar is host-local,

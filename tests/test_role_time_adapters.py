@@ -350,6 +350,31 @@ class RemoteNativeCaches(unittest.TestCase):
             self.assertEqual(ob2.remote_ok, {})
 
 
+class JobPart(unittest.TestCase):
+    def test_placed_job_grant_and_finish_from_its_records(self):
+        from unittest import mock
+        import jobs
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(jobs, "state_dir", lambda sid: td), mock.patch.object(jobs, "data_dir", lambda sid: td):
+                p = jobs.paths(SID, "u1")
+                os.makedirs(p["sdir"], exist_ok=True)
+                meta = {"unit": "u1", "name": "ci", "slug": "worker", "placement": {"vendor": "nvidia"},
+                        "rc_file": p["rc"]}
+                Path(p["meta"]).write_text(json.dumps(meta))
+                self.assertIsNone(ad.job_part(SID, "worker", "remote-ci"))
+                self.assertEqual(ad.job_part(SID, "worker", "job:ci"), {"placed": True, "granted": False, "done": False})
+                Path(p["granted"]).write_text("2026-11-01T00:00:00Z\n")
+                self.assertTrue(ad.job_part(SID, "worker", "job:ci")["granted"])
+                Path(p["rc"]).write_text("0\n")
+                self.assertTrue(ad.job_part(SID, "worker", "job:ci")["done"])
+                # a remote placed job: its supervisor copies the grant into the home meta, so the
+                # local marker is not consulted and the meta field decides
+                Path(p["meta"]).write_text(json.dumps(dict(meta, host="otherhost")))
+                self.assertIs(ad.job_part(SID, "worker", "job:ci")["granted"], False)
+                Path(p["meta"]).write_text(json.dumps(dict(meta, host="otherhost", lease_granted="2026-11-01T22:31:26Z")))
+                self.assertIs(ad.job_part(SID, "worker", "job:ci")["granted"], True)
+
+
 class PopulationExit(unittest.TestCase):
     def test_removed_and_departed_roles_leave_the_population(self):
         with tempfile.TemporaryDirectory() as td:
