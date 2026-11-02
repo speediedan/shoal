@@ -759,10 +759,19 @@ Per PR head, **CI complete** is the last completion among every check counted on
 GitHub jobs plus gate builds, minus the repository's `ignore` patterns (workflow, job or pipeline
 names), or exactly its `required` patterns when given. Records go to `<data_root>/_ci_wait/
 <owner>__<name>.jsonl` (append-only; the last record for a key wins) with a cursor state beside them.
-`shoal ci-wait observe --spec S` runs one incremental pass; `shoal ci-wait report --spec S [--repo
-<owner>/<name>] --since T [--json]` prints push-to-CI-complete and gate wait (p50, p95), GitHub queue
-and run time, local lease wait and run time, job-minutes per PR head and rerun share, and the counted
-checks with the most wait per PR head.
+`shoal ci-wait observe --spec S` runs one incremental pass (`--watch S` repeats it, re-reading the
+spec each pass; `--prom-out F` then writes Prometheus text atomically); `shoal ci-wait report --spec S
+[--repo <owner>/<name>] --since T [--json]` prints push-to-CI-complete and gate wait (p50, p95),
+GitHub queue and run time, local lease wait and run time, job-minutes per PR head and rerun share,
+and the counted checks with the most wait per PR head. The Prometheus text holds gauges per
+repository for 24 h and 7 d windows ending at the pass (quantiles do not aggregate, so they are
+computed here): `shoal_ci_wait_pr_heads`, `shoal_ci_wait_push_to_complete_seconds` and
+`shoal_ci_wait_gate_wait_seconds` (quantiles 0.5 and 0.95), `shoal_ci_wait_seconds` by source and
+phase, `shoal_ci_wait_job_minutes_per_head`, `shoal_ci_wait_rerun_share`, and
+`shoal_ci_wait_check_wait_per_head_seconds` for the ten checks with the most wait (7 d), plus
+`shoal_ci_wait_source_errors_total` and `shoal_ci_wait_last_success_timestamp_seconds`. Labels never
+carry a SHA or PR number. The weekly report (`telemetry/shoal_report.py`) adds one line per
+configured repository from the same store, with no provider call.
 
 ## 10. Live upgrades
 
