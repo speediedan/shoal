@@ -544,19 +544,24 @@ def write_cache(doc: dict) -> None:
         pass
 
 
+def read_cache(max_age_s: float = CACHE_MAX_AGE_S) -> dict | None:
+    """The all-shoal document the feeder last wrote when it is fresh, else None. Never computes:
+    readers that must not probe (the graph feed) fall back on their own."""
+    try:
+        d = json.load(open(cache_path()))
+        a = age_s(d.get("ts", ""))
+        if d.get("v") == CONTRACT_V and a is not None and a <= max_age_s:
+            return d
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
 def cached_status(ids: list[str] | None = None, max_age_s: float = CACHE_MAX_AGE_S, force: bool = False) -> dict:
     """The all-shoal document the feeder last wrote, when fresh; else computed (and cached). Role
     cards, the overview and the status line read this, so N panes cost one computation per tick,
     not N. Filtered to `ids` after reading."""
-    doc = None
-    if not force:
-        try:
-            d = json.load(open(cache_path()))
-            a = age_s(d.get("ts", ""))
-            if d.get("v") == CONTRACT_V and a is not None and a <= max_age_s:
-                doc = d
-        except (OSError, ValueError):
-            pass
+    doc = None if force else read_cache(max_age_s)
     if doc is None:
         doc = status(None)
         write_cache(doc)

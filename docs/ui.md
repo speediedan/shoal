@@ -96,6 +96,153 @@ still reads as current until the quorum's next run marks it stale. This is delib
 provider calls on in the 20-second feed. `--conditions` (the quorum's own `evaluate()`, live, cached
 five minutes) is the up-to-date view.
 
+## The graph feed: `shoal ui graph`
+
+```bash
+shoal ui graph [--shoal <id> ...] [--json] [--since <cursor>] [--events N] [--window-rate S]
+shoal ui graph-feed [--interval S] [--out PATH] [--once]
+```
+
+`ui graph` prints every shoal on the host as a network: roles, the maintainer and outside seats as
+nodes, ledger traffic as edges, and the tail of recent events. Without `--json` it prints a short
+summary per shoal (roles by state class, the needs-you list, the busiest edges). `ui graph-feed`
+writes the same document every `--interval` seconds (default 5) to `graph.json` beside the status
+cache (`$XDG_RUNTIME_DIR/shoal-ui-<uid>/`), atomically (temp file plus rename). It runs as it is
+under a user unit.
+
+The contract is versioned like the status document: `v: 1`, additive only, unknown fields ignored.
+
+```json
+{"v": 1, "kind": "shoal-graph", "host": "<host>", "ts": "<utc>", "cursor": "<opaque>",
+ "windows": {"rate_s": 300, "recent_s": 3600, "day_s": 86400},
+ "hosts": [{"id": "host:<host>", "name": "<host>", "home": true,
+            "roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "msgs_1h": 14}],
+ "shoals": [{"id": "<id>", "gen": "r12", "retired": false, "home": "<host>",
+             "mode": {"offline": false, "freeze": false},
+             "metrics": {"roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "stalled": 1,
+                         "asks_open": 1, "pages_24h": 2, "done_24h": 6, "done_7d": 31, "claims_24h": 8,
+                         "offers_24h": 5, "msgs_1h": 14, "msgs_24h": 120, "work_ratio_24h": null,
+                         "grants_pending_n": 1}}],
+ "nodes": [
+   {"id": "user", "kind": "user", "shoal": null, "label": "you",
+    "state": {"class": "work", "event": "", "group": "", "needs_you": true},
+    "work": {"asks_open": 3, "grants_pending": 1}, "metrics": {"msgs_out_1h": 2, "msgs_in_1h": 5}},
+   {"id": "<id>:<role>", "kind": "role", "shoal": "<id>", "slug": "<role>", "label": "<role>",
+    "ecosystem": "claude", "model": "<model>", "host": "<host>", "fill": "assigned",
+    "state": {"class": "wait", "event": "local-ci", "group": "system", "source": "role-time", "quality": [],
+              "posture": "wait", "sub": "local-ci", "session": "working", "since_s": 900,
+              "needs_you": false, "reasons": [], "job_host": "<pool host>",
+              "job": {"unit": "<unit>", "host": "<pool host>", "placed": true, "granted": true,
+                      "started_age_s": 840}},
+    "work": {"active": {"item": "<repo>#103:fix", "url": "https://github.com/<owner>/<repo>/issues/103"},
+             "next": [{"item": "<repo>#104:review", "url": "...", "blocker": "<role>:<repo>#103", "stale": false}],
+             "asks": [], "offers_open": 0, "grants_pending": [{"item": "<text>", "kind": "<kind>"}],
+             "done_recent": [{"item": "<repo>#90", "url": "<the done event's url>", "ts": "<utc>"}]},
+    "metrics": {"done_24h": 1, "claims_24h": 1, "msgs_out_1h": 2, "msgs_in_1h": 3,
+                "last_write_age_s": 600, "heartbeat_age_s": 30, "context_k": 95},
+    "view": ["shoal", "view", "<id>", "<role>"]}],
+ "edges": [{"id": "<src>|<dst>|msg", "src": "<id>:<a>", "dst": "<id>:<b>", "class": "msg",
+            "n_rate": 2, "n_1h": 4, "n_24h": 18, "rate_per_h": 3.5, "last_ts": "<utc>", "last_age_s": 40,
+            "shoal": "<id>", "cross_host": false}],
+ "events": [{"seq": 101, "ts": "<utc>", "shoal": "<id>", "src": "<id>:<a>", "dst": "<id>:*",
+             "type": "msg", "class": "broadcast", "kind": "info", "item": "", "summary": "<= 120 chars"}]}
+```
+
+**Nodes.**
+
+- `role`: one per spec role. Its row (posture, sub, session, `since_s` from `posture_age_s`,
+  `needs_you`, reasons, active and next items, asks, offers) is the `ui status` row. Every role node
+  carries `host`: the role's server, else the spec's home, else this host.
+- `user` (the maintainer, one for all shoals): open asks summed, and `grants_pending` summed from the
+  status rows' `grants_pending` lists (0 while no row carries one; grant events are not folded).
+- `system` (`<id>:shoal`, the `shoal` writer), with the shoal's home as `host`. The retired wake
+  relay's writer folds into it, so its historical traffic stays counted without a node of its own.
+- `external` (`ext:<slug>`): an outside seat, from an `ext-<slug>.jsonl` writer file or an `ext:<slug>`
+  target. `alias_of` names `<other-shoal>:<slug>` when that slug is a role in another discovered shoal;
+  the seat then takes that role's state and host.
+- `writer`: any other edge or event endpoint (a removed role, a tool's own writer file), state unknown.
+
+`<id>:*` (a broadcast target) is not a node.
+
+**Role state.** `state.class`, `state.event` and `state.group` are `role_time.classify` over a
+snapshot built by `role_time_adapters.build_snapshots`: the ledger part from the View, the native part
+only from the role-time cache files (`role-time-native.json` in the shoal's state directory, plus the
+`role-time-native-<host>.json` copies `role-time observe` keeps there). `event` is the raw role-time
+event (`turn`, `local-ci`, `remote-ci`, `lease`, `user-auth`, `user-ask`, `user-prompt`,
+`user-design`, `assignment`, `sources`, `upstream`, `session-blocked`, `self`, `hold`, `handover`,
+`refill` and the rest of the vocabulary), passed through as it is, so a renderer can key encodings
+off it; `group` is `WAIT_GROUP` for waits, else empty; `quality` is the classifier's quality flags.
+`state.source` is `role-time` for that reading. A role with no native observation (no cache, or a
+background role) gets a best-effort reading of its status row in the same vocabulary, marked
+`source: posture`. As in role-time accounting, a source is believed only within its budget (the
+ledger half only while the clone's last fetch is fresh). Where accounting would read
+`unknown:stale-source` or `unknown:missing-source`, the graph falls back to the posture reading
+instead, marks it `source: posture`, and adds `role-time:<event>` to `quality`, so a host whose clone
+stopped fetching still shows what its roles last declared.
+
+For `wait:local-ci`, `wait:remote-ci` and `wait:lease`, `state.job` describes the job a `job:<name>`
+wait target names, from the job meta the role-time adapter already reads (`<state dir>/jobs/<unit>.json`):
+`unit`, `host` (where the job runs: a placement's host, else a remote `--on` host, else this host;
+it may differ from the role's host), `placed`, `granted` and `started_age_s`. `state.job_host` mirrors
+`job.host`. Both are omitted when the wait names no job this host knows. A job's host joins `hosts`.
+
+**Work.** Item URLs are `https://github.com/<owner>/<repo>/issues/<n>` (GitHub redirects a pull
+request's number), with the owner from the item, else the spec's `repos`, else the host's
+`default_owner`; `null` when none resolves. `done_recent` lists the role's `done` events of the last
+24 hours (at most 10), with the event's own `url` when it has one. `grants_pending` is the status
+row's list, passed through when the row has one, else omitted (likewise the shoal's
+`grants_pending_n`).
+
+**Edges** aggregate ledger events of the last 24 hours per (`src`, `dst`, `class`):
+
+| class | from |
+|---|---|
+| `msg` | a `msg` between writers |
+| `broadcast` | a `msg` to `*`; `dst` is `<id>:*` |
+| `ask` | a `msg` of kind `request` or `ask` to `user`; also present (with `open`, the role's open asks) when the role has recorded asks |
+| `health` | a `msg` of kind `health` (a page) |
+| `offer` | an `offer`, `by` to `to` |
+| `grant` | a `grant`, `user` to its `role` |
+| `handoff` | a `release` of kind `handoff` to a role |
+| `blocked-on` | a role's next item whose blocker names another role of the shoal (`<role>:<item>` or `role:<role>`); no event needed, `structural: true`, `stale` when every such blocker is stale |
+| `alias` | an outside seat to the role it aliases; `structural: true`, `shoal: null` |
+
+`n_rate`, `n_1h` and `n_24h` count events within the rate window (`--window-rate`, default 300 s),
+an hour and a day. `rate_per_h` is an exponentially weighted rate with a one-hour half-life
+(`ln 2` times the sum of `2^(-age_h)` over the day's events), so a steady r per hour reads r and a
+burst fades within hours. `last_ts` and `last_age_s` are the newest event's, `null` for a structural
+edge with none. `cross_host` is true when both ends have a known host and the hosts differ (the
+maintainer node has none). Writers map to node ids as above: `user`, `shoal` to `<id>:shoal`,
+`ext-x` and `ext:x` to `ext:x`, a role slug to `<id>:<slug>`.
+
+**Events** are the last `--events` (default 200) traffic and work events across every ledger file in
+`ts` order: `msg`, `offer`, `withdraw`, `claim`, `release`, `done`, `grant` and mode changes (never
+`state`, `queue` or host beats). Each has a `seq`, increasing along a cursor chain. `cursor` is opaque
+(URL-safe base64 of each file's byte offset plus the last `seq`). With `--since <cursor>`, `events`
+holds only lines appended after it, numbered on from its `seq`; nodes, edges and shoals are always
+complete. A cursor that does not parse returns the plain tail with `cursor_reset: true`.
+
+**Hosts** are this host, every role's host, every shoal's home and every job host, with `home` true
+for this host and per-host role aggregates: `roles`, `working`, `waiting`, `needs_you` and `msgs_1h`
+(messages written by the roles there in the last hour).
+
+**Sources and cost.** Role rows come from the status cache (`status.json`, written by the
+`shoal-ui-feed` feeder) when it is at most 45 seconds old. Otherwise the graph builds them with
+`ui_status.role_row` over its own View, running the local harness listing (`claude agents --json --all`: read-only, no wake, no
+network) at most once per 45 seconds, with the opencode probe off and no remote merge. With `--ledger-root` the cache is skipped. The feed keeps each ledger
+file's byte offset in memory and reads only whole lines appended since the last tick; the View is
+folded from those parsed events, not re-read from disk. A tick:
+
+- never pulls, commits or writes in a ledger clone, and never calls `next`;
+- never messages or wakes a role;
+- makes no provider or network call: blocker checks run with `live=False`, native turn state comes
+  only from cache files, job details from local job meta files, and the only process it may start is
+  the local harness listing above;
+- does not change `shoal-ui-feed` or its document.
+
+The document stays small: edges are aggregated, events capped, and `work_ratio_24h` is `null`
+(role-time journals are not parsed).
+
 ## Subscription meters
 
 Enable the account plans used on the host, once for every shoal:

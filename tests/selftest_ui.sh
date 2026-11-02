@@ -1765,4 +1765,233 @@ assert "no handover events" in context_cost.render_handovers(context_cost.handov
 print("context-report ok")
 PY2
 
+echo "== 10 graph feed: nodes, edges and the event tail from a synthetic ledger; cursor round trip; writes nothing"
+# Two shoals in one ledger repository: alpha (core, dist-ci, tune, a parked research) and beta (research, analysis).
+# Every line is synthetic and timed relative to now, so the window counts are exact.
+GR="$S/graph-root"; GL="$S/graph-ledger"; GA=uigraph-alpha; GB=uigraph-beta
+rm -rf "$GR" "$GL" "/tmp/$GA" "/tmp/$GB"; mkdir -p "$GR/shoals/$GA" "$GR/shoals/$GB" "/tmp/$GA"
+git init -q "$GL"
+python3 - "$GR" "$GL" "$DOC" "$WORK" <<'PY2' || fail "graph fixture"
+import datetime as dt, json, os, sys, time
+GR, GL, DOC, WORK = sys.argv[1:5]
+now = dt.datetime.now(dt.timezone.utc)
+ago = lambda s: (now - dt.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def spec(sid, roles, home=""):
+    d = {"shoal": sid, "home": home, "dir": WORK, "incarnation": 0, "repos": ["example-org/repo-one"], "ledger": {"dir": GL},
+         "roles": [dict(ecosystem="claude", title=r[0], doc=DOC, slug=r[0], fill=r[1], session=r[2]) for r in roles],
+         "generations": [{"gen": "r1", "incarnation": 0, "started_utc": ago(86400 * 3), "ended_utc": "", "sessions": {}, "run": {}}]}
+    json.dump(d, open(os.path.join(GR, "shoals", sid, "shoal.json"), "w"))
+spec("uigraph-alpha", [("core", "assigned", "c0re0000"), ("dist-ci", "assigned", "d15c0000"),
+                       ("tune", "assigned", "t0ne0000"), ("research", "assigned", "")])
+spec("uigraph-beta", [("research", "assigned", "r5ch0000"), ("analysis", "assigned", "an4l0000")],
+     home="graph-host-b.invalid")   # beta runs on another host: its edges to alpha cross hosts
+n = [0]
+def ev(sid, writer, age, typ, **kw):
+    n[0] += 1
+    e = dict(ts=ago(age), by=kw.pop("by", writer), type=typ, id=f"g{n[0]:05d}", **kw)
+    d = os.path.join(GL, "shoals", sid, "ledger"); os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, f"{writer}.jsonl"), "a").write(json.dumps(e, separators=(",", ":")) + "\n")
+A, B = "uigraph-alpha", "uigraph-beta"
+ev(A, "shoal", 86400 * 2, "system", event="ledger-init")
+ev(A, "user", 26 * 3600, "offer", to="core", item="repo-one#101", verb="fix", src="user")      # assigned roles claim
+ev(A, "user", 26 * 3600, "offer", to="dist-ci", item="repo-one#103", verb="fix", src="user")   # only what is offered
+ev(A, "user", 3 * 3600, "offer", to="tune", item="repo-one#871", verb="fix", src="user")
+ev(A, "user", 5 * 3600, "grant", state="granted", role="core", scope="merge selftest PRs", kind="merge")
+ev(A, "user", 4 * 3600, "grant", state="pending", role="tune", scope="push an image", kind="image")
+ev(A, "core", 30 * 3600, "msg", to="dist-ci", text="old news", kind="info")         # outside the day
+ev(A, "core", 3 * 3600, "msg", to="dist-ci", text="hourly", kind="info")
+ev(A, "core", 1800, "msg", to="dist-ci", text="half an hour", kind="info")
+ev(A, "core", 120, "msg", to="dist-ci", text="two minutes", kind="info")
+ev(A, "core", 60, "msg", to="dist-ci", text="PR 103 rebased; please rerun the GPU leg", kind="info")
+ev(A, "core", 600, "msg", to="*", text="queue v12: active repo-one#101:fix", kind="info")
+ev(A, "core", 1200, "msg", to="ext:evolution", text="reply to the outside seat", kind="info")
+ev(A, "core", 3 * 3600, "claim", item="repo-one#101", verb="fix")
+ev(A, "core", 2 * 3600, "done", item="repo-one#99", verb="fix", kind="fix", url="https://github.com/example-org/repo-one/pull/120")
+ev(A, "core", 7000, "queue", version=1, active="repo-one#101:fix", next=["repo-one#104:review"],
+   next_blocked={"repo-one#104": "dist-ci:repo-one#103"}, posture="active")
+ev(A, "dist-ci", 3 * 3600, "claim", item="repo-one#103", verb="fix")
+ev(A, "dist-ci", 900, "state", state="waiting", sub="local-ci", holder="job ci-1", target="job:ci-1")
+ev(A, "dist-ci", 2400, "msg", to="ext:research", text="cross-shoal note", kind="info")
+ev(A, "tune", 1500, "queue", version=1, active="repo-one#871:fix", asks=["approve image push scope?"], posture="active")
+ev(A, "tune", 1500, "state", state="waiting", sub="user-auth", holder="image push scope")
+ev(A, "tune", 1500, "msg", to="user", text="approve image push scope?", kind="request")
+ev(A, "shoal", 3000, "msg", to="user", text="health: tune waits on you", kind="health")
+ev(A, "ext-evolution", 900, "msg", by="ext:evolution", to="core", text="a note from outside", kind="info")
+ev(A, "wake-relay", 86400 * 2, "state", state="waiting", sub="queue-empty")
+ev(B, "shoal", 86400, "system", event="ledger-init")
+ev(B, "analysis", 7200, "msg", to="research", text="findings attached", kind="info")
+# role-time native cache: core is mid-turn, dist-ci between turns (its CI wait comes from the ledger); tune has none
+t = time.time()
+nat = lambda st: {"native": {"state": st, "observed_at": t, "budget_s": 90.0, "wait_event": "", "raw": ""}}
+json.dump({"v": 1, "shoal": A, "host": "h", "written_at": t, "roles": {"core": nat("turn"), "dist-ci": nat("between")},
+           "errors": {}}, open(f"/tmp/{A}/role-time-native.json", "w"))
+# analysis's native observation is past its budget: role-time reads unknown:stale-source, the graph its posture
+os.makedirs(f"/tmp/{B}", exist_ok=True)
+json.dump({"v": 1, "shoal": B, "host": "h", "written_at": t - 1000, "roles": {"analysis": {"native": {
+           "state": "between", "observed_at": t - 1000, "budget_s": 90.0, "wait_event": "", "raw": ""}}},
+           "errors": {}}, open(f"/tmp/{B}/role-time-native.json", "w"))
+# dist-ci's CI job: placed on a pool host and granted its lease (the job meta `job wait` keeps)
+os.makedirs(f"/tmp/{A}/jobs", exist_ok=True)
+json.dump({"unit": "shoal-uigraph-ci-1", "shoal": A, "slug": "dist-ci", "name": "ci-1", "cmd": ["true"],
+           "started_utc": ago(800), "rc_file": f"/tmp/{A}/jobs/none.rc", "lease_granted": True,
+           "placement": {"host": "graph-pool-c.invalid", "reason": "selftest"}},
+          open(f"/tmp/{A}/jobs/shoal-uigraph-ci-1.json", "w"))
+PY2
+git -C "$GL" add -A && git -C "$GL" -c user.email=t@e -c user.name=t commit -qm fixture || fail "graph fixture commit"
+touch "$GL/.git/FETCH_HEAD"   # the clone's last fetch: the ledger half of a role-time snapshot is fresh
+snap() { (cd "$GL" && git rev-parse HEAD && git status --porcelain && find shoals -type f -printf '%p %s %T@\n' | sort); }
+SNAP0=$(snap)
+export SHOAL_FAKE_SESSIONS='{"claude": [], "opencode": {}}'
+G0=$($H ui graph --ledger-root "$GR" --json) || fail "ui graph rc :: $(tail -c 600 <<<"$G0")"
+[ "$(snap)" = "$SNAP0" ] || fail "ui graph wrote into the ledger clone"
+python3 - "$G0" <<'PY2' || fail "graph contract"
+import json, sys
+d = json.loads(sys.argv[1]); A, B = "uigraph-alpha", "uigraph-beta"
+assert d["v"] == 1 and d["kind"] == "shoal-graph" and d["cursor"], d.keys()
+assert d["windows"] == {"rate_s": 300, "recent_s": 3600, "day_s": 86400}, d["windows"]
+nodes = {n["id"]: n for n in d["nodes"]}
+kinds = {i: n["kind"] for i, n in nodes.items()}
+for i, k in {"user": "user", f"{A}:shoal": "system", f"{A}:core": "role", f"{A}:dist-ci": "role",
+             f"{A}:tune": "role", f"{A}:research": "role", f"{B}:research": "role", f"{B}:analysis": "role",
+             "ext:evolution": "external", "ext:research": "external"}.items():
+    assert kinds.get(i) == k, (i, kinds.get(i))
+# the retired wake relay's writer folds into the system node: no relay node, no writer node for it
+assert not any(k in ("relay", "writer") for k in kinds.values()) and f"{A}:wake-relay" not in nodes, kinds
+# outside seats: aliased to the role of the same slug in another shoal, or not at all
+assert nodes["ext:research"]["alias_of"] == f"{B}:research" and nodes["ext:evolution"]["alias_of"] is None
+# role state: role-time over the cached native status where there is one, the posture where there is none
+st = lambda i: nodes[i]["state"]
+assert (st(f"{A}:core")["class"], st(f"{A}:core")["event"], st(f"{A}:core")["source"]) == ("work", "turn", "role-time"), st(f"{A}:core")
+assert (st(f"{A}:dist-ci")["class"], st(f"{A}:dist-ci")["event"], st(f"{A}:dist-ci")["group"]) == ("wait", "local-ci", "system"), st(f"{A}:dist-ci")
+assert (st(f"{A}:tune")["event"], st(f"{A}:tune")["group"], st(f"{A}:tune")["source"]) == ("user-auth", "human", "posture"), st(f"{A}:tune")
+assert st(f"{A}:tune")["needs_you"] and "waiting-on-you" in st(f"{A}:tune")["reasons"], st(f"{A}:tune")
+assert (st(f"{A}:research")["class"], st(f"{A}:research")["event"]) == ("excluded", "parked"), st(f"{A}:research")
+assert st(f"{B}:analysis")["source"] == "posture" and "role-time:stale-source" in st(f"{B}:analysis")["quality"], st(f"{B}:analysis")
+assert st(f"{B}:analysis")["class"] != "unknown", st(f"{B}:analysis")
+# work: item URLs from the spec's repos, done with the event's own url
+w = nodes[f"{A}:core"]["work"]
+assert w["active"] == {"item": "repo-one#101:fix", "url": "https://github.com/example-org/repo-one/issues/101"}, w
+assert w["next"][0]["blocker"] == "dist-ci:repo-one#103" and w["next"][0]["url"].endswith("/repo-one/issues/104"), w
+assert w["done_recent"] == [{"item": "repo-one#99", "url": "https://github.com/example-org/repo-one/pull/120",
+                             "ts": w["done_recent"][0]["ts"]}], w
+assert nodes[f"{A}:tune"]["work"]["asks"] == ["approve image push scope?"]
+assert nodes["user"]["work"] == {"asks_open": 1, "grants_pending": 0}, nodes["user"]   # no row lists any
+assert "grants_pending" not in nodes[f"{A}:core"]["work"] and "grants_pending_n" not in d["shoals"][0]["metrics"]
+# a CI wait names its job: where it runs (a pool host here), placed, granted, started
+j = st(f"{A}:dist-ci")["job"]
+assert j["unit"] == "shoal-uigraph-ci-1" and j["host"] == "graph-pool-c.invalid" and j["placed"] and j["granted"], j
+assert 790 <= j["started_age_s"] < 900 and st(f"{A}:dist-ci")["job_host"] == "graph-pool-c.invalid", j
+assert "job" not in st(f"{A}:core") and "job_host" not in st(f"{A}:tune")
+# hosts: this host, beta's home and the job's pool host, with per-host role aggregates
+H = {h["name"]: h for h in d["hosts"]}
+here = H[d["host"]]
+assert here["home"] and (here["roles"], here["working"], here["waiting"], here["needs_you"]) == (4, 1, 2, 1), here
+assert here["msgs_1h"] == 7 and here["id"] == "host:" + d["host"], here   # core 5, dist-ci 1, tune 1 in the hour
+assert (H["graph-host-b.invalid"]["roles"], H["graph-host-b.invalid"]["home"]) == (2, False), H
+assert H["graph-pool-c.invalid"]["roles"] == 0, H
+assert nodes[f"{B}:research"]["host"] == "graph-host-b.invalid" and nodes["ext:research"]["host"] == "graph-host-b.invalid"
+# edges
+E = {(e["src"], e["dst"], e["class"]): e for e in d["edges"]}
+m = E[(f"{A}:core", f"{A}:dist-ci", "msg")]
+assert (m["n_rate"], m["n_1h"], m["n_24h"]) == (2, 3, 4) and m["last_age_s"] < 120 and m["shoal"] == A, m
+assert m["id"] == f"{A}:core|{A}:dist-ci|msg" and m["rate_per_h"] > 0
+assert E[(f"{A}:core", f"{A}:*", "broadcast")]["n_24h"] == 1
+bo = E[(f"{A}:core", f"{A}:dist-ci", "blocked-on")]
+assert bo["structural"] and bo["last_ts"] is None and bo["stale"] is False, bo
+ask = E[(f"{A}:tune", "user", "ask")]
+assert ask["n_24h"] == 1 and ask["open"] == 1, ask
+assert E[(f"{A}:shoal", "user", "health")]["n_1h"] == 1
+assert E[("user", f"{A}:tune", "offer")]["n_1h"] == 0 and E[("user", f"{A}:tune", "offer")]["n_24h"] == 1
+assert E[("user", f"{A}:core", "grant")]["n_24h"] == 1
+assert E[("ext:evolution", f"{A}:core", "msg")]["n_rate"] == 0 and E[("ext:evolution", f"{A}:core", "msg")]["n_1h"] == 1
+assert E[(f"{A}:dist-ci", "ext:research", "msg")]["n_24h"] == 1
+al = E[("ext:research", f"{B}:research", "alias")]
+assert al["shoal"] is None and al["structural"] and al["cross_host"] is False, al
+# cross_host: dist-ci (this host) writing to the outside seat that is beta's research (the other host)
+assert E[(f"{A}:dist-ci", "ext:research", "msg")]["cross_host"] is True
+assert E[(f"{A}:core", f"{A}:dist-ci", "msg")]["cross_host"] is False and E[(f"{A}:tune", "user", "ask")]["cross_host"] is False
+assert E[(f"{B}:analysis", f"{B}:research", "msg")]["shoal"] == B
+# shoal metrics
+sm = {s["id"]: s for s in d["shoals"]}[A]["metrics"]
+want = dict(roles=4, working=1, needs_you=1, asks_open=1, pages_24h=1, done_24h=1, done_7d=1, claims_24h=2,
+            offers_24h=1, msgs_1h=9, msgs_24h=10, work_ratio_24h=None)
+assert {k: sm[k] for k in want} == want, sm
+# events: ts order, seq increasing, broadcast dst, the done carries its url
+ev = d["events"]
+assert [e["seq"] for e in ev] == sorted(e["seq"] for e in ev) and len({e["seq"] for e in ev}) == len(ev), ev
+assert [e["ts"] for e in ev] == sorted(e["ts"] for e in ev)
+b = next(e for e in ev if e["class"] == "broadcast")
+assert b["dst"] == f"{A}:*" and b["type"] == "msg" and b["summary"].startswith("queue v12"), b
+dn = next(e for e in ev if e["type"] == "done")
+assert dn["url"].endswith("/pull/120") and dn["dst"] is None, dn
+assert all(len(e["summary"]) <= 120 for e in ev)
+assert not any(e["type"] in ("state", "queue") for e in ev)
+print("graph contract ok")
+PY2
+CUR=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["cursor"])' "$G0")
+SEQ0=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["events"][-1]["seq"])' "$G0")
+G1=$($H ui graph --ledger-root "$GR" --json --since "$CUR") || fail "ui graph --since rc"
+python3 - "$G1" <<'PY2' || fail "graph since: nothing new"
+import json, sys; d = json.loads(sys.argv[1])
+assert d["events"] == [] and len(d["nodes"]) > 5 and d["edges"] and d["shoals"], d["events"]
+PY2
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"ts":"%s","by":"core","type":"msg","id":"gnew0001","to":"dist-ci","text":"one more","kind":"info"}\n' "$NOW" \
+  >> "$GL/shoals/$GA/ledger/core.jsonl"
+G2=$($H ui graph --ledger-root "$GR" --json --since "$CUR") || fail "ui graph --since rc after append"
+python3 - "$G2" "$SEQ0" "$CUR" <<'PY2' || fail "graph cursor round trip"
+import json, sys; d = json.loads(sys.argv[1]); seq0 = int(sys.argv[2])
+ev = d["events"]
+assert len(ev) == 1 and ev[0]["summary"] == "one more" and ev[0]["seq"] == seq0 + 1, ev
+assert d["cursor"] != sys.argv[3]
+e = {(x["src"], x["dst"], x["class"]): x for x in d["edges"]}[("uigraph-alpha:core", "uigraph-alpha:dist-ci", "msg")]
+assert e["n_rate"] == 3 and e["n_24h"] == 5, e
+print("cursor round trip ok")
+PY2
+CUR2=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["cursor"])' "$G2")
+G3=$($H ui graph --ledger-root "$GR" --json --since "$CUR2") || fail "ui graph --since newest rc"
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["events"] == [], d["events"]' "$G3" || fail "graph since the newest cursor"
+# the feed: an in-memory tail reads only appended whole lines, and the document lands beside the status cache
+python3 - "$SHOALD" "$GR" "$GL" <<'PY2' || fail "graph builder incremental"
+import os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_graph
+b = ui_graph.GraphBuilder(root=sys.argv[2])
+d1 = b.build()
+p = os.path.join(sys.argv[3], "shoals", "uigraph-alpha", "ledger", "core.jsonl")
+key = "uigraph-alpha/core.jsonl"
+assert b.tail.files[key]["off"] == os.path.getsize(p)
+with open(p, "a") as fh:  # a line still being written: no newline yet
+    fh.write('{"ts":"2099-01-01T00:00:00Z","by":"core","type":"msg","id":"gnew0002","to":"*","text":"partial')
+d2 = b.build()
+assert d2["events"][-1]["seq"] == d1["events"][-1]["seq"] and b.tail.files[key]["off"] < os.path.getsize(p)
+with open(p, "a") as fh:
+    fh.write('","kind":"info"}\n')
+d3 = b.build()
+assert d3["events"][-1]["seq"] == d1["events"][-1]["seq"] + 1 and d3["events"][-1]["summary"] == "partial", d3["events"][-1]
+assert b.tail.files[key]["off"] == os.path.getsize(p)
+# grants the status rows list pass through to the role, the shoal and the maintainer node
+sid = "uigraph-alpha"
+rows = [dict(r, grants_pending=[{"item": "push an image", "kind": "image"}] if r["slug"] == "tune" else [])
+        for r in b._rows[sid][1]]
+b.use_cache = True
+b._cached_shoals = lambda: {sid: {"id": sid, "roles": rows, "grants_pending_n": 1}}
+d4 = b.build()
+n = {x["id"]: x for x in d4["nodes"]}
+assert n[sid + ":tune"]["work"]["grants_pending"] == [{"item": "push an image", "kind": "image"}], n[sid + ":tune"]["work"]
+assert n["user"]["work"]["grants_pending"] == 1
+assert {s["id"]: s for s in d4["shoals"]}[sid]["metrics"]["grants_pending_n"] == 1
+print("incremental tail ok")
+PY2
+$H ui graph-feed --ledger-root "$GR" --once >/dev/null || fail "graph-feed --once rc"
+GJ="$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/graph.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["v"] == 1 and d["kind"] == "shoal-graph"' "$GJ" \
+  || fail "graph-feed did not write $GJ"
+check "needs you: tune" $H ui graph --ledger-root "$GR"
+check "top edges" $H ui graph --ledger-root "$GR"
+# only the test's own appends changed the clone: no file was added, committed or rewritten by a graph run
+[ "$(cd "$GL" && git status --porcelain)" = " M shoals/$GA/ledger/core.jsonl" ] || fail "graph run changed the ledger clone"
+rm -rf "/tmp/$GA" "/tmp/$GB"
+echo "graph feed ok"
+
 echo "SELFTEST PASS ($S)"

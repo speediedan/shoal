@@ -960,6 +960,19 @@ and the contract are in [`ui.md`](ui.md).
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 
+### Graph feed (`shoal ui graph`)
+
+`shoal/ui/ui_graph.py` turns the same read model into a network document (`kind: shoal-graph`,
+`v: 1`, additive; contract in [`ui.md`](ui.md)). Role nodes take their rows from the status cache
+(else `ui_status.role_row` over the graph's own View) and their state from `role_time.classify`
+over cached native status only, so the graph speaks the role-time vocabulary; a CI or lease wait
+carries its job's host from the local job meta. The maintainer, each shoal's system writer (which absorbs the retired relay's writer) and outside seats (`ext:<slug>`, aliased to a role in another shoal) are
+nodes too. Edges aggregate ledger events per (src, dst, class) over a rate window, an hour and a
+day, plus `blocked-on` and `alias` edges that need no event, each marked `cross_host`. Events are a
+capped tail behind an opaque cursor of per-file byte offsets. `ui graph-feed` keeps those offsets
+in memory and writes `graph.json` beside the status cache each tick, reading only appended bytes.
+It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call.
+
 ### Host resource observations and placement pilot
 
 `shoal resources sample|watch|report|balance|install` (`shoal/resource_usage.py`) maintains one

@@ -49,6 +49,23 @@ def add_parsers(sub) -> None:
                         "viewer pulls over its route)")
     q.set_defaults(func=ui_status.cmd_status)
 
+    import ui_graph
+    q = u.add_parser("graph", help="the graph document (v1): roles, the maintainer and outside seats as nodes, "
+                                   "ledger traffic as edges, the event tail (read-only)")
+    ui_graph.add_args(q)
+    q.add_argument("--since", default="", metavar="CURSOR", help="only events after this cursor (from a previous doc)")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=ui_graph.cmd_graph)
+
+    q = u.add_parser("graph-feed", help="write the graph document atomically every interval (graph.json beside "
+                                        "the status cache); reads only appended ledger bytes per tick")
+    ui_graph.add_args(q)
+    q.add_argument("--interval", type=float, default=ui_graph.FEED_INTERVAL_S)
+    q.add_argument("--out", default="", help="output path (default: graph.json beside the status cache)")
+    q.add_argument("--once", action="store_true", help="one tick, then exit")
+    q.add_argument("--verbose", action="store_true")
+    q.set_defaults(func=ui_graph.cmd_graph_feed)
+
     q = u.add_parser("line", help="one status line for a tab bar")
     ui_status.add_args(q)
     q.set_defaults(func=ui_status.cmd_line)
