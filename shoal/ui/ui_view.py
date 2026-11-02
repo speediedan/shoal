@@ -114,18 +114,21 @@ def verify_listed(harness: str, session: str, job: str = "") -> str:
     """'' when the harness lists the session, else why not. Never guesses. A Claude session is found by its job id
     or any conversation id it has had (backends.claude_find), so a `/clear` does not strand it. One with no worker
     (retired idle by the background service, or stopped) is still viewable: `claude attach` wakes its worker
-    without a turn (measured 2026-10-22: "Waking session", pid back, no new assistant message)."""
+    without a turn (measured 2026-10-22: "Waking session", pid back, no new assistant message). A session that is
+    not listed as a background job is resolved with its registry entry (resolve_standalone), so a `/bg` successor
+    is named rather than a resume that would start a copy."""
     if harness == "claude":
         import ui_status
-        e = ui_status.claude_session(ui_status.claude_rows(), session, job)
-        if e is None:
-            if not job:  # no job ever recorded: picked as an interactive session, which is listed only while it runs
-                return (f"session {session} is not listed by `claude agents`: not running (an interactive session "
-                        f"that ended, or removed). `claude --bg --resume {session}` continues it in the background, "
-                        "then [enter] attaches; never while it runs in another terminal (that starts a copy)")
-            return f"session {session} is not listed by `claude agents` (removed? re-resolve, never guess)"
-        if e.get("kind") == "interactive":
-            return interactive_where(e)
+        rows = ui_status.claude_rows()
+        entry, entries = registry_entry(harness, session)
+        d = resolve_standalone(rows, entry or {"harness": harness, "session": session, "job": job}, entries,
+                               claude_jobs_dir())
+        if d["action"] != "attach":
+            if d["action"] == "follow":
+                return (f"{d['message']}: its card follows it on the next refresh (any key), or attach it with "
+                        f"`shoal view --harness claude --session {d['successors'][0]['sessionId']}`")
+            return d["message"]
+        e = d["row"]
         if not e.get("pid"):
             print(f"shoal view: {e.get('id')} has no worker (state {e.get('state')}, retired idle or stopped): "
                   f"attaching wakes its worker; no turn is taken")
@@ -133,18 +136,248 @@ def verify_listed(harness: str, session: str, job: str = "") -> str:
     return ""  # opencode: the server rejects an unknown session id itself
 
 
-def interactive_where(row: dict) -> str:
-    """Why an interactive Claude session cannot be attached, and where it is. `claude attach` opens background
-    sessions only, and `claude --resume` (or `--bg --resume`) of a session live in another process starts a copy."""
+def _where(row: dict) -> str:
     pid, tty = row.get("pid"), ""
     try:
         tty = os.readlink(f"/proc/{pid}/fd/0")
     except (OSError, TypeError):
         pass
-    where = f"pid {pid}" + (f" on {tty}" if tty.startswith("/dev/") else "")
-    return (f"running interactively in {where}: `claude attach` opens background sessions only, so use that "
-            f"terminal. To view it here, end it there and run `claude --bg --resume {row.get('sessionId')}` "
-            "(never while it runs: that starts a copy)")
+    return f"pid {pid}" + (f" on {tty}" if tty.startswith("/dev/") else "")
+
+
+def _bg_resume(session: str, label: str = "") -> str:
+    import shlex
+    return f"`claude --bg --resume {session}" + (f" --name {shlex.quote(label)}`" if label else "`")
+
+
+BG_FORKS = ("(`/bg` inside the session forks a new session id instead; a card follows a unique `/bg` successor "
+            "on its own)")
+
+
+def interactive_where(row: dict, label: str = "") -> str:
+    """Why an interactive Claude session cannot be attached, and where it is. `claude attach` opens background
+    sessions only, and `claude --resume` (or `--bg --resume`) of a session live in another process starts a copy,
+    so the id-preserving move is: exit that window first, then resume it in the background."""
+    return (f"running interactively in {_where(row)}: `claude attach` opens background sessions only, so use that "
+            f"terminal. To view it here, exit that interactive window first, then run "
+            f"{_bg_resume(str(row.get('sessionId')), label or str(row.get('name') or ''))} "
+            f"(never while it still runs: that starts a second copy). {BG_FORKS}")
+
+
+# ---- standalone Claude sessions after a `/bg` ------------------------------------------------------------------
+# `/bg` in an interactive Claude session does not move it: Claude Code starts a NEW background job with a NEW
+# session id (its state.json: `interactiveLineage: true`, the session's user-set name, `template: "bg"`, and no field
+# naming the session it came from). A standalone card keyed to the original id would refuse, and its old advice
+# (`--bg --resume <orig>`) started yet another copy while the original still ran. resolve_standalone matches the
+# successor by evidence (name, cwd, lineage, start time, not already owned) and decides what the card does.
+
+SEEN_REFRESH_S = 600
+
+
+def claude_jobs_dir() -> str:
+    from backends import claude_base
+    return os.path.join(claude_base(), "jobs")
+
+
+def _iso(t: float) -> str:
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _epoch(v) -> float | None:
+    """Epoch seconds from a ms epoch number or an ISO UTC string, None when unreadable."""
+    import datetime as _dt
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+        return v / 1000.0 if v > 1e11 else float(v)
+    if isinstance(v, str) and v:
+        try:
+            return _dt.datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _first_transcript_ts(session: str) -> float | None:
+    """The first timestamp in a Claude session's own transcript (projects/*/<session>.jsonl), None when absent."""
+    import glob
+    from backends import claude_base
+    if not session or not re.fullmatch(r"[0-9a-fA-F-]{8,64}", session):
+        return None
+    for p in glob.glob(os.path.join(claude_base(), "projects", "*", f"{session}.jsonl")):
+        try:
+            with open(p) as fh:
+                for _, ln in zip(range(200), fh):
+                    try:
+                        t = _epoch((json.loads(ln) or {}).get("timestamp"))
+                    except (ValueError, AttributeError):
+                        continue
+                    if t:
+                        return t
+        except OSError:
+            continue
+    return None
+
+
+def bg_since(entry: dict) -> tuple[float | None, str]:
+    """(epoch seconds, source): a `/bg` successor must have started after this. The entry's `seen_utc` (refreshed by
+    its card whenever the recorded session is listed); for an entry without one, its `saved_utc`, else the first
+    timestamp of the original session's transcript; (None, "unknown") when none of these is available."""
+    for k in ("seen_utc", "saved_utc"):
+        t = _epoch(entry.get(k))
+        if t:
+            return t, k
+    t = _first_transcript_ts(str(entry.get("session") or ""))
+    return (t, "transcript") if t else (None, "unknown")
+
+
+def _job_state(jobs_dir: str, job: str) -> dict | None:
+    """A job's state.json under jobs_dir, None when unreadable (read-only)."""
+    if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job):
+        return None
+    try:
+        with open(os.path.join(jobs_dir, job, "state.json")) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _bg_name_matches(name: str, label: str) -> bool:
+    if not (name and label):
+        return False
+    m = re.fullmatch(r"(.*) \((\d+)\)", name)
+    bases = {name} | ({m.group(1)} if m else set())
+    # the picker keeps 40 characters of a name as the label
+    return any(b == label or (len(label) == 40 and b[:40] == label) for b in bases)
+
+
+# finished background jobs (`claude agents --json --all` keeps them: measured 2026-11-02, `stopped` after `claude stop`
+# and `done`): an operator ended them, so they are never followed, only named
+FINISHED_STATES = frozenset({"stopped", "done", "failed", "error", "killed", "cancelled", "exited"})
+
+
+def bg_successors(rows: list[dict], entry: dict, entries: list[dict], jobs_dir: str,
+                  since: tuple[float | None, str] | None = None) -> list[dict]:
+    """The `claude agents` rows that are a `/bg` successor of this registry entry's session (bg_candidates)."""
+    return bg_candidates(rows, entry, entries, jobs_dir, since)[0]
+
+
+def bg_candidates(rows: list[dict], entry: dict, entries: list[dict], jobs_dir: str,
+                  since: tuple[float | None, str] | None = None) -> tuple[list[dict], list[dict]]:
+    """(successors, stopped copies) of this registry entry's session after a `/bg`. A successor is a background job
+    named as the entry's label (or the label followed by " (N)": a second `/bg`), in the entry's cwd (when it has
+    one), whose state.json says `interactiveLineage` (an unreadable state.json is accepted and noted), started after
+    `since` (bg_since), not referenced by any other registry entry, and not finished (FINISHED_STATES). A job that
+    matches all of that but is finished is a stopped copy: named, never followed. Read-only; never a guess."""
+    from backends import _same
+    label = str(entry.get("label") or "")
+    if not label:
+        return [], []
+    t_since, src = since if since is not None else (None, "unknown")
+    others = [x for x in entries if x is not entry and not (x.get("harness") == entry.get("harness")
+                                                             and x.get("session") == entry.get("session")
+                                                             and (x.get("label") or "") == label)]
+    owned = [str(x.get(k) or "") for x in others for k in ("session", "job")]
+    out, stopped = [], []
+    for r in rows:
+        sid, jid = str(r.get("sessionId") or ""), str(r.get("id") or "")
+        if r.get("kind") != "background" or not sid or _same(sid, str(entry.get("session") or "")):
+            continue
+        if not _bg_name_matches(str(r.get("name") or ""), label):
+            continue
+        if entry.get("cwd") and os.path.normpath(str(r.get("cwd") or "")) != os.path.normpath(entry["cwd"]):
+            continue
+        if any(o and (_same(o, sid) or o == jid) for o in owned):
+            continue
+        notes = []
+        st = _job_state(jobs_dir, jid)
+        if st is None:
+            notes.append("state.json unreadable: lineage not checked")
+        elif st.get("interactiveLineage") is not True:
+            continue
+        started = _epoch(r.get("startedAt")) or _epoch((st or {}).get("createdAt"))
+        if t_since is not None:
+            if started is None or started <= t_since:
+                continue
+            notes.append(f"started after {src}")
+        else:
+            notes.append("no seen time recorded: start time not checked")
+        c = {"id": jid, "sessionId": sid, "name": r.get("name"), "startedAt": started,
+             "state": r.get("state") or r.get("status") or "?", "note": "; ".join(notes)}
+        (stopped if str(r.get("state") or "") in FINISHED_STATES else out).append(c)
+    return (sorted(out, key=lambda c: c["startedAt"] or 0), sorted(stopped, key=lambda c: c["startedAt"] or 0))
+
+
+def _succ_line(i: int, c: dict) -> str:
+    when = _iso(c["startedAt"]) if c.get("startedAt") else "?"
+    return f"  [{i}] {c['id']}  started {when}  state {c['state']}" + (f"  ({c['note']})" if c.get("note") else "")
+
+
+def resolve_standalone(rows: list[dict], entry: dict, entries: list[dict], jobs_dir: str,
+                       since: tuple[float | None, str] | None = None) -> dict:
+    """What a standalone Claude card does now, as a decision (pure: reads only `jobs_dir`, writes nothing):
+      attach    the recorded session is listed as a background job (`row`)
+      refuse    not listed as background and no successor (`message` says why and what to do)
+      follow    exactly one `/bg` successor and the original is not live interactively: rewrite the entry to it
+      two-live  one or more successors AND the original still runs interactively: warn, do nothing else
+      pick      several successors, the original not live: list them; the operator picks one, never a guess
+    `row` is the recorded session's own row (None when unlisted); `successors` from bg_successors. `since` defaults to
+    bg_since(entry), read only when the recorded session is not listed as a background job."""
+    import ui_status
+    session, job = str(entry.get("session") or ""), str(entry.get("job") or "")
+    label = str(entry.get("label") or "")
+    row = ui_status.claude_session(rows, session, job)
+    d = {"action": "attach", "row": row, "successors": [], "stopped": [], "message": ""}
+    if row is not None and row.get("kind") != "interactive":
+        return d
+    live = row is not None
+    succ, stopped = (bg_candidates(rows, entry, entries, jobs_dir, since if since is not None else bg_since(entry))
+                     if label else ([], []))
+    d["successors"], d["stopped"] = succ, stopped
+    gone = (f" Stopped copies: {', '.join(c['id'] for c in stopped)} (`claude attach <id>` resumes one)."
+            if stopped else "")
+    if live and succ:
+        d["action"] = "two-live"
+        d["message"] = (f"two live copies of {label or session[:8]}: the original {session[:8]} still runs "
+                        f"interactively in {_where(row)}, and `/bg` started a new background session:\n"
+                        + "\n".join(_succ_line(i, c) for i, c in enumerate(succ, 1))
+                        + "\nnothing is followed while both run: end one of them yourself (shoal never stops, "
+                          "kills or resumes a session)")
+    elif len(succ) == 1:
+        d["action"] = "follow"
+        d["message"] = f"followed /bg successor {succ[0]['id']} (was {session[:8]})"
+    elif succ:
+        d["action"] = "pick"
+        d["message"] = (f"session {session[:8]} is not listed, and {len(succ)} `/bg` sessions could have "
+                        f"followed it:\n" + "\n".join(_succ_line(i, c) for i, c in enumerate(succ, 1))
+                        + "\npress the number of the one this card should follow (nothing is guessed)")
+    else:
+        d["action"] = "refuse"
+        if live:
+            d["message"] = interactive_where(row, label)
+        elif not job:  # no job ever recorded: picked as an interactive session, which is listed only while it runs
+            d["message"] = (f"session {session} is not listed by `claude agents`: not running (an interactive "
+                            f"session that ended, or removed). To continue it in the background, exit any terminal "
+                            f"still running it first, then run {_bg_resume(session, label)}, then [enter] attaches "
+                            f"(never while it runs elsewhere: that starts a second copy). {BG_FORKS}")
+        else:
+            d["message"] = (f"session {session} is not listed by `claude agents` and no `/bg` successor matches "
+                            "(removed? re-resolve, never guess)")
+        d["message"] += gone
+    return d
+
+
+def registry_entry(harness: str, session: str, label: str = "") -> tuple[dict | None, list[dict]]:
+    """(this seat's saved registry entry or None, every saved entry): matched by session, else by label."""
+    try:
+        import ui_herdr
+        entries = ui_herdr.load_standalone(raw=True)
+    except Exception:  # noqa: BLE001 - the registry is a convenience
+        return None, []
+    mine = [e for e in entries if not e.get("host") and e.get("harness") == harness]
+    e = (next((e for e in mine if e.get("session") == session), None)
+         or next((e for e in mine if label and (e.get("label") or e["session"][:12]) == label), None))
+    return e, entries
 
 
 def viewer(harness: str, session: str, label: str = "", model: str = "", effort: str = "",
@@ -413,13 +646,77 @@ def registry_view_args(harness: str, session: str, label: str) -> tuple[str, str
     return "", ""
 
 
+def follow_successor(entry: dict, succ: dict) -> str:
+    """Point a saved standalone entry at its `/bg` successor (session and job), by atomic replace with a one-time
+    backup of the registry file. The note the card shows, or '' when the entry moved under us (nothing written)."""
+    import ui_herdr
+    orig = str(entry.get("session") or "")
+    ok = ui_herdr.update_standalone(entry, {"session": succ["sessionId"], "job": succ["id"], "seen_utc": _iso(time.time()),
+                                            "bg_followed_from": orig}, backup=True)
+    return f"followed /bg successor {succ['id']} (was {orig[:8]})" if ok else ""
+
+
+def standalone_tick(harness: str, session: str, label: str, job: str = "", pick: int = 0) -> dict:
+    """One refresh of a local standalone Claude card: resolve_standalone on its saved entry, then act on it. A listed
+    session refreshes the entry's `seen_utc` (at most every SEEN_REFRESH_S); a unique successor is followed; with
+    `pick` (a digit the operator pressed) the numbered candidate of a `pick` decision is followed. Never stops,
+    kills or resumes a session. {"action": "none"} when the seat has no saved entry (the attach path decides)."""
+    entry, entries = registry_entry(harness, session, label)
+    if harness != "claude" or entry is None:
+        return {"action": "none", "successors": [], "message": ""}
+    import ui_herdr
+    import ui_status
+    t0 = time.time()  # before the listing: a job started after this cannot be missing from it
+    d = resolve_standalone(ui_status.claude_rows(), entry, entries, claude_jobs_dir())
+    if d["action"] == "attach" or (d["action"] == "refuse" and d["row"] is not None):
+        if (_epoch(entry.get("seen_utc")) or 0) < t0 - SEEN_REFRESH_S:
+            ui_herdr.update_standalone(entry, {"seen_utc": _iso(t0)})
+    chosen = (d["successors"][0] if d["action"] == "follow" else
+              d["successors"][pick - 1] if d["action"] == "pick" and 1 <= pick <= len(d["successors"]) else None)
+    if chosen is not None:
+        note = follow_successor(entry, chosen)
+        d.update(action="followed" if note else "refuse", followed=chosen,
+                 message=note or "the saved entry changed while following its /bg successor: refresh")
+    return d
+
+
 def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
+    notice, pick = "", 0
     while True:
         watch.check()
+        d = {"action": "none", "message": ""}
         if not host:
             session, job = registry_follow(harness, session, label, job)
+        if not host and harness == "claude":
+            try:
+                d = standalone_tick(harness, session, label, job, pick)
+            except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
+                d = {"action": "none", "message": f"/bg successor check unavailable ({exc})"}
+            if d["action"] == "followed":
+                notice = d.pop("message")  # shown on the card from now on (cards keep no log)
+                session, job = d["followed"]["sessionId"], d["followed"]["id"]
+        pick = 0
+        if not host and harness == "claude" and d["action"] in ("two-live", "pick", "refuse"):
+            keys = ("[1-%d] follow that one   " % len(d["successors"]) if d["action"] == "pick" else
+                    "" if d["action"] == "two-live" else "[enter] attach   ")
+            sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
+                             + (f"\x1b[32m{notice}\x1b[0m\n" if notice else "")
+                             + f"\x1b[33m{d['message']}\x1b[0m\n\n"
+                             f"\x1b[2m{keys}[r] refresh   [q] shell\n{DETACH_HINT}\x1b[0m\n")
+            sys.stdout.flush()
+            k = _getkey(60)
+            if k in ("q", "Q"):
+                return 0
+            if d["action"] == "pick" and k.isdigit():
+                pick = int(k)
+            elif d["action"] == "refuse" and k in ("\r", "\n"):
+                flush_input()
+                subprocess.run(_view_cmd("", "", "", harness=harness, session=session, label=label)
+                               + (["--job", job] if job else []))
+                time.sleep(2)
+            continue
         if host:
             import routes
             up = routes.reachable(host)
@@ -439,7 +736,9 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "", job:
                 f"this card hosts the {harness.capitalize()} client itself: quit {harness} to come back here; the "
                 "session is saved on disk and [enter] resumes it (a name that does not exist yet starts a new session)")
         sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
-                         f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n")
+                         + (f"\x1b[32m{notice}\x1b[0m\n" if notice else "")
+                         + (f"\x1b[33m{d['message']}\x1b[0m\n" if d.get("message") else "")
+                         + f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n")
         sys.stdout.flush()
         k = _getkey(300)
         if k in ("q", "Q"):

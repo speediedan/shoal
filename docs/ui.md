@@ -500,6 +500,36 @@ labelled panes, so not a fresh server) marks it `dismissed` and leaves it closed
 - **Retired sessions:** one with no worker (retired after 8 h idle, or stopped) is still attachable. `claude attach` wakes its
   worker without taking a turn.
 
+**Backgrounding an interactive Claude session.** A card attaches background sessions only, so a seat picked
+while it ran interactively in a terminal has to move to the background first. There are two ways, and they differ:
+
+- **`claude --bg --resume <id> --name <label>`, after exiting the interactive window:** keeps the session id, so the
+  card attaches it with nothing to follow. Never run it while the interactive window is still open: that starts a
+  second copy of the conversation.
+- **`/bg` inside the session:** Claude Code starts a new background job with a new session id (its
+  `~/.claude/jobs/<job>/state.json` has `interactiveLineage: true` and the session's user-set name, but no field
+  naming the session it came from). A second `/bg` makes another job named `<name> (2)`.
+
+**How a card follows a `/bg` successor** (`ui_view.resolve_standalone`). Only when the recorded session is not
+listed as a background job, the card looks for successors among `claude agents --json --all` rows: kind
+`background`; named as the entry's label or the label followed by ` (N)`; in the entry's `cwd` (when it has one);
+`interactiveLineage` in the job's `state.json` (an unreadable file is accepted and noted on the card); started after
+the entry's `seen_utc`; not referenced (session or job) by another saved entry; and not finished (`stopped`, `done`).
+`seen_utc` is refreshed by the card whenever the recorded session is listed (at most every 10 minutes). An entry
+saved before that field existed falls back to its `saved_utc` (written by `ui pick --save` from now on), else the
+first timestamp of the original session's transcript; with none of these the start time is not checked, and the card
+says so.
+
+| successors | original live interactively | card |
+| --- | --- | --- |
+| 0 | no | refuses: exit any terminal still running it, then `claude --bg --resume <id> --name <label>`; stopped copies are named (`claude attach <id>` resumes one) |
+| 0 | yes | refuses: where it runs (pid, tty), and the same exit-first advice |
+| 1 | no | follows it: the entry gets the successor's `session` and `job` by atomic replace, after a one-time backup `ui-standalone.json.bak-bgfollow-<utc>`; the card shows `followed /bg successor <job> (was <old>)`, then attaches as usual on Enter |
+| 1 or more | yes | warns `two live copies`, naming the interactive original and each successor (job, start time, state), and does nothing else |
+| 2 or more | no | lists them numbered; a digit key follows that one, as for a unique successor; nothing is guessed |
+
+A card never stops, kills or resumes a session. `shoal view` without a card gives the same answers.
+
 **Context handover for standalone sessions** (opt-in): `shoal ui handover <label|job> --doc <plan_state> --mode
 advise|auto`, `--list`. The feeder advises a session past its limit to refresh its start doc and, in `auto` mode, resets it
 onto that doc in a new conversation (for Claude, a new job, which the registry follows). See [`handover.md`](handover.md).

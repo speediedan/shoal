@@ -886,7 +886,12 @@ and the contract are in [`ui.md`](ui.md).
   `claude attach` opens background jobs only, so a Claude seat running interactively in a terminal
   is not attachable: its card names the pid and tty to use instead, and the move to a background
   job (`claude --bg --resume <id>` once that terminal has ended; never while it runs, which starts
-  a copy). Cards and the overview dashboard redraw with `ui_term.fit_frame`: each frame is clipped
+  a copy). A `/bg` inside the session forks a new job with a new id instead: a standalone card whose
+  recorded session is not listed as a background job resolves it with `resolve_standalone` (name,
+  cwd, `interactiveLineage`, start after the entry's `seen_utc`, not owned by another entry, not
+  finished), follows a unique successor by rewriting its registry entry (atomic, one-time backup),
+  warns when the original still runs beside one, and lets the operator pick among several
+  ([`ui.md`](ui.md)). Cards and the overview dashboard redraw with `ui_term.fit_frame`: each frame is clipped
   to the pane with a marker for the cut lines and clears the scrollback, so a frame taller than its
   pane never piles copies of its top block into the scrollback on every refresh.
   Clients that take a model and effort per run (Muse, Codex) get the seat's own pair: a role's

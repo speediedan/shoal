@@ -617,6 +617,30 @@ def save_standalone(entries: list[dict]) -> None:
     os.replace(tmp, p)
 
 
+BGFOLLOW_BACKUP = ".bak-bgfollow-"
+
+
+def update_standalone(match: dict, updates: dict, backup: bool = False) -> bool:
+    """Merge `updates` into the saved entry `match` names (same harness, session and label), by atomic replace
+    (save_standalone). With `backup`, the registry file is first copied once to `ui-standalone.json.bak-bgfollow-<utc>`
+    (only when no such backup exists yet), so the first `/bg` follow can be undone by hand. False when the entry is
+    gone (another writer moved it): nothing is written then."""
+    import glob
+    import shutil
+    entries = load_standalone(raw=True)
+    lab = match.get("label") or match["session"][:12]
+    hit = next((x for x in entries if not x.get("host") and x.get("harness") == match.get("harness")
+                and x.get("session") == match.get("session") and (x.get("label") or x["session"][:12]) == lab), None)
+    if hit is None:
+        return False
+    p = standalone_path()
+    if backup and os.path.exists(p) and not glob.glob(glob.escape(p) + BGFOLLOW_BACKUP + "*"):
+        shutil.copy2(p, p + BGFOLLOW_BACKUP + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    hit.update(updates)
+    save_standalone(entries)
+    return True
+
+
 def standalone_label(e: dict) -> str:
     return f"{STANDALONE_WS}/{e.get('label') or e['session'][:12]}"
 
@@ -1196,6 +1220,9 @@ def _pick(a) -> int:
                 for k in ("doc", "handover", "handover_k") + (("model", "effort") if x["harness"] == e["harness"] else ()):
                     if k not in e and x.get(k):
                         e[k] = x[k]
+        # when the seat was saved: a `/bg` successor of a session never yet seen by its card must start after it
+        # (ui_view.bg_since); a re-pick keeps the first save's time
+        e.setdefault("saved_utc", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         entries = [x for x in load_standalone(raw=True) if x["session"] != e["session"]
                    and (x.get("label") or x["session"][:12]) != label] + [e]
         save_standalone(entries)
