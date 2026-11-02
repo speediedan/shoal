@@ -960,6 +960,16 @@ and the contract are in [`ui.md`](ui.md).
   Below it, a bounded enlargement prompt replaces the chooser and requests a resize once per
   small-window episode. Window-manager minimum sizes are not enforceable through the portable
   terminal interface; resizing back restores the centered chooser without losing selection.
+- **Herdr app lattice** (`plugins/shoal-herdr-app/mods/shoal-lattice/`): a mod for the Herdr app
+  (the GPUI desktop window, not herdr 0.9.x) that draws the graph doc v1 (`shoal ui graph --json`)
+  as an animated network: a global view of every shoal around the operator hub, a per-shoal view
+  with host bands, a needs-you, shoal and host rail, and a compact `pulse` mode. It only reads: an
+  `exec` of the feed (optionally `on` a herdr-core machine), a file, or its bundled fixture. Logic
+  lives in pure modules tested under Node (`tests/herdr_app/test_lattice.mjs`, run by
+  `selftest_ui.sh` when `node` is present); `main.js` turns their display list into native
+  elements, and all motion is native (`loop`, `frames`, `transition`), so the view redraws only on
+  data ticks and input. Encodings key on role-time class and event; unknown values render as
+  "other" or "unknown".
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 
