@@ -41,7 +41,11 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import blockers  # noqa: E402
 
-POLICY_VERSION = "role-time/v5"
+POLICY_VERSION = "role-time/v5.1"
+# v5.1 (2026-11-01): a role with no session recorded in the spec whose declared posture is paused or
+# offline is excluded, not unknown; and a CI wait on a placed job that has not been granted its
+# lease yet is wait:lease, not wait:local-ci. Snapshots from v5 segments keep v5 behaviour.
+V5_POLICY = "role-time/v5"
 # Snapshots from a journal segment stamped with this policy, or from a journal written before
 # segment headers existed, are classified with its semantics, so an old report reads the same.
 LEGACY_POLICY = "role-time/v4.1"
@@ -151,7 +155,9 @@ def classify(snap, now):
     an older policy carries it as `policy` and keeps that policy's semantics; a live snapshot has
     none and gets the current one."""
     q = set()
-    v5 = (snap.get("policy") or POLICY_VERSION) != LEGACY_POLICY
+    pol = snap.get("policy") or POLICY_VERSION
+    v5 = pol != LEGACY_POLICY
+    v51 = pol not in (LEGACY_POLICY, V5_POLICY)
     life = snap.get("lifecycle") or {}
     native, ledger = snap.get("native"), snap.get("ledger")
     n_ok, n_why, n_dead = _fresh(native, now)
@@ -181,6 +187,11 @@ def classify(snap, now):
     if life.get("handover"):
         return out("wait", "handover", n_dead)
     if nstate == "absent":
+        # v5.1: no session recorded at all (not a missing process) and a declared posture that
+        # says the role is out: excluded. A recorded session with no live worker stays unknown.
+        if (v51 and life.get("session_recorded") is False and l_ok
+                and (ledger or {}).get("state") in ("paused", "offline")):
+            return out("excluded", ledger["state"], min(n_dead, l_dead))
         return out("unknown", "session-missing", n_dead)
     # between turns: the ledger classifies
     if not l_ok:
@@ -192,6 +203,9 @@ def classify(snap, now):
     if state == "waiting":
         if str(ledger.get("target") or "").startswith("lease:"):
             return out("wait", "lease", until)
+        job = ledger.get("job") or {}
+        if v51 and sub == "local-ci" and job.get("placed") and job.get("granted") is False and not job.get("done"):
+            return out("wait", "lease", until)  # queued for its lease, not yet running
         if sub in POSTURE_WAITS:
             return out("wait", sub, until)
         if sub == "queue-empty":

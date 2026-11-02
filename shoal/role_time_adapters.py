@@ -211,7 +211,30 @@ def ledger_part(spec, view, slug, fetched_at, budget_s=LEDGER_BUDGET_S):
             "refill_requested": bool(q.get("asks")),
             "active": item_key(str(q.get("active"))) if q.get("active") else "", "next": nxt,
             "blockers": _blocker_records(spec, view, slug, q), "fill": fill,
-            "sources": sources_part(spec.sid, slug) if fill == "self" else None}
+            "sources": sources_part(spec.sid, slug) if fill == "self" else None,
+            "job": job_part(spec.sid, slug, str(st.get("target") or ""))}
+
+
+def job_part(sid, slug, target):
+    """For a `job:<name>` wait target: whether that job was started with placement, whether its
+    lease was granted (`lease_granted` in the home meta, or this host's grant marker) and whether it
+    has finished (its rc file). For a remote placed job the role's `job wait` supervisor copies the
+    remote grant into the home meta, so its absence there means not granted yet (if that supervisor
+    died, the lease wait reads long until the role writes a new posture)."""
+    if not target.startswith("job:"):
+        return None
+    try:
+        import jobs
+        m = jobs.job_meta(sid, target[len("job:"):], slug)
+    except Exception:  # noqa: BLE001 - a missing or unreadable record is no evidence either way
+        return None
+    if not m:
+        return None
+    granted = bool(m.get("lease_granted"))
+    if not granted and not m.get("host"):
+        granted = os.path.exists(jobs.paths(sid, m.get("unit", ""))["granted"])
+    return {"placed": bool(m.get("placement")), "granted": granted,
+            "done": bool(m.get("rc_file")) and os.path.exists(m["rc_file"])}
 
 
 def sources_part(sid, slug):
@@ -233,7 +256,7 @@ def lifecycle_part(spec, role, view):
     parked = bool(getattr(role, "parked", None)) and not role.session
     q = view.current_queue(role.slug) or {}
     handover = bool(not role.session and not parked and q.get("restart_ready"))
-    return {"parked": parked, "handover": handover, "conflict": ""}
+    return {"parked": parked, "handover": handover, "conflict": "", "session_recorded": bool(role.session)}
 
 
 # ---- native turn state, probed where the session runs ------------------------------

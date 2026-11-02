@@ -166,6 +166,35 @@ class PolicyV5(unittest.TestCase):
             self.assertEqual([s["policy"] for s in obs["r"]], [rt.LEGACY_POLICY, rt.POLICY_VERSION])
 
 
+class PolicyV51(unittest.TestCase):
+    def cls(self, s):
+        return rt.classify(s, s["t"])[:2]
+
+    def test_session_less_role_declared_out_is_excluded(self):
+        norec = {"session_recorded": False}
+        self.assertEqual(self.cls(snap(0, "absent", "paused", lifecycle=norec)), ("excluded", "paused"))
+        self.assertEqual(self.cls(snap(0, "absent", "offline", lifecycle=norec)), ("excluded", "offline"))
+        # idle with no session stays visible as unknown; a recorded session with no worker too
+        self.assertEqual(self.cls(snap(0, "absent", "idle", lifecycle=norec)), ("unknown", "session-missing"))
+        self.assertEqual(self.cls(snap(0, "absent", "paused", lifecycle={"session_recorded": True})),
+                         ("unknown", "session-missing"))
+        # a v5 segment replays as v5
+        v5 = dict(snap(0, "absent", "paused", lifecycle=norec), policy=rt.V5_POLICY)
+        self.assertEqual(self.cls(v5), ("unknown", "session-missing"))
+
+    def test_placed_job_waiting_for_its_lease(self):
+        def w(job, **kw):
+            return snap(0, posture="waiting", sub="local-ci", target="job:ci", job=job, **kw)
+        self.assertEqual(self.cls(w({"placed": True, "granted": False, "done": False})), ("wait", "lease"))
+        self.assertEqual(self.cls(w({"placed": True, "granted": True, "done": False})), ("wait", "local-ci"))
+        # a remote job's grant is not knowable at home: no evidence, no lease claim
+        self.assertEqual(self.cls(w({"placed": True, "granted": None, "done": False})), ("wait", "local-ci"))
+        self.assertEqual(self.cls(w({"placed": True, "granted": False, "done": True})), ("wait", "local-ci"))
+        self.assertEqual(self.cls(w({"placed": False, "granted": False, "done": False})), ("wait", "local-ci"))
+        self.assertEqual(self.cls(dict(w({"placed": True, "granted": False, "done": False}), policy=rt.V5_POLICY)),
+                         ("wait", "local-ci"))
+
+
 class Accounting(unittest.TestCase):
     def test_v4_control_two_roles_half_work_half_wait(self):
         obs = {r: [snap(0, "turn"), snap(30, "between", "waiting", "remote-ci")] for r in ("r1", "r2")}
