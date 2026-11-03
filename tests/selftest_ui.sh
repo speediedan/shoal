@@ -1994,6 +1994,119 @@ check "top edges" $H ui graph --ledger-root "$GR"
 rm -rf "/tmp/$GA" "/tmp/$GB"
 echo "graph feed ok"
 
+echo "== 11 standalone card after a Claude /bg: a new background job with a new id, followed only on evidence"
+python3 - "$SHOALD" "$S" <<'PY2' || fail "bg successor"
+import datetime as dt, glob, json, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+S = sys.argv[2]
+os.environ["XDG_CONFIG_HOME"] = os.path.join(S, "xdg-bg")      # a scratch registry, never the operator's
+cc = os.path.join(S, "cc-bg"); os.environ["CLAUDE_CONFIG_DIR"] = cc  # scratch jobs/ and projects/
+JOBS = os.path.join(cc, "jobs")
+import ui_herdr, ui_view
+ORIG = "11111111-1111-4111-8111-111111111111"
+CWD = "/work/seat"
+SEEN = "2026-11-01T00:00:00Z"
+T = dt.datetime(2026, 11, 1, tzinfo=dt.timezone.utc).timestamp()
+def job(jid, lineage=True):
+    os.makedirs(os.path.join(JOBS, jid), exist_ok=True)
+    json.dump({"sessionId": jid + "-2222-4222-8222-222222222222", "resumeSessionId": jid + "-2222-4222-8222-222222222222",
+               "interactiveLineage": lineage, "name": "seat", "nameSource": "user", "template": "bg", "cwd": CWD},
+              open(os.path.join(JOBS, jid, "state.json"), "w"))
+def bg(jid, name="seat", cwd=CWD, after=60, state="idle"):
+    return {"id": jid, "sessionId": jid + "-2222-4222-8222-222222222222", "kind": "background", "name": name, "cwd": cwd,
+            "startedAt": int((T + after) * 1000), "state": state, "status": "idle", "pid": 4100}
+ITV = {"kind": "interactive", "sessionId": ORIG, "pid": os.getpid(), "name": "seat"}
+for j in ("aaaa0001", "bbbb0001", "cccc0001", "dddd0001", "eeee0001", "44444444"):
+    job(j)
+job("ffff0001", lineage=False)
+def setrows(rows):
+    os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": rows, "opencode": {}})
+def reset():
+    ui_herdr.save_standalone([{"harness": "claude", "session": ORIG, "label": "seat", "cwd": CWD, "seen_utc": SEEN},
+                              {"harness": "claude", "session": "44444444-2222-4222-8222-222222222222", "job": "44444444",
+                               "label": "other"}])
+def saved():
+    return next(e for e in ui_herdr.load_standalone(raw=True) if e["label"] == "seat")
+def backups():
+    return glob.glob(ui_herdr.standalone_path() + ".bak-bgfollow-*")
+tick = lambda pick=0: ui_view.standalone_tick("claude", ORIG, "seat", "", pick)
+
+# 0 successors, the original not listed: refused, with the exit-first background resume and the /bg note
+reset(); setrows([])
+d = tick()
+assert d["action"] == "refuse" and not d["successors"], d
+m = d["message"]
+assert "not listed" in m and "exit any terminal" in m and f"--bg --resume {ORIG} --name seat" in m and "/bg" in m, m
+assert ui_view.verify_listed("claude", ORIG) == m
+# 0 successors, the original live interactively: where it runs, exit first, then resume; its seen time is refreshed
+setrows([ITV])
+d = tick()
+assert d["action"] == "refuse" and d["row"]["kind"] == "interactive", d
+m = d["message"]
+assert f"running interactively in pid {os.getpid()}" in m and "exit that interactive window first" in m, m
+assert f"--bg --resume {ORIG} --name seat" in m and "forks a new session id" in m, m
+assert saved()["seen_utc"] > SEEN and saved()["session"] == ORIG, saved()
+assert "exit that interactive window first" in ui_view.interactive_where(ITV)
+
+# exactly 1 successor, the original gone: followed, by atomic replace, with one backup
+reset(); setrows([bg("aaaa0001")])
+d = tick()
+assert d["action"] == "followed" and d["message"] == "followed /bg successor aaaa0001 (was 11111111)", d
+e = saved()
+assert (e["session"], e["job"], e["bg_followed_from"]) == ("aaaa0001-2222-4222-8222-222222222222", "aaaa0001", ORIG), e
+assert len(backups()) == 1 and not os.path.exists(ui_herdr.standalone_path() + ".tmp"), backups()
+assert ORIG in open(backups()[0]).read(), "the backup holds the registry from before the follow"
+assert ui_view.registry_follow("claude", ORIG, "seat", "") == ("aaaa0001-2222-4222-8222-222222222222", "aaaa0001")
+assert ui_view.standalone_tick("claude", e["session"], "seat", "aaaa0001")["action"] == "attach"
+# a second follow writes no second backup
+reset(); d = tick()
+assert d["action"] == "followed" and len(backups()) == 1, backups()
+# a successor that has answered its first prompt reads `done` (idle, with a pid): live, and followed
+reset(); setrows([bg("aaaa0001", state="done")])
+d = tick()
+assert d["action"] == "followed" and saved()["job"] == "aaaa0001" and not d.get("stopped"), (d, saved())
+
+# 1 successor while the original still runs interactively: two live copies, a warning, nothing rewritten
+reset(); setrows([ITV, bg("aaaa0001")])
+d = tick()
+assert d["action"] == "two-live" and saved()["session"] == ORIG and saved()["seen_utc"] == SEEN, (d, saved())
+m = d["message"]
+assert "two live copies" in m and f"pid {os.getpid()}" in m and "aaaa0001" in m and "2026-11-01T00:01:00Z" in m, m
+assert "--bg --resume" not in m, m
+assert "two live copies" in ui_view.verify_listed("claude", ORIG)
+
+# 2 successors (a second /bg named "seat (2)"): listed, nothing guessed; a digit picks one
+reset(); setrows([bg("aaaa0001"), bg("bbbb0001", name="seat (2)", after=120)])
+d = tick()
+assert d["action"] == "pick" and [c["id"] for c in d["successors"]] == ["aaaa0001", "bbbb0001"], d
+assert "[1] aaaa0001" in d["message"] and "[2] bbbb0001" in d["message"] and saved()["session"] == ORIG, d
+assert tick(pick=7)["action"] == "pick" and saved()["session"] == ORIG, "an out-of-range digit follows nothing"
+d = tick(pick=2)
+assert d["action"] == "followed" and saved()["job"] == "bbbb0001", (d, saved())
+
+# excluded: another cwd, one another entry already holds, one started before seen_utc, no interactive lineage,
+# and a stopped copy (named only, never followed)
+reset(); setrows([bg("cccc0001", cwd="/work/elsewhere"), bg("44444444"), bg("dddd0001", after=-3600),
+                  bg("ffff0001"), bg("eeee0001", state="stopped"), dict(bg("bbbb0001", name="seats"))])
+d = tick()
+assert d["action"] == "refuse" and not d["successors"] and [c["id"] for c in d["stopped"]] == ["eeee0001"], d
+assert "Stopped copies: eeee0001 (`claude attach <id>` resumes one)" in d["message"], d["message"]
+assert saved()["session"] == ORIG and len(backups()) == 1, saved()
+# an unreadable state.json is accepted, and noted
+e = saved(); ents = ui_herdr.load_standalone(raw=True)
+c = ui_view.bg_successors([bg("abab0001")], e, ents, JOBS, (T, "seen_utc"))
+assert [x["id"] for x in c] == ["abab0001"] and "unreadable" in c[0]["note"], c
+
+# an entry with no seen_utc: a successor must start after the saved time, else the original transcript's first line
+e = {"harness": "claude", "session": ORIG, "label": "seat", "cwd": CWD}
+os.makedirs(os.path.join(cc, "projects", "p"), exist_ok=True)
+open(os.path.join(cc, "projects", "p", ORIG + ".jsonl"), "w").write(json.dumps({"type": "user", "timestamp": SEEN}) + "\n")
+assert ui_view.bg_since(e) == (T, "transcript"), ui_view.bg_since(e)
+assert ui_view.bg_since(dict(e, saved_utc="2026-11-01T00:00:30Z")) == (T + 30, "saved_utc")
+rows = [bg("dddd0001", after=-10), bg("aaaa0001", after=10)]
+assert [x["id"] for x in ui_view.bg_successors(rows, e, [e], JOBS, ui_view.bg_since(e))] == ["aaaa0001"]
+print("bg successor ok")
+PY2
+
 # the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
 if command -v node >/dev/null 2>&1; then
   node "$TESTD/herdr_app/test_lattice_view.mjs" >"$S/lattice-view.out" 2>&1 || fail "herdr-app lattice-view: $(tail -c 800 "$S/lattice-view.out")"

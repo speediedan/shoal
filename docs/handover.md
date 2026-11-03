@@ -86,7 +86,9 @@ sessions.
 
 **What is kept**, with the reason in the table:
 - (a) the current session of any role in any spec, retired ones included, matched by job id and by current and original
-  conversation id; (b) any role's parked session; (c) any entry in the viewer registry, dismissed ones too;
+  conversation id; (b) any role's parked session; (c) any entry in the viewer registry, dismissed ones too, matched
+  by the session and job ids it records (a job that only shares the seat's name, such as a stopped `/bg` fork or an
+  older job, is not the seat; only an entry that records neither id is matched by its label);
 - (d) a live worker, or state working, blocked or idle; (e) a conversation shared with a job that has a worker or is
   protected;
 - (f) a recorded worktree that still exists, a git worktree under the job's `tmp/`, or a process running inside either;

@@ -188,11 +188,18 @@ class World:
             self.registry = [e for e in json.load(open(p)).get("sessions", []) if isinstance(e, dict)]
         except (OSError, ValueError, AttributeError):
             self.registry = []
+        # A seat is matched by the session and job ids its entry records, never by its label while it records one: a
+        # `/bg` fork, or an older job, carries the seat's name with ids of its own and is not the seat. Only an entry
+        # with neither id is matched by its label (self.protect_names).
+        self.protect_names: list[tuple[str, str]] = []
         for e in self.registry:
             lab = e.get("label") or str(e.get("session", ""))[:12]
+            why = f"standalone seat {lab}" + (" (dismissed)" if e.get("dismissed") else "")
             for k in ("session", "job"):
                 if e.get(k):
-                    self.protect.append((str(e[k]), f"standalone seat {lab}" + (" (dismissed)" if e.get("dismissed") else "")))
+                    self.protect.append((str(e[k]), why))
+            if not (e.get("session") or e.get("job")) and e.get("label"):
+                self.protect_names.append((str(e["label"]), why + " (no recorded id: matched by label)"))
         # (g) the session this runs inside
         me = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
         if me:
@@ -260,9 +267,12 @@ class World:
             pass
         self.ancestors.discard(0)
 
-    def protected(self, ids) -> str:
+    def protected(self, ids, name: str = "") -> str:
         for pid_, why in self.protect:
             if any(same_id(i, pid_) for i in ids if i):
+                return why
+        for lab, why in self.protect_names:  # registry entries that record no id at all
+            if name and name == lab:
                 return why
         return ""
 
@@ -360,7 +370,7 @@ def claude_candidates(w: World, standalone: bool, min_age: float, sizes: bool = 
 
 def claude_guard(w, r, st, ids, info, hard, own, min_age, c) -> str:
     job = ids[0]
-    why = w.protected(ids)
+    why = w.protected(ids, c.name)
     if job in own or why == "the session this runs inside":
         return "(g) the job this runs inside"
     if why:
@@ -404,7 +414,7 @@ def _age(s: float | None) -> str:
 
 
 def _generic_guard(w: World, c: Cand, busy: bool, live_state: str, min_age: float) -> str:
-    why = w.protected(c.ids)
+    why = w.protected(c.ids, c.name)
     if why:
         return f"(a-c) {why}"
     if live_state:
