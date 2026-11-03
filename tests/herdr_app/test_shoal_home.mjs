@@ -267,6 +267,10 @@ test("ocean: the logo letters ride one wave inside the logo box, in order, witho
   assert.ok(Math.max(...ys) - Math.min(...ys) > 84 * 0.08, "the letters are at different heights (a wave)");
   assert.ok(Math.max(...ys.map((y) => Math.abs(y - lg.y))) <= 84 * 0.085 + 0.1, "a gentle wave keeps the word readable");
   assert.equal(new Set(O.LETTER_SHADES).size, O.LETTER_SHADES.length, "the shades grade without repeats");
+  // a wide face (the laptop's DejaVu Serif) is drawn a little smaller so it still fits, letters apart
+  const wide = O.logoLetters(lg, "SHOAL", "DejaVu Serif");
+  assert.ok(wide[0].font < 84 && wide[0].x >= lg.x && wide[4].x + wide[4].w <= lg.x + lg.w, "a wide face fits the box");
+  for (let i = 1; i < wide.length; i++) assert.ok(wide[i].x >= wide[i - 1].x + wide[i - 1].w, "wide letters do not overlap");
   // ripple cells cover every pixel of each letter box, and their band edges differ between strips (a ripple)
   for (const l of ls) {
     const cells = O.rippleBands(l, 84, O.LETTER_SHADES.length);

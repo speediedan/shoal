@@ -312,7 +312,7 @@ export default class Home extends View {
     const fam = logoFamily();
     // one letter, its box at (x, y) relative to `top` (a band's clip offset)
     const glyph = (l, dx, dy, color, top = 0) => div().absolute().left(dx).top(dy - top).w(l.w).h(l.h)
-      .flex().items_center().justify_center().whitespace_nowrap().font_family(fam).text_size(lg.font)
+      .flex().items_center().justify_center().whitespace_nowrap().font_family(fam).text_size(l.font)
       .line_height(`${l.h}px`).font_weight(800).text_color(color).child(l.ch);
     // Oceanic and still plain to read: every letter rides its own crest of one wave (GPUI cannot warp text), with a
     // deep drop shadow, a navy outline (eight offset copies: text has no stroke), and underwater light shading
@@ -320,7 +320,7 @@ export default class Home extends View {
     const o = Math.max(1.5, lg.font / 34);
     const depth = Math.max(3, Math.round(lg.font / 16));
     const out = div().absolute().left(0).top(0).size_full();
-    const letters = logoLetters(lg);
+    const letters = logoLetters(lg, "SHOAL", fam);
     for (const l of letters) out.child(glyph(l, l.x + depth, l.y + depth, withAlpha(SEA.logoShadow, 0.7)));
     for (const l of letters) {
       for (const [dx, dy] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]) {
@@ -330,7 +330,7 @@ export default class Home extends View {
     // the shading: each letter is cut into vertical strips, and in each strip the band edges follow a ripple
     // (ocean.js rippleBands), so the light inside the letters moves like water
     for (const l of letters) {
-      for (const c of rippleBands(l, lg.font, LETTER_SHADES.length)) {
+      for (const c of rippleBands(l, l.font, LETTER_SHADES.length)) {
         out.child(div().absolute().left(l.x + c.x).top(l.y + c.y0).w(c.w).h(c.y1 - c.y0).overflow_hidden()
           .child(glyph(l, -c.x, 0, LETTER_SHADES[c.k], c.y0)));
       }

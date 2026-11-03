@@ -288,6 +288,9 @@ export function oceanScene(L) {
 // Bold display-serif advance widths, in em, so each letter gets its own box (GPUI cannot warp text, so the
 // word becomes wavy by giving every letter its own height on a wave).
 const LETTER_EM = { S: 0.6, H: 0.84, O: 0.8, A: 0.76, L: 0.68 };
+// per family where it differs (DejaVu Serif Bold is much wider than Noto Serif Display)
+const FAMILY_EM = { "DejaVu Serif": { S: 0.72, H: 0.97, O: 0.86, A: 0.82, L: 0.76 },
+                    "Liberation Serif": { S: 0.58, H: 0.8, O: 0.8, A: 0.74, L: 0.68 } };
 // Underwater light, top to bottom: aqua near the surface, deep blue below (thin rippled bands, no seam).
 export const LETTER_SHADES = ["#b4f7ff", "#9ef0ff", "#88e7ff", "#72dcfd", "#5fcff9", "#4fc0f4", "#43b0ee",
   "#3a9fe8", "#338ee2", "#2d7edb", "#2870d3", "#2463ca"];
@@ -315,17 +318,21 @@ export function rippleBands(l, font, n, strips = 4) {
   return cells;
 }
 
-/** The letters of the logo inside box `lg` ({x, y, w, h, font}): each {ch, x, y, w, h}, centered as a word,
- * every letter lifted by its point on one gentle wave. */
-export function logoLetters(lg, word = "SHOAL") {
-  const em = lg.font;
-  const ws = [...word].map((ch) => (LETTER_EM[ch] ?? 0.72) * em);
-  const gap = em * 0.03;
+/** The letters of the logo inside box `lg` ({x, y, w, h, font}) in `family`: each {ch, x, y, w, h, font},
+ * centered as a word, every letter lifted by its point on one gentle wave. A face too wide for the box is
+ * drawn a little smaller (`font` on each letter), never past the box. */
+export function logoLetters(lg, word = "SHOAL", family = "") {
+  const table = FAMILY_EM[family] ?? LETTER_EM;
+  const raw = [...word].map((ch) => table[ch] ?? 0.72);
+  const fit = Math.min(1, (lg.w * 0.98) / (lg.font * (raw.reduce((a, b) => a + b, 0) + 0.04 * (raw.length - 1))));
+  const em = lg.font * fit;
+  const ws = raw.map((k) => k * em);
+  const gap = em * 0.04;
   const total = ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
   const amp = em * 0.085;
   let x = lg.x + (lg.w - total) / 2;
   return [...word].map((ch, i) => {
-    const out = { ch, x: r2(x), y: r2(lg.y + amp * Math.sin(0.4 + i * 1.15)), w: r2(ws[i]), h: lg.h };
+    const out = { ch, x: r2(x), y: r2(lg.y + amp * Math.sin(0.4 + i * 1.15)), w: r2(ws[i]), h: lg.h, font: r2(em) };
     x += ws[i] + gap;
     return out;
   });
