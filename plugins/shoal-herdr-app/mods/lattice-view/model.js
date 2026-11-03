@@ -583,6 +583,85 @@ export function demoEvents(doc, tick) {
   return out;
 }
 
+// ---- the default view (`shoal` prop) and shared focus
+
+/**
+ * The view a copy returns to: `shoal` (a shoal id) when the doc has it live, else "global".
+ * `missing` says the prop named a shoal the feed does not have (retired, or a typo).
+ */
+export function homeView(doc, shoal) {
+  if (typeof shoal !== "string" || !shoal || shoal === "global") return { home: "global", missing: false };
+  const live = shoalSummaries(doc).some((s) => s.id === shoal);
+  return { home: live ? shoal : "global", missing: !live };
+}
+
+/**
+ * What Escape does, in order: unpin the card, close the legend, then go back to the home view
+ * (a shoal for a copy opened with `shoal`, else global). Null when there is nothing to undo.
+ */
+export function escapeStep({ pinned = null, legend = false, view = "global", home = "global" } = {}) {
+  if (pinned) return { pinned: null };
+  if (legend) return { legend: false };
+  if (view !== home) return { view: home };
+  return null;
+}
+
+/** The shared key a pulse row (or any mod) sets to ask a full lattice view to focus a node. */
+export const FOCUS_KEY = "lattice.focus";
+
+/**
+ * Reads the shared focus value: a node id string, or {node?, shoal?, t?} (t in ms; a request older
+ * than `maxAgeMs` is stale). Returns {key, node, shoal} for a new request (key differs from
+ * `seenKey`), else null. Copies remember the key they saw at start, so a value persisted from an
+ * earlier run is not replayed.
+ */
+export function readFocus(value, seenKey, now = Date.now(), maxAgeMs = 120000) {
+  let f;
+  if (typeof value === "string" && value) f = { node: value, shoal: null, t: null };
+  else if (value && typeof value === "object" && (typeof value.node === "string" || typeof value.shoal === "string")) {
+    f = { node: typeof value.node === "string" && value.node ? value.node : null, shoal: typeof value.shoal === "string" && value.shoal ? value.shoal : null, t: typeof value.t === "number" ? value.t : null };
+  } else return null;
+  const key = `${f.node ?? ""}|${f.shoal ?? ""}|${f.t ?? ""}`;
+  if (key === seenKey) return null;
+  if (f.t !== null && now - f.t > maxAgeMs) return { key, node: null, shoal: null, stale: true };
+  return { key, node: f.node, shoal: f.shoal ?? (f.node && f.node.includes(":") ? f.node.slice(0, f.node.lastIndexOf(":")) : null) };
+}
+
+/** The key of a shared focus value as readFocus computes it (null when it is not one). */
+export const focusKeyOf = (value) => readFocus(value, undefined, 0, Infinity)?.key ?? null;
+
+// ---- pulse mode: a compact edge drawer
+
+/** The pulse drawer's rows: one per live shoal, then up to `maxNeeds` needs-you roles, loudest first. */
+export function pulseModel(doc, opts = {}) {
+  const only = typeof opts.shoal === "string" && opts.shoal ? opts.shoal : null;
+  const all = shoalSummaries(doc);
+  const shoals = only && all.some((s) => s.id === only) ? all.filter((s) => s.id === only) : all;
+  const live = new Set(shoals.map((s) => s.id));
+  const roles = arr(doc?.nodes).filter((n) => n && typeof n.id === "string" && (n.kind ?? "role") === "role" && live.has(n.shoal));
+  const byId = new Map(roles.map((n) => [n.id, n]));
+  const ranked = needsYouList(roles).filter((r) => r.rank < 4);
+  const needs = ranked.slice(0, Math.max(0, opts.maxNeeds ?? 5)).map((r) => {
+    const n = byId.get(r.id);
+    const ev = str(obj(n?.state).event) || r.key;
+    return { id: r.id, label: r.label, shoal: r.shoal, short: shortShoal(r.shoal), color: r.color, badge: r.badge ?? "!", event: ev, host: typeof n?.host === "string" ? n.host : null, since_s: r.since_s };
+  });
+  return {
+    shoals: shoals.map((s) => ({ id: s.id, short: s.short, tint: s.tint, urgent: s.urgent, urgentColor: s.urgentColor, needsYou: s.needsYou, msgsPerH: s.msgsPerH })),
+    needs,
+    more: Math.max(0, ranked.length - needs.length),
+  };
+}
+
+/** A hash of what the pulse draws: a poll that hashes the same needs no redraw. */
+export function pulseSignature(pm) {
+  const parts = [];
+  for (const s of pm.shoals) parts.push(s.id, s.urgent, s.needsYou, s.msgsPerH);
+  for (const r of pm.needs) parts.push(r.id, r.event, r.host ?? "");
+  parts.push(pm.more);
+  return hash32(parts.join("\u0001"));
+}
+
 /** The text lines of a hover card for a node, shared by main.js and the preview. */
 export function cardLines(vm, id) {
   const n = vm.byId.get(id);

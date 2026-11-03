@@ -971,7 +971,11 @@ and the contract are in [`ui.md`](ui.md).
 - **Herdr app lattice view** (`plugins/shoal-herdr-app/mods/lattice-view/`): a mod for the Herdr app
   (the GPUI desktop window, not herdr 0.9.x) that draws the graph doc v1 (`shoal ui graph --json`)
   as an animated network: a global view of every shoal around the operator hub, a per-shoal view
-  with host bands, a needs-you, shoal and host rail, and a compact `pulse` mode. It only reads: an
+  with host bands, a needs-you, shoal and host rail, and a compact `pulse` mode (an edge drawer:
+  a row per shoal, then up to five needs-you roles; a role row sets the shared key `lattice.focus`,
+  which every full copy honors by drilling in and pinning that role). A `shoal` prop opens a copy
+  drilled into one shoal as its home view, so a per-shoal tab can read the one shared feed file
+  instead of polling its own `exec`. It only reads: an
   `exec` of the feed (optionally `on` a herdr-core machine), a file, or its bundled fixture. Logic
   lives in pure modules tested under Node (`tests/herdr_app/test_lattice_view.mjs`, run by
   `selftest_ui.sh` when `node` is present); `main.js` turns their display list into native

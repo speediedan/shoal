@@ -56,19 +56,35 @@ around exactly that. Never point it at anything that writes, wakes a role or sen
    ]
    ```
 
-   Each row is one shoal: its most urgent state dot (blinking while something needs you, when the motion tier allows), the
-   needs-you count, messages per hour and a sparkline. Clicking a row asks the Lattice tab (if
-   open) to drill into that shoal with the loudest role's card pinned.
+   One row per shoal (its most urgent state's dot, the needs-you count, its tag, messages per
+   hour), then up to five needs-you roles, loudest first (the state badge, the role, its wait
+   event, its host). Dots, counts and badges sit on the edge side, so they show while the drawer
+   peeks. It is still unless the motion tier is `full`, and a poll redraws it only when a row
+   changed. Clicking a role row sets the shared key `lattice.focus` (`{node, shoal, t}`; a plain
+   node id string works too, for other mods); every Lattice tab honors it by drilling into that
+   role's shoal and pinning its card. A shoal row does the same with the shoal's loudest role.
 
-4. Run `herdr-app check` after every edit, and `herdr-app status` for `errors`.
+4. **Per-shoal lattice tabs.** Give each shoal's space a `lattice` tab that reads the one shared
+   feed file (`shoal ui graph-feed` writes the whole doc each tick) and opens on that shoal,
+   instead of a per-tab `exec` that would start Python on the server every poll per tab:
+
+   ```sh
+   herdr-app do tab.new '{"name":"lattice","mod":"lattice-view","props":{"shoal":"<shoal id>","source":{"kind":"file","path":"<graph.json>","on":"<machine>"}}}'
+   ```
+
+   Escape returns to that shoal rather than to the global view; `g` or the header chip shows
+   every shoal and comes back.
+
+5. Run `herdr-app check` after every edit, and `herdr-app status` for `errors`.
 
 ### Props
 
 | Prop | Default | Meaning |
 |---|---|---|
 | `source` | `{"kind":"fixture"}` | `{"kind":"exec","argv":[...],"on":<machine or null>}` (after the first read the mod appends `--since <cursor>`), `{"kind":"file","path":"...","on":...}`, or `{"kind":"fixture","path"?:...}` (the bundled `fixtures/graph-v1.json`, with synthetic events every tick for a demo) |
-| `mode` | `"full"` | `"pulse"`: one compact row per shoal |
-| `view` | `"global"` | a shoal id to open drilled in |
+| `mode` | `"full"` | `"pulse"`: the compact edge drawer (shoal rows, then up to five needs-you roles) |
+| `shoal` | none | a shoal id: open drilled into it and treat it as home (Escape returns there; `g` toggles global). In pulse mode, list only that shoal |
+| `view` | the home view | a shoal id to open drilled in once (Escape then goes to the home view) |
 | `pin` | none | a node id whose card opens pinned |
 | `motion` | `"auto"` | `"full"`, `"balanced"`, `"low"`, `"off"` or `"auto"` (see Motion budget; `m` cycles) |
 | `budget` | none | overrides for the tier: `{"max_dots", "max_pulses", "frame_ms", "packets", "render_ms"}` |
@@ -84,7 +100,8 @@ the same way), hover a node to fade everything not connected to it and show its 
 pin the card (links open in the browser; a long item or blocker line is cut, its full text on the
 line's tooltip; click the `$ shoal view ...` line to copy it), click a cluster to drill in. The
 card stays inside the canvas, flipping left of or above its node near an edge. `escape` unpins,
-closes the legend, then goes back to the global view; `l` legend (it shows the motion tier), `m`
+closes the legend, then goes back to the home view (the `shoal` prop's shoal, else global); `g`
+toggles the global view; `l` legend (it shows the motion tier), `m`
 cycles the motion tier, `f` lays the view out afresh and fits every node, label and cluster ring
 inside the canvas, `i` items, `+`/`-` zoom, arrows pan. Node positions are kept across polls: a
 poll with the same nodes moves nothing, and a new node is placed without moving the rest. With `"focusable": true`, `pane.go` reaches the pane.

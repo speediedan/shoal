@@ -558,4 +558,81 @@ test("fit: every node, label, chip and cluster ring inside the canvas with a mar
   }
 });
 
+test("pulse model: a row per shoal, then up to five needs-you roles with event and host", () => {
+  const pm = M.pulseModel(doc);
+  assert.deepEqual(pm.shoals.map((s) => s.id), [A, B]);
+  const a = pm.shoals[0];
+  assert.equal(a.urgent, "auth");
+  assert.equal(a.urgentColor, M.PALETTE.auth, "the dot takes the most urgent role state's color");
+  assert.equal(a.needsYou, 2);
+  assert.equal(pm.shoals[1].needsYou, 0);
+  assert.deepEqual(pm.needs.map((r) => r.id), [`${A}:integration`, `${A}:tune`], "loudest first; stalls are not needs-you rows");
+  assert.deepEqual([pm.needs[0].event, pm.needs[0].badge, pm.needs[0].host], ["user-auth", "⚷", "host-a"]);
+  assert.equal(pm.more, 0);
+  // capped at five, the rest counted
+  const many = structuredClone(doc);
+  for (let i = 0; i < 7; i++) many.nodes.push({ id: `${B}:ask${i}`, kind: "role", shoal: B, host: "host-b", state: { class: "wait", event: "user-ask", since_s: i } });
+  const pm2 = M.pulseModel(many);
+  assert.equal(pm2.needs.length, 5);
+  assert.equal(pm2.more, 4);
+  assert.equal(pm2.needs[0].id, `${A}:integration`, "auth still first");
+  assert.equal(pm2.shoals[1].needsYou, 7);
+  assert.equal(M.pulseModel(many, { maxNeeds: 2 }).needs.length, 2);
+  // narrowed to one shoal by the `shoal` prop; an unknown shoal shows every shoal
+  const only = M.pulseModel(many, { shoal: B });
+  assert.deepEqual(only.shoals.map((s) => s.id), [B]);
+  assert.ok(only.needs.every((r) => r.shoal === B));
+  assert.equal(M.pulseModel(doc, { shoal: "gone-20261101-000000" }).shoals.length, 2);
+  // render gating: the same doc hashes the same; a new needs-you role changes it
+  assert.equal(M.pulseSignature(M.pulseModel(doc)), M.pulseSignature(M.pulseModel(structuredClone(doc))));
+  assert.notEqual(M.pulseSignature(M.pulseModel(doc)), M.pulseSignature(pm2));
+  assert.deepEqual(M.pulseModel({}).shoals, []);
+  assert.ok(finiteDeep(pm2));
+});
+
+test("default view from the shoal prop: drilled in, Escape returns home, unknown shoal falls back", () => {
+  assert.deepEqual(M.homeView(doc, A), { home: A, missing: false });
+  assert.deepEqual(M.homeView(doc, null), { home: "global", missing: false });
+  assert.deepEqual(M.homeView(doc, "global"), { home: "global", missing: false });
+  assert.deepEqual(M.homeView(doc, "gone-20261101-000000"), { home: "global", missing: true });
+  // the home shoal's view holds that constellation only (plus the hub and its externals)
+  const home = M.buildModel(doc, M.homeView(doc, B).home);
+  assert.equal(home.view, B);
+  assert.equal(home.global, false);
+  assert.ok(home.nodes.filter((nd) => nd.kind === "role").every((nd) => nd.shoal === B));
+  assert.deepEqual(home.shoalsInView.map((s) => s.id), [B]);
+  // Escape: unpin, then the legend, then back to the home view; nothing at home
+  const H = A;
+  assert.deepEqual(M.escapeStep({ pinned: "x", legend: true, view: B, home: H }), { pinned: null });
+  assert.deepEqual(M.escapeStep({ legend: true, view: B, home: H }), { legend: false });
+  assert.deepEqual(M.escapeStep({ view: B, home: H }), { view: H }, "another shoal goes back to the home shoal");
+  assert.deepEqual(M.escapeStep({ view: "global", home: H }), { view: H }, "the global view goes back to the home shoal");
+  assert.equal(M.escapeStep({ view: H, home: H }), null, "at home Escape does nothing");
+  assert.deepEqual(M.escapeStep({ view: A, home: "global" }), { view: "global" }, "without a home shoal Escape goes global");
+  assert.equal(M.escapeStep({ view: "global", home: "global" }), null);
+});
+
+test("shared focus: a node id or {node, shoal, t}; persisted and stale requests are not replayed", () => {
+  const now = 1_000_000;
+  const f = M.readFocus(`${A}:tune`, null, now);
+  assert.equal(f.node, `${A}:tune`);
+  assert.equal(f.shoal, A, "the shoal is read from the node id");
+  assert.equal(M.readFocus(`${A}:tune`, f.key, now), null, "the same value twice is one request");
+  const o = M.readFocus({ node: `${B}:pool`, shoal: B, t: now - 1000 }, f.key, now);
+  assert.deepEqual([o.node, o.shoal, o.stale], [`${B}:pool`, B, undefined]);
+  const again = M.readFocus({ node: `${B}:pool`, shoal: B, t: now }, o.key, now);
+  assert.ok(again && again.node === `${B}:pool`, "a repeat click with a new t is a new request");
+  const stale = M.readFocus({ node: `${B}:pool`, t: now - 200000 }, null, now);
+  assert.equal(stale.stale, true);
+  assert.equal(stale.node, null);
+  const shoalOnly = M.readFocus({ shoal: B, node: null, t: now }, null, now);
+  assert.deepEqual([shoalOnly.node, shoalOnly.shoal], [null, B]);
+  for (const bad of [null, undefined, 3, "", {}, { t: now }, []]) assert.equal(M.readFocus(bad, null, now), null);
+  // a copy starts with the persisted value as seen
+  const persisted = { node: `${A}:core`, t: now - 5 };
+  assert.equal(M.readFocus(persisted, M.focusKeyOf(persisted), now), null);
+  assert.equal(M.focusKeyOf(null), null);
+  assert.equal(M.FOCUS_KEY, "lattice.focus");
+});
+
 console.log(`lattice-view: ${n} tests passed`);
