@@ -501,7 +501,8 @@ def _getkey(timeout: float) -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def card(sid: str, slug: str, force: bool = False) -> str:
+def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None) -> str:
+    """The card text; the role's status row is appended to `rows_out` when given (the app status report)."""
     import ui_status
     doc = ui_status.cached_status([sid], force=force)
     s = doc["shoals"][0] if doc["shoals"] else {"error": "no such shoal"}
@@ -510,6 +511,8 @@ def card(sid: str, slug: str, force: bool = False) -> str:
     r = next((x for x in s["roles"] if x["slug"] == slug), None)
     if r is None:
         return f"{slug}: not a role of {sid}"
+    if rows_out is not None:
+        rows_out.append(r)
     import re as _re
     tag = _re.sub(r"-[0-9]{8}-[0-9]{6}$", "", sid)
     # Herdr draws the pane border title as plain text, so the card's own first line carries the colors:
@@ -553,20 +556,41 @@ def card(sid: str, slug: str, force: bool = False) -> str:
 
 def stub(sid: str, slug: str, spec_path: str = "") -> int:
     """The role card loop: Enter attaches, `r` refreshes, `q` leaves to a shell. Read-only."""
-    force = False
+    import ui_app
     import ui_term
     watch = ui_term.CodeWatch()
+    report = ui_app.in_core_terminal()  # the Herdr app: the card reports the role's state itself (OSC 7501)
+    try:
+        return _stub_loop(sid, slug, spec_path, watch, report)
+    finally:
+        if report:
+            sys.stdout.write(ui_app.OSC_CLEAR)
+            sys.stdout.flush()
+
+
+def _stub_loop(sid: str, slug: str, spec_path: str, watch, report: bool) -> int:
     import routes
+    import ui_app
+    import ui_term
+    force = False
     while True:
         watch.check()
         # re-read each tick: a role moved to another host (its spec `server`) is attached there at once
         remote = _remote_host(sid, slug, spec_path)
         routed = bool(remote) and routes.route(remote) is not None
+        rows: list = []
         try:
-            body = card(sid, slug, force)
+            body = card(sid, slug, force, rows)
         except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
             body = f"{slug}: status unavailable ({exc})"
         force = False
+        osc = ""
+        if report and rows:
+            try:
+                import ui_herdr
+                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid))
+            except Exception:  # noqa: BLE001 - a report never breaks the card
+                pass
         if routed:
             up = routes.reachable(remote)
             keys = (f"runs on {remote} (ssh{'' if up else ': unreachable now'})   [enter] attach   [r] refresh   [q] shell")
@@ -575,7 +599,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         else:
             keys = "[enter] attach   [r] refresh   [q] shell"
         sys.stdout.write(ui_term.fit_frame(body, "\x1b[2m" + keys + f"   (refresh every {CARD_REFRESH_S}s; viewing "
-                                           f"never wakes the role)\n{DETACH_HINT}\x1b[0m"))
+                                           f"never wakes the role)\n{DETACH_HINT}\x1b[0m") + osc)
         sys.stdout.flush()
         k = _getkey(CARD_REFRESH_S)
         if k in ("q", "Q"):

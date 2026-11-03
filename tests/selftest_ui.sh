@@ -2107,6 +2107,195 @@ assert [x["id"] for x in ui_view.bg_successors(rows, e, [e], JOBS, ui_view.bg_si
 print("bg successor ok")
 PY2
 
+echo "== 12 Herdr app adapter: plan, reconcile over a fake herdr-app and hc, card status reports, the host list"
+# one stub plays both herdr-app and hc (by its name), keeping the app's spaces in a JSON file and logging every call
+cat > "$S/app-stub" <<'STUB'
+#!/usr/bin/env python3
+import json, os, sys
+st_path = os.environ["STUB_APP_STATE"]
+def load():
+    try:
+        return json.load(open(st_path))
+    except (OSError, ValueError):
+        return {"spaces": [], "terms": {}, "n": 0, "machines": []}
+st = load()
+me, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+open(os.environ["STUB_APP_LOG"], "a").write(json.dumps([me] + args) + "\n")
+def save():
+    json.dump(st, open(st_path, "w"))
+def term(argv, space, tab):
+    st["n"] += 1
+    t = f"t{st['n']}"
+    st["terms"][t] = {"labels": {}, "argv": argv}
+    tab["terminals"].append({"terminal": t, "pane": "p" + t})
+    return t
+def find_tab(pane):
+    for s in st["spaces"]:
+        for tb in s["tabs"]:
+            if any(x["pane"] == pane for x in tb["terminals"]):
+                return s, tb
+    return None, None
+if args[:1] == ["--version"]:
+    print(("herdr-app " if me == "herdr-app" else "hc ") + os.environ.get("STUB_APP_VERSION", "0.1.12" if me == "herdr-app" else "0.1.17"))
+elif me == "herdr-app" and args[:1] == ["status"]:
+    sys.exit(0 if os.environ.get("STUB_APP_UP", "1") == "1" else 1)
+elif me == "herdr-app" and args[:1] == ["ls"]:
+    print(json.dumps({"spaces": [{"id": s["id"], "name": s["name"], "machine": s["machine"],
+                                  "tabs": [{"id": t["id"], "name": t["name"], "terminals": t["terminals"]} for t in s["tabs"]]}
+                                 for s in st["spaces"]]}))
+elif me == "herdr-app" and args[:1] == ["do"]:
+    cmd, a = args[1], json.loads(args[2] if len(args) > 2 else "{}")
+    out = {}
+    if cmd == "space.new":
+        s = {"id": f"sp{len(st['spaces'])}", "name": a.get("name"), "machine": a.get("machine") or None, "tabs": []}
+        tb = {"id": f"tb{s['id']}-0", "name": a.get("tab") or "1", "terminals": []}
+        s["tabs"].append(tb); st["spaces"].append(s)
+        out = {"space": s["id"], "tab": tb["id"], "terminal": term(a.get("argv"), s, tb)}
+    elif cmd == "tab.new":
+        s = next(x for x in st["spaces"] if x["id"] == a["space"])
+        tb = {"id": f"tb{s['id']}-{len(s['tabs'])}", "name": a.get("name"), "terminals": [], "mod": a.get("mod")}
+        s["tabs"].append(tb)
+        out = {"space": s["id"], "tab": tb["id"]}
+        if not a.get("mod"):
+            out["terminal"] = term(a.get("argv"), s, tb)
+    elif cmd == "pane.split":
+        s, tb = find_tab(a["pane"])
+        t = term(a.get("argv"), s, tb)
+        out = {"pane": "p" + t, "terminal": t}
+    elif cmd == "pane.close":
+        s, tb = find_tab(a["pane"])
+        tb["terminals"] = [x for x in tb["terminals"] if x["pane"] != a["pane"]]
+    save(); print(json.dumps(out))
+elif me == "hc" and args[:1] == ["get"]:
+    t = st["terms"].get(args[1]) or {}
+    fg = os.environ.get("STUB_FG_" + args[1])
+    argv = fg.split() if fg else ["/usr/bin/python3", "/x/shoal/cli.py", "view"]
+    print(json.dumps({"address": args[1], "labels": t.get("labels", {}),
+                      "foreground": {"name": os.path.basename(argv[0]), "argv": argv}}))
+elif me == "hc" and args[:1] == ["label"]:
+    for kv in args[2:]:
+        if "=" in kv:
+            k, v = kv.split("=", 1); st["terms"].setdefault(args[1], {"labels": {}})["labels"][k] = v
+    save(); print("{}")
+elif me == "hc" and args[:2] == ["machine", "ls"]:
+    print(json.dumps({"machines": [{"name": m} for m in st["machines"]]}))
+elif me == "hc" and args[:2] == ["machine", "add"]:
+    st["machines"].append(args[args.index("--name") + 1]); save(); print("{}")
+else:
+    print(json.dumps({"error": "stub: unknown " + " ".join(args)})); sys.exit(1)
+STUB
+chmod +x "$S/app-stub"; mkdir -p "$S/appbin"; ln -sf "$S/app-stub" "$S/appbin/herdr-app"; ln -sf "$S/app-stub" "$S/appbin/hc"
+mkdir -p "$S/apphome/mods/lattice-view"
+AENV="SHOAL_HERDR_APP_BIN=$S/appbin/herdr-app SHOAL_HC_BIN=$S/appbin/hc HERDR_APP_HOME=$S/apphome STUB_APP_STATE=$S/app.json STUB_APP_LOG=$S/app.log XDG_STATE_HOME=$S/state-app"
+# the plan: a space per shoal (overview, roles, lattice) and the cards' argv; read-only
+OUT=$(env $AENV $H ui app-plan --json --no-standalone --ledger-root "$ROOT") || fail "app-plan :: $OUT"
+python3 - "$OUT" "$SID" <<'PY3' || fail "app plan shape"
+import json, sys
+d = json.loads(sys.argv[1]); sid = sys.argv[2]
+assert d["kind"] == "shoal-app-plan" and d["v"] == 1, d
+s = next(x for x in d["spaces"] if x.get("shoal") == sid)
+assert s["name"] == sid and [t["name"] for t in s["tabs"]] == ["overview", "roles", "lattice"], s
+cards = [p for p in s["tabs"][1]["panes"]]
+assert any(p["label"] == f"{sid}/cl" and p["argv"][-4:] == ["view", sid, "cl", "--stub"] for p in cards), cards
+lat = s["tabs"][2]
+assert lat["mod"] == "lattice-view" and lat["props"]["shoal"] == sid and lat["props"]["source"]["kind"] in ("file", "exec"), lat
+print("app plan ok")
+PY3
+# no app running: app-open says so and changes nothing
+OUT=$(env $AENV STUB_APP_UP=0 $H ui app-open --no-standalone --ledger-root "$ROOT" 2>&1); RC=$?
+[ "$RC" = 1 ] && grep -q "not running here" <<<"$OUT" || fail "app-open without an app: rc $RC :: $OUT"
+# a dry run lists what it would add; nothing structural is called
+: > "$S/app.log"
+OUT=$(env $AENV $H ui app-open --dry-run --no-standalone --ledger-root "$ROOT") || fail "app-open dry-run :: $OUT"
+grep -q "\[dry-run\] space $SID" <<<"$OUT" && grep -q "\[dry-run\] tab lattice (lattice-view)" <<<"$OUT" || fail "dry-run plan :: $OUT"
+! grep -q '"do"' "$S/app.log" || fail "a dry run called herdr-app do :: $(cat "$S/app.log")"
+# a real open: the space, its tabs, a split per further pane, every terminal labelled; then focus
+OUT=$(env $AENV $H ui app-open --no-standalone --ledger-root "$ROOT") || fail "app-open :: $OUT"
+python3 - "$S/app.json" "$S/app.log" "$SID" <<'PY4' || fail "app-open reconcile"
+import json, sys
+st = json.load(open(sys.argv[1])); log = [json.loads(l) for l in open(sys.argv[2])]; sid = sys.argv[3]
+s = next(x for x in st["spaces"] if x["name"] == sid)
+assert [t["name"] for t in s["tabs"]] == ["overview", "roles", "lattice"], s["tabs"]
+assert len(s["tabs"][0]["terminals"]) == 2 and s["tabs"][2].get("mod") == "lattice-view", s["tabs"]
+labels = sorted(t["labels"].get("shoal.pane", "") for t in st["terms"].values())
+assert f"{sid}/overview" in labels and f"{sid}/ledger" in labels and f"{sid}/cl" in labels, labels
+cmds = [l[2] for l in log if l[:2] == ["herdr-app", "do"]]
+assert cmds.count("space.new") == 1 and "space.select" in cmds and "tab.select" in cmds, cmds
+assert not any(c in ("pane.close", "space.close", "tab.close", "terminal.kill") for c in cmds), cmds
+print("app open ok")
+PY4
+# idempotent: a second open adds nothing
+: > "$S/app.log"
+OUT=$(env $AENV $H ui app-open --no-standalone --no-focus --ledger-root "$ROOT") || fail "app-open again :: $OUT"
+grep -q "every planned space is open" <<<"$OUT" || fail "second open :: $OUT"
+! grep -qE '"(space.new|tab.new|pane.split)"' "$S/app.log" || fail "second open changed the app :: $(cat "$S/app.log")"
+# a card whose terminal came back as a bare shell is replaced; a pane running anything else is left alone
+CL=$(python3 -c "import json,sys;st=json.load(open('$S/app.json'));print(next(t for t,v in st['terms'].items() if v['labels'].get('shoal.pane')=='$SID/cl'))")
+OV=$(python3 -c "import json,sys;st=json.load(open('$S/app.json'));print(next(t for t,v in st['terms'].items() if v['labels'].get('shoal.pane')=='$SID/overview'))")
+: > "$S/app.log"
+OUT=$(env $AENV "STUB_FG_$CL=-bash" "STUB_FG_$OV=claude attach c1a2b3c4" $H ui app-open --no-standalone --no-focus --ledger-root "$ROOT") || fail "app-open repair :: $OUT"
+grep -q "restart $SID/cl (its pane is a bare shell)" <<<"$OUT" || fail "bare shell card not restarted :: $OUT"
+python3 - "$S/app.log" "p$CL" "p$OV" <<'PY8' || fail "bare shell repair touched the wrong panes :: $(cat "$S/app.log")"
+import json, sys
+do = [(l[2], json.loads(l[3])) for l in map(json.loads, open(sys.argv[1])) if l[:2] == ["herdr-app", "do"]]
+assert ("pane.close", {"pane": sys.argv[2]}) in do, do
+assert not any(a.get("pane") == sys.argv[3] for _, a in do), do
+PY8
+# a remote host: its route becomes an app machine and its plan comes over ssh
+cp "$SHOAL_CONFIG" "$S/host-app.toml"; printf '\n[hosts.lane-b]\nssh = "u@lane-b.invalid"\nresolve = "dns"\n' >> "$S/host-app.toml"
+env $AENV $H ui app-plan --json --no-standalone --ledger-root "$ROOT" > "$S/plan-b.json" || fail "app-plan for the remote stub"
+printf '#!/bin/sh\ncat "%s"\n' "$S/plan-b.json" > "$S/ssh-plan"; chmod +x "$S/ssh-plan"
+OUT=$(env $AENV SHOAL_CONFIG="$S/host-app.toml" SHOAL_SSH="$S/ssh-plan" $H ui app-open --machine lane-b --no-standalone --no-focus) \
+  || fail "app-open remote :: $OUT"
+python3 - "$S/app.json" "$SID" <<'PY5' || fail "remote machine space"
+import json, sys
+st = json.load(open(sys.argv[1]))
+assert st["machines"] == ["lane-b"], st["machines"]
+assert any(s["name"] == sys.argv[2] and s["machine"] == "lane-b" for s in st["spaces"]), st["spaces"]
+print("app remote ok")
+PY5
+# the card's own status report (OSC 7501), the mapping, and the host list
+python3 - "$SHOALD" <<'PY6' || fail "card report"
+import base64, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_app
+o = ui_app.osc7501("blocked", "auth", "lane/r", "wait user-auth")
+assert o.startswith("\x1b]7501;state=blocked:kind=auth:app=shoal:title=") and o.endswith("\x1b\\"), repr(o)
+assert base64.b64encode(b"wait user-auth").decode() in o
+def row(**kw):
+    r = {"slug": "r", "posture": "idle", "sub": None, "wait": None, "active": None, "session": "idle", "needs_you": False,
+         "asks": [], "can_progress": {"ok": True, "reasons": []}}
+    r.update(kw); return r
+assert ui_app.card_report(row(), "lane")["state"] == "idle"
+w = row(posture="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
+        can_progress={"ok": True, "reasons": ["waiting-on-you"]})
+assert (ui_app.card_report(w, "lane")["state"], ui_app.card_report(w, "lane")["kind"]) == ("blocked", "auth")
+q = row(session="working", needs_you=True, can_progress={"ok": False, "reasons": ["blocked-on-question"]})
+assert (ui_app.card_report(q, "lane")["state"], ui_app.card_report(q, "lane")["kind"]) == ("blocked", "question")
+j = row(posture="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:build"})
+rep = ui_app.card_report(j, "lane")
+assert rep["state"] == "working" and "local-ci" in rep["msg"] and rep["title"] == "lane/r", rep
+assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["-bash"]}}) == "shell"
+assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["bash", "-c", "x"]}}) == "other"
+assert ui_app.foreground_kind({"foreground": {"name": "claude", "argv": ["claude", "attach", "x"]}}) == "other"
+assert not ui_app.in_core_terminal({}) and ui_app.in_core_terminal({"HC_TERMINAL_ID": "t1"})
+print("card report ok")
+PY6
+OUT=$(env $AENV SHOAL_UI_LEDGER_ROOTS="$ROOT" HC_TERMINAL_ID=t1 timeout 4 $H view $SID cl --stub </dev/null 2>/dev/null); true
+grep -q $'\x1b\]7501;state=' <<<"$OUT" || fail "a card in a core terminal reports no OSC 7501 :: $(tail -c 300 <<<"$OUT" | od -c | tail -5)"
+OUT=$(env $AENV SHOAL_UI_LEDGER_ROOTS="$ROOT" timeout 4 $H view $SID cl --stub </dev/null 2>/dev/null); true
+! grep -q $'\x1b\]7501' <<<"$OUT" || fail "a card outside the app wrote an OSC 7501 report"
+OUT=$(env $AENV SHOAL_CONFIG="$S/host-app.toml" SHOAL_SSH="$S/ssh-stub" STUB_SSH_RC=255 $H ui launch --list --json) || fail "launch --list :: $OUT"
+python3 - "$OUT" <<'PY7' || fail "launch list shape"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["kind"] == "shoal-launch-list" and d["hosts"][0]["name"] == "local" and d["hosts"][0]["local"], d
+b = next(h for h in d["hosts"] if h["name"] == "lane-b")
+assert b["reachable"] is False and "shoal doctor" in b["hint"] and b["route"] == "u@lane-b.invalid", b
+print("launch list ok")
+PY7
+OUT=$(env $AENV $H ui app-install --dry-run) || fail "app-install dry-run :: $OUT"
+grep -q "shoal-graph-feed.service" <<<"$OUT" || fail "app-install plan :: $OUT"
+
 # the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
 if command -v node >/dev/null 2>&1; then
   node "$TESTD/herdr_app/test_lattice_view.mjs" >"$S/lattice-view.out" 2>&1 || fail "herdr-app lattice-view: $(tail -c 800 "$S/lattice-view.out")"
