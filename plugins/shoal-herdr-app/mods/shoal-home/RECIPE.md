@@ -14,8 +14,20 @@ host's shoal spaces in the app.
   `#03050b`, 165 degrees) with a navy wash (35 degrees), and a soft static bloom behind the logo
   (six stacked ellipses, blue then cyan, 2.2 percent alpha each).
 - **Top right:** a `↻ refresh` button (96 by 24, steel `#1c2a30` at half alpha).
-- **Logo:** `SHOAL` in Geist weight 700 at 84 px times the scale, cyan `#5fe3ff` over a deep blue
-  `#1f4fd8` copy offset down and right (the terminal header's cyan blocks with a blue outline).
+- **Logo:** `SHOAL` at 84 px times the scale, weight 800, in a display serif (Noto Serif Display, else
+  DejaVu Serif, else Liberation Serif, else Geist), so it reads like a ship's name. Layers, back to
+  front: a drop shadow `#020a18` at 70 percent offset by font/16; a navy `#062a4f` outline (eight copies
+  offset by font/34: GPUI text has no stroke); the letters in deep sea blue `#1f6fd8`; and their top 53
+  percent again in sunlit `#7fe7ff`, clipped, so the letters sit half above a waterline.
+- **The sea** (`ocean.js`, a pure display list): kelp strands rise from a seabed line just above the
+  tagline, only in the room either side of the logo (a strand's sway is clamped to its side). Each
+  strand is a dark `#0d4f4c` body, a `#1f8f7a` middle and a light `#5fd3b0` midrib, with three leaf
+  blades and two or three floats (`#47d6b4`, a glow ring and a highlight). The floats are a network:
+  tendrils (`#38c8ff`, a 7 percent halo under a 42 percent line) link same-height floats of
+  neighbouring strands and link each creature's rim to its nearest float; a tendril that would cross
+  the logo is dropped. Below the logo, two foam waves; above its right end, four rising bubbles. Items
+  of one style are merged into one path (about 40 layers in all), and at the `full` motion tier each
+  strand sways a few pixels natively.
 - **Creatures** (`assets/fish-*.png`, 384 px RGBA), placed like the terminal splash: coral
   centered above the logo, the seahorse above left, the blowfish above right, teal left of the
   logo, violet right of it. Size in units of B = 92 px times the scale: coral 1.1, seahorse 0.85,
@@ -78,7 +90,7 @@ host's shoal spaces in the app.
   room for creatures that never draw.
 - Card heights are computed from the line count (`layout.cardHeight`), so every line must stay
   exactly 18 px (`.h(CARD.line)`), or the cards clip.
-- The logo width is an estimate (3.5 em); a font much wider than Geist would crowd the side fish.
+- The logo width is an estimate (3.5 em). Noto Serif Display at weight 800 fits it; a much wider face would crowd the side fish.
 - The list contract is additive: unknown fields are ignored, a repeated host name keeps its first
   row, a `last` naming no host is dropped.
 

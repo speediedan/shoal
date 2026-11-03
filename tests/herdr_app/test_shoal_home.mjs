@@ -189,3 +189,52 @@ test("assets and motion: five creatures shipped, motion.js identical to lattice-
   assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", { renderer: "gpu", focused: false }).tier).loops, false, "not while the window is unfocused");
   assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", {}).tier).loops, false, "an unknown renderer stays still");
 });
+
+const O = await import(join(MOD, "ocean.js"));
+
+test("ocean: kelp, floats and tendrils stay clear of the logo and the host cards, at every art size", () => {
+  const sizes = [[1425, 860], [1150, 770], [1920, 1200], [900, 640], [700, 520]];
+  let drawn = 0;
+  for (const [w, h] of sizes) {
+    const lay = L.homeLayout({ width: w, height: h }, heightsOf(list), { art: true });
+    const sea = O.oceanScene(lay);
+    if (lay.mode !== "art") { assert.equal(sea, null, `${w}x${h}: no sea in text mode`); continue; }
+    drawn++;
+    assert.ok(sea.strands.length >= 2 && sea.nodes.length >= 4 && sea.edges.length >= 2, `${w}x${h}: a network`);
+    const lg = lay.logo;
+    const cardsTop = Math.min(...lay.cards.map((c) => c.y));
+    for (const it of sea.items) {
+      const b = O.itemBounds(it);
+      assert.ok(b.x0 >= 0 && b.x1 <= w && b.y0 >= 0, `${w}x${h}: ${it.kind} inside the window`);
+      assert.ok(b.y1 < cardsTop - 8, `${w}x${h}: ${it.kind} above the host cards`);
+    }
+    for (const s of sea.strands) {
+      const xs = s.segs.flatMap((g) => [g[0], g[2], g[4], g[6]]);
+      assert.ok(Math.max(...xs) < lg.x || Math.min(...xs) > lg.x + lg.w, `${w}x${h}: a strand stays beside the logo`);
+    }
+    for (const n of sea.nodes) {
+      assert.ok(!(n.x > lg.x && n.x < lg.x + lg.w && n.y > lg.y && n.y < lg.y + lg.h), `${w}x${h}: no float on the logo`);
+      assert.ok(n.y <= sea.seabed, `${w}x${h}: floats above the seabed`);
+    }
+    const ids = new Set(sea.nodes.map((n) => n.id));
+    for (const e of sea.edges) {
+      assert.ok(ids.has(e.a), "an edge starts at a float");
+      assert.ok(ids.has(e.b) || e.b.startsWith("creature:"), "an edge ends at a float or a creature");
+    }
+    assert.ok(sea.edges.some((e) => e.creature), `${w}x${h}: creatures join the network`);
+    assert.ok(sea.items.length < 60, `${w}x${h}: styles merged into few layers (${sea.items.length})`);
+  }
+  assert.ok(drawn >= 3, "most sizes draw the sea");
+  const lay = L.homeLayout({ width: 1150, height: 770 }, heightsOf(list), { art: true });
+  assert.deepEqual(O.oceanScene(lay), O.oceanScene(lay), "the same layout draws the same sea");
+});
+
+test("ocean: merged items keep one layer per style and every subpath", () => {
+  const a = { kind: "node", cmds: [["M", 0, 0], ["Z"]], fill: true, color: "#fff", alpha: 0.5 };
+  const b = { kind: "node", cmds: [["M", 1, 1], ["Z"]], fill: true, color: "#fff", alpha: 0.5 };
+  const s = { kind: "kelp", cmds: [["M", 2, 2]], width: 3, color: "#0f0", alpha: 1, sway: { amp: 2, period: 4000 } };
+  const m = O.mergeItems([a, s, b]);
+  assert.equal(m.length, 2);
+  assert.deepEqual(m[0].cmds, [["M", 0, 0], ["Z"], ["M", 1, 1], ["Z"]]);
+  assert.equal(m[1], s);
+});

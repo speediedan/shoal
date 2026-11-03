@@ -573,12 +573,14 @@ shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; t
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
 ```
 
-- **Spaces.** `app-open` gives each shoal a space named with its short tag, on the machine that runs it,
-  with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (one card
+- **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
+  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (one card
   per role, a two-column grid from four cards) and `lattice` (the `lattice-view` mod on that shoal). Each
   saved standalone session gets a space as well. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
-  from the 0.9.3 registry flags.
+  from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only
+  the shoals whose home it is (`--shoal ID` names one anyway); a role that runs on another host keeps its
+  routed card in its home's space, as in 0.9.3.
 - **Another host** is a herdr-core machine named after its route (`[hosts.<server>]`). The first
   `app-open --machine <server>` adds it (`hc machine add <route ssh> --name <server>`); the host must have
   herdr-core installed. The plan comes from that host (`shoal ui app-plan --json` over the route), and its
@@ -610,6 +612,11 @@ shoal ui launch --list [--json] [--summary]        # the hosts the chooser offer
   copied (marked `.shoal-copy`), because the app does not load a PNG through a linked mod folder. Rerun it
   after an upgrade; the doctor row says when a copy is stale. A folder there that shoal did not make is left
   alone.
+- **Copy and paste.** The app copies with Ctrl+Shift+C (or a program's OSC 52), and pastes an image into a
+  terminal on another machine by uploading it there and pasting its path, which Claude Code, Codex, opencode
+  and Muse take as an attachment. `app-install` keeps the 0.9.3 keys in the app's `keys.json`: Ctrl+V pastes
+  text, Ctrl+Shift+V pastes an image (the app ships them the other way round). Only an unbound key or the
+  app's own default is changed. The kitty window wrapper and `shoal-paste-image` are not needed here.
 - **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
   "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's
   shoals (`id`, `tag`, `roles`, `working`, `waiting`, `needs_you`), its total needs-you and `pin_ok` (its

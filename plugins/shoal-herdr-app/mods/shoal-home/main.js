@@ -22,7 +22,7 @@
 
 import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, readTextFile, appHome, props, theme, nextCommand, window as appWindow } from "herdr";
+import { exec, readTextFile, appHome, props, theme, fonts, nextCommand, window as appWindow } from "herdr";
 import * as fs from "fs/promises";
 import {
   PALETTE, DOT, parseList, listSignature, hostState, canOpen, initialSelection, keepSelection, keyAction,
@@ -30,6 +30,7 @@ import {
 } from "./model.js";
 import { homeLayout, cardHeight, CREATURES, CARD, PAD } from "./layout.js";
 import { resolveTier, motionPolicy, rendererFromProcess, MOTION_CYCLE } from "./motion.js";
+import { oceanScene, SEA } from "./ocean.js";
 
 const MOD = "shoal-home";
 const DEFAULT_ARGV = ["shoal", "ui", "launch", "--list", "--json", "--summary"];
@@ -50,6 +51,35 @@ const dot = (color, size = 8) => div().w(size).h(size).flex_none().rounded(size 
 
 function rectPath(w, h) {
   return PathBuilder.fill().move_to(0, 0).line_to(w, 0).line_to(w, h).line_to(0, h).close().build();
+}
+
+/** One ocean.js item as a full-canvas paint_path layer. */
+function seaEl(it) {
+  let b = it.fill ? PathBuilder.fill() : PathBuilder.stroke(it.width ?? 1);
+  for (const c of it.cmds) {
+    switch (c[0]) {
+      case "M": b = b.move_to(c[1], c[2]); break;
+      case "L": b = b.line_to(c[1], c[2]); break;
+      // display list: C c1x c1y c2x c2y x y; PathBuilder: to first, then the two controls
+      case "C": b = b.cubic_bezier_to(c[5], c[6], c[1], c[2], c[3], c[4]); break;
+      case "A": b = b.arc_to(c[1], c[2], c[3], c[4], c[5], c[6], c[7]); break;
+      case "Z": b = b.close(); break;
+      default: break;
+    }
+  }
+  return window.paint_path(b.build(), Background.solid(withAlpha(it.color, it.alpha))).absolute().top(0).left(0).size_full();
+}
+
+// A display serif reads as a ship's name; the shipped Geist when it is not installed.
+const LOGO_FONTS = ["Noto Serif Display", "DejaVu Serif", "Liberation Serif"];
+let logoFont = null;
+function logoFamily() {
+  if (logoFont === null) {
+    let have = [];
+    try { have = fonts(); } catch (_e) { have = []; }
+    logoFont = LOGO_FONTS.find((f) => have.includes(f)) ?? UI;
+  }
+  return logoFont;
 }
 
 export default class Home extends View {
@@ -224,6 +254,14 @@ export default class Home extends View {
       canvas.child(window.paint_path(path, Background.solid(withAlpha(k < 3 ? P.blue : P.cyan, 0.022))).absolute().top(0).left(0).size_full());
     }
 
+    // the sea: kelp strands whose floats and tendrils make a network with the creatures (ocean.js)
+    const sea = oceanScene(L);
+    for (const it of sea?.items ?? []) {
+      let el = seaEl(it);
+      if (drift && it.sway) el = el.loop("left", { from: 0, to: it.sway.amp, period: it.sway.period, easing: "ease-in-out" });
+      canvas.child(el);
+    }
+
     for (const c of L.creatures) {
       let im = image(`mods/${MOD}/assets/${c.file}`).id(`fish-${c.name}`).absolute().left(c.x).top(c.y).w(c.size).h(c.size);
       if (drift) im = im.loop("top", { from: c.y, to: c.y + c.drift, period: c.period, easing: "ease-in-out" });
@@ -264,13 +302,25 @@ export default class Home extends View {
 
   logoEl(L) {
     const lg = L.logo;
-    const text = (dx, dy, color) => div().absolute().left(lg.x + dx).top(lg.y + dy).w(lg.w).h(lg.h).flex().items_center().justify_center()
-      .whitespace_nowrap().text_size(lg.font).line_height(`${lg.h}px`).font_weight(700).text_color(color).child("SHOAL");
-    // the terminal header's look: bright cyan blocks over a deep blue offset outline
-    const depth = Math.max(2, Math.round(lg.font / 28));
-    return div().absolute().left(0).top(0).size_full()
-      .child(text(depth, depth + 1, withAlpha(P.logoDeep, 0.9)))
-      .child(text(0, 0, P.logo));
+    const fam = logoFamily();
+    const text = (x, y, color) => div().absolute().left(x).top(y).w(lg.w).h(lg.h).flex().items_center().justify_center()
+      .whitespace_nowrap().font_family(fam).text_size(lg.font).line_height(`${lg.h}px`).font_weight(800).text_color(color).child("SHOAL");
+    // nautical and still plain to read: a deep drop shadow, a navy outline (eight offset copies: GPUI text has no
+    // stroke), the letters in deep sea blue, and their upper half sunlit (the same letters clipped to the top)
+    const o = Math.max(1.5, lg.font / 34);
+    const depth = Math.max(3, Math.round(lg.font / 16));
+    const out = div().absolute().left(0).top(0).size_full()
+      .child(text(lg.x + depth, lg.y + depth, withAlpha(SEA.logoShadow, 0.7)));
+    for (const [dx, dy] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]) {
+      out.child(text(lg.x + dx * o, lg.y + dy * o, SEA.logoOutline));
+    }
+    out.child(text(lg.x, lg.y, SEA.logoDeep));
+    const sun = Math.round(lg.h * 0.53);
+    out.child(div().absolute().left(lg.x).top(lg.y).w(lg.w).h(sun).overflow_hidden()
+      .child(div().absolute().left(0).top(0).w(lg.w).h(lg.h).flex().items_center().justify_center().whitespace_nowrap()
+        .font_family(fam).text_size(lg.font).line_height(`${lg.h}px`).font_weight(800)
+        .text_color(SEA.logoSun).child("SHOAL")));
+    return out;
   }
 
   refreshEl(b) {

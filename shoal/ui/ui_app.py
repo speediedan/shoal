@@ -192,8 +192,17 @@ def standalone_space(e: dict) -> dict:
                       "panes": [_pane(ui_herdr.standalone_label(e), ui_herdr.standalone_argv(e))]}]}
 
 
+def home_here(spec) -> bool:
+    """True when this host is the shoal's home (its spec `home`; none set counts as here). Every host reads
+    every shoal through the shared ledger, so a space per shoal on every machine duplicated every card."""
+    import config as _config
+    home = getattr(spec, "home", "") or ""
+    return not home or home == (_config.server() or os.uname().nodename.split(".")[0])
+
+
 def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool = True) -> dict:
-    """This host's wanted spaces. Hidden shoals are left out unless named; retired ones never appear."""
+    """This host's wanted spaces: the shoals whose home it is (any shoal named in `ids`), and its saved
+    standalone sessions. Hidden shoals are left out unless named; retired ones never appear."""
     import ui_herdr
     import ui_launch
     import ui_status
@@ -206,6 +215,9 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
             spec = ShoalSpec.load(p)
             spec.path = p
             if spec.sid in hidden:
+                continue
+            if not ids and not home_here(spec):
+                notes.append(f"{spec.sid}: its home is {spec.home} (open it there, or name it with --shoal)")
                 continue
             spaces.append(shoal_space(spec, feed))
         except Exception as exc:  # noqa: BLE001 - one broken spec never hides the others
@@ -838,7 +850,55 @@ def cmd_app_install(a) -> int:
                 line = install_mod(name, a.dry_run)
                 if line:
                     print(line)
+        for line in install_keys(a.dry_run):
+            print(line)
     return 0
+
+
+# The 0.9.3 paste keys, kept at the maintainer's request (2026-11-03): under kitty, Ctrl+V pasted text and
+# Ctrl+Shift+V an image. The app ships them the other way round.
+PASTE_KEYS = {"ctrl-v": "terminal.paste", "ctrl-shift-v": "terminal.paste_image"}
+APP_DEFAULT_PASTE_KEYS = {"ctrl-v": "terminal.paste_image", "ctrl-shift-v": "terminal.paste"}
+
+
+def keys_state() -> tuple[bool, str]:
+    try:
+        term = (json.load(open(os.path.join(app_home(), "keys.json"))).get("terminal") or {})
+    except (OSError, ValueError) as exc:
+        return False, f"keys.json unreadable ({exc})"
+    have = {k: term.get(k) for k in PASTE_KEYS}
+    return have == PASTE_KEYS, ", ".join(f"{k} = {v or 'unbound'}" for k, v in have.items())
+
+
+def install_keys(dry_run: bool = False) -> list[str]:
+    """Set the 0.9.3 paste keys in the app's keys.json `terminal` section. Only a key that is unbound or holds the
+    app's own default is changed; a binding the person chose is left and named. The app reloads the file live."""
+    path = os.path.join(app_home(), "keys.json")
+    try:
+        text = open(path).read()
+        doc = json.loads(text)
+    except FileNotFoundError:
+        text, doc = None, {}
+    except ValueError as exc:
+        return [f"keys: {path} is not valid JSON ({exc}): left as it is"]
+    term = doc.setdefault("terminal", {})
+    out, changed = [], False
+    for key, want in PASTE_KEYS.items():
+        have = term.get(key)
+        if have == want:
+            continue
+        if have not in (None, APP_DEFAULT_PASTE_KEYS[key]):
+            out.append(f"keys: {key} is bound to {have} by you: left as it is (0.9.3 had {want})")
+            continue
+        term[key] = want
+        changed = True
+        out.append(("[dry-run] " if dry_run else "") + f"keys: {key} -> {want} (the 0.9.3 paste keys)")
+    if changed and not dry_run:
+        with open(path + ".tmp", "w") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(path + ".tmp", path)
+    return out
 
 
 # ---- doctor -----------------------------------------------------------------------------------
@@ -865,6 +925,7 @@ def doctor_checks() -> list[tuple[str, bool, str]]:
         for name in MODS:
             if os.path.isdir(os.path.join(MOD_DIR, name)):
                 out.append((f"app mod {name} installed from this checkout",) + link_state(name))
+        out.append(("app paste keys as in 0.9.3",) + keys_state())
     if has_core:
         v = _version([hc_bin(), "--version"])
         out.append(("herdr-core at the pin", v == CORE_PIN, f"{v or 'none'} (pin {CORE_PIN})"))
