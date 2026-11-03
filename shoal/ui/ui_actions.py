@@ -148,6 +148,9 @@ def plan(verb: str, a) -> dict:
         raise ActError(f"unknown verb {verb} (write: {', '.join(WRITE_VERBS)}; view: {', '.join(VIEW_VERBS)})")
     args, cost, confirm = build(verb, a)
     pv = _shoal(args + ["--dry-run"])
+    if pv.returncode != 0:
+        # the verb would refuse it too: say why, and hand out no token
+        raise ActError(f"the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
     _sweep()
     token = _store({"verb": verb, "shoal": a.shoal, "role": a.role or "", "argv": args})
     return {"v": V, "kind": "shoal-act-plan", "verb": verb, "shoal": a.shoal, "role": a.role or "",

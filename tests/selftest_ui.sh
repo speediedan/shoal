@@ -2403,6 +2403,11 @@ OUT=$(env $AE $H ui act-apply --token "$TOK" --json 2>&1); RC=$?
 [ "$RC" = 2 ] && grep -q "already applied, or expired" <<<"$OUT" || fail "a token applies once: rc $RC :: $OUT"
 OUT=$(env $AE $H ui act-apply --token "../../etc/passwd" --json 2>&1); RC=$?
 [ "$RC" = 2 ] && grep -q "not a plan token" <<<"$OUT" || fail "a token is only ever a token :: $OUT"
+# a verb whose own dry run refuses gets no token (nothing to withdraw here)
+N=$(ls "$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/act-plans" | wc -l)
+OUT=$(env $AE $H ui act-plan withdraw --shoal $SID --item example/repo#999 --json 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "dry run refused it" <<<"$OUT" || fail "a refused dry run plans nothing: rc $RC :: $OUT"
+[ "$(ls "$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/act-plans" | wc -l)" = "$N" ] || fail "a refused dry run stored a plan"
 # an expired plan does not run
 OUT=$(env $AE $H ui act-plan withdraw --shoal $SID --item example/repo#7 --json) || fail "act-plan withdraw :: $OUT"
 TOK=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["token"])' "$OUT")
@@ -2451,8 +2456,10 @@ if command -v node >/dev/null 2>&1; then
   echo "herdr-app lattice-view ok"
   node "$TESTD/herdr_app/test_shoal_home.mjs" >"$S/shoal-home.out" 2>&1 || fail "herdr-app shoal-home: $(tail -c 800 "$S/shoal-home.out")"
   echo "herdr-app shoal-home ok"
+  node "$TESTD/herdr_app/test_shoal_actions.mjs" >"$S/shoal-actions.out" 2>&1 || fail "herdr-app shoal-actions: $(tail -c 800 "$S/shoal-actions.out")"
+  echo "herdr-app shoal-actions ok"
 else
-  echo "herdr-app lattice-view, shoal-home: skipped (node not on PATH)"
+  echo "herdr-app lattice-view, shoal-home, shoal-actions: skipped (node not on PATH)"
 fi
 
 echo "SELFTEST PASS ($S)"

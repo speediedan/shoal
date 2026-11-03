@@ -5,7 +5,8 @@
 // pan/zoom) and scene.js (the display list). This file fetches the doc on a data timer, turns the
 // display list into GPUI elements and handles input. Motion is native (.loop, .frames,
 // .transition, .spin); the view redraws only on data ticks, hover target changes, pan and zoom,
-// and at most every 100 ms while a changed layout cools.
+// and at most every 100 ms while a changed layout cools. A right-click on a role node opens the
+// shoal-actions dialog on that role (model.js actionsOverlay); the view itself never writes.
 //
 // props:
 //   source: {kind: "exec", argv: [...], on} | {kind: "file", path, on} | {kind: "fixture", path?}
@@ -27,11 +28,11 @@
 
 import { View, div, svg, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, Link } from "gpui-base";
-import { exec, readTextFile, appHome, props, theme, shared, setShared, nextCommand, placement, window as appWindow } from "herdr";
+import { exec, readTextFile, appHome, props, theme, shared, setShared, nextCommand, placement, openOverlay, window as appWindow } from "herdr";
 import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
-  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature,
+  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay,
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
@@ -484,6 +485,18 @@ export default class Lattice extends View {
     cx.notify();
   }
 
+  /** Right-click on a role node (or a shoal's system node): the shoal-actions dialog on it. */
+  actions(e, cx) {
+    const p = e.local_position;
+    if (!p || !this.vm) return;
+    const spec = actionsOverlay(this.vm, hitNode(this.hits, p, 4), this.source);
+    if (!spec) return;
+    cx.stop_propagation();
+    this.press = null;
+    this.drag = false;
+    openOverlay(spec);
+  }
+
   wheel(e, cx) {
     if (!this.tf) return;
     const anchor = e.local_position ?? { x: this.canvasSize().width / 2, y: this.canvasSize().height / 2 };
@@ -541,6 +554,7 @@ export default class Lattice extends View {
       })
       .on_mouse_move((e, cx) => this.move(e, cx))
       .on_mouse_up("left", (e, cx) => this.release(e, cx))
+      .on_mouse_down("right", (e, cx) => this.actions(e, cx))
       .on_hover((h, cx) => {
         if (h) return;
         const had = this.hover !== null || this.press !== null;

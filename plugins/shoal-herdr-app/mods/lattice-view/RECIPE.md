@@ -84,6 +84,10 @@ you, per-shoal throughput and per-host load.
   `+N more` note). Drag pans, wheel up zooms in at the pointer and wheel down zooms out, click a
   cluster drills in, Escape backs out (to the home view), `g` toggles the global view, `l`
   toggles a legend of every encoding, `f` lays the view out afresh and fits it.
+- Right-click a role node: the `shoal-actions` dialog opens on that role
+  (`openOverlay({mod: "shoal-actions", kind: "dialog", props: {shoal, role, machine}})`, machine
+  `source.on`, null here); on a shoal's writer node it opens on the shoal alone. A fixture copy
+  passes `fixture: true`, so the dialog answers from its own fixtures. The view writes nothing.
 - Layout stability: positions are kept by node id across polls. A poll with the same node set
   moves nothing and does not refit (metrics, states, ages and edges never shift a node); a changed
   node set refines only the new nodes and those whose target moved, the rest stay pinned. `f` is
@@ -119,7 +123,8 @@ you, per-shoal throughput and per-host load.
 - A pane mod, `mod.json` `{"place": "none", "focusable": true}`; no layout of its own. Pulse is the
   same mod as a floating `peek` block with `props.mode: "pulse"`.
 - `main.js` (View): `cx.timer.every` for data only, `cx.spawn` + `exec` / `readTextFile`,
-  `nextCommand`, `shared` / `setShared`, `placement`, `theme` (rail border), `appHome`.
+  `nextCommand`, `shared` / `setShared`, `placement`, `theme` (rail border), `appHome`,
+  `openOverlay` (the actions dialog on a right-click, `model.js` `actionsOverlay`).
 - Pure modules (no Herdr imports, tested under Node): `model.js` (doc to view model, encodings,
   needs-you order, edge buckets, host palette, event diff, the visual signature), `motion.js`
   (tiers, budgets, auto resolution, the renderer probe), `layout.js` (targets plus a compact

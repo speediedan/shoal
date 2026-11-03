@@ -641,7 +641,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   was shown. `offline` carries `confirm: false` (the palette runs it without a confirm). Views store nothing:
   `next`, `status`, `conditions`, `asks` (also as data) and `upgrade` (a preview) return
   `{"kind": "shoal-act-view", "text"}`, and `roles` lists the shoals and their roles with a session. An
-  error is `{"kind": "shoal-act-error", "error"}` with exit 2. A preview syncs the ledger clone the way the
+  error is `{"kind": "shoal-act-error", "error"}` with exit 2, and so is a write whose own `--dry-run` refuses
+  it (no token is handed out). A preview syncs the ledger clone the way the
   verb itself would, as the palette's preview does.
 - **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
   "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's

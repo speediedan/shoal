@@ -2,11 +2,14 @@
 
 Mods for the Herdr app (the GPUI desktop window over herdr-core), as opposed to
 `plugins/shoal-herdr/`, which targets the herdr 0.9.x terminal multiplexer. Nothing here changes
-how shoal runs; every mod reads shoal's own feeds, and the only verb any mod runs is
-`shoal ui app-open` (shoal-home, on a click), which arranges the app's spaces and wakes no role.
+how shoal runs; every mod reads shoal's own feeds. shoal-home runs `shoal ui app-open` on a
+click, which arranges the app's spaces and wakes no role. shoal-actions is the one mod that can
+lead to a write, and only through the CLI: it shows the `--dry-run` preview and the wake cost,
+and applies on Confirm with the plan's token (`shoal ui act-apply`).
 
 | Mod | What it is |
 |---|---|
+| `mods/shoal-actions` | The operator actions dialog (in place of herdr 0.9.3's popup palette): shoal and role pickers, then Message, Offer, Withdraw, Next, Asks, Offline, Freeze, Status, Conditions and Upgrade preview. Writes are planned (`shoal ui act-plan <verb> --json`), previewed and confirmed (`shoal ui act-apply --token`). See its `RECIPE.md`. |
 | `mods/lattice-view` | The shoal graph doc v1 (`shoal ui graph --json`) as an animated, hoverable network: a global view of every shoal around the operator hub, a per-shoal view with host regions, a metrics and needs-you rail, and a compact `pulse` mode for an edge drawer. See its `RECIPE.md`. |
 | `mods/shoal-home` | The splash and host chooser, natively: the nautical SHOAL logo, the five splash creatures in a kelp network and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
 
@@ -170,6 +173,49 @@ pin differs. Unreachable cards are greyed and do not click. Keys: arrows or `j`/
 selects, Enter opens, `r` refreshes. Below 640 by 460, or without the images, the same screen is
 text only.
 
+## shoal-actions
+
+A dialog overlay (`mod.json` `{"place":"none","focusable":true,"overlay":{"kind":"dialog","width":640,"height":540}}`).
+It runs `shoal` on the machine of the role's card (`exec` `on`: the space machine of the terminal
+labelled `shoal.pane=<shoal id>/<role>`, else of any card of that shoal, else where the dialog was
+opened), and only these subcommands:
+
+- `shoal ui act-plan roles --json`: the shoals and roles for the pickers (needs-you roles in the
+  theme's blocked color);
+- `shoal ui act-plan <verb> --shoal <id> [...] --json`: a write verb's plan (the command, the
+  `--dry-run` preview, the wake cost, a one-use token), or a read-only view's text;
+- `shoal ui act-apply --token <token> --json`: on Confirm only. Offline is the exception the
+  maintainer chose in 0.9.3: it applies right after its plan, and the dialog still shows the
+  command, the preview and the result.
+
+It never types into a pane and writes nothing itself; the token stays in memory.
+
+1. **Copy** the folder and check it:
+
+   ```sh
+   cp -r plugins/shoal-herdr-app/mods/shoal-actions ~/.config/herdr-app/mods/shoal-actions
+   herdr-app check ~/.config/herdr-app/mods/shoal-actions
+   ```
+
+2. **Open it**: `herdr-app do mod.open '{"name":"shoal-actions"}'` (again closes it); a key bound to
+   `mod.open:shoal-actions` in `keys.json` (`shoal ui app-install` binds one); a right-click on a
+   role node in a Lattice tab; or from another mod:
+   `openOverlay({mod: "shoal-actions", kind: "dialog", props: {shoal, role, machine}})`.
+
+3. Props:
+
+   | Prop | Default | Meaning |
+   |---|---|---|
+   | `shoal`, `role`, `machine` | the focused card | the target; without them, the focused terminal's `shoal.pane` label (and its space's machine), else the first shoal with a role that needs you |
+   | `verb` | none | open straight on one verb (`msg`, `offer`, `next`, `asks`, ...) |
+   | `text`, `wake` | none | prefill Message |
+   | `fixture` | `false` | `true` answers from the bundled `fixtures/act.json` instead of running shoal (a field value containing `fail` gets the error reply), to look at every screen without the CLI |
+
+Mouse first: chips pick the shoal and role, buttons pick the verb, Preview, Confirm and Cancel.
+Keys: Esc closes from the verb list and goes back one step elsewhere; Enter in a form previews,
+then Enter confirms; Tab and Shift-Tab move between text fields. The asks view lists each waiting
+role with its asks; Answer opens Message to that role with wake on.
+
 ## Development
 
 The mod's logic is in pure ES modules that run under Node (`model.js`, `layout.js`, `geom.js`,
@@ -177,10 +223,12 @@ The mod's logic is in pure ES modules that run under Node (`model.js`, `layout.j
 input.
 
 shoal-home is built the same way (`model.js`, `layout.js`, and `motion.js`, which is a verbatim
-copy of lattice-view's: edit it there, then copy; a test checks they match).
+copy of lattice-view's: edit it there, then copy; a test checks they match). shoal-actions keeps
+its decisions in `model.js` (verbs and forms to argv, reply parsing for every reply kind, the
+preselection from `terminals()`, `focused()` and `spaces()`, keys, the fixture answers).
 
 ```sh
-node --test tests/herdr_app/*.mjs                                # unit tests for both mods
+node --test tests/herdr_app/*.mjs                                # unit tests for every mod
 node tests/herdr_app/test_lattice_view.mjs                       # unit tests on the fixture
 node plugins/shoal-herdr-app/preview/render_svg.mjs --legend --out /tmp/lattice.svg
 ```
