@@ -2146,6 +2146,9 @@ elif me == "herdr-app" and args[:1] == ["ls"]:
 elif me == "herdr-app" and args[:1] == ["do"]:
     cmd, a = args[1], json.loads(args[2] if len(args) > 2 else "{}")
     out = {}
+    if cmd == "space.new" and a.get("machine") and st.get("connecting", 0) < int(os.environ.get("STUB_CONNECTING", "0")):
+        st["connecting"] = st.get("connecting", 0) + 1; save()  # a machine added a moment ago is still connecting
+        print(json.dumps({"error": f"{a['machine']} is connecting"})); sys.exit(1)
     if cmd == "space.new":
         s = {"id": f"sp{len(st['spaces'])}", "name": a.get("name"), "machine": a.get("machine") or None, "tabs": []}
         tb = {"id": f"tb{s['id']}-0", "name": a.get("tab") or "1", "terminals": []}
@@ -2245,7 +2248,7 @@ PY8
 cp "$SHOAL_CONFIG" "$S/host-app.toml"; printf '\n[hosts.lane-b]\nssh = "u@lane-b.invalid"\nresolve = "dns"\n' >> "$S/host-app.toml"
 env $AENV $H ui app-plan --json --no-standalone --ledger-root "$ROOT" > "$S/plan-b.json" || fail "app-plan for the remote stub"
 printf '#!/bin/sh\ncat "%s"\n' "$S/plan-b.json" > "$S/ssh-plan"; chmod +x "$S/ssh-plan"
-OUT=$(env $AENV SHOAL_CONFIG="$S/host-app.toml" SHOAL_SSH="$S/ssh-plan" $H ui app-open --machine lane-b --no-standalone --no-focus) \
+OUT=$(env $AENV STUB_CONNECTING=2 SHOAL_CONFIG="$S/host-app.toml" SHOAL_SSH="$S/ssh-plan" $H ui app-open --machine lane-b --no-standalone --no-focus) \
   || fail "app-open remote :: $OUT"
 python3 - "$S/app.json" "$SID" <<'PY5' || fail "remote machine space"
 import json, sys
@@ -2271,6 +2274,10 @@ w = row(posture="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth
 assert (ui_app.card_report(w, "lane")["state"], ui_app.card_report(w, "lane")["kind"]) == ("blocked", "auth")
 q = row(session="working", needs_you=True, can_progress={"ok": False, "reasons": ["blocked-on-question"]})
 assert (ui_app.card_report(q, "lane")["state"], ui_app.card_report(q, "lane")["kind"]) == ("blocked", "question")
+# an open prompt is the thing to answer, even while the ledger wait is user-auth
+qa = row(posture="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
+         can_progress={"ok": False, "reasons": ["blocked-on-question", "waiting-on-you"]})
+assert ui_app.card_report(qa, "lane")["kind"] == "question", ui_app.card_report(qa, "lane")
 j = row(posture="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:build"})
 rep = ui_app.card_report(j, "lane")
 assert rep["state"] == "working" and "local-ci" in rep["msg"] and rep["title"] == "lane/r", rep
@@ -2322,6 +2329,20 @@ os.remove(mine); os.makedirs(mine); open(os.path.join(mine, "main.js"), "w").wri
 assert "left as it is" in ui_app.install_mod("plain") and open(os.path.join(mine, "main.js")).read() == "operator's own"
 print("mod install ok")
 PY9
+# the plugin wrapper (every 0.9.3 pane, app card and unit runs it) finds the Python of the `shoal` on PATH: from a
+# python shebang, or from the exec line of a shell wrapper `shoal` (running cli.py under sh broke a host's units)
+mkdir -p "$S/wrap-sh" "$S/wrap-py" "$S/wrap-none"
+printf '#!/bin/sh\nexec %s /x/cli.py "$@"\n' "$(command -v python3)" > "$S/wrap-sh/shoal"
+printf '#!%s\nimport sys\n' "$(command -v python3)" > "$S/wrap-py/shoal"
+printf '#!/bin/sh\necho none\n' > "$S/wrap-none/shoal"
+chmod +x "$S"/wrap-*/shoal
+WRAP="$TESTD/../plugins/shoal-herdr/bin/shoal-ui"
+for d in sh py none; do
+  OUT=$(env -u SHOAL_PYTHON PATH="$S/wrap-$d:/usr/bin:/bin" sh -x "$WRAP" --help 2>&1 | grep '^+ exec' || true)
+  want=$( [ "$d" = none ] && echo "python3" || command -v python3 )
+  grep -q "^+ exec $want .*/shoal/cli.py --help" <<<"$OUT" || fail "shoal-ui interpreter for a $d shoal :: $OUT"
+done
+echo "plugin wrapper interpreter ok"
 
 # the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
 if command -v node >/dev/null 2>&1; then

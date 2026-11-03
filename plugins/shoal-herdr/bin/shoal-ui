@@ -3,10 +3,19 @@
 # plugin, its panes and the feeder all run the code that `git pull` + `shoal upgrade` rolled out.
 # Interpreter: SHOAL_PYTHON, else the one the installed `shoal` entry point uses (it carries the TOML
 # reader on Python 3.10), else python3. Herdr starts plugins with argv (no shell), hence this file.
+# A `shoal` that is itself a shell wrapper (`#!/bin/sh` then `exec /usr/bin/python3 .../cli.py`) names its
+# Python on the exec line, not the shebang: running cli.py under sh failed every unit and card there.
+# A `#!/usr/bin/env python3` entry point names no Python path, so it takes the python3 fallback (it used to
+# exec cli.py through env, which needs cli.py executable).
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../../.." && pwd)"
 PY="${SHOAL_PYTHON:-}"
 if [ -z "$PY" ] && command -v shoal >/dev/null 2>&1; then
-    PY="$(head -n 1 "$(command -v shoal)" | sed -n 's/^#!\([^ ]*\).*/\1/p')"
+    BIN="$(command -v shoal)"
+    PY="$(head -n 1 "$BIN" | sed -n 's/^#!\([^ ]*\).*/\1/p')"
+    case "$(basename "${PY:-x}")" in
+        python*) ;;
+        *) PY="$(head -n 5 "$BIN" | sed -n 's/^[[:space:]]*exec[[:space:]]\{1,\}\([^ ]*python[^ ]*\)[[:space:]].*/\1/p' | head -n 1)" ;;
+    esac
     [ -x "$PY" ] || PY=""
 fi
 exec "${PY:-python3}" "$ROOT/shoal/cli.py" "$@"
