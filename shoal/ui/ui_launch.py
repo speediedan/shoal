@@ -22,6 +22,7 @@ Launching never wakes a role and costs no tokens: cards attach to a session only
 """
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shlex
@@ -311,8 +312,10 @@ def dashboard(rows: list[tuple[str, str, bool]], default: int, cols: int | None 
     out.append([])
     keys = f"↑↓ / j k move{dot}Enter choose{dot}t type SSH target{dot}q quit" if uni else \
         f"j/k move{dot}Enter choose{dot}t type SSH target{dot}q quit"
-    for note in ("local: this host's Herdr server, other hosts' roles over ssh",
-                 "remote: that host's Herdr server, drawn here", keys):
+    notes = (("local: this machine's shoal spaces in the Herdr app", "remote: that host's spaces, as an app machine")
+             if app_mode() else ("local: this host's Herdr server, other hosts' roles over ssh",
+                                 "remote: that host's Herdr server, drawn here"))
+    for note in notes + (keys,):
         if len(note) <= width:
             out.append(_centered([(note, "2")], width))
     rendered = [_paint(segs, color) for segs in out]
@@ -644,7 +647,142 @@ def launch_remote(server: str, opened: bool, ids: list[str], dry_run: bool = Fal
     return 0  # not reached
 
 
+SUMMARY_TTL_S = 30
+
+
+def _summary_cache(name: str) -> str:
+    import ui_status
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return os.path.join(os.path.dirname(ui_status.cache_path()), f"launch-summary-{safe}.json")
+
+
+def summarize(graph: dict, core_version: str = "") -> dict:
+    """A host card's numbers from its graph document: each live shoal's roles, working, waiting and needs-you."""
+    import ui_app
+    shoals = []
+    for s in graph.get("shoals", []):
+        if s.get("retired"):
+            continue
+        m = s.get("metrics") or {}
+        shoals.append({"id": s["id"], "tag": re.sub(r"-\d{8}-\d{6}$", "", s["id"]), "roles": m.get("roles", 0),
+                       "working": m.get("working", 0), "waiting": m.get("waiting", 0),
+                       "needs_you": m.get("needs_you", 0)})
+    return {"shoals": shoals, "needs_you": sum(x["needs_you"] for x in shoals),
+            "pin_ok": (core_version == ui_app.CORE_PIN) if core_version else None}
+
+
+def host_summary(choice: str) -> dict | None:
+    """One host's summary (cached SUMMARY_TTL_S): this host's own `ui graph`, or a routed host's over ssh with its
+    herdr-core version for the pin check. None when it cannot be read."""
+    import json
+    import time
+    import routes
+    path = _summary_cache(choice)
+    try:
+        d = json.load(open(path))
+        if time.time() - float(d.get("t", 0)) < SUMMARY_TTL_S:
+            return d.get("summary")
+    except (OSError, ValueError):
+        pass
+    summary = None
+    try:
+        if choice == "local":
+            import ui_app
+            import ui_herdr
+            g = subprocess.run(ui_herdr.shoal_argv("ui", "graph", "--json"), capture_output=True, text=True,
+                               timeout=60, stdin=subprocess.DEVNULL)
+            if g.returncode == 0:
+                summary = summarize(json.loads(g.stdout), ui_app._version([ui_app.hc_bin(), "--version"]))
+        else:
+            r = routes.route(choice)
+            if r is not None and routes.reachable(choice) is not False:
+                cli = str(r.get("cli") or "shoal")
+                script = f"(hc --version 2>/dev/null || true) | head -n 1; echo; {cli} ui graph --json"
+                p = subprocess.run(routes.ssh_argv(r) + ["bash -lc " + shlex.quote(script)], capture_output=True,
+                                   text=True, timeout=60, stdin=subprocess.DEVNULL)
+                if p.returncode == 0:
+                    head, _, body = p.stdout.partition("\n")
+                    ver = next((w for w in head.split() if w[:1].isdigit()), "")
+                    summary = summarize(json.loads(body.strip() or "{}"), ver)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        summary = None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as fh:
+            json.dump({"t": time.time(), "summary": summary}, fh)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+    return summary
+
+
+def launch_list(summary: bool = False) -> dict:
+    """The chooser's hosts as data (the app's home screen reads it): this host first, then every route, each with
+    its cached reachability and, with `summary`, its shoals. Read-only: no host is prepared, no role is woken."""
+    import routes
+    import ui_app
+    have = set(ui_app.machines()) if os.path.exists(ui_app.hc_bin()) else set()
+    hosts = []
+    for c in candidates():
+        if c == "local":
+            hosts.append({"name": "local", "local": True, "server": this_server(), "route": None, "reachable": True,
+                          "hint": None, "machine": None})
+            continue
+        up = routes.reachable(c)
+        hint = None if up is not False else f"{c} did not answer ssh (BatchMode, 5 s): `shoal doctor` checks its route"
+        hosts.append({"name": c, "local": False, "server": c, "route": str((routes.route(c) or {}).get("ssh") or "") or None,
+                      "reachable": up, "hint": hint, "machine": c if c in have else None})
+    if summary:
+        from concurrent.futures import ThreadPoolExecutor
+        todo = [h for h in hosts if h["reachable"] is not False]
+        with ThreadPoolExecutor(max_workers=max(1, min(4, len(todo)))) as ex:
+            for h, s in zip(todo, ex.map(lambda h: host_summary(h["name"]), todo)):
+                h["summary"] = s
+        for h in hosts:
+            h.setdefault("summary", None)
+    last = last_choice()
+    return {"v": 1, "kind": "shoal-launch-list", "last": ("local" if last and is_local(last) else last) or None,
+            "hosts": hosts}
+
+
+def cmd_list(a) -> int:
+    import json
+    doc = launch_list(a.summary)
+    if a.json:
+        print(json.dumps(doc, indent=1))
+        return 0
+    for i, h in enumerate(doc["hosts"], 1):
+        star = "*" if h["name"] == doc["last"] else " "
+        line = f"{star}{i}  {h['name']}" + (f"  ({h['server']}, this host)" if h["local"] else "")
+        line += "  (unreachable)" if h["reachable"] is False else ""
+        s = h.get("summary")
+        if s:
+            line += "   " + ", ".join(x["tag"] + (f" {x['needs_you']}!" if x["needs_you"] else "") for x in s["shoals"])
+        print(line)
+    return 0
+
+
+@functools.lru_cache(maxsize=1)
+def app_mode() -> bool:
+    """True in a Herdr app terminal with the app running: a choice then opens that host's spaces in the app
+    instead of exec'ing a herdr 0.9.3 client inside it. Asked once per process (the chooser redraws often)."""
+    import ui_app
+    return ui_app.in_core_terminal() and os.path.exists(ui_app.app_bin()) and ui_app.app_running()
+
+
+def launch_app(choice: str, ids: list[str], dry_run: bool = False) -> int:
+    """2: the host could not be opened (unreachable, no route), so the chooser asks again."""
+    import ui_app
+    print(f"shoal ui launch: opening {choice} in the Herdr app (no role is woken)...")
+    rc, lines = ui_app.open_app(choice, ids, dry_run)
+    for line in lines:
+        print(line)
+    return rc
+
+
 def cmd_launch(a) -> int:
+    if getattr(a, "list", False):
+        return cmd_list(a)
     if os.environ.get("HERDR_SOCKET_PATH") or os.environ.get("HERDR_SESSION"):
         # inside a Herdr pane the view would be drawn on the host that serves it, nested in itself
         print("shoal ui launch: run this in a plain terminal, not inside the Herdr viewer")
@@ -660,6 +798,12 @@ def cmd_launch(a) -> int:
         else:
             choice = last_choice() or "local"
         choice = "local" if is_local(choice) else choice
+        if app_mode():
+            rc = launch_app(choice, a.ids, a.dry_run)
+            if rc != 2 or a.server or a.no_choose or not (sys.stdin.isatty() and sys.stdout.isatty()):
+                return rc
+            print()  # back to the chooser
+            continue
         # only a choice that worked is remembered: a host that just failed must never become the default
         # (measured 2026-10-21: an unreachable test host became the chooser's Enter)
         if choice == "local":

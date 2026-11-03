@@ -2321,4 +2321,13 @@ def cmd_doctor(a) -> int:
     for name, ok, detail in doctor_checks(a.session):
         print(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}")
         bad += not ok
+    # the Herdr app rows inform here and decide `ui app-install --check`; the 0.9.3 view does not need them
+    try:
+        import ui_app
+        rows = ui_app.doctor_checks()
+    except Exception as exc:  # noqa: BLE001 - the app rows never hang or crash the 0.9.3 doctor
+        rows = []
+        print(f"warn app: checks unavailable ({exc})")
+    for name, ok, detail in rows:
+        print(f"{'ok  ' if ok else 'warn'} app: {name}: {detail}")
     return 1 if bad else 0

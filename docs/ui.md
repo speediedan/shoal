@@ -559,6 +559,64 @@ ledger lines.
 **Metrics** (`shoal ui metrics`) prints failure-mode counts from the health review's `fm_report.py`
 and the latest report files. The browser view is the report HTML (`shoal report --out-html`).
 
+## The Herdr app
+
+The [Herdr app](https://github.com/herdrdev/herdr-app) is a desktop window over herdr-core (`hc`), which
+runs every terminal on its own machine. The same three rules hold. herdr 0.9.3 and everything above keep
+working beside it.
+
+```bash
+shoal ui app-start [--write-desktop] [--dry-run]   # start the app with the pin held, open the home space
+shoal ui app-open [--machine NAME|local] [--shoal ID] [--show LABEL] [--no-standalone] [--no-focus] [--dry-run]
+shoal ui app-plan [--shoal ID] [--json]            # this host's wanted spaces (read-only)
+shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; the mods installed into the app
+shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
+```
+
+- **Spaces.** `app-open` gives each shoal a space named with its short tag, on the machine that runs it,
+  with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (one card
+  per role, a two-column grid from four cards) and `lattice` (the `lattice-view` mod on that shoal). Each
+  saved standalone session gets a space as well. A standalone space closed in the app stays closed
+  (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
+  from the 0.9.3 registry flags.
+- **Another host** is a herdr-core machine named after its route (`[hosts.<server>]`). The first
+  `app-open --machine <server>` adds it (`hc machine add <route ssh> --name <server>`); the host must have
+  herdr-core installed. The plan comes from that host (`shoal ui app-plan --json` over the route), and its
+  cards run there, so they keep running when this machine sleeps or the app closes.
+- **Re-running** adds only what is missing. Every terminal it starts carries the label
+  `shoal.pane=<label>`; a labelled pane whose terminal came back as a bare shell (a lost terminal comes back
+  as a shell in its last folder, and its command is never run again) is replaced. A pane running anything
+  else, an attached client for example, is left as it is. Spaces of hidden or retired shoals are named, never
+  closed.
+- **Role state in the app.** A role card in a herdr-core terminal prints its own OSC 7501 status on every
+  refresh (`app=shoal`, title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
+  wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
+  report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask or a design or
+  feedback wait, `permission` for a pending grant. The app then shows the role in its agents list, colors the
+  space and tab dots, plays its sound and posts a toast that leads to the card. Leaving the card clears the
+  report. The 0.9.3 feeder's socket push is not used here.
+- **The pin.** The app downloads its own updates and then updates herdr-core, and no setting stops it.
+  `app-start` runs it as the user unit `shoal-herdr-app` with `HERDR_RELEASES_URL` pointed at a dead loopback
+  address, passing through only the display variables. Pins: app 0.1.12, core 0.1.17 (`ui_app.APP_PIN`,
+  `CORE_PIN`); upgrade deliberately by rerunning the installer, lane host first. `--write-desktop` writes a
+  desktop entry that runs `app-start`.
+- **The home space** (`shoal`, on this machine): the `shoal-home` mod when it is installed, else the terminal
+  chooser, plus the global `lattice` tab. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
+  the app instead of starting a 0.9.3 client.
+- **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);
+  lattice tabs then read its `graph.json` on their machine. Without it they run `shoal ui graph` every 15 s.
+  Like `herdr-install --local`, it refuses to write from a git worktree. It also puts the shoal mods into the
+  app's `mods/` folder: a link to this checkout, except a mod with pictures (an `assets/` folder), which is
+  copied (marked `.shoal-copy`), because the app does not load a PNG through a linked mod folder. Rerun it
+  after an upgrade; the doctor row says when a copy is stale. A folder there that shoal did not make is left
+  alone.
+- **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
+  "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's
+  shoals (`id`, `tag`, `roles`, `working`, `waiting`, `needs_you`), its total needs-you and `pin_ok` (its
+  herdr-core at the pin), from its `ui graph`, cached 30 s.
+- **Doctor.** `shoal ui doctor` adds informational `app:` rows (app and core at the pin, mods installed from this
+  checkout, machines, the feed unit); `ui app-install --check` prints the same rows and fails on them.
+
 ## Configuration and install
 
 Herdr splits its configuration by machine:

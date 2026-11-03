@@ -1001,6 +1001,24 @@ capped tail behind an opaque cursor of per-file byte offsets. `ui graph-feed` ke
 in memory and writes `graph.json` beside the status cache each tick, reading only appended bytes.
 It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call.
 
+### Herdr app adapter (`shoal ui app-*`)
+
+`shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
+machine's herdr-core. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
+and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
+saved standalone session). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
+route for another host, which it first adds as a herdr-core machine named after the route), compares it with
+`herdr-app ls`, and adds only what is missing with `herdr-app do`, labelling each terminal it starts
+(`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground
+is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
+own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
+feeder push; a blocked role names `auth`, `question` or `permission`. `ui app-start` starts the app as a user
+unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
+its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit and installs the mods
+into the app's home. `ui launch` in an app terminal opens the chosen host in the app, and `ui launch --list
+--json [--summary]` gives the host list the app's home screen reads. Nothing here wakes a role, types into a
+pane or writes the ledger; herdr 0.9.3 is untouched.
+
 ### Host resource observations and placement pilot
 
 Cross-host imbalance over compatible demand (`shoal/pool_metrics.py`): where the pool planner is
