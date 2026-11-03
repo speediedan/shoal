@@ -238,3 +238,44 @@ test("ocean: merged items keep one layer per style and every subpath", () => {
   assert.deepEqual(m[0].cmds, [["M", 0, 0], ["Z"], ["M", 1, 1], ["Z"]]);
   assert.equal(m[1], s);
 });
+
+test("ocean: a bridge joins the two kelp networks over the logo without touching the letters", () => {
+  for (const [w, h] of [[1425, 860], [1150, 770], [1920, 1200]]) {
+    const lay = L.homeLayout({ width: w, height: h }, heightsOf(list), { art: true });
+    const sea = O.oceanScene(lay);
+    const lg = lay.logo;
+    assert.equal(sea.bridge.length, 3, `${w}x${h}: left float, two buoys, right float`);
+    const ends = [sea.bridge[0].from, sea.bridge[2].to];
+    assert.ok(ends[0].x < lg.x && ends[1].x > lg.x + lg.w, `${w}x${h}: it runs from the left network to the right one`);
+    for (const b of sea.bridge) {
+      for (const p of O.sampleCurve(b.cmds)) {
+        assert.ok(!(p.x > lg.x && p.x < lg.x + lg.w && p.y > lg.y && p.y < lg.y + lg.h), `${w}x${h}: the bridge stays off the letters`);
+      }
+    }
+    for (const n of sea.nodes.filter((x) => x.id.startsWith("bridge."))) assert.ok(n.y < lg.y, "the buoys float above the logo");
+    assert.ok(sea.edges.filter((e) => e.bridge).length === 3);
+  }
+});
+
+test("ocean: the logo letters ride one wave inside the logo box, in order, without overlapping", () => {
+  const lg = { x: 100, y: 50, w: 84 * 3.9, h: 84 * 1.25, font: 84 };
+  const ls = O.logoLetters(lg);
+  assert.deepEqual(ls.map((l) => l.ch).join(""), "SHOAL");
+  for (let i = 1; i < ls.length; i++) assert.ok(ls[i].x >= ls[i - 1].x + ls[i - 1].w, "letters do not overlap");
+  assert.ok(ls[0].x >= lg.x && ls[4].x + ls[4].w <= lg.x + lg.w, "the word fits the box");
+  const ys = ls.map((l) => l.y);
+  assert.ok(Math.max(...ys) - Math.min(...ys) > 84 * 0.08, "the letters are at different heights (a wave)");
+  assert.ok(Math.max(...ys.map((y) => Math.abs(y - lg.y))) <= 84 * 0.085 + 0.1, "a gentle wave keeps the word readable");
+  assert.equal(new Set(O.LETTER_SHADES).size, O.LETTER_SHADES.length, "the shades grade without repeats");
+  // ripple cells cover every pixel of each letter box, and their band edges differ between strips (a ripple)
+  for (const l of ls) {
+    const cells = O.rippleBands(l, 84, O.LETTER_SHADES.length);
+    for (let x = 0; x < Math.floor(l.w); x += 3) {
+      for (let y = 0; y < Math.floor(l.h); y += 3) {
+        assert.ok(cells.some((c) => x >= c.x && x < c.x + c.w && y >= c.y0 && y < c.y1), `${l.ch}: pixel ${x},${y} shaded`);
+      }
+    }
+    const edgesOf = (j) => cells.filter((c) => c.x === cells.filter((d) => d.k === 0)[j].x).map((c) => c.y0);
+    assert.notDeepEqual(edgesOf(0), edgesOf(2), `${l.ch}: band edges ripple across the strips`);
+  }
+});

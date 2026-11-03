@@ -991,10 +991,11 @@ and the contract are in [`ui.md`](ui.md).
   render as "other" or "unknown".
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
-  additive v1) every 20 s and on refresh, and draws a nautical logo (a display serif, outlined, sunlit
-  above a waterline), the five splash creatures with `image()` (placed like `image_rectangles`, scaled
-  to the window; text only below 640 by 460 or without the assets), a kelp sea whose floats and
-  tendrils link the creatures into a network (`ocean.js`, a static display list that never crosses the
+  additive v1) every 20 s and on refresh, and draws an oceanic logo (an outlined display serif whose letters ride a
+  wave, shaded aqua to deep blue in rippled bands), the acronym tagline with each initial underlined, the
+  five splash creatures with `image()` (placed like `image_rectangles`, scaled to the window; text only
+  below 640 by 460 or without the assets), a kelp sea whose floats and tendrils link the creatures into
+  one network bridged over the logo (`ocean.js`, a static display list that never crosses the
   logo or the cards) and one card per host: reachability with the doctor hint, the last choice,
   per-shoal needs-you, working and waiting, and the pin check. A click runs
   `shoal ui app-open --machine <name>` here and shows its result on the card; unreachable cards

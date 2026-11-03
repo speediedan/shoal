@@ -17,23 +17,32 @@ host's shoal spaces in the app.
 - **Logo:** `SHOAL` at 84 px times the scale, weight 800, in a display serif (Noto Serif Display, else
   DejaVu Serif, else Liberation Serif, else Geist), so it reads like a ship's name. Layers, back to
   front: a drop shadow `#020a18` at 70 percent offset by font/16; a navy `#062a4f` outline (eight copies
-  offset by font/34: GPUI text has no stroke); the letters in deep sea blue `#1f6fd8`; and their top 53
-  percent again in sunlit `#7fe7ff`, clipped, so the letters sit half above a waterline.
+  offset by font/34: GPUI text has no stroke); then the letters themselves. GPUI cannot warp text, so
+  the word is wavy letter by letter (`ocean.js` `logoLetters`): each letter has its own box (bold-serif
+  widths in em) and rides one wave (amplitude 0.085 em). Each letter is shaded like underwater light,
+  aqua `#b4f7ff` at the top to deep blue `#2463ca` below, in 12 thin bands; it is cut into four vertical
+  strips whose band edges follow a ripple (`rippleBands`), so the light moves like water, with no seam.
+  The logo box is 3.9 em by 1.25 em.
 - **The sea** (`ocean.js`, a pure display list): kelp strands rise from a seabed line just above the
   tagline, only in the room either side of the logo (a strand's sway is clamped to its side). Each
   strand is a dark `#0d4f4c` body, a `#1f8f7a` middle and a light `#5fd3b0` midrib, with three leaf
   blades and two or three floats (`#47d6b4`, a glow ring and a highlight). The floats are a network:
   tendrils (`#38c8ff`, a 7 percent halo under a 42 percent line) link same-height floats of
   neighbouring strands and link each creature's rim to its nearest float; a tendril that would cross
-  the logo is dropped. Below the logo, two foam waves; above its right end, four rising bubbles. Items
+  the logo is dropped. A bridge joins the two networks over the logo: from the innermost strand's
+  highest float on each side, arched tendrils run through two floats (buoys) above the logo at 30 and
+  70 percent of its width, each checked point by point to stay off the letters. Below the logo, two
+  foam waves; above its right end, four rising bubbles. Items
   of one style are merged into one path (about 40 layers in all), and at the `full` motion tier each
   strand sways a few pixels natively.
 - **Creatures** (`assets/fish-*.png`, 384 px RGBA), placed like the terminal splash: coral
   centered above the logo, the seahorse above left, the blowfish above right, teal left of the
   logo, violet right of it. Size in units of B = 92 px times the scale: coral 1.1, seahorse 0.85,
   blowfish 0.95, teal and violet 1.35.
-- **Tagline** in amber `#ffb547` at 78 percent: `stigmergic · heterogeneous · open · agent ·
-  lattice`; then `which host serves the view?` in ink `#d4d4d4`, semibold.
+- **Tagline** at 15.5 px times the scale (14 px on the text screen) in amber `#ffb547` at 86 percent:
+  `Stigmergic · Heterogeneous · Open · Agent · Lattice`, each initial semibold in full amber with a wavy
+  underline (the acronym), separators at 45 percent; then `which host serves the view?` in ink
+  `#d4d4d4`, semibold.
 - **Host cards** (248 to 340 px wide, up to four per row, rows balanced and centered, radius 10,
   `#0b0e12` at 92 percent, steel border): header with the reachable dot (green `#50d090`, red
   `#ff4d5e` for unreachable, grey `#6b7780` for not probed yet), the host name (14.5 px semibold),

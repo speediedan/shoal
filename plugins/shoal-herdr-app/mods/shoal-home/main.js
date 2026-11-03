@@ -30,14 +30,14 @@ import {
 } from "./model.js";
 import { homeLayout, cardHeight, CREATURES, CARD, PAD } from "./layout.js";
 import { resolveTier, motionPolicy, rendererFromProcess, MOTION_CYCLE } from "./motion.js";
-import { oceanScene, SEA } from "./ocean.js";
+import { oceanScene, logoLetters, rippleBands, LETTER_SHADES, SEA } from "./ocean.js";
 
 const MOD = "shoal-home";
 const DEFAULT_ARGV = ["shoal", "ui", "launch", "--list", "--json", "--summary"];
 const P = PALETTE;
 const UI = "Geist";
 const MONO = "Geist Mono";
-const TAGLINE = "stigmergic · heterogeneous · open · agent · lattice";
+const TAGLINE = ["Stigmergic", "Heterogeneous", "Open", "Agent", "Lattice"];
 
 function normalizeSource(src) {
   const s = src && typeof src === "object" ? src : { kind: "exec" };
@@ -270,8 +270,15 @@ export default class Home extends View {
 
     canvas.child(this.logoEl(L));
     if (L.tagline) {
-      canvas.child(div().absolute().left(0).top(L.tagline.y).w(W).h(L.tagline.h).flex().items_center().justify_center()
-        .text_size(L.tagline.size).text_color(withAlpha(P.amber, 0.78)).child(TAGLINE));
+      // Stigmergic · Heterogeneous · Open · Agent · Lattice, each initial underlined (wavy: we are under the sea)
+      const row = h_flex().absolute().left(0).top(L.tagline.y).w(W).h(L.tagline.h).items_center().justify_center()
+        .text_size(L.tagline.size).text_color(withAlpha(P.amber, 0.86));
+      TAGLINE.forEach((word, i) => {
+        if (i) row.child(div().px(Math.round(L.tagline.size * 0.45)).text_color(withAlpha(P.amber, 0.45)).child("·"));
+        row.child(div().font_semibold().text_color(P.amber).underline().text_decoration_wavy().child(word[0]));
+        row.child(div().child(word.slice(1)));
+      });
+      canvas.child(row);
     }
     const ask = this.error && !this.list ? `host list: ${this.error}` : this.list ? (hosts.length ? "which host serves the view?" : "no hosts in the list") : "reading the host list…";
     canvas.child(div().absolute().left(PAD).top(L.ask.y).w(W - 2 * PAD).h(L.ask.h).flex().items_center().justify_center().truncate()
@@ -303,23 +310,31 @@ export default class Home extends View {
   logoEl(L) {
     const lg = L.logo;
     const fam = logoFamily();
-    const text = (x, y, color) => div().absolute().left(x).top(y).w(lg.w).h(lg.h).flex().items_center().justify_center()
-      .whitespace_nowrap().font_family(fam).text_size(lg.font).line_height(`${lg.h}px`).font_weight(800).text_color(color).child("SHOAL");
-    // nautical and still plain to read: a deep drop shadow, a navy outline (eight offset copies: GPUI text has no
-    // stroke), the letters in deep sea blue, and their upper half sunlit (the same letters clipped to the top)
+    // one letter, its box at (x, y) relative to `top` (a band's clip offset)
+    const glyph = (l, dx, dy, color, top = 0) => div().absolute().left(dx).top(dy - top).w(l.w).h(l.h)
+      .flex().items_center().justify_center().whitespace_nowrap().font_family(fam).text_size(lg.font)
+      .line_height(`${l.h}px`).font_weight(800).text_color(color).child(l.ch);
+    // Oceanic and still plain to read: every letter rides its own crest of one wave (GPUI cannot warp text), with a
+    // deep drop shadow, a navy outline (eight offset copies: text has no stroke), and underwater light shading
+    // each letter from aqua at the top to deep blue below, in thin clipped bands so there is no seam.
     const o = Math.max(1.5, lg.font / 34);
     const depth = Math.max(3, Math.round(lg.font / 16));
-    const out = div().absolute().left(0).top(0).size_full()
-      .child(text(lg.x + depth, lg.y + depth, withAlpha(SEA.logoShadow, 0.7)));
-    for (const [dx, dy] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]) {
-      out.child(text(lg.x + dx * o, lg.y + dy * o, SEA.logoOutline));
+    const out = div().absolute().left(0).top(0).size_full();
+    const letters = logoLetters(lg);
+    for (const l of letters) out.child(glyph(l, l.x + depth, l.y + depth, withAlpha(SEA.logoShadow, 0.7)));
+    for (const l of letters) {
+      for (const [dx, dy] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]) {
+        out.child(glyph(l, l.x + dx * o, l.y + dy * o, SEA.logoOutline));
+      }
     }
-    out.child(text(lg.x, lg.y, SEA.logoDeep));
-    const sun = Math.round(lg.h * 0.53);
-    out.child(div().absolute().left(lg.x).top(lg.y).w(lg.w).h(sun).overflow_hidden()
-      .child(div().absolute().left(0).top(0).w(lg.w).h(lg.h).flex().items_center().justify_center().whitespace_nowrap()
-        .font_family(fam).text_size(lg.font).line_height(`${lg.h}px`).font_weight(800)
-        .text_color(SEA.logoSun).child("SHOAL")));
+    // the shading: each letter is cut into vertical strips, and in each strip the band edges follow a ripple
+    // (ocean.js rippleBands), so the light inside the letters moves like water
+    for (const l of letters) {
+      for (const c of rippleBands(l, lg.font, LETTER_SHADES.length)) {
+        out.child(div().absolute().left(l.x + c.x).top(l.y + c.y0).w(c.w).h(c.y1 - c.y0).overflow_hidden()
+          .child(glyph(l, -c.x, 0, LETTER_SHADES[c.k], c.y0)));
+      }
+    }
     return out;
   }
 

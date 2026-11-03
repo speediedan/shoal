@@ -84,6 +84,29 @@ function tendril(a, b, bow) {
   return [["M", r2(a.x), r2(a.y)], ["C", r2((a.x + 2 * cx) / 3), r2((a.y + 2 * cy) / 3), r2((b.x + 2 * cx) / 3), r2((b.y + 2 * cy) / 3), r2(b.x), r2(b.y)]];
 }
 
+/** An upward arch from a to b: both controls `lift` above the higher end. */
+function arch(a, b, lift) {
+  const y = Math.min(a.y, b.y) - lift;
+  return [["M", r2(a.x), r2(a.y)], ["C", r2(a.x + (b.x - a.x) / 3), r2(y), r2(a.x + (2 * (b.x - a.x)) / 3), r2(y), r2(b.x), r2(b.y)]];
+}
+
+/** Points along a path's cubic segments (24 per segment), for clearance checks. */
+export function sampleCurve(cmds) {
+  const pts = [];
+  let px = 0, py = 0;
+  for (const c of cmds) {
+    if (c[0] === "M" || c[0] === "L") { px = c[1]; py = c[2]; pts.push({ x: px, y: py }); continue; }
+    if (c[0] !== "C") continue;
+    for (let i = 1; i <= 24; i++) {
+      const t = i / 24, m = 1 - t;
+      pts.push({ x: m * m * m * px + 3 * m * m * t * c[1] + 3 * m * t * t * c[3] + t * t * t * c[5],
+                 y: m * m * m * py + 3 * m * m * t * c[2] + 3 * m * t * t * c[4] + t * t * t * c[6] });
+    }
+    px = c[5]; py = c[6];
+  }
+  return pts;
+}
+
 const circleCmds = (x, y, r) => [["M", r2(x - r), r2(y)], ["A", r2(r), r2(r), 0, false, true, r2(x + r), r2(y)],
   ["A", r2(r), r2(r), 0, false, true, r2(x - r), r2(y)], ["Z"]];
 
@@ -166,6 +189,31 @@ export function oceanScene(L) {
     edges.push({ a: near.n.id, b: `creature:${c.name}`, from: near.n, to: rim, bow: 0.22, creature: c.name });
   }
 
+  // the bridge: the two kelp networks joined over the logo, through two floats above it, by tendrils that
+  // arc upward and are checked point by point to stay clear of the letters
+  const inner = [
+    strands.map((s, i) => ({ s, i })).filter((x) => x.s.side === 0).sort((p, q) => q.s.x - p.s.x)[0],
+    strands.map((s, i) => ({ s, i })).filter((x) => x.s.side === 1).sort((p, q) => p.s.x - q.s.x)[0],
+  ];
+  const bridge = [];
+  if (inner[0] && inner[1] && sides.length === 2) {
+    const lift = Math.max(14 * u, lg.h * 0.22);
+    const buoyY = r2(Math.max(top + 6 * u, lg.y - lift));
+    const buoys = [0.3, 0.7].map((f, k) => ({ id: `bridge.${k}`, strand: -1, level: -1, x: r2(lg.x + lg.w * f), y: buoyY, r: r2(3.6 * u) }));
+    const highest = (si) => nodes.filter((n) => n.strand === si).sort((p, q) => p.y - q.y);
+    const clearOf = (cmds) => sampleCurve(cmds).every((p) => !(p.x > lg.x - 4 && p.x < lg.x + lg.w + 4 && p.y > lg.y - 4 && p.y < lg.y + lg.h));
+    const pick = (si, to) => highest(si).find((n) => clearOf(arch(n, to, lift)));
+    const a = pick(inner[0].i, buoys[0]);
+    const b = pick(inner[1].i, buoys[1]);
+    if (a && b) {
+      nodes.push(...buoys);
+      for (const [from, to] of [[a, buoys[0]], [buoys[0], buoys[1]], [buoys[1], b]]) {
+        bridge.push({ a: from.id, b: to.id, from, to, cmds: arch(from, to, lift * 0.6) });
+      }
+      edges.push(...bridge.map(({ cmds: _c, ...e }) => ({ ...e, bridge: true })));
+    }
+  }
+
   const waves = [
     { y: r2(lg.y + lg.h * 0.97), amp: 4 * u, w: 22 * u, width: 2.4 * u, alpha: 0.55 },
     { y: r2(lg.y + lg.h * 0.97 + 9 * u), amp: 3 * u, w: 30 * u, width: 1.6 * u, alpha: 0.3 },
@@ -212,11 +260,12 @@ export function oceanScene(L) {
   // tendrils: a soft halo under a fine line; one whose curve would cross the logo box is dropped
   const clear = { x0: lg.x - keep / 2, y0: lg.y, x1: lg.x + lg.w + keep / 2, y1: lg.y + lg.h };
   for (let i = edges.length - 1; i >= 0; i--) {
+    if (edges[i].bridge) continue;
     const b = itemBounds({ cmds: tendril(edges[i].from, edges[i].to, edges[i].bow) });
     if (b.x0 < clear.x1 && clear.x0 < b.x1 && b.y0 < clear.y1 && clear.y0 < b.y1) edges.splice(i, 1);
   }
   for (const e of edges) {
-    const cmds = tendril(e.from, e.to, e.bow);
+    const cmds = e.bridge ? bridge.find((x) => x.a === e.a && x.b === e.b).cmds : tendril(e.from, e.to, e.bow);
     items.push({ kind: "edge", cmds, width: r2(3.5 * u), color: SEA.tendril, alpha: 0.07 });
     items.push({ kind: "edge", cmds, width: r2(Math.max(0.8, 1.1 * u)), color: SEA.tendril, alpha: 0.42 });
   }
@@ -233,7 +282,53 @@ export function oceanScene(L) {
                width: r2(0.9 * u), color: SEA.foam, alpha: 0.5 });
   for (const b of bubbles) items.push({ kind: "bubble", cmds: circleCmds(b.x, b.y, b.r), width: r2(Math.max(0.8, u)), color: SEA.bubble, alpha: 0.55 });
 
-  return { strands, nodes, edges, waves, bubbles, seabed: r2(seabed), top: r2(top), items: mergeItems(items) };
+  return { strands, nodes, edges, bridge, waves, bubbles, seabed: r2(seabed), top: r2(top), items: mergeItems(items) };
+}
+
+// Bold display-serif advance widths, in em, so each letter gets its own box (GPUI cannot warp text, so the
+// word becomes wavy by giving every letter its own height on a wave).
+const LETTER_EM = { S: 0.6, H: 0.84, O: 0.8, A: 0.76, L: 0.68 };
+// Underwater light, top to bottom: aqua near the surface, deep blue below (thin rippled bands, no seam).
+export const LETTER_SHADES = ["#b4f7ff", "#9ef0ff", "#88e7ff", "#72dcfd", "#5fcff9", "#4fc0f4", "#43b0ee",
+  "#3a9fe8", "#338ee2", "#2d7edb", "#2870d3", "#2463ca"];
+
+/** The clip cells that shade one letter: `strips` vertical strips, each cut into `n` bands whose edges ride a
+ * ripple (a sine across the word, by the letter's own x), so the shading reads as moving water. Cells are
+ * relative to the letter box: {x, w, y0, y1, k}; together they cover the box without gaps. */
+export function rippleBands(l, font, n, strips = 4) {
+  const capH = font * 0.72;
+  const capTop = (l.h - capH) / 2;
+  const amp = font * 0.035;
+  const lambda = font * 0.95;
+  const sw = l.w / strips;
+  const cells = [];
+  for (let j = 0; j < strips; j++) {
+    const x0 = Math.round(j * sw);
+    const x1 = j === strips - 1 ? Math.ceil(l.w) : Math.round((j + 1) * sw);
+    const off = amp * Math.sin(((l.x + (j + 0.5) * sw) / lambda) * 2 * Math.PI);
+    const edge = (k) => (k <= 0 ? 0 : k >= n ? Math.ceil(l.h) : Math.round(capTop + (k * capH) / n + off));
+    for (let k = 0; k < n; k++) {
+      const y0 = edge(k), y1 = edge(k + 1) + (k < n - 1 ? 1 : 0);
+      if (y1 > y0) cells.push({ x: x0, w: x1 - x0 + (j < strips - 1 ? 1 : 0), y0, y1, k });
+    }
+  }
+  return cells;
+}
+
+/** The letters of the logo inside box `lg` ({x, y, w, h, font}): each {ch, x, y, w, h}, centered as a word,
+ * every letter lifted by its point on one gentle wave. */
+export function logoLetters(lg, word = "SHOAL") {
+  const em = lg.font;
+  const ws = [...word].map((ch) => (LETTER_EM[ch] ?? 0.72) * em);
+  const gap = em * 0.03;
+  const total = ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
+  const amp = em * 0.085;
+  let x = lg.x + (lg.w - total) / 2;
+  return [...word].map((ch, i) => {
+    const out = { ch, x: r2(x), y: r2(lg.y + amp * Math.sin(0.4 + i * 1.15)), w: r2(ws[i]), h: lg.h };
+    x += ws[i] + gap;
+    return out;
+  });
 }
 
 /** Items of one style (and no sway of their own) become one path of several subpaths: every paint_path is a
