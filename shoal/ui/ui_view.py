@@ -556,21 +556,24 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
 
 def stub(sid: str, slug: str, spec_path: str = "") -> int:
     """The role card loop: Enter attaches, `r` refreshes, `q` leaves to a shell. Read-only."""
-    import ui_app
     import ui_term
     watch = ui_term.CodeWatch()
-    report = ui_app.in_core_terminal()  # the Herdr app: the card reports the role's state itself (OSC 7501)
     try:
-        return _stub_loop(sid, slug, spec_path, watch, report)
+        import ui_app
+        report = ui_app.in_core_terminal()  # the Herdr app: the card reports the role's state itself (OSC 7501)
+    except Exception:  # noqa: BLE001 - the app adapter can never take a 0.9.3 card down
+        ui_app, report = None, False
+    try:
+        return _stub_loop(sid, slug, spec_path, watch, ui_app if report else None)
     finally:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
 
 
-def _stub_loop(sid: str, slug: str, spec_path: str, watch, report: bool) -> int:
+def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
+    """`ui_app`: the adapter module when this card reports to the Herdr app, else None."""
     import routes
-    import ui_app
     import ui_term
     force = False
     while True:
@@ -585,7 +588,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, report: bool) -> int:
             body = f"{slug}: status unavailable ({exc})"
         force = False
         osc = ""
-        if report and rows:
+        if ui_app is not None and rows:
             try:
                 import ui_herdr
                 osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid))

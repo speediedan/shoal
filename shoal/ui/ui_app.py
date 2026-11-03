@@ -809,9 +809,13 @@ def doctor_checks() -> list[tuple[str, bool, str]]:
         out.append(("app machines", True,
                     (", ".join(sorted(have)) or "none") + ("; added on first open: " + ", ".join(miss) if miss else "")))
     feed = feed_state()
-    r = subprocess.run(["systemctl", "--user", "is-active", FEED_UNIT], capture_output=True, text=True)
-    out.append((f"unit {FEED_UNIT} active", r.stdout.strip() == "active",
-                r.stdout.strip() + ("" if feed["fresh"] else f"; {feed['path']} not fresh")))
+    try:
+        state = subprocess.run(["systemctl", "--user", "is-active", FEED_UNIT], capture_output=True, text=True,
+                               timeout=10, stdin=subprocess.DEVNULL).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        state = f"unknown ({exc})"
+    out.append((f"unit {FEED_UNIT} active", state == "active",
+                state + ("" if feed["fresh"] else f"; {feed['path']} not fresh")))
     return out
 
 
