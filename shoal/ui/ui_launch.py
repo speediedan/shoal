@@ -708,9 +708,10 @@ def host_summary(choice: str) -> dict | None:
         summary = None
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path + ".tmp", "w") as fh:
+        tmp = path + f".{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
             json.dump({"t": time.time(), "summary": summary}, fh)
-        os.replace(path + ".tmp", path)
+        os.replace(tmp, path)
     except OSError:
         pass
     return summary

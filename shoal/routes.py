@@ -66,9 +66,15 @@ def _cached(name: str, max_age: float):
 def _store(name: str, d: dict) -> None:
     d["t"] = time.time()
     p = os.path.join(_cache_dir(), name + ".json")
-    with open(p + ".tmp", "w") as fh:
-        json.dump(d, fh)
-    os.replace(p + ".tmp", p)
+    # a temp name per process: every routed card probes on its own, and with one shared name a card lost the file
+    # between another's write and rename and died on it. A cache that cannot be written only costs a later probe.
+    tmp = p + f".{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(d, fh)
+        os.replace(tmp, p)
+    except OSError:
+        pass
 
 
 def resolve_host(r: dict) -> str:

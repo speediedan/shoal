@@ -2451,6 +2451,10 @@ python3 -c 'import json,sys;d=json.loads(sys.argv[1]);s=d["shoals"][0];assert d[
   || fail "roles view (roles with a session only) :: $OUT"
 echo "act plan and apply ok"
 
+# every routed card probes on its own: concurrent writes of one route cache entry never take a card down
+python3 "$TESTD/route_cache_stress.py" "$SHOALD" "$S/route-stress" || fail "concurrent route cache writes"
+echo "route cache writes ok"
+
 # the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
 if command -v node >/dev/null 2>&1; then
   node "$TESTD/herdr_app/test_lattice_view.mjs" >"$S/lattice-view.out" 2>&1 || fail "herdr-app lattice-view: $(tail -c 800 "$S/lattice-view.out")"
