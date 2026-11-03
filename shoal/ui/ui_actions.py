@@ -117,15 +117,15 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
     if verb == "withdraw":
         if not (a.item or "").strip():
             raise ActError("withdraw needs --item")
-        return ["withdraw", "--shoal", sid, "--item", a.item], "", True
+        return ["withdraw", "--shoal", sid, f"--item={a.item}"], "", True
     if verb in ("offline", "freeze"):
         if a.state not in ("on", "off"):
             raise ActError(f"{verb} needs --state on|off")
         args = [verb, a.state, "--shoal", sid]
         if verb == "offline" and a.state == "on" and a.until:
-            args += ["--until", a.until]
+            args += [f"--until={a.until}"]
         if a.note:
-            args += ["--note", a.note]
+            args += [f"--note={a.note}"]
         if verb == "offline":
             # the palette runs offline without a confirm (maintainer, 2026-10-13); the dialog applies at once too
             return args, "", False

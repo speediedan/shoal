@@ -2430,7 +2430,8 @@ assert "--wake" in args and "EVERY role" in cost and ok
 args, cost, ok = ui_actions.build("offer", A(role="oc", item="example/repo#9:fix"))
 assert args[:5] == ["offer", "--shoal", sys.argv[2], "--to", "oc"] and "wakes an idle role" in cost
 args, cost, ok = ui_actions.build("offline", A(state="on", until="2026-11-04T09:00-08:00", note="out"))
-assert args[:2] == ["offline", "on"] and "--until" in args and ok is False and cost == ""
+assert args[:2] == ["offline", "on"] and "--until=2026-11-04T09:00-08:00" in args and "--note=out" in args and ok is False and cost == ""
+assert ui_actions.build("withdraw", A(item="-odd"))[0][-1] == "--item=-odd"  # a value that starts with a dash stays a value
 assert "every role" in ui_actions.build("freeze", A(state="on"))[1]
 assert ui_actions.build("freeze", A(state="on", no_wake=True)) == (["freeze", "on", "--shoal", sys.argv[2], "--no-wake"], "", True)
 for verb, kw in (("msg", dict(role="nope", text="x")), ("msg", dict(role="cl")), ("offer", dict(role="cl")),
