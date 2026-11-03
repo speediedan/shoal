@@ -189,3 +189,97 @@ test("assets and motion: five creatures shipped, motion.js identical to lattice-
   assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", { renderer: "gpu", focused: false }).tier).loops, false, "not while the window is unfocused");
   assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", {}).tier).loops, false, "an unknown renderer stays still");
 });
+
+const O = await import(join(MOD, "ocean.js"));
+
+test("ocean: kelp, floats and tendrils stay clear of the logo and the host cards, at every art size", () => {
+  const sizes = [[1425, 860], [1150, 770], [1920, 1200], [900, 640], [700, 520]];
+  let drawn = 0;
+  for (const [w, h] of sizes) {
+    const lay = L.homeLayout({ width: w, height: h }, heightsOf(list), { art: true });
+    const sea = O.oceanScene(lay);
+    if (lay.mode !== "art") { assert.equal(sea, null, `${w}x${h}: no sea in text mode`); continue; }
+    drawn++;
+    assert.ok(sea.strands.length >= 2 && sea.nodes.length >= 4 && sea.edges.length >= 2, `${w}x${h}: a network`);
+    const lg = lay.logo;
+    const cardsTop = Math.min(...lay.cards.map((c) => c.y));
+    for (const it of sea.items) {
+      const b = O.itemBounds(it);
+      assert.ok(b.x0 >= 0 && b.x1 <= w && b.y0 >= 0, `${w}x${h}: ${it.kind} inside the window`);
+      assert.ok(b.y1 < cardsTop - 8, `${w}x${h}: ${it.kind} above the host cards`);
+    }
+    for (const s of sea.strands) {
+      const xs = s.segs.flatMap((g) => [g[0], g[2], g[4], g[6]]);
+      assert.ok(Math.max(...xs) < lg.x || Math.min(...xs) > lg.x + lg.w, `${w}x${h}: a strand stays beside the logo`);
+    }
+    for (const n of sea.nodes) {
+      assert.ok(!(n.x > lg.x && n.x < lg.x + lg.w && n.y > lg.y && n.y < lg.y + lg.h), `${w}x${h}: no float on the logo`);
+      assert.ok(n.y <= sea.seabed, `${w}x${h}: floats above the seabed`);
+    }
+    const ids = new Set(sea.nodes.map((n) => n.id));
+    for (const e of sea.edges) {
+      assert.ok(ids.has(e.a), "an edge starts at a float");
+      assert.ok(ids.has(e.b) || e.b.startsWith("creature:"), "an edge ends at a float or a creature");
+    }
+    assert.ok(sea.edges.some((e) => e.creature), `${w}x${h}: creatures join the network`);
+    assert.ok(sea.items.length < 60, `${w}x${h}: styles merged into few layers (${sea.items.length})`);
+  }
+  assert.ok(drawn >= 3, "most sizes draw the sea");
+  const lay = L.homeLayout({ width: 1150, height: 770 }, heightsOf(list), { art: true });
+  assert.deepEqual(O.oceanScene(lay), O.oceanScene(lay), "the same layout draws the same sea");
+});
+
+test("ocean: merged items keep one layer per style and every subpath", () => {
+  const a = { kind: "node", cmds: [["M", 0, 0], ["Z"]], fill: true, color: "#fff", alpha: 0.5 };
+  const b = { kind: "node", cmds: [["M", 1, 1], ["Z"]], fill: true, color: "#fff", alpha: 0.5 };
+  const s = { kind: "kelp", cmds: [["M", 2, 2]], width: 3, color: "#0f0", alpha: 1, sway: { amp: 2, period: 4000 } };
+  const m = O.mergeItems([a, s, b]);
+  assert.equal(m.length, 2);
+  assert.deepEqual(m[0].cmds, [["M", 0, 0], ["Z"], ["M", 1, 1], ["Z"]]);
+  assert.equal(m[1], s);
+});
+
+test("ocean: a bridge joins the two kelp networks over the logo without touching the letters", () => {
+  for (const [w, h] of [[1425, 860], [1150, 770], [1920, 1200]]) {
+    const lay = L.homeLayout({ width: w, height: h }, heightsOf(list), { art: true });
+    const sea = O.oceanScene(lay);
+    const lg = lay.logo;
+    assert.equal(sea.bridge.length, 3, `${w}x${h}: left float, two buoys, right float`);
+    const ends = [sea.bridge[0].from, sea.bridge[2].to];
+    assert.ok(ends[0].x < lg.x && ends[1].x > lg.x + lg.w, `${w}x${h}: it runs from the left network to the right one`);
+    for (const b of sea.bridge) {
+      for (const p of O.sampleCurve(b.cmds)) {
+        assert.ok(!(p.x > lg.x && p.x < lg.x + lg.w && p.y > lg.y && p.y < lg.y + lg.h), `${w}x${h}: the bridge stays off the letters`);
+      }
+    }
+    for (const n of sea.nodes.filter((x) => x.id.startsWith("bridge."))) assert.ok(n.y < lg.y, "the buoys float above the logo");
+    assert.ok(sea.edges.filter((e) => e.bridge).length === 3);
+  }
+});
+
+test("ocean: the logo letters ride one wave inside the logo box, in order, without overlapping", () => {
+  const lg = { x: 100, y: 50, w: 84 * 3.9, h: 84 * 1.25, font: 84 };
+  const ls = O.logoLetters(lg);
+  assert.deepEqual(ls.map((l) => l.ch).join(""), "SHOAL");
+  for (let i = 1; i < ls.length; i++) assert.ok(ls[i].x >= ls[i - 1].x + ls[i - 1].w, "letters do not overlap");
+  assert.ok(ls[0].x >= lg.x && ls[4].x + ls[4].w <= lg.x + lg.w, "the word fits the box");
+  const ys = ls.map((l) => l.y);
+  assert.ok(Math.max(...ys) - Math.min(...ys) > 84 * 0.08, "the letters are at different heights (a wave)");
+  assert.ok(Math.max(...ys.map((y) => Math.abs(y - lg.y))) <= 84 * 0.085 + 0.1, "a gentle wave keeps the word readable");
+  assert.equal(new Set(O.LETTER_SHADES).size, O.LETTER_SHADES.length, "the shades grade without repeats");
+  // a wide face (the laptop's DejaVu Serif) is drawn a little smaller so it still fits, letters apart
+  const wide = O.logoLetters(lg, "SHOAL", "DejaVu Serif");
+  assert.ok(wide[0].font < 84 && wide[0].x >= lg.x && wide[4].x + wide[4].w <= lg.x + lg.w, "a wide face fits the box");
+  for (let i = 1; i < wide.length; i++) assert.ok(wide[i].x >= wide[i - 1].x + wide[i - 1].w, "wide letters do not overlap");
+  // ripple cells cover every pixel of each letter box, and their band edges differ between strips (a ripple)
+  for (const l of ls) {
+    const cells = O.rippleBands(l, 84, O.LETTER_SHADES.length);
+    for (let x = 0; x < Math.floor(l.w); x += 3) {
+      for (let y = 0; y < Math.floor(l.h); y += 3) {
+        assert.ok(cells.some((c) => x >= c.x && x < c.x + c.w && y >= c.y0 && y < c.y1), `${l.ch}: pixel ${x},${y} shaded`);
+      }
+    }
+    const edgesOf = (j) => cells.filter((c) => c.x === cells.filter((d) => d.k === 0)[j].x).map((c) => c.y0);
+    assert.notDeepEqual(edgesOf(0), edgesOf(2), `${l.ch}: band edges ripple across the strips`);
+  }
+});

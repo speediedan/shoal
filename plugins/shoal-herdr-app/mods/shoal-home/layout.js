@@ -38,7 +38,8 @@ export const REFRESH = { y: 14, w: 96, h: 24 };
 const refreshBox = (W) => ({ x: W - PAD - REFRESH.w, y: REFRESH.y, w: REFRESH.w, h: REFRESH.h });
 
 /** Logo text size estimate: SHOAL in a semibold sans is about 3.5 em wide, 1.2 em tall. */
-const logoBox = (font) => ({ w: font * 3.5, h: font * 1.2 });
+// wide enough for the wavy letters (ocean.js logoLetters: 3.8 em of glyph boxes)
+const logoBox = (font) => ({ w: font * 3.9, h: font * 1.25 });
 
 /**
  * Card grid for `heights` (one per host, in order) in `avail` px of width: rows as even as the
@@ -82,7 +83,7 @@ function artAt(W, H, heights, u) {
   const grid = cardGrid(W, heights);
   const bandH = Math.max(...CREATURES.filter((c) => c.slot === "top").map((c) => c.dy * B + c.k * B)) + drift;
   const rowH = Math.max(logo.h, sideSize + drift);
-  const tagSize = Math.round(12.5 * Math.min(1.25, Math.max(0.9, u)));
+  const tagSize = Math.round(15.5 * Math.min(1.25, Math.max(0.9, u)));
   // offsets from the composition top
   const rowY = bandH + 0.1 * B;
   const tagY = rowY + rowH + 6;
@@ -127,13 +128,13 @@ function textAt(W, H, heights) {
   const font = W < 420 ? 34 : 48;
   const logo = logoBox(font);
   const grid = cardGrid(W, heights);
-  const tag = W >= 420;
+  const tag = W >= 520;
   // a narrow window keeps the refresh control above the logo, not beside it
   const minTop = W < 560 ? REFRESH.y + REFRESH.h + 8 : PAD;
-  const body = logo.h + 4 + (tag ? 22 : 0) + 6 + 22 + 14 + grid.h + 12 + 16;
+  const body = logo.h + 4 + (tag ? 25 : 0) + 6 + 22 + 14 + grid.h + 12 + 16;
   const logoY = Math.round(Math.max(minTop, (H - body) / 2));
   const tagY = logoY + logo.h + 4;
-  const askY = tagY + (tag ? 22 : 0) + 6;
+  const askY = tagY + (tag ? 25 : 0) + 6;
   const gridY = askY + 22 + 14;
   const footY = gridY + grid.h + 12;
   const total = footY + 16 + PAD;
@@ -145,7 +146,7 @@ function textAt(W, H, heights) {
     height: H,
     contentH: total,
     logo: { x: Math.round(W / 2 - logo.w / 2), y: logoY, w: Math.round(logo.w), h: Math.round(logo.h), font },
-    tagline: tag ? { y: Math.round(tagY), h: 16, size: 12 } : null,
+    tagline: tag ? { y: Math.round(tagY), h: 19, size: 14 } : null,
     ask: { y: Math.round(askY), h: 22, size: 13 },
     creatures: [],
     cards: grid.cards.map((c) => ({ ...c, y: Math.round(gridY + c.y) })),

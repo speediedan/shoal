@@ -8,7 +8,7 @@ how shoal runs; every mod reads shoal's own feeds, and the only verb any mod run
 | Mod | What it is |
 |---|---|
 | `mods/lattice-view` | The shoal graph doc v1 (`shoal ui graph --json`) as an animated, hoverable network: a global view of every shoal around the operator hub, a per-shoal view with host regions, a metrics and needs-you rail, and a compact `pulse` mode for an edge drawer. See its `RECIPE.md`. |
-| `mods/shoal-home` | The splash and host chooser, natively: the SHOAL logo with the five splash creatures and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
+| `mods/shoal-home` | The splash and host chooser, natively: the nautical SHOAL logo, the five splash creatures in a kelp network and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
 
 ![lattice-view](mods/lattice-view/preview.png)
 

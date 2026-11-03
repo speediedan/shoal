@@ -2259,7 +2259,7 @@ print("app remote ok")
 PY5
 # the card's own status report (OSC 7501), the mapping, and the host list
 python3 - "$SHOALD" <<'PY6' || fail "card report"
-import base64, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import base64, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import ui_app
 o = ui_app.osc7501("blocked", "auth", "lane/r", "wait user-auth")
 assert o.startswith("\x1b]7501;state=blocked:kind=auth:app=shoal:title=") and o.endswith("\x1b\\"), repr(o)
@@ -2285,6 +2285,11 @@ assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["-bash"]}
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["bash", "-c", "x"]}}) == "other"
 assert ui_app.foreground_kind({"foreground": {"name": "claude", "argv": ["claude", "attach", "x"]}}) == "other"
 assert not ui_app.in_core_terminal({}) and ui_app.in_core_terminal({"HC_TERMINAL_ID": "t1"})
+# a shoal's space lives on its home host only (every host reads every shoal through the shared ledger)
+import config
+Spec = lambda home: type("Spec", (), {"home": home})()
+me = config.server() or os.uname().nodename.split(".")[0]
+assert ui_app.home_here(Spec("")) and ui_app.home_here(Spec(me)) and not ui_app.home_here(Spec("elsewhere.invalid"))
 print("card report ok")
 PY6
 OUT=$(env $AENV SHOAL_UI_LEDGER_ROOTS="$ROOT" HC_TERMINAL_ID=t1 timeout 4 $H view $SID cl --stub </dev/null 2>/dev/null); true
@@ -2328,6 +2333,26 @@ mine = os.path.join(S, "apphome-mods", "mods", "plain")
 os.remove(mine); os.makedirs(mine); open(os.path.join(mine, "main.js"), "w").write("operator's own")
 assert "left as it is" in ui_app.install_mod("plain") and open(os.path.join(mine, "main.js")).read() == "operator's own"
 print("mod install ok")
+# the 0.9.3 paste keys: the app's defaults are swapped, other keys kept, a binding the person chose is left
+import json
+kp = os.path.join(S, "apphome-mods", "keys.json")
+json.dump({"global": {"alt-1": "space.select:1"},
+           "terminal": {"ctrl-v": "terminal.paste_image", "ctrl-shift-v": "terminal.paste", "ctrl-shift-c": "terminal.copy"}},
+          open(kp, "w"))
+lines = ui_app.install_keys()
+k = json.load(open(kp))
+assert k["terminal"]["ctrl-v"] == "terminal.paste" and k["terminal"]["ctrl-shift-v"] == "terminal.paste_image", k
+assert k["terminal"]["ctrl-shift-c"] == "terminal.copy" and k["global"] == {"alt-1": "space.select:1"}, k
+assert len(lines) == 2 and ui_app.keys_state()[0] and ui_app.install_keys() == [], lines
+bak = json.load(open(kp + ".bak-shoal-paste"))  # a one-time backup of the file as it was
+assert bak["terminal"]["ctrl-v"] == "terminal.paste_image", bak
+open(kp + ".odd", "w").write(json.dumps({"terminal": ["not", "an", "object"]}))
+os.replace(kp, kp + ".keep"); os.replace(kp + ".odd", kp)
+assert "left as it is" in ui_app.install_keys()[0] and json.load(open(kp))["terminal"] == ["not", "an", "object"]
+os.replace(kp + ".keep", kp)
+k["terminal"]["ctrl-v"] = "send:x"; json.dump(k, open(kp, "w"))
+assert "by you" in ui_app.install_keys()[0] and json.load(open(kp))["terminal"]["ctrl-v"] == "send:x"
+print("paste keys ok")
 PY9
 # the plugin wrapper (every 0.9.3 pane, app card and unit runs it) finds the Python of the `shoal` on PATH: from a
 # python shebang, or from the exec line of a shell wrapper `shoal` (running cli.py under sh broke a host's units)
