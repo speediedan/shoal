@@ -66,9 +66,21 @@ class UsageTests(unittest.TestCase):
         rows = u.normalize("claude", {"five_hour": {"utilization": 10}, "seven_day": None})
         self.assertEqual(len(rows[0]["windows"]), 1)
         for provider, data in [("codex", {}), ("claude", {}), ("opencode-go", {}),
-                               ("muse", {"is_subs_active": True, "subs_usage": None})]:
+                               ("muse", {"is_subs_active": True, "subs_usage": "malformed"}),
+                               ("muse", {"is_subs_active": False})]:
             with self.subTest(provider=provider), self.assertRaises(u.UsageError):
                 u.normalize(provider, data)
+
+    def test_muse_without_usage_block_is_idle_not_zero_or_error(self):
+        # an active subscription whose response carries no subs_usage: no use in the current windows
+        rows = u.normalize("muse", {"is_subs_active": True, "subs_tier_name": "Power"})
+        self.assertEqual(rows, [{"bucket": "muse", "plan": "Power", "windows": [], "idle": True}])
+        doc = {"accounts": [{"provider": "muse", "stale": False, "age_s": 60, "rows": rows}]}
+        self.assertEqual(u.summary(doc), "muse: idle")
+        self.assertIn("muse: unused since reset", u.render_lines(doc))
+        self.assertIn("unused since reset", u.render_table(doc))
+        self.assertNotIn("0%", u.render_table(doc))
+        self.assertEqual(u.severity(doc["accounts"][0], rows[0]), "ok")
 
     def test_status_line_retains_denial_without_a_meter_or_in_another_bucket(self):
         rows = u.normalize("codex", {"ordinaryUsageAllowed": False})
