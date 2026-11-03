@@ -50,7 +50,7 @@ CORE_PIN = "0.1.17"
 DEAD_RELEASES_URL = "http://127.0.0.1:9"
 APP_UNIT = "shoal-herdr-app"
 FEED_UNIT = "shoal-graph-feed.service"
-MODS = ("lattice-view", "shoal-home")
+MODS = ("lattice-view", "shoal-home", "shoal-actions")
 MOD_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "mods")
 REPORT_APP = "shoal"
 # the plan's own label on each terminal it starts, so a later reconcile finds the pane again
@@ -850,7 +850,7 @@ def cmd_app_install(a) -> int:
                 line = install_mod(name, a.dry_run)
                 if line:
                     print(line)
-        for line in install_keys(a.dry_run):
+        for line in install_keys(a.dry_run) + install_theme(a.dry_run):
             print(line)
     return 0
 
@@ -859,6 +859,64 @@ def cmd_app_install(a) -> int:
 # Ctrl+Shift+V an image. The app ships them the other way round.
 PASTE_KEYS = {"ctrl-v": "terminal.paste", "ctrl-shift-v": "terminal.paste_image"}
 APP_DEFAULT_PASTE_KEYS = {"ctrl-v": "terminal.paste_image", "ctrl-shift-v": "terminal.paste"}
+# The actions dialog (the 0.9.3 palette's Alt+s, after the Herdr prefix): one global key, mouse for the rest.
+ACTION_KEYS = {"ctrl-alt-s": "mod.open:shoal-actions"}
+THEME = "shoal-ocean"
+THEME_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "themes")
+
+
+def install_theme(dry_run: bool = False) -> list[str]:
+    """The shoal ocean theme: dark chrome and white-on-black terminals. The theme file is shoal's own (refreshed
+    when it changed); settings.json's `theme` is set only when the person set none (one-time backup first)."""
+    src = os.path.join(THEME_DIR, THEME + ".json")
+    if not os.path.exists(src):
+        return []
+    out, pre = [], "[dry-run] " if dry_run else ""
+    dest = os.path.join(app_home(), "themes", THEME + ".json")
+    body = open(src).read()
+    if (open(dest).read() if os.path.exists(dest) else None) != body:
+        out.append(pre + f"theme: write {dest}")
+        if not dry_run:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest + ".tmp", "w") as fh:
+                fh.write(body)
+            os.replace(dest + ".tmp", dest)
+    path = os.path.join(app_home(), "settings.json")
+    try:
+        text = open(path).read()
+        doc = json.loads(text)
+    except FileNotFoundError:
+        text, doc = None, {}
+    except ValueError as exc:
+        return out + [f"theme: {path} is not valid JSON ({exc}): left as it is"]
+    if not isinstance(doc, dict):
+        return out + [f"theme: {path} is not an object: left as it is"]
+    have = doc.get("theme")
+    if have == THEME:
+        return out
+    if have not in (None, ""):
+        return out + [f"theme: settings.json picks {have!r}: left as it is (shoal's is {THEME!r})"]
+    out.append(pre + f"theme: settings.json theme -> {THEME}")
+    if not dry_run:
+        backup = path + ".bak-shoal-theme"
+        if text is not None and not os.path.exists(backup):
+            with open(backup, "w") as fh:
+                fh.write(text)
+        doc["theme"] = THEME
+        with open(path + ".tmp", "w") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(path + ".tmp", path)
+    return out
+
+
+def theme_state() -> tuple[bool, str]:
+    try:
+        have = json.load(open(os.path.join(app_home(), "settings.json"))).get("theme")
+    except (OSError, ValueError, AttributeError):
+        have = None
+    present = os.path.exists(os.path.join(app_home(), "themes", THEME + ".json"))
+    return have == THEME and present, f"settings theme = {have or 'unset'}; {THEME}.json {'present' if present else 'missing'}"
 
 
 def keys_state() -> tuple[bool, str]:
@@ -881,20 +939,23 @@ def install_keys(dry_run: bool = False) -> list[str]:
         text, doc = None, {}
     except ValueError as exc:
         return [f"keys: {path} is not valid JSON ({exc}): left as it is"]
-    if not isinstance(doc, dict) or not isinstance(doc.get("terminal", {}), dict):
-        return [f"keys: {path} has no `terminal` object shoal can edit: left as it is"]
-    term = doc.setdefault("terminal", {})
+    want_keys = [("terminal", k, v, APP_DEFAULT_PASTE_KEYS[k], "the 0.9.3 paste keys") for k, v in PASTE_KEYS.items()]
+    if os.path.isdir(os.path.join(MOD_DIR, "shoal-actions")):
+        want_keys += [("global", k, v, None, "the actions dialog") for k, v in ACTION_KEYS.items()]
+    if not isinstance(doc, dict) or any(not isinstance(doc.get(s, {}), dict) for s in {w[0] for w in want_keys}):
+        return [f"keys: {path} has a section shoal can edit that is not an object: left as it is"]
     out, changed = [], False
-    for key, want in PASTE_KEYS.items():
-        have = term.get(key)
+    for section, key, want, default, why in want_keys:
+        sec = doc.setdefault(section, {})
+        have = sec.get(key)
         if have == want:
             continue
-        if have not in (None, APP_DEFAULT_PASTE_KEYS[key]):
-            out.append(f"keys: {key} is bound to {have} by you: left as it is (0.9.3 had {want})")
+        if have not in (None, default):
+            out.append(f"keys: {section} {key} is bound to {have} by you: left as it is (shoal would use it for {why})")
             continue
-        term[key] = want
+        sec[key] = want
         changed = True
-        out.append(("[dry-run] " if dry_run else "") + f"keys: {key} -> {want} (the 0.9.3 paste keys)")
+        out.append(("[dry-run] " if dry_run else "") + f"keys: {key} -> {want} ({why})")
     if changed and not dry_run:
         backup = path + ".bak-shoal-paste"
         if text is not None and not os.path.exists(backup):  # one-time, before shoal's first rewrite
@@ -932,6 +993,7 @@ def doctor_checks() -> list[tuple[str, bool, str]]:
             if os.path.isdir(os.path.join(MOD_DIR, name)):
                 out.append((f"app mod {name} installed from this checkout",) + link_state(name))
         out.append(("app paste keys as in 0.9.3",) + keys_state())
+        out.append(("app theme (shoal ocean)",) + theme_state())
     if has_core:
         v = _version([hc_bin(), "--version"])
         out.append(("herdr-core at the pin", v == CORE_PIN, f"{v or 'none'} (pin {CORE_PIN})"))

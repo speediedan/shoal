@@ -1,0 +1,131 @@
+{
+  "roles": {
+    "v": 1,
+    "kind": "shoal-act-roles",
+    "shoals": [
+      {
+        "id": "alpha-20261101-000000",
+        "tag": "alpha",
+        "roles": [
+          { "slug": "core", "host": "host-a", "needs_you": false, "posture": "active" },
+          { "slug": "lane-a", "host": "host-a", "needs_you": true, "posture": "blocked:user-ask" },
+          { "slug": "lane-b", "host": "host-b", "needs_you": false, "posture": "wait:remote-ci" },
+          { "slug": "review", "host": "host-a", "needs_you": false, "posture": "idle" }
+        ]
+      },
+      {
+        "id": "beta-20261101-000000",
+        "tag": "beta",
+        "roles": [
+          { "slug": "core", "host": "host-b", "needs_you": false, "posture": "active" },
+          { "slug": "docs", "host": "host-b", "needs_you": true, "posture": "QUESTION" }
+        ]
+      }
+    ]
+  },
+  "plans": {
+    "msg": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "msg",
+      "command": "shoal msg --shoal alpha-20261101-000000 --to lane-a --text=<text>",
+      "preview": "dry run: nothing written\nwould append to the ledger:\n  msg  user -> lane-a\n  text: <text>\nwake: one turn of lane-a now (its session is asleep with a watcher)",
+      "cost": "a --wake from user starts one turn of that role (tokens)",
+      "confirm": true,
+      "token": "0f3c9a7d2b8e4f61",
+      "expires_s": 600
+    },
+    "offer": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "offer",
+      "command": "shoal offer --shoal alpha-20261101-000000 --to review --item=repo-one#104:review",
+      "preview": "dry run: nothing written\nwould append to the ledger:\n  offer  user -> review\n  item: repo-one#104:review\n  review is idle: the offer wakes it for one turn",
+      "cost": "an offer wakes an idle role (one turn)",
+      "confirm": true,
+      "token": "5a1e77c0d93b2f48",
+      "expires_s": 600
+    },
+    "withdraw": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "withdraw",
+      "command": "shoal withdraw --shoal alpha-20261101-000000 --item=repo-one#104",
+      "preview": "dry run: nothing written\nwould append to the ledger:\n  withdraw  repo-one#104 (offered to review 2h ago, not claimed)",
+      "cost": "",
+      "confirm": true,
+      "token": "c4d2096e1ab57f33",
+      "expires_s": 600
+    },
+    "offline": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "offline",
+      "command": "shoal offline on --shoal alpha-20261101-000000 --until=2026-11-04T09:00+00:00",
+      "preview": "dry run: nothing written\nwould set user-offline on until 2026-11-04T09:00+00:00\nroles waiting on you (1): lane-a pivots to other work",
+      "cost": "wakes the roles waiting on you, once, so they pivot (tokens)",
+      "confirm": false,
+      "token": "9be0f1a4c6d27e85",
+      "expires_s": 600
+    },
+    "freeze": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "freeze",
+      "command": "shoal freeze on --shoal alpha-20261101-000000 --no-wake",
+      "preview": "dry run: nothing written\nwould set freeze on for alpha-20261101-000000\nroles: 4 (each stops at its next boundary)",
+      "cost": "toggling a freeze wakes every role once (tokens)",
+      "confirm": true,
+      "token": "71d8e3b5a0c94f26",
+      "expires_s": 600
+    }
+  },
+  "result": {
+    "v": 1,
+    "kind": "shoal-act-result",
+    "rc": 0,
+    "command": "shoal msg --shoal alpha-20261101-000000 --to lane-a --text=<text>",
+    "output": "appended seq 4182 (msg user -> lane-a)\nwoke lane-a: one turn"
+  },
+  "views": {
+    "next": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "next",
+      "text": "next for lane-a (peek: nothing marked read)\n\nactive:  repo-one#101:fix  claimed 42m ago\nqueue:\n  1. repo-one#104:review   blocked by dist-ci:repo-one#103\n  2. repo-two#7:fix\noffers: none open\nmail (2 unread):\n  core -> lane-a  \"rebase onto main before the review\"\n  user -> *       \"quiet hours after 22:00\""
+    },
+    "asks": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "asks",
+      "text": "2 roles wait on you",
+      "asks": [
+        { "role": "lane-a", "host": "host-a", "asks": ["Which branch should the fix target: main or release-1.2?"], "question": true, "says_waiting": false },
+        { "role": "lane-b", "host": "host-b", "asks": ["Can I bump the pinned toolchain?", "Should the flaky test be quarantined?"], "question": false, "says_waiting": true }
+      ]
+    },
+    "status": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "status",
+      "text": "alpha-20261101-000000  4 roles  host-a (home), host-b\n\n  core     active        repo-one#101:fix        turn 7m\n  lane-a   blocked:ask   repo-two#7:fix          QUESTION 12m\n  lane-b   wait:remote-ci  repo-one#103          on host-b 3m\n  review   idle          (queue empty)           asleep, watcher alive\n\nconditions: 1 open\n  lane-a: blocked-on-question: asked 12m ago"
+    },
+    "conditions": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "conditions",
+      "text": "  lane-a: blocked-on-question: asked 12m ago\n1 open condition(s) (health quorum's own evaluate, refreshed now)"
+    },
+    "upgrade": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "upgrade",
+      "text": "Upgrades stay a CLI step (operator-only). Preview of what this commit would roll out:\n\n  skills: shoal-protocol 1.41 -> 1.42 (4 roles)\n  hooks: unchanged\n  watchers: rearm lazy (no session wakes)\n\nTo apply with zero session wakes: shoal upgrade --spec <spec>"
+    }
+  },
+  "error": {
+    "v": 1,
+    "kind": "shoal-act-error",
+    "error": "no open offer of repo-one#999 in alpha-20261101-000000"
+  }
+}

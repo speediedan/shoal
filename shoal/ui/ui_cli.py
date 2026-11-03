@@ -243,6 +243,8 @@ def add_parsers(sub) -> None:
     q.add_argument("--check", action="store_true", help="report only (the app doctor rows)")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_app.cmd_app_install)
+    import ui_actions
+    ui_actions.add_parsers(u)
 
     import herdr_pin
     q = u.add_parser("herdr-get", help=f"install the pinned Herdr release (checksum-verified; pin {herdr_pin.PIN})")

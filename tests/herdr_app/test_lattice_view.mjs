@@ -635,4 +635,31 @@ test("shared focus: a node id or {node, shoal, t}; persisted and stale requests 
   assert.equal(M.FOCUS_KEY, "lattice.focus");
 });
 
+test("right-click opens shoal-actions on a role (machine from source.on) or a shoal, nothing else", () => {
+  const exec = { kind: "exec", argv: ["shoal", "ui", "graph", "--json"], on: "lane-a" };
+  const o = M.actionsOverlay(alpha, `${A}:core`, exec);
+  assert.deepEqual(o, { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: A, role: "core", machine: "lane-a" } });
+  assert.equal(M.actionsOverlay(alpha, `${A}:core`, { kind: "exec", on: null }).props.machine, null, "null is this computer");
+  assert.equal(M.actionsOverlay(alpha, `${A}:core`, { kind: "file", path: "<feed>", on: "lane-b" }).props.machine, "lane-b");
+  assert.equal(M.actionsOverlay(global, `${A}:core`, null).props.machine, null);
+  const fx = M.actionsOverlay(alpha, `${A}:core`, { kind: "fixture" });
+  assert.equal(fx.props.fixture, true, "a fixture copy opens the dialog on fixtures");
+  assert.equal(fx.props.machine, null);
+  assert.ok(!("fixture" in o.props), "a live copy does not");
+  // the shoal's writer node: the shoal alone
+  assert.deepEqual(M.actionsOverlay(alpha, `${A}:shoal`, exec).props, { shoal: A, role: null, machine: "lane-a" });
+  // the hub, an external writer, a missing id or no model: nothing opens
+  assert.equal(M.actionsOverlay(global, "user", exec), null);
+  for (const nd of global.nodes.filter((x) => x.kind !== "role" && x.kind !== "system")) assert.equal(M.actionsOverlay(global, nd.id, exec), null, nd.id);
+  assert.equal(M.actionsOverlay(alpha, null, exec), null);
+  assert.equal(M.actionsOverlay(alpha, "nope", exec), null);
+  assert.equal(M.actionsOverlay(null, `${A}:core`, exec), null);
+  // every role node in the fixture gets its own slug
+  for (const nd of global.nodes.filter((x) => x.kind === "role")) {
+    const p = M.actionsOverlay(global, nd.id, exec).props;
+    assert.equal(p.shoal, nd.shoal);
+    assert.equal(p.role, nd.slug ?? nd.label);
+  }
+});
+
 console.log(`lattice-view: ${n} tests passed`);

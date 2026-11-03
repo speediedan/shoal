@@ -630,6 +630,27 @@ export function readFocus(value, seenKey, now = Date.now(), maxAgeMs = 120000) {
 /** The key of a shared focus value as readFocus computes it (null when it is not one). */
 export const focusKeyOf = (value) => readFocus(value, undefined, 0, Infinity)?.key ?? null;
 
+// ---- the actions dialog (shoal-actions), opened by a right-click
+
+/**
+ * The overlay a right-click on node `id` opens: the shoal-actions dialog on that role (a role
+ * node) or on its shoal (the shoal's system node), else null. `machine` is where this copy reads
+ * its feed (`source.on`, null for this computer); a fixture copy opens the dialog on fixtures too,
+ * so a demo never runs shoal against made-up ids.
+ */
+export function actionsOverlay(vm, id, source = null) {
+  const n = vm?.byId?.get(id);
+  if (!n || typeof n.shoal !== "string" || !n.shoal) return null;
+  let role = null;
+  if (n.kind === "role") role = n.slug ?? n.label ?? null;
+  else if (n.kind !== "system") return null;
+  const src = obj(source) ?? {};
+  const machine = src.kind === "exec" || src.kind === "file" ? (typeof src.on === "string" && src.on ? src.on : null) : null;
+  const props = { shoal: n.shoal, role, machine };
+  if (src.kind === "fixture") props.fixture = true;
+  return { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props };
+}
+
 // ---- pulse mode: a compact edge drawer
 
 /** The pulse drawer's rows: one per live shoal, then up to `maxNeeds` needs-you roles, loudest first. */

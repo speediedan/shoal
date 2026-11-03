@@ -1002,6 +1002,18 @@ and the contract are in [`ui.md`](ui.md).
   do not click. Motion uses the lattice budget (its `motion.js`, copied verbatim): a native drift
   only at `full`, stopped once a host is opened. Pure modules are tested under Node
   (`tests/herdr_app/test_shoal_home.mjs`, run by `selftest_ui.sh` when `node` is present).
+- **Herdr app actions dialog** (`plugins/shoal-herdr-app/mods/shoal-actions/`): the operator
+  actions in place of the 0.9.3 popup palette, a dialog overlay opened by `mod.open shoal-actions`
+  (a key), a right-click on a lattice role node (`actionsOverlay` in lattice-view's `model.js`), or
+  `openOverlay` with props `{shoal, role, machine}`. Without props it starts on the focused card
+  (its `shoal.pane` label and its space's machine), else on the first needs-you role. It runs only
+  `shoal ui act-plan roles|<verb> --json` and `shoal ui act-apply --token --json`, on the machine
+  of the role's card (exec `on`). A write verb shows the plan's command, `--dry-run` preview and
+  wake cost, and applies only on Confirm with the plan's one-use token (offline applies right
+  after its plan, still shown); the token stays in memory, and the dialog never types into a pane.
+  Read-only verbs (next, asks, status, conditions, upgrade) render the CLI's text; Answer on an ask
+  opens Message to that role with wake on. Pure decisions in `model.js` are tested under Node
+  (`tests/herdr_app/test_shoal_actions.mjs`); `props.fixture` answers from bundled fixtures.
 - **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
   this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
   or the exec line when that `shoal` is a shell wrapper), else `python3`.
@@ -1034,10 +1046,17 @@ is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_T
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
 feeder push; a blocked role names `auth`, `question` or `permission`. `ui app-start` starts the app as a user
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
-its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit and installs the mods
-into the app's home. `ui launch` in an app terminal opens the chosen host in the app, and `ui launch --list
---json [--summary]` gives the host list the app's home screen reads. Nothing here wakes a role, types into a
-pane or writes the ledger; herdr 0.9.3 is untouched.
+its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit, installs the mods
+into the app's home, and sets the 0.9.3 paste keys, the actions key and the `shoal-ocean` theme where the
+person has not chosen their own. `ui launch` in an app terminal opens the chosen host in the app, and `ui
+launch --list --json [--summary]` gives the host list the app's home screen reads. Nothing here wakes a role,
+types into a pane or writes the ledger; herdr 0.9.3 is untouched.
+
+`shoal/ui/ui_actions.py` (`ui act-plan`, `ui act-apply`) is the palette without a terminal, for the app's
+actions dialog. A write verb's plan builds the palette's argv, runs its `--dry-run`, names the wake cost, and
+stores the argv under a one-time token (0600, runtime dir, ten minutes); apply runs only a stored argv, once,
+and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own.
+Read-only views (`next`, `status`, `conditions`, `asks`, `upgrade`, `roles`) store nothing.
 
 ### Host resource observations and placement pilot
 

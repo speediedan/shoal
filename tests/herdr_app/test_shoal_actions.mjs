@@ -1,0 +1,362 @@
+// test_shoal_actions.mjs: the shoal-actions Herdr app mod's pure module against its bundled fixtures.
+// Node only, no dependencies: node --test tests/herdr_app/*.mjs (or node this file)
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MOD = join(here, "..", "..", "plugins", "shoal-herdr-app", "mods", "shoal-actions");
+const M = await import(join(MOD, "model.js"));
+const fx = JSON.parse(readFileSync(join(MOD, "fixtures", "act.json"), "utf8"));
+const modJson = JSON.parse(readFileSync(join(MOD, "mod.json"), "utf8"));
+
+const A = "alpha-20261101-000000";
+const B = "beta-20261101-000000";
+const ok = (doc, code = 0, stderr = "") => ({ code, stdout: JSON.stringify(doc), stderr });
+const NOW = new Date(2026, 10, 3, 14, 30, 0); // local time
+
+// terminals(), spaces(), focused() and panes() as the app gives them (synthetic ids)
+const spaces = [
+  { id: "sp-home", machine: null, name: "alpha" },
+  { id: "lane-a/sp-remote", machine: "lane-a", name: "beta" },
+  { id: "sp-solo", machine: null, name: "solo" },
+];
+const terminals = [
+  { address: "t1", labels: { "herdr.space": "sp-home", "herdr.tab": "tb1", "shoal.pane": `${A}/overview` } },
+  { address: "t2", labels: { "herdr.space": "sp-home", "herdr.tab": "tb2", "shoal.pane": `${A}/core` } },
+  { address: "t3", labels: { "herdr.space": "sp-home", "herdr.tab": "tb2", "shoal.pane": `${A}/lane-a` } },
+  { address: "lane-a/t7", labels: { "herdr.space": "sp-remote", "herdr.tab": "tb9", "shoal.pane": `${B}/docs` } },
+  { address: "lane-a/t8", labels: { "herdr.space": "sp-remote", "herdr.tab": "tb9", "shoal.pane": `${B}/ledger` } },
+  { address: "t9", labels: { "herdr.space": "sp-solo", "herdr.tab": "tb5", "shoal.pane": "standalone/<label>" } },
+  { address: "t10", labels: { "herdr.space": "sp-home" } },
+  { address: "t11" },
+];
+const panes = [{ pane: "p2", terminal: "t2" }, { pane: "p7", terminal: "lane-a/t7" }, { pane: "pm", terminal: null, mod: "lattice-view" }];
+
+test("mod.json: a focusable dialog overlay that docks nowhere", () => {
+  assert.equal(modJson.place, "none");
+  assert.equal(modJson.focusable, true);
+  assert.equal(modJson.overlay.kind, "dialog");
+  assert.equal(modJson.overlay.width, M.SIZE.width);
+  assert.equal(modJson.overlay.height, M.SIZE.height);
+});
+
+test("verbs: the ten buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.VERBS.map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Status", "Conditions", "Upgrade preview"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"]]);
+  for (const v of M.VERBS) {
+    if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
+    else assert.ok(fx.views[v.verb], `a view fixture for ${v.verb}`);
+  }
+  for (const v of M.VERBS.filter((x) => x.kind === "write")) assert.ok(fx.plans[v.verb], `a plan fixture for ${v.verb}`);
+  assert.equal(M.verbInfo("nope"), null);
+  assert.ok(M.isWrite("msg") && !M.isWrite("next") && M.isView("asks") && !M.isView("freeze"));
+});
+
+test("forms: defaults, visible fields, Tab order", () => {
+  const msg = M.newForm("msg", NOW);
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true });
+  assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake"]);
+  assert.equal(M.newForm("next", NOW), null, "a view has no form");
+  assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
+  assert.ok(!("bogus" in M.newForm("msg", NOW, { bogus: 1 }).values));
+  // offline: `until` only while turning it on, prefilled with the next local 09:00
+  let off = M.newForm("offline", NOW);
+  assert.equal(off.values.until, M.nextMorning(NOW));
+  assert.match(off.values.until, /^2026-11-04T09:00[+-]\d\d:\d\d$/);
+  assert.deepEqual(M.visibleFields(off).map((f) => f.key), ["state", "note"]);
+  off = M.setValue(off, "state", "on");
+  assert.deepEqual(M.visibleFields(off).map((f) => f.key), ["state", "until", "note"]);
+  assert.deepEqual(M.textFields(off), ["until", "note"]);
+  assert.equal(M.nextField(off, null), "until");
+  assert.equal(M.nextField(off, "until"), "note");
+  assert.equal(M.nextField(off, "note"), "until", "Tab wraps");
+  assert.equal(M.nextField(off, "until", true), "note", "Shift-Tab goes back");
+  assert.equal(M.nextField(off, null, true), "note");
+  assert.equal(M.nextField(M.newForm("freeze", NOW), null), "note");
+  assert.equal(M.nextField(null, null), null);
+  // freeze records without a wake by default (0.9.3 asked [Y/n])
+  assert.equal(M.newForm("freeze", NOW).values.noWake, true);
+  // the next morning rolls to tomorrow at or after 09:00, and stays today before it
+  assert.match(M.nextMorning(new Date(2026, 10, 3, 8, 59)), /^2026-11-03T09:00/);
+  assert.match(M.nextMorning(new Date(2026, 10, 3, 9, 0)), /^2026-11-04T09:00/);
+  assert.match(M.nextMorning(new Date(2026, 11, 31, 23, 0)), /^2027-01-01T09:00/);
+});
+
+test("validation and argv for every verb", () => {
+  const t = { shoal: A, role: "lane-a" };
+  const f = (verb, values) => ({ ...M.newForm(verb, NOW), values: { ...M.newForm(verb, NOW).values, ...values } });
+  assert.equal(M.validate("msg", t, f("msg", {})), "type a message");
+  assert.equal(M.validate("msg", { shoal: A }, f("msg", { text: "hi" })), "pick a role (or * for everyone)");
+  assert.equal(M.validate("msg", { role: "core" }, f("msg", { text: "hi" })), "pick a shoal first");
+  assert.equal(M.validate("offer", { shoal: A, role: "*" }, f("offer", { item: "r#1:fix" })), "pick a role first (not *)");
+  assert.equal(M.validate("offer", t, f("offer", { item: "  " })), "type the item");
+  assert.equal(M.validate("offline", { shoal: A }, f("offline", {})), "pick on or off");
+  assert.equal(M.validate("next", { shoal: A }), "pick a role first (not *)");
+  assert.equal(M.validate("status", { shoal: A }), null);
+  assert.equal(M.validate("withdraw", { shoal: A }, M.newForm("offer", NOW)), "the form is missing");
+  assert.throws(() => M.planArgv("msg", t, f("msg", {})), /type a message/);
+
+  assert.deepEqual(M.planArgv("msg", t, f("msg", { text: "  -rebase first  " })),
+    ["ui", "act-plan", "msg", "--shoal", A, "--role=lane-a", "--text=-rebase first", "--json"], "a leading dash stays a value");
+  assert.deepEqual(M.planArgv("msg", { shoal: A, role: "*" }, f("msg", { text: "hi all", wake: true })),
+    ["ui", "act-plan", "msg", "--shoal", A, "--role=*", "--text=hi all", "--wake", "--json"]);
+  assert.deepEqual(M.planArgv("offer", t, f("offer", { item: "repo-one#104:review", note: "after CI" })),
+    ["ui", "act-plan", "offer", "--shoal", A, "--role=lane-a", "--item=repo-one#104:review", "--note=after CI", "--json"]);
+  assert.deepEqual(M.planArgv("offer", t, f("offer", { item: "repo-one#104:review" })),
+    ["ui", "act-plan", "offer", "--shoal", A, "--role=lane-a", "--item=repo-one#104:review", "--json"], "an empty note is left out");
+  assert.deepEqual(M.planArgv("withdraw", t, f("withdraw", { item: "repo-one#104" })),
+    ["ui", "act-plan", "withdraw", "--shoal", A, "--item=repo-one#104", "--json"], "withdraw is shoal-wide: no role");
+  assert.deepEqual(M.planArgv("offline", t, f("offline", { state: "on", until: "2026-11-04T09:00+00:00", note: "away" })),
+    ["ui", "act-plan", "offline", "--shoal", A, "--state", "on", "--until=2026-11-04T09:00+00:00", "--note=away", "--json"]);
+  assert.deepEqual(M.planArgv("offline", t, f("offline", { state: "on", until: "" })),
+    ["ui", "act-plan", "offline", "--shoal", A, "--state", "on", "--json"], "a cleared until is no time");
+  assert.deepEqual(M.planArgv("offline", t, f("offline", { state: "off", until: "2026-11-04T09:00+00:00" })),
+    ["ui", "act-plan", "offline", "--shoal", A, "--state", "off", "--json"], "until only with on");
+  assert.deepEqual(M.planArgv("freeze", t, f("freeze", { state: "on" })),
+    ["ui", "act-plan", "freeze", "--shoal", A, "--state", "on", "--no-wake", "--json"]);
+  assert.deepEqual(M.planArgv("freeze", t, f("freeze", { state: "off", noWake: false, note: "resume" })),
+    ["ui", "act-plan", "freeze", "--shoal", A, "--state", "off", "--note=resume", "--json"]);
+  assert.deepEqual(M.planArgv("next", t), ["ui", "act-plan", "next", "--shoal", A, "--role=lane-a", "--json"]);
+  for (const v of ["status", "conditions", "asks", "upgrade"]) {
+    assert.deepEqual(M.planArgv(v, t), ["ui", "act-plan", v, "--shoal", A, "--json"], `${v} is shoal-wide`);
+  }
+  assert.deepEqual(M.rolesArgv(), ["ui", "act-plan", "roles", "--json"]);
+  assert.deepEqual(M.rolesArgv(A), ["ui", "act-plan", "roles", "--json", "--shoal", A]);
+  assert.deepEqual(M.applyArgv("abc"), ["ui", "act-apply", "--token", "abc", "--json"]);
+  assert.throws(() => M.applyArgv(""), /no plan token/);
+  assert.equal(M.roleFor("withdraw", "core"), null);
+  assert.equal(M.roleFor("msg", "*"), "*");
+  assert.equal(M.roleFor("next", "*"), null);
+});
+
+test("replies: roles", () => {
+  const r = M.parseReply(ok(fx.roles), "roles");
+  assert.equal(r.kind, "roles");
+  assert.deepEqual(r.shoals.map((s) => [s.id, s.tag, s.needsYou]), [[A, "alpha", 1], [B, "beta", 1]]);
+  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, posture: "blocked:user-ask" });
+  // unknown fields ignored; bad rows, repeats and a `*` slug dropped; a missing tag from the id
+  const doc = JSON.parse(JSON.stringify(fx.roles));
+  doc.future = 1;
+  doc.shoals[0].future = [1];
+  doc.shoals[0].roles.push({ slug: "core" }, { slug: "*" }, { nope: 1 }, null);
+  doc.shoals.push({ id: A }, { tag: "x" }, { id: "zeta-20261101-000000" });
+  const r2 = M.parseReply(ok(doc), "roles");
+  assert.deepEqual(r2.shoals.slice(0, 2), r.shoals);
+  assert.equal(r2.shoals.length, 3);
+  assert.deepEqual(r2.shoals[2], { id: "zeta-20261101-000000", tag: "zeta", roles: [], needsYou: 0 });
+});
+
+test("replies: plan, result, view, asks", () => {
+  const p = M.parseReply(ok(fx.plans.msg), "plan");
+  assert.equal(p.kind, "plan");
+  assert.equal(p.verb, "msg");
+  assert.equal(p.confirm, true);
+  assert.equal(p.token, "0f3c9a7d2b8e4f61");
+  assert.equal(p.expiresS, 600);
+  assert.match(p.cost, /tokens/);
+  assert.match(p.preview, /dry run/);
+  const off = M.parseReply(ok(fx.plans.offline), "plan");
+  assert.equal(off.confirm, false, "offline applies right after planning");
+  assert.equal(M.parseReply(ok({ ...fx.plans.msg, confirm: undefined }), "plan").confirm, true, "confirm defaults to asking");
+  assert.equal(M.parseReply(ok({ ...fx.plans.msg, token: "" }), "plan").kind, "error", "a plan without a token is not appliable");
+  assert.equal(M.parseReply(ok({ ...fx.plans.msg, expires_s: -1 }), "plan").expiresS, null);
+  const res = M.parseReply(ok(fx.result), "result");
+  assert.deepEqual([res.kind, res.rc, res.ok], ["result", 0, true]);
+  assert.match(res.output, /appended/);
+  const bad = M.parseReply(ok({ ...fx.result, rc: 3, output: "refused" }, 3), "result");
+  assert.deepEqual([bad.kind, bad.rc, bad.ok], ["result", 3, false], "a failed apply still shows its result");
+  assert.equal(M.resultLine(res), "done (rc 0)");
+  assert.equal(M.resultLine(bad), "failed (rc 3)");
+  assert.equal(M.parseReply(ok({ ...fx.result, rc: undefined }, 4), "result").rc, 4, "rc falls back to the exit code");
+  for (const v of ["next", "status", "conditions", "upgrade"]) {
+    const r = M.parseReply(ok(fx.views[v]), "view");
+    assert.equal(r.kind, "view", v);
+    assert.equal(r.verb, v);
+    assert.ok(r.text.length > 0);
+    assert.ok(!("asks" in r), `${v} has no asks list`);
+  }
+  const asks = M.parseReply(ok(fx.views.asks), "view");
+  assert.deepEqual(asks.asks.map((a) => [a.role, a.host, a.asks.length, a.question, a.saysWaiting]),
+    [["lane-a", "host-a", 1, true, false], ["lane-b", "host-b", 2, false, true]]);
+  assert.deepEqual(M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["", "a", 3] }, { asks: ["y"] }, null] }), "view").asks,
+    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false }]);
+  // a plan call may get a view (a read-only verb); a roles call may not
+  assert.equal(M.parseReply(ok(fx.views.status), "plan").kind, "view");
+  assert.match(M.parseReply(ok(fx.views.status), "roles").error, /unexpected reply \(view, wanted roles\)/);
+  assert.match(M.parseReply(ok(fx.plans.msg), "result").error, /wanted result/);
+});
+
+test("replies: errors, junk and transport failures", () => {
+  const e = M.parseReply(ok(fx.error, 2, "shoal: error"), "plan");
+  assert.deepEqual([e.kind, e.error, e.code], ["error", "no open offer of repo-one#999 in alpha-20261101-000000", 2]);
+  assert.equal(M.parseReply(ok(fx.error, 0)).kind, "error", "an error document is an error even at exit 0");
+  const junk = M.parseReply({ code: 1, stdout: "Traceback ...", stderr: "line one\nValueError: bad shoal\n\n" }, "plan");
+  assert.deepEqual([junk.kind, junk.error], ["error", "exit 1: ValueError: bad shoal"], "the last stderr line");
+  assert.equal(M.parseReply({ code: 0, stdout: "", stderr: "" }).error, "unreadable reply: no output");
+  assert.equal(M.parseReply({ code: 127, stdout: "", stderr: "\x1b[31mshoal: command not found\x1b[0m" }).error, "exit 127: shoal: command not found");
+  assert.match(M.parseReply(new Error("machine unreachable")).error, /could not run shoal: machine unreachable/);
+  assert.match(M.parseReply(null).error, /could not run shoal/);
+  assert.match(M.parseReply(ok({ v: 2, kind: "shoal-act-plan" })).error, /v2/);
+  assert.match(M.parseReply(ok({ v: 1, kind: "shoal-act-future" })).error, /unexpected reply \(shoal-act-future\)/);
+  assert.match(M.parseReply(ok(fx.views.next, 1, "boom")).error, /exit 1: boom/, "a view at a non-zero exit is an error");
+  // a warning line before the document still parses
+  assert.equal(M.parseReply({ code: 0, stdout: `warning: slow ledger\n${JSON.stringify(fx.roles)}`, stderr: "" }, "roles").kind, "roles");
+  // a long error is clipped
+  assert.ok(M.parseReply(ok({ v: 1, kind: "shoal-act-error", error: "x".repeat(2000) }, 2)).error.length <= 400);
+});
+
+test("text: escapes stripped, lines capped", () => {
+  assert.equal(M.plainText("\x1b[1mbold\x1b[0m\r\nnext\tcol\x07"), "bold\nnext    col");
+  assert.equal(M.plainText("\x1b]8;;https://example.org\x1b\\link\x1b]8;;\x1b\\"), "link");
+  assert.deepEqual(M.textLines("a\n  b\n\n"), ["a", "  b"], "leading spaces kept, trailing newlines dropped");
+  const many = M.textLines(Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n"), 4);
+  assert.deepEqual(many, ["l0", "l1", "l2", "l3", "... 6 more lines"]);
+  assert.deepEqual(M.textLines(""), [""]);
+});
+
+test("plan expiry", () => {
+  const plan = { expiresS: 600, plannedAt: 1_000_000 };
+  assert.equal(M.planExpired(plan, 1_000_000 + 599_999), false);
+  assert.equal(M.planExpired(plan, 1_000_000 + 600_000), true);
+  assert.equal(M.planExpired({ expiresS: null, plannedAt: 0 }, 1e12), false, "no expiry: the CLI decides");
+  assert.equal(M.planExpired(null), false);
+});
+
+test("pane labels and the machine of a card", () => {
+  assert.deepEqual(M.parsePaneLabel(`${A}/core`), { shoal: A, role: "core" });
+  assert.deepEqual(M.parsePaneLabel(`${A}/overview`), { shoal: A, role: null });
+  assert.deepEqual(M.parsePaneLabel(`${A}/ledger`), { shoal: A, role: null });
+  for (const bad of ["standalone/<label>", "", null, "noslash", "/core", 7]) assert.equal(M.parsePaneLabel(bad), null, String(bad));
+  assert.equal(M.terminalSpace(terminals[1], spaces).id, "sp-home");
+  assert.equal(M.terminalSpace(terminals[3], spaces).id, "lane-a/sp-remote", "a remote terminal's space carries the machine prefix");
+  assert.equal(M.terminalSpace(terminals[7], spaces), null);
+  assert.equal(M.machineFor(A, "core", terminals, spaces), null, "this computer");
+  assert.equal(M.machineFor(B, "docs", terminals, spaces), "lane-a");
+  assert.equal(M.machineFor(B, "pool", terminals, spaces), "lane-a", "no card of its own: the shoal's other cards");
+  assert.equal(M.machineFor(B, null, terminals, spaces), "lane-a");
+  assert.equal(M.machineFor("gamma-20261101-000000", "core", terminals, spaces), undefined, "no card at all");
+  assert.equal(M.machineFor(null, "core", terminals, spaces), undefined);
+  assert.equal(M.targetMachine({ shoal: B, role: "docs" }, terminals, spaces, "fallback"), "lane-a");
+  assert.equal(M.targetMachine({ shoal: B, role: "*" }, terminals, spaces, null), "lane-a", "* uses the shoal's cards");
+  assert.equal(M.targetMachine({ shoal: "gamma-20261101-000000" }, terminals, spaces, "lane-b"), "lane-b");
+  assert.equal(M.targetMachine({ shoal: "gamma-20261101-000000" }, terminals, spaces), null);
+});
+
+test("preselection: props, then the focused card, then the first needs-you role", () => {
+  const roles = M.parseReply(ok(fx.roles), "roles");
+  // props win, with their machine
+  assert.deepEqual(M.preselect({ props: { shoal: B, role: "docs", machine: "lane-a", overlay: "o1" }, focused: { space: "sp-home", terminal: "t2" }, terminals, spaces }),
+    { shoal: B, role: "docs", machine: "lane-a", from: "props", machineGiven: true });
+  assert.equal(M.preselect({ props: { shoal: A, role: "core", machine: null } }).machine, null);
+  // a key opens it with only {overlay}: the focused card
+  const env = (f) => ({ props: { overlay: "o1" }, focused: f, terminals, spaces, panes });
+  assert.deepEqual(M.preselect(env({ space: "sp-home", tab: "tb2", pane: "p2", terminal: "t2" })), { shoal: A, role: "core", machine: null, from: "focus" });
+  assert.deepEqual(M.preselect(env({ space: "lane-a/sp-remote", pane: "p7", terminal: "lane-a/t7" })), { shoal: B, role: "docs", machine: "lane-a", from: "focus" });
+  assert.deepEqual(M.preselect(env({ space: "lane-a/sp-remote", pane: null, terminal: "lane-a/t8" })), { shoal: B, role: null, machine: "lane-a", from: "focus" }, "the ledger card: shoal only");
+  assert.deepEqual(M.preselect(env({ space: "sp-home", pane: "p2", terminal: null })).role, "core", "terminal null: the focused pane's terminal");
+  assert.deepEqual(M.preselect(env({ space: "sp-home", pane: "pm", terminal: null, agent: "t3" })).role, "lane-a", "a mod pane: the agent block's terminal");
+  assert.equal(M.preselect(env({ space: "sp-solo", pane: null, terminal: "t9" })), null, "a standalone card is not a shoal");
+  assert.equal(M.preselect(env({ space: "sp-home", terminal: "t10" })), null, "an unlabelled terminal");
+  assert.equal(M.preselect(env({ space: "sp-home", terminal: "gone" })), null);
+  assert.equal(M.preselect(env(null)), null);
+  assert.equal(M.preselect({}), null);
+  // then the roles list settles it: the first needs-you role
+  assert.deepEqual(M.firstNeedsYou(roles), { shoal: A, role: "lane-a", from: "needs-you" });
+  assert.deepEqual(M.settleSelection({ shoal: null, role: null }, roles), { shoal: A, role: "lane-a", from: "needs-you" });
+  assert.deepEqual(M.settleSelection(null, roles), { shoal: A, role: "lane-a", from: "needs-you" });
+  assert.deepEqual(M.settleSelection({ shoal: B, role: "docs" }, roles), { shoal: B, role: "docs" });
+  assert.deepEqual(M.settleSelection({ shoal: B, role: "gone" }, roles), { shoal: B, role: null }, "an unknown role is dropped");
+  assert.deepEqual(M.settleSelection({ shoal: B, role: "*" }, roles), { shoal: B, role: "*" });
+  assert.equal(M.settleSelection({ shoal: "retired-20250101-000000", role: "core" }, roles).shoal, A, "an unknown shoal falls back");
+  const calm = { kind: "roles", shoals: [{ id: B, tag: "beta", roles: [{ slug: "core", needsYou: false }], needsYou: 0 }] };
+  assert.deepEqual(M.firstNeedsYou(calm), { shoal: B, role: null, from: "first" });
+  assert.equal(M.firstNeedsYou({ shoals: [] }), null);
+  assert.deepEqual(M.settleSelection({ shoal: A, role: "core" }, { shoals: [] }), { shoal: A, role: "core" }, "no list yet: kept");
+});
+
+test("screens and keys: Esc steps back, Enter previews then confirms, Tab moves", () => {
+  assert.equal(M.keyAction("escape", "menu"), "close");
+  for (const s of ["form", "plan", "result", "view", "error", "busy"]) assert.equal(M.keyAction("escape", s), "back", s);
+  assert.equal(M.keyAction("enter", "form"), "preview");
+  assert.equal(M.keyAction("enter", "plan", { canConfirm: true }), "confirm");
+  assert.equal(M.keyAction("enter", "plan", { canConfirm: false }), null, "no token, no confirm");
+  assert.equal(M.keyAction("enter", "menu"), null);
+  assert.equal(M.keyAction("enter", "result"), null, "a result never re-applies");
+  assert.equal(M.keyAction("tab", "form"), "next-field");
+  assert.equal(M.keyAction("shift-tab", "form"), "prev-field");
+  assert.equal(M.keyAction("tab", "menu"), null);
+  assert.equal(M.keyAction("x", "form"), null);
+  assert.equal(M.backStep("menu", null), "close");
+  assert.equal(M.backStep("plan", "msg"), "form");
+  assert.equal(M.backStep("result", "msg"), "form");
+  assert.equal(M.backStep("error", "msg"), "form");
+  assert.equal(M.backStep("error", "next"), "menu");
+  assert.equal(M.backStep("view", "asks"), "menu");
+  assert.equal(M.backStep("form", "msg"), "menu");
+});
+
+test("Answer from the asks view: Message to that role with wake on", () => {
+  const a = M.answerTarget({ shoal: A, role: "core" }, { role: "lane-b", asks: ["?"] }, NOW);
+  assert.deepEqual(a.target, { shoal: A, role: "lane-b" });
+  assert.equal(a.form.verb, "msg");
+  assert.equal(a.form.values.wake, true);
+  assert.equal(a.form.values.text, "");
+});
+
+test("fixture mode answers every call in the CLI's shape", () => {
+  const roles = M.parseReply(M.fixtureReply(fx, M.rolesArgv()), "roles");
+  assert.equal(roles.shoals.length, 2);
+  const t = { shoal: A, role: "lane-a" };
+  const msg = { ...M.newForm("msg", NOW), values: { ...M.newForm("msg", NOW).values, text: "use main", wake: true } };
+  const p = M.parseReply(M.fixtureReply(fx, M.planArgv("msg", t, msg)), "plan");
+  assert.equal(p.kind, "plan");
+  assert.equal(p.command, `shoal msg --shoal ${A} --to lane-a '--text=use main' --wake`, "the command follows the form");
+  assert.match(p.cost, /wake/);
+  assert.equal(p.shoal, A);
+  const quiet = { ...msg, values: { ...msg.values, wake: false } };
+  assert.equal(M.parseReply(M.fixtureReply(fx, M.planArgv("msg", t, quiet)), "plan").cost, "", "no wake, no cost");
+  const fr = { ...M.newForm("freeze", NOW), values: { ...M.newForm("freeze", NOW).values, state: "on" } };
+  const fp = M.parseReply(M.fixtureReply(fx, M.planArgv("freeze", t, fr)), "plan");
+  assert.equal(fp.command, `shoal freeze on --shoal ${A} --no-wake`);
+  assert.equal(fp.cost, "", "--no-wake: no cost");
+  const of = { ...M.newForm("offline", NOW), values: { ...M.newForm("offline", NOW).values, state: "on", until: "2026-11-04T09:00+00:00" } };
+  const op = M.parseReply(M.fixtureReply(fx, M.planArgv("offline", t, of)), "plan");
+  assert.equal(op.confirm, false);
+  assert.equal(op.command, `shoal offline on --shoal ${A} --until=2026-11-04T09:00+00:00`);
+  const res = M.parseReply(M.fixtureReply(fx, M.applyArgv(p.token ?? "x"), p), "result");
+  assert.equal(res.command, p.command, "the result names the planned command");
+  for (const v of ["next", "asks", "status", "conditions", "upgrade"]) {
+    const r = M.parseReply(M.fixtureReply(fx, M.planArgv(v, t)), "plan");
+    assert.equal(r.kind, "view", v);
+    assert.equal(r.shoal, A);
+  }
+  const wd = { ...M.newForm("withdraw", NOW), values: { ...M.newForm("withdraw", NOW).values, item: "fail#1" } };
+  const err = M.parseReply(M.fixtureReply(fx, M.planArgv("withdraw", t, wd)), "plan");
+  assert.equal(err.kind, "error");
+  assert.match(err.error, /no open offer/);
+  assert.equal(M.parseReply(M.fixtureReply(fx, ["status"])).kind, "error");
+});
+
+test("palette follows theme() and falls back", () => {
+  const t = { popover: "#101820", foreground: "#e0e8f0", blocked: "#ff3366", ansi11: "#ffcc00", accent: "#33aaff" };
+  const c = M.palette(t);
+  assert.equal(c.bg, "#101820");
+  assert.equal(c.ink, "#e0e8f0");
+  assert.equal(c.blocked, "#ff3366");
+  assert.equal(c.amber, "#ffcc00");
+  const bare = M.palette(null);
+  for (const [k, v] of Object.entries(bare)) assert.match(v, /^#[0-9a-f]{6}$/, k);
+  assert.equal(M.withAlpha("#abc", 0.5), "#aabbcc80");
+});
+
+test("public gate: fixtures and module hold no local paths or host names", () => {
+  const files = ["model.js", "main.js", "mod.json", join("fixtures", "act.json")].map((f) => readFileSync(join(MOD, f), "utf8"));
+  for (const text of files) {
+    assert.ok(!/\/home\/|\/Users\/|\/mnt\//.test(text), "no absolute home paths");
+    assert.ok(!/\u2014/.test(text), "no em dashes");
+  }
+});
