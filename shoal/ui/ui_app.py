@@ -881,6 +881,8 @@ def install_keys(dry_run: bool = False) -> list[str]:
         text, doc = None, {}
     except ValueError as exc:
         return [f"keys: {path} is not valid JSON ({exc}): left as it is"]
+    if not isinstance(doc, dict) or not isinstance(doc.get("terminal", {}), dict):
+        return [f"keys: {path} has no `terminal` object shoal can edit: left as it is"]
     term = doc.setdefault("terminal", {})
     out, changed = [], False
     for key, want in PASTE_KEYS.items():
@@ -894,6 +896,10 @@ def install_keys(dry_run: bool = False) -> list[str]:
         changed = True
         out.append(("[dry-run] " if dry_run else "") + f"keys: {key} -> {want} (the 0.9.3 paste keys)")
     if changed and not dry_run:
+        backup = path + ".bak-shoal-paste"
+        if text is not None and not os.path.exists(backup):  # one-time, before shoal's first rewrite
+            with open(backup, "w") as fh:
+                fh.write(text)
         with open(path + ".tmp", "w") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")

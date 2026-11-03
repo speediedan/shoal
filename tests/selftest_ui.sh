@@ -2344,6 +2344,12 @@ k = json.load(open(kp))
 assert k["terminal"]["ctrl-v"] == "terminal.paste" and k["terminal"]["ctrl-shift-v"] == "terminal.paste_image", k
 assert k["terminal"]["ctrl-shift-c"] == "terminal.copy" and k["global"] == {"alt-1": "space.select:1"}, k
 assert len(lines) == 2 and ui_app.keys_state()[0] and ui_app.install_keys() == [], lines
+bak = json.load(open(kp + ".bak-shoal-paste"))  # a one-time backup of the file as it was
+assert bak["terminal"]["ctrl-v"] == "terminal.paste_image", bak
+open(kp + ".odd", "w").write(json.dumps({"terminal": ["not", "an", "object"]}))
+os.replace(kp, kp + ".keep"); os.replace(kp + ".odd", kp)
+assert "left as it is" in ui_app.install_keys()[0] and json.load(open(kp))["terminal"] == ["not", "an", "object"]
+os.replace(kp + ".keep", kp)
 k["terminal"]["ctrl-v"] = "send:x"; json.dump(k, open(kp, "w"))
 assert "by you" in ui_app.install_keys()[0] and json.load(open(kp))["terminal"]["ctrl-v"] == "send:x"
 print("paste keys ok")
