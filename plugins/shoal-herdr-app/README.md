@@ -2,13 +2,17 @@
 
 Mods for the Herdr app (the GPUI desktop window over herdr-core), as opposed to
 `plugins/shoal-herdr/`, which targets the herdr 0.9.x terminal multiplexer. Nothing here changes
-how shoal runs; every mod is read-only over shoal's own feeds.
+how shoal runs; every mod reads shoal's own feeds, and the only verb any mod runs is
+`shoal ui app-open` (shoal-home, on a click), which arranges the app's spaces and wakes no role.
 
 | Mod | What it is |
 |---|---|
 | `mods/lattice-view` | The shoal graph doc v1 (`shoal ui graph --json`) as an animated, hoverable network: a global view of every shoal around the operator hub, a per-shoal view with host regions, a metrics and needs-you rail, and a compact `pulse` mode for an edge drawer. See its `RECIPE.md`. |
+| `mods/shoal-home` | The splash and host chooser, natively: the SHOAL logo with the five splash creatures and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
 
 ![lattice-view](mods/lattice-view/preview.png)
+
+![shoal-home](mods/shoal-home/preview.png)
 
 ## Install
 
@@ -111,13 +115,55 @@ GPU device node (`/dev/nvidia*`, `/dev/dri/renderD*`) means GPU, and CPU needs a
 with no hardware driver library beside it. Every Mesa ICD and no device stays unknown
 (`balanced`). The `renderer` prop overrides the probe.
 
+## shoal-home
+
+The home screen: a full-window pane, best alone in a `home` tab of a `shoal` space on the laptop.
+It reads one list and runs one verb, both here (`on` the local machine):
+
+- the list: `shoal ui launch --list --json --summary` (read-only, the same list the terminal
+  chooser reads), every 20 s and on `↻` / `r`;
+- on a click or Enter: `shoal ui app-open --machine <name>`, which creates or focuses that host's
+  shoal spaces and remembers the choice.
+
+1. **Copy** the folder (do not symlink it: `image()` in Herdr app 0.1.12 does not load PNGs from
+   a mod folder linked from outside the app home, so the creatures would not draw):
+
+   ```sh
+   cp -r plugins/shoal-herdr-app/mods/shoal-home ~/.config/herdr-app/mods/shoal-home
+   herdr-app check ~/.config/herdr-app/mods/shoal-home
+   herdr-app do tab.new '{"name":"home","mod":"shoal-home"}'
+   # the bundled demo list instead (a click then only says what it would run):
+   herdr-app do tab.new '{"name":"home","mod":"shoal-home","props":{"source":{"kind":"fixture"}}}'
+   ```
+
+2. Props:
+
+   | Prop | Default | Meaning |
+   |---|---|---|
+   | `source` | `{"kind":"exec"}` | `{"kind":"exec","argv":[...],"on":<machine or null>}` (default argv `["shoal","ui","launch","--list","--json","--summary"]`), or `{"kind":"fixture","path"?:...}` (the bundled `fixtures/launch-list.json`) |
+   | `motion` | `"auto"` | the lattice tiers; only `full` moves anything (a slow drift of the creatures), and never again after a host is opened |
+   | `renderer` | probed | `"cpu"` or `"gpu"`: a launcher's hint for `auto` |
+   | `art` | `true` | `false` draws the text screen (logo and host list) |
+   | `poll_ms` | `20000` | list poll interval, 10000 to 300000 |
+
+Cards: `local` first, then each route; a green, red or grey dot (reachable, unreachable with the
+doctor hint as its tooltip, not probed yet); a ring on the last choice; per shoal its tag, the
+roles that need you (in the theme's blocked color), working and waiting; a warning when the Herdr
+pin differs. Unreachable cards are greyed and do not click. Keys: arrows or `j`/`k` move, a digit
+selects, Enter opens, `r` refreshes. Below 640 by 460, or without the images, the same screen is
+text only.
+
 ## Development
 
 The mod's logic is in pure ES modules that run under Node (`model.js`, `layout.js`, `geom.js`,
 `scene.js`, `motion.js`); `main.js` only fetches, translates the display list into GPUI elements and handles
 input.
 
+shoal-home is built the same way (`model.js`, `layout.js`, and `motion.js`, which is a verbatim
+copy of lattice-view's: edit it there, then copy; a test checks they match).
+
 ```sh
+node --test tests/herdr_app/*.mjs                                # unit tests for both mods
 node tests/herdr_app/test_lattice_view.mjs                       # unit tests on the fixture
 node plugins/shoal-herdr-app/preview/render_svg.mjs --legend --out /tmp/lattice.svg
 ```

@@ -985,6 +985,16 @@ and the contract are in [`ui.md`](ui.md).
   out and fits the measured scene (labels and cluster titles included) inside the canvas. The `source` argv
   must stay a read-only shoal command. Encodings key on role-time class and event; unknown values
   render as "other" or "unknown".
+- **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
+  a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
+  additive v1) every 20 s and on refresh, and draws the logo, the five splash creatures with
+  `image()` (placed like `image_rectangles`, scaled to the window; text only below 640 by 460 or
+  without the assets) and one card per host: reachability with the doctor hint, the last choice,
+  per-shoal needs-you, working and waiting, and the pin check. A click runs
+  `shoal ui app-open --machine <name>` here and shows its result on the card; unreachable cards
+  do not click. Motion uses the lattice budget (its `motion.js`, copied verbatim): a native drift
+  only at `full`, stopped once a host is opened. Pure modules are tested under Node
+  (`tests/herdr_app/test_shoal_home.mjs`, run by `selftest_ui.sh` when `node` is present).
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 

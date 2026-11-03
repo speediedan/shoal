@@ -1,0 +1,67 @@
+{
+  "v": 1,
+  "kind": "shoal-launch-list",
+  "last": "lane-a",
+  "generated": "2026-11-03T00:00:00Z",
+  "hosts": [
+    {
+      "name": "lane-a",
+      "local": false,
+      "route": "<user>@lane-a",
+      "reachable": true,
+      "hint": null,
+      "machine": "lane-a",
+      "probe_age_s": 42,
+      "summary": {
+        "shoals": [
+          { "id": "alpha-20261101-000000", "tag": "alpha", "roles": 7, "working": 3, "waiting": 3, "needs_you": 2, "gen": "g4" },
+          { "id": "beta-20261101-000000", "tag": "beta", "roles": 5, "working": 1, "waiting": 4, "needs_you": 0 }
+        ],
+        "needs_you": 2,
+        "pin_ok": true
+      }
+    },
+    {
+      "name": "local",
+      "local": true,
+      "route": null,
+      "reachable": true,
+      "hint": null,
+      "machine": null,
+      "summary": {
+        "shoals": [
+          { "id": "gamma-20261102-000000", "tag": "gamma", "roles": 3, "working": 0, "waiting": 2, "needs_you": 1 }
+        ],
+        "needs_you": 1,
+        "pin_ok": true
+      }
+    },
+    {
+      "name": "lane-b",
+      "local": false,
+      "route": "<user>@lane-b",
+      "reachable": false,
+      "hint": "ssh <user>@lane-b timed out; run shoal ui doctor",
+      "machine": "lane-b",
+      "summary": null
+    },
+    {
+      "name": "lane-c",
+      "local": false,
+      "route": "<user>@lane-c",
+      "reachable": null,
+      "hint": null,
+      "machine": null,
+      "summary": null
+    },
+    {
+      "name": "lane-d",
+      "local": false,
+      "route": "<user>@lane-d",
+      "reachable": true,
+      "hint": null,
+      "machine": "lane-d",
+      "summary": { "shoals": [], "needs_you": 0, "pin_ok": false }
+    }
+  ]
+}

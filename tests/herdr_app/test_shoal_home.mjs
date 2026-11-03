@@ -1,0 +1,191 @@
+// test_shoal_home.mjs: the shoal-home Herdr app mod's pure modules against its bundled fixture.
+// Node only, no dependencies: node --test tests/herdr_app/*.mjs (or node this file)
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MODS = join(here, "..", "..", "plugins", "shoal-herdr-app", "mods");
+const MOD = join(MODS, "shoal-home");
+const M = await import(join(MOD, "model.js"));
+const L = await import(join(MOD, "layout.js"));
+const Mo = await import(join(MOD, "motion.js"));
+const fixtureText = readFileSync(join(MOD, "fixtures", "launch-list.json"), "utf8");
+const list = M.parseList(fixtureText);
+const heightsOf = (l, status = new Map()) => l.hosts.map((h) => L.cardHeight(M.cardLines(h, status.get(h.name) ?? null).length));
+
+test("fixture parses: local first, routes in order, fields normalized", () => {
+  assert.deepEqual(list.hosts.map((h) => h.name), ["local", "lane-a", "lane-b", "lane-c", "lane-d"]);
+  assert.equal(list.last, "lane-a");
+  const [local, a, b, c, d] = list.hosts;
+  assert.equal(local.local, true);
+  assert.equal(local.route, null);
+  assert.equal(a.reachable, true);
+  assert.equal(b.reachable, false);
+  assert.equal(c.reachable, null, "null reachable means not probed");
+  assert.equal(M.hostState(a), "up");
+  assert.equal(M.hostState(b), "down");
+  assert.equal(M.hostState(c), "unknown");
+  assert.equal(a.summary.needsYou, 2);
+  assert.equal(a.summary.pinOk, true);
+  assert.deepEqual(a.summary.shoals[0], { id: "alpha-20261101-000000", tag: "alpha", roles: 7, working: 3, waiting: 3, needsYou: 2 });
+  assert.equal(d.summary.pinOk, false);
+  assert.equal(b.summary, null);
+});
+
+test("unknown fields are ignored; bad rows skipped; contract errors reported", () => {
+  const doc = JSON.parse(fixtureText);
+  doc.future = { x: 1 };
+  doc.hosts[0].future_field = [1, 2];
+  doc.hosts[0].summary.shoals[0].future = "y";
+  doc.hosts.push({ name: "" }, { nope: 1 }, "str", null, { name: "lane-a", reachable: false });
+  const l = M.parseList(doc);
+  assert.deepEqual(l, list, "extra fields, nameless rows and a repeated name change nothing");
+  assert.equal(M.listSignature(l), M.listSignature(list));
+  // missing optional fields
+  const bare = M.parseList({ hosts: [{ name: "lane-x" }, { name: "local" }] });
+  assert.deepEqual(bare.hosts.map((h) => h.name), ["local", "lane-x"]);
+  assert.equal(bare.last, null);
+  assert.equal(bare.hosts[1].reachable, null);
+  assert.equal(bare.hosts[1].summary, null);
+  // a last that names no host is dropped; a tag falls back to the id's short form
+  const odd = M.parseList({ last: "gone", hosts: [{ name: "h", summary: { shoals: [{ id: "zeta-20261101-000000", needs_you: 3 }], pin_ok: "yes" } }] });
+  assert.equal(odd.last, null);
+  assert.equal(odd.hosts[0].summary.shoals[0].tag, "zeta");
+  assert.equal(odd.hosts[0].summary.needsYou, 3, "needs_you falls back to the shoal sum");
+  assert.equal(odd.hosts[0].summary.pinOk, null);
+  assert.throws(() => M.parseList("not json"), /not JSON/);
+  assert.throws(() => M.parseList({ v: 2, hosts: [] }), /v2/);
+  assert.throws(() => M.parseList({ kind: "shoal-graph", hosts: [] }), /not a launch list/);
+  assert.throws(() => M.parseList([]), /not an object/);
+});
+
+test("card lines: summary rows, unreachable hint, pin warning, status", () => {
+  const [local, a, b, c, d] = list.hosts;
+  assert.deepEqual(M.cardLines(local).map((x) => x.kind), ["sub", "shoal"]);
+  assert.equal(M.cardLines(local)[0].text, "this machine");
+  assert.deepEqual(M.cardLines(a).map((x) => x.kind), ["sub", "shoal", "shoal"]);
+  assert.equal(M.cardLines(a)[0].text, "<user>@lane-a");
+  const down = M.cardLines(b);
+  assert.equal(down[1].tone, "down");
+  assert.match(down[1].text, /timed out/);
+  assert.equal(M.cardLines(c)[1].text, "not probed yet");
+  assert.deepEqual(M.cardLines(d).map((x) => x.kind), ["sub", "note", "pin"]);
+  const many = M.parseList({ hosts: [{ name: "h", reachable: true, summary: { shoals: Array.from({ length: 7 }, (_, i) => ({ id: `s${i}`, needs_you: i })) } }] }).hosts[0];
+  const ml = M.cardLines(many);
+  assert.equal(ml.filter((x) => x.kind === "shoal").length, M.MAX_SHOALS);
+  assert.equal(ml.at(-1).text, "+3 more shoals");
+  assert.equal(M.cardLines(a, { phase: "opening" }).at(-1).text, "opening…");
+  assert.equal(M.cardLines(a, { phase: "error", text: "exit 2: boom" }).at(-1).tone, "error");
+  assert.equal(M.shoalCounts(a.summary.shoals[0]), "3 working · 3 waiting · 7 roles");
+  assert.equal(M.hostNeedsYou(a), 2);
+  assert.equal(M.hostNeedsYou(b), 0);
+});
+
+test("opening: reachable and unprobed cards open, unreachable ones do not; results summarized", () => {
+  const [local, a, b, c] = list.hosts;
+  assert.equal(M.canOpen(local), true);
+  assert.equal(M.canOpen(a), true);
+  assert.equal(M.canOpen(b), false);
+  assert.equal(M.canOpen(c), true);
+  assert.deepEqual(M.openArgv(a), ["ui", "app-open", "--machine", "lane-a"]);
+  assert.deepEqual(M.openResult({ code: 0, stdout: "planning\nopened 2 spaces on lane-a\n", stderr: "" }), { ok: true, text: "opened 2 spaces on lane-a" });
+  assert.deepEqual(M.openResult({ code: 0, stdout: "", stderr: "" }), { ok: true, text: "opened" });
+  assert.deepEqual(M.openResult({ code: 0, stdout: '{"summary":"focused alpha","spaces":2}', stderr: "" }), { ok: true, text: "focused alpha" });
+  assert.deepEqual(M.openResult({ code: 3, stdout: "", stderr: "trace\nlane-a unreachable\n" }), { ok: false, text: "exit 3: lane-a unreachable" });
+  assert.deepEqual(M.openResult({ code: 1, stdout: '{"error":"no such machine"}', stderr: "" }), { ok: false, text: "exit 1: no such machine" });
+  const thrown = M.openResult(new Error("not installed"));
+  assert.equal(thrown.ok, false);
+  assert.match(thrown.text, /not installed/);
+  assert.ok(M.openResult({ code: 1, stdout: "", stderr: "x".repeat(500) }).text.length <= 160);
+});
+
+test("keyboard selection: arrows and j/k wrap, digits jump, Enter opens, r refreshes", () => {
+  const n = list.hosts.length;
+  assert.equal(M.initialSelection(list), 1, "starts on the last choice");
+  assert.equal(M.initialSelection({ last: null, hosts: [{ reachable: false }, { reachable: true }] }), 1, "else the first that can open");
+  assert.equal(M.initialSelection({ last: null, hosts: [] }), 0);
+  assert.deepEqual(M.keyAction("down", 0, n), { sel: 1, action: null });
+  assert.deepEqual(M.keyAction("j", n - 1, n), { sel: 0, action: null });
+  assert.deepEqual(M.keyAction("up", 0, n), { sel: n - 1, action: null });
+  assert.deepEqual(M.keyAction("k", 2, n), { sel: 1, action: null });
+  assert.deepEqual(M.keyAction("right", 1, n), { sel: 2, action: null });
+  assert.deepEqual(M.keyAction("3", 0, n), { sel: 2, action: null });
+  assert.equal(M.keyAction("9", 0, n), null, "a digit past the list does nothing");
+  assert.deepEqual(M.keyAction("enter", 2, n), { sel: 2, action: "open" });
+  assert.deepEqual(M.keyAction("r", 2, n), { sel: 2, action: "refresh" });
+  assert.deepEqual(M.keyAction("r", 0, 0), { sel: 0, action: "refresh" });
+  assert.equal(M.keyAction("down", 0, 0), null);
+  assert.equal(M.keyAction("x", 0, n), null);
+  // a poll keeps the selection on the same host
+  const reordered = M.parseList({ hosts: [{ name: "lane-d" }, { name: "lane-a" }, { name: "local" }] });
+  assert.equal(reordered.hosts[M.keepSelection(list.hosts, reordered, 1)].name, "lane-a");
+  assert.equal(M.keepSelection(list.hosts, { hosts: [{ name: "x" }] }, 4), 0);
+});
+
+const SIZES = [[1440, 900], [1280, 820], [1100, 760], [994, 700], [800, 560], [700, 500], [640, 460], [600, 700], [420, 320], [320, 240]];
+
+test("layout: art scales with the window; nothing overlaps; everything inside the window", () => {
+  const hs = heightsOf(list);
+  let prev = Infinity;
+  for (const [w, h] of [[1440, 900], [1280, 820], [1100, 760], [994, 700]]) {
+    const l = L.homeLayout({ width: w, height: h }, hs);
+    assert.equal(l.mode, "art", `${w}x${h} has room for the art`);
+    assert.equal(l.creatures.length, 5);
+    assert.ok(l.scale <= prev, "a smaller window never scales the art up");
+    prev = l.scale;
+  }
+  for (const [w, h] of SIZES) {
+    for (const status of [new Map(), new Map([["lane-a", { phase: "error", text: "exit 1" }]])]) {
+      const l = L.homeLayout({ width: w, height: h }, heightsOf(list, status));
+      const rects = L.occupied(l);
+      for (let i = 0; i < rects.length; i++) {
+        for (let j = i + 1; j < rects.length; j++) assert.ok(!L.overlaps(rects[i], rects[j]), `${w}x${h} ${l.mode}: ${rects[i].kind} overlaps ${rects[j].kind}`);
+      }
+      for (const r of rects) {
+        assert.ok(r.x >= 0 && r.x + r.w <= w, `${w}x${h}: ${r.kind} inside horizontally`);
+        assert.ok(r.y >= 0, `${w}x${h}: ${r.kind} below the top`);
+        if (l.mode === "art") assert.ok(r.y + r.h <= h, `${w}x${h}: ${r.kind} inside vertically (art never scrolls)`);
+        else assert.ok(r.y + r.h <= l.contentH, `${w}x${h}: ${r.kind} inside the scrolled content`);
+      }
+      for (const [i, c] of l.cards.entries()) assert.ok(c.h >= hs[i] || status.size, "a card is as tall as its lines");
+      for (const c of l.creatures) assert.ok(Number.isFinite(c.x + c.y + c.size + c.drift + c.period));
+    }
+  }
+});
+
+test("layout: text fallback below the art floor or without images", () => {
+  const hs = heightsOf(list);
+  for (const [w, h] of [[639, 800], [1200, 459], [420, 320], [320, 240]]) {
+    const l = L.homeLayout({ width: w, height: h }, hs);
+    assert.equal(l.mode, "text", `${w}x${h} is below the floor`);
+    assert.equal(l.creatures.length, 0);
+    assert.equal(l.cards.length, list.hosts.length, "the host list is still there");
+  }
+  const noArt = L.homeLayout({ width: 1440, height: 900 }, hs, { art: false });
+  assert.equal(noArt.mode, "text");
+  assert.equal(noArt.creatures.length, 0);
+  // too many hosts for the art at this size: text, scrolling
+  const crowd = L.homeLayout({ width: 700, height: 520 }, Array.from({ length: 12 }, () => L.cardHeight(6)));
+  assert.equal(crowd.mode, "text");
+  assert.ok(crowd.contentH > 520, "the text screen scrolls");
+  // cards: one column when narrow, never wider than the max, rows centered
+  const narrow = L.homeLayout({ width: 320, height: 900 }, hs);
+  assert.equal(narrow.cols, 1);
+  const wide = L.homeLayout({ width: 1440, height: 900 }, hs);
+  assert.ok(wide.cards.every((c) => c.w <= L.CARD.maxW));
+  assert.equal(wide.cols, 3, "five hosts balance as three and two");
+  assert.equal(L.homeLayout({ width: 1440, height: 900 }, []).cards.length, 0);
+});
+
+test("assets and motion: five creatures shipped, motion.js identical to lattice-view's", () => {
+  for (const c of L.CREATURES) assert.ok(existsSync(join(MOD, "assets", c.file)), c.file);
+  assert.equal(readFileSync(join(MOD, "motion.js"), "utf8"), readFileSync(join(MODS, "lattice-view", "motion.js"), "utf8"),
+    "shoal-home/motion.js is a verbatim copy of lattice-view/motion.js: edit there, then copy");
+  assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", { renderer: "cpu" }).tier).loops, false, "a CPU renderer never drifts");
+  assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", { renderer: "gpu" }).tier).loops, true, "a GPU renderer drifts at full");
+  assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", { renderer: "gpu", focused: false }).tier).loops, false, "not while the window is unfocused");
+  assert.equal(Mo.motionPolicy(Mo.resolveTier("auto", {}).tier).loops, false, "an unknown renderer stays still");
+});
