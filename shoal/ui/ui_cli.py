@@ -239,7 +239,7 @@ def add_parsers(sub) -> None:
     q.add_argument("--write-desktop", action="store_true", help="also write a desktop entry that runs app-start")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_app.cmd_app_start)
-    q = u.add_parser("app-install", help="Herdr app: the graph feed unit here, and the shoal mods linked into the app")
+    q = u.add_parser("app-install", help="Herdr app: the graph feed unit here, and the shoal mods installed into the app")
     q.add_argument("--check", action="store_true", help="report only (the app doctor rows)")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_app.cmd_app_install)

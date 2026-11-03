@@ -1014,7 +1014,7 @@ is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_T
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
 feeder push; a blocked role names `auth`, `question` or `permission`. `ui app-start` starts the app as a user
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
-its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit and links the mods
+its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit and installs the mods
 into the app's home. `ui launch` in an app terminal opens the chosen host in the app, and `ui launch --list
 --json [--summary]` gives the host list the app's home screen reads. Nothing here wakes a role, types into a
 pane or writes the ledger; herdr 0.9.3 is untouched.

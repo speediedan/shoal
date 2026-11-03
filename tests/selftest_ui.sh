@@ -2295,6 +2295,33 @@ print("launch list ok")
 PY7
 OUT=$(env $AENV $H ui app-install --dry-run) || fail "app-install dry-run :: $OUT"
 grep -q "shoal-graph-feed.service" <<<"$OUT" || fail "app-install plan :: $OUT"
+# mods go into the app home: a link, or a marked copy for one with pictures (the app loads no PNG through a link);
+# a stale copy is refreshed, a folder shoal did not make is left alone
+python3 - "$SHOALD" "$S" <<'PY9' || fail "mod install"
+import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+S = sys.argv[2]
+os.environ["HERDR_APP_HOME"] = os.path.join(S, "apphome-mods")
+import ui_app
+src = os.path.join(S, "modsrc"); ui_app.MOD_DIR = src
+for d in ("plain", "pics/assets"):
+    os.makedirs(os.path.join(src, d), exist_ok=True)
+open(os.path.join(src, "plain", "main.js"), "w").write("x")
+open(os.path.join(src, "pics", "main.js"), "w").write("y")
+open(os.path.join(src, "pics", "assets", "a.png"), "wb").write(b"png")
+assert ui_app.install_mod("plain").startswith("link ") and ui_app.link_state("plain")[0]
+assert ui_app.install_mod("pics").startswith("copy ") and ui_app.link_state("pics")[0]
+dest = os.path.join(S, "apphome-mods", "mods", "pics")
+assert not os.path.islink(dest) and os.path.exists(os.path.join(dest, ui_app.COPY_MARK))
+open(os.path.join(dest, "herdr.d.ts"), "w").write("app-written")   # files the app writes never make it stale
+assert ui_app.install_mod("pics") == "" and ui_app.install_mod("plain") == ""
+open(os.path.join(src, "pics", "main.js"), "w").write("y2")
+assert not ui_app.link_state("pics")[0] and "stale" in ui_app.link_state("pics")[1]
+assert ui_app.install_mod("pics").startswith("copy ") and open(os.path.join(dest, "main.js")).read() == "y2"
+mine = os.path.join(S, "apphome-mods", "mods", "plain")
+os.remove(mine); os.makedirs(mine); open(os.path.join(mine, "main.js"), "w").write("operator's own")
+assert "left as it is" in ui_app.install_mod("plain") and open(os.path.join(mine, "main.js")).read() == "operator's own"
+print("mod install ok")
+PY9
 
 # the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
 if command -v node >/dev/null 2>&1; then

@@ -711,18 +711,84 @@ WantedBy=default.target
 """
 
 
+COPY_MARK = ".shoal-copy"
+
+
+def copied(name: str) -> bool:
+    """A mod with pictures is copied into the app home, not linked: Herdr app 0.1.12's `image()` does not load a
+    PNG from a mod folder that is a symlink to outside its home (`svg()` does)."""
+    return os.path.isdir(os.path.join(MOD_DIR, name, "assets"))
+
+
+def tree_digest(root: str) -> str:
+    """sha256 over a mod folder's files, leaving out what the app writes there (hidden files, type files,
+    jsconfig.json) and the copy mark."""
+    import hashlib
+    h = hashlib.sha256()
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "node_modules")
+        for f in sorted(files):
+            if f.startswith(".") or f.endswith(".d.ts") or f == "jsconfig.json":
+                continue
+            p = os.path.join(d, f)
+            h.update(os.path.relpath(p, root).encode() + b"\0")
+            with open(p, "rb") as fh:
+                h.update(fh.read())
+    return h.hexdigest()
+
+
 def link_state(name: str) -> tuple[bool, str]:
     link = os.path.join(app_home(), "mods", name)
     want = os.path.join(MOD_DIR, name)
     if not os.path.lexists(link):
         return False, f"{link} missing"
+    if copied(name):
+        if os.path.islink(link) or not os.path.exists(os.path.join(link, COPY_MARK)):
+            return False, f"{link} is not a shoal copy (`shoal ui app-install` copies it)"
+        same = tree_digest(link) == tree_digest(want)
+        return same, f"{link} copied from {want}" + ("" if same else ": stale (rerun `shoal ui app-install`)")
     real = os.path.realpath(link)
     return real == os.path.realpath(want), f"{link} -> {real}"
 
 
+def install_mod(name: str, dry_run: bool = False) -> str:
+    """Link (or, for a mod with pictures, copy) one mod into the app home. A folder there that shoal did not put
+    there is left alone. Returns what it did, or "" when it was current."""
+    src = os.path.join(MOD_DIR, name)
+    dest = os.path.join(app_home(), "mods", name)
+    ok, _ = link_state(name)
+    if ok:
+        return ""
+    ours = os.path.islink(dest) or not os.path.lexists(dest) or os.path.exists(os.path.join(dest, COPY_MARK))
+    if not ours:
+        return f"mod {name}: {dest} is a folder shoal did not make: left as it is (move it aside, then rerun)"
+    pre = "[dry-run] " if dry_run else ""
+    if dry_run:
+        return pre + (f"copy {src} to {dest}" if copied(name) else f"link {dest} -> {src}")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if copied(name):
+        tmp = dest + ".shoal-new"
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(src, tmp, ignore=shutil.ignore_patterns(".*", "*.d.ts", "jsconfig.json", "node_modules"))
+        with open(os.path.join(tmp, COPY_MARK), "w") as fh:
+            fh.write(f"copied from {src}; `shoal ui app-install` refreshes it\n")
+        if os.path.islink(dest):
+            os.remove(dest)
+        elif os.path.isdir(dest):
+            shutil.rmtree(dest)
+        os.rename(tmp, dest)
+        return f"copy {src} to {dest}"
+    if os.path.islink(dest):
+        os.remove(dest)
+    elif os.path.isdir(dest):
+        shutil.rmtree(dest)  # an earlier shoal copy
+    os.symlink(src, dest)
+    return f"link {dest} -> {src}"
+
+
 def cmd_app_install(a) -> int:
     """This host's part of the app adapter: the graph feed unit (any host that runs shoals) and, where the app
-    is installed, the shoal mods linked into its home from this checkout. Idempotent."""
+    is installed, the shoal mods installed into its home from this checkout (linked; copied when they carry pictures). Idempotent."""
     import ui_herdr
     if a.check:
         return cmd_app_doctor(a)
@@ -751,24 +817,11 @@ def cmd_app_install(a) -> int:
         if old is not None and old != text:
             subprocess.run(["systemctl", "--user", "enable", FEED_UNIT], capture_output=True)
     if os.path.exists(app_bin()):
-        mods = os.path.join(app_home(), "mods")
         for name in MODS:
-            src = os.path.join(MOD_DIR, name)
-            if not os.path.isdir(src):
-                continue
-            ok, _ = link_state(name)
-            if ok:
-                continue
-            link = os.path.join(mods, name)
-            if os.path.lexists(link) and not os.path.islink(link):
-                print(f"mod {name}: {link} is a folder, not a link: left as it is (move it aside, then rerun)")
-                continue
-            print(("[dry-run] " if a.dry_run else "") + f"link {link} -> {src}")
-            if not a.dry_run:
-                os.makedirs(mods, exist_ok=True)
-                if os.path.islink(link):
-                    os.remove(link)
-                os.symlink(src, link)
+            if os.path.isdir(os.path.join(MOD_DIR, name)):
+                line = install_mod(name, a.dry_run)
+                if line:
+                    print(line)
     return 0
 
 
@@ -795,7 +848,7 @@ def doctor_checks() -> list[tuple[str, bool, str]]:
         out.append(("herdr-app at the pin", v == APP_PIN, f"{v or 'none'} (pin {APP_PIN})"))
         for name in MODS:
             if os.path.isdir(os.path.join(MOD_DIR, name)):
-                out.append((f"app mod {name} linked from this checkout",) + link_state(name))
+                out.append((f"app mod {name} installed from this checkout",) + link_state(name))
     if has_core:
         v = _version([hc_bin(), "--version"])
         out.append(("herdr-core at the pin", v == CORE_PIN, f"{v or 'none'} (pin {CORE_PIN})"))

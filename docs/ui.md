@@ -569,7 +569,7 @@ working beside it.
 shoal ui app-start [--write-desktop] [--dry-run]   # start the app with the pin held, open the home space
 shoal ui app-open [--machine NAME|local] [--shoal ID] [--show LABEL] [--no-standalone] [--no-focus] [--dry-run]
 shoal ui app-plan [--shoal ID] [--json]            # this host's wanted spaces (read-only)
-shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; the mods linked into the app
+shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; the mods installed into the app
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
 ```
 
@@ -605,12 +605,16 @@ shoal ui launch --list [--json] [--summary]        # the hosts the chooser offer
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);
   lattice tabs then read its `graph.json` on their machine. Without it they run `shoal ui graph` every 15 s.
-  Like `herdr-install --local`, it refuses to write from a git worktree.
+  Like `herdr-install --local`, it refuses to write from a git worktree. It also puts the shoal mods into the
+  app's `mods/` folder: a link to this checkout, except a mod with pictures (an `assets/` folder), which is
+  copied (marked `.shoal-copy`), because the app does not load a PNG through a linked mod folder. Rerun it
+  after an upgrade; the doctor row says when a copy is stale. A folder there that shoal did not make is left
+  alone.
 - **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
   "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's
   shoals (`id`, `tag`, `roles`, `working`, `waiting`, `needs_you`), its total needs-you and `pin_ok` (its
   herdr-core at the pin), from its `ui graph`, cached 30 s.
-- **Doctor.** `shoal ui doctor` adds informational `app:` rows (app and core at the pin, mods linked from this
+- **Doctor.** `shoal ui doctor` adds informational `app:` rows (app and core at the pin, mods installed from this
   checkout, machines, the feed unit); `ui app-install --check` prints the same rows and fails on them.
 
 ## Configuration and install
