@@ -2327,8 +2327,10 @@ PY9
 if command -v node >/dev/null 2>&1; then
   node "$TESTD/herdr_app/test_lattice_view.mjs" >"$S/lattice-view.out" 2>&1 || fail "herdr-app lattice-view: $(tail -c 800 "$S/lattice-view.out")"
   echo "herdr-app lattice-view ok"
+  node "$TESTD/herdr_app/test_shoal_home.mjs" >"$S/shoal-home.out" 2>&1 || fail "herdr-app shoal-home: $(tail -c 800 "$S/shoal-home.out")"
+  echo "herdr-app shoal-home ok"
 else
-  echo "herdr-app lattice-view: skipped (node not on PATH)"
+  echo "herdr-app lattice-view, shoal-home: skipped (node not on PATH)"
 fi
 
 echo "SELFTEST PASS ($S)"

@@ -1,0 +1,4 @@
+# written by the Herdr app into a mod folder it loads
+gpui-kit.d.ts
+herdr.d.ts
+jsconfig.json

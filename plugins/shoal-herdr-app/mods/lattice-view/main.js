@@ -9,12 +9,21 @@
 //
 // props:
 //   source: {kind: "exec", argv: [...], on} | {kind: "file", path, on} | {kind: "fixture", path?}
-//   mode: "full" (default) | "pulse" (one compact row per shoal, for a floating edge drawer)
+//   mode: "full" (default) | "pulse" (a compact floating edge drawer: one row per shoal, then up
+//         to five needs-you roles; a role row click sets shared "lattice.focus", which a full copy
+//         honors by drilling to that role's shoal and pinning its card)
+//   shoal: a shoal id: the copy opens drilled into that shoal and treats it as its home view
+//          (Escape returns there, not to the global view; `g` or the header chip toggles global).
+//          Meant for a per-shoal lattice tab that reads the one shared feed file. In pulse mode it
+//          narrows the drawer to that shoal.
+//   view: a shoal id to open drilled into once (Escape then goes to the home view)
+//   pin: a node id whose card opens pinned
 //   motion: "auto" (default) | "full" | "balanced" | "low" | "off" (motion.js; `m` cycles)
 //   budget: {max_dots, max_pulses, frame_ms, packets} overrides for the tier
 //   renderer: "cpu" | "gpu" (a launcher hint for auto; else read from the app process)
 //   items: false hides the satellite layer
-//   poll_ms: data poll interval (default 4000)
+//   poll_ms: data poll interval (default 4000, 1500 to 60000), for every source kind; with
+//            `{kind: "file"}` each poll is one readTextFile of the shared feed file, no process
 
 import { View, div, svg, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, Link } from "gpui-base";
@@ -22,6 +31,7 @@ import { exec, readTextFile, appHome, props, theme, shared, setShared, nextComma
 import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
+  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature,
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
@@ -30,7 +40,6 @@ import { hitNode, hitDisc, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlp
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
-const FOCUS_KEY = "lattice-view.focus";
 const P = PALETTE;
 const MONO = "Geist Mono";
 
@@ -139,7 +148,10 @@ export default class Lattice extends View {
     this.cursor = null;
     this.lastSeq = null;
     this.tick = 0;
-    this.view = typeof p.view === "string" ? p.view : "global";
+    this.homeShoal = typeof p.shoal === "string" && p.shoal && p.shoal !== "global" ? p.shoal : null;
+    this.home = { home: this.homeShoal ?? "global", missing: false };
+    this.view = typeof p.view === "string" ? p.view : this.homeShoal ?? "global";
+    this.pm = null;
     this.layouts = new Map();
     this.tf = null;
     this.autoFit = true;
@@ -155,7 +167,8 @@ export default class Lattice extends View {
     this.discs = [];
     this.cooling = null;
     this.batch = 0;
-    this.focusSeen = null;
+    // a focus request persisted from an earlier run is not replayed
+    try { this.focusSeen = focusKeyOf(shared(FOCUS_KEY)); } catch (_e) { this.focusSeen = null; }
     this.pinned = typeof p.pin === "string" ? p.pin : null;
     this.handle = cx.focus_handle();
     if (!this.renderer) this.probeRenderer(cx);
@@ -269,6 +282,15 @@ export default class Lattice extends View {
     if (typeof doc.v === "number" && doc.v !== 1) throw new Error(`graph doc v${doc.v} is not supported (v1)`);
     this.doc = doc;
     if (typeof doc.cursor === "string") this.cursor = doc.cursor;
+    this.home = homeView(doc, this.homeShoal);
+    if (this.mode === "pulse") {
+      // the drawer needs no layout, scene or packets: only its rows, redrawn when they change
+      this.pm = pulseModel(doc, { shoal: this.homeShoal, maxNeeds: 5 });
+      const sig = pulseSignature(this.pm);
+      if (sig === this.sig) return false;
+      this.sig = sig;
+      return true;
+    }
     for (const s of shoalSummaries(doc)) {
       const h = this.history.get(s.id) ?? [];
       h.push(s.msgsPerH);
@@ -396,6 +418,7 @@ export default class Lattice extends View {
 
   command(c, cx) {
     if (c === "back") this.key({ keystroke: "escape" }, cx);
+    else if (c === "global") this.toggleGlobal(cx);
     else if (c === "legend") this.legend = !this.legend;
     else if (c === "motion") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
     else if (c === "fit") this.relayout(cx);
@@ -405,10 +428,13 @@ export default class Lattice extends View {
     const k = e.keystroke;
     const center = { x: this.canvasSize().width / 2, y: this.canvasSize().height / 2 };
     if (k === "escape") {
-      if (this.pinned) this.pinned = null;
-      else if (this.legend) this.legend = false;
-      else if (this.vm && !this.vm.global) this.drill("global", cx);
-    } else if (k === "l") this.legend = !this.legend;
+      const step = escapeStep({ pinned: this.pinned, legend: this.legend, view: this.vm?.view ?? this.view, home: this.home.home });
+      if (!step) return;
+      if ("pinned" in step) this.pinned = null;
+      else if ("legend" in step) this.legend = false;
+      else this.drill(step.view, cx);
+    } else if (k === "g") this.toggleGlobal(cx);
+    else if (k === "l") this.legend = !this.legend;
     else if (k === "m") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
     else if (k === "f" || k === "0") this.relayout(cx);
     else if (k === "i") { this.items = !this.items; this.needFit = this.autoFit; this.rebuild(cx); }
@@ -466,14 +492,22 @@ export default class Lattice extends View {
     cx.notify();
   }
 
-  // A pulse row click asks the full view (any copy) to focus a shoal and role.
+  /** `g` and the header chip: the global view, or back to this copy's home shoal. */
+  toggleGlobal(cx) {
+    if (!this.vm) return;
+    const home = this.home.home;
+    if (this.vm.global) { if (home !== "global") this.drill(home, cx); } else this.drill("global", cx);
+  }
+
+  // A pulse row click (or any mod) asks the full view to focus a role: shared "lattice.focus".
   applySharedFocus() {
-    const f = shared(FOCUS_KEY);
-    if (!f || typeof f !== "object" || f.t === this.focusSeen) return;
-    this.focusSeen = f.t;
-    if (!this.doc || typeof f.t !== "number" || Date.now() - f.t > 120000) return;
-    if (f.shoal) this.drill(f.shoal, null);
-    if (f.node) this.pinned = f.node;
+    if (!this.doc) return;
+    const f = readFocus(shared(FOCUS_KEY), this.focusSeen);
+    if (!f) return;
+    this.focusSeen = f.key;
+    if (f.stale) return;
+    if (f.node && this.vm && (this.vm.byId.has(f.node) || buildModel(this.doc, "global").byId.has(f.node))) this.focusNode(f.node, null);
+    else if (f.shoal) this.drill(f.shoal, null);
   }
 
   // ---- render
@@ -543,11 +577,24 @@ export default class Lattice extends View {
 
   renderHeader() {
     const h = headerText(this.vm);
+    const home = this.home.home;
+    const atHome = this.vm.view === home;
+    // a copy with a home shoal gets a chip to the global view and back (also `g`)
+    const chip = this.homeShoal && !this.home.missing
+      ? div().id("home-chip").px(6).rounded(4).cursor_pointer().text_size(9.5).text_color(P.steel2).border(1).border_color(withAlpha(P.steel1, 0.7))
+        .hover((st) => st.text_color(P.ink).bg(withAlpha(P.steel1, 0.4)))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { this.toggleGlobal(cx); cx.notify(); })
+        .child(this.vm.global ? `‹ ${shortShoal(home)}` : "all shoals ›")
+      : null;
+    const back = this.vm.global ? (home !== "global" ? ` · esc: back to ${shortShoal(home)}` : " · click a cluster to drill in") : atHome ? " · g: all shoals" : " · esc: back";
     return v_flex().absolute().left(16).top(12).gap(2)
       .child(h_flex().gap(8).items_center()
         .child(div().text_size(11).font_semibold().text_color(P.ink).child("LATTICE"))
-        .child(div().text_size(11).text_color(P.steel2).child(`› ${h.where}`)))
-      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${this.vm.global ? " · click a cluster to drill in" : " · esc: back"} · l: legend · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
+        .child(div().text_size(11).text_color(P.steel2).child(`› ${h.where}`))
+        .when(chip !== null, (el) => el.child(chip))
+        .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
+      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
   }
 
   renderCard(id, at, size, pinned) {
@@ -689,28 +736,58 @@ export default class Lattice extends View {
     return rail;
   }
 
+  /**
+   * The pulse drawer: one row per shoal (its loudest state's dot, the needs-you count, its tag,
+   * msg/h), then up to five needs-you roles (badge, role, wait event, host). Dots and counts sit on
+   * the edge side of each row, so they show while the drawer peeks; rows mirror on the right edge
+   * and run side by side on a top or bottom edge. Still unless the motion tier is full.
+   */
   renderPulse() {
     const pl = placement();
+    const vertical = pl ? pl.vertical : true;
     const right = pl?.edge === "right";
-    const doc = this.doc;
-    const col = v_flex().id("pulse").py(4).gap(1).font_family(MONO).text_size(10.5).text_color(P.ink);
-    if (!doc) return col.child(div().px(10).text_color(this.error ? P.red : P.dim).child(this.error ? "feed error" : "…"));
-    const rows = shoalSummaries(doc);
-    for (const s of rows) {
-      let row = h_flex().id(`pulse-${s.id}`).gap(8).px(10).py(3).items_center().cursor_pointer()
+    const pm = this.pm;
+    const animate = this.policy.tier === "full";
+    // the drawer sits in Herdr's frame on the theme background, so its text follows the theme
+    const t = theme();
+    const ink = t.foreground ?? P.ink, dim = t.muted ?? P.dim, faint = t.dim ?? P.faint, rule = t.border ?? P.steel1;
+    const col = (vertical ? v_flex() : h_flex()).id("pulse").py(4).gap(1).font_family(MONO).text_size(10.5).text_color(ink);
+    if (!pm) return col.child(div().px(10).text_color(this.error ? P.red : dim).child(this.error ? "feed error" : "…"));
+    const mirror = (row) => (right ? row.flex_row_reverse() : row);
+    const lead = (el) => div().w(14).h(14).flex_none().flex().items_center().justify_center().child(el);
+    for (const s of pm.shoals) {
+      const state = (STATE_STYLE[s.urgent] ?? STATE_STYLE.idle).label;
+      col.child(mirror(h_flex().id(`pulse-${s.id}`).gap(7).px(10).py(3).items_center().cursor_pointer()
         .hover((st) => st.bg(withAlpha(s.tint, 0.12)))
+        .tooltip(`${s.short}: ${s.needsYou ? `${s.needsYou} need you` : "nothing waits on you"} · loudest: ${state}`)
         .on_click((_e, cx) => {
-          const first = buildModel(doc, s.id).needsYou[0];
+          const first = pm.needs.find((r) => r.shoal === s.id);
           setShared(FOCUS_KEY, { shoal: s.id, node: first?.id ?? null, t: Date.now() });
           cx.notify();
         })
-        .child(this.pulseDot(s.urgentColor, 9, s.needsYou > 0))
-        .child(div().w(18).text_color(s.needsYou ? P.magenta : P.faint).font_bold().child(s.needsYou ? String(s.needsYou) : "·"))
-        .child(div().w(70).truncate().text_color(s.tint).child(s.short))
-        .child(div().w(52).text_color(P.dim).child(`${s.msgsPerH}/h`))
-        .child(sparkline(this.history.get(s.id) ?? [], 40, 12, withAlpha(s.tint, 0.9)));
-      if (right) row = row.flex_row_reverse();
-      col.child(row);
+        .child(lead(this.pulseDot(s.urgentColor, 9, animate && s.needsYou > 0)))
+        .child(div().w(18).flex_none().text_color(s.needsYou ? P.magenta : faint).font_bold().child(s.needsYou ? String(s.needsYou) : "·"))
+        .child(div().w(84).flex_none().truncate().text_color(s.tint).child(s.short))
+        .child(div().w(44).flex_none().text_color(dim).child(`${s.msgsPerH}/h`))));
+    }
+    if (pm.needs.length) {
+      col.child(vertical ? div().mx(10).my(3).h(1).bg(rule) : div().my(4).mx(2).w(1).bg(rule));
+      for (const r of pm.needs) {
+        col.child(mirror(h_flex().id(`pulse-ny-${r.id}`).gap(7).px(10).py(2).items_center().cursor_pointer()
+          .hover((st) => st.bg(withAlpha(r.color, 0.16)))
+          .tooltip(`${r.label} @${r.short}: ${r.event}${r.host ? ` on ${r.host}` : ""} · ${fmtAge(r.since_s)} · click: focus it in the lattice tab`)
+          .on_click((_e, cx) => {
+            setShared(FOCUS_KEY, { node: r.id, shoal: r.shoal, t: Date.now() });
+            cx.notify();
+          })
+          .child(lead(div().w(14).h(14).rounded(7).bg(r.color).flex().items_center().justify_center()
+            .text_size(8.5).font_bold().text_color("#0b0b10").child(r.badge)))
+          .child(div().w(18).flex_none())
+          .child(div().w(84).flex_none().truncate().font_semibold().text_color(ink).child(r.label))
+          .child(div().w(76).flex_none().truncate().text_color(r.color).child(r.event))
+          .child(div().w(56).flex_none().truncate().text_color(dim).child(r.host ?? ""))));
+      }
+      if (pm.more) col.child(mirror(h_flex().px(10).py(1).child(div().w(39).flex_none()).child(div().text_size(9.5).text_color(faint).child(`+${pm.more} more`))));
     }
     return col;
   }

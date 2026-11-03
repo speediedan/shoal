@@ -2,13 +2,17 @@
 
 Mods for the Herdr app (the GPUI desktop window over herdr-core), as opposed to
 `plugins/shoal-herdr/`, which targets the herdr 0.9.x terminal multiplexer. Nothing here changes
-how shoal runs; every mod is read-only over shoal's own feeds.
+how shoal runs; every mod reads shoal's own feeds, and the only verb any mod runs is
+`shoal ui app-open` (shoal-home, on a click), which arranges the app's spaces and wakes no role.
 
 | Mod | What it is |
 |---|---|
 | `mods/lattice-view` | The shoal graph doc v1 (`shoal ui graph --json`) as an animated, hoverable network: a global view of every shoal around the operator hub, a per-shoal view with host regions, a metrics and needs-you rail, and a compact `pulse` mode for an edge drawer. See its `RECIPE.md`. |
+| `mods/shoal-home` | The splash and host chooser, natively: the SHOAL logo with the five splash creatures and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
 
 ![lattice-view](mods/lattice-view/preview.png)
+
+![shoal-home](mods/shoal-home/preview.png)
 
 ## Install
 
@@ -52,19 +56,35 @@ around exactly that. Never point it at anything that writes, wakes a role or sen
    ]
    ```
 
-   Each row is one shoal: its most urgent state dot (blinking while something needs you, when the motion tier allows), the
-   needs-you count, messages per hour and a sparkline. Clicking a row asks the Lattice tab (if
-   open) to drill into that shoal with the loudest role's card pinned.
+   One row per shoal (its most urgent state's dot, the needs-you count, its tag, messages per
+   hour), then up to five needs-you roles, loudest first (the state badge, the role, its wait
+   event, its host). Dots, counts and badges sit on the edge side, so they show while the drawer
+   peeks. It is still unless the motion tier is `full`, and a poll redraws it only when a row
+   changed. Clicking a role row sets the shared key `lattice.focus` (`{node, shoal, t}`; a plain
+   node id string works too, for other mods); every Lattice tab honors it by drilling into that
+   role's shoal and pinning its card. A shoal row does the same with the shoal's loudest role.
 
-4. Run `herdr-app check` after every edit, and `herdr-app status` for `errors`.
+4. **Per-shoal lattice tabs.** Give each shoal's space a `lattice` tab that reads the one shared
+   feed file (`shoal ui graph-feed` writes the whole doc each tick) and opens on that shoal,
+   instead of a per-tab `exec` that would start Python on the server every poll per tab:
+
+   ```sh
+   herdr-app do tab.new '{"name":"lattice","mod":"lattice-view","props":{"shoal":"<shoal id>","source":{"kind":"file","path":"<graph.json>","on":"<machine>"}}}'
+   ```
+
+   Escape returns to that shoal rather than to the global view; `g` or the header chip shows
+   every shoal and comes back.
+
+5. Run `herdr-app check` after every edit, and `herdr-app status` for `errors`.
 
 ### Props
 
 | Prop | Default | Meaning |
 |---|---|---|
 | `source` | `{"kind":"fixture"}` | `{"kind":"exec","argv":[...],"on":<machine or null>}` (after the first read the mod appends `--since <cursor>`), `{"kind":"file","path":"...","on":...}`, or `{"kind":"fixture","path"?:...}` (the bundled `fixtures/graph-v1.json`, with synthetic events every tick for a demo) |
-| `mode` | `"full"` | `"pulse"`: one compact row per shoal |
-| `view` | `"global"` | a shoal id to open drilled in |
+| `mode` | `"full"` | `"pulse"`: the compact edge drawer (shoal rows, then up to five needs-you roles) |
+| `shoal` | none | a shoal id: open drilled into it and treat it as home (Escape returns there; `g` toggles global). In pulse mode, list only that shoal |
+| `view` | the home view | a shoal id to open drilled in once (Escape then goes to the home view) |
 | `pin` | none | a node id whose card opens pinned |
 | `motion` | `"auto"` | `"full"`, `"balanced"`, `"low"`, `"off"` or `"auto"` (see Motion budget; `m` cycles) |
 | `budget` | none | overrides for the tier: `{"max_dots", "max_pulses", "frame_ms", "packets", "render_ms"}` |
@@ -80,7 +100,8 @@ the same way), hover a node to fade everything not connected to it and show its 
 pin the card (links open in the browser; a long item or blocker line is cut, its full text on the
 line's tooltip; click the `$ shoal view ...` line to copy it), click a cluster to drill in. The
 card stays inside the canvas, flipping left of or above its node near an edge. `escape` unpins,
-closes the legend, then goes back to the global view; `l` legend (it shows the motion tier), `m`
+closes the legend, then goes back to the home view (the `shoal` prop's shoal, else global); `g`
+toggles the global view; `l` legend (it shows the motion tier), `m`
 cycles the motion tier, `f` lays the view out afresh and fits every node, label and cluster ring
 inside the canvas, `i` items, `+`/`-` zoom, arrows pan. Node positions are kept across polls: a
 poll with the same nodes moves nothing, and a new node is placed without moving the rest. With `"focusable": true`, `pane.go` reaches the pane.
@@ -111,13 +132,55 @@ GPU device node (`/dev/nvidia*`, `/dev/dri/renderD*`) means GPU, and CPU needs a
 with no hardware driver library beside it. Every Mesa ICD and no device stays unknown
 (`balanced`). The `renderer` prop overrides the probe.
 
+## shoal-home
+
+The home screen: a full-window pane, best alone in a `home` tab of a `shoal` space on the laptop.
+It reads one list and runs one verb, both here (`on` the local machine):
+
+- the list: `shoal ui launch --list --json --summary` (read-only, the same list the terminal
+  chooser reads), every 20 s and on `↻` / `r`;
+- on a click or Enter: `shoal ui app-open --machine <name>`, which creates or focuses that host's
+  shoal spaces and remembers the choice.
+
+1. **Copy** the folder (do not symlink it: `image()` in Herdr app 0.1.12 does not load PNGs from
+   a mod folder linked from outside the app home, so the creatures would not draw):
+
+   ```sh
+   cp -r plugins/shoal-herdr-app/mods/shoal-home ~/.config/herdr-app/mods/shoal-home
+   herdr-app check ~/.config/herdr-app/mods/shoal-home
+   herdr-app do tab.new '{"name":"home","mod":"shoal-home"}'
+   # the bundled demo list instead (a click then only says what it would run):
+   herdr-app do tab.new '{"name":"home","mod":"shoal-home","props":{"source":{"kind":"fixture"}}}'
+   ```
+
+2. Props:
+
+   | Prop | Default | Meaning |
+   |---|---|---|
+   | `source` | `{"kind":"exec"}` | `{"kind":"exec","argv":[...],"on":<machine or null>}` (default argv `["shoal","ui","launch","--list","--json","--summary"]`), or `{"kind":"fixture","path"?:...}` (the bundled `fixtures/launch-list.json`) |
+   | `motion` | `"auto"` | the lattice tiers; only `full` moves anything (a slow drift of the creatures), and never again after a host is opened |
+   | `renderer` | probed | `"cpu"` or `"gpu"`: a launcher's hint for `auto` |
+   | `art` | `true` | `false` draws the text screen (logo and host list) |
+   | `poll_ms` | `20000` | list poll interval, 10000 to 300000 |
+
+Cards: `local` first, then each route; a green, red or grey dot (reachable, unreachable with the
+doctor hint as its tooltip, not probed yet); a ring on the last choice; per shoal its tag, the
+roles that need you (in the theme's blocked color), working and waiting; a warning when the Herdr
+pin differs. Unreachable cards are greyed and do not click. Keys: arrows or `j`/`k` move, a digit
+selects, Enter opens, `r` refreshes. Below 640 by 460, or without the images, the same screen is
+text only.
+
 ## Development
 
 The mod's logic is in pure ES modules that run under Node (`model.js`, `layout.js`, `geom.js`,
 `scene.js`, `motion.js`); `main.js` only fetches, translates the display list into GPUI elements and handles
 input.
 
+shoal-home is built the same way (`model.js`, `layout.js`, and `motion.js`, which is a verbatim
+copy of lattice-view's: edit it there, then copy; a test checks they match).
+
 ```sh
+node --test tests/herdr_app/*.mjs                                # unit tests for both mods
 node tests/herdr_app/test_lattice_view.mjs                       # unit tests on the fixture
 node plugins/shoal-herdr-app/preview/render_svg.mjs --legend --out /tmp/lattice.svg
 ```

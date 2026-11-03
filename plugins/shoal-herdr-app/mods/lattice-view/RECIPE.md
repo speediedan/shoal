@@ -82,8 +82,8 @@ you, per-shoal throughput and per-host load.
   full text is on the line's tooltip. The card stays inside the canvas (right of the node, else
   left; flipped above it near the bottom; capped at the canvas height, dropping item lines with a
   `+N more` note). Drag pans, wheel up zooms in at the pointer and wheel down zooms out, click a
-  cluster drills in, Escape backs out, `l` toggles a legend of every encoding, `f` lays the view
-  out afresh and fits it.
+  cluster drills in, Escape backs out (to the home view), `g` toggles the global view, `l`
+  toggles a legend of every encoding, `f` lays the view out afresh and fits it.
 - Layout stability: positions are kept by node id across polls. A poll with the same node set
   moves nothing and does not refit (metrics, states, ages and edges never shift a node); a changed
   node set refines only the new nodes and those whose target moved, the rest stay pinned. `f` is
@@ -91,8 +91,24 @@ you, per-shoal throughput and per-host load.
 - Fit (`f`, a drill, a resize, a node set change while fitted) measures the drawn scene, labels,
   chips, halos and cluster titles included, and solves for the zoom that keeps all of it 24 px
   inside the canvas and below the header, centered.
-- Pulse mode: one row per shoal; clicking a row sets shared `lattice-view.focus` so a Lattice tab
-  drills in with the loudest role pinned.
+- **Home shoal** (`props.shoal`): the copy opens drilled into that shoal and treats it as home:
+  Escape (after unpinning and closing the legend) returns there from any other view, the header
+  gets an `all shoals ›` / `‹ <tag>` chip, and `g` toggles the global view. A shoal the feed does
+  not have shows the global view with an amber `<tag> is not in the feed`.
+- **Pulse mode** (`props.mode: "pulse"`, a floating `peek` drawer): Geist Mono 10.5 px in the
+  theme's colors. One row per shoal: the loudest state's dot (9 px, its state color), the
+  needs-you count in magenta (`·` when none), the tag in its pastel, msg/h. A rule, then up to five
+  needs-you roles, loudest first: a 14 px badge disc in the state color with its glyph (`⚷`, `?`,
+  `⏎`, `✎`, ...), the role, the wait event in the state color, the host; `+N more` below. Dots,
+  counts and badges sit on the edge side (rows mirror on the right edge; a top or bottom edge lays
+  the rows side by side). Still unless the tier is `full` (an explicit `motion: "full"`; `auto`
+  drops a tier for the drawer), where a needs-you shoal dot breathes. A poll redraws the drawer
+  only when its rows changed; it builds no layout or scene. With `props.shoal` it lists that
+  shoal only.
+- **Focus from the drawer:** a role row sets shared `lattice.focus` to `{node, shoal, t}`, a shoal
+  row to `{shoal, node: its loudest needs-you role or null, t}`. Every full copy honors a new
+  value (a plain node id string works too) by drilling into the role's shoal and pinning its card;
+  a value older than two minutes, or the one already there when a copy starts, is ignored.
 
 ## Built from
 
