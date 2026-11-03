@@ -2353,6 +2353,18 @@ os.replace(kp + ".keep", kp)
 k["terminal"]["ctrl-v"] = "send:x"; json.dump(k, open(kp, "w"))
 assert "by you" in ui_app.install_keys()[0] and json.load(open(kp))["terminal"]["ctrl-v"] == "send:x"
 print("paste keys ok")
+# the shoal ocean theme: its file is shoal's own; settings.json's theme is set only when the person set none
+sp = os.path.join(S, "apphome-mods", "settings.json")
+json.dump({"zoom": 1.0}, open(sp, "w"))
+lines = ui_app.install_theme()
+assert json.load(open(sp)) == {"zoom": 1.0, "theme": "shoal-ocean"} and ui_app.theme_state()[0], lines
+assert json.load(open(sp + ".bak-shoal-theme")) == {"zoom": 1.0}
+th = json.load(open(os.path.join(S, "apphome-mods", "themes", "shoal-ocean.json")))
+assert th["background"] == "#000000" and th["foreground"].startswith("#f") and len(th["ansi"]) == 16, th
+assert ui_app.install_theme() == []
+json.dump({"theme": "paper"}, open(sp, "w"))
+assert "left as it is" in ui_app.install_theme()[0] and json.load(open(sp))["theme"] == "paper"
+print("theme ok")
 PY9
 # the plugin wrapper (every 0.9.3 pane, app card and unit runs it) finds the Python of the `shoal` on PATH: from a
 # python shebang, or from the exec line of a shell wrapper `shoal` (running cli.py under sh broke a host's units)
@@ -2368,6 +2380,70 @@ for d in sh py none; do
   grep -q "^+ exec $want .*/shoal/cli.py --help" <<<"$OUT" || fail "shoal-ui interpreter for a $d shoal :: $OUT"
 done
 echo "plugin wrapper interpreter ok"
+
+echo "== 13 actions without a terminal: act-plan previews a write verb under a one-time token, act-apply runs it once"
+AE="SHOAL_UI_LEDGER_ROOTS=$ROOT"
+OUT=$(env $AE $H ui act-plan msg --shoal $SID --role cl --text "from the dialog" --json) || fail "act-plan msg :: $OUT"
+TOK=$(python3 - "$OUT" <<'PY10'
+import json, os, stat, sys
+d = json.loads(sys.argv[1])
+assert d["kind"] == "shoal-act-plan" and d["confirm"] is True and d["cost"] == "", d
+assert d["command"].startswith("shoal msg --shoal") and "--to cl" in d["command"], d
+assert "dry-run" in d["preview"].lower(), d["preview"]
+print(d["token"])
+PY10
+) || fail "plan shape"
+P="$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/act-plans/$TOK.json"
+[ "$(stat -c %a "$P")" = 600 ] || fail "a plan is stored private (mode $(stat -c %a "$P"))"
+OUT=$(env $AE $H ui act-apply --token "$TOK" --json) || fail "act-apply :: $OUT"
+grep -q '"kind": "shoal-act-result"' <<<"$OUT" && grep -q '"rc": 0' <<<"$OUT" || fail "apply result :: $OUT"
+grep -q '"from the dialog"\|from the dialog' "$S/data/ui-actions.jsonl" || fail "apply is logged like the palette"
+[ ! -e "$P" ] || fail "a plan is forgotten once applied"
+OUT=$(env $AE $H ui act-apply --token "$TOK" --json 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "already applied, or expired" <<<"$OUT" || fail "a token applies once: rc $RC :: $OUT"
+OUT=$(env $AE $H ui act-apply --token "../../etc/passwd" --json 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "not a plan token" <<<"$OUT" || fail "a token is only ever a token :: $OUT"
+# an expired plan does not run
+OUT=$(env $AE $H ui act-plan withdraw --shoal $SID --item example/repo#7 --json) || fail "act-plan withdraw :: $OUT"
+TOK=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["token"])' "$OUT")
+P="$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/act-plans/$TOK.json"
+python3 -c 'import json,sys;p=sys.argv[1];d=json.load(open(p));d["created"]-=3600;json.dump(d,open(p,"w"))' "$P"
+OUT=$(env $AE $H ui act-apply --token "$TOK" --json 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "expired" <<<"$OUT" || fail "an expired plan is refused :: $OUT"
+# the palette's rules: costs named, offline without a confirm, freeze --no-wake without a cost, roles checked
+python3 - "$SHOALD" "$SID" "$SPEC" <<'PY11' || fail "act build rules"
+import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+os.environ["SHOAL_SPEC"] = sys.argv[3]
+import ui_actions
+class A:
+    def __init__(self, **kw):
+        self.shoal = sys.argv[2]; self.role = ""; self.text = ""; self.item = ""; self.note = ""
+        self.wake = False; self.state = ""; self.until = ""; self.no_wake = False
+        self.__dict__.update(kw)
+args, cost, ok = ui_actions.build("msg", A(role="*", text="all", wake=True))
+assert "--wake" in args and "EVERY role" in cost and ok
+args, cost, ok = ui_actions.build("offer", A(role="oc", item="example/repo#9:fix"))
+assert args[:5] == ["offer", "--shoal", sys.argv[2], "--to", "oc"] and "wakes an idle role" in cost
+args, cost, ok = ui_actions.build("offline", A(state="on", until="2026-11-04T09:00-08:00", note="out"))
+assert args[:2] == ["offline", "on"] and "--until" in args and ok is False and cost == ""
+assert "every role" in ui_actions.build("freeze", A(state="on"))[1]
+assert ui_actions.build("freeze", A(state="on", no_wake=True)) == (["freeze", "on", "--shoal", sys.argv[2], "--no-wake"], "", True)
+for verb, kw in (("msg", dict(role="nope", text="x")), ("msg", dict(role="cl")), ("offer", dict(role="cl")),
+                 ("freeze", dict(state="maybe")), ("withdraw", {})):
+    try:
+        ui_actions.build(verb, A(**kw)); raise SystemExit(f"{verb} {kw} accepted")
+    except ui_actions.ActError:
+        pass
+print("act rules ok")
+PY11
+OUT=$(env $AE $H ui act-plan next --shoal $SID --role cl --json) || fail "act-plan next :: $OUT"
+grep -q '"kind": "shoal-act-view"' <<<"$OUT" && grep -q 'next for cl' <<<"$OUT" || fail "next view :: $(head -c 400 <<<"$OUT")"
+OUT=$(env $AE $H ui act-plan asks --shoal $SID --json) || fail "act-plan asks :: $OUT"
+python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="shoal-act-view" and isinstance(d["asks"],list),d' "$OUT" || fail "asks view"
+OUT=$(env $AE $H ui act-plan roles --shoal $SID --json) || fail "act-plan roles :: $OUT"
+python3 -c 'import json,sys;d=json.loads(sys.argv[1]);s=d["shoals"][0];assert d["kind"]=="shoal-act-roles" and "cl" in [r["slug"] for r in s["roles"]] and "parked" not in [r["slug"] for r in s["roles"]],d' "$OUT" \
+  || fail "roles view (roles with a session only) :: $OUT"
+echo "act plan and apply ok"
 
 # the lattice-view Herdr app mod's pure modules on its fixture (Node only; skipped without node)
 if command -v node >/dev/null 2>&1; then

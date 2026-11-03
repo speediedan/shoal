@@ -571,6 +571,8 @@ shoal ui app-open [--machine NAME|local] [--shoal ID] [--show LABEL] [--no-stand
 shoal ui app-plan [--shoal ID] [--json]            # this host's wanted spaces (read-only)
 shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; the mods installed into the app
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
+shoal ui act-plan VERB --shoal ID [...] [--json]   # an action's preview and one-time token, or a view
+shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
@@ -617,6 +619,30 @@ shoal ui launch --list [--json] [--summary]        # the hosts the chooser offer
   and Muse take as an attachment. `app-install` keeps the 0.9.3 keys in the app's `keys.json`: Ctrl+V pastes
   text, Ctrl+Shift+V pastes an image (the app ships them the other way round). Only an unbound key or the
   app's own default is changed. The kitty window wrapper and `shoal-paste-image` are not needed here.
+- **Look.** `app-install` puts `shoal-ocean` into the app's `themes/` (white text on a black terminal, deep
+  navy chrome, a cyan accent) and sets it in `settings.json` when no theme is set there (a one-time
+  `settings.json.bak-shoal-theme` first); a theme you picked stays. Only one app should show a machine's
+  spaces at a time: herdr-core sizes each terminal for one viewer, so a second window on the same spaces makes
+  the cards wrap at its size.
+- **Actions.** Ctrl+Alt+S (set by `app-install` when free) opens the `shoal-actions` dialog, as does a
+  right-click on a role in the lattice. It does what the 0.9.3 palette did, with buttons, through two verbs:
+
+  ```bash
+  shoal ui act-plan VERB --shoal ID [--role SLUG] [--text T] [--item I] [--note N] [--wake]
+                    [--state on|off] [--until ISO] [--no-wake] [--json]
+  shoal ui act-apply --token T [--json]
+  ```
+
+  For a write verb (`msg`, `offer`, `withdraw`, `offline`, `freeze`), `act-plan` builds the argv the palette
+  builds, runs its `--dry-run`, names the wake cost, and keeps the argv under a one-time token (mode 0600 in
+  the runtime dir, ten minutes): `{"kind": "shoal-act-plan", "command", "preview", "cost", "confirm",
+  "token", "expires_s"}`. `act-apply` runs exactly that argv once, logs it to `ui-actions.jsonl` and forgets
+  the token (`{"kind": "shoal-act-result", "rc", "command", "output"}`); the caller can confirm only a plan it
+  was shown. `offline` carries `confirm: false` (the palette runs it without a confirm). Views store nothing:
+  `next`, `status`, `conditions`, `asks` (also as data) and `upgrade` (a preview) return
+  `{"kind": "shoal-act-view", "text"}`, and `roles` lists the shoals and their roles with a session. An
+  error is `{"kind": "shoal-act-error", "error"}` with exit 2. A preview syncs the ledger clone the way the
+  verb itself would, as the palette's preview does.
 - **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
   "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's
   shoals (`id`, `tag`, `roles`, `working`, `waiting`, `needs_you`), its total needs-you and `pin_ok` (its
