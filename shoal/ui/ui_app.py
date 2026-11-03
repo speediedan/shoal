@@ -98,11 +98,14 @@ def card_report(r: dict, tag: str) -> dict:
     kind = ""
     if state == "blocked":
         sub = r.get("sub") or ""
-        if sub == "user-auth":
+        # an open prompt first: it is the thing to answer in the session, whatever the ledger wait says
+        if "blocked-on-question" in reasons:
+            kind = "question"
+        elif sub == "user-auth":
             kind = "auth"
         elif r.get("grants_pending"):
             kind = "permission"
-        elif "blocked-on-question" in reasons or r.get("asks") or sub in QUESTION_SUBS:
+        elif r.get("asks") or sub in QUESTION_SUBS:
             kind = "question"
     bits = [ui_status.posture_label(r)]
     w = r.get("wait") or {}
@@ -262,8 +265,21 @@ def app_ls() -> dict:
     return _run_json([app_bin(), "ls"])
 
 
+CONNECT_WAIT_S = 30
+
+
 def app_do(command: str, args: dict) -> dict:
-    return _run_json([app_bin(), "do", command, json.dumps({k: v for k, v in args.items() if v is not None})])
+    """One app command. A machine added a moment ago is still connecting (`<machine> is connecting`), so a
+    structural command on it is retried for up to CONNECT_WAIT_S."""
+    argv = [app_bin(), "do", command, json.dumps({k: v for k, v in args.items() if v is not None})]
+    deadline = time.time() + CONNECT_WAIT_S
+    while True:
+        try:
+            return _run_json(argv)
+        except AppError as exc:
+            if "is connecting" not in str(exc) or time.time() > deadline:
+                raise
+            time.sleep(1)
 
 
 def app_running() -> bool:

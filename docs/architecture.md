@@ -999,6 +999,9 @@ and the contract are in [`ui.md`](ui.md).
   do not click. Motion uses the lattice budget (its `motion.js`, copied verbatim): a native drift
   only at `full`, stopped once a host is opened. Pure modules are tested under Node
   (`tests/herdr_app/test_shoal_home.mjs`, run by `selftest_ui.sh` when `node` is present).
+- **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
+  this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
+  or the exec line when that `shoal` is a shell wrapper), else `python3`.
 - **Rollout:** the UI modules are `live` code, except the feeder, which `upgrade` restarts on any
   module change. No session is woken.
 
