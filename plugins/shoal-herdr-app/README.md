@@ -75,11 +75,15 @@ around exactly that. Never point it at anything that writes, wakes a role or sen
 
 ### Keys and pointer (Lattice tab)
 
-Drag to pan (4 px threshold), wheel to zoom at the pointer, hover a node to fade everything not
-connected to it and show its card, click to pin the card (links open in the browser; click the
-`$ shoal view ...` line to copy it), click a cluster to drill in. `escape` unpins, closes the
-legend, then goes back to the global view; `l` legend (it shows the motion tier), `m` cycles the
-motion tier, `f` fit, `i` items, `+`/`-` zoom, arrows pan. With `"focusable": true`, `pane.go` reaches the pane.
+Drag to pan (4 px threshold), wheel up to zoom in at the pointer and down to zoom out (a trackpad
+the same way), hover a node to fade everything not connected to it and show its card, click to
+pin the card (links open in the browser; a long item or blocker line is cut, its full text on the
+line's tooltip; click the `$ shoal view ...` line to copy it), click a cluster to drill in. The
+card stays inside the canvas, flipping left of or above its node near an edge. `escape` unpins,
+closes the legend, then goes back to the global view; `l` legend (it shows the motion tier), `m`
+cycles the motion tier, `f` lays the view out afresh and fits every node, label and cluster ring
+inside the canvas, `i` items, `+`/`-` zoom, arrows pan. Node positions are kept across polls: a
+poll with the same nodes moves nothing, and a new node is placed without moving the rest. With `"focusable": true`, `pane.go` reaches the pane.
 
 ### Motion budget
 
@@ -98,9 +102,14 @@ many frames they ask for:
 In every tier a data poll redraws only when something shown changed. `auto` (the default)
 starts at `balanced`, takes `low` on a CPU renderer and `full` on a GPU, and drops a tier for
 the pulse drawer, a small pane, or a window without focus. The renderer is read once from the app
-process (`/proc/self/environ`, then `/proc/self/maps`, on Linux): a lavapipe, llvmpipe or
-SwiftShader ICD means CPU. `SHOAL_LATTICE_RENDERER=cpu|gpu` in the app's environment, or the
-`renderer` prop, overrides the probe.
+process on Linux. First its environment: `SHOAL_LATTICE_RENDERER=cpu|gpu` or
+`LIBGL_ALWAYS_SOFTWARE=1` forces it, and `VK_ICD_FILENAMES`, `VK_DRIVER_FILES` or
+`GALLIUM_DRIVER` naming a software driver (lavapipe, llvmpipe, SwiftShader) means CPU and naming a
+hardware one means GPU. Else its loaded libraries (`/proc/self/maps`), where hardware wins: the
+Vulkan loader maps every installed ICD, lavapipe included, so an NVIDIA driver library or a mapped
+GPU device node (`/dev/nvidia*`, `/dev/dri/renderD*`) means GPU, and CPU needs a software driver
+with no hardware driver library beside it. Every Mesa ICD and no device stays unknown
+(`balanced`). The `renderer` prop overrides the probe.
 
 ## Development
 

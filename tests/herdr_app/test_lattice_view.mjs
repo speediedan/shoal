@@ -218,9 +218,15 @@ test("geometry: pan/zoom round trip, fit, curves", () => {
   assert.ok(Math.abs(back.x - p.x) < 1e-9 && Math.abs(back.y - p.y) < 1e-9);
   const anchor = { x: 400, y: 300 };
   const w0 = G.toWorld(tf, anchor);
-  const z = G.zoomAt(tf, anchor, G.wheelFactor(-120));
+  // GPUI: wheel up (X button 4) and a trackpad swipe the same way arrive as a positive delta.y
+  const z = G.zoomAt(tf, anchor, G.wheelFactor(120));
   const w1 = G.toWorld(z, anchor);
-  assert.ok(z.k > tf.k && Math.abs(w0.x - w1.x) < 1e-9 && Math.abs(w0.y - w1.y) < 1e-9, "zoom keeps the anchor");
+  assert.ok(z.k > tf.k && Math.abs(w0.x - w1.x) < 1e-9 && Math.abs(w0.y - w1.y) < 1e-9, "wheel up zooms in, keeping the anchor");
+  assert.ok(G.zoomAt(tf, anchor, G.wheelFactor(-120)).k < tf.k, "wheel down zooms out");
+  assert.ok(G.wheelFactor(4) > 1 && G.wheelFactor(4) < 1.05 && G.wheelFactor(-4) < 1, "small trackpad pixel deltas: same sign, small steps");
+  assert.ok(Math.abs(G.wheelFactor(40) * G.wheelFactor(-40) - 1) < 1e-12, "up then down returns");
+  assert.equal(G.wheelFactor(1e6), 2, "one event zooms at most 2x");
+  assert.equal(G.wheelFactor(NaN), 1);
   assert.equal(G.zoomAt(tf, anchor, 1e9).k, 4);
   const panned = G.panBy(tf, 10, -5);
   assert.deepEqual(G.toScreen(panned, p), { x: G.toScreen(tf, p).x + 10, y: G.toScreen(tf, p).y - 5 });
@@ -413,10 +419,142 @@ test("labels: no overlaps, right ellipsis, alias labels hidden beside their role
       const hit = ea.x < eb.x + eb.w && eb.x < ea.x + ea.w && ea.y < eb.y + eb.h && eb.y < ea.y + ea.h;
       assert.ok(!hit, `${view}: ${a.id} overlaps ${b.id}`);
     }
+    // cluster titles ("ALPHA r12", "2 need you") are obstacles too
+    const titles = sc.items.filter((i) => i.id.startsWith("disc-label-") || i.id.startsWith("disc-needs-")).map((t) => { const w = t.text.length * t.size * 0.6; return { x: t.x + t.w / 2 - w / 2, y: t.y, w, h: t.h }; });
+    for (const l of labels.filter((x) => !vm.byId.get(x.id.slice("label-".length))?.kind?.startsWith("role"))) {
+      const el = { x: l.x, y: l.y, w: l.text.length * l.size * 0.6, h: l.h };
+      for (const t of titles) assert.ok(!(el.x < t.x + t.w && t.x < el.x + el.w && el.y < t.y + t.h && t.y < el.y + el.h), `${view}: ${l.id} overlaps a cluster title`);
+    }
     for (const n of vm.nodes.filter((x) => x.kind === "role")) assert.ok(labels.some((l) => l.id === `label-${n.id}`), `${n.id} keeps its label`);
     const lab = labels.find((l) => l.id === `label-${A}:addressing`);
     if (lab) assert.ok(lab.text.endsWith("…"));
     if (view === "global") assert.ok(!labels.some((l) => l.id === "label-ext:research"), "aliased external label hidden beside its role");
+  }
+});
+
+
+test("hover card: inside the canvas, flipped near edges, capped when tall", () => {
+  const size = { width: 720, height: 740 };
+  const inside = (b) => b.x >= 8 - 1e-9 && b.y >= 8 - 1e-9 && b.x + b.w <= size.width - 8 + 1e-9 && b.y + b.h <= size.height - 8 + 1e-9;
+  const mid = G.placeCard({ x: 200, y: 200, r: 10 }, size, 300, 200);
+  assert.ok(inside(mid) && mid.x > 200, "room on the right: beside the node, right");
+  const right = G.placeCard({ x: 600, y: 200, r: 10 }, size, 300, 200);
+  assert.ok(inside(right) && right.x + right.w < 600, "near the right edge: flipped left of the node");
+  const low = G.placeCard({ x: 200, y: 700, r: 10 }, size, 300, 260);
+  assert.ok(inside(low) && low.y + low.h <= 720 + 1e-9 && low.y < 700, "near the bottom: flipped above, ending near the node");
+  const tall = G.placeCard({ x: 650, y: 690, r: 10 }, size, 300, 2000);
+  assert.ok(inside(tall) && tall.h === size.height - 16 && tall.maxH === size.height - 16, "taller than the canvas: capped");
+  for (let x = 0; x <= size.width; x += 60) for (let y = 0; y <= size.height; y += 60) assert.ok(inside(G.placeCard({ x, y, r: 12 }, size, 300, 420)), `card at ${x},${y}`);
+  // every card line is one line: long items and blockers are cut, the full text kept for a tooltip
+  const d = structuredClone(doc);
+  const core = d.nodes.find((x) => x.id === `${A}:core`);
+  core.work.next[0].blocker = "upstream: a release that carries the fix, then a long explanation ".repeat(4);
+  const card = M.cardLines(M.buildModel(d, "global"), `${A}:core`);
+  const long = card.links.find((l) => l.text.length > 100);
+  assert.ok(long);
+  const cut = S.fitText(long.text, 276, 10.5);
+  assert.ok(cut.length < long.text.length && cut.endsWith("…") && long.text.startsWith(cut.slice(0, -1)));
+});
+
+test("renderer probe: environment forcing wins, then hardware drivers outrank the lavapipe ICD", () => {
+  const line = (path, i) => `7f${(0x1000 + i).toString(16)}000-7f${(0x1001 + i).toString(16)}000 r-xp 00000000 103:02 ${1000 + i} ${path}`;
+  const maps = (paths) => paths.map(line).join("\n");
+  const lib = "/usr/lib/x86_64-linux-gnu/";
+  const mesaIcds = ["libvulkan_lvp.so", "libvulkan_intel.so", "libvulkan_intel_hasvk.so", "libvulkan_radeon.so", "libvulkan_nouveau.so", "libvulkan_asahi.so", "libvulkan_gfxstream.so", "libvulkan_virtio.so"].map((f) => lib + f);
+  // the laptop: the Vulkan loader maps every installed ICD, lavapipe included, plus the NVIDIA driver
+  const laptop = maps([lib + "libvulkan.so.1.3.275", ...mesaIcds, lib + "libGLX_nvidia.so.590.48.01", lib + "libnvidia-glvkspirv.so.590.48.01", lib + "libnvidia-glcore.so.590.48.01", lib + "libEGL_mesa.so.0.0.0", "/dev/nvidia0", "/dev/nvidiactl", "/dev/dri/renderD129"]);
+  const laptopEnv = "HOME=/home/<user>\0DISPLAY=:0\0XDG_SESSION_TYPE=wayland\0";
+  assert.equal(MO.rendererFromProcess(laptopEnv, laptop), "gpu", "laptop: all ICDs plus nvidia, no forcing env");
+  assert.equal(MO.rendererFromProcess(laptopEnv), null, "the environment alone says nothing there");
+  // the dev server: a virtual display, lavapipe selected by the environment
+  const devEnv = "DISPLAY=:17\0VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json\0VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json\0";
+  const devMaps = maps([lib + "libvulkan.so.1.3.204", lib + "libvulkan_lvp.so"]);
+  assert.equal(MO.rendererFromProcess(devEnv), "cpu", "dev server: VK_ICD_FILENAMES names lavapipe");
+  assert.equal(MO.rendererFromProcess(devEnv, laptop), "cpu", "a forcing environment wins over any maps");
+  assert.equal(MO.rendererFromProcess("", devMaps), "cpu", "software only: just libvulkan_lvp");
+  assert.equal(MO.rendererFromProcess("GALLIUM_DRIVER=llvmpipe", laptop), "cpu");
+  assert.equal(MO.rendererFromProcess("LIBGL_ALWAYS_SOFTWARE=1", laptop), "cpu");
+  assert.equal(MO.rendererFromProcess("LIBGL_ALWAYS_SOFTWARE=true"), "cpu");
+  assert.equal(MO.rendererFromProcess("SHOAL_LATTICE_RENDERER=cpu", laptop), "cpu");
+  assert.equal(MO.rendererFromProcess("SHOAL_LATTICE_RENDERER=gpu", devMaps), "gpu");
+  assert.equal(MO.rendererFromProcess("VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json", devMaps), "gpu");
+  // an AMD or Intel desktop: every Mesa ICD mapped, and the render node the driver draws through
+  assert.equal(MO.rendererFromProcess("", maps([...mesaIcds, "/dev/dri/renderD128"])), "gpu");
+  assert.equal(MO.rendererFromProcess("", maps([lib + "libvulkan_radeon.so"])), "gpu", "a hardware ICD and no software one");
+  // every Mesa ICD and no device node (a GPU-less box with Mesa installed): unknown, auto stays balanced
+  assert.equal(MO.rendererFromProcess("", maps(mesaIcds)), null);
+  assert.equal(MO.resolveTier("auto", { renderer: MO.rendererFromProcess(laptopEnv, laptop) }).tier, "full");
+  assert.equal(MO.resolveTier("auto", { renderer: MO.rendererFromProcess(devEnv, devMaps) }).tier, "low");
+});
+
+test("layout stability: same nodes never move; an added node leaves the rest in place", () => {
+  for (const view of ["global", A]) {
+    const l = new L.Layout();
+    l.update(M.buildModel(doc, view)).run();
+    const before = new Map([...l.pos].map(([k, p]) => [k, { ...p }]));
+    // the same graph with every metric, state age, rate and item changed: identical positions
+    const d = structuredClone(doc);
+    for (const x of d.nodes) {
+      x.metrics = { ...(x.metrics ?? {}), done_24h: 40, msgs_out_1h: 30, msgs_in_1h: 12, context_k: 180 };
+      if (x.state) x.state.since_s = (x.state.since_s ?? 0) + 3600;
+      if (Array.isArray(x.work?.done_recent)) x.work.done_recent = x.work.done_recent.slice(0, 1);
+    }
+    for (const e of d.edges) Object.assign(e, { n_1h: 50, rate_per_h: 50, n_rate: 9, last_age_s: 2 });
+    // global: some edges go quiet too (per shoal, an external with no traffic leaves the view)
+    if (view === "global") d.edges = d.edges.filter((e, i) => i % 3 !== 0 || e.class === "blocked-on" || e.class === "alias");
+    assert.equal(L.layoutKey(M.buildModel(d, view)), L.layoutKey(M.buildModel(doc, view)), `${view}: same node set`);
+    d.nodes.reverse();
+    l.update(M.buildModel(d, view));
+    assert.equal(l.moved, false, `${view}: same node set, nothing to move`);
+    l.run();
+    for (const [k, p] of before) assert.deepEqual(l.pos.get(k), p, `${view}: ${k} moved on a metrics-only poll`);
+    // one external writer appears, talking to a role: everything else stays within epsilon
+    const d2 = structuredClone(doc);
+    d2.nodes.push({ id: "ext:newcomer", kind: "external", label: "newcomer", state: { class: "unknown" } });
+    d2.edges.push({ id: `ext:newcomer|${A}:core|msg`, src: "ext:newcomer", dst: `${A}:core`, class: "msg", n_rate: 1, n_1h: 1, n_24h: 1, rate_per_h: 1, last_ts: null, last_age_s: 30, shoal: A });
+    l.update(M.buildModel(d2, view)).run();
+    assert.ok(l.pos.has("ext:newcomer") && finiteDeep([...l.pos.values()]));
+    let max = 0;
+    for (const [k, p] of before) max = Math.max(max, G.dist(p, l.pos.get(k)));
+    if (view === "global") assert.ok(max < 0.5, `${view}: an added external moved the others by ${max}`);
+    else assert.ok(max < 220, `${view}: ${max}`);
+  }
+  // a role added to one shoal: the other shoal does not move
+  const l = new L.Layout();
+  l.update(M.buildModel(doc, "global")).run();
+  const before = new Map([...l.pos].map(([k, p]) => [k, { ...p }]));
+  const d3 = structuredClone(doc);
+  d3.nodes.push({ id: `${B}:extra`, kind: "role", shoal: B, slug: "extra", label: "extra", host: "host-a", state: { class: "idle" } });
+  l.update(M.buildModel(d3, "global")).run();
+  for (const [k, p] of before) if (k.startsWith(A)) assert.ok(G.dist(p, l.pos.get(k)) < 0.5, `${k} moved for a role added to the other shoal`);
+  // f: a full layout from scratch is the deterministic cold layout
+  l.update(M.buildModel(doc, "global"), { relayout: true }).run();
+  const cold = L.layoutGraph(M.buildModel(doc, "global"));
+  for (const [k, p] of cold.pos) assert.deepEqual(l.pos.get(k), p, `relayout ${k}`);
+});
+
+test("fit: every node, label, chip and cluster ring inside the canvas with a margin", () => {
+  const d = structuredClone(doc);
+  d.nodes.find((x) => x.id === `${A}:addressing`).label = "addressing-with-a-much-longer-name";
+  for (const size of [{ width: 722, height: 740 }, { width: 1000, height: 560 }, { width: 520, height: 900 }]) {
+    for (const view of ["global", A, B]) {
+      const vm = M.buildModel(d, view);
+      const lay = L.layoutGraph(vm);
+      const tf = S.fitScene(vm, lay, size, { pad: 24, top: 48 });
+      const sc = S.buildScene(vm, lay, { ...size, tf, policy: MO.motionPolicy("off") });
+      const e = sc.extent;
+      const where = `${view} at ${size.width}x${size.height}`;
+      assert.ok(e.x0 >= 24 - 1 && e.x1 <= size.width - 24 + 1 && e.y0 >= 48 - 1 && e.y1 <= size.height - 24 + 1, `${where}: extent ${JSON.stringify(e)}`);
+      for (const it of sc.items.filter((i) => i.id.startsWith("label-") || i.id.startsWith("tether-chip-"))) {
+        const w = it.id.startsWith("label-") ? it.text.length * it.size * 0.6 : it.w;
+        assert.ok(it.x >= 0 && it.x + w <= size.width && it.y >= 0 && it.y + it.h <= size.height, `${where}: ${it.id} clipped`);
+      }
+      for (const c of sc.discs) assert.ok(c.x - c.r >= 0 && c.x + c.r <= size.width && c.y - c.r >= 0 && c.y + c.r <= size.height, `${where}: ring ${c.id} clipped`);
+      // a fit is centered, and the whole width or height is used
+      const usedW = e.x1 - e.x0, usedH = e.y1 - e.y0;
+      assert.ok(usedW >= size.width - 48 - 4 || usedH >= size.height - 72 - 4 || tf.k >= 1.6 - 1e-9, `${where}: fit uses the canvas`);
+      assert.ok(Math.abs((e.x0 - 24) - (size.width - 24 - e.x1)) < 3, `${where}: centered`);
+    }
   }
 });
 

@@ -78,8 +78,19 @@ you, per-shoal throughput and per-host load.
 - Hover a node: everything not connected fades, a card shows its state and age, ecosystem, model,
   host, CI job host, grants, done and messages, context size, asks, items with blockers (stale in
   red) and the `shoal view` command. Click pins the card; item lines become links; the command
-  copies. Drag pans, wheel zooms at the pointer, click a cluster drills in, Escape backs out, `l`
-  toggles a legend of every encoding, `f` fits.
+  copies. Every card line is one line: a long item or blocker is cut with an ellipsis and its
+  full text is on the line's tooltip. The card stays inside the canvas (right of the node, else
+  left; flipped above it near the bottom; capped at the canvas height, dropping item lines with a
+  `+N more` note). Drag pans, wheel up zooms in at the pointer and wheel down zooms out, click a
+  cluster drills in, Escape backs out, `l` toggles a legend of every encoding, `f` lays the view
+  out afresh and fits it.
+- Layout stability: positions are kept by node id across polls. A poll with the same node set
+  moves nothing and does not refit (metrics, states, ages and edges never shift a node); a changed
+  node set refines only the new nodes and those whose target moved, the rest stay pinned. `f` is
+  the only full relayout after the first.
+- Fit (`f`, a drill, a resize, a node set change while fitted) measures the drawn scene, labels,
+  chips, halos and cluster titles included, and solves for the zoom that keeps all of it 24 px
+  inside the canvas and below the header, centered.
 - Pulse mode: one row per shoal; clicking a row sets shared `lattice-view.focus` so a Lattice tab
   drills in with the loudest role pinned.
 
@@ -96,8 +107,9 @@ you, per-shoal throughput and per-host load.
 - Pure modules (no Herdr imports, tested under Node): `model.js` (doc to view model, encodings,
   needs-you order, edge buckets, host palette, event diff, the visual signature), `motion.js`
   (tiers, budgets, auto resolution, the renderer probe), `layout.js` (targets plus a compact
-  Fruchterman-Reingold refinement, seeded by a hash of each node id, warm-started), `geom.js`
-  (curves, arrowheads, arc-length samples, hit tests, pan/zoom), `scene.js` (the display list).
+  Fruchterman-Reingold refinement, seeded by a hash of each node id, positions kept by node id),
+  `geom.js` (curves, arrowheads, arc-length samples, hit tests, pan/zoom, the wheel factor, card
+  placement), `scene.js` (the display list, its screen extent, and the fit).
 - Drawing: one `relative()` canvas; every path layer is `window.paint_path(path, Background)`
   absolutely positioned over the whole canvas; edges batched one glow and one core path per
   color x tier bucket; hatch with `Background.pattern_slash`; dashes with `dash_array`. Nodes,
@@ -116,7 +128,21 @@ you, per-shoal throughput and per-host load.
 - Skip `cx.notify` when a poll changed nothing shown (`visualSignature`); on a CPU renderer an
   unneeded redraw is the expensive part.
 - No renderer API exists in Herdr app 0.1.12; `readTextFile("/proc/self/environ")` from the mod
-  reads the app process's own environment (the Vulkan ICD), which is the cheap probe.
+  reads the app process's own environment (the Vulkan ICD), which is the cheap probe. Then
+  `/proc/self/maps`, but read it hardware first: the Vulkan loader maps every installed ICD while
+  it enumerates (lavapipe, intel, radeon, nouveau, asahi, gfxstream, virtio, and NVIDIA's
+  `libGLX_nvidia`), so `libvulkan_lvp` is mapped on a GPU laptop too. An NVIDIA library or a mapped
+  `/dev/nvidia*` or `/dev/dri/renderD*` means GPU; only a software driver with no hardware driver
+  library means CPU. An environment that forces or selects a driver always wins.
+- Wheel direction: GPUI reports a wheel turned up (X button 4) as a positive `delta.y`, and
+  trackpad pixel deltas use the same sign. Zoom by `exp(+dy * 0.004)` so up zooms in; one event
+  is capped at 2x so a burst of line deltas cannot jump.
+- Labels, halos and cluster titles keep their screen size at any zoom, so a fit to world bounds
+  clips them at the edges; fit to the scene's measured extent instead (`fitScene`).
+- Refitting on every poll shifts the whole picture when satellites or label placement change;
+  refit only when the layout moved, the view or size changed, or on `f`.
+- A pinned `Link` wraps a long label and grows the card past its estimate: cut the text to one
+  line first. `tooltip` is wired on `div`, not on `Link`, so wrap the link in a div with an id.
 - `transition` animates a change between two renders, so a packet needs two: drawn at the source,
   then (a 60 ms `timer.after`) given the target. A pure timer animation would redraw everything.
 - `on_size_change` arrives after the first layout: make the canvas `flex_1`, not a fixed width.
@@ -134,6 +160,9 @@ you, per-shoal throughput and per-host load.
 ## Done when
 
 - `herdr-app check` passes and `herdr-app status` shows no errors.
+- `f` shows every node, label and ring inside the canvas; two polls with the same nodes draw them
+  at the same pixels; a pinned card near the bottom or right edge stays inside the canvas; wheel up
+  zooms in.
 - With the fixture: two clusters around `you`, `integration` pulsing orange-red with `⚷` and a
   `⚑`, `tune` magenta with `⏎`, `dist-ci` and `bench` hatched blue with different badges, a dotted
   `remote-ci -> host-b` chip at `bench`, three rows under NEEDS YOU (integration, tune,

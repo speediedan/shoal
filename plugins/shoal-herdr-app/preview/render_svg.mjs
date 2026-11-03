@@ -27,11 +27,8 @@ const doc = JSON.parse(readFileSync(opt("doc", join(MOD, "fixtures", "graph-v1.j
 const vm = M.buildModel(doc, opt("view", "global"));
 const lay = L.layoutGraph(vm);
 const CW = W - RAIL;
-const pts = [...lay.pos.values()].map((p) => ({ ...p, r: 30 }));
-for (const s of lay.sats) pts.push({ x: s.x, y: s.y, r: 8 });
-for (const c of lay.clusters) pts.push({ x: c.x, y: c.y, r: c.r + 26 });
-for (const a of lay.anchors.values()) pts.push({ x: a.x, y: a.y, r: 40 });
-const tf = G.fitTransform(G.boundsOf(pts), { width: CW, height: H }, 30, 1.6);
+// the same fit as the mod's `f`: every node, label and ring inside the canvas
+const tf = S.fitScene(vm, lay, { width: CW, height: H }, { pad: 24, top: 48, kMax: 1.6 });
 const pin = opt("pin", null);
 const sc = S.buildScene(vm, lay, { width: CW, height: H, tf, selected: pin, motion: opt("motion", "full") });
 const P = M.PALETTE;

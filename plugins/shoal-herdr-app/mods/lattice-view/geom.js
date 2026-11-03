@@ -247,8 +247,33 @@ export function zoomAt(tf, anchor, factor, kMin = 0.25, kMax = 4) {
   return { k, tx: anchor.x - w.x * k, ty: anchor.y - w.y * k };
 }
 
-/** The wheel convention borrowed from ocean-view: exp(-dy * 0.004) per event. */
-export const wheelFactor = (dy) => Math.exp(-finite(dy) * 0.004);
+/**
+ * The zoom factor for one scroll event's `delta.y` (pixels). GPUI reports a wheel turned up (away
+ * from you, X button 4) as a positive delta.y, and a trackpad's pixel deltas use the same sign, so
+ * up zooms in and down zooms out, the map convention: exp(dy * 0.004), at most 2x either way per
+ * event so a burst of line deltas cannot jump.
+ */
+export const wheelFactor = (dy) => Math.exp(clamp(finite(dy) * 0.004, -Math.LN2, Math.LN2));
+
+/**
+ * Where a hover card of `w` x `h` goes beside a node `at` {x, y, r} inside a canvas `size`
+ * {width, height}: right of the node, else left of it; top near the node, flipped to end near it
+ * when it would run off the bottom; then clamped inside the canvas with `margin`. A card taller
+ * than the canvas is capped at `maxH` (the caller drops lines to fit). Returns {x, y, w, h, maxH}.
+ */
+export function placeCard(at, size, w, h, margin = 8) {
+  const W = finite(size.width, 800), H = finite(size.height, 600);
+  const maxH = Math.max(40, H - 2 * margin);
+  const ch = Math.min(h, maxH);
+  const gap = (at.r ?? 8) + 16;
+  let x = at.x + gap;
+  if (x + w > W - margin) x = at.x - gap - w;
+  x = clamp(x, margin, Math.max(margin, W - w - margin));
+  let y = at.y - 20;
+  if (y + ch > H - margin) y = at.y + 20 - ch;
+  y = clamp(y, margin, Math.max(margin, H - ch - margin));
+  return { x, y, w, h: ch, maxH };
+}
 
 export function boundsOf(points, pad = 0) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;

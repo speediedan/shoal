@@ -14,7 +14,7 @@ import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal } from "./mode
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, annularSectorCmds,
-  samplesBySpacing, toScreen, withAlpha, mix, clamp,
+  samplesBySpacing, pointAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp,
 } from "./geom.js";
 
 const P = PALETTE;
@@ -44,8 +44,11 @@ export const pulseFrames = (kind) => (kind === "needs" ? [PULSE_GLYPH, " "] : [P
 
 /**
  * Builds the display list. `opts`: {width, height, tf, hover, selected, policy (motion.js) or
- * motion (a tier name), packets}. Returns {items, hits, discs, nodeScreen, animated}: `animated`
- * counts elements that make the window redraw on their own (loops, frames, spins, transitions).
+ * motion (a tier name), packets}. Returns {items, hits, discs, nodeScreen, animated, extent}:
+ * `animated` counts elements that make the window redraw on their own (loops, frames, spins,
+ * transitions); `extent` {x0, y0, x1, y1} is the screen box of everything drawn for the graph
+ * (regions and their labels, edges, nodes and halos, satellites, labels, chips), which `fitScene`
+ * keeps inside the canvas.
  */
 export function buildScene(vm, lay, opts) {
   const { width, height, tf } = opts;
@@ -58,6 +61,14 @@ export function buildScene(vm, lay, opts) {
   const hover = opts.hover && vm.byId.has(opts.hover) ? opts.hover : null;
   const bright = hover ? new Set([hover, ...(vm.neighbors.get(hover) ?? [])]) : null;
   const dimOf = (id) => (bright && !bright.has(id) ? 0.2 : 1);
+  const extent = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  const grow = (x0, y0, x1, y1) => {
+    if (![x0, y0, x1, y1].every(Number.isFinite)) return;
+    extent.x0 = Math.min(extent.x0, x0); extent.y0 = Math.min(extent.y0, y0);
+    extent.x1 = Math.max(extent.x1, x1); extent.y1 = Math.max(extent.y1, y1);
+  };
+  const growRect = (r) => grow(r.x, r.y, r.x + r.w, r.y + r.h);
+  const growCentered = (cx, y, text, size, h) => { const w = textW(text, size); grow(cx - w / 2, y, cx + w / 2, y + h); };
 
   // 1. canvas: near-black violet to navy, a cool wash, and a soft bloom behind the hub
   const rect = [["M", 0, 0], ["L", width, 0], ["L", width, height], ["L", 0, height], ["Z"]];
@@ -70,8 +81,9 @@ export function buildScene(vm, lay, opts) {
     items.push({ t: "path", id: `bloom-${i}`, fill: true, cmds: circleCmds(bloomAt.x, bloomAt.y, bloomR * f), bg: solid(withAlpha("#2a2148", 0.05 + i * 0.012)) });
   });
 
-  // 2. regions: cluster discs (global) or host bands (per shoal)
+  // 2. regions: cluster discs (global) or host bands (per shoal); their titles block node labels
   const discs = [];
+  const labelObstacles = [];
   if (vm.global) {
     for (const c of lay.clusters) {
       const p = S(c);
@@ -82,6 +94,9 @@ export function buildScene(vm, lay, opts) {
       items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: 1, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.22)) });
       const label = `${c.label.toUpperCase()}  ${c.gen ?? ""}`.trim();
       items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - r - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
+      grow(p.x - r - 3, p.y - r - 3, p.x + r + 3, p.y + r + 3);
+      growCentered(p.x, p.y - r - 22, label, 11, 16);
+      labelObstacles.push({ x: p.x - textW(label, 11) / 2, y: p.y - r - 22, w: textW(label, 11), h: c.needsYou > 0 ? 29 : 16 });
       if (c.needsYou > 0) {
         items.push({ t: "text", id: `disc-needs-${c.id}`, x: p.x - 120, y: p.y - r - 8, w: 240, h: 13, text: `${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`, size: 9.5, color: P.magenta, align: "center" });
       }
@@ -95,14 +110,20 @@ export function buildScene(vm, lay, opts) {
       items.push({ t: "path", id: `band-rim-${b.host}`, fill: false, width: 1, cmds: annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1), bg: solid(withAlpha(tint, 0.16)) });
       const am = (b.a0 + b.a1) / 2;
       const lp = { x: o.x + (b.r1 * k + 14) * Math.cos(am), y: o.y + (b.r1 * k + 14) * Math.sin(am) };
-      items.push({ t: "text", id: `band-label-${b.host}`, x: lp.x - 70, y: lp.y - 7, w: 140, h: 14, text: `${b.home ? "\u2302 " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`, size: 10, color: withAlpha(tint, 0.9), align: "center", weight: "semibold" });
+      const bandText = `${b.home ? "\u2302 " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`;
+      items.push({ t: "text", id: `band-label-${b.host}`, x: lp.x - 70, y: lp.y - 7, w: 140, h: 14, text: bandText, size: 10, color: withAlpha(tint, 0.9), align: "center", weight: "semibold" });
+      growCentered(lp.x, lp.y - 7, bandText, 10, 14);
+      for (let i = 0; i <= 16; i++) {
+        const a = b.a0 + ((b.a1 - b.a0) * i) / 16;
+        const q = { x: o.x + b.r1 * k * Math.cos(a), y: o.y + b.r1 * k * Math.sin(a) };
+        grow(q.x, q.y, q.x, q.y);
+      }
     }
     if (c) discs.push({ id: c.id, x: o.x, y: o.y, r: c.r * k });
   }
 
   // 2b. a role whose CI job runs on another host: a tether to that host's band (per shoal), or a
   // short chip at the node naming the host (global view, where hosts have no region)
-  const labelObstacles = [];
   for (const t of lay.tethers ?? []) {
     if (!t.from) continue;
     const a = S(t.from);
@@ -116,6 +137,8 @@ export function buildScene(vm, lay, opts) {
       const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       const r = { x: m.x - 70, y: m.y - 14, w: 140, h: 13 };
       labelObstacles.push(r);
+      grow(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y));
+      growCentered(m.x, m.y - 14, text, 9, 13);
       items.push({ t: "text", id: `tether-label-${t.id}`, ...r, text, size: 9, color: withAlpha(color, 0.85 * dim), align: "center" });
     } else {
       const dir = Number.isFinite(t.dir) ? t.dir : 0;
@@ -126,6 +149,7 @@ export function buildScene(vm, lay, opts) {
       const right = Math.cos(dir) >= 0;
       const r = { x: right ? b.x : b.x - w, y: b.y - 8, w, h: 16 };
       labelObstacles.push(r);
+      growRect(r);
       items.push({ t: "box", id: `tether-chip-${t.id}`, ...r, radius: 8, bg: withAlpha(P.panelSolid, 0.85 * dim), border: { w: 1, color: withAlpha(color, 0.6 * dim) }, opacity: 1 });
       items.push({ t: "box", id: `tether-dot-${t.id}`, x: r.x + 6, y: r.y + 5, w: 6, h: 6, radius: 3, bg: withAlpha(color, dim), opacity: 1 });
       items.push({ t: "text", id: `tether-label-${t.id}`, x: r.x + 14, y: r.y + 1, w: w - 16, h: 14, text, size: 9, color: withAlpha(color, 0.95 * dim), align: "left" });
@@ -138,7 +162,9 @@ export function buildScene(vm, lay, opts) {
   for (const e of vm.edges) {
     const a = posOf(e.src), b = posOf(e.dst);
     if (!a || !b) continue;
-    curves.set(e.id, edgeCurve(S(a), S(b), { bend: e.bend, trimA: nodeR.get(e.src) + 2, trimB: nodeR.get(e.dst) + 3 }));
+    const c = edgeCurve(S(a), S(b), { bend: e.bend, trimA: nodeR.get(e.src) + 2, trimB: nodeR.get(e.dst) + 3 });
+    curves.set(e.id, c);
+    for (const t of [0.25, 0.5, 0.75]) { const q = pointAt(c, t); grow(q.x, q.y, q.x, q.y); }
   }
   const keep = hover ? incidentEdges(vm, hover) : null;
   for (const bk of edgeBuckets(vm.edges.filter((e) => curves.has(e.id)), keep)) {
@@ -165,7 +191,9 @@ export function buildScene(vm, lay, opts) {
     spokes.get(sc).push(["M", a.x, a.y], ["L", b.x, b.y]);
     const color = s.kind === "active" ? withAlpha(o.visual.color, 0.95 * dim) : s.stale ? withAlpha(P.red, 0.85 * dim) : withAlpha(o.tint, (s.kind === "next" ? 0.9 : 0.5) * dim);
     if (!satFill.has(color)) satFill.set(color, []);
-    satFill.get(color).push(...circleCmds(b.x, b.y, s.r * clamp(Math.sqrt(k), 0.7, 1.4)));
+    const sr = s.r * clamp(Math.sqrt(k), 0.7, 1.4);
+    satFill.get(color).push(...circleCmds(b.x, b.y, sr));
+    grow(b.x - sr, b.y - sr, b.x + sr, b.y + sr);
   }
   let si = 0;
   for (const [color, cmds] of spokes) items.push({ t: "path", id: `spoke-${si++}`, fill: false, width: 1.2, cmds, bg: solid(color) });
@@ -221,6 +249,8 @@ export function buildScene(vm, lay, opts) {
     hits.push({ id: n.id, x: p.x, y: p.y, r: Math.max(r, 7) });
     nodeScreen.set(n.id, { x: p.x, y: p.y, r });
     const hs = v.halo?.scale ?? 2.4;
+    const outer = v.halo ? r * hs : v.ring ? r + 7 : r + 2;
+    grow(p.x - outer, p.y - outer, p.x + outer, p.y + outer);
     const pulse = pulsing.has(n.id) && dim === 1;
     const loopPulse = pulse && policy.pulseMode === "loop";
     if (v.halo) {
@@ -348,6 +378,7 @@ export function buildScene(vm, lay, opts) {
       spot = { ...spots[0], w, h };
     }
     placed.push(spot);
+    growRect(spot);
     items.push({
       t: "text", id: `label-${n.id}`, x: spot.x + tagW, y: spot.y, w: w - tagW + 2, h, text,
       size, align: "left", weight: loud ? "semibold" : null,
@@ -398,7 +429,52 @@ export function buildScene(vm, lay, opts) {
     }
   }
 
-  return { items, hits, discs, nodeScreen, animated };
+  if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
+  return { items, hits, discs, nodeScreen, animated, extent };
+}
+
+/** The world box of what scales with zoom: node centers, satellites and the cluster regions. */
+function worldBounds(lay) {
+  const pts = [...lay.pos.values()].map((p) => ({ x: p.x, y: p.y, r: 0 }));
+  for (const s of lay.sats ?? []) pts.push({ x: s.x, y: s.y, r: 0 });
+  for (const c of lay.clusters ?? []) pts.push({ x: c.x, y: c.y, r: c.r });
+  return boundsOf(pts);
+}
+
+/**
+ * The view transform that fits the whole graph inside a canvas `size` {width, height}: every
+ * node, label, chip and cluster ring, `pad` px clear of each side and `top` px below the header.
+ * Labels and halos keep their screen size whatever the zoom, so a fit to world bounds alone
+ * clips them; this measures the scene, solves for the zoom that leaves room for that overhang,
+ * and centers the result, repeating while label placement settles. Options: {pad, top, kMax,
+ * iterations}.
+ */
+export function fitScene(vm, lay, size, opts = {}) {
+  const pad = opts.pad ?? 24, top = opts.top ?? 48, kMax = opts.kMax ?? 1.6;
+  const width = Math.max(1, size.width), height = Math.max(1, size.height);
+  const availW = Math.max(1, width - 2 * pad), availH = Math.max(1, height - top - pad);
+  const wb = worldBounds(lay);
+  const ww = Math.max(wb.w, 1), wh = Math.max(wb.h, 1);
+  let tf = fitTransform(wb, { width, height }, pad, kMax);
+  const policy = motionPolicy("off");
+  for (let i = 0; i < (opts.iterations ?? 5); i++) {
+    const e = buildScene(vm, lay, { width, height, tf, policy }).extent;
+    const sx0 = wb.x * tf.k + tf.tx, sx1 = (wb.x + wb.w) * tf.k + tf.tx;
+    const sy0 = wb.y * tf.k + tf.ty, sy1 = (wb.y + wb.h) * tf.k + tf.ty;
+    // what the drawn scene adds beyond the world box on each side, in screen px (negative where
+    // the world box reaches further than anything drawn)
+    const ovL = sx0 - e.x0, ovR = e.x1 - sx1, ovT = sy0 - e.y0, ovB = e.y1 - sy1;
+    const k = clamp(Math.min(kMax, (availW - ovL - ovR) / ww, (availH - ovT - ovB) / wh), 0.1, kMax);
+    const next = {
+      k,
+      tx: pad + (availW - (ww * k + ovL + ovR)) / 2 + ovL - wb.x * k,
+      ty: top + (availH - (wh * k + ovT + ovB)) / 2 + ovT - wb.y * k,
+    };
+    const done = Math.abs(next.k - tf.k) < 1e-4 * tf.k && Math.abs(next.tx - tf.tx) < 0.25 && Math.abs(next.ty - tf.ty) < 0.25;
+    tf = next;
+    if (done) break;
+  }
+  return tf;
 }
 
 /** Header text for a view: breadcrumb and counts. */
