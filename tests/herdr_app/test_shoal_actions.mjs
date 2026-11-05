@@ -58,7 +58,7 @@ test("verbs: the eleven buttons in order, each with a kind and a role rule", () 
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", force: false });
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false });
   assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
@@ -381,9 +381,9 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   const f = M.newForm("handoff", NOW);
   assert.equal(M.validate("handoff", { shoal: A, role: "*" }, f), "pick a role first (not *)");
   assert.deepEqual(M.planArgv("handoff", t, f), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--json"]);
-  const g = M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "force", true);
-  assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--force", "--json"]);
-  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "force"]);
+  const g = M.setValue(M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "effort", "high"), "force", true);
+  assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--effort=high", "--force", "--json"]);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "force"]);
   assert.equal(M.handoffMachine({ host: "lane-b" }, ["lane-a", "lane-b"], "lane-a"), "lane-b", "restart refuses another host's role");
   assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);
   assert.equal(M.handoffMachine({ host: "elsewhere" }, ["lane-a"], "lane-a"), "lane-a", "the CLI's refusal then says where to run it");

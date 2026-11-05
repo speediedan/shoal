@@ -31,7 +31,7 @@ import {
 const MONO = "Geist Mono";
 // Flipped to true only in a scratch copy, to look at every screen with no props (mod.open).
 const FIXTURE_DEFAULT = false;
-const TEXT_KEYS = ["text", "item", "note", "until", "model"];
+const TEXT_KEYS = ["text", "item", "note", "until", "model", "effort"];
 
 const safe = (f, d) => {
   try {

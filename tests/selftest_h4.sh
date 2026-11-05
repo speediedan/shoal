@@ -777,9 +777,9 @@ assert s.incarnation == inc0 + 2, s.incarnation
 
 # another provider through restart: only for a role being relaunched, only once its old session is gone
 FakeBackend.send = lambda self, *a, **k: None
-def restart_eco(only, eco, model=()):
+def restart_eco(only, eco, model=(), effort=()):
     ns = argparse.Namespace(spec=rspec, stages="handoffs,sync-plans,restart", dry_run=False, only=only,
-                            consumer_launched=[], keep=[], seq=[], set_model=list(model), set_ecosystem=list(eco), old_session=[],
+                            consumer_launched=[], keep=[], seq=[], set_model=list(model), set_ecosystem=list(eco), set_effort=list(effort), old_session=[],
                             defer_consumers=False, probe_claude=False, no_verify=True, save_spec="", force=False)
     return cli.run_restart(ShoalSpec.load(rspec), ns)
 cli._park.session_held = lambda r, d="": False
@@ -804,6 +804,11 @@ r = s.role("up")
 assert rc in (0, 5), rc  # 5: this role's own incomplete doc, as above
 assert (r.ecosystem, r.model, r.effort) == ("opencode", "", ""), (r.ecosystem, r.model, r.effort)
 assert r.seq == seq0 + 1 and r.session != old and r.session.startswith("fake"), (r.seq, r.session)
+# an effort given with the move is the new provider's, not cleared
+assert restart_eco("tl", [], (), ["up:low"]) == 1, "--set-effort outside --only"
+assert restart_eco("up", ["up:claude"], ["up:m9"], ["up:high"]) in (0, 5)
+r = ShoalSpec.load(rspec).role("up")
+assert (r.ecosystem, r.model, r.effort) == ("claude", "m9", "high"), (r.ecosystem, r.model, r.effort)
 # back as it was, for what follows
 d = json.load(open(rspec))
 next(x for x in d["roles"] if x["slug"] == "up").update(ecosystem="claude")
@@ -1690,9 +1695,9 @@ out = []
 def run(**kw):
     out.clear()
     park.print = lambda *a, **k: out.append(" ".join(map(str, a)))
-    a = dict(model="", ecosystem="", force=False, dry_run=True)
+    a = dict(model="", ecosystem="", force=False, dry_run=True, effort="")
     a.update(kw)
-    rc = park.handoff(spec, spec_path, "up", a["model"], a["ecosystem"], a["force"], a["dry_run"])
+    rc = park.handoff(spec, spec_path, "up", a["model"], a["ecosystem"], a["force"], a["dry_run"], a["effort"])
     return rc, "\n".join(out)
 health.claude_busy = lambda: {}
 # a session nothing here can stop refuses, even forced
@@ -1740,8 +1745,9 @@ park.stop_session = lambda r, dry_run=False: stops.append(r.session[:8]) or f"st
 health.watcher_alive = lambda sid, slug: (False, {})
 import context
 context.note_restart = lambda *a: None
-rc, t = run(dry_run=False, ecosystem="muse", model="m3")
+rc, t = run(dry_run=False, ecosystem="muse", model="m3", effort="high")
 assert rc == 0 and "restarting on a fresh session" in t, (rc, t)
+assert any("--set-effort=up:high" in x for x in spawned[0]), spawned
 assert stops == [role.session[:8]], stops
 assert any("--set-ecosystem=up:muse" in x for x in spawned[0]) and any("--set-model=up:m3" in x for x in spawned[0]), spawned
 rc, t = run(dry_run=False)

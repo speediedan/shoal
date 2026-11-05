@@ -856,6 +856,16 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
             return 1
         print(f"{slug}: recorded provider {r.ecosystem} -> {eco}" + (f"; effort {r.effort} cleared" if r.effort else ""))
         r.ecosystem, r.effort = eco, ""  # an effort value means what its provider says it means: back to the default
+    for kv in (getattr(args, "set_effort", None) or []):
+        slug, _, effort = kv.partition(":")
+        r = spec.role(slug)
+        if r is None:
+            print(f"unknown --set-effort slug: {slug}")
+            return 1
+        if slug not in (only or []):
+            print(f"REFUSED: --set-effort {slug} needs --only {slug}")
+            return 1
+        r.effort = effort
     for slug, sid in launched.items():
         r = spec.role(slug)
         if r is None:
@@ -1192,6 +1202,7 @@ def main(argv: list[str] | None = None) -> int:
                         "adoptions and relaunches inherit the record)")
     p.add_argument("--set-ecosystem", action="append", default=[],
                    help="SLUG:ECOSYSTEM to relaunch a role on another provider (repeatable; `handoff` stops the old session)")
+    p.add_argument("--set-effort", action="append", default=[], help="SLUG:EFFORT for a relaunched role (repeatable)")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
     p.add_argument("--old-session", action="append", default=[])
     p.add_argument("--consumer-launched", action="append", default=[],

@@ -47,7 +47,7 @@ export const VERBS = [
   { verb: "asks", label: "Asks", kind: "view", role: "none", about: "open asks and roles waiting on a question" },
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
-  { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
+  { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
   { verb: "upgrade", label: "Upgrade preview", kind: "view", role: "none", about: "what an upgrade would roll out (applying stays a CLI step)" },
@@ -77,6 +77,7 @@ export const FIELDS = {
   noWake: { key: "noWake", kind: "toggle", label: "Record without waking every role (--no-wake)", hint: "off: every role wakes once to see the change (tokens)" },
   ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
   model: { key: "model", kind: "text", label: "Model", placeholder: "empty keeps the recorded model, or the new provider's default" },
+  effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty keeps the recorded effort, or the new provider's default" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
 };
 
@@ -96,7 +97,7 @@ export function nextMorning(now = new Date(), hour = 9) {
 export function newForm(verb, now = new Date(), prefill = {}) {
   const info = verbInfo(verb);
   if (!info || info.kind !== "write") return null;
-  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", force: false };
+  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false };
   if (verb === "offline") values.until = nextMorning(now);
   for (const [k, v] of Object.entries(obj(prefill) ?? {})) if (k in values) values[k] = v;
   return { verb, values };
@@ -193,6 +194,7 @@ export function planArgv(verb, target, form = null) {
     } else if (verb === "handoff") {
       if (strOrNull(v.ecosystem)) argv.push(`--ecosystem=${v.ecosystem}`);
       if (text("model")) argv.push(`--model=${text("model")}`);
+      if (text("effort")) argv.push(`--effort=${text("effort")}`);
       if (v.force) argv.push("--force");
     }
   }

@@ -3,7 +3,7 @@
 
     shoal park   --spec S --only ROLE[,ROLE] [--note TEXT] [--until <kind>:<ref>] [--force] [--dry-run]
     shoal unpark --spec S --only ROLE[,ROLE] [--dry-run]
-    shoal handoff --spec S --only ROLE [--model M] [--ecosystem E] [--force] [--dry-run]
+    shoal handoff --spec S --only ROLE [--model M] [--effort X] [--ecosystem E] [--force] [--dry-run]
 
 Park, in an order that wakes nothing:
   1. refuse a remote role (park it on its own host) and a role with an active item unless --force (its
@@ -246,7 +246,7 @@ def claude_live(role) -> bool:
 
 
 def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "", force: bool = False,
-            dry_run: bool = False) -> int:
+            dry_run: bool = False, effort: str = "") -> int:
     """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
     or provider: the quorum's `context_restart` run by hand, under the quorum's gate. Everything that can be proved is
     proved before the old session stops: the role is at a boundary (restart-ready, posture idle or waiting, between
@@ -307,7 +307,9 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         extra.append(f"--set-ecosystem={slug}:{new_eco}")
     if model or new_eco:  # another provider never inherits the old model name: empty is the provider's default
         extra.append(f"--set-model={slug}:{model}")
-    to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model)) if x)
+    if effort:
+        extra.append(f"--set-effort={slug}:{effort}")
+    to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model), effort) if x)
     print(f"{slug}: {role.ecosystem} session {role.session[:8]} hands off to a new {to} session from "
           f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else " (not restart-ready: forced)"))
     if new_eco:
@@ -319,7 +321,7 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
 
 def cmd_handoff(a) -> int:
     from roles import ShoalSpec
-    return handoff(ShoalSpec.load(a.spec), a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run)
+    return handoff(ShoalSpec.load(a.spec), a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort)
 
 
 def add_parser(sub) -> None:
@@ -327,6 +329,7 @@ def add_parser(sub) -> None:
     p.add_argument("--spec", required=True)
     p.add_argument("--only", required=True, help="one slug")
     p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
+    p.add_argument("--effort", default="", help="the new session's effort (default: the recorded one; on another provider, its default)")
     p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one)")
     p.add_argument("--force", action="store_true", help="even though the role has not said it is restart-ready")
     p.add_argument("--dry-run", action="store_true")

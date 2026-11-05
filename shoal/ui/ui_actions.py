@@ -2,7 +2,7 @@
 """Operator actions without a terminal: plan, then apply (the Herdr app's actions dialog; docs/ui.md).
 
     shoal ui act-plan VERB [--shoal ID | --scope all|host:NAME] [--role SLUG] [--text T] [--item I] [--note N] [--wake]
-                      [--state on|off] [--until ISO] [--no-wake] [--model M] [--ecosystem E] [--force] [--json]
+                      [--state on|off] [--until ISO] [--no-wake] [--model M] [--effort X] [--ecosystem E] [--force] [--json]
     shoal ui act-apply --token T [--json]
 
 The 0.9.3 palette (`ui_herdr.act`) asks in a terminal, previews a write verb with its own `--dry-run`, names its
@@ -139,6 +139,8 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         args = ["handoff", "--spec", roles.find_spec(sid), "--only", role]
         if a.model:
             args.append(f"--model={a.model}")
+        if a.effort:
+            args.append(f"--effort={a.effort}")
         if a.ecosystem:
             args.append(f"--ecosystem={a.ecosystem}")
         if a.force:
@@ -345,6 +347,7 @@ def add_parsers(u) -> None:
     q.add_argument("--no-wake", action="store_true", help="freeze: record it without waking every role")
     q.add_argument("--scope", default="", help="offline, freeze: across shoals, `all` or `host:<name>`, in place of --shoal")
     q.add_argument("--model", default="", help="handoff: the new session's model")
+    q.add_argument("--effort", default="", help="handoff: the new session's effort")
     q.add_argument("--ecosystem", default="", help="handoff: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--json", action="store_true")
