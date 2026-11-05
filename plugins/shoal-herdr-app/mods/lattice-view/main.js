@@ -32,12 +32,13 @@ import { exec, readTextFile, appHome, props, theme, shared, setShared, nextComma
 import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
-  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay,
+  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay, scopeOverlay,
+  SHOAL_CARD, HIDDEN_KEY, hiddenList, ledgerStale,
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, fitScene, fitText, headerText } from "./scene.js";
-import { hitNode, hitEdge, hitDisc, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
+import { hitNode, hitEdge, hitDisc, hitHole, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -314,7 +315,7 @@ export default class Lattice extends View {
 
   rebuild(cx) {
     if (!this.doc) return;
-    this.vm = buildModel(this.doc, this.view, { items: this.items });
+    this.vm = buildModel(this.doc, this.view, { items: this.items, hidden: hiddenList(shared(HIDDEN_KEY)) });
     this.view = this.vm.view;
     let lay = this.layouts.get(this.view);
     if (!lay) {
@@ -463,7 +464,8 @@ export default class Lattice extends View {
       }
     }
     if (!p) return;
-    const id = hitNode(this.hits, p, 4) ?? hitEdge(this.edgeHits, p);
+    const hole = hitHole(this.discs, p);
+    const id = hitNode(this.hits, p, 4) ?? hitEdge(this.edgeHits, p) ?? (hole ? SHOAL_CARD + hole : null);
     if (id !== this.hover) {
       this.hover = id;
       cx.notify();
@@ -484,22 +486,39 @@ export default class Lattice extends View {
     else if (this.vm?.global && hitDisc(this.discs, p)) this.drill(hitDisc(this.discs, p), cx);
     else {
       // an edge pins only outside a cluster disc: a click inside one still drills in, however close an edge runs
-      const edge = hitEdge(this.edgeHits, p);
-      this.pinned = edge && this.pinned !== edge ? edge : null;
+      const hole = hitHole(this.discs, p);
+      const what = hitEdge(this.edgeHits, p) ?? (hole ? SHOAL_CARD + hole : null);
+      this.pinned = what && this.pinned !== what ? what : null;
     }
     cx.notify();
   }
 
-  /** Right-click on a role node (or a shoal's system node): the shoal-actions dialog on it. */
+  /** Right-click: a role opens the shoal-actions dialog on it; an outside writer pins its card, which offers to hide
+   * it; a shoal's circle or title acts on that shoal, and anywhere else (the hub too) on every shoal. */
   actions(e, cx) {
     const p = e.local_position;
     if (!p || !this.vm) return;
-    const spec = actionsOverlay(this.vm, hitNode(this.hits, p, 4), this.source);
-    if (!spec) return;
+    const id = hitNode(this.hits, p, 4);
+    const n = id ? this.vm.byId.get(id) : null;
     cx.stop_propagation();
     this.press = null;
     this.drag = false;
-    openOverlay(spec);
+    if (n && n.kind !== "role" && n.kind !== "user") {
+      this.pinned = id;
+      cx.notify();
+      return;
+    }
+    const spec = n?.kind === "role" ? actionsOverlay(this.vm, id, this.source) : scopeOverlay(this.vm, n ? null : hitDisc(this.discs, p), this.source);
+    if (spec) openOverlay(spec);
+  }
+
+  /** Take a node off every copy of the picture, and bring them back; the list persists. */
+  setHidden(ids, cx) {
+    setShared(HIDDEN_KEY, ids);
+    this.pinned = null;
+    this.hover = null;
+    this.rebuild(cx);
+    cx.notify();
   }
 
   wheel(e, cx) {
@@ -586,8 +605,17 @@ export default class Lattice extends View {
     }
     canvas.child(this.renderHeader());
     if (this.legend) canvas.child(this.renderLegend(size));
-    const cardId = this.pinned ?? this.hover;
-    const cardAt = cardId && (sc.nodeScreen.get(cardId) ?? sc.edgeScreen.get(cardId));
+    const screenOf = (id) => {
+      if (!id) return null;
+      if (id.startsWith(SHOAL_CARD)) {
+        const d = sc.discs.find((x) => x.id === id.slice(SHOAL_CARD.length));
+        return d ? { x: d.x, y: d.y, r: 0 } : null;
+      }
+      return sc.nodeScreen.get(id) ?? sc.edgeScreen.get(id) ?? null;
+    };
+    // an edge with nothing left in the day leaves the feed: a pin on it must not block the hover's card
+    const cardId = screenOf(this.pinned) ? this.pinned : this.hover;
+    const cardAt = screenOf(cardId);
     if (cardAt) canvas.child(this.renderCard(cardId, cardAt, size, cardId === this.pinned));
     if (this.error) {
       canvas.child(div().absolute().left(16).bottom(12).px(8).py(4).rounded(6).bg(withAlpha(P.red, 0.16))
@@ -629,7 +657,8 @@ export default class Lattice extends View {
     // measured in Herdr app 0.1.12: a 10.5px line plus the 3px gap is about 20px; padding,
     // border and the command chip add about 28
     const LINE = 20, EXTRA = 28;
-    const fixed = 1 + c.rows.length + c.list.length + (c.command ? 1 : 0);
+    const hideBtn = pinned && c.hideable === true;
+    const fixed = 1 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0);
     const room = Math.floor((size.height - 16 - EXTRA) / LINE) - fixed;
     const links = c.links.length > room ? c.links.slice(0, Math.max(0, room - 1)) : c.links;
     const more = c.links.length - links.length;
@@ -666,6 +695,13 @@ export default class Lattice extends View {
       card.child(div().id("card-cmd").mt(2).px(6).py(2).rounded(4).bg(withAlpha(P.steel1, 0.35)).text_color(P.steel2)
         .when(pinned, (el) => el.cursor_pointer().on_click((_e, cx) => cx.write_to_clipboard(c.command)).tooltip(short === cmd ? "copy" : `copy: ${c.command}`))
         .child(short));
+    }
+    if (hideBtn) {
+      card.child(div().id("card-hide").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.steel1, 0.35)).text_color(P.ink)
+        .hover((st) => st.bg(withAlpha(P.steel1, 0.6)))
+        .tooltip("takes it off this picture only: its ledger history stays; the rail's footer brings it back")
+        .on_click((_e, cx) => this.setHidden([...hiddenList(shared(HIDDEN_KEY)), id], cx))
+        .child("Remove from the lattice"));
     }
     return card;
   }
@@ -706,6 +742,12 @@ export default class Lattice extends View {
       .child(div().text_size(12).font_semibold().text_color(P.ink).child(vm ? (vm.global ? "all shoals" : shortShoal(vm.view)) : "shoal lattice"))
       .child(div().text_color(this.error ? P.red : P.dim).child(this.error ? "feed error" : this.doc ? `${this.doc.host ?? ""} · ${this.doc.ts ?? ""}` : "loading")));
     if (!vm) return rail;
+    const stale = vm.shoalsInView.filter(ledgerStale);
+    if (stale.length) {
+      const worst = Math.max(...stale.map((s) => s.ledgerAge));
+      rail.child(div().px(6).py(4).rounded(5).bg(withAlpha(P.amber, 0.14)).text_color(P.amber)
+        .child(`${vm.host ?? "this host"}'s ledger clone is ${fmtAge(worst)} old: this picture may be out of date`));
+    }
 
     rail.child(section(`NEEDS YOU  ${vm.needsYou.length}`));
     const ny = v_flex().gap(2);
@@ -730,7 +772,8 @@ export default class Lattice extends View {
         .child(h_flex().gap(7).items_center()
           .child(this.pulseDot(s.urgentColor, 8, s.needsYou > 0))
           .child(div().font_semibold().text_color(s.tint).child(s.short))
-          .child(div().flex_1().text_color(P.dim).child(s.gen))
+          .child(div().flex_1())
+          .when(s.offline, (el) => el.child(div().text_color(P.steel2).child("offline")))
           .when(s.needsYou > 0, (el) => el.child(div().px(5).rounded(7).bg(P.magenta).text_color("#0b0b10").font_bold().text_size(9.5).child(String(s.needsYou)))))
         .child(h_flex().gap(10).text_color(P.dim)
           .child(div().child(`done ${s.done24}/24h ${s.done7}/7d`))
@@ -753,7 +796,11 @@ export default class Lattice extends View {
           .child(div().flex_1()).child(div().text_color(P.dim).child(`${h.roles} roles`)))
         .child(div().pl(15).text_color(P.dim).child(`work ${h.working} · wait ${h.waiting}${h.needsYou ? ` · you ${h.needsYou}` : ""} · ${h.msgsPerH}/h${h.jobsIn ? ` · CI in ${h.jobsIn}` : ""}`)));
     }
-    rail.child(div().text_size(9).text_color(P.faint).child("drag: pan · wheel: zoom · click: pin · esc: back · f: fit · l: legend"));
+    if (vm.hiddenN > 0) {
+      rail.child(div().id("show-hidden").px(6).cursor_pointer().text_color(P.dim).hover((st) => st.text_color(P.ink))
+        .on_click((_e, cx) => this.setHidden([], cx)).child(`${vm.hiddenN} hidden: show them`));
+    }
+    rail.child(div().text_size(9).text_color(P.faint).child("drag: pan · wheel: zoom · click: pin · right-click: actions · esc: back · f: fit · l: legend"));
     return rail;
   }
 

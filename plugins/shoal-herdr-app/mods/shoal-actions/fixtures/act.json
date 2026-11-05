@@ -7,18 +7,48 @@
         "id": "alpha-20261101-000000",
         "tag": "alpha",
         "roles": [
-          { "slug": "core", "host": "host-a", "needs_you": false, "posture": "active" },
-          { "slug": "lane-a", "host": "host-a", "needs_you": true, "posture": "blocked:user-ask" },
-          { "slug": "lane-b", "host": "host-b", "needs_you": false, "posture": "wait:remote-ci" },
-          { "slug": "review", "host": "host-a", "needs_you": false, "posture": "idle" }
+          {
+            "slug": "core",
+            "host": "host-a",
+            "needs_you": false,
+            "posture": "active"
+          },
+          {
+            "slug": "lane-a",
+            "host": "host-a",
+            "needs_you": true,
+            "posture": "blocked:user-ask"
+          },
+          {
+            "slug": "lane-b",
+            "host": "host-b",
+            "needs_you": false,
+            "posture": "wait:remote-ci"
+          },
+          {
+            "slug": "review",
+            "host": "host-a",
+            "needs_you": false,
+            "posture": "idle"
+          }
         ]
       },
       {
         "id": "beta-20261101-000000",
         "tag": "beta",
         "roles": [
-          { "slug": "core", "host": "host-b", "needs_you": false, "posture": "active" },
-          { "slug": "docs", "host": "host-b", "needs_you": true, "posture": "QUESTION" }
+          {
+            "slug": "core",
+            "host": "host-b",
+            "needs_you": false,
+            "posture": "active"
+          },
+          {
+            "slug": "docs",
+            "host": "host-b",
+            "needs_you": true,
+            "posture": "QUESTION"
+          }
         ]
       }
     ]
@@ -78,6 +108,18 @@
       "confirm": true,
       "token": "71d8e3b5a0c94f26",
       "expires_s": 600
+    },
+    "handoff": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "handoff",
+      "command": "shoal handoff --spec <spec> --only core --ecosystem=codex --model=gpt-x",
+      "preview": "core: claude session 11112222 hands off to a new codex gpt-x session from <doc>\nwould restart (dry-run): restart --spec <spec> --only core",
+      "cost": "stops this session and starts a new one from its start doc: a new incarnation, one cold turn",
+      "confirm": true,
+      "token": "9be0f1a4c6d27e85",
+      "expires_s": 600,
+      "role": "core"
     }
   },
   "result": {
@@ -100,8 +142,25 @@
       "verb": "asks",
       "text": "2 roles wait on you",
       "asks": [
-        { "role": "lane-a", "host": "host-a", "asks": ["Which branch should the fix target: main or release-1.2?"], "question": true, "says_waiting": false },
-        { "role": "lane-b", "host": "host-b", "asks": ["Can I bump the pinned toolchain?", "Should the flaky test be quarantined?"], "question": false, "says_waiting": true }
+        {
+          "role": "lane-a",
+          "host": "host-a",
+          "asks": [
+            "Which branch should the fix target: main or release-1.2?"
+          ],
+          "question": true,
+          "says_waiting": false
+        },
+        {
+          "role": "lane-b",
+          "host": "host-b",
+          "asks": [
+            "Can I bump the pinned toolchain?",
+            "Should the flaky test be quarantined?"
+          ],
+          "question": false,
+          "says_waiting": true
+        }
       ]
     },
     "status": {

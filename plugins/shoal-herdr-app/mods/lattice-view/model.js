@@ -56,12 +56,11 @@ const EVENT_KEY = {
   lease: "lease",
   upstream: "upstream",
   "session-blocked": "peer",
-  self: "self",
   handover: "handover",
   refill: "refill",
   hold: "hold",
 };
-const GROUP_KEY = { human: "ask", system: "system", upstream: "upstream", peer: "peer", self: "self" };
+const GROUP_KEY = { human: "ask", system: "system", upstream: "upstream", peer: "peer" };
 
 const SOFT_MAGENTA = "#d985b6";
 /**
@@ -83,18 +82,20 @@ export const STATE_STYLE = {
   system: { label: "waits on system", color: P.blue, fill: 0.28, hatch: 4, border: "solid", urgency: null },
   upstream: { label: "waits upstream", color: P.violet, fill: 0.26, hatch: 5, border: "solid", badge: "↑", urgency: null },
   peer: { label: "blocked on a peer", color: P.amber, fill: 0.22, border: "dashed", badge: "⊘", urgency: null },
-  self: { label: "ready between turns", color: P.teal, fill: 0, border: "solid", urgency: null },
   handover: { label: "handing over", color: P.lavender, fill: 0.35, border: "dashed", badge: "⇆", urgency: null },
   refill: { label: "refilling", color: P.mint, fill: 0.3, border: "dashed", badge: "↺", urgency: null },
   hold: { label: "on hold", color: "#9aa7b0", fill: 0.3, border: "solid", badge: "∥", urgency: null },
   other: { label: "other wait", color: "#8fa3ad", fill: 0.25, border: "dashed", badge: "…", urgency: null },
   idle: { label: "idle", color: P.slate, fill: 0.75, urgency: null },
+  queued: { label: "idle, work queued", color: P.slate, fill: 0.75, badge: "•", urgency: null },
+  held: { label: "held: you are offline", color: P.steel2, fill: 0.2, border: "solid", opacity: 0.7, badge: "☾", urgency: null },
+  dead: { label: "session ended", color: P.red, fill: 0.12, border: "dotted", badge: "✕", urgency: 4, stall: true },
   excluded: { label: "excluded", color: P.steel2, fill: 0, border: "solid", opacity: 0.42, urgency: null },
   unknown: { label: "unknown", color: P.red, fill: 0.12, border: "dotted", badge: "✕", urgency: 4, stall: true },
 };
 
 /** Loudness for picking a shoal's most urgent state (pulse dot, cluster tint). */
-export const STATE_RANK = ["auth", "ask", "prompt", "design", "assign", "sources", "unknown", "peer", "local-ci", "remote-ci", "lease", "system", "upstream", "handover", "refill", "hold", "other", "working", "self", "idle", "excluded"];
+export const STATE_RANK = ["auth", "ask", "prompt", "design", "assign", "sources", "unknown", "peer", "local-ci", "remote-ci", "lease", "system", "upstream", "handover", "refill", "hold", "other", "dead", "working", "held", "queued", "idle", "excluded"];
 
 /** Per-host palette for host tags, bands and tethers (distinct from state hues). */
 export const HOST_COLORS = ["#9ad1ff", "#f2a7c6", "#b7e08a", "#e6c08f", "#c3a6ff", "#8fe0d2", "#f0e68c"];
@@ -145,6 +146,20 @@ export function fmtAge(s) {
   return `${Math.round(s / 8640) / 10}d`.replace(".0d", "d");
 }
 
+/**
+ * `wait:self` (idle with runnable next items, nothing running) says what the role could do, not what
+ * holds it, so it is drawn as its cause: an open question, the operator being offline (`parked-work`
+ * does not wake then), a session that ended, or plain idle with work queued. Role-time accounting
+ * keeps the event.
+ */
+function selfKey(s, node) {
+  const reasons = arr(s.reasons);
+  if (reasons.includes("blocked-on-question")) return "prompt";
+  if (arr(obj(node?.work).asks).length || reasons.includes("waiting-on-you")) return "ask";
+  if (s.shoal_offline === true) return "held";
+  return reasons.includes("dead-worker") ? "dead" : "queued";
+}
+
 /** The state key of a node, from its role-time class and event. Never throws. */
 export function stateKey(node) {
   const s = obj(node?.state);
@@ -153,6 +168,7 @@ export function stateKey(node) {
   const grp = str(s.group);
   if (cls === "work") return "working";
   if (cls === "wait") {
+    if (ev === "self" || (!ev && grp === "self")) return selfKey(s, node);
     if (Object.prototype.hasOwnProperty.call(EVENT_KEY, ev)) return EVENT_KEY[ev];
     if (!ev && Object.prototype.hasOwnProperty.call(GROUP_KEY, grp)) return GROUP_KEY[grp];
     return "other";
@@ -181,13 +197,6 @@ export function nodeVisual(node) {
     const asks = num(work.asks_open) + grants;
     return { kind, key: "hub", shape: "circle", r: 22, color: asks > 0 ? P.magenta : P.ink, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
   }
-  if (kind === "system") {
-    const pages = num(metrics.pages_24h);
-    return { kind, key: "writer", shape: "square", r: 6.5, color: pages > 0 ? P.amber : P.steel2, fill: 0.85, urgency: null, needsYou: false, opacity: 0.9, badge: null, grants: 0 };
-  }
-  if (kind === "relay") {
-    return { kind, key: "relay", shape: "triangle", r: 7, color: key === "working" ? P.teal : P.steel2, fill: 0.8, urgency: null, needsYou: false, opacity: 0.85, badge: null, grants: 0 };
-  }
   if (kind === "writer") {
     // an unknown or removed ledger writer: a small dashed node, quieter than an external
     return { kind, key: "writer-unknown", shape: "circle", r: 6, color: "#7a8a94", fill: 0.04, border: "dashed", urgency: null, needsYou: false, opacity: 0.7, badge: null, grants: 0 };
@@ -197,7 +206,8 @@ export function nodeVisual(node) {
   }
   const st = STATE_STYLE[key] ?? STATE_STYLE.unknown;
   const done = num(metrics.done_24h);
-  const needsYou = Boolean(st.needsYou || obj(node?.state).needs_you === true);
+  // a role held by the operator being offline asks nothing of them until they are back
+  const needsYou = key !== "held" && Boolean(st.needsYou || obj(node?.state).needs_you === true);
   return {
     kind: "role",
     key,
@@ -228,7 +238,7 @@ export function legendEntries(vm = null) {
     style: s.hatch ? "hatch" : s.border === "dashed" ? "dashed" : s.border === "dotted" ? "dotted" : s.fill === 0 ? "outline" : "fill",
     pulse: Boolean(s.ring), needsYou: Boolean(s.needsYou),
   }));
-  const shapes = [["circle", "claude"], ["hexagon", "codex"], ["diamond", "opencode"], ["square", "shoal writer"], ["triangle", "wake relay"], ["ring", "you (operator hub)"], ["dashed", "external writer"]];
+  const shapes = [["circle", "claude"], ["hexagon", "codex"], ["diamond", "opencode"], ["ring", "you (operator hub)"], ["dashed", "external writer"]];
   const edges = Object.entries(EDGE_COLOR).map(([cls, color]) => ({ cls, color, dash: EDGE_DASH[cls] ?? null }));
   edges.push({ cls: "cross-host", color: "#7fb6cc", dash: CROSS_HOST_DASH });
   const hosts = vm ? [...vm.hostColor.entries()].map(([name, color]) => ({ name, color })) : [];
@@ -362,7 +372,7 @@ export function needsYouList(nodes) {
       badge: v.badge,
       rank: v.urgency ?? 9,
       since_s: num(s.since_s, 0),
-      text: asks[0] ?? (s.event ? `${s.class}:${s.event}` : s.class ?? ""),
+      text: asks[0] ?? (s.event === "self" ? v.label : s.event ? `${s.class}:${s.event}` : s.class ?? ""),
     });
   }
   rows.sort((a, b) => a.rank - b.rank || b.since_s - a.since_s || (a.id < b.id ? -1 : 1));
@@ -384,7 +394,6 @@ export function shoalSummaries(doc) {
     return {
       id: s.id,
       short: shortShoal(s.id),
-      gen: s.gen ?? "",
       home: s.home ?? null,
       tint: PASTELS[i % PASTELS.length],
       urgent,
@@ -404,6 +413,7 @@ export function shoalSummaries(doc) {
       workShare: typeof m.work_ratio_24h === "number" ? m.work_ratio_24h : null,
       offline: obj(s.mode).offline === true,
       freeze: obj(s.mode).freeze === true,
+      ledgerAge: typeof s.ledger_age_s === "number" ? s.ledger_age_s : null,
     };
   });
 }
@@ -417,9 +427,13 @@ export function buildModel(doc, view = "global", opts = {}) {
   const windows = obj(doc?.windows);
   const shoals = shoalSummaries(doc);
   const tintOf = new Map(shoals.map((s) => [s.id, s.tint]));
+  const homeOf = new Map(shoals.map((s) => [s.id, s.home]));
   const hostColor = hostColors(doc);
   const live = new Set(shoals.map((s) => s.id));
-  const all = arr(doc?.nodes).filter((n) => n && typeof n.id === "string");
+  // a shoal's status lives in the middle of its circle (`shoalCardLines`), not on a node of its own
+  const hidden = new Set(arr(opts.hidden));
+  const all = arr(doc?.nodes).filter((n) => n && typeof n.id === "string" && n.kind !== "system" && !hidden.has(n.id));
+  const hiddenN = arr(doc?.nodes).filter((n) => n && hidden.has(n.id)).length;
   const global = view === "global" || !live.has(view);
   const viewId = global ? "global" : view;
 
@@ -450,6 +464,8 @@ export function buildModel(doc, view = "global", opts = {}) {
       model: n.model ?? null,
       host: typeof n.host === "string" ? n.host : null,
       hostColor: hostColor.get(n.host) ?? null,
+      // a role running away from its shoal's home says where in its label: the global view has no host bands
+      awayHost: (n.kind ?? "role") === "role" && typeof n.host === "string" && homeOf.get(n.shoal) && n.host !== homeOf.get(n.shoal) ? n.host : null,
       jobHost: jobHostOf(n),
       grants: grantsOf(n),
       alias_of: n.alias_of ?? null,
@@ -524,6 +540,7 @@ export function buildModel(doc, view = "global", opts = {}) {
     host: doc?.host ?? null,
     hosts: arr(doc?.hosts),
     windows,
+    hiddenN,
     nodes,
     byId,
     edges,
@@ -641,16 +658,30 @@ export const focusKeyOf = (value) => readFocus(value, undefined, 0, Infinity)?.k
  */
 export function actionsOverlay(vm, id, source = null) {
   const n = vm?.byId?.get(id);
-  if (!n || typeof n.shoal !== "string" || !n.shoal) return null;
-  let role = null;
-  if (n.kind === "role") role = n.slug ?? n.label ?? null;
-  else if (n.kind !== "system") return null;
-  const src = obj(source) ?? {};
+  if (!n || n.kind !== "role" || typeof n.shoal !== "string" || !n.shoal) return null;
+  return dialogSpec({ shoal: n.shoal, role: n.slug ?? n.label ?? null }, source);
+}
+
+/** The same dialog on a whole shoal (its circle), or across every shoal (outside any circle, the hub). */
+export function scopeOverlay(vm, shoal, source = null) {
+  if (!vm) return null;
+  return dialogSpec(shoal ? { shoal, role: null } : { shoal: null, role: null, scope: "all" }, source);
+}
+
+function dialogSpec(target, source) {
+  const src = obj(source);
   const machine = src.kind === "exec" || src.kind === "file" ? (typeof src.on === "string" && src.on ? src.on : null) : null;
-  const props = { shoal: n.shoal, role, machine };
+  const props = { ...target, machine };
   if (src.kind === "fixture") props.fixture = true;
   return { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props };
 }
+
+/** Nodes a person can take off the picture: dashed outside writers, and roles parked or paused for good. */
+export const hideable = (n) => n?.kind === "external" || n?.kind === "writer" || (n?.kind === "role" && n.visual?.key === "excluded");
+
+/** The persistent list of hidden node ids (shared `lattice.hidden`), cleaned of anything that is not a string. */
+export const HIDDEN_KEY = "lattice.hidden";
+export const hiddenList = (v) => arr(v).filter((x) => typeof x === "string");
 
 // ---- pulse mode: a compact edge drawer
 
@@ -703,8 +734,28 @@ export function edgeCardLines(vm, id) {
   return { title: `${a.label} → ${b.label}`, subtitle: e.cls, color: e.color, rows, list: [], links, command: null };
 }
 
-/** The text lines of a hover card for a node, or else an edge, shared by main.js and the preview. */
+/** A ledger clone older than this reads as a warning: the feed never pulls, so someone else must. */
+export const LEDGER_STALE_S = 3600;
+export const ledgerStale = (s) => typeof s?.ledgerAge === "number" && s.ledgerAge > LEDGER_STALE_S;
+
+/** A hover target for the middle of a shoal's circle. */
+export const SHOAL_CARD = "shoal-card:";
+
+/** The text lines of the shoal status card (the middle of the circle). */
+export function shoalCardLines(vm, sid) {
+  const s = vm.shoals.find((x) => x.id === sid);
+  if (!s) return null;
+  const mode = [s.offline ? "offline" : "", s.freeze ? "freeze" : ""].filter(Boolean).join(", ") || "on";
+  const rows = [["mode", mode], ["roles", `${s.roles}: ${s.working} working, ${s.waiting} waiting`], ["needs you", String(s.needsYou)],
+    ["asks / grants", `${s.asks} / ${s.grants}`], ["pages 24h", String(s.pages24)], ["done 24h / 7d", `${s.done24} / ${s.done7}`], ["msgs per hour", String(s.msgsPerH)]];
+  if (s.home) rows.push(["home", s.home]);
+  if (ledgerStale(s)) rows.push(["ledger clone", `${fmtAge(s.ledgerAge)} old on ${vm.host ?? "this host"}`]);
+  return { title: s.short, subtitle: "shoal", color: s.urgentColor, rows, list: [], links: [], command: null };
+}
+
+/** The text lines of a hover card for a node, an edge or a shoal, shared by main.js and the preview. */
 export function cardLines(vm, id) {
+  if (typeof id === "string" && id.startsWith(SHOAL_CARD)) return shoalCardLines(vm, id.slice(SHOAL_CARD.length));
   const n = vm.byId.get(id);
   if (!n) return edgeCardLines(vm, id);
   const s = n.state;
@@ -718,7 +769,7 @@ export function cardLines(vm, id) {
   const rows = [];
   if (n.kind === "role") {
     // "~": a posture reading (no role-time probe), less certain than a role-time one
-    rows.push(["state", `${s.source === "posture" ? "~ " : ""}${v.label}${s.event && v.key !== "other" ? ` (${s.event})` : ""} ${fmtAge(s.since_s)}`]);
+    rows.push(["state", `${s.source === "posture" ? "~ " : ""}${v.label}${s.event && s.event !== "self" && v.key !== "other" ? ` (${s.event})` : ""} ${fmtAge(s.since_s)}`]);
     if (arr(s.quality).length) rows.push(["quality", arr(s.quality).map(str).join(", ")]);
     rows.push(["agent", [n.ecosystem, n.model].filter(Boolean).join(" · ") || "?"]);
     rows.push(["host", n.host ?? "?"]);
@@ -728,7 +779,9 @@ export function cardLines(vm, id) {
     if (n.grants.length) rows.push(["grants", n.grants.map((g) => `${str(g.kind) || "grant"} ${str(g.item)}`.trim()).join(", ")]);
     rows.push(["done 24h", String(num(m.done_24h))]);
     rows.push(["msgs 1h out/in", `${num(m.msgs_out_1h)}/${num(m.msgs_in_1h)}`]);
-    if (typeof m.context_k === "number") rows.push(["context", `${m.context_k}k`]);
+    rows.push(["context", typeof m.context_k === "number" ? `${m.context_k}k` : "not read here"]);
+    // only a role not mid-turn can be said to be ready: its doc is refreshed and it stopped at a boundary
+    if (str(s.class) !== "work") rows.push(["restart-ready", s.restart_ready === true ? "yes" : "no"]);
     if (arr(s.reasons).length) rows.push(["reasons", arr(s.reasons).join(", ")]);
   } else {
     rows.push(["kind", n.kind]);
@@ -747,6 +800,7 @@ export function cardLines(vm, id) {
     list: asks,
     links,
     command: n.viewArgv ? n.viewArgv.join(" ") : null,
+    hideable: hideable(n),
   };
 }
 
@@ -767,7 +821,7 @@ export function visualSignature(vm, cardId = null) {
   for (const e of vm.edges) parts.push(e.id, e.tier, rateBand(e.rate), e.cross ? 1 : 0, e.stale ? 1 : 0);
   for (const b of vm.broadcasts) parts.push(b.src, b.tier);
   for (const r of vm.needsYou) parts.push(r.id, r.text, fmtAge(r.since_s));
-  for (const s of vm.shoals) parts.push(s.id, s.gen, s.needsYou, s.msgsPerH, s.done24, s.done7, s.asks, s.grants, s.pages24, s.workShare ?? "n");
+  for (const s of vm.shoals) parts.push(s.id, s.offline ? 1 : 0, ledgerStale(s) ? 1 : 0, s.needsYou, s.msgsPerH, s.done24, s.done7, s.asks, s.grants, s.pages24, s.workShare ?? "n");
   for (const h of hostSummaries(vm)) parts.push(h.name, h.roles, h.working, h.waiting, h.msgsPerH, h.jobsIn);
   return hash32(parts.join("\u0001"));
 }

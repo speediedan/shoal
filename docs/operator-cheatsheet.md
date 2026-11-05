@@ -152,6 +152,8 @@ export S=<id> SPEC=<path to the group's spec>
     ```bash
     shoal park --spec <spec> --only <role> --note "<why>" [--until gh-pr:<owner/repo>#<n>] [--dry-run]
     shoal unpark --spec <spec> --only <role>      # restart --only <role>
+    shoal handoff --spec <spec> --only <role> [--ecosystem E] [--model M] [--force] [--dry-run]
+                                                  # a fresh session from its start doc, on its own host
     ```
 
 - Restart into the next incarnation (all roles, or `--only` some); add a role; retire:

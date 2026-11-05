@@ -1636,6 +1636,12 @@ OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health 
 
 echo "== 36 park and unpark: no session and no watcher, the queue kept; a full restart keeps it parked; --until unparks"
 FS0='{"claude": [], "opencode": {}}'
+# handoff: refused until the role says it is restart-ready; forced, it names the old session and the new provider
+check "has not said it is restart-ready" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --dry-run
+[ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --dry-run)" = 1 ] || fail "handoff without restart-ready"
+check "set-ecosystem=up:codex --set-model=up:gpt-x" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --force --dry-run --ecosystem codex --model gpt-x
+check "unknown provider" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --force --dry-run --ecosystem nope
+check "no role nope" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only nope --force --dry-run
 check "posture=active" $Q --slug up --active interpretune#9701:fix --next interpretune#9702
 check "REFUSED: up holds active item" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up
 [ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up)" = 1 ] || fail "park took a role mid-item"

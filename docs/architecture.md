@@ -988,15 +988,22 @@ and the contract are in [`ui.md`](ui.md).
   same node set moves nothing, a changed one refines only new and retargeted nodes, and `f` relays
   out and fits the measured scene (labels and cluster titles included) inside the canvas. The `source` argv
   must stay a read-only shoal command. Encodings key on role-time class and event; unknown values
-  render as "other" or "unknown".
+  render as "other" or "unknown". `wait:self` is drawn as its cause (an open question, held while the
+  operator is offline, a session that ended, or idle with work queued), and accounting keeps the event. A hover or
+  click reaches a node, then an edge, then the middle of a shoal's circle, which is the shoal's status (the
+  feed's writer node is not drawn). A right-click on a role opens `shoal-actions` on it; on a shoal's circle or
+  title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
+  off the picture (shared `lattice.hidden`, restored from the rail). The rail warns when the feed's ledger
+  clone is over an hour old, because the feed never pulls.
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
-  additive v1) every 20 s and on refresh, and draws an oceanic logo (an outlined display serif whose letters ride a
-  wave, shaded aqua to deep blue in rippled bands), the acronym tagline with each initial underlined, the
+  additive v1) every 20 s and on refresh, and draws a logo in original liquid brush letters on one baseline, shaded aqua to deep blue (a
+  pre-rendered `assets/logo.png` from `preview/gen_logo_image.mjs`, because a mod's render has a time limit and the
+  vector letters took most of it; a light vector fallback in `logo.js` while the image is not available), the acronym tagline with each initial underlined, the
   five splash creatures with `image()` (placed like `image_rectangles`, scaled to the window; text only
-  below 640 by 460 or without the assets), a kelp sea whose floats and tendrils link the creatures into
-  one network bridged over the logo (`ocean.js`, a static display list that never crosses the
-  logo or the cards) and one card per host: reachability with the doctor hint, the last choice,
+  below 640 by 460 or without the assets), a kelp sea whose two sets are the shoals, joined by one direct tendril, with two solo vines for
+  standalone sessions that weave through the letters and link to both sets (`ocean.js`, a static display
+  list; only the solo vines cross the logo, none reaches the cards) and one card per host: reachability with the doctor hint, the last choice,
   per-shoal needs-you, working and waiting, and the pin check. A click runs
   `shoal ui app-open --machine <name>` here and shows its result on the card; unreachable cards
   do not click. Motion uses the lattice budget (its `motion.js`, copied verbatim): a native drift
@@ -1032,12 +1039,18 @@ day, plus `blocked-on` and `alias` edges that need no event, each marked `cross_
 its last three events' summaries for the lattice's edge hover card. Events are a
 capped tail behind an opaque cursor of per-file byte offsets. `ui graph-feed` keeps those offsets
 in memory and writes `graph.json` beside the status cache each tick, reading only appended bytes.
-It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call.
+It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call. So a host that is no
+shoal's home has a clone nothing refreshes; each shoal says how old its clone is (`ledger_age_s`), and the app's lattice
+tabs read the feed of the machine their space is on.
 
 ### Herdr app adapter (`shoal ui app-*`)
 
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
-machine's herdr-core. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
+machine's herdr-core. Its `shoal` layout is Herdr's own `main` with three blocks swapped: `shoal-agents` and
+`shoal-spaces` are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
+block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
+`shoal-status` adds the way back to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
+slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
 saved standalone session). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
 route for another host, which it first adds as a herdr-core machine named after the route), compares it with

@@ -22,7 +22,7 @@
 
 import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, readTextFile, appHome, props, theme, fonts, nextCommand, window as appWindow } from "herdr";
+import { exec, readTextFile, appHome, props, theme, nextCommand, window as appWindow } from "herdr";
 import * as fs from "fs/promises";
 import {
   PALETTE, DOT, parseList, listSignature, hostState, canOpen, initialSelection, keepSelection, keyAction,
@@ -30,7 +30,8 @@ import {
 } from "./model.js";
 import { homeLayout, cardHeight, CREATURES, CARD, PAD } from "./layout.js";
 import { resolveTier, motionPolicy, rendererFromProcess, MOTION_CYCLE } from "./motion.js";
-import { oceanScene, logoLetters, rippleBands, LETTER_SHADES, SEA } from "./ocean.js";
+import { oceanScene, lastResult } from "./ocean.js";
+import { logoDraw, LOGO_IMAGE } from "./logo.js";
 
 const MOD = "shoal-home";
 const DEFAULT_ARGV = ["shoal", "ui", "launch", "--list", "--json", "--summary"];
@@ -38,6 +39,8 @@ const P = PALETTE;
 const UI = "Geist";
 const MONO = "Geist Mono";
 const TAGLINE = ["Stigmergic", "Heterogeneous", "Open", "Agent", "Lattice"];
+const seaOf = lastResult(oceanScene);
+const logoOf = lastResult(logoDraw);
 
 function normalizeSource(src) {
   const s = src && typeof src === "object" ? src : { kind: "exec" };
@@ -53,8 +56,10 @@ function rectPath(w, h) {
   return PathBuilder.fill().move_to(0, 0).line_to(w, 0).line_to(w, h).line_to(0, h).close().build();
 }
 
-/** One ocean.js item as a full-canvas paint_path layer. */
-function seaEl(it) {
+/** One ocean.js or logo.js item as a paint_path layer: full canvas, or its own `box` when it has a gradient (so the
+ * gradient spans that box and nothing else). A swaying item moves natively, only when `drift` allows it. Each command
+ * is a native call, and a render has a time limit: tests/herdr_app/test_shoal_home.mjs holds the total to a budget. */
+function seaEl(it, drift = false) {
   let b = it.fill ? PathBuilder.fill() : PathBuilder.stroke(it.width ?? 1);
   for (const c of it.cmds) {
     switch (c[0]) {
@@ -67,19 +72,12 @@ function seaEl(it) {
       default: break;
     }
   }
-  return window.paint_path(b.build(), Background.solid(withAlpha(it.color, it.alpha))).absolute().top(0).left(0).size_full();
-}
-
-// A display serif reads as a ship's name; the shipped Geist when it is not installed.
-const LOGO_FONTS = ["Noto Serif Display", "DejaVu Serif", "Liberation Serif"];
-let logoFont = null;
-function logoFamily() {
-  if (logoFont === null) {
-    let have = [];
-    try { have = fonts(); } catch (_e) { have = []; }
-    logoFont = LOGO_FONTS.find((f) => have.includes(f)) ?? UI;
+  if (it.gradient) {
+    const g = it.gradient;
+    return window.paint_path(b.build(), Background.linear_gradient(g.angle, g.from, g.to)).absolute().left(it.box.x).top(it.box.y).w(it.box.w).h(it.box.h);
   }
-  return logoFont;
+  const el = window.paint_path(b.build(), Background.solid(withAlpha(it.color, it.alpha))).absolute().top(0).left(0).size_full();
+  return drift && it.sway ? el.loop("left", { from: 0, to: it.sway.amp, period: it.sway.period, easing: "ease-in-out" }) : el;
 }
 
 export default class Home extends View {
@@ -145,8 +143,8 @@ export default class Home extends View {
     cx.spawn(async (cx) => {
       let ok = true;
       try {
-        for (const c of CREATURES) {
-          if (!(await fs.exists(`${appHome()}/mods/${MOD}/assets/${c.file}`))) { ok = false; break; }
+        for (const file of [...CREATURES.map((c) => c.file), LOGO_IMAGE.file]) {
+          if (!(await fs.exists(`${appHome()}/mods/${MOD}/assets/${file}`))) { ok = false; break; }
         }
       } catch (_e) {
         ok = true; // no way to ask: draw the images, a missing one just shows nothing
@@ -255,12 +253,8 @@ export default class Home extends View {
     }
 
     // the sea: kelp strands whose floats and tendrils make a network with the creatures (ocean.js)
-    const sea = oceanScene(L);
-    for (const it of sea?.items ?? []) {
-      let el = seaEl(it);
-      if (drift && it.sway) el = el.loop("left", { from: 0, to: it.sway.amp, period: it.sway.period, easing: "ease-in-out" });
-      canvas.child(el);
-    }
+    const sea = seaOf(L);
+    for (const it of sea?.items ?? []) canvas.child(seaEl(it, drift));
 
     for (const c of L.creatures) {
       let im = image(`mods/${MOD}/assets/${c.file}`).id(`fish-${c.name}`).absolute().left(c.x).top(c.y).w(c.size).h(c.size);
@@ -268,7 +262,15 @@ export default class Home extends View {
       canvas.child(im);
     }
 
-    canvas.child(this.logoEl(L));
+    // the logo: its image once the assets are known to be there, else (as on the first render) a cheap fill (logo.js);
+    // then the stretches of the solo vines that pass in front of its letters
+    const logo = logoOf(L.logo, this.art === true);
+    if (logo.image) {
+      const b = logo.image;
+      canvas.child(image(`mods/${MOD}/assets/${b.file}`).id("logo").absolute().left(b.x).top(b.y).w(b.w).h(b.h));
+    }
+    for (const it of logo.items) canvas.child(seaEl(it));
+    for (const it of sea?.front ?? []) canvas.child(seaEl(it, drift));
     if (L.tagline) {
       // Stigmergic · Heterogeneous · Open · Agent · Lattice, each initial underlined (wavy: we are under the sea)
       const row = h_flex().absolute().left(0).top(L.tagline.y).w(W).h(L.tagline.h).items_center().justify_center()
@@ -305,37 +307,6 @@ export default class Home extends View {
         cx.notify();
       })
       .child(canvas);
-  }
-
-  logoEl(L) {
-    const lg = L.logo;
-    const fam = logoFamily();
-    // one letter, its box at (x, y) relative to `top` (a band's clip offset)
-    const glyph = (l, dx, dy, color, top = 0) => div().absolute().left(dx).top(dy - top).w(l.w).h(l.h)
-      .flex().items_center().justify_center().whitespace_nowrap().font_family(fam).text_size(l.font)
-      .line_height(`${l.h}px`).font_weight(800).text_color(color).child(l.ch);
-    // Oceanic and still plain to read: every letter rides its own crest of one wave (GPUI cannot warp text), with a
-    // deep drop shadow, a navy outline (eight offset copies: text has no stroke), and underwater light shading
-    // each letter from aqua at the top to deep blue below, in thin clipped bands so there is no seam.
-    const o = Math.max(1.5, lg.font / 34);
-    const depth = Math.max(3, Math.round(lg.font / 16));
-    const out = div().absolute().left(0).top(0).size_full();
-    const letters = logoLetters(lg, "SHOAL", fam);
-    for (const l of letters) out.child(glyph(l, l.x + depth, l.y + depth, withAlpha(SEA.logoShadow, 0.7)));
-    for (const l of letters) {
-      for (const [dx, dy] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]) {
-        out.child(glyph(l, l.x + dx * o, l.y + dy * o, SEA.logoOutline));
-      }
-    }
-    // the shading: each letter is cut into vertical strips, and in each strip the band edges follow a ripple
-    // (ocean.js rippleBands), so the light inside the letters moves like water
-    for (const l of letters) {
-      for (const c of rippleBands(l, l.font, LETTER_SHADES.length)) {
-        out.child(div().absolute().left(l.x + c.x).top(l.y + c.y0).w(c.w).h(c.y1 - c.y0).overflow_hidden()
-          .child(glyph(l, -c.x, 0, LETTER_SHADES[c.k], c.y0)));
-      }
-    }
-    return out;
   }
 
   refreshEl(b) {

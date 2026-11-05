@@ -251,9 +251,15 @@ export function hitEdge(edges, p, slop = 5, steps = 16) {
   return best;
 }
 
-/** The cluster disc ({id, x, y, r}) under a pointer, or null. */
+/** The cluster disc ({id, x, y, r, title?}) under a pointer, its title above it included, or null. */
 export function hitDisc(discs, p) {
-  for (const c of discs) if (Math.hypot(c.x - p.x, c.y - p.y) <= c.r) return c.id;
+  for (const c of discs) if (Math.hypot(c.x - p.x, c.y - p.y) <= c.r || inRect(c.title, p)) return c.id;
+  return null;
+}
+
+/** The disc whose middle ({hole}: a radius) is under a pointer, or null. */
+export function hitHole(discs, p) {
+  for (const c of discs) if (c.hole && Math.hypot(c.x - p.x, c.y - p.y) <= c.hole) return c.id;
   return null;
 }
 

@@ -11,6 +11,7 @@
 // openOverlay({mod: "shoal-actions", kind: "dialog", props}).
 // props:
 //   shoal, role, machine: the target (machine: a herdr-core machine name, null for this computer).
+//   scope: "all" or "host:<name>" in place of a shoal: only the verbs that span shoals (offline, freeze).
 //     Without them the dialog starts on the focused card (its `shoal.pane` label and its space's
 //     machine), else on the first shoal with a role that needs you.
 //   verb: open straight on one verb ("msg", "next", "asks", ...); text, wake: prefill Message.
@@ -19,17 +20,18 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, closeOverlay, nextCommand } from "herdr";
+import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, machines, closeOverlay, nextCommand } from "herdr";
 import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
+  verbsFor, scopeLabel, handoffMachine,
 } from "./model.js";
 
 const MONO = "Geist Mono";
 // Flipped to true only in a scratch copy, to look at every screen with no props (mod.open).
 const FIXTURE_DEFAULT = false;
-const TEXT_KEYS = ["text", "item", "note", "until"];
+const TEXT_KEYS = ["text", "item", "note", "until", "model"];
 
 const safe = (f, d) => {
   try {
@@ -46,7 +48,7 @@ export default class Actions extends View {
     this.fixture = p.fixture === true || (FIXTURE_DEFAULT && p.fixture !== false);
     this.fx = null;
     const start = preselect({ props: p, focused: safe(focused, null), terminals: safe(terminals, []), spaces: safe(spaces, []), panes: safe(panes, []) });
-    this.sel = { shoal: start?.shoal ?? null, role: start?.role ?? null };
+    this.sel = { shoal: start?.shoal ?? null, role: start?.role ?? null, scope: start?.scope ?? null };
     this.origin = start?.machine ?? null; // where the roles list is read, and the fallback machine
     this.applying = false; // an apply in flight: its result must land, so the target stays put
     this.roles = null;
@@ -117,7 +119,11 @@ export default class Actions extends View {
 
   /** The role's card's machine, else the shoal's cards', else where the dialog started. */
   machine() {
-    return targetMachine(this.sel, safe(terminals, []), safe(spaces, []), this.origin);
+    if (this.sel.scope) return this.origin;
+    const m = targetMachine(this.sel, safe(terminals, []), safe(spaces, []), this.origin);
+    if (this.verb !== "handoff") return m;
+    const role = this.roles?.shoals?.find((s) => s.id === this.sel.shoal)?.roles?.find((r) => r.slug === this.sel.role);
+    return handoffMachine(role, safe(machines, []).map((x) => x.name).filter(Boolean), m, this.roles?.host ?? null);
   }
 
   loadRoles(cx) {
@@ -127,7 +133,7 @@ export default class Actions extends View {
       if (r.kind === "roles") {
         this.roles = r;
         const before = this.sel.shoal;
-        this.sel = settleSelection(this.sel, r);
+        if (!this.sel.scope) this.sel = settleSelection(this.sel, r);
         if (this.sel.shoal !== before && this.view) this.view = null;
       } else this.rolesError = r.error;
       if (this.pendingVerb) {
@@ -401,12 +407,14 @@ export default class Actions extends View {
     const head = h_flex().items_center().gap(8)
       .child(div().text_size(15).font_semibold().child("Shoal actions"))
       .child(div().text_size(11).text_color(c.dim).child(`on ${m ?? "this computer"}${this.fixture ? " · fixtures" : ""}`))
+      .when(Boolean(this.sel.scope), (el) => el.child(div().text_size(11.5).font_medium().text_color(c.amber).child(scopeLabel(this.sel.scope))))
       .child(div().flex_1())
       .child(h_flex().id("refresh").px(6).rounded(5).cursor_pointer().text_size(11).text_color(c.dim)
         .hover((s) => s.text_color(c.ink).bg(c.hover)).tooltip("read the roles again")
         .on_click((_e, cx) => { this.loadRoles(cx); cx.notify(); }).child("↻"))
       .child(div().text_size(11).text_color(c.dim).child("Esc"));
     const col = v_flex().px(16).pt(14).pb(10).gap(8).flex_none().child(head);
+    if (this.sel.scope) return col; // no shoal or role to pick: the action reaches them all
 
     const shoalRow = h_flex().gap(6).flex_wrap().items_center().child(div().w(44).flex_none().text_size(11).text_color(c.dim).child("shoal"));
     if (!this.roles) {
@@ -445,7 +453,7 @@ export default class Actions extends View {
 
   verbRow(c) {
     const row = h_flex().px(16).pb(12).gap(6).flex_wrap().flex_none();
-    for (const v of VERBS) {
+    for (const v of verbsFor(this.sel)) {
       const on = v.verb === this.verb;
       row.child(h_flex().id(`v-${v.verb}`).h(28).px(11).items_center().rounded(7).flex_none().cursor_pointer()
         .border_1().border_color(on ? c.accent : c.input)
@@ -473,6 +481,7 @@ export default class Actions extends View {
   }
 
   target(c) {
+    if (this.sel.scope) return scopeLabel(this.sel.scope);
     const role = roleFor(this.verb, this.sel.role);
     const where = this.sel.shoal ? shortShoal(this.sel.shoal) : "no shoal";
     return `${where}${role ? ` / ${role}` : ""}`;
@@ -493,7 +502,7 @@ export default class Actions extends View {
   menuBody(c) {
     const col = v_flex().gap(2);
     col.child(div().pb(6).text_size(11.5).text_color(c.muted).child("Pick an action. Writes show the CLI's dry-run preview and its wake cost before you confirm."));
-    for (const v of VERBS) {
+    for (const v of verbsFor(this.sel)) {
       col.child(h_flex().id(`m-${v.verb}`).gap(10).px(8).py(5).rounded(6).cursor_pointer().items_center()
         .hover((s) => s.bg(c.hover))
         .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })
@@ -531,7 +540,8 @@ export default class Actions extends View {
         for (const o of f.options) {
           row.child(this.chip(`f-${f.key}-${o}`, o, {
             on: v === o,
-            onClick: (_e, cx) => { this.form = setValue(this.form, f.key, o); this.hint = null; cx.notify(); },
+            // an optional choice clicks off again
+            onClick: (_e, cx) => { this.form = setValue(this.form, f.key, v === o && !f.required ? null : o); this.hint = null; cx.notify(); },
           }, c));
         }
         col.child(v_flex().gap(5).child(this.label(f.label, c)).child(row));

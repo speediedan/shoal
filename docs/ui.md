@@ -117,7 +117,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
  "windows": {"rate_s": 300, "recent_s": 3600, "day_s": 86400},
  "hosts": [{"id": "host:<host>", "name": "<host>", "home": true,
             "roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "msgs_1h": 14}],
- "shoals": [{"id": "<id>", "gen": "r12", "retired": false, "home": "<host>",
+ "shoals": [{"id": "<id>", "gen": "r12", "retired": false, "home": "<host>", "ledger_age_s": 120,
              "mode": {"offline": false, "freeze": false},
              "metrics": {"roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "stalled": 1,
                          "asks_open": 1, "pages_24h": 2, "done_24h": 6, "done_7d": 31, "claims_24h": 8,
@@ -131,7 +131,8 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
     "ecosystem": "claude", "model": "<model>", "host": "<host>", "fill": "assigned",
     "state": {"class": "wait", "event": "local-ci", "group": "system", "source": "role-time", "quality": [],
               "posture": "wait", "sub": "local-ci", "session": "working", "since_s": 900,
-              "needs_you": false, "reasons": [], "job_host": "<pool host>",
+              "needs_you": false, "reasons": [], "shoal_offline": false, "restart_ready": false,
+              "job_host": "<pool host>",
               "job": {"unit": "<unit>", "host": "<pool host>", "placed": true, "granted": true,
                       "started_age_s": 840}},
     "work": {"active": {"item": "<repo>#103:fix", "url": "https://github.com/<owner>/<repo>/issues/103"},
@@ -578,12 +579,18 @@ shoal ui app-plan [--shoal ID] [--json]            # this host's wanted spaces (
 shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; the mods installed into the app
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
 shoal ui act-plan VERB --shoal ID [...] [--json]   # an action's preview and one-time token, or a view
+shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # the same across shoals, always confirmed
+shoal ui app-sync                                  # roles tabs follow the roles, everywhere; nothing else changes
+shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
-  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (one card
-  per role, a two-column grid from four cards) and `lattice` (the `lattice-view` mod on that shoal). Each
+  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (four cards a tab
+  in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
+  shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
+  lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
+  closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back. Each
   saved standalone session gets a space as well. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
   from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only
@@ -607,11 +614,15 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   report. The 0.9.3 feeder's socket push is not used here.
 - **The pin.** The app downloads its own updates and then updates herdr-core, and no setting stops it.
   `app-start` runs it as the user unit `shoal-herdr-app` with `HERDR_RELEASES_URL` pointed at a dead loopback
-  address, passing through only the display variables. Pins: app 0.1.12, core 0.1.17 (`ui_app.APP_PIN`,
-  `CORE_PIN`); upgrade deliberately by rerunning the installer, lane host first. `--write-desktop` writes a
+  address, passing through only the display variables. Pins: app 0.1.13, core 0.1.18 (`ui_app.APP_PIN`,
+  `CORE_PIN`); upgrade deliberately by rerunning the installer, lane host first. Herdr's own desktop entry starts
+  the app without the pin held, so it can stage and apply an update by itself. `--write-desktop` writes a
   desktop entry that runs `app-start`.
+- **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
+  back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
+  Spaces acts on that host's shoals, and the status bar shows each provider's usage.
 - **The home space** (`shoal`, on this machine): the `shoal-home` mod when it is installed, else the terminal
-  chooser, plus the global `lattice` tab. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
+  chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);
   lattice tabs then read its `graph.json` on their machine. Without it they run `shoal ui graph` every 15 s.
@@ -631,7 +642,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   spaces at a time: herdr-core sizes each terminal for one viewer, so a second window on the same spaces makes
   the cards wrap at its size.
 - **Actions.** Ctrl+Alt+S (set by `app-install` when free) opens the `shoal-actions` dialog, as does a
-  right-click on a role in the lattice. It does what the 0.9.3 palette did, with buttons, through two verbs:
+  right-click in the lattice: on a role, on a shoal's circle (that shoal), or anywhere else (every shoal), or on a machine
+  in Spaces (its shoals). Hand off restarts a role in place from its start doc (`shoal handoff`), optionally on another
+  provider or model, on the role's own host, and refuses a role that has not said it is restart-ready unless forced. It does what the 0.9.3 palette did, with buttons, through two verbs:
 
   ```bash
   shoal ui act-plan VERB --shoal ID [--role SLUG] [--text T] [--item I] [--note N] [--wake]

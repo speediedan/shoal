@@ -3,6 +3,7 @@
 
     shoal park   --spec S --only ROLE[,ROLE] [--note TEXT] [--until <kind>:<ref>] [--force] [--dry-run]
     shoal unpark --spec S --only ROLE[,ROLE] [--dry-run]
+    shoal handoff --spec S --only ROLE [--model M] [--ecosystem E] [--force] [--dry-run]
 
 Park, in an order that wakes nothing:
   1. refuse a remote role (park it on its own host) and a role with an active item unless --force (its
@@ -227,7 +228,61 @@ def cmd_unpark(a) -> int:
     return unpark(spec, a.spec, slugs, dry_run=a.dry_run)
 
 
+def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "", force: bool = False,
+            dry_run: bool = False) -> int:
+    """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
+    or provider: the quorum's `context_restart` run by hand. The role must have said it is at a boundary with a
+    refreshed doc (`queue --restart-ready`) unless `force`, which can cut off work in progress. The old session is
+    stopped under its old provider, because the record changes only in the `restart` that follows."""
+    import health
+    from ledger import Ledger, View
+    from roles import ECOSYSTEMS, host_of, is_local
+    role = spec.role(slug)
+    if role is None:
+        print(f"handoff: no role {slug}")
+        return 2
+    if not is_local(role, spec):
+        print(f"REFUSED: {slug} runs on {host_of(role, spec)}: hand it off on its own host")
+        return 1
+    if not role.session:
+        print(f"REFUSED: {slug} has no session (`unpark` relaunches a parked role)")
+        return 1
+    if ecosystem and ecosystem not in ECOSYSTEMS:
+        print(f"handoff: unknown provider {ecosystem} ({', '.join(ECOSYSTEMS)})")
+        return 2
+    new_eco = ecosystem if ecosystem != role.ecosystem else ""
+    view = View(Ledger(spec.sid, root=spec.ledger_dir or None, sync=False), spec)
+    ready = bool((view.current_queue(slug) or {}).get("restart_ready"))
+    if not ready and not force:
+        print(f"REFUSED: {slug} has not said it is restart-ready (`queue --restart-ready` refreshes its doc first); "
+              "--force hands off anyway and can cut off work in progress")
+        return 1
+    extra: list[str] = []
+    if new_eco:
+        extra.append(f"--set-ecosystem={slug}:{new_eco}")
+    if model or new_eco:  # another provider never inherits the old model name: empty is the provider's default
+        extra.append(f"--set-model={slug}:{model}")
+    to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model)) if x)
+    print(f"{slug}: {role.ecosystem} session {role.session[:8]} hands off to a new {to} session from "
+          f"{role.doc or 'its brief (no start doc on record)'}" + ("" if ready else " (not restart-ready: forced)"))
+    print(health.context_restart(spec, spec_path, role, dry_run, tuple(extra)))
+    return 0
+
+
+def cmd_handoff(a) -> int:
+    from roles import ShoalSpec
+    return handoff(ShoalSpec.load(a.spec), a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run)
+
+
 def add_parser(sub) -> None:
+    p = sub.add_parser("handoff", help="hand a role to a fresh session from its start doc, optionally on another model or provider")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--only", required=True, help="one slug")
+    p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
+    p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one)")
+    p.add_argument("--force", action="store_true", help="even though the role has not said it is restart-ready")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_handoff)
     p = sub.add_parser("park", help="stop a role and keep its queue: no session, no wakes, no pages (until unparked)")
     p.add_argument("--spec", required=True)
     p.add_argument("--only", required=True, help="comma slugs")

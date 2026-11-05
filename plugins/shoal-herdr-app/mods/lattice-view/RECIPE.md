@@ -15,15 +15,14 @@ you, per-shoal throughput and per-host load.
   Geist Mono 11px: `LATTICE > all shoals`, counts below in `#8c8c8c` 9.5px.
 - **Global view:** shoals on a ring around the `you` hub (22px ring, magenta `#ff4f9a` with a count
   badge when asks or grants are open). Each shoal is a translucent disc in a pastel tint (olive
-  `#b0b070`, mint `#50d090`, teal `#70b090`, ...), its name and generation above, `N need you` in
-  magenta. Roles sit on a ring inside; the shoal writer (small square, and a wake relay triangle
-  where a feed still has one) inside that, unlabeled. External writers (dashed circles) sit
+  `#b0b070`, mint `#50d090`, teal `#70b090`, ...), its name above, `N need you` in
+  magenta. Roles sit on a ring inside; hovering the middle of the disc shows the shoal's status. External writers (dashed circles) sit
   outside, an aliased one beside its home role with no label of its own (the alias tether says
   it). Hosts show as the dot before each label and in the rail; a role whose CI job runs on
   another host gets a small chip (`remote-ci -> host-b`) in that host's color.
 - **Per-shoal view:** the shoal's roles on one ring split into host sectors: translucent annular
   bands in the host color, labeled with the host name (`⌂` marks the shoal's home). The hub in the
-  middle, writer and relay inside, externals outside.
+  middle, the shoal's status on a hover anywhere in the hole of the ring, externals outside.
 - **Nodes:** shape by ecosystem (circle claude, hexagon codex, diamond opencode), size by work done
   in 24 h, a host-colored dot before each label, a state badge top right, an olive `⚑` grant badge
   top left. State encodings:

@@ -126,18 +126,6 @@
    }
   },
   {
-   "id": "alpha-20261101-000000:relay",
-   "kind": "relay",
-   "shoal": "alpha-20261101-000000",
-   "label": "wake-relay",
-   "state": {
-    "class": "idle",
-    "event": "no-work",
-    "group": ""
-   },
-   "metrics": {}
-  },
-  {
    "id": "alpha-20261101-000000:core",
    "kind": "role",
    "shoal": "alpha-20261101-000000",

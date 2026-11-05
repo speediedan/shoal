@@ -1,13 +1,20 @@
 // ocean.js: the splash's sea around the SHOAL logo, as a display list (no GPUI here, so it runs under Node).
 //
 // Kelp strands rise from a seabed line just above the tagline, in the room either side of the logo, and
-// weave behind the creatures. Each strand carries floats (pneumatocysts), and the floats are the nodes of a
-// small network: tendrils link each float to the next strand's float at the same height, and link the
-// creatures to their nearest float, so the shoal reads as connected nodes and edges without a single
-// straight line. Below the logo, two foam waves; above its right end, a few rising bubbles.
+// weave behind the creatures. The two sets of strands are the two shoals. Each strand carries floats
+// (pneumatocysts), and the floats are the nodes of a small network: tendrils link each float to the next
+// strand's float at the same height, and link the creatures to their nearest float, so a shoal reads as
+// connected nodes and edges without a single straight line.
 //
-// Everything is static and deterministic (from the layout alone). Nothing crosses the logo box or comes
-// near the host cards, so the logo and every card stay readable.
+// Between the shoals, two solo vines are the standalone sessions: each rises from the seabed and threads through
+// a letter, behind one stroke and in front of the next, to a single float above the logo, and each float is tied
+// to both shoals. One more tendril is the only direct link between the shoals. Below the logo, two foam waves;
+// above its right end, a few rising bubbles.
+//
+// Everything is static and deterministic (from the layout alone). Only the solo vines cross the logo, and
+// nothing comes near the host cards, so the logo and every card stay readable.
+
+import { logoLetters, capPoint } from "./logo.js";
 
 export const SEA = {
   kelpDeep: "#0d4f4c",
@@ -19,10 +26,10 @@ export const SEA = {
   foam: "#9fe9ff",
   wave: "#38c8ff",
   bubble: "#bdf2ff",
-  logoShadow: "#020a18",
-  logoOutline: "#062a4f",
-  logoDeep: "#1f6fd8",
-  logoSun: "#7fe7ff",
+  soloDeep: "#0a4a48",
+  solo: "#2aa585",
+  soloLight: "#9debcf",
+  soloLink: "#8af0c8",
 };
 
 const r2 = (v) => Math.round(v * 10) / 10;
@@ -73,6 +80,48 @@ function strand(x, base, h, amp, lo, hi, rand) {
 }
 
 const segCmds = (segs) => [["M", segs[0][0], segs[0][1]], ...segs.map((s) => ["C", s[2], s[3], s[4], s[5], s[6], s[7]])];
+
+/** Cubic segments of a spline through `pts` (Catmull-Rom, open), as [x0, y0, c1x, c1y, c2x, c2y, x1, y1]. */
+function splineSegs(pts) {
+  const at = (i) => pts[Math.max(0, Math.min(pts.length - 1, i))];
+  const segs = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [p0, p1, p2, p3] = [at(i - 1), at(i), at(i + 1), at(i + 2)];
+    segs.push([p1.x, p1.y, p1.x + (p2.x - p0.x) / 6, p1.y + (p2.y - p0.y) / 6, p2.x - (p3.x - p1.x) / 6, p2.y - (p3.y - p1.y) / 6, p2.x, p2.y].map(r2));
+  }
+  return segs;
+}
+
+/** A leaf blade at `t` along a strand, leaning out to side `dir` and up, its tip kept inside [lo, hi]. */
+function leafCmds(segs, t, dir, len, wid, lo, hi) {
+  const p = along(segs, t);
+  const q = along(segs, Math.min(0.99, t + 0.04));
+  const tx = q.x - p.x, ty = q.y - p.y;
+  const tl = Math.hypot(tx, ty) || 1;
+  let tipX = p.x + dir * len * 0.85 + (tx / tl) * len * 0.5;
+  tipX = Math.max(lo, Math.min(hi, tipX));
+  const tipY = p.y - len * 0.75 + (ty / tl) * len * 0.3;
+  const mx = (p.x + tipX) / 2, my = (p.y + tipY) / 2;
+  const nx = -(tipY - p.y), ny = tipX - p.x;
+  const nl = Math.hypot(nx, ny) || 1;
+  const ox = (nx / nl) * wid, oy = (ny / nl) * wid;
+  return [["M", r2(p.x), r2(p.y)],
+    ["C", r2(mx + ox), r2(my + oy), r2(mx + ox * 0.4), r2(my + oy * 0.4), r2(tipX), r2(tipY)],
+    ["C", r2(mx - ox * 0.4), r2(my - oy * 0.4), r2(mx - ox), r2(my - oy), r2(p.x), r2(p.y)], ["Z"]];
+}
+
+// The solo vines, in the cap units of the letter each threads (logo.js capPoint: x from the letter's left, y 0 on
+// the cap line, 1 on the baseline), so they follow the letters at any scale. `way`: [x, y, over]; `over` draws the
+// stretch from that point to the next in front of the letters, so a vine goes under one stroke and over the next.
+// Each crossing's ends lie in open water, so no seam shows.
+export const SOLO_VINES = [
+  // up the gap between S and H, under the H's left stem, over its bar, out through its open top
+  { letter: 1, root: [-0.13, 1.28], tip: [0.62, -0.2],
+    way: [[0.02, 1.06], [0.3, 0.87], [0.5, 0.68, true], [0.45, 0.38], [0.5, 0.12]] },
+  // up the gap between A and L, under the A's right leg, over its bar, under its left stroke, out over the O
+  { letter: 3, root: [1.12, 1.28], tip: [0.02, -0.2],
+    way: [[0.99, 1.04], [0.72, 0.9], [0.47, 0.85, true], [0.45, 0.53], [0.27, 0.33], [0.1, 0.1]] },
+];
 
 /** A curved tendril between two points, bowed by `bow` (a fraction of its length) to one side. */
 function tendril(a, b, bow) {
@@ -126,8 +175,10 @@ function waveCmds(x0, x1, y, amp, w) {
 
 /**
  * The sea for one art layout (`homeLayout` in art mode). Returns null in text mode.
- * {strands, nodes, edges, waves, bubbles, seabed, items}: `items` is the draw order (back to front), each
- * {kind, cmds, fill?, width?, color, alpha, sway?}; the rest is for tests and hit checks.
+ * {strands, vines, nodes, edges, links, bridge, waves, bubbles, seabed, items, front}: `items` is the draw order
+ * behind the logo (back to front), `front` goes over it, each {kind, cmds, fill?, width?, color, alpha, sway?};
+ * the rest is for tests and hit checks. `links` tie each solo vine's float to both shoals; `bridge` is the one
+ * direct link between the shoals.
  */
 export function oceanScene(L) {
   if (!L || L.mode !== "art") return null;
@@ -189,29 +240,52 @@ export function oceanScene(L) {
     edges.push({ a: near.n.id, b: `creature:${c.name}`, from: near.n, to: rim, bow: 0.22, creature: c.name });
   }
 
-  // the bridge: the two kelp networks joined over the logo, through two floats above it, by tendrils that
-  // arc upward and are checked point by point to stay clear of the letters
-  const inner = [
-    strands.map((s, i) => ({ s, i })).filter((x) => x.s.side === 0).sort((p, q) => q.s.x - p.s.x)[0],
-    strands.map((s, i) => ({ s, i })).filter((x) => x.s.side === 1).sort((p, q) => p.s.x - q.s.x)[0],
-  ];
+  // the links between the shoals: each solo vine's float to both sides, and one direct tendril. They arc above
+  // the logo, ending on the floats of the strands nearest it, and each is checked point by point to stay off it.
+  const f = lg.font;
+  const nearest = (side) => strands.map((s, i) => ({ s, i })).filter((x) => x.s.side === side)
+    .sort((p, q) => (side === 0 ? q.s.x - p.s.x : p.s.x - q.s.x)).slice(0, 2)
+    .flatMap((x) => nodes.filter((n) => n.strand === x.i).sort((p, q) => p.y - q.y));
+  const clearOf = (cmds) => sampleCurve(cmds).every((p) => !(p.x > lg.x - 4 && p.x < lg.x + lg.w + 4 && p.y > lg.y - 4 && p.y < lg.y + lg.h));
+  const archTo = (a, b, lift) => arch(a, b, Math.min(lift, Math.min(a.y, b.y) - top));
+  const used = new Set();
+  // a float of this side not yet taken whose arc clears the logo; a taken one if it must
+  const anchor = (side, to, lift) => {
+    const fits = nearest(side).filter((n) => clearOf(archTo(n, to, lift)));
+    const n = fits.find((c) => !used.has(c.id)) ?? fits[0];
+    if (n) used.add(n.id);
+    return n ?? null;
+  };
   const bridge = [];
-  if (inner[0] && inner[1] && sides.length === 2) {
-    const lift = Math.max(14 * u, lg.h * 0.22);
-    const buoyY = r2(Math.max(top + 6 * u, lg.y - lift));
-    const buoys = [0.3, 0.7].map((f, k) => ({ id: `bridge.${k}`, strand: -1, level: -1, x: r2(lg.x + lg.w * f), y: buoyY, r: r2(3.6 * u) }));
-    const highest = (si) => nodes.filter((n) => n.strand === si).sort((p, q) => p.y - q.y);
-    const clearOf = (cmds) => sampleCurve(cmds).every((p) => !(p.x > lg.x - 4 && p.x < lg.x + lg.w + 4 && p.y > lg.y - 4 && p.y < lg.y + lg.h));
-    const pick = (si, to) => highest(si).find((n) => clearOf(arch(n, to, lift)));
-    const a = pick(inner[0].i, buoys[0]);
-    const b = pick(inner[1].i, buoys[1]);
-    if (a && b) {
-      nodes.push(...buoys);
-      for (const [from, to] of [[a, buoys[0]], [buoys[0], buoys[1]], [buoys[1], b]]) {
-        bridge.push({ a: from.id, b: to.id, from, to, cmds: arch(from, to, lift * 0.6) });
-      }
-      edges.push(...bridge.map(({ cmds: _c, ...e }) => ({ ...e, bridge: true })));
+  const links = [];
+  const vines = [];
+  if (nearest(0).length && nearest(1).length) {
+    // the direct link takes the highest float each side, so it clears everything else
+    const lift = 1.15 * f;
+    const a = anchor(0, { x: lg.x + lg.w / 2, y: top }, lift);
+    const b = a && anchor(1, a, lift);
+    if (a && b) bridge.push({ a: a.id, b: b.id, from: a, to: b, bridge: true, cmds: archTo(a, b, lift) });
+    const letters = logoLetters(lg);
+    const tipY = lg.y - 0.17 * f;
+    for (const [k, plan] of SOLO_VINES.entries()) {
+      const l = letters[plan.letter];
+      const at = ([x, y]) => capPoint(l, x, y);
+      const tip = { id: `solo.${k}`, strand: -1, level: -1, x: r2(at(plan.tip).x), y: r2(tipY), r: r2(4.2 * u) };
+      const pts = [{ x: at(plan.root).x, y: seabed }, ...plan.way.map((w) => ({ ...at(w), over: !!w[2] })), tip];
+      const segs = splineSegs(pts);
+      const front = segs.filter((_s, i) => pts[i].over);
+      vines.push({ id: tip.id, tip, letter: l.ch, segs, front, width: r2(4.4 * u), sway: { amp: r2(1.6 * u), period: 5300 + 900 * k } });
+      nodes.push(tip);
     }
+    for (const v of vines) {
+      for (const side of [0, 1]) {
+        const near = (side === 0) === (v.tip.x < lg.x + lg.w / 2);
+        const rise = (near ? 0.2 : 0.62) * f;
+        const from = anchor(side, v.tip, rise);
+        if (from) links.push({ a: from.id, b: v.tip.id, from, to: v.tip, solo: true, side, cmds: archTo(from, v.tip, rise) });
+      }
+    }
+    edges.push(...links, ...bridge);
   }
 
   const waves = [
@@ -227,25 +301,11 @@ export function oceanScene(L) {
   strands.forEach((s, si) => {
     const side = sides[s.side];
     [0.16, 0.42, 0.68].forEach((t, k) => {
-      const p = along(s.segs, t);
-      const q = along(s.segs, Math.min(0.99, t + 0.04));
-      const tx = q.x - p.x, ty = q.y - p.y;
-      const tl = Math.hypot(tx, ty) || 1;
-      const dir = (k + si) % 2 === 0 ? 1 : -1;
-      const len = (15 + 8 * rand()) * u, wid = (4.5 + 2 * rand()) * u;
-      // the tip leans out to one side and up along the strand
-      let tipX = p.x + dir * len * 0.85 + (tx / tl) * len * 0.5;
-      tipX = Math.max(side.lo, Math.min(side.hi, tipX));
-      const tipY = p.y - len * 0.75 + (ty / tl) * len * 0.3;
-      const mx = (p.x + tipX) / 2, my = (p.y + tipY) / 2;
-      const nx = -(tipY - p.y), ny = tipX - p.x;
-      const nl = Math.hypot(nx, ny) || 1;
-      const ox = (nx / nl) * wid, oy = (ny / nl) * wid;
-      leaves.push([["M", r2(p.x), r2(p.y)],
-        ["C", r2(mx + ox), r2(my + oy), r2(mx + ox * 0.4), r2(my + oy * 0.4), r2(tipX), r2(tipY)],
-        ["C", r2(mx - ox * 0.4), r2(my - oy * 0.4), r2(mx - ox), r2(my - oy), r2(p.x), r2(p.y)], ["Z"]]);
+      leaves.push(leafCmds(s.segs, t, (k + si) % 2 === 0 ? 1 : -1, (15 + 8 * rand()) * u, (4.5 + 2 * rand()) * u, side.lo, side.hi));
     });
   });
+  // a solo vine's blades are small, and all behind the letters
+  const soloLeaves = vines.flatMap((v, vi) => [0.06, 0.82, 0.94].map((t, k) => leafCmds(v.segs, t, (k + vi) % 2 === 0 ? 1 : -1, (10 + 3 * rand()) * u, (3 + rand()) * u, 0, W)));
 
   const items = [];
   for (const cmds of leaves) items.push({ kind: "leaf", cmds, fill: true, color: SEA.kelp, alpha: 0.6 });
@@ -257,17 +317,30 @@ export function oceanScene(L) {
     items.push({ kind: "kelp", cmds, width: r2(s.width * 0.45), color: SEA.kelp, alpha: 0.75, sway });
     items.push({ kind: "kelp", cmds, width: r2(Math.max(0.8, s.width * 0.14)), color: SEA.kelpLight, alpha: 0.45, sway });
   });
+  for (const cmds of soloLeaves) items.push({ kind: "vine-leaf", cmds, fill: true, color: SEA.solo, alpha: 0.7 });
+  // a solo vine: all of it goes behind the logo, then its over-crossings go again in front (`front`, drawn after
+  // the letters); both copies sway alike, so the weave holds
+  const front = [];
+  for (const v of vines) {
+    const strokes = [[v.width, SEA.soloDeep, 1], [r2(v.width * 0.5), SEA.solo, 1], [r2(Math.max(0.7, v.width * 0.16)), SEA.soloLight, 0.8]];
+    for (const [width, color, alpha] of strokes) {
+      items.push({ kind: "vine", cmds: segCmds(v.segs), width, color, alpha, sway: v.sway });
+      front.push({ kind: "vine", cmds: v.front.flatMap((g) => segCmds([g])), width, color, alpha, sway: v.sway });
+    }
+  }
   // tendrils: a soft halo under a fine line; one whose curve would cross the logo box is dropped
   const clear = { x0: lg.x - keep / 2, y0: lg.y, x1: lg.x + lg.w + keep / 2, y1: lg.y + lg.h };
   for (let i = edges.length - 1; i >= 0; i--) {
-    if (edges[i].bridge) continue;
+    if (edges[i].cmds) continue;
     const b = itemBounds({ cmds: tendril(edges[i].from, edges[i].to, edges[i].bow) });
     if (b.x0 < clear.x1 && clear.x0 < b.x1 && b.y0 < clear.y1 && clear.y0 < b.y1) edges.splice(i, 1);
   }
   for (const e of edges) {
-    const cmds = e.bridge ? bridge.find((x) => x.a === e.a && x.b === e.b).cmds : tendril(e.from, e.to, e.bow);
-    items.push({ kind: "edge", cmds, width: r2(3.5 * u), color: SEA.tendril, alpha: 0.07 });
-    items.push({ kind: "edge", cmds, width: r2(Math.max(0.8, 1.1 * u)), color: SEA.tendril, alpha: 0.42 });
+    const cmds = e.cmds ?? tendril(e.from, e.to, e.bow);
+    // a link to a solo vine is mint, the one direct link between the shoals a little stronger than the rest
+    const color = e.solo ? SEA.soloLink : SEA.tendril;
+    items.push({ kind: "edge", cmds, width: r2(3.5 * u), color, alpha: 0.07 });
+    items.push({ kind: "edge", cmds, width: r2(Math.max(0.8, (e.bridge ? 1.5 : 1.1) * u)), color, alpha: e.bridge ? 0.62 : 0.42 });
   }
   // floats: a glow ring, the float, a highlight
   for (const n of nodes) {
@@ -282,60 +355,18 @@ export function oceanScene(L) {
                width: r2(0.9 * u), color: SEA.foam, alpha: 0.5 });
   for (const b of bubbles) items.push({ kind: "bubble", cmds: circleCmds(b.x, b.y, b.r), width: r2(Math.max(0.8, u)), color: SEA.bubble, alpha: 0.55 });
 
-  return { strands, nodes, edges, bridge, waves, bubbles, seabed: r2(seabed), top: r2(top), items: mergeItems(items) };
+  return { strands, vines, nodes, edges, links, bridge, waves, bubbles, seabed: r2(seabed), top: r2(top), items: mergeItems(items), front: mergeItems(front) };
 }
 
-// Bold display-serif advance widths, in em, so each letter gets its own box (GPUI cannot warp text, so the
-// word becomes wavy by giving every letter its own height on a wave).
-const LETTER_EM = { S: 0.6, H: 0.84, O: 0.8, A: 0.76, L: 0.68 };
-// per family where it differs (DejaVu Serif Bold is much wider than Noto Serif Display)
-const FAMILY_EM = { "DejaVu Serif": { S: 0.72, H: 0.97, O: 0.86, A: 0.82, L: 0.76 },
-                    "Liberation Serif": { S: 0.58, H: 0.8, O: 0.8, A: 0.74, L: 0.68 } };
-// Underwater light, top to bottom: aqua near the surface, deep blue below (thin rippled bands, no seam).
-export const LETTER_SHADES = ["#b4f7ff", "#9ef0ff", "#88e7ff", "#72dcfd", "#5fcff9", "#4fc0f4", "#43b0ee",
-  "#3a9fe8", "#338ee2", "#2d7edb", "#2870d3", "#2463ca"];
-
-/** The clip cells that shade one letter: `strips` vertical strips, each cut into `n` bands whose edges ride a
- * ripple (a sine across the word, by the letter's own x), so the shading reads as moving water. Cells are
- * relative to the letter box: {x, w, y0, y1, k}; together they cover the box without gaps. */
-export function rippleBands(l, font, n, strips = 4) {
-  const capH = font * 0.72;
-  const capTop = (l.h - capH) / 2;
-  const amp = font * 0.035;
-  const lambda = font * 0.95;
-  const sw = l.w / strips;
-  const cells = [];
-  for (let j = 0; j < strips; j++) {
-    const x0 = Math.round(j * sw);
-    const x1 = j === strips - 1 ? Math.ceil(l.w) : Math.round((j + 1) * sw);
-    const off = amp * Math.sin(((l.x + (j + 0.5) * sw) / lambda) * 2 * Math.PI);
-    const edge = (k) => (k <= 0 ? 0 : k >= n ? Math.ceil(l.h) : Math.round(capTop + (k * capH) / n + off));
-    for (let k = 0; k < n; k++) {
-      const y0 = edge(k), y1 = edge(k + 1) + (k < n - 1 ? 1 : 0);
-      if (y1 > y0) cells.push({ x: x0, w: x1 - x0 + (j < strips - 1 ? 1 : 0), y0, y1, k });
-    }
-  }
-  return cells;
-}
-
-/** The letters of the logo inside box `lg` ({x, y, w, h, font}) in `family`: each {ch, x, y, w, h, font},
- * centered as a word, every letter lifted by its point on one gentle wave. A face too wide for the box is
- * drawn a little smaller (`font` on each letter), never past the box. */
-export function logoLetters(lg, word = "SHOAL", family = "") {
-  const table = FAMILY_EM[family] ?? LETTER_EM;
-  const raw = [...word].map((ch) => table[ch] ?? 0.72);
-  const fit = Math.min(1, (lg.w * 0.98) / (lg.font * (raw.reduce((a, b) => a + b, 0) + 0.04 * (raw.length - 1))));
-  const em = lg.font * fit;
-  const ws = raw.map((k) => k * em);
-  const gap = em * 0.04;
-  const total = ws.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
-  const amp = em * 0.085;
-  let x = lg.x + (lg.w - total) / 2;
-  return [...word].map((ch, i) => {
-    const out = { ch, x: r2(x), y: r2(lg.y + amp * Math.sin(0.4 + i * 1.15)), w: r2(ws[i]), h: lg.h, font: r2(em) };
-    x += ws[i] + gap;
-    return out;
-  });
+/** `fn`, remembering its last result: a pure scene is only worked out again when its arguments (a layout, say) change,
+ * so a poll or a card's status does not redo it, and a resize does. */
+export function lastResult(fn) {
+  let key = null, value = null;
+  return (...args) => {
+    const k = JSON.stringify(args);
+    if (k !== key) { key = k; value = fn(...args); }
+    return value;
+  };
 }
 
 /** Items of one style (and no sway of their own) become one path of several subpaths: every paint_path is a

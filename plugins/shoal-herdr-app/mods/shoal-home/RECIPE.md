@@ -8,33 +8,47 @@ host's shoal spaces in the app.
 
 ![Shoal home](preview.png)
 
+(`preview.png` is a harness render of the bundled fixture, `preview/render_home.mjs`, not an app screenshot: the
+geometry and colors are the mod's own, the text uses the render host's fonts.)
+
 ## What you see
 
 - **Background:** the lattice view's canvas: a near-black violet to navy gradient (`#14111a` to
   `#03050b`, 165 degrees) with a navy wash (35 degrees), and a soft static bloom behind the logo
   (six stacked ellipses, blue then cyan, 2.2 percent alpha each).
 - **Top right:** a `↻ refresh` button (96 by 24, steel `#1c2a30` at half alpha).
-- **Logo:** `SHOAL` at 84 px times the scale, weight 800, in a display serif (Noto Serif Display, else
-  DejaVu Serif, else Liberation Serif, else Geist), so it reads like a ship's name. Layers, back to
-  front: a drop shadow `#020a18` at 70 percent offset by font/16; a navy `#062a4f` outline (eight copies
-  offset by font/34: GPUI text has no stroke); then the letters themselves. GPUI cannot warp text, so
-  the word is wavy letter by letter (`ocean.js` `logoLetters`): each letter has its own box (bold-serif
-  widths in em) and rides one wave (amplitude 0.085 em). Each letter is shaded like underwater light,
-  aqua `#b4f7ff` at the top to deep blue `#2463ca` below, in 12 thin bands; it is cut into four vertical
-  strips whose band edges follow a ripple (`rippleBands`), so the light moves like water, with no seam.
-  The logo box is 3.9 em by 1.25 em.
+- **Logo** (`logo.js`, `glyphs.js`, `assets/logo.png`): `SHOAL` in original liquid brush letters, no font: rounded
+  splash crests on the terminals, drips off the feet, beads on the strokes and a few detached droplets. All five
+  letters stand on one baseline, and only the drips run below it. The em is 84 px times the scale, or less when the
+  word's ink would pass the logo box (3.9 em by 1.25 em), which holds all of it. It is drawn as a pre-rendered
+  transparent PNG with `image()`, at `logoImageBox`, exactly on the vector letters. In the image, back to front: two
+  soft blurred shadows `#020a18`, a navy `#062a4f` rim, the body in one vertical gradient across the word (aqua
+  `#b4f7ff` to `#0b4fc8`, which puts the old deep blue `#2463ca` on the baseline, since the gradient spans the drips
+  too), a soft darker inner edge (`#0a3f86` at 30 percent), and light gloss strokes (`#eafdff` at 50 percent).
+- **Fallback logo:** until the assets are known to be there (the first render), or when one is missing, the logo is
+  one path: the same gradient on the body alone, from light outlines (about 260 commands, no droplets).
 - **The sea** (`ocean.js`, a pure display list): kelp strands rise from a seabed line just above the
-  tagline, only in the room either side of the logo (a strand's sway is clamped to its side). Each
-  strand is a dark `#0d4f4c` body, a `#1f8f7a` middle and a light `#5fd3b0` midrib, with three leaf
-  blades and two or three floats (`#47d6b4`, a glow ring and a highlight). The floats are a network:
-  tendrils (`#38c8ff`, a 7 percent halo under a 42 percent line) link same-height floats of
-  neighbouring strands and link each creature's rim to its nearest float; a tendril that would cross
-  the logo is dropped. A bridge joins the two networks over the logo: from the innermost strand's
-  highest float on each side, arched tendrils run through two floats (buoys) above the logo at 30 and
-  70 percent of its width, each checked point by point to stay off the letters. Below the logo, two
-  foam waves; above its right end, four rising bubbles. Items
-  of one style are merged into one path (about 40 layers in all), and at the `full` motion tier each
-  strand sways a few pixels natively.
+  tagline, only in the room either side of the logo (a strand's sway is clamped to its side). The two sets are
+  the two shoals. Each strand is a dark `#0d4f4c` body, a `#1f8f7a` middle and a light `#5fd3b0` midrib, with three
+  leaf blades and two or three floats (`#47d6b4`, a glow ring and a highlight). The floats are a network: tendrils
+  (`#38c8ff`, a 7 percent halo under a 42 percent line) link same-height floats of neighbouring strands and link each
+  creature's rim to its nearest float; a tendril that would cross the logo is dropped.
+- **Solo vines** (`SOLO_VINES` in `ocean.js`): between the two sets, two slimmer vines are the standalone sessions.
+  Each rises from the seabed, threads a letter and ends on one float above the logo, either side of the coral. The
+  first goes up the S and H gap, under the H's left stem, over its bar and out through its open top; the second up
+  the A and L gap, under the A's right leg, over its bar, under its left stroke and out over the O and A gap. All of
+  a vine is painted behind the logo, then its over-crossings are painted again after the letters (`front`), each
+  crossing starting and ending in open water, so no seam shows. Waypoints are in the letter's own brush units
+  (`logo.js` `capPoint`), so the weave holds at any scale.
+- **Links between the shoals:** each solo float is tied to both sets by a mint `#8af0c8` tendril (four links), and
+  one stronger blue tendril is the only direct link between the sets. All five arc over the logo from floats of the
+  strands nearest it, each its own float, and each is checked point by point to stay off the letters. Below the logo,
+  two foam waves; above its right end, four rising bubbles. Items of one style are merged into one path (about 45 to
+  55 layers behind the logo and 6 in front of it).
+- **Path budget:** every path command is a native call, and a render has the mod engine's time limit. The heaviest
+  render is the one before the asset check, at most about 1330 commands (the largest window: sea 1031, vines in front
+  12, fallback logo 256, background and bloom 34), and a test fails above 1350. Once the image is known, the logo
+  costs no path at all.
 - **Creatures** (`assets/fish-*.png`, 384 px RGBA), placed like the terminal splash: coral
   centered above the logo, the seahorse above left, the blowfish above right, teal left of the
   logo, violet right of it. Size in units of B = 92 px times the scale: coral 1.1, seahorse 0.85,
@@ -73,8 +87,10 @@ host's shoal spaces in the app.
   Enter opens, `r` refreshes. The mouse is primary.
 - **Motion:** only at the `full` tier (lattice-view's budget, `auto` by default: full on a GPU
   renderer with the window focused), each creature drifts 10 px times the scale up and down with
-  a native `.loop("top")`, periods 4.7 to 6.4 s. Every other tier is still. All loops stop for
-  good once a host has been opened, because any native animation redraws the whole window.
+  a native `.loop("top")`, periods 4.7 to 6.4 s, and the kelp and the solo vines sway a few pixels with a native
+  `.loop("left")` (a vine's two copies with the same amplitude and period, so the weave holds). The logo never
+  moves. Every other tier is still. All loops stop for good once a host has been opened, because any native
+  animation redraws the whole window.
 
 ## Built from
 
@@ -84,12 +100,18 @@ host's shoal spaces in the app.
   `["shoal","ui","launch","--list","--json","--summary"]` here, or `{kind: "fixture", path?}`),
   `motion`, `renderer`, `art`, `poll_ms`.
 - `main.js` (the View), `model.js` (list parsing, card lines, keys, open results), `layout.js`
-  (composition per window size), `motion.js` (a verbatim copy of lattice-view's).
+  (composition per window size), `ocean.js` (the sea), `logo.js` and `glyphs.js` (the logo), `motion.js` (a verbatim
+  copy of lattice-view's). The sea and the logo are pure, so `main.js` keeps the last result per layout (`lastResult`).
+- `glyphs.js` and `assets/logo.png` are generated. To change the letters, edit the strokes in
+  `preview/gen_logo_glyphs.mjs` and run it (brush strokes stamped into a mask, blurred so they run together like
+  water, traced back into outlines), then run `preview/gen_logo_image.mjs` (`logoScene` drawn by a CPU-only headless
+  browser, 240 px to the em, which is twice the largest logo). Tests fail when `glyphs.js` disagrees with its generator,
+  when the PNG's size is not the frame `logo.js` places, or when its pixels do not land on the vector letters.
 - Herdr: `exec` (the list and `ui app-open`), `readTextFile` (the fixture; `/proc/self/environ`
   and `/proc/self/maps` once for the renderer probe), `fs/promises` `exists` (the assets), `theme()`,
   `nextCommand` (`focus`, `refresh`, `open`), `window()`.
-- GPUI: `image()` for the creatures, `window.paint_path` for the gradient and the bloom, absolute
-  divs for everything else, `on_size_change` on the root.
+- GPUI: `image()` for the creatures and the logo, `window.paint_path` for the background, the bloom, the sea and the
+  fallback logo, absolute divs for everything else, `on_size_change` on the root.
 
 ## Watch out
 
@@ -99,7 +121,16 @@ host's shoal spaces in the app.
   room for creatures that never draw.
 - Card heights are computed from the line count (`layout.cardHeight`), so every line must stay
   exactly 18 px (`.h(CARD.line)`), or the cards clip.
-- The logo width is an estimate (3.5 em). Noto Serif Display at weight 800 fits it; a much wider face would crowd the side fish.
+- Outlines in `glyphs.js` never touch, and a counter winds against its letter, so either fill rule fills them the
+  same. Keep it so when changing the strokes: a test checks every edge pair.
+- **Do not draw `logoScene` on a render.** Its six layers are about 3500 path commands, and with them `herdr-app check`
+  was interrupted in `render` in most runs, and the app showed "This view could not be re-rendered". The limit is
+  sharp and on wall-clock time: with `check` at the default window, about 2800 commands never failed in 24 runs, 3500
+  failed twice and 4150 every time, and a starved CPU trips it at any count, this mod's old versions included. One passing
+  check proves little here: run it a dozen times after adding to what a render draws, against a known-good version in
+  the same loop.
+- `herdr-app check` reaches the render with the assets already checked, so it never exercises the fallback logo. The
+  fallback is held by the tests and by `render_home.mjs --first-render`.
 - The list contract is additive: unknown fields are ignored, a repeated host name keeps its first
   row, a `last` naming no host is dropped.
 
@@ -111,3 +142,5 @@ host's shoal spaces in the app.
   `lane-c` grey dot `not probed yet`, `lane-d` with the pin warning.
 - With `art: false`: the text screen.
 - `node --test tests/herdr_app/test_shoal_home.mjs` passes.
+- `node plugins/shoal-herdr-app/preview/render_home.mjs --out /tmp/home.svg` draws the same geometry for review where
+  the app cannot run (`--first-render` with the fallback logo).

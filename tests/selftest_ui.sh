@@ -2284,6 +2284,48 @@ assert ui_app.card_report(qa, "lane")["kind"] == "question", ui_app.card_report(
 j = row(posture="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:build"})
 rep = ui_app.card_report(j, "lane")
 assert rep["state"] == "working" and "local-ci" in rep["msg"] and rep["title"] == "lane/r", rep
+assert ui_app.card_report(row(host="a-host"), "lane")["title"] == "lane/r@a-host", "the role's own host travels in the report"
+
+# lattice tabs read the feed of the machine their space is on
+assert ui_app.Reconciler("lane-m")._mod_props({"props": {"source": {"kind": "file", "path": "/f"}}})["source"]["on"] == "lane-m"
+assert "on" not in ui_app.Reconciler(None)._mod_props({"props": {"source": {"kind": "file", "path": "/f"}}})["source"]
+assert ui_app.Reconciler("lane-m")._mod_props({"props": {"source": {"kind": "file", "path": "/f", "on": "other"}}})["source"]["on"] == "other"
+
+# roles tabs: laid out again when their roles change or they predate the grid, never over a card in use
+calls, fg = [], {"t1": "card", "t2": "card"}
+ui_app.app_do = lambda c, a: calls.append((c, a)) or {}
+ui_app.app_ls = lambda: {"spaces": []}
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: f"s/{t}"}, "foreground": {"name": "bash", "argv": ["bash", "x"] if fg[t] == "other" else ["-bash"]}}
+pane = lambda t: {"label": f"s/{t}", "argv": ["x"]}
+space = {"name": "tag", "kind": "shoal", "tabs": [{"name": "roles", "layout": "grid", "panes": [pane("t1"), pane("t2")]}]}
+got = {"id": "sp", "tabs": [{"id": "tb", "name": "roles", "terminals": [{"terminal": "t1", "pane": "p1"}, {"terminal": "t2", "pane": "p2"}]}]}
+rec = ui_app.Reconciler(None)
+assert rec._relayout(space, got, {"local/tag": ui_app.TABS_V}) is False and not calls, "same roles, current build: left alone"
+built = {}
+assert rec._relayout(space, got, built) and ("tab.close", {"id": "tb", "confirmed": True}) in calls, calls
+assert built["local/tag"] == ui_app.TABS_V and any(c == "tab.new" for c, _ in calls), "a tab from before the grid is rebuilt once"
+calls.clear()
+more = dict(space, tabs=[{"name": "roles", "layout": "grid", "panes": [pane("t1"), pane("t2"), pane("t3")]}])
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and any(c == "tab.close" for c, _ in calls), "a new role lays out again"
+calls.clear(); fg["t2"] = "other"
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls and "in use" in rec.out[-1], "an attached card keeps the tabs"
+fg["t2"] = "card"; calls.clear()
+two = ui_app.Reconciler(None, dry_run=True)
+assert two._relayout(more, got, {}) and not calls and "lay the roles out again" in two.out[-1], "a dry run only says"
+
+# the shoal layout: a patched copy of a shipped mod, or Herdr's own when the anchor moved
+name, (clone, patches) = "agents", ui_app.CLONES["agents"]
+text = "\n".join(o for o, _ in patches) + '\nsvg("mods/agents/x.svg"); openOverlay({ mod: "agents" })\n'
+out = ui_app.patch_clone(text, name, patches)
+assert "shoalRole" in out and 'mods/shoal-agents/x.svg' in out and 'mod: "shoal-agents"' in out, out
+assert ui_app.patch_clone(text.replace("const more = detail.get(a.address);", "moved"), name, patches) is None
+for k, (_c, ps) in ui_app.CLONES.items():
+    assert all(o != n for o, n in ps), k
+main = {"id": "root", "children": [{"id": "a", "content": {"mod": "agents"}}, {"id": "s", "content": {"mod": "workspace-status"}},
+                                   {"id": "w", "content": {"mod": "spaces"}}, {"id": "f", "content": {"mod": "files"}}]}
+doc = ui_app.shoal_layout_doc(main, {"shoal-agents", "shoal-status"})
+assert [c["content"]["mod"] for c in doc["children"]] == ["shoal-agents", "shoal-status", "spaces", "files"] and doc["shoal_layout"], doc
+assert main["children"][0]["content"]["mod"] == "agents", "Herdr's own document is not touched"
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["-bash"]}}) == "shell"
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["bash", "-c", "x"]}}) == "other"
 assert ui_app.foreground_kind({"foreground": {"name": "claude", "argv": ["claude", "attach", "x"]}}) == "other"
@@ -2445,6 +2487,17 @@ for verb, kw in (("msg", dict(role="nope", text="x")), ("msg", dict(role="cl")),
         pass
 print("act rules ok")
 PY11
+# one verb across every shoal here: one token, each shoal's own preview, a confirm even for a verb that needs none alone
+# (a real offline on wakes roles, so the plan is offline's and the apply is a freeze that wakes nobody)
+OUT=$(env $AE $H ui act-plan offline --scope all --state on --json) || fail "act-plan offline --scope :: $OUT"
+python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="shoal-act-plan" and d["confirm"] is True and d["scope"]=="all" and d["shoal"]=="" and d["preview"],d' "$OUT" || fail "scoped plan :: $OUT"
+OUT=$(env $AE $H ui act-plan freeze --scope all --state on --no-wake --json) || fail "act-plan freeze --scope :: $OUT"
+TOK=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["token"])' "$OUT") || fail "scoped token :: $OUT"
+OUT=$(env $AE $H ui act-apply --token "$TOK" --json) || fail "act-apply scoped :: $OUT"
+grep -q '"rc": 0' <<<"$OUT" && grep -q "freeze on --shoal $SID" <<<"$OUT" || fail "scoped apply :: $OUT"
+env $AE $H freeze off --shoal $SID --no-wake >/dev/null 2>&1 || fail "freeze off after the scoped test"
+! env $AE $H ui act-plan msg --scope all --text x --json >/dev/null 2>&1 || fail "--scope took a verb that does not span shoals"
+! env $AE $H ui act-plan offline --scope host:no-such-host --state on --json >/dev/null 2>&1 || fail "a scope with no shoal planned something"
 OUT=$(env $AE $H ui act-plan next --shoal $SID --role cl --json) || fail "act-plan next :: $OUT"
 grep -q '"kind": "shoal-act-view"' <<<"$OUT" && grep -q 'next for cl' <<<"$OUT" || fail "next view :: $(head -c 400 <<<"$OUT")"
 OUT=$(env $AE $H ui act-plan asks --shoal $SID --json) || fail "act-plan asks :: $OUT"
@@ -2466,6 +2519,8 @@ if command -v node >/dev/null 2>&1; then
   echo "herdr-app shoal-home ok"
   node "$TESTD/herdr_app/test_shoal_actions.mjs" >"$S/shoal-actions.out" 2>&1 || fail "herdr-app shoal-actions: $(tail -c 800 "$S/shoal-actions.out")"
   echo "herdr-app shoal-actions ok"
+  node "$TESTD/herdr_app/test_shoal_status.mjs" >"$S/shoal-status.out" 2>&1 || fail "herdr-app shoal-status: $(tail -c 800 "$S/shoal-status.out")"
+  echo "herdr-app shoal-status ok"
 else
   echo "herdr-app lattice-view, shoal-home, shoal-actions: skipped (node not on PATH)"
 fi

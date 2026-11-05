@@ -87,7 +87,7 @@ import pool_cli as _pool_cli  # noqa: E402
 import role_time as _role_time  # noqa: E402
 import ci_wait as _ci_wait  # noqa: E402
 import prune as _prune  # noqa: E402
-from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
+from roles import (ECOSYSTEMS, SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
@@ -828,6 +828,15 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
         if r.model != model:
             print(f"{slug}: recorded model {r.model or '(unset)'} -> {model}")
             r.model = model
+    for kv in (getattr(args, "set_ecosystem", None) or []):
+        slug, _, eco = kv.partition(":")
+        r = spec.role(slug)
+        if r is None or eco not in ECOSYSTEMS:
+            print(f"bad --set-ecosystem {kv!r} (want SLUG:{'|'.join(ECOSYSTEMS)})")
+            return 1
+        if r.ecosystem != eco:
+            print(f"{slug}: recorded provider {r.ecosystem} -> {eco}")
+            r.ecosystem = eco
     only = None
     if getattr(args, "only", ""):
         only = [s.strip() for s in args.only.split(",") if s.strip()]
@@ -1165,6 +1174,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--set-model", action="append", default=[],
                    help="SLUG:MODEL to correct a role's recorded model (repeatable; "
                         "adoptions and relaunches inherit the record)")
+    p.add_argument("--set-ecosystem", action="append", default=[],
+                   help="SLUG:ECOSYSTEM to relaunch a role on another provider (repeatable; `handoff` stops the old session)")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
     p.add_argument("--old-session", action="append", default=[])
     p.add_argument("--consumer-launched", action="append", default=[],

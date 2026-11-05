@@ -870,16 +870,17 @@ def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, stat
                                                 + be.respawn(job, dry_run) + " (no turn)"))
 
 
-def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False) -> str:
+def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False, extra: tuple[str, ...] = ()) -> str:
     """features.health.context_restart `auto`: hand a restart-ready role to a fresh session. The old Claude
     session is stopped first and its detached watcher ended (neither wakes it), so nothing delivers to it
     afterwards; then `restart --only` launches the new one, detached from this run (it verifies the new
-    loop for minutes, and the quorum holds a lock)."""
+    loop for minutes, and the quorum holds a lock). `extra`: more restart arguments (`shoal handoff`'s model and
+    provider)."""
     if role is None or not spec_path:
         return "FAILED (no role or spec path)"
-    argv = shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", role.slug]
+    argv = shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", role.slug, *extra]
     if dry_run:
-        return "would restart (dry-run): " + " ".join(argv[-4:])
+        return "would restart (dry-run): " + " ".join(argv[-(4 + len(extra)):])
     log = os.path.join(state_dir(spec.sid), f"context-restart-{role.slug}.log")
     try:
         os.makedirs(state_dir(spec.sid), exist_ok=True)

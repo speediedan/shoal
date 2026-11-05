@@ -10,6 +10,7 @@ and applies on Confirm with the plan's token (`shoal ui act-apply`).
 | Mod | What it is |
 |---|---|
 | `mods/shoal-actions` | The operator actions dialog (in place of herdr 0.9.3's popup palette): shoal and role pickers, then Message, Offer, Withdraw, Next, Asks, Offline, Freeze, Status, Conditions and Upgrade preview. Writes are planned (`shoal ui act-plan <verb> --json`), previewed and confirmed (`shoal ui act-apply --token`). See its `RECIPE.md`. |
+| `mods/shoal-status` | The status bar of the `shoal` layout: the Lattice and Actions buttons, and each provider's usage from the cached `shoal ui usage --json`. |
 | `mods/lattice-view` | The shoal graph doc v1 (`shoal ui graph --json`) as an animated, hoverable network: a global view of every shoal around the operator hub, a per-shoal view with host regions, a metrics and needs-you rail, and a compact `pulse` mode for an edge drawer. See its `RECIPE.md`. |
 | `mods/shoal-home` | The splash and host chooser, natively: the nautical SHOAL logo, the five splash creatures in a kelp network and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
 
@@ -234,4 +235,6 @@ node plugins/shoal-herdr-app/preview/render_svg.mjs --legend --out /tmp/lattice.
 ```
 
 `preview/render_svg.mjs` draws the same display list to SVG for hosts that cannot run the Herdr
-app. `preview.png` is a screenshot of the real app (`herdr-app shot`) on the fixture.
+app, and `preview/render_home.mjs` does so for the home screen (`shoal-home/preview.png` is its render).
+`preview/gen_logo_glyphs.mjs` and `preview/gen_logo_image.mjs` regenerate the logo's outlines and its image.
+lattice-view's `preview.png` is a screenshot of the real app (`herdr-app shot`) on the fixture.
