@@ -417,14 +417,17 @@ def messages(session: str, limit: int = 20) -> str:
 
 
 def interactive_view(session: str, model: str = "", effort: str = "") -> int:
-    """Explicit native access, serialized with start_run so a watcher cannot win the attach race."""
+    """Explicit native access, serialized with start_run so a watcher cannot win the attach race. The client is
+    checked first: one opened from another observer holds this lock too, and is not a turn."""
+    import native_client
+    pid = attached_client(session)
+    if pid:
+        raise BusyError(f"{native_client.held_message(pid)}; the live view remains available")
     with open(os.path.join(sdir(session, create=True), "lock"), "a+") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise BusyError("a turn is running; the live view remains available")
-        if attached_client(session):
-            raise BusyError("a native client already owns this session; the live view remains available")
         print("Native interactive mode pauses automatic wakes until you exit Muse (/exit).", flush=True)
         return subprocess.run([muse_bin(), "resume", session, *interactive_flags(model, effort)],
                               env=turn_env()).returncode
@@ -467,6 +470,7 @@ def cmd_muse_tail(a) -> int:
     """Follow public turn output without taking either session lock. q/Escape/Ctrl+C returns to the card."""
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ui"))
     from ui_view import _getkey
+    import native_client
     print(f"Muse {a.session}: live read-only view. Automatic wakes remain enabled.")
     interactive = getattr(a, "allow_interactive", False)
     keys = "[q/esc/ctrl+c] back to card" + ("   [i] native interactive (only when idle; /exit releases it)" if interactive else "")
@@ -501,19 +505,15 @@ def cmd_muse_tail(a) -> int:
                 pass
             if a.once:
                 return 0
-            state = "running" if busy(a.session) else "idle"
+            state = native_client.state(sys.modules[__name__], a.session)
             if state != last_state or offset != before:
                 print(f"\n[{state}] {keys}", flush=True)
                 last_state = state
             k = _getkey(2)
             if k in ("q", "Q", "\x1b", "\x03"):
                 return 0
-            if k in ("i", "I") and interactive:
-                try:
-                    interactive_view(a.session, getattr(a, "model", ""), getattr(a, "effort", ""))
-                except BusyError as exc:
-                    print(f"\n{exc}", flush=True)
-                print("\nBack to live read-only view. " + keys, flush=True)
+            if interactive:
+                native_client.on_key(sys.modules[__name__], k, a.session, getattr(a, "model", ""), getattr(a, "effort", ""), keys)
     except KeyboardInterrupt:
         return 0
 
