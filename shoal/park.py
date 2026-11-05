@@ -324,8 +324,10 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
 def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False) -> int:
     """Take a role out for good: stop its session and watchers, prune its incarnations from every harness's listing, remove
     it from the spec and write `role-removed`. The ledger keeps its history. In that order because a prune protects any
-    session the spec still names, and a role only stops being recognised once the spec drops it. Its live claims are released
-    and its open offers withdrawn first, because a claim by a role that is gone keeps the item from everyone else. A session
+    session the spec still names, and a role only stops being recognised once the spec drops it. Its open offers are
+    withdrawn first, because nothing else takes an offer back from a role that is gone and its item stays out of every fill.
+    Its live claims are released too: replay already ignores a claim by a writer not in the spec, but it would come back to
+    life if the slug were ever added again. A session
     held by a turn or client nothing here can stop refuses, even forced, as does one that will not stop; an active item
     refuses unless forced. It takes the role's restart lock, so a restart in flight cannot bring the role back."""
     import fcntl

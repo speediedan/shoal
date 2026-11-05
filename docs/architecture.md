@@ -413,7 +413,8 @@ leftover sidecar says. `shoal park` makes a role so on purpose (`park.py`): it s
 watchers with SIGKILL (no exit path can deliver a wake to the stopped session) and records `parked` {at, by,
 note, until} beside the empty session, which `show` prints. A full restart keeps a parked role parked; naming
 it (`restart --only`, `unpark`) relaunches it and clears the record. `shoal remove-role` takes a role out for good (stops its session and watchers, prunes its incarnations
-on every harness, releases its claims and withdraws its offers so those items are free again, removes it from the spec, writes
+on every harness, withdraws the offers addressed to it so those items can be filled again, releases its claims so they stay
+gone if the slug ever returns, removes it from the spec, writes
 `role-removed`; the ledger keeps its history), and `shoal remove-session`
 does the same for a saved standalone session. `shoal handoff` hands a live role to a fresh session
 in place, optionally on another model or provider (the quorum's `context_restart` run by hand, under its gate: see

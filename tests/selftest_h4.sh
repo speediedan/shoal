@@ -1966,7 +1966,7 @@ order.clear()
 assert park.remove_role(spec, "p", "gone") == 1 and "restart of gone is running" in out[-1] and not order, out[-1]
 held_lock.close()
 # applied: the session is cleared on disk before the prune, which protects any session the spec names; its claims are
-# released as the role itself and its offers withdrawn, because a claim by a gone role blocks the item for everyone
+# withdrawn so their items can be filled again, and its claims released as the role itself, so they stay gone if the slug returns
 claims.append({"item": "repo#7:fix", "by": "gone"})
 by_item["repo#8"] = [{"to": "gone", "status": "open"}, {"to": "stays", "status": "open"}]
 by_item["repo#9"] = [{"to": "*", "status": "open"}, {"to": "gone", "status": "declined"}]
