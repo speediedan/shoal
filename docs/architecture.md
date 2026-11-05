@@ -471,7 +471,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | key | default | effect |
 | --- | --- | --- |
 | `lazy_rearm` | on | a dead watcher on a role that is not active and has nothing its watcher would wake it for raises no `watcher-dead`: its next real work raises its own condition |
-| `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder |
+| `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder. Each arm counts fetch failures from zero, so a re-arm during an outage gets its full five attempts |
 | `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
 | `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |

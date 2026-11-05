@@ -348,10 +348,11 @@ def cmd_ledger_watch(a) -> int:
                 return 0
         except (OSError, ValueError):
             pass
+    # fetch_fail starts over: a re-arm inheriting a dead watcher's count ended on its first miss, so every
+    # quorum re-arm during an outage was spent within a tick (2026-11-04: one role's reached 7, then stayed dead)
     sc.update(session_id=session, pid=str(os.getpid()), armed_utc=now_iso(),
-              wake=a.wake, interval=str(a.interval))
+              wake=a.wake, interval=str(a.interval), fetch_fail="0")
     sc.setdefault("delivered", "")
-    sc.setdefault("fetch_fail", "0")
     save_sidecar(sc_path, sc)
     led = Ledger(sid, root=a.ledger_dir or (spec.ledger_dir if spec else None), sync=not a.no_sync)
     if not led.exists() and led.sync:
@@ -365,7 +366,7 @@ def cmd_ledger_watch(a) -> int:
                 f"in-transcript, then arm for real (same command without --test).")
         return 0 if fire(a.wake, text, repo_dir) else 2
     print(f"{now_iso()} armed: {slug}@{sid} every {a.interval:g}s wake={a.wake} sidecar={sc_path}")
-    fails = int(sc.get("fetch_fail", "0") or 0)
+    fails = 0
     send_fails = 0
     last_board = 0.0
     first = True
