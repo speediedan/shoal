@@ -37,8 +37,7 @@ export const CREATURES = [
 export const REFRESH = { y: 14, w: 96, h: 24 };
 const refreshBox = (W) => ({ x: W - PAD - REFRESH.w, y: REFRESH.y, w: REFRESH.w, h: REFRESH.h });
 
-/** Logo text size estimate: SHOAL in a semibold sans is about 3.5 em wide, 1.2 em tall. */
-// wide enough for the wavy letters (ocean.js logoLetters: 3.8 em of glyph boxes)
+/** The logo box: the drawn letters (logo.js) are about 3.9 em wide, and 1.25 em tall with their splashes and drips. */
 const logoBox = (font) => ({ w: font * 3.9, h: font * 1.25 });
 
 /**

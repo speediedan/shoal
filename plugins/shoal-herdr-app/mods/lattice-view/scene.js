@@ -44,7 +44,8 @@ export const pulseFrames = (kind) => (kind === "needs" ? [PULSE_GLYPH, " "] : [P
 
 /**
  * Builds the display list. `opts`: {width, height, tf, hover, selected, policy (motion.js) or
- * motion (a tier name), packets}. Returns {items, hits, discs, nodeScreen, animated, extent}:
+ * motion (a tier name), packets}; `hover` is a node or an edge id. Returns {items, hits, edgeHits,
+ * discs, nodeScreen, edgeScreen, animated, extent}:
  * `animated` counts elements that make the window redraw on their own (loops, frames, spins,
  * transitions); `extent` {x0, y0, x1, y1} is the screen box of everything drawn for the graph
  * (regions and their labels, edges, nodes and halos, satellites, labels, chips), which `fitScene`
@@ -59,7 +60,10 @@ export function buildScene(vm, lay, opts) {
   const S = (p) => toScreen(tf, p);
   const posOf = (id) => lay.pos.get(id);
   const hover = opts.hover && vm.byId.has(opts.hover) ? opts.hover : null;
-  const bright = hover ? new Set([hover, ...(vm.neighbors.get(hover) ?? [])]) : null;
+  // a hovered edge keeps itself and its two ends bright, as a hovered node keeps its neighbors
+  const edgeFocus = opts.hover ?? opts.selected;
+  const hoverEdge = !hover && edgeFocus ? vm.edges.find((e) => e.id === edgeFocus) ?? null : null;
+  const bright = hover ? new Set([hover, ...(vm.neighbors.get(hover) ?? [])]) : hoverEdge ? new Set([hoverEdge.src, hoverEdge.dst]) : null;
   const dimOf = (id) => (bright && !bright.has(id) ? 0.2 : 1);
   const extent = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
   const grow = (x0, y0, x1, y1) => {
@@ -88,15 +92,16 @@ export function buildScene(vm, lay, opts) {
     for (const c of lay.clusters) {
       const p = S(c);
       const r = c.r * k;
-      discs.push({ id: c.id, x: p.x, y: p.y, r });
+      discs.push({ id: c.id, x: p.x, y: p.y, r, hole: r * 0.5 });
       items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, hover ? 0.025 : 0.045)) });
       items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.05)) });
       items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: 1, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.22)) });
-      const label = `${c.label.toUpperCase()}  ${c.gen ?? ""}`.trim();
+      const label = c.label.toUpperCase();
       items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - r - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
       grow(p.x - r - 3, p.y - r - 3, p.x + r + 3, p.y + r + 3);
       growCentered(p.x, p.y - r - 22, label, 11, 16);
       labelObstacles.push({ x: p.x - textW(label, 11) / 2, y: p.y - r - 22, w: textW(label, 11), h: c.needsYou > 0 ? 29 : 16 });
+      discs.at(-1).title = labelObstacles.at(-1);
       if (c.needsYou > 0) {
         items.push({ t: "text", id: `disc-needs-${c.id}`, x: p.x - 120, y: p.y - r - 8, w: 240, h: 13, text: `${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`, size: 9.5, color: P.magenta, align: "center" });
       }
@@ -107,7 +112,10 @@ export function buildScene(vm, lay, opts) {
     for (const b of lay.bands) {
       const tint = b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
       items.push({ t: "path", id: `band-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1), bg: solid(withAlpha(tint, 0.055)) });
-      items.push({ t: "path", id: `band-rim-${b.host}`, fill: false, width: 1, cmds: annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1), bg: solid(withAlpha(tint, 0.16)) });
+      // a band that closes the whole ring has no ends to draw: its sector outline would leave a radial seam
+      const closed = b.a1 - b.a0 >= Math.PI * 2 - 0.3;
+      const rim = closed ? [...circleCmds(o.x, o.y, b.r0 * k), ...circleCmds(o.x, o.y, b.r1 * k)] : annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1);
+      items.push({ t: "path", id: `band-rim-${b.host}`, fill: false, width: 1, cmds: rim, bg: solid(withAlpha(tint, 0.16)) });
       const am = (b.a0 + b.a1) / 2;
       const lp = { x: o.x + (b.r1 * k + 14) * Math.cos(am), y: o.y + (b.r1 * k + 14) * Math.sin(am) };
       const bandText = `${b.home ? "\u2302 " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`;
@@ -119,7 +127,8 @@ export function buildScene(vm, lay, opts) {
         grow(q.x, q.y, q.x, q.y);
       }
     }
-    if (c) discs.push({ id: c.id, x: o.x, y: o.y, r: c.r * k });
+    // the donut hole: inside the innermost host band
+    if (c) discs.push({ id: c.id, x: o.x, y: o.y, r: c.r * k, hole: lay.bands.length ? Math.min(...lay.bands.map((b) => b.r0)) * k : c.r * k * 0.5 });
   }
 
   // 2b. a role whose CI job runs on another host: a tether to that host's band (per shoal), or a
@@ -166,7 +175,9 @@ export function buildScene(vm, lay, opts) {
     curves.set(e.id, c);
     for (const t of [0.25, 0.5, 0.75]) { const q = pointAt(c, t); grow(q.x, q.y, q.x, q.y); }
   }
-  const keep = hover ? incidentEdges(vm, hover) : null;
+  const edgeHits = [...curves].map(([id, c]) => ({ id, c }));
+  const edgeScreen = new Map(edgeHits.map(({ id, c }) => [id, { ...pointAt(c, 0.5), r: 2 }]));
+  const keep = hover ? incidentEdges(vm, hover) : hoverEdge ? new Set([hoverEdge.id]) : null;
   for (const bk of edgeBuckets(vm.edges.filter((e) => curves.has(e.id)), keep)) {
     const cmds = bk.edges.flatMap((e) => curveCmds(curves.get(e.id)));
     if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
@@ -355,13 +366,12 @@ export function buildScene(vm, lay, opts) {
     const focus = n.id === hover || n.id === opts.selected;
     const loud = v.needsYou || focus;
     const isRole = n.kind === "role";
-    // the writer and relay keep their shapes in the global view; their labels only add noise there
-    const quiet = vm.global && (n.kind === "system" || n.kind === "relay");
     // an aliased external whose home role is in view: the alias tether says it, the label repeats it
     const aliased = n.kind === "external" && n.alias_of && vm.byId.has(n.alias_of);
-    if ((quiet || aliased) && !focus) continue;
+    if (aliased && !focus) continue;
     const size = isRole ? 10.5 : n.kind === "user" ? 11 : 9;
-    const text = fitText(n.kind === "user" ? "you" : n.label, isRole ? 150 : 120, size);
+    const away = vm.global && n.awayHost ? ` @${n.awayHost}` : "";
+    const text = fitText(n.kind === "user" ? "you" : n.label + away, isRole ? (away ? 210 : 150) : 120, size);
     const tagW = n.hostColor ? 10 : 0;
     const w = textW(text, size) + tagW + 4, h = 14;
     const gap = (v.halo && isRole ? 4 : 3) + (n.items?.length ? 6 : 0);
@@ -430,7 +440,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
-  return { items, hits, discs, nodeScreen, animated, extent };
+  return { items, hits, edgeHits, discs, nodeScreen, edgeScreen, animated, extent };
 }
 
 /** The world box of what scales with zoom: node centers, satellites and the cluster regions. */

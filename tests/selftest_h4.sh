@@ -775,6 +775,45 @@ assert rc == 5, rc
 assert s.role("up").session.startswith("fake"), s.role("up").session
 assert s.incarnation == inc0 + 2, s.incarnation
 
+# another provider through restart: only for a role being relaunched, only once its old session is gone
+FakeBackend.send = lambda self, *a, **k: None
+def restart_eco(only, eco, model=(), effort=()):
+    ns = argparse.Namespace(spec=rspec, stages="handoffs,sync-plans,restart", dry_run=False, only=only,
+                            consumer_launched=[], keep=[], seq=[], set_model=list(model), set_ecosystem=list(eco), set_effort=list(effort), old_session=[],
+                            defer_consumers=False, probe_claude=False, no_verify=True, save_spec="", force=False)
+    return cli.run_restart(ShoalSpec.load(rspec), ns)
+cli._park.session_held = lambda r, d="": False
+cli._park.claude_live = lambda r: False
+assert restart_eco("tl", ["up:opencode"]) == 1 and ShoalSpec.load(rspec).role("up").ecosystem == "claude", "outside --only"
+assert restart_eco("up", ["up:nope"]) == 1
+cli.OLD_SESSION_WAIT_S = 1
+cli._park.claude_live = lambda r: True
+assert restart_eco("up", ["up:opencode"]) == 1 and ShoalSpec.load(rspec).role("up").ecosystem == "claude", "old session live"
+# a stopped worker that takes a moment to exit is waited for, not refused
+cli.OLD_SESSION_WAIT_S = 30
+alive = iter([True, True, False])
+cli._park.claude_live = lambda r: next(alive, False)
+s0 = ShoalSpec.load(rspec)
+d = json.load(open(rspec))
+next(r for r in d["roles"] if r["slug"] == "up").update(effort="high", model="old-model")
+json.dump(d, open(rspec, "w"))
+seq0, old = s0.role("up").seq, s0.role("up").session
+rc = restart_eco("up", ["up:opencode"], ["up:"])
+s = ShoalSpec.load(rspec)
+r = s.role("up")
+assert rc in (0, 5), rc  # 5: this role's own incomplete doc, as above
+assert (r.ecosystem, r.model, r.effort) == ("opencode", "", ""), (r.ecosystem, r.model, r.effort)
+assert r.seq == seq0 + 1 and r.session != old and r.session.startswith("fake"), (r.seq, r.session)
+# an effort given with the move is the new provider's, not cleared
+assert restart_eco("tl", [], (), ["up:low"]) == 1, "--set-effort outside --only"
+assert restart_eco("up", ["up:claude"], ["up:m9"], ["up:high"]) in (0, 5)
+r = ShoalSpec.load(rspec).role("up")
+assert (r.ecosystem, r.model, r.effort) == ("claude", "m9", "high"), (r.ecosystem, r.model, r.effort)
+# back as it was, for what follows
+d = json.load(open(rspec))
+next(x for x in d["roles"] if x["slug"] == "up").update(ecosystem="claude")
+json.dump(d, open(rspec, "w"))
+
 V = cli.sidecar_verdict
 since, before, after = "2026-09-28T12:00:00Z", "2026-09-28T11:00:00Z", "2026-09-28T13:00:00Z"
 assert V({}, "new1", ["old1"], since)[:2] == (False, "")
@@ -1635,7 +1674,115 @@ OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health 
 ! grep -q "context-restart" <<<"$OUT" || fail "restart-ready survived a later queue write :: $OUT"
 
 echo "== 36 park and unpark: no session and no watcher, the queue kept; a full restart keeps it parked; --until unparks"
+cat > "$S/handoff_tool.py" <<'PY_HANDOFF'
+# handoff's refusals and its applied path, with every harness and the detached restart replaced
+import os, sys
+shoald, spec_path, mode = sys.argv[1:4]
+sys.path.insert(0, shoald)
+import argparse, health, ledger_watch, park, startdoc
+import backends
+from roles import ShoalSpec
+spec = ShoalSpec.load(spec_path)
+role = spec.role("up")
+backends.tool_which = lambda name: "/bin/true"
+if mode == "dry":
+    # a provider this suite's tool path need not have: the tool check is exercised in the guards below
+    role.ecosystem = "codex"
+    ledger_watch.muse_session_busy = lambda s, e="muse": False
+    startdoc.check = lambda p, **k: {"ok": True, "problems": []}
+    sys.exit(park.handoff(spec, spec_path, "up", "m2", "claude", True, True))
+out = []
+def run(**kw):
+    out.clear()
+    park.print = lambda *a, **k: out.append(" ".join(map(str, a)))
+    a = dict(model="", ecosystem="", force=False, dry_run=True, effort="")
+    a.update(kw)
+    rc = park.handoff(spec, spec_path, "up", a["model"], a["ecosystem"], a["force"], a["dry_run"], a["effort"])
+    return rc, "\n".join(out)
+health.claude_busy = lambda: {}
+# a session nothing here can stop refuses, even forced
+role.ecosystem = "muse"
+ledger_watch.muse_session_busy = lambda s, e="muse": True
+rc, t = run(force=True)
+assert rc == 1 and "held by a running turn" in t, (rc, t)
+ledger_watch.muse_session_busy = lambda s, e="muse": False
+role.ecosystem = "claude"
+# the new provider's tool, before anything stops
+backends.tool_which = lambda name: None
+rc, t = run(force=True, ecosystem="muse")
+assert rc == 1 and "muse is not on this host" in t, (rc, t)
+backends.tool_which = lambda name: "/bin/true"
+# a start doc that would not carry the new session, forced or not
+startdoc.check = lambda p, **k: {"ok": False, "problems": ["no next steps section"]}
+rc, t = run(force=True)
+assert rc == 1 and "no next steps section" in t, (rc, t)
+startdoc.check = lambda p, **k: {"ok": True, "problems": []}
+# the quorum's gate: the flag alone is not enough; the session must be between turns
+class V:
+    def __init__(self, *a, **k): pass
+    def current_queue(self, s): return {"restart_ready": True, "ts": "t"}
+    def role_state(self, s): return {"state": "idle"}
+    def is_idle(self, s): return True
+import ledger
+ledger.View = V
+health.session_between_turns = lambda r, c, d: False
+rc, t = run()
+assert rc == 1 and "not known to be between turns" in t, (rc, t)
+health.session_between_turns = lambda r, c, d: True
+rc, t = run()
+assert rc == 0 and "would restart" in t, (rc, t)
+# applied: the old provider stops, the restart is launched once with the new record, and the lock holds a second one back
+import subprocess
+spawned = []
+real_spawn = backends.spawn_detached
+def spawn(argv, **kw):  # the real spawn path on a stand-in command: the lock must survive whatever scope wraps it
+    spawned.append(argv)
+    kw.pop("cwd", None)
+    return real_spawn(["sleep", "5"], **kw)
+backends.spawn_detached = spawn
+stops = []
+park.stop_session = lambda r, dry_run=False: stops.append(r.session[:8]) or f"stopped {r.session[:8]}"
+health.watcher_alive = lambda sid, slug: (False, {})
+import context
+context.note_restart = lambda *a: None
+rc, t = run(dry_run=False, ecosystem="muse", model="m3", effort="high")
+assert rc == 0 and "restarting on a fresh session" in t, (rc, t)
+assert any("--set-effort=up:high" in x for x in spawned[0]), spawned
+assert stops == [role.session[:8]], stops
+assert any("--set-ecosystem=up:muse" in x for x in spawned[0]) and any("--set-model=up:m3" in x for x in spawned[0]), spawned
+rc, t = run(dry_run=False)
+assert rc == 1 and "already running" in t and len(spawned) == 1, (rc, t, spawned)
+# the lock goes when the restart exits, however it exits
+import time
+end = time.time() + 20
+while time.time() < end:
+    rc, t = run(dry_run=False)
+    if "already running" not in t:
+        break
+    time.sleep(1)
+assert rc == 0 and len(spawned) == 2, (rc, t, spawned)
+# a copy on the conversation that will not stop: nothing restarts, and it says so
+end = time.time() + 20
+park.stop_session = lambda r, dry_run=False: "stopped a; STILL LIVE: b"
+while time.time() < end:
+    rc, t = run(dry_run=False)
+    if "already running" not in t:
+        break
+    time.sleep(1)
+assert rc == 1 and "STILL LIVE" in t and "nothing restarted" in t and len(spawned) == 2, (rc, t, spawned)
+# FAILED reaches the exit code, which is what the dialog reports
+health.context_restart = lambda *a, **k: "FAILED (no room)"
+rc, t = run(dry_run=False)
+assert rc == 1 and "FAILED" in t, (rc, t)
+PY_HANDOFF
 FS0='{"claude": [], "opencode": {}}'
+# handoff: refused until the role says it is restart-ready; forced, it names the old session and the new provider
+check "has not said it is restart-ready" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --dry-run
+[ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --dry-run)" = 1 ] || fail "handoff without restart-ready"
+check "set-ecosystem=up:claude --set-model=up:m2" env SHOAL_FAKE_SESSIONS="$FS0" python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" dry
+python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" guards || fail "handoff guards"
+check "unknown provider" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --force --dry-run --ecosystem nope
+check "no role nope" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only nope --force --dry-run
 check "posture=active" $Q --slug up --active interpretune#9701:fix --next interpretune#9702
 check "REFUSED: up holds active item" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up
 [ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up)" = 1 ] || fail "park took a role mid-item"

@@ -873,32 +873,50 @@ def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, stat
                                                 + be.respawn(job, dry_run) + " (no turn)"))
 
 
-def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False) -> str:
+def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False, extra: tuple[str, ...] = ()) -> str:
     """features.health.context_restart `auto`: hand a restart-ready role to a fresh session. The old Claude
     session is stopped first and its detached watcher ended (neither wakes it), so nothing delivers to it
     afterwards; then `restart --only` launches the new one, detached from this run (it verifies the new
-    loop for minutes, and the quorum holds a lock)."""
+    loop for minutes, and the quorum holds a lock). `extra`: more restart arguments (`shoal handoff`'s model and
+    provider)."""
     if role is None or not spec_path:
         return "FAILED (no role or spec path)"
-    argv = shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", role.slug]
+    argv = shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", role.slug, *extra]
     if dry_run:
-        return "would restart (dry-run): " + " ".join(argv[-4:])
+        return "would restart (dry-run): " + " ".join(argv[-(4 + len(extra)):])
     log = os.path.join(state_dir(spec.sid), f"context-restart-{role.slug}.log")
+    guard = None
     try:
         os.makedirs(state_dir(spec.sid), exist_ok=True)
+        # one restart of a role at a time: the spec records the new session only when it ends, so a double click, or the
+        # quorum and `handoff` together, would launch two. The detached restart inherits this descriptor, so the lock
+        # lasts as long as it does and goes when it exits, however it exits.
+        guard = open(os.path.join(state_dir(spec.sid), f"context-restart-{role.slug}.lock"), "a")
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return f"FAILED (a restart of {role.slug} is already running; its log: {log})"
         alive, sc = watcher_alive(spec.sid, role.slug)
         if alive and is_detached_wake(str(sc.get("wake", ""))):
             os.kill(int(sc["pid"]), 15)  # a detached watcher: ending it wakes nobody
         if role.ecosystem == "claude" and role.session:
-            from backends import get as get_backend
-            get_backend("claude").stop(role.session[:8])
+            # every job on the conversation, watched so a respawned worker is stopped again: a copy left behind would hold
+            # the role beside the new session
+            import park
+            stopped = park.stop_session(role)
+            if "STILL LIVE" in stopped:
+                __import__("context").note_restart(spec, role, f"FAILED ({stopped})")
+                return f"FAILED ({stopped}; nothing restarted)"
         from backends import spawn_detached
         # its own scope, like a re-armed watcher: the quorum's oneshot unit would end it with its cgroup
         spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,
-                       cwd=spec.dir or None, env=_ENV)
+                       cwd=spec.dir or None, env=_ENV, pass_fds=(guard.fileno(),))
         out = f"restarting on a fresh session (log {log})"
     except (OSError, ValueError) as exc:
         out = f"FAILED ({exc})"
+    finally:
+        if guard is not None:
+            guard.close()  # this process's copy: the restart's keeps the lock
     __import__("context").note_restart(spec, role, out)
     return out
 

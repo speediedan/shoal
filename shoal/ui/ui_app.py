@@ -24,8 +24,12 @@ herdr 0.9.3 (`ui open`, `ui feed`, `ui launch`) is untouched and keeps working b
 from __future__ import annotations
 
 import base64
+import fcntl
+import glob
+import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -45,17 +49,22 @@ PLAN_V = 1
 # The Herdr app and herdr-core releases every shoal host runs. The app updates itself (and then the core) unless
 # its release feed is unreachable, so every shoal-managed launch points HERDR_RELEASES_URL at a dead loopback URL;
 # upgrades happen by rerunning the installer deliberately, lane host first.
-APP_PIN = "0.1.12"
-CORE_PIN = "0.1.17"
+APP_PIN = "0.1.13"
+CORE_PIN = "0.1.18"
 DEAD_RELEASES_URL = "http://127.0.0.1:9"
 APP_UNIT = "shoal-herdr-app"
 FEED_UNIT = "shoal-graph-feed.service"
-MODS = ("lattice-view", "shoal-home", "shoal-actions")
+MODS = ("lattice-view", "shoal-home", "shoal-actions", "shoal-status")
 MOD_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "mods")
 REPORT_APP = "shoal"
 # the plan's own label on each terminal it starts, so a later reconcile finds the pane again
 PANE_LABEL = "shoal.pane"
 FEED_FRESH_S = 60
+STARVED_AFTER_S = 7200
+ROLE_TAB = re.compile(r"^roles( \d+)?$")
+# Bumped when what a tab is built from changes, so a tab made before it is rebuilt once: mod tabs hold no work, and
+# a roles tab is rebuilt only if every card in it is idle. 2: lattice tabs read their own machine's feed; roles in a grid.
+TABS_V = 2
 
 
 class AppError(RuntimeError):
@@ -86,6 +95,16 @@ OSC_CLEAR = "\x1b]7501;state=clear\x1b\\"
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
+def starved(r: dict) -> bool:
+    """A fill=assigned role left with an empty queue past the grace, asking nothing: usually deliberate, so the agents list
+    reads it as idle rather than needs-you (the lattice's `STARVED_AFTER_S`; accounting keeps `wait:assignment`)."""
+    reasons = set(r["can_progress"]["reasons"])
+    age = r.get("posture_age_s")
+    return (r.get("fill") == "assigned" and r.get("sub") == "queue-empty" and not r.get("asks") and not r.get("next")
+            and not r.get("grants_pending") and isinstance(age, (int, float)) and age >= STARVED_AFTER_S
+            and not reasons & {"blocked-on-question", "blocked-says-waiting", "watcher-dead", "dead-worker"})
+
+
 def card_report(r: dict, tag: str) -> dict:
     """{state, kind, title, msg} for one role's status row. The state follows the 0.9.3 sidebar rules
     (`ui_herdr.herdr_state`): working for a turn or a job wait, blocked when the role needs you or cannot be
@@ -94,6 +113,8 @@ def card_report(r: dict, tag: str) -> dict:
     import ui_herdr
     import ui_status
     state = ui_herdr.herdr_state(r)
+    if state == "blocked" and starved(r):
+        state = "idle"
     reasons = r["can_progress"]["reasons"]
     kind = ""
     if state == "blocked":
@@ -118,7 +139,9 @@ def card_report(r: dict, tag: str) -> dict:
     why = [ui_status.ATTENTION.get(x, x) for x in reasons if x not in ("parked", "dormant")]
     if why and state == "blocked":
         bits.append("(" + ", ".join(why)[:80] + ")")
-    return {"state": state, "kind": kind, "title": f"{tag}/{r['slug']}", "msg": " ".join(bits)[:200]}
+    # the role's own host in the title: the card's machine says only where the card runs (`/` and `@` never occur in a slug)
+    where = f"@{r['host']}" if r.get("host") else ""
+    return {"state": state, "kind": kind, "title": f"{tag}/{r['slug']}{where}", "msg": " ".join(bits)[:200]}
 
 
 def report_text(r: dict, tag: str) -> str:
@@ -390,6 +413,15 @@ class Reconciler:
         for p in right[1:]:
             last = self._split(last, "down", p) or last
 
+    def _mod_props(self, tab: dict) -> dict:
+        """A mod runs in the app, wherever its space's terminals run, so its source must name that machine: without
+        `on` a lattice tab in a space on another machine reads this computer's feed."""
+        props = dict(tab.get("props") or {})
+        src = props.get("source")
+        if self.machine and isinstance(src, dict) and src.get("kind") in ("file", "exec") and not src.get("on"):
+            props["source"] = dict(src, on=self.machine)
+        return props
+
     def _new_tab(self, space_id: str, tab: dict) -> None:
         if tab.get("mod"):
             if tab["mod"] not in self.mods:
@@ -397,7 +429,7 @@ class Reconciler:
                 return
             self.say(f"tab {tab['name']} ({tab['mod']})")
             if not self.dry_run:
-                app_do("tab.new", {"space": space_id, "name": tab["name"], "mod": tab["mod"], "props": tab["props"]})
+                app_do("tab.new", {"space": space_id, "name": tab["name"], "mod": tab["mod"], "props": self._mod_props(tab)})
             return
         self.say(f"tab {tab['name']}: {len(tab['panes'])} pane(s)")
         if self.dry_run:
@@ -436,6 +468,68 @@ class Reconciler:
                 self._new_tab(space_id, t)
         self.select_tab(space_id, s.get("select") or s["tabs"][0]["name"])
         return space_id
+
+    def _relayout(self, s: dict, got: dict, built: dict, sync: bool = False) -> bool:
+        """Rebuild a shoal's roles tabs when they no longer hold the planned roles, or were built before TABS_V (a
+        tab grown one pane at a time is a stack, not a grid). A card is only a viewer, so closing it stops nothing, but
+        one in use (an attached session, or anything else that is not a card), or one that cannot be read (a machine out of
+        reach, whose tabs may hold anything), keeps every tab as it is. The quiet `sync` leaves a space with no roles tab
+        alone: someone closed them. True when it dealt with the roles tabs."""
+        planned = [t for t in s["tabs"] if ROLE_TAB.match(t["name"]) and not t.get("mod")]
+        existing = [t for t in got.get("tabs", []) if ROLE_TAB.match(t.get("name") or "")]
+        if not planned and not existing:
+            return False
+        if sync and not existing:
+            return True
+        have: dict[str, set[str]] = {}
+        busy = False
+        for tab in existing:
+            labels = set()
+            for x in tab.get("terminals", []):
+                try:
+                    t = hc_get(x["terminal"])
+                except AppError:
+                    busy = True
+                    continue
+                lab = (t.get("labels") or {}).get(PANE_LABEL)
+                if lab:
+                    labels.add(lab)
+                busy = busy or not lab or foreground_kind(t) == "other"
+            have[tab["name"]] = labels
+        want = {t["name"]: {p["label"] for p in t["panes"]} for t in planned}
+        key = f"{self.machine or 'local'}/{s['name']}"
+        if have == want and built.get(key) == TABS_V:
+            return False
+        if busy:
+            if have != want:
+                self.say(f"{s['name']}: roles changed, but a card is in use: tabs left as they are until it is detached")
+            return True
+        self.say(f"{s['name']}: lay the roles out again ({len(planned)} tab(s))")
+        if self.dry_run:
+            return True
+        for tab in existing:
+            app_do("tab.close", {"id": tab["id"], "confirmed": True})
+        for t in planned:
+            self._new_tab(got["id"], t)
+        names = [t["name"] for t in s["tabs"]]
+        space = next((x for x in app_ls().get("spaces", []) if x.get("id") == got["id"]), None)
+        tabs = {t.get("name"): t for t in (space or {}).get("tabs", [])}
+        for i, name in enumerate((n for n in names if n in tabs), 1):  # new tabs land last: back to the planned order
+            app_do("tab.move", {"id": tabs[name]["id"], "index": i})
+        built[key] = TABS_V
+        return True
+
+    def _refresh_mod(self, space_id: str, tab_doc: dict, t: dict, built: dict, space_name: str) -> None:
+        """Rebuild a mod tab made before TABS_V: its props are fixed when it is made."""
+        key = f"{self.machine or 'local'}/{space_name}/{t['name']}"
+        if built.get(key) == TABS_V:
+            return
+        self.say(f"{space_name}/{t['name']}: rebuild ({t['mod']})")
+        if self.dry_run or t["mod"] not in self.mods:
+            return
+        app_do("tab.close", {"id": tab_doc["id"], "confirmed": True})
+        self._new_tab(space_id, t)
+        built[key] = TABS_V
 
     def select_tab(self, space_id: str, name: str) -> None:
         """Show the named tab of a space (the last tab made is the one shown otherwise)."""
@@ -480,12 +574,14 @@ class Reconciler:
                 break
             last = self._split(last, "down", p) or last
 
-    def apply(self, doc: dict, focus: bool = True, show: set[str] | None = None) -> list[str]:
+    def apply(self, doc: dict, focus: bool = True, show: set[str] | None = None, sync: bool = False) -> list[str]:
+        """`sync`: the status bar's quiet pass: only roles tabs follow the roles, and what a person closed stays closed."""
         ls = app_ls()
         mine = [s for s in ls.get("spaces", []) if (s.get("machine") or None) == self.machine]
         opened = load_opened()
         key = self.machine or "local"
         seen = set(opened.get(key, []))
+        built = dict(opened.get("_built") or {})
         first = None
         for s in doc.get("spaces", []):
             got = next((x for x in mine if x.get("name") == s["name"]), None)
@@ -498,15 +594,28 @@ class Reconciler:
             if lab:
                 seen.add(lab)
             if got is None:
+                if sync:
+                    continue
                 sid = self._new_space(s)
                 first = first or sid
+                if not self.dry_run:
+                    built[f"{key}/{s['name']}"] = TABS_V
+                    built.update({f"{key}/{s['name']}/{t['name']}": TABS_V for t in s["tabs"] if t.get("mod")})
                 continue
             first = first or got["id"]
             tabs = {t.get("name"): t for t in got.get("tabs", [])}
+            relaid = s.get("kind") == "shoal" and self._relayout(s, got, built, sync)
             for t in s["tabs"]:
+                if relaid and ROLE_TAB.match(t["name"]) and not t.get("mod"):
+                    continue
                 if t["name"] not in tabs:
-                    self._new_tab(got["id"], t)
-                elif not t.get("mod"):
+                    if not sync:
+                        self._new_tab(got["id"], t)
+                        if t.get("mod") and not self.dry_run:
+                            built[f"{key}/{s['name']}/{t['name']}"] = TABS_V
+                elif t.get("mod"):
+                    self._refresh_mod(got["id"], tabs[t["name"]], t, built, s["name"])
+                elif not sync:
                     self._gaps(s, tabs[t["name"]], t)
         planned = {s["name"] for s in doc.get("spaces", [])}
         import ui_herdr
@@ -516,8 +625,9 @@ class Reconciler:
                 self.say(f"space {x['name']}: its shoal is hidden or retired (close it in the app when done)")
         if focus and first and not self.dry_run:
             app_do("space.select", {"id": first})
-        if not self.dry_run and seen != set(opened.get(key, [])):
+        if not self.dry_run and (seen != set(opened.get(key, [])) or built != (opened.get("_built") or {})):
             opened[key] = sorted(seen)
+            opened["_built"] = built
             save_opened(opened)
         return self.out
 
@@ -588,7 +698,8 @@ def ensure_machine(server: str, dry_run: bool = False) -> str:
 
 
 def open_app(choice: str, ids: list[str] | None = None, dry_run: bool = False, focus: bool = True,
-             standalone: bool = True, show: set[str] | None = None, ledger_root: str = "") -> tuple[int, list[str]]:
+             standalone: bool = True, show: set[str] | None = None, ledger_root: str = "",
+             sync: bool = False) -> tuple[int, list[str]]:
     import ui_launch
     ids = ids or []
     out: list[str] = []
@@ -607,10 +718,10 @@ def open_app(choice: str, ids: list[str] | None = None, dry_run: bool = False, f
         if dry_run and not app_running():
             out += [f"[dry-run] space {s['name']}: " + ", ".join(t["name"] for t in s["tabs"]) for s in doc["spaces"]]
             return 0, out
-        out += Reconciler(machine, dry_run).apply(doc, focus, show)
+        out += Reconciler(machine, dry_run).apply(doc, focus, show, sync)
     except AppError as exc:
         return 2, out + [str(exc)]
-    if not dry_run:
+    if not dry_run and not sync:
         ui_launch.remember("local" if ui_launch.is_local(choice) else choice)
     return 0, out
 
@@ -626,6 +737,82 @@ def cmd_app_open(a) -> int:
     return rc
 
 
+def cmd_app_sync(_a) -> int:
+    """One quiet pass over this computer and every machine (the shoal-status mod runs it on a slow timer): roles tabs
+    follow added and removed roles, nothing takes the focus, and a machine out of reach is only noted."""
+    if not app_running():
+        return 0
+    os.makedirs(os.path.dirname(_state_path()), exist_ok=True)
+    with open(_state_path() + ".sync-lock", "a") as lock:
+        try:  # a pass does ssh per machine and rebuilds tabs: a timer firing during a slow one, or a second bar, waits its turn
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        for choice in ["local"] + machines():
+            _rc, lines = open_app(choice, focus=False, sync=True)
+            for line in lines:
+                if not line.startswith("note "):
+                    print(f"{choice}: {line}")
+    return 0
+
+
+def global_lattice_props() -> dict:
+    """The global lattice's props on this computer. A host that is no shoal's home runs nothing that pulls its ledger
+    clone (the feed never does), so its own feed goes stale: it reads a shoal home's feed instead, the machine it last
+    opened first. A host with a shoal of its own, or no machine in reach, reads its own."""
+    import ui_launch
+    try:
+        if not any(s.get("kind") == "shoal" for s in plan(standalone=False).get("spaces", [])):
+            names = machines()
+            last = ui_launch.last_choice()
+            for m in ([last] if last in names else []) + [n for n in names if n != last]:
+                try:
+                    props = lattice_props("", remote_plan(m, [], False)["feed"])
+                except AppError:
+                    continue
+                return dict(props, source=dict(props["source"], on=m))
+    except AppError:
+        pass
+    return lattice_props()
+
+
+def open_lattice(dry_run: bool = False) -> list[str]:
+    """Show a lattice from anywhere: the tab of the shoal space in view (reopened if it was closed), else the global
+    one. Closing a tab hides it from the quiet sync; this and `ui app-open` bring it back."""
+    cur = next((s for s in app_ls().get("spaces", []) if s.get("active")), None)
+    if cur is not None:
+        tab = next((t for t in cur.get("tabs", []) if t.get("name") == "lattice"), None)
+        rec = Reconciler(cur.get("machine") or None, dry_run)
+        if tab is not None:
+            if not dry_run:
+                app_do("tab.select", {"id": tab["id"]})
+            return [f"{cur['name']}: lattice"]
+        try:
+            doc = remote_plan(cur["machine"], [], False) if cur.get("machine") else plan(standalone=False)
+        except AppError:
+            doc = {}
+        want = next((s for s in doc.get("spaces", []) if s.get("name") == cur.get("name")), None)
+        t = next((x for x in (want or {}).get("tabs", []) if x.get("mod") == "lattice-view"), None)
+        if t is not None:
+            rec._new_tab(cur["id"], t)
+            rec.select_tab(cur["id"], "lattice")
+            return rec.out
+    return home_space(dry_run, select="lattice")
+
+
+def cmd_app_lattice(a) -> int:
+    if not app_running():
+        print("the Herdr app is not running here (`shoal ui app-start` starts it with the pin held)")
+        return 1
+    try:
+        for line in open_lattice(a.dry_run):
+            print(line)
+    except AppError as exc:
+        print(str(exc))
+        return 2
+    return 0
+
+
 def start_argv() -> list[str]:
     """How the app is started: a transient user unit (so it outlives this terminal), with the pin held and only
     the display variables passed through (names chosen here; nothing else from the environment)."""
@@ -639,7 +826,7 @@ def start_argv() -> list[str]:
     return ["env"] + [f"{k}={v}" for k, v in env.items()] + [app_bin()]
 
 
-def home_space(dry_run: bool = False) -> list[str]:
+def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
     """A `shoal` space on this machine with the home screen (the shoal-home mod, else the terminal chooser in app
     mode) and the global lattice."""
     ls = app_ls()
@@ -650,22 +837,20 @@ def home_space(dry_run: bool = False) -> list[str]:
         tabs.append({"name": "home", "mod": "shoal-home", "props": {}})
     else:
         tabs.append({"name": "home", "layout": "stack", "panes": [_pane("shoal/home", _cli_argv("ui", "launch"))]})
-    tabs.append({"name": "lattice", "mod": "lattice-view", "props": lattice_props()})
+    tabs.append({"name": "lattice", "mod": "lattice-view", "props": global_lattice_props()})
     if got is None:
         if tabs[0].get("mod"):
             # a space starts with a terminal: the chooser, then the home mod beside it as its own tab
             tabs.insert(0, {"name": "launch", "layout": "stack",
                             "panes": [_pane("shoal/home", _cli_argv("ui", "launch"))]})
-        rec.apply({"spaces": [{"name": "shoal", "kind": "home", "folder": "", "tabs": tabs, "select": "home"}]},
+        rec.apply({"spaces": [{"name": "shoal", "kind": "home", "folder": "", "tabs": tabs, "select": select}]},
                   focus=True)
     else:
-        have = {t.get("name") for t in got.get("tabs", [])}
-        for t in tabs:
-            if t["name"] not in have:
-                rec._new_tab(got["id"], t)
+        # `apply` makes the missing tabs and rebuilds a lattice tab older than TABS_V, which points it at the live feed
+        rec.apply({"spaces": [{"name": "shoal", "kind": "home", "folder": "", "tabs": tabs}]}, focus=False)
         if not dry_run:
             app_do("space.select", {"id": got["id"]})
-            rec.select_tab(got["id"], "home")
+            rec.select_tab(got["id"], select)
     return rec.out
 
 
@@ -677,6 +862,9 @@ def cmd_app_start(a) -> int:
             print(f"[dry-run] write {path}\n{text}")
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
+            backup = path + ".bak-shoal"
+            if os.path.exists(path) and not os.path.exists(backup):  # one time: the entry Herdr's installer wrote
+                shutil.copy2(path, backup)
             with open(path + ".tmp", "w") as fh:
                 fh.write(text)
             os.replace(path + ".tmp", path)
@@ -708,17 +896,25 @@ def cmd_app_start(a) -> int:
 
 
 def desktop_path() -> str:
+    """The app's own entry, replaced: a desktop shell matches a window to the entry named after its app id, so only this name
+    pins and groups with the window. It also means no launcher here starts the app without the pin held."""
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return os.path.join(base, "applications", "shoal-herdr-app.desktop")
+    return os.path.join(base, "applications", "herdr-app.desktop")
+
+
+def desktop_icon() -> str:
+    """A `shoal` icon in the user's icon theme (the name the 0.9.3 launcher uses), else a splash creature."""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    if glob.glob(os.path.join(base, "icons", "hicolor", "*", "apps", "shoal.*")):
+        return "shoal"
+    icon = os.path.join(MOD_DIR, "shoal-home", "assets", "fish-teal.png")
+    return icon if os.path.exists(icon) else os.path.join(PKG, "ui", "assets", "fish-teal.png")
 
 
 def desktop_text() -> str:
-    icon = os.path.join(MOD_DIR, "shoal-home", "assets", "fish-teal.png")
-    if not os.path.exists(icon):
-        icon = os.path.join(PKG, "ui", "assets", "fish-teal.png")
     exe = shlex.join(_cli_argv("ui", "app-start"))
-    return ("[Desktop Entry]\nType=Application\nName=Shoal\nComment=Shoal groups in the Herdr app\n"
-            f"Exec={exe}\nIcon={icon}\nTerminal=false\nCategories=Development;\nStartupWMClass=herdr-app\n")
+    return ("[Desktop Entry]\nType=Application\nName=Shoal\nComment=Shoal groups in the Herdr app, with the pin held\n"
+            f"Exec={exe}\nIcon={desktop_icon()}\nTerminal=false\nCategories=Development;\nStartupWMClass=herdr-app\n")
 
 
 def feed_unit_text() -> str:
@@ -752,7 +948,6 @@ def copied(name: str) -> bool:
 def tree_digest(root: str) -> str:
     """sha256 over a mod folder's files, leaving out what the app writes there (hidden files, type files,
     jsconfig.json) and the copy mark."""
-    import hashlib
     h = hashlib.sha256()
     for d, dirs, files in os.walk(root):
         dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x != "node_modules")
@@ -851,9 +1046,147 @@ def cmd_app_install(a) -> int:
                 line = install_mod(name, a.dry_run)
                 if line:
                     print(line)
-        for line in install_keys(a.dry_run) + install_theme(a.dry_run):
+        for line in install_keys(a.dry_run) + install_theme(a.dry_run) + install_layout(a.dry_run):
             print(line)
     return 0
+
+
+# ---- the shoal layout: Herdr's own, with role names in Agents, host actions in Spaces and shoal's status bar
+
+SHOAL_LAYOUT = "shoal"
+CLONE_MARK = ".shoal-clone"
+AGENTS_HELPER = """// shoal: a role card's row names the role, in its shoal's color, on the host it really runs on.
+const SHOAL_MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
+function shoalRole(a) {
+  const term = terminals().find((x) => x.address === a.address);
+  const label = term?.labels?.["shoal.pane"] ?? "";
+  const cut = label.lastIndexOf("/");
+  if (cut < 0 || label.startsWith("standalone/")) return null;
+  const title = term?.report?.title ?? "";
+  const at = title.indexOf("@");
+  const stored = (shared("space.colors") ?? {})[a.space] ?? "ansi6";
+  return { role: label.slice(cut + 1), host: at >= 0 ? title.slice(at + 1) : null, color: stored.startsWith("#") ? stored : SHOAL_MARK[stored] ?? null };
+}
+
+export default class Agents extends View {"""
+# (exact text in Herdr's shipped mod, its replacement): a text that is gone leaves that block on Herdr's own mod
+CLONES = {
+    "agents": ("shoal-agents", [
+        ("export default class Agents extends View {", AGENTS_HELPER),
+        ("      const more = detail.get(a.address);\n",
+         "      const sr = shoalRole(a);\n      const more = sr ? (byPriority || a.pinned ? a.space_name : null) : detail.get(a.address);\n"),
+        ('const machine = a.address.includes("/") ? a.address.split("/")[0] : null;',
+         'const machine = sr?.host ?? (a.address.includes("/") ? a.address.split("/")[0] : null);'),
+        ("const name = full ? a.space_name || label(a) :", "const name = sr ? sr.role : full ? a.space_name || label(a) :"),
+        (".text_color(idle ? t.muted : t.foreground).child(name))", ".text_color(sr?.color ?? (idle ? t.muted : t.foreground)).child(name))"),
+    ]),
+    "spaces": ("shoal-spaces", [
+        ('const head = h_flex().id(`machine-${m ?? "local"}`).h(26)',
+         'const head = h_flex().id(`machine-${m ?? "local"}`)'
+         '.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "shoal-actions", kind: "dialog", '
+         'width: 640, height: 540, props: { scope: m ? `host:${m}` : "all", machine: m } }); }).h(26)'),
+    ]),
+}
+LAYOUT_BLOCKS = {"agents": "shoal-agents", "spaces": "shoal-spaces", "workspace-status": "shoal-status"}
+
+
+def patch_clone(text: str, name: str, patches: list[tuple[str, str]]) -> str | None:
+    """Herdr's mod text with shoal's edits, as `mod.clone` would name it; None when one of the anchors is gone (a
+    new Herdr release moved that code), so no half-patched copy runs."""
+    clone = CLONES[name][0]
+    for old, new in patches:
+        if text.count(old) != 1:
+            return None
+        text = text.replace(old, new)
+    return text.replace(f"mods/{name}/", f"mods/{clone}/").replace(f'mod: "{name}"', f'mod: "{clone}"')
+
+
+def install_clone(name: str, dry_run: bool = False) -> tuple[bool, str]:
+    """(usable, what happened) for one patched copy of a shipped mod. It is redone whenever the shipped text changes."""
+    clone, patches = CLONES[name]
+    src = os.path.join(app_home(), "mods", name)
+    dest = os.path.join(app_home(), "mods", clone)
+    try:
+        text = open(os.path.join(src, "main.js")).read()
+    except OSError as exc:
+        return False, f"mod {clone}: {exc}"
+    mark = hashlib.sha256(json.dumps([text, patches]).encode()).hexdigest()
+    try:
+        if open(os.path.join(dest, CLONE_MARK)).read().strip() == mark:
+            return True, ""
+    except OSError:
+        pass
+    out = patch_clone(text, name, patches)
+    if out is None:
+        return False, f"mod {clone}: this Herdr release changed {name}: its block keeps Herdr's own (update shoal's patch)"
+    if dry_run:
+        return True, f"[dry-run] mod {clone}: patched copy of {name}"
+    tmp = dest + ".shoal-new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src, tmp, ignore=shutil.ignore_patterns("*.d.ts", "jsconfig.json", "node_modules"))
+    with open(os.path.join(tmp, "main.js"), "w") as fh:
+        fh.write(out)
+    with open(os.path.join(tmp, CLONE_MARK), "w") as fh:
+        fh.write(mark + "\n")
+    shutil.rmtree(dest, ignore_errors=True)
+    os.rename(tmp, dest)  # the app hot-reloads a half-written folder: only a whole one moves in
+    return True, f"mod {clone}: patched copy of {name}"
+
+
+def shoal_layout_doc(main: dict, usable: set[str]) -> dict:
+    """Herdr's `main` layout with `LAYOUT_BLOCKS` swapped where the replacement is usable."""
+    doc = json.loads(json.dumps(main))
+
+    def walk(node: dict) -> None:
+        content = node.get("content")
+        if isinstance(content, dict) and LAYOUT_BLOCKS.get(content.get("mod")) in usable:
+            content["mod"] = LAYOUT_BLOCKS[content["mod"]]
+        for child in node.get("children") or []:
+            walk(child)
+    walk(doc)
+    doc["shoal_layout"] = True
+    return doc
+
+
+def install_layout(dry_run: bool = False) -> list[str]:
+    """The `shoal` layout (ctrl-shift-l still cycles back to Herdr's). A file of that name shoal did not write is left."""
+    out, usable = [], set()
+    for name in CLONES:
+        ok, line = install_clone(name, dry_run)
+        if ok:
+            usable.add(CLONES[name][0])
+        if line:
+            out.append(line)
+    if os.path.lexists(os.path.join(app_home(), "mods", "shoal-status")) or dry_run:
+        usable.add("shoal-status")
+    src = os.path.join(app_home(), "layouts", "main.json")
+    path = os.path.join(app_home(), "layouts", f"{SHOAL_LAYOUT}.json")
+    try:
+        main = json.load(open(src))
+    except (OSError, ValueError) as exc:
+        return out + [f"layout {SHOAL_LAYOUT}: {src}: {exc}"]
+    try:
+        have = json.load(open(path))
+    except FileNotFoundError:
+        have = None
+    except (OSError, ValueError) as exc:
+        return out + [f"layout {SHOAL_LAYOUT}: {path}: {exc}: left as it is"]
+    if have is not None and not (isinstance(have, dict) and have.get("shoal_layout")):
+        return out + [f"layout {SHOAL_LAYOUT}: {path} is not shoal's: left as it is"]
+    doc = shoal_layout_doc(main, usable)
+    if doc != have:
+        out.append(("[dry-run] " if dry_run else "") + f"layout {SHOAL_LAYOUT}: {', '.join(sorted(usable))}")
+        if not dry_run:
+            with open(path + ".tmp", "w") as fh:
+                json.dump(doc, fh, indent=2)
+                fh.write("\n")
+            os.replace(path + ".tmp", path)
+    if have is None and not dry_run and app_running():
+        try:
+            app_do("layout.switch", {"name": SHOAL_LAYOUT})
+        except AppError as exc:
+            out.append(f"layout {SHOAL_LAYOUT}: not switched ({exc})")
+    return out
 
 
 # The 0.9.3 paste keys, kept at the maintainer's request (2026-11-03): under kitty, Ctrl+V pasted text and
@@ -861,7 +1194,7 @@ def cmd_app_install(a) -> int:
 PASTE_KEYS = {"ctrl-v": "terminal.paste", "ctrl-shift-v": "terminal.paste_image"}
 APP_DEFAULT_PASTE_KEYS = {"ctrl-v": "terminal.paste_image", "ctrl-shift-v": "terminal.paste"}
 # The actions dialog (the 0.9.3 palette's Alt+s, after the Herdr prefix): one global key, mouse for the rest.
-ACTION_KEYS = {"ctrl-alt-s": "mod.open:shoal-actions"}
+ACTION_KEYS = {"ctrl-alt-s": "mod.open:shoal-actions", "ctrl-alt-l": "shoal-status.lattice"}
 THEME = "shoal-ocean"
 THEME_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "themes")
 
@@ -942,7 +1275,7 @@ def install_keys(dry_run: bool = False) -> list[str]:
         return [f"keys: {path} is not valid JSON ({exc}): left as it is"]
     want_keys = [("terminal", k, v, APP_DEFAULT_PASTE_KEYS[k], "the 0.9.3 paste keys") for k, v in PASTE_KEYS.items()]
     if os.path.isdir(os.path.join(MOD_DIR, "shoal-actions")):
-        want_keys += [("global", k, v, None, "the actions dialog") for k, v in ACTION_KEYS.items()]
+        want_keys += [("global", k, v, None, "the actions dialog and the lattice") for k, v in ACTION_KEYS.items()]
     if not isinstance(doc, dict) or any(not isinstance(doc.get(s, {}), dict) for s in {w[0] for w in want_keys}):
         return [f"keys: {path} has a section shoal can edit that is not an object: left as it is"]
     out, changed = [], False
@@ -995,6 +1328,8 @@ def doctor_checks() -> list[tuple[str, bool, str]]:
                 out.append((f"app mod {name} installed from this checkout",) + link_state(name))
         out.append(("app paste keys as in 0.9.3",) + keys_state())
         out.append(("app theme (shoal ocean)",) + theme_state())
+        path = os.path.join(app_home(), "layouts", f"{SHOAL_LAYOUT}.json")
+        out.append((f"app layout {SHOAL_LAYOUT}", os.path.exists(path), path if os.path.exists(path) else "missing (rerun `shoal ui app-install`)"))
     if has_core:
         v = _version([hc_bin(), "--version"])
         out.append(("herdr-core at the pin", v == CORE_PIN, f"{v or 'none'} (pin {CORE_PIN})"))

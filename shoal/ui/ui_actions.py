@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Operator actions without a terminal: plan, then apply (the Herdr app's actions dialog; docs/ui.md).
 
-    shoal ui act-plan VERB [--shoal ID] [--role SLUG] [--text T] [--item I] [--note N] [--wake]
-                      [--state on|off] [--until ISO] [--no-wake] [--json]
+    shoal ui act-plan VERB [--shoal ID | --scope all|host:NAME] [--role SLUG] [--text T] [--item I] [--note N] [--wake]
+                      [--state on|off] [--until ISO] [--no-wake] [--model M] [--effort X] [--ecosystem E] [--force] [--json]
     shoal ui act-apply --token T [--json]
 
 The 0.9.3 palette (`ui_herdr.act`) asks in a terminal, previews a write verb with its own `--dry-run`, names its
@@ -35,7 +35,8 @@ for _p in (PKG, HERE):
 
 V = 1
 PLAN_TTL_S = 600
-WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze")
+WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff")
+SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade")
 
 
@@ -132,6 +133,19 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         if a.no_wake:
             return args + ["--no-wake"], "", True
         return args, "toggling a freeze wakes every role once (tokens)", True
+    if verb == "handoff":
+        import roles
+        role = _role(spec, a.role)
+        args = ["handoff", "--spec", roles.find_spec(sid), "--only", role]
+        if a.model:
+            args.append(f"--model={a.model}")
+        if a.effort:
+            args.append(f"--effort={a.effort}")
+        if a.ecosystem:
+            args.append(f"--ecosystem={a.ecosystem}")
+        if a.force:
+            args.append("--force")
+        return args, "stops this session and starts a new one from its start doc: a new incarnation, one cold turn", True
     raise ActError(f"unknown write verb {verb}")
 
 
@@ -141,11 +155,57 @@ def _shoal(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
                           timeout=timeout, env=dict(os.environ, NO_COLOR="1"), stdin=subprocess.DEVNULL)
 
 
+def scope_shoals(scope: str) -> list[str]:
+    """The shoal ids of a scope: `all` (every live shoal this host sees) or `host:<name>` (those whose home it is).
+    Hidden shoals are left out, as they are from the app's spaces."""
+    import ui_status
+    from roles import ShoalSpec
+    if scope != "all" and not (scope.startswith("host:") and scope[5:]):
+        raise ActError(f"unknown scope {scope!r} (all, or host:<name>)")
+    hidden = ui_status.hidden_shoals()
+    out = []
+    for p in ui_status.discover_all("", None):
+        try:
+            spec = ShoalSpec.load(p)
+        except Exception:  # noqa: BLE001 - one broken spec never blocks the others
+            continue
+        if spec.retired_utc or spec.sid in hidden or (scope != "all" and (spec.home or "") != scope[5:]):
+            continue
+        out.append(spec.sid)
+    if not out:
+        raise ActError(f"no live shoal in scope {scope}")
+    return out
+
+
+def plan_scope(verb: str, a) -> dict:
+    """One verb across shoals: every shoal's own dry run, one token, and a confirm even for offline (it reaches
+    more than the shoal in front of you). Any refusal refuses the whole plan."""
+    if verb not in SCOPED_VERBS:
+        raise ActError(f"--scope applies to {', '.join(SCOPED_VERBS)}, not {verb}")
+    argvs, previews, cost = [], [], ""
+    for sid in scope_shoals(a.scope):
+        a.shoal = sid
+        args, c, _confirm = build(verb, a)
+        pv = _shoal(args + ["--dry-run"])
+        if pv.returncode != 0:
+            raise ActError(f"{sid}: the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
+        argvs.append(args)
+        previews.append(f"{sid}:\n{(pv.stdout + pv.stderr).strip() or '(no preview output)'}")
+        cost = cost or c
+    _sweep()
+    token = _store({"verb": verb, "shoal": "", "scope": a.scope, "role": "", "argvs": argvs})
+    return {"v": V, "kind": "shoal-act-plan", "verb": verb, "shoal": "", "scope": a.scope, "role": "",
+            "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "preview": "\n\n".join(previews),
+            "preview_rc": 0, "cost": cost, "confirm": True, "token": token, "expires_s": PLAN_TTL_S}
+
+
 def plan(verb: str, a) -> dict:
     if verb in VIEW_VERBS:
         return view(verb, a)
     if verb not in WRITE_VERBS:
         raise ActError(f"unknown verb {verb} (write: {', '.join(WRITE_VERBS)}; view: {', '.join(VIEW_VERBS)})")
+    if getattr(a, "scope", ""):
+        return plan_scope(verb, a)
     args, cost, confirm = build(verb, a)
     pv = _shoal(args + ["--dry-run"])
     if pv.returncode != 0:
@@ -169,13 +229,17 @@ def apply(token: str) -> dict:
         raise ActError("no such plan (already applied, or expired): plan it again") from exc
     if time.time() - float(p.get("created", 0)) > PLAN_TTL_S:
         raise ActError("the plan expired: plan it again")
-    args = [str(x) for x in p["argv"]]
-    if not args or args[0] not in WRITE_VERBS:
+    argvs = [[str(x) for x in argv] for argv in (p.get("argvs") or [p["argv"]])]
+    if not all(args and args[0] in WRITE_VERBS for args in argvs):
         raise ActError("a stored plan names no write verb")
-    r = _shoal(args)
-    ui_herdr.log_action(args, r.returncode)
+    rc, outs = 0, []
+    for args in argvs:  # each shoal's verb runs even when another's failed: the output says which
+        r = _shoal(args)
+        ui_herdr.log_action(args, r.returncode)
+        rc = rc or r.returncode
+        outs.append((r.stdout + r.stderr).strip())
     return {"v": V, "kind": "shoal-act-result", "verb": p.get("verb"), "shoal": p.get("shoal"), "role": p.get("role"),
-            "rc": r.returncode, "command": "shoal " + shlex.join(args), "output": (r.stdout + r.stderr).strip()}
+            "rc": rc, "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "output": "\n\n".join(outs)}
 
 
 def view(verb: str, a) -> dict:
@@ -281,6 +345,11 @@ def add_parsers(u) -> None:
     q.add_argument("--state", default="", help="offline, freeze: on|off")
     q.add_argument("--until", default="", help="offline on: expected return")
     q.add_argument("--no-wake", action="store_true", help="freeze: record it without waking every role")
+    q.add_argument("--scope", default="", help="offline, freeze: across shoals, `all` or `host:<name>`, in place of --shoal")
+    q.add_argument("--model", default="", help="handoff: the new session's model")
+    q.add_argument("--effort", default="", help="handoff: the new session's effort")
+    q.add_argument("--ecosystem", default="", help="handoff: the new session's provider")
+    q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_act_plan)
     q = u.add_parser("act-apply", help="run a planned write verb once, by its token (from act-plan)")

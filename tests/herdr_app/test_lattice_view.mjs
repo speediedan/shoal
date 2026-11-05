@@ -40,7 +40,7 @@ const vis = (vm, id) => vm.byId.get(id).visual;
 test("node visual classes per state", () => {
   const exp = {
     [`${A}:core`]: "working", [`${A}:dist-ci`]: "local-ci", [`${A}:bench`]: "remote-ci", [`${A}:tune`]: "prompt",
-    [`${A}:integration`]: "auth", [`${A}:addressing`]: "self", [`${A}:registry`]: "unknown", [`${A}:scribe`]: "handover",
+    [`${A}:integration`]: "auth", [`${A}:addressing`]: "queued", [`${A}:registry`]: "unknown", [`${A}:scribe`]: "handover",
     [`${B}:research`]: "peer", [`${B}:analysis`]: "upstream", [`${B}:archive`]: "excluded", [`${B}:pool`]: "lease", [`${B}:drift`]: "other",
   };
   for (const [id, key] of Object.entries(exp)) assert.equal(vis(global, id).key, key, id);
@@ -51,21 +51,18 @@ test("node visual classes per state", () => {
   for (const [id, v] of global.byId) if (v.visual.halo && v.kind === "role" && id !== `${A}:integration`) assert.ok(v.visual.halo.period > auth.halo.period, `${id} pulses slower than auth`);
   assert.equal(vis(global, `${B}:research`).border, "dashed");
   assert.equal(vis(global, `${A}:registry`).border, "dotted");
-  assert.equal(vis(global, `${A}:addressing`).fill, 0);
   assert.ok(vis(global, `${A}:dist-ci`).hatch > 0 && vis(global, `${B}:analysis`).hatch > 0);
-  assert.equal(vis(global, `${B}:research`).shape, "hexagon");
-  assert.equal(vis(global, `${A}:addressing`).shape, "diamond");
+  assert.equal(vis(global, `${B}:research`).shape, "circle", "the agent's type is in the hover card");
   assert.equal(vis(global, `${A}:core`).shape, "circle");
 });
 
 test("every salient wait is distinguishable", () => {
-  const keys = ["auth", "ask", "prompt", "design", "assign", "sources", "local-ci", "remote-ci", "lease", "upstream", "peer", "self", "handover", "refill", "hold", "other"];
+  const keys = ["auth", "ask", "prompt", "design", "assign", "sources", "local-ci", "remote-ci", "lease", "upstream", "peer", "handover", "refill", "hold", "other"];
   const sig = (k) => { const s = M.STATE_STYLE[k]; return [s.color, s.badge ?? "", s.hatch ?? 0, s.border ?? "", s.fill].join("|"); };
   assert.equal(new Set(keys.map(sig)).size, keys.length, "each wait has its own encoding");
   const l = M.STATE_STYLE["local-ci"], r = M.STATE_STYLE["remote-ci"];
   assert.notEqual(l.badge, r.badge);
   assert.notEqual(l.hatch, r.hatch);
-  assert.notEqual(l.color, r.color);
 });
 
 test("unknown event and class are tolerated", () => {
@@ -306,12 +303,10 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, pos
   assert.equal(hs.get("host-a").roles, 11);
   assert.equal(hs.get("host-a").msgsPerH, 40);
   assert.equal(hs.get("host-b").roles, 4);
-  // the feed folds the retired wake relay into the system node: a doc without relay nodes is fine
-  const norelay = structuredClone(d);
-  norelay.nodes = norelay.nodes.filter((x) => x.kind !== "relay");
+  // the shoal's writer has no node of its own: its status is on the middle of the circle
   for (const view of ["global", A]) {
-    const nvm = M.buildModel(norelay, view);
-    assert.ok(!nvm.nodes.some((x) => x.kind === "relay"));
+    const nvm = M.buildModel(d, view);
+    assert.ok(!nvm.nodes.some((x) => x.kind === "system"));
     assert.ok(finiteDeep(S.buildScene(nvm, L.layoutGraph(nvm), { width: 900, height: 600, tf: G.identity() }).items));
   }
   // a bad cursor comes back with cursor_reset and a full tail: a new baseline, nothing replayed
@@ -646,11 +641,13 @@ test("right-click opens shoal-actions on a role (machine from source.on) or a sh
   assert.equal(fx.props.fixture, true, "a fixture copy opens the dialog on fixtures");
   assert.equal(fx.props.machine, null);
   assert.ok(!("fixture" in o.props), "a live copy does not");
-  // the shoal's writer node: the shoal alone
-  assert.deepEqual(M.actionsOverlay(alpha, `${A}:shoal`, exec).props, { shoal: A, role: null, machine: "lane-a" });
-  // the hub, an external writer, a missing id or no model: nothing opens
+  // a shoal's circle acts on that shoal, anywhere else on every shoal
+  assert.deepEqual(M.scopeOverlay(alpha, A, exec).props, { shoal: A, role: null, machine: "lane-a" });
+  assert.deepEqual(M.scopeOverlay(global, null, exec).props, { shoal: null, role: null, scope: "all", machine: "lane-a" });
+  assert.equal(M.scopeOverlay(null, A, exec), null);
+  // the hub, an external writer, a missing id or no model: no role to act on
   assert.equal(M.actionsOverlay(global, "user", exec), null);
-  for (const nd of global.nodes.filter((x) => x.kind !== "role" && x.kind !== "system")) assert.equal(M.actionsOverlay(global, nd.id, exec), null, nd.id);
+  for (const nd of global.nodes.filter((x) => x.kind !== "role")) assert.equal(M.actionsOverlay(global, nd.id, exec), null, nd.id);
   assert.equal(M.actionsOverlay(alpha, null, exec), null);
   assert.equal(M.actionsOverlay(alpha, "nope", exec), null);
   assert.equal(M.actionsOverlay(null, `${A}:core`, exec), null);
@@ -660,6 +657,200 @@ test("right-click opens shoal-actions on a role (machine from source.on) or a sh
     assert.equal(p.shoal, nd.shoal);
     assert.equal(p.role, nd.slug ?? nd.label);
   }
+});
+
+test("edge cards: hit test, card lines, focus and signature", () => {
+  const vm = M.buildModel(doc, A);
+  const lay = L.layoutGraph(vm);
+  const size = { width: 1280, height: 800 };
+  const tf = S.fitScene(vm, lay, size);
+  const id = `${A}:core|${A}:dist-ci|msg`;
+  const sc = S.buildScene(vm, lay, { ...size, tf, motion: "off" });
+  assert.equal(sc.edgeHits.length, vm.edges.filter((e) => lay.pos.get(e.src) && lay.pos.get(e.dst)).length);
+  // the curve's middle hits this edge, or one running within the slop of it; far away hits nothing
+  const at = sc.edgeScreen.get(id);
+  assert.ok(at && Number.isFinite(at.x) && Number.isFinite(at.y));
+  assert.equal(G.hitEdge(sc.edgeHits.filter((h) => h.id === id), at), id);
+  assert.equal(G.hitEdge(sc.edgeHits, { x: -500, y: -500 }), null);
+  assert.equal(G.hitEdge([], at), null);
+  assert.equal(G.hitEdge(sc.edgeHits.filter((h) => h.id === id), { x: at.x + 40, y: at.y + 40 }, 5), null);
+
+  const c = M.cardLines(vm, id);
+  assert.equal(c.title, "core → dist-ci");
+  assert.equal(c.subtitle, "msg");
+  assert.deepEqual(c.rows[0][1], "2 / 4 / 18");
+  assert.deepEqual(c.links.map((l) => l.url), ["https://github.com/example-org/repo-one/pull/103", null], "newest first, a url only when the event has one");
+  assert.ok(c.links[0].text.endsWith("PR 103 rebased; please rerun the GPU leg"), c.links[0].text);
+  assert.equal(c.command, null);
+  assert.equal(M.cardLines(vm, "nope|nope|msg"), null);
+  // an edge from a feed without `recent` still has its card
+  const bare = structuredClone(doc);
+  for (const e of bare.edges) delete e.recent;
+  assert.deepEqual(M.cardLines(M.buildModel(bare, A), id).links, []);
+
+  // hovering an edge keeps it and its ends bright: a node hover's fade, on one edge
+  const hov = S.buildScene(vm, lay, { ...size, tf, motion: "off", hover: id });
+  assert.notDeepEqual(hov.items.filter((it) => it.t === "path" && it.id.startsWith("ec-")).map((it) => it.bg), sc.items.filter((it) => it.t === "path" && it.id.startsWith("ec-")).map((it) => it.bg));
+
+  // a new event on the open edge redraws; on a closed one it does not
+  const d2 = structuredClone(doc);
+  const e2 = d2.edges.find((e) => e.id === id);
+  e2.recent.unshift({ ts: "2026-11-02T20:00:30Z", age_s: 10, kind: "info", summary: "newer" });
+  e2.n_24h += 1;
+  assert.notEqual(M.visualSignature(M.buildModel(d2, A), id), M.visualSignature(vm, id));
+  assert.equal(M.visualSignature(M.buildModel(d2, A)), M.visualSignature(vm));
+});
+
+test("the legend: five groups, what is on screen, the full key one click away", () => {
+  assert.deepEqual(M.LEGEND_GROUPS.map((g) => g.id), ["you", "working", "waiting", "idle", "off"]);
+  const grouped = M.LEGEND_GROUPS.flatMap((g) => g.keys);
+  assert.equal(new Set(grouped).size, grouped.length, "a state is in one group");
+  assert.deepEqual([...grouped].sort(), Object.keys(M.STATE_STYLE).sort(), "every state has a group");
+  for (const key of M.LEGEND_GROUPS.find((g) => g.id === "waiting").keys) assert.equal(M.STATE_STYLE[key].color, M.STATE_STYLE["local-ci"].color, key);
+  const colors = new Set(Object.values(M.STATE_STYLE).map((s) => s.color));
+  assert.ok(colors.size <= 8, `state colors: ${[...colors]}`);
+  const vm = M.buildModel(doc, A);
+  const now = M.legendEntries(vm);
+  const drawn = new Set(vm.nodes.filter((n) => n.kind === "role").map((n) => n.visual.key));
+  assert.deepEqual(new Set(now.states.map((s) => s.key)), drawn, "only what is on screen");
+  assert.ok(now.hiddenStates > 0);
+  const full = M.legendEntries(vm, true);
+  assert.equal(full.states.length, Object.keys(M.STATE_STYLE).length);
+  assert.equal(full.hiddenStates, 0);
+  assert.ok(now.edges.length <= 3 && now.edges[0].cls === "messages");
+  assert.ok(!now.shapes.some(([, l]) => /claude|codex|opencode/.test(l)));
+  assert.equal(new Set(Object.entries(M.EDGE_COLOR).filter(([c]) => c !== "blocked-on" && c !== "alias").map(([, v]) => v)).size, 1, "traffic is one color");
+  assert.equal(M.legendEntries({ ...vm, hostColor: new Map([["host-a", "#fff"]]) }).hosts.length, 0, "one host needs no key");
+});
+
+test("a role with no work assigned goes quiet after the grace, unless it asks", () => {
+  const role = (since, extra = {}, work = {}) => ({ kind: "role", id: "s:r", state: { class: "wait", event: "assignment", group: "human", since_s: since, needs_you: true, ...extra }, work });
+  assert.equal(M.stateKey(role(600)), "assign");
+  assert.equal(M.nodeVisual(role(600)).needsYou, true, "at first it does ask");
+  assert.equal(M.stateKey(role(M.STARVED_AFTER_S)), "starved");
+  const q = M.nodeVisual(role(M.STARVED_AFTER_S));
+  assert.equal(q.needsYou, false);
+  assert.equal(q.halo, null);
+  assert.equal(q.urgency, null);
+  assert.equal(M.stateKey(role(M.STARVED_AFTER_S, {}, { asks: ["ok?"] })), "assign", "an open question still counts");
+  assert.equal(M.stateKey(role(M.STARVED_AFTER_S, { reasons: ["waiting-on-you"] })), "assign");
+  const d = structuredClone(doc);
+  const n = d.nodes.find((x) => x.id === `${A}:core`);
+  n.state = { class: "wait", event: "assignment", group: "human", since_s: M.STARVED_AFTER_S + 5, needs_you: true };
+  n.work = { asks: [] };
+  const vm = M.buildModel(d, A);
+  assert.ok(!vm.needsYou.some((r) => r.id === `${A}:core`));
+  const s = vm.shoals.find((x) => x.id === A);
+  assert.equal(s.starved, 1);
+  assert.ok(M.cardLines(vm, M.SHOAL_CARD + A).rows.some(([k, v]) => k === "no work assigned" && v === "1"));
+});
+
+test("wait:self draws its cause, and is never its own state or a legend entry", () => {
+  const role = (state, work = {}) => ({ kind: "role", id: "s:r", state: { class: "wait", event: "self", group: "self", ...state }, work });
+  assert.equal(M.stateKey(role({})), "queued");
+  assert.equal(M.stateKey(role({}, { asks: ["ok to merge?"] })), "ask");
+  assert.equal(M.stateKey(role({ reasons: ["waiting-on-you"] })), "ask");
+  assert.equal(M.stateKey(role({ reasons: ["blocked-on-question"], shoal_offline: true })), "prompt", "a question outranks offline");
+  assert.equal(M.stateKey(role({ reasons: ["dead-worker"] })), "dead");
+  assert.equal(M.stateKey(role({ reasons: ["parked-work"], shoal_offline: true, needs_you: true })), "held");
+  assert.equal(M.nodeVisual(role({ reasons: ["parked-work"], shoal_offline: true, needs_you: true })).needsYou, false, "a held role asks nothing while you are away");
+  assert.equal(M.stateKey(role({ reasons: ["dead-worker", "parked-work"], shoal_offline: true, needs_you: true })), "dead", "offline never hides a dead session");
+  assert.equal(M.nodeVisual(role({ reasons: ["dead-worker"], shoal_offline: true, needs_you: true })).needsYou, true);
+  assert.equal(M.nodeVisual(role({ reasons: ["waiting-on-you"], needs_you: true })).needsYou, true);
+  const keys = M.legendEntries().states.map((s) => s.key);
+  assert.ok(!keys.includes("self"));
+  for (const k of ["queued", "held", "dead"]) assert.ok(keys.includes(k), k);
+  assert.ok(M.STATE_RANK.every((k) => M.STATE_STYLE[k]), "every ranked state has a style");
+  const card = M.cardLines(M.buildModel(doc, "global"), `${A}:addressing`);
+  assert.ok(!card.rows.find(([k]) => k === "state")[1].includes("self"), "the raw event stays out of the card");
+});
+
+test("legend and labels: no retired relay, no writer square, no generation", () => {
+  const L0 = M.legendEntries();
+  assert.ok(!L0.shapes.some(([, label]) => /relay|shoal writer/.test(label)), JSON.stringify(L0.shapes));
+  const vm = M.buildModel(doc, "global");
+  const lay = L.layoutGraph(vm);
+  const sc = S.buildScene(vm, lay, { width: 1200, height: 800, tf: S.fitScene(vm, lay, { width: 1200, height: 800 }), motion: "off" });
+  for (const it of sc.items) if (it.t === "text") assert.ok(!/\br\d+\b/.test(it.text), it.text);
+});
+
+test("the middle of a shoal's circle is its status; a right-click there acts on the shoal", () => {
+  const size = { width: 1200, height: 800 };
+  for (const view of ["global", A]) {
+    const vm = M.buildModel(doc, view);
+    const lay = L.layoutGraph(vm);
+    const sc = S.buildScene(vm, lay, { ...size, tf: S.fitScene(vm, lay, size), motion: "off" });
+    const d = sc.discs.find((x) => x.id === A);
+    assert.ok(d && d.hole > 0 && d.hole <= d.r, view);
+    assert.equal(G.hitHole(sc.discs, { x: d.x, y: d.y }), A);
+    assert.equal(G.hitDisc(sc.discs, { x: d.x + d.hole + 1, y: d.y }), A, "still inside the circle");
+    assert.equal(G.hitHole(sc.discs, { x: d.x + d.hole + 1, y: d.y }), null);
+    assert.equal(G.hitDisc(sc.discs, { x: -5000, y: -5000 }), null, "outside every circle: all shoals");
+    const c = M.cardLines(vm, M.SHOAL_CARD + A);
+    assert.equal(c.title, "alpha");
+    assert.ok(c.rows.some(([k]) => k === "needs you") && c.rows.some(([k]) => k === "mode"));
+    assert.equal(M.cardLines(vm, M.SHOAL_CARD + "nope"), null);
+  }
+  const g = M.buildModel(doc, "global");
+  const lay = L.layoutGraph(g);
+  const sc = S.buildScene(g, lay, { ...size, tf: S.fitScene(g, lay, size), motion: "off" });
+  const t = sc.discs[0].title;
+  assert.equal(G.hitDisc(sc.discs, { x: t.x + 1, y: t.y + 1 }), sc.discs[0].id, "the shoal's name counts too");
+});
+
+test("a role away from its shoal's home names its host in the global view", () => {
+  const d = structuredClone(doc);
+  const id = `${A}:core`;
+  d.shoals.find((s) => s.id === A).home = "home-host";
+  d.nodes.find((x) => x.id === id).host = "away-host";
+  const size = { width: 1400, height: 900 };
+  const labels = (view) => {
+    const vm = M.buildModel(d, view);
+    const lay = L.layoutGraph(vm);
+    return S.buildScene(vm, lay, { ...size, tf: S.fitScene(vm, lay, size), motion: "off" }).items.filter((i) => i.t === "text").map((i) => i.text);
+  };
+  assert.equal(M.buildModel(d, "global").byId.get(id).awayHost, "away-host");
+  assert.ok(labels("global").some((t) => t === "core @away-host"), "global: in the label");
+  assert.ok(!labels(A).some((t) => t.includes("@")), "per shoal: the host bands say it");
+  d.shoals.find((s) => s.id === A).home = "away-host";
+  assert.equal(M.buildModel(d, "global").byId.get(id).awayHost, null, "at home: nothing to say");
+});
+
+test("a stale ledger clone is flagged, and a fresh or unknown one is not", () => {
+  const d = structuredClone(doc);
+  d.shoals[0].ledger_age_s = 4 * 86400;
+  d.shoals[1].ledger_age_s = 30;
+  const vm = M.buildModel(d, "global");
+  assert.ok(M.ledgerStale(vm.shoals.find((s) => s.id === d.shoals[0].id)));
+  assert.ok(!M.ledgerStale(vm.shoals.find((s) => s.id === d.shoals[1].id)));
+  assert.ok(M.cardLines(vm, M.SHOAL_CARD + d.shoals[0].id).rows.some(([k, v]) => k === "ledger clone" && v.includes("4d")));
+  assert.ok(!M.ledgerStale({ ledgerAge: null }));
+  assert.notEqual(M.visualSignature(M.buildModel(doc, "global")), M.visualSignature(vm), "the warning redraws");
+});
+
+test("hiding: outside writers and parked roles only, and the count says how to bring them back", () => {
+  const vm = M.buildModel(doc, "global");
+  const ext = vm.nodes.find((x) => x.kind === "external");
+  assert.equal(M.cardLines(vm, ext.id).hideable, true);
+  assert.equal(M.cardLines(vm, `${A}:core`).hideable, false);
+  assert.equal(M.cardLines(vm, `${B}:archive`).hideable, true, "a parked role");
+  const h = M.buildModel(doc, "global", { hidden: [ext.id, 7, null] });
+  assert.ok(!h.byId.has(ext.id));
+  assert.equal(h.hiddenN, 1);
+  assert.ok(!h.edges.some((e) => e.src === ext.id || e.dst === ext.id), "its edges go with it");
+  assert.deepEqual(M.hiddenList(["a", 1, null, "b"]), ["a", "b"]);
+  assert.deepEqual(M.hiddenList("x"), []);
+});
+
+test("a role's card says its context and whether it can restart now", () => {
+  const vm = M.buildModel(doc, "global");
+  const row = (id, k) => M.cardLines(vm, id).rows.find(([x]) => x === k);
+  assert.ok(row(`${A}:core`, "context"));
+  assert.equal(row(`${A}:core`, "restart-ready"), undefined, "mid-turn: not asked");
+  assert.deepEqual(row(`${A}:addressing`, "restart-ready"), ["restart-ready", "no"]);
+  const d = structuredClone(doc);
+  d.nodes.find((x) => x.id === `${A}:addressing`).state.restart_ready = true;
+  assert.deepEqual(M.cardLines(M.buildModel(d, "global"), `${A}:addressing`).rows.find(([x]) => x === "restart-ready"), ["restart-ready", "yes"]);
 });
 
 console.log(`lattice-view: ${n} tests passed`);

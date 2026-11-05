@@ -43,10 +43,10 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
   assert.equal(modJson.overlay.height, M.SIZE.height);
 });
 
-test("verbs: the ten buttons in order, each with a kind and a role rule", () => {
-  assert.deepEqual(M.VERBS.map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Status", "Conditions", "Upgrade preview"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"]]);
+test("verbs: the eleven buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.VERBS.map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Status", "Conditions", "Upgrade preview"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["handoff", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
     else assert.ok(fx.views[v.verb], `a view fixture for ${v.verb}`);
@@ -58,7 +58,7 @@ test("verbs: the ten buttons in order, each with a kind and a role rule", () => 
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true });
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false });
   assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
@@ -250,7 +250,7 @@ test("preselection: props, then the focused card, then the first needs-you role"
   const roles = M.parseReply(ok(fx.roles), "roles");
   // props win, with their machine
   assert.deepEqual(M.preselect({ props: { shoal: B, role: "docs", machine: "lane-a", overlay: "o1" }, focused: { space: "sp-home", terminal: "t2" }, terminals, spaces }),
-    { shoal: B, role: "docs", machine: "lane-a", from: "props", machineGiven: true });
+    { shoal: B, role: "docs", scope: null, machine: "lane-a", from: "props", machineGiven: true });
   assert.equal(M.preselect({ props: { shoal: A, role: "core", machine: null } }).machine, null);
   // a key opens it with only {overlay}: the focused card
   const env = (f) => ({ props: { overlay: "o1" }, focused: f, terminals, spaces, panes });
@@ -359,4 +359,33 @@ test("public gate: fixtures and module hold no local paths or host names", () =>
     assert.ok(!/\/home\/|\/Users\/|\/mnt\//.test(text), "no absolute home paths");
     assert.ok(!/\u2014/.test(text), "no em dashes");
   }
+});
+
+test("scopes: across shoals only the verbs that span them, and no shoal to pick", () => {
+  const all = { shoal: null, role: null, scope: "all" };
+  assert.deepEqual(M.verbsFor(all).map((v) => v.verb), ["offline", "freeze"]);
+  assert.equal(M.verbsFor({ shoal: A, role: null }).length, M.VERBS.length);
+  const form = M.setValue(M.newForm("offline", NOW), "state", "off");
+  assert.equal(M.validate("offline", all, form), null);
+  assert.deepEqual(M.planArgv("offline", all, form).slice(0, 7), ["ui", "act-plan", "offline", "--scope", "all", "--state", "off"]);
+  assert.deepEqual(M.planArgv("offline", { scope: "host:lane-a" }, form).slice(3, 5), ["--scope", "host:lane-a"]);
+  assert.match(M.validate("msg", all, M.newForm("msg", NOW)), /one shoal/);
+  assert.equal(M.scopeLabel("all"), "every shoal");
+  assert.equal(M.scopeLabel("host:lane-a"), "shoals on lane-a");
+  assert.equal(M.scopeLabel(null), "");
+  assert.deepEqual(M.propsContext({ scope: "host:lane-a", machine: "lane-a" }), { shoal: null, role: null, scope: "host:lane-a", machine: "lane-a", from: "props", machineGiven: true });
+});
+
+test("handoff: a role, an optional provider and model, on the role's own host", () => {
+  const t = { shoal: A, role: "core" };
+  const f = M.newForm("handoff", NOW);
+  assert.equal(M.validate("handoff", { shoal: A, role: "*" }, f), "pick a role first (not *)");
+  assert.deepEqual(M.planArgv("handoff", t, f), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--json"]);
+  const g = M.setValue(M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "effort", "high"), "force", true);
+  assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--effort=high", "--force", "--json"]);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "force"]);
+  assert.equal(M.handoffMachine({ host: "lane-b" }, ["lane-a", "lane-b"], "lane-a"), "lane-b", "restart refuses another host's role");
+  assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);
+  assert.equal(M.handoffMachine({ host: "elsewhere" }, ["lane-a"], "lane-a"), "lane-a", "the CLI's refusal then says where to run it");
+  assert.equal(M.handoffMachine(null, ["lane-a"], "lane-a"), "lane-a");
 });

@@ -49,6 +49,7 @@ FEED_INTERVAL_S = 5.0
 ROWS_MAX_AGE_S = ui_status.CACHE_MAX_AGE_S  # a role row built here is reused this long (no re-probe per tick)
 RATE_HALF_LIFE_S = 3600.0
 DONE_RECENT_MAX = 10
+EDGE_RECENT_MAX = 3
 SUMMARY_MAX = 120
 RELAY_WRITER = "wake-relay"
 EVENT_TYPES = ("msg", "offer", "withdraw", "claim", "release", "done", "grant")
@@ -260,6 +261,17 @@ def summary(e: dict) -> str:
     return _short(f"{typ} {item}".strip())
 
 
+def recent_doc(e: dict, now: float) -> dict:
+    """One entry of an edge's `recent` list (newest first): what its hover card shows."""
+    d = {"ts": e["ts"], "age_s": int(max(0.0, now - e["_t"])), "kind": str(e.get("kind") or e.get("verb") or e.get("mode") or ""),
+         "summary": summary(e)}
+    if e.get("item"):
+        d["item"] = str(e["item"])
+    if e.get("url"):
+        d["url"] = e["url"]
+    return d
+
+
 def tail_event(e: dict) -> bool:
     """Events the tail carries: traffic and work changes, not postures, queue versions or beats."""
     typ = e.get("type")
@@ -345,7 +357,7 @@ def role_states(spec, view, rows: list[dict], now: float) -> dict[str, dict]:
 
 class Edge:
     __slots__ = ("src", "dst", "cls", "sid", "n_rate", "n_1h", "n_24h", "decayed", "last_t", "structural", "open",
-                 "stale")
+                 "stale", "recent")
 
     def __init__(self, src, dst, cls, sid, structural=False):
         self.src, self.dst, self.cls, self.sid = src, dst, cls, sid
@@ -355,8 +367,9 @@ class Edge:
         self.structural = structural
         self.open = 0
         self.stale = None
+        self.recent = collections.deque(maxlen=EDGE_RECENT_MAX)
 
-    def add(self, t: float, now: float, rate_s: float) -> None:
+    def add(self, t: float, now: float, rate_s: float, e: dict | None = None) -> None:
         age = max(0.0, now - t)
         if age < DAY_S:
             self.n_24h += 1
@@ -365,6 +378,8 @@ class Edge:
                 self.n_1h += 1
             if age < rate_s:
                 self.n_rate += 1
+            if e is not None:  # `Tail.events` sorts by timestamp, so the deque keeps the newest
+                self.recent.append(e)
         if self.last_t is None or t > self.last_t:
             self.last_t = t
 
@@ -382,6 +397,8 @@ class Edge:
             d["open"] = self.open
         if self.stale is not None:
             d["stale"] = self.stale
+        if self.recent:
+            d["recent"] = [recent_doc(e, now) for e in reversed(self.recent)]
         return d
 
 
@@ -525,7 +542,7 @@ class GraphBuilder:
                     if (name.startswith("ext:") or name.startswith("ext-")) and name not in slugs:
                         ext_seen.setdefault("ext:" + name[4:], set()).add(sid)
                 if dst is not None and cls in EDGE_CLASSES:
-                    edge(src, dst, cls, sid).add(t, now, self.rate_s)
+                    edge(src, dst, cls, sid).add(t, now, self.rate_s, e)
             for w in self.tail.writers(sid):
                 if w.startswith("ext-") and w not in slugs:
                     ext_seen.setdefault("ext:" + w[4:], set()).add(sid)
@@ -536,6 +553,7 @@ class GraphBuilder:
                                      "metrics": {"pages_24h": m["pages_24h"]}}
 
             # -- roles
+            off, frz = view.user_offline(), view.freeze()
             counts = collections.Counter()
             for row in rows:
                 slug = row.get("slug")
@@ -573,7 +591,9 @@ class GraphBuilder:
                               "source": st["source"], "quality": st.get("quality") or [],
                               "posture": row.get("posture") or "", "sub": row.get("sub") or "",
                               "session": row.get("session") or "", "since_s": row.get("posture_age_s"),
-                              "needs_you": bool(row.get("needs_you")), "reasons": reasons},
+                              "needs_you": bool(row.get("needs_you")), "reasons": reasons,
+                              "shoal_offline": bool(off),
+                              "restart_ready": bool((view.current_queue(slug) or {}).get("restart_ready"))},
                     "work": {"active": {"item": active, "url": item_url(active, repos)} if active else None,
                              "next": nxt, "asks": asks, "offers_open": int(row.get("offers_open") or 0),
                              "done_recent": [{"item": d.get("item"), "url": d.get("url") or item_url(d.get("item"), repos),
@@ -597,9 +617,12 @@ class GraphBuilder:
             user["metrics"]["msgs_in_1h"] += umet.get("msgs_in_1h", 0)
             if home:
                 hosts.add(home)
-            off, frz = view.user_offline(), view.freeze()
+            from role_time_adapters import ledger_fetched_at
+            fetched = ledger_fetched_at(spec.ledger_dir) if spec.ledger_dir else None
             sdoc = {
                 "id": sid, "gen": f"r{spec.incarnation + 1}", "retired": bool(spec.retired_utc), "home": home,
+                # how long ago this host's clone last fetched: the feed never pulls, so a renderer warns when it is old
+                "ledger_age_s": int(max(0.0, now - fetched)) if fetched else None,
                 "mode": {"offline": bool(off), "freeze": bool(frz)},
                 "metrics": {"roles": len(rows), "working": counts["work"], "waiting": counts["wait"],
                             "needs_you": sum(1 for r in rows if r.get("needs_you")),

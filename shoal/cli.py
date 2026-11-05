@@ -87,7 +87,7 @@ import pool_cli as _pool_cli  # noqa: E402
 import role_time as _role_time  # noqa: E402
 import ci_wait as _ci_wait  # noqa: E402
 import prune as _prune  # noqa: E402
-from roles import (SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
+from roles import (ECOSYSTEMS, SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
 from systemd import cmd_install as cmd_install_systemd  # noqa: E402
 from systemd import cmd_uninstall as cmd_uninstall_systemd  # noqa: E402
@@ -789,6 +789,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return run_restart(load_spec(args), args)
 
 
+OLD_SESSION_WAIT_S = 30
+
+
 def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
     if spec.retired_utc and not getattr(args, "force", False):
         print(f"spec is retired ({spec.retired_utc}); start a fresh shoal or pass --force")
@@ -831,6 +834,38 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
     only = None
     if getattr(args, "only", ""):
         only = [s.strip() for s in args.only.split(",") if s.strip()]
+    for kv in (getattr(args, "set_ecosystem", None) or []):
+        slug, _, eco = kv.partition(":")
+        r = spec.role(slug)
+        if r is None or eco not in ECOSYSTEMS:
+            print(f"bad --set-ecosystem {kv!r} (want SLUG:{'|'.join(ECOSYSTEMS)})")
+            return 1
+        if slug not in (only or []):
+            print(f"REFUSED: --set-ecosystem {slug} needs --only {slug}: the record would change with no relaunch")
+            return 1
+        if r.ecosystem == eco:
+            continue
+        # the old session must be gone first: `shoal handoff` stops it, or says why it cannot. A stopped worker can take
+        # a moment to exit, and refusing then would strand a role whose old session was just stopped.
+        gone_by = time.time() + OLD_SESSION_WAIT_S
+        while r.session and not dry and r.ecosystem == "claude" and _park.claude_live(r) and time.time() < gone_by:
+            time.sleep(1)
+        if r.session and not dry and (_park.session_held(r, spec.dir) or (r.ecosystem == "claude" and _park.claude_live(r))):
+            print(f"REFUSED: {slug}'s {r.ecosystem} session {r.session[:8]} is still live, so two sessions would hold the "
+                  f"role: use `shoal handoff`")
+            return 1
+        print(f"{slug}: recorded provider {r.ecosystem} -> {eco}" + (f"; effort {r.effort} cleared" if r.effort else ""))
+        r.ecosystem, r.effort = eco, ""  # an effort value means what its provider says it means: back to the default
+    for kv in (getattr(args, "set_effort", None) or []):
+        slug, _, effort = kv.partition(":")
+        r = spec.role(slug)
+        if r is None:
+            print(f"unknown --set-effort slug: {slug}")
+            return 1
+        if slug not in (only or []):
+            print(f"REFUSED: --set-effort {slug} needs --only {slug}")
+            return 1
+        r.effort = effort
     for slug, sid in launched.items():
         r = spec.role(slug)
         if r is None:
@@ -1165,6 +1200,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--set-model", action="append", default=[],
                    help="SLUG:MODEL to correct a role's recorded model (repeatable; "
                         "adoptions and relaunches inherit the record)")
+    p.add_argument("--set-ecosystem", action="append", default=[],
+                   help="SLUG:ECOSYSTEM to relaunch a role on another provider (repeatable; `handoff` stops the old session)")
+    p.add_argument("--set-effort", action="append", default=[], help="SLUG:EFFORT for a relaunched role (repeatable)")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
     p.add_argument("--old-session", action="append", default=[])
     p.add_argument("--consumer-launched", action="append", default=[],

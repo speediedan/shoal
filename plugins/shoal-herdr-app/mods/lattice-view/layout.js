@@ -2,7 +2,7 @@
 //
 // Two steps. First a structured target for every node (global: shoal clusters on a ring around
 // the shared `user` hub; per shoal: roles on a ring grouped into host sectors, the system writer
-// and wake relay inside, externals outside). Then a small force refinement (anchor springs plus
+// inside, externals outside). Then a small force refinement (anchor springs plus
 // collision and short-range repulsion, a compact Fruchterman-Reingold variant with linear
 // cooling) that clears overlaps without losing the structure. Starting jitter is seeded by a hash
 // of each node id. Positions are kept by node id across data ticks: while the view's node set is
@@ -78,13 +78,7 @@ export function layoutTargets(vm) {
         targets.set(n.id, { x: c.x + rc * Math.cos(a), y: c.y + rc * Math.sin(a) });
         center.set(n.id, c);
       });
-      for (const n of nodes.filter((m) => m.shoal === s.id && m.kind !== "role" && m.kind !== "writer" && m.kind !== "external")) {
-        const off = n.kind === "system" ? 0 : n.kind === "relay" ? Math.PI : Math.PI / 2;
-        const rr = n.kind === "system" ? rc * 0.34 : rc * 0.3;
-        targets.set(n.id, { x: c.x + rr * Math.cos(toHub + off), y: c.y + rr * Math.sin(toHub + off) });
-        center.set(n.id, c);
-      }
-      clusters.push({ id: s.id, label: s.short, gen: s.gen, tint: s.tint, x: c.x, y: c.y, r: rc + 52, urgentColor: s.urgentColor, needsYou: s.needsYou });
+      clusters.push({ id: s.id, label: s.short, tint: s.tint, x: c.x, y: c.y, r: rc + 52, urgentColor: s.urgentColor, needsYou: s.needsYou });
     });
     const clusterOf = new Map(clusters.map((c) => [c.id, c]));
     // externals: by their alias home, else beside the cluster they talk to
@@ -150,11 +144,6 @@ export function layoutTargets(vm) {
       anchors.set(h, { x: (R + 6) * Math.cos(am), y: (R + 6) * Math.sin(am), band: true });
       a0 += span + gap;
     }
-    for (const n of nodes.filter((m) => m.shoal === sid && m.kind !== "role" && m.kind !== "writer" && m.kind !== "external")) {
-      const a = n.kind === "system" ? (Math.PI * 3) / 4 : n.kind === "relay" ? Math.PI / 4 : -Math.PI / 2;
-      targets.set(n.id, { x: R * 0.4 * Math.cos(a), y: R * 0.4 * Math.sin(a) });
-      center.set(n.id, { x: 0, y: 0 });
-    }
     const ext = nodes.filter((n) => n.kind === "external" || n.kind === "writer");
     const list = ext.map((n) => {
       const angs = [...(vm.neighbors.get(n.id) ?? [])].map((id) => targets.get(id)).filter(Boolean).map((t) => Math.atan2(t.y, t.x));
@@ -164,7 +153,7 @@ export function layoutTargets(vm) {
       targets.set(p.id, { x: R * 1.62 * Math.cos(p.a), y: R * 1.62 * Math.sin(p.a) });
       center.set(p.id, { x: 0, y: 0 });
     }
-    clusters.push({ id: sid, label: summary?.short ?? sid, gen: summary?.gen ?? "", tint: summary?.tint ?? "#6a8592", x: 0, y: 0, r: R + 70, urgentColor: summary?.urgentColor, needsYou: summary?.needsYou ?? 0 });
+    clusters.push({ id: sid, label: summary?.short ?? sid, tint: summary?.tint ?? "#6a8592", x: 0, y: 0, r: R + 70, urgentColor: summary?.urgentColor, needsYou: summary?.needsYou ?? 0 });
   }
   // anything left (a node of an unexpected kind) gets a seeded spot on an outer ring
   for (const n of nodes) {

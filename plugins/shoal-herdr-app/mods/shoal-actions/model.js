@@ -45,8 +45,9 @@ export const VERBS = [
   { verb: "withdraw", label: "Withdraw", kind: "write", role: "none", fields: ["item"], about: "withdraw an open offer" },
   { verb: "next", label: "Next", kind: "view", role: "one", about: "a role's queue, offers and mail (marks nothing read)" },
   { verb: "asks", label: "Asks", kind: "view", role: "none", about: "open asks and roles waiting on a question" },
-  { verb: "offline", label: "Offline", kind: "write", role: "none", fields: ["state", "until", "note"], about: "user-offline mode on or off" },
-  { verb: "freeze", label: "Freeze", kind: "write", role: "none", fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
+  { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
+  { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
+  { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
   { verb: "upgrade", label: "Upgrade preview", kind: "view", role: "none", about: "what an upgrade would roll out (applying stays a CLI step)" },
@@ -55,6 +56,15 @@ export const VERBS = [
 export const verbInfo = (verb) => VERBS.find((v) => v.verb === verb) ?? null;
 export const isWrite = (verb) => verbInfo(verb)?.kind === "write";
 export const isView = (verb) => verbInfo(verb)?.kind === "view";
+
+/** The verbs a target can use: a scope across shoals (`all`, `host:<name>`) takes only those that span shoals. */
+export const verbsFor = (target) => (strOrNull(target?.scope) ? VERBS.filter((v) => v.scoped) : VERBS);
+
+/** "every shoal" or "shoals on <host>", for the dialog's header. */
+export function scopeLabel(scope) {
+  const s = str(scope);
+  return s === "all" ? "every shoal" : s.startsWith("host:") ? `shoals on ${s.slice(5)}` : "";
+}
 
 /** Field definitions. kind: "text" (an input), "toggle" (a switch), "choice" (on/off chips). */
 export const FIELDS = {
@@ -65,6 +75,10 @@ export const FIELDS = {
   state: { key: "state", kind: "choice", label: "Mode", options: ["on", "off"], required: true },
   until: { key: "until", kind: "text", label: "Back at", placeholder: "ISO time with offset; empty for no time" },
   noWake: { key: "noWake", kind: "toggle", label: "Record without waking every role (--no-wake)", hint: "off: every role wakes once to see the change (tokens)" },
+  ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
+  model: { key: "model", kind: "text", label: "Model", placeholder: "empty keeps the recorded model, or the new provider's default" },
+  effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty keeps the recorded effort, or the new provider's default" },
+  force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
 };
 
 /** The next local `hour`:00 with its UTC offset (2026-11-04T09:00-07:00): the usual offline end. */
@@ -83,7 +97,7 @@ export function nextMorning(now = new Date(), hour = 9) {
 export function newForm(verb, now = new Date(), prefill = {}) {
   const info = verbInfo(verb);
   if (!info || info.kind !== "write") return null;
-  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true };
+  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false };
   if (verb === "offline") values.until = nextMorning(now);
   for (const [k, v] of Object.entries(obj(prefill) ?? {})) if (k in values) values[k] = v;
   return { verb, values };
@@ -126,7 +140,9 @@ export function roleFor(verb, role) {
 export function validate(verb, target, form = null) {
   const info = verbInfo(verb);
   if (!info) return `unknown action ${verb}`;
-  if (!strOrNull(target?.shoal)) return "pick a shoal first";
+  if (strOrNull(target?.scope)) {
+    if (!info.scoped) return `${info.label} works on one shoal: pick one`;
+  } else if (!strOrNull(target?.shoal)) return "pick a shoal first";
   if (info.role !== "none" && !roleFor(verb, target?.role)) {
     return info.role === "any" ? "pick a role (or * for everyone)" : "pick a role first (not *)";
   }
@@ -153,7 +169,7 @@ export function rolesArgv(shoal = null) {
 export function planArgv(verb, target, form = null) {
   const why = validate(verb, target, form);
   if (why) throw new Error(why);
-  const argv = ["ui", "act-plan", verb, "--shoal", target.shoal];
+  const argv = ["ui", "act-plan", verb, ...(strOrNull(target.scope) ? ["--scope", target.scope] : ["--shoal", target.shoal])];
   const role = roleFor(verb, target.role);
   if (role) argv.push(`--role=${role}`);
   if (isWrite(verb)) {
@@ -175,6 +191,11 @@ export function planArgv(verb, target, form = null) {
       argv.push("--state", v.state);
       if (text("note")) argv.push(`--note=${text("note")}`);
       if (v.noWake) argv.push("--no-wake");
+    } else if (verb === "handoff") {
+      if (strOrNull(v.ecosystem)) argv.push(`--ecosystem=${v.ecosystem}`);
+      if (text("model")) argv.push(`--model=${text("model")}`);
+      if (text("effort")) argv.push(`--effort=${text("effort")}`);
+      if (v.force) argv.push("--force");
     }
   }
   argv.push("--json");
@@ -392,9 +413,21 @@ export function focusContext(focused, terminals, spaces, panes = []) {
 export function propsContext(p) {
   const o = obj(p);
   const shoal = strOrNull(o?.shoal);
-  if (!shoal) return null;
+  const scope = strOrNull(o?.scope);
+  if (!shoal && !scope) return null;
   const machine = typeof o.machine === "string" && o.machine ? o.machine : null;
-  return { shoal, role: strOrNull(o.role), machine, from: "props", machineGiven: "machine" in o };
+  return { shoal, role: strOrNull(o.role), scope, machine, from: "props", machineGiven: "machine" in o };
+}
+
+/**
+ * Where a handoff runs: `restart` launches a session where it runs and refuses a role on another host, so it goes to the
+ * role's own host when that is a machine here, or to this computer when the role is here; else the usual machine.
+ */
+export function handoffMachine(role, machineNames, fallback, thisHost = null) {
+  const host = strOrNull(role?.host);
+  if (!host) return fallback;
+  if (thisHost && host === thisHost) return null;
+  return arr(machineNames).includes(host) ? host : fallback;
 }
 
 /** The first shoal with a needs-you role, and that role; else the first shoal. */

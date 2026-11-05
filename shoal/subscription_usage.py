@@ -481,7 +481,7 @@ def render_lines(doc, *, color=False):
 
 WINDOWS = ("5h", "week", "month")
 IDLE_TEXT = "unused since reset"  # a row the server reports no use for in its current windows (not a 0%)
-BAR_STEPS = (8, 5, 3)  # bar cells, widest first: the table takes the widest set that fits the terminal
+BAR_STEPS = (24, 16, 12, 8, 5, 3)  # bar cells, widest first: the table takes the widest set that fits the terminal
 DIM, RESET_CODE = "\x1b[90m", "\x1b[0m"
 SEVERITY_CODES = {"ok": "\x1b[32m", "warning": "\x1b[33m", "critical": "\x1b[31m"}
 

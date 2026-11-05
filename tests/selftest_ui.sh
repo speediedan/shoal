@@ -1895,6 +1895,9 @@ E = {(e["src"], e["dst"], e["class"]): e for e in d["edges"]}
 m = E[(f"{A}:core", f"{A}:dist-ci", "msg")]
 assert (m["n_rate"], m["n_1h"], m["n_24h"]) == (2, 3, 4) and m["last_age_s"] < 120 and m["shoal"] == A, m
 assert m["id"] == f"{A}:core|{A}:dist-ci|msg" and m["rate_per_h"] > 0
+# an edge's last events, newest first, capped at 3, from the last day only (the 30-hour-old message is out)
+assert [r["summary"] for r in m["recent"]] == ["PR 103 rebased; please rerun the GPU leg", "two minutes", "half an hour"], m["recent"]
+assert m["recent"][0]["kind"] == "info" and 50 <= m["recent"][0]["age_s"] < 120 and m["recent"][0]["ts"], m["recent"][0]
 assert E[(f"{A}:core", f"{A}:*", "broadcast")]["n_24h"] == 1
 bo = E[(f"{A}:core", f"{A}:dist-ci", "blocked-on")]
 assert bo["structural"] and bo["last_ts"] is None and bo["stale"] is False, bo
@@ -2283,6 +2286,73 @@ assert ui_app.card_report(qa, "lane")["kind"] == "question", ui_app.card_report(
 j = row(posture="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:build"})
 rep = ui_app.card_report(j, "lane")
 assert rep["state"] == "working" and "local-ci" in rep["msg"] and rep["title"] == "lane/r", rep
+assert ui_app.card_report(row(host="a-host"), "lane")["title"] == "lane/r@a-host", "the role's own host travels in the report"
+# a role left with no work reads idle in the agents list after the grace, unless it asks or cannot be woken
+sv = lambda age, **kw: row(**{**dict(posture="wait", sub="queue-empty", fill="assigned", needs_you=True, posture_age_s=age, asks=[], next=[],
+                                     can_progress={"ok": True, "reasons": ["waiting-on-you"]}), **kw})
+assert ui_app.card_report(sv(60), "lane")["state"] == "blocked"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S), "lane")["state"] == "idle"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S, asks=["ok?"]), "lane")["state"] == "blocked"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S, fill="self"), "lane")["state"] == "blocked"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S, can_progress={"ok": False, "reasons": ["watcher-dead"]}), "lane")["state"] == "blocked"
+# the launcher takes the app's own entry name, which is what a desktop shell matches a window to, and holds the pin
+assert os.path.basename(ui_app.desktop_path()) == "herdr-app.desktop"
+assert "ui" in ui_app.desktop_text() and "app-start" in ui_app.desktop_text() and "StartupWMClass=herdr-app" in ui_app.desktop_text()
+
+# lattice tabs read the feed of the machine their space is on
+assert ui_app.Reconciler("lane-m")._mod_props({"props": {"source": {"kind": "file", "path": "/f"}}})["source"]["on"] == "lane-m"
+assert "on" not in ui_app.Reconciler(None)._mod_props({"props": {"source": {"kind": "file", "path": "/f"}}})["source"]
+assert ui_app.Reconciler("lane-m")._mod_props({"props": {"source": {"kind": "file", "path": "/f", "on": "other"}}})["source"]["on"] == "other"
+
+# roles tabs: laid out again when their roles change or they predate the grid, never over a card in use
+calls, fg = [], {"t1": "card", "t2": "card"}
+ui_app.app_do = lambda c, a: calls.append((c, a)) or {}
+ui_app.app_ls = lambda: {"spaces": []}
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: f"s/{t}"}, "foreground": {"name": "bash", "argv": ["bash", "x"] if fg[t] == "other" else ["-bash"]}}
+pane = lambda t: {"label": f"s/{t}", "argv": ["x"]}
+space = {"name": "tag", "kind": "shoal", "tabs": [{"name": "roles", "layout": "grid", "panes": [pane("t1"), pane("t2")]}]}
+got = {"id": "sp", "tabs": [{"id": "tb", "name": "roles", "terminals": [{"terminal": "t1", "pane": "p1"}, {"terminal": "t2", "pane": "p2"}]}]}
+rec = ui_app.Reconciler(None)
+assert rec._relayout(space, got, {"local/tag": ui_app.TABS_V}) is False and not calls, "same roles, current build: left alone"
+built = {}
+assert rec._relayout(space, got, built) and ("tab.close", {"id": "tb", "confirmed": True}) in calls, calls
+assert built["local/tag"] == ui_app.TABS_V and any(c == "tab.new" for c, _ in calls), "a tab from before the grid is rebuilt once"
+calls.clear()
+more = dict(space, tabs=[{"name": "roles", "layout": "grid", "panes": [pane("t1"), pane("t2"), pane("t3")]}])
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and any(c == "tab.close" for c, _ in calls), "a new role lays out again"
+calls.clear(); fg["t2"] = "other"
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls and "in use" in rec.out[-1], "an attached card keeps the tabs"
+fg["t2"] = "card"; calls.clear()
+# a terminal that cannot be read (a machine out of reach) may be anything: its tabs stay, whatever the labels say
+real_get = ui_app.hc_get
+def unreadable(t):
+    if t == "t2":
+        raise ui_app.AppError("no route")
+    return real_get(t)
+ui_app.hc_get = unreadable
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls, "an unreadable terminal closed tabs"
+ui_app.hc_get = real_get
+# someone closed every roles tab: the quiet sync leaves that, an explicit open brings them back
+closed = {"id": "sp", "tabs": []}
+assert rec._relayout(space, closed, {}, sync=True) and not calls, "the sync reopened closed roles tabs"
+assert rec._relayout(space, closed, {}) and any(c == "tab.new" for c, _ in calls), "app-open restores them"
+calls.clear()
+two = ui_app.Reconciler(None, dry_run=True)
+assert two._relayout(more, got, {}) and not calls and "lay the roles out again" in two.out[-1], "a dry run only says"
+
+# the shoal layout: a patched copy of a shipped mod, or Herdr's own when the anchor moved
+name, (clone, patches) = "agents", ui_app.CLONES["agents"]
+text = "\n".join(o for o, _ in patches) + '\nsvg("mods/agents/x.svg"); openOverlay({ mod: "agents" })\n'
+out = ui_app.patch_clone(text, name, patches)
+assert "shoalRole" in out and 'mods/shoal-agents/x.svg' in out and 'mod: "shoal-agents"' in out, out
+assert ui_app.patch_clone(text.replace("const more = detail.get(a.address);", "moved"), name, patches) is None
+for k, (_c, ps) in ui_app.CLONES.items():
+    assert all(o != n for o, n in ps), k
+main = {"id": "root", "children": [{"id": "a", "content": {"mod": "agents"}}, {"id": "s", "content": {"mod": "workspace-status"}},
+                                   {"id": "w", "content": {"mod": "spaces"}}, {"id": "f", "content": {"mod": "files"}}]}
+doc = ui_app.shoal_layout_doc(main, {"shoal-agents", "shoal-status"})
+assert [c["content"]["mod"] for c in doc["children"]] == ["shoal-agents", "shoal-status", "spaces", "files"] and doc["shoal_layout"], doc
+assert main["children"][0]["content"]["mod"] == "agents", "Herdr's own document is not touched"
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["-bash"]}}) == "shell"
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["bash", "-c", "x"]}}) == "other"
 assert ui_app.foreground_kind({"foreground": {"name": "claude", "argv": ["claude", "attach", "x"]}}) == "other"
@@ -2444,6 +2514,17 @@ for verb, kw in (("msg", dict(role="nope", text="x")), ("msg", dict(role="cl")),
         pass
 print("act rules ok")
 PY11
+# one verb across every shoal here: one token, each shoal's own preview, a confirm even for a verb that needs none alone
+# (a real offline on wakes roles, so the plan is offline's and the apply is a freeze that wakes nobody)
+OUT=$(env $AE $H ui act-plan offline --scope all --state on --json) || fail "act-plan offline --scope :: $OUT"
+python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="shoal-act-plan" and d["confirm"] is True and d["scope"]=="all" and d["shoal"]=="" and d["preview"],d' "$OUT" || fail "scoped plan :: $OUT"
+OUT=$(env $AE $H ui act-plan freeze --scope all --state on --no-wake --json) || fail "act-plan freeze --scope :: $OUT"
+TOK=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["token"])' "$OUT") || fail "scoped token :: $OUT"
+OUT=$(env $AE $H ui act-apply --token "$TOK" --json) || fail "act-apply scoped :: $OUT"
+grep -q '"rc": 0' <<<"$OUT" && grep -q "freeze on --shoal $SID" <<<"$OUT" || fail "scoped apply :: $OUT"
+env $AE $H freeze off --shoal $SID --no-wake >/dev/null 2>&1 || fail "freeze off after the scoped test"
+! env $AE $H ui act-plan msg --scope all --text x --json >/dev/null 2>&1 || fail "--scope took a verb that does not span shoals"
+! env $AE $H ui act-plan offline --scope host:no-such-host --state on --json >/dev/null 2>&1 || fail "a scope with no shoal planned something"
 OUT=$(env $AE $H ui act-plan next --shoal $SID --role cl --json) || fail "act-plan next :: $OUT"
 grep -q '"kind": "shoal-act-view"' <<<"$OUT" && grep -q 'next for cl' <<<"$OUT" || fail "next view :: $(head -c 400 <<<"$OUT")"
 OUT=$(env $AE $H ui act-plan asks --shoal $SID --json) || fail "act-plan asks :: $OUT"
@@ -2465,6 +2546,8 @@ if command -v node >/dev/null 2>&1; then
   echo "herdr-app shoal-home ok"
   node "$TESTD/herdr_app/test_shoal_actions.mjs" >"$S/shoal-actions.out" 2>&1 || fail "herdr-app shoal-actions: $(tail -c 800 "$S/shoal-actions.out")"
   echo "herdr-app shoal-actions ok"
+  node "$TESTD/herdr_app/test_shoal_status.mjs" >"$S/shoal-status.out" 2>&1 || fail "herdr-app shoal-status: $(tail -c 800 "$S/shoal-status.out")"
+  echo "herdr-app shoal-status ok"
 else
   echo "herdr-app lattice-view, shoal-home, shoal-actions: skipped (node not on PATH)"
 fi
