@@ -169,6 +169,13 @@ grep -q "LEDGER-WAKE beta@t1shoal" "$S/watch.out" || fail "watcher did not wake:
 grep -q "rc=0" "$S/watch.out" || fail "watcher exit code: $(tail -1 "$S/watch.out")"
 grep -q "session_id=ses_bbbb" /tmp/t1shoal/ledger-watch-beta.state || fail "sidecar not bound"
 check "LEDGER-WAKE-TEST" timeout 20 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 60 --ledger-dir "$B" --no-board --test
+echo "== 6b a re-armed watcher counts fetch failures afresh: a dead watcher's count must not end it on its first miss"
+git clone -q "$B" "$S/unreachable"; git -C "$S/unreachable" remote set-url origin "$S/no-such-remote.git"
+sed -i 's/^fetch_fail=.*/fetch_fail=7/' /tmp/t1shoal/ledger-watch-beta.state
+grep -q "^fetch_fail=7$" /tmp/t1shoal/ledger-watch-beta.state || fail "sidecar not seeded with a dead watcher's count"
+OUT=$(timeout 60 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 1 --ledger-dir "$S/unreachable" --no-board --session ses_bbbb 2>&1 || true)
+grep -q "FETCH-FAILED (1/5)" <<<"$OUT" && grep -q "FETCH-FAILED (5/5)" <<<"$OUT" && grep -q "INSTRUMENT-FAILED" <<<"$OUT" \
+  || fail "re-armed watcher did not count afresh :: $OUT"
 echo "== 7 transition -> ledger state; heartbeat covers via ledger; systemd plan; status; doctor; report"
 check "ledger" $H transition --shoal t1shoal --slug alpha --to waiting --sub remote-ci --holder "gate 1350" --rescan-min 30
 check "ledger" $H transition --shoal t1shoal --slug beta --to active --ledger-dir "$B"
