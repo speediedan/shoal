@@ -228,13 +228,35 @@ def cmd_unpark(a) -> int:
     return unpark(spec, a.spec, slugs, dry_run=a.dry_run)
 
 
+def session_held(role, repo_dir: str = "") -> bool:
+    """True when a non-Claude role's session is held by a running turn or an attached client. Nothing can stop one from
+    here (`context_restart` stops only Claude), so its old turn would keep writing as the role beside a new session."""
+    import ledger_watch
+    if role.ecosystem in ("muse", "codex"):
+        return ledger_watch.muse_session_busy(role.session, role.ecosystem)
+    if role.ecosystem == "opencode":
+        return ledger_watch.session_busy(role.session, repo_dir)
+    return False
+
+
+def claude_live(role) -> bool:
+    """True when a Claude job on the role's conversation has a live worker."""
+    from backends import claude_holders, get as get_backend
+    return any(h.get("pid") for h in claude_holders(get_backend("claude")._agents(include_stopped=True), role.session))
+
+
 def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "", force: bool = False,
             dry_run: bool = False) -> int:
     """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
-    or provider: the quorum's `context_restart` run by hand. The role must have said it is at a boundary with a
-    refreshed doc (`queue --restart-ready`) unless `force`, which can cut off work in progress. The old session is
-    stopped under its old provider, because the record changes only in the `restart` that follows."""
+    or provider: the quorum's `context_restart` run by hand, under the quorum's gate. Everything that can be proved is
+    proved before the old session stops: the role is at a boundary (restart-ready, posture idle or waiting, between
+    turns; only that gate yields to `force`, which can cut off a Claude turn), a session nothing here can stop is not
+    held (`force` never overrides that), and the new provider's tool and the start doc are in order. A login on the new
+    provider is not checked (no harness has a uniform probe), and the restart itself runs detached: its log tells."""
     import health
+    import startdoc
+    from backends import tool_which
+    from doctor import ECOSYSTEM_TOOLS
     from ledger import Ledger, View
     from roles import ECOSYSTEMS, host_of, is_local
     role = spec.role(slug)
@@ -251,12 +273,35 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         print(f"handoff: unknown provider {ecosystem} ({', '.join(ECOSYSTEMS)})")
         return 2
     new_eco = ecosystem if ecosystem != role.ecosystem else ""
-    view = View(Ledger(spec.sid, root=spec.ledger_dir or None, sync=False), spec)
-    ready = bool((view.current_queue(slug) or {}).get("restart_ready"))
-    if not ready and not force:
-        print(f"REFUSED: {slug} has not said it is restart-ready (`queue --restart-ready` refreshes its doc first); "
-              "--force hands off anyway and can cut off work in progress")
+    if session_held(role, spec.dir):
+        print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing "
+              f"here can stop it; --force does not change that. Detach it or let the turn end, then try again")
         return 1
+    tool = ECOSYSTEM_TOOLS.get(new_eco or role.ecosystem, "")
+    if tool and not tool_which(tool):
+        print(f"REFUSED: {tool} is not on this host's tool path, so a new {new_eco or role.ecosystem} session cannot start")
+        return 1
+    view = View(Ledger(spec.sid, root=spec.ledger_dir or None, sync=False), spec)
+    q = view.current_queue(slug) or {}
+    st = view.role_state(slug) or {}
+    posture = st.get("state") or ("idle" if view.is_idle(slug) else "active")
+    between = health.session_between_turns(role, health.claude_busy(), spec.dir)
+    if not (q.get("restart_ready") and posture in ("idle", "waiting") and between) and not force:
+        why = [] if q.get("restart_ready") else ["it has not said it is restart-ready (`queue --restart-ready` refreshes its doc first)"]
+        if posture not in ("idle", "waiting"):
+            why.append(f"its posture is {posture}")
+        if not between:
+            why.append("it is not known to be between turns")
+        print(f"REFUSED: {slug}: {'; '.join(why)}. --force hands off anyway and can cut off work in progress")
+        return 1
+    if role.doc:
+        doc = startdoc.check(role.doc)
+        if not doc["ok"]:
+            print(f"REFUSED: {slug}'s start doc would not carry the new session: " + "; ".join(doc["problems"]))
+            return 1
+    if posture == "waiting":  # what the operator is deciding about: a job or lease goes on without this session
+        print(f"{slug} waits on {st.get('sub') or '?'}" + (f" ({st['target']})" if st.get("target") else "")
+              + ": the wait stays with the role, and the new session reads it from the ledger")
     extra: list[str] = []
     if new_eco:
         extra.append(f"--set-ecosystem={slug}:{new_eco}")
@@ -264,9 +309,12 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         extra.append(f"--set-model={slug}:{model}")
     to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model)) if x)
     print(f"{slug}: {role.ecosystem} session {role.session[:8]} hands off to a new {to} session from "
-          f"{role.doc or 'its brief (no start doc on record)'}" + ("" if ready else " (not restart-ready: forced)"))
-    print(health.context_restart(spec, spec_path, role, dry_run, tuple(extra)))
-    return 0
+          f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else " (not restart-ready: forced)"))
+    if new_eco:
+        print(f"not checked: {tool}'s login on this host, which the new session needs")
+    out = health.context_restart(spec, spec_path, role, dry_run, tuple(extra))
+    print(out)
+    return 1 if out.startswith("FAILED") else 0
 
 
 def cmd_handoff(a) -> int:

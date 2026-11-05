@@ -24,6 +24,7 @@ herdr 0.9.3 (`ui open`, `ui feed`, `ui launch`) is untouched and keeps working b
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -722,11 +723,17 @@ def cmd_app_sync(_a) -> int:
     follow added and removed roles, nothing takes the focus, and a machine out of reach is only noted."""
     if not app_running():
         return 0
-    for choice in ["local"] + machines():
-        _rc, lines = open_app(choice, focus=False, sync=True)
-        for line in lines:
-            if not line.startswith("note "):
-                print(f"{choice}: {line}")
+    os.makedirs(os.path.dirname(_state_path()), exist_ok=True)
+    with open(_state_path() + ".sync-lock", "a") as lock:
+        try:  # a pass does ssh per machine and rebuilds tabs: a timer firing during a slow one, or a second bar, waits its turn
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+        for choice in ["local"] + machines():
+            _rc, lines = open_app(choice, focus=False, sync=True)
+            for line in lines:
+                if not line.startswith("note "):
+                    print(f"{choice}: {line}")
     return 0
 
 
@@ -1024,7 +1031,7 @@ function shoalRole(a) {
   const term = terminals().find((x) => x.address === a.address);
   const label = term?.labels?.["shoal.pane"] ?? "";
   const cut = label.lastIndexOf("/");
-  if (cut < 0 || label.startsWith("standalone/") || a.app !== "shoal") return null;
+  if (cut < 0 || label.startsWith("standalone/")) return null;
   const title = term?.report?.title ?? "";
   const at = title.indexOf("@");
   const stored = (shared("space.colors") ?? {})[a.space] ?? "ansi6";

@@ -828,18 +828,27 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
         if r.model != model:
             print(f"{slug}: recorded model {r.model or '(unset)'} -> {model}")
             r.model = model
+    only = None
+    if getattr(args, "only", ""):
+        only = [s.strip() for s in args.only.split(",") if s.strip()]
     for kv in (getattr(args, "set_ecosystem", None) or []):
         slug, _, eco = kv.partition(":")
         r = spec.role(slug)
         if r is None or eco not in ECOSYSTEMS:
             print(f"bad --set-ecosystem {kv!r} (want SLUG:{'|'.join(ECOSYSTEMS)})")
             return 1
-        if r.ecosystem != eco:
-            print(f"{slug}: recorded provider {r.ecosystem} -> {eco}")
-            r.ecosystem = eco
-    only = None
-    if getattr(args, "only", ""):
-        only = [s.strip() for s in args.only.split(",") if s.strip()]
+        if slug not in (only or []):
+            print(f"REFUSED: --set-ecosystem {slug} needs --only {slug}: the record would change with no relaunch")
+            return 1
+        if r.ecosystem == eco:
+            continue
+        # the old session must be gone first: `shoal handoff` stops it, or says why it cannot
+        if r.session and not dry and (_park.session_held(r, spec.dir) or (r.ecosystem == "claude" and _park.claude_live(r))):
+            print(f"REFUSED: {slug}'s {r.ecosystem} session {r.session[:8]} is still live, so two sessions would hold the "
+                  f"role: use `shoal handoff`")
+            return 1
+        print(f"{slug}: recorded provider {r.ecosystem} -> {eco}" + (f"; effort {r.effort} cleared" if r.effort else ""))
+        r.ecosystem, r.effort = eco, ""  # an effort value means what its provider says it means: back to the default
     for slug, sid in launched.items():
         r = spec.role(slug)
         if r is None:

@@ -18,6 +18,19 @@ Configured per shoal and per role in `features.health`:
 The advice is the `CONTEXT` line in `next` and in wakes. The proof of refresh is `queue --restart-ready`. The reset is
 `restart --only <role>`, a new incarnation. See architecture §7, "Bounding context".
 
+`shoal handoff --spec <spec> --only <role> [--model M] [--ecosystem E] [--force] [--dry-run]` runs the same reset by hand,
+on the role's own host, optionally moving it to another model or provider (also the actions dialog's Hand off):
+
+- **It proves what it can first.** The role is at a boundary (restart-ready, posture idle or waiting, between turns), and the
+  new provider's tool and the start doc are in order. `--force` skips only the boundary check, and can cut off a Claude turn.
+- **It refuses a session it cannot stop.** Only a Claude session is stopped from here. A Muse, Codex or opencode session held
+  by a running turn or an attached client would go on writing as the role beside the new one, so it refuses, even forced.
+- **One at a time.** It shares a per-role lock with the quorum's restart, held until the detached restart exits.
+- **What it does not prove.** A login on the new provider is not checked, and the restart runs detached: a failure after the
+  old session stops shows in `context-restart-<role>.log` and as the role's health conditions. On a provider change the effort
+  and, unless given, the model go back to the provider's defaults, and the old provider's incarnations are not auto-pruned
+  (`prune-incarnations` removes them by hand).
+
 ## Standalone sessions (opt-in)
 
 A session saved in the viewer registry (`shoal ui pick --save`) opts in with its start doc:
