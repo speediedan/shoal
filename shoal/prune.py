@@ -21,7 +21,8 @@ id in a spec's generation history; standalone predecessors only with `--standalo
   (c) any entry in the viewer registry (ui-standalone.json), session or job, dismissed ones too
   (d) a live worker (pid), or state working, blocked or idle
   (e) a conversation shared with a job that has a worker or is protected
-  (f) its recorded worktree exists, a git worktree is registered under its job tmp/, or a process runs inside either
+  (f) its recorded worktree exists, a git worktree is registered under its job tmp/, a process runs inside either, or
+      a role's or standalone seat's start doc names its job folder (the doc of a role being removed does not count)
   (g) the job this runs inside
   (h) a held Muse `.session.lock` or shoal exec lock, or a ledger-watch still bound to it
   and anything younger than --min-age (default 24h).
@@ -155,7 +156,8 @@ class World:
     the viewer registry, and one pass over /proc (cwds, ancestors, ledger-watch bindings)."""
 
     def __init__(self, ledger_dir: str = "", selected: list[str] | None = None, all_specs: bool = False,
-                 extra_protect: list[tuple[str, str]] | None = None, only_slug: str = "", max_seq: int = 0):
+                 extra_protect: list[tuple[str, str]] | None = None, only_slug: str = "", max_seq: int = 0,
+                 removing: bool = False):
         self.ledger_dir = ledger_dir or config.ledger_dir()
         paths = sorted(glob.glob(os.path.join(self.ledger_dir, "shoals", "*", "shoal.json")))
         pin = config.env("SPEC")
@@ -200,6 +202,16 @@ class World:
                     self.protect.append((str(e[k]), why))
             if not (e.get("session") or e.get("job")) and e.get("label"):
                 self.protect_names.append((str(e["label"]), why + " (no recorded id: matched by label)"))
+        # (f) a job whose folder a start doc names: the next session may rely on what is in it. A role being removed has
+        # no next session, and once it is out of the spec no prune can match its jobs, so its own doc does not count.
+        import startdoc
+        self.doc_jobs: dict[str, str] = {}
+        leaving = {os.path.abspath(p) for p in selected or []} if removing else set()
+        docs = [str(r.get("doc") or "") for p, d in self.specs for r in d.get("roles") or []
+                if not (os.path.abspath(p) in leaving and r.get("slug") == only_slug)]
+        for path in sorted({x for x in docs + [str(e.get("doc") or "") for e in self.registry] if x}):
+            for j in startdoc.doc_job_folders(path):
+                self.doc_jobs.setdefault(j, os.path.basename(path))
         # (g) the session this runs inside
         me = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
         if me:
@@ -375,6 +387,8 @@ def claude_guard(w, r, st, ids, info, hard, own, min_age, c) -> str:
         return "(g) the job this runs inside"
     if why:
         return f"(a-c) {why}"
+    if w.doc_jobs.get(job):
+        return f"(f) start doc {w.doc_jobs[job]} names its job folder"
     if not job or r.get("kind") == "interactive":
         return "(d) interactive session (no background job to remove)"
     if r.get("pid"):
@@ -610,7 +624,8 @@ def run(*, specs: list[str] | None = None, all_specs: bool = False, harnesses: t
         batch: int = 10, dry_run: bool = False, only_slug: str = "", max_seq: int = 0, trigger: str = "manual",
         extra_protect: list[tuple[str, str]] | None = None, sizes: bool = True, log=print) -> dict:
     """Gather, judge and (unless dry_run) prune. Returns {harness: {"listed", "cands", "failed"}}."""
-    w = World(selected=specs, all_specs=all_specs, extra_protect=extra_protect, only_slug=only_slug, max_seq=max_seq)
+    w = World(selected=specs, all_specs=all_specs, extra_protect=extra_protect, only_slug=only_slug, max_seq=max_seq,
+              removing=trigger == "remove")
     out = {}
     for h in harnesses:
         try:
