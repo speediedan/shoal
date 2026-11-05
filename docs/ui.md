@@ -21,11 +21,14 @@ Three rules hold for every piece:
    `freeze` after a `--dry-run` preview and an explicit confirm, and are logged to
    `<data_root>/ui-actions.jsonl`. The adapter never types into a pane.
 
-Muse role cards open a live read-only observer on Enter, even when the role is idle. It leaves
-automated wakes enabled and shows public output and tool activity. Press `q`, Escape or Ctrl+C
+Muse and Codex role cards open a live read-only observer on Enter, even when the role is idle. It
+leaves automated wakes enabled and shows public output and tool activity. Press `q`, Escape or Ctrl+C
 to return to the card. Native interaction is a separate `i` action inside that view, available
-only while idle; `/exit` quits native Muse and releases its exclusive ownership. A running turn
-is never stopped to attach. Standalone Muse cards retain their native interaction when idle.
+only while idle; `/exit` quits the native client and releases its exclusive ownership. A running turn
+is never stopped to attach. The view's status says `running` only for a turn; a native client open
+elsewhere reads `held` with its pid, terminal and start, since it also holds the role's wakes. When `i`
+is refused by one, `T` ends it and attaches here, unless the session was written to in the last two
+minutes. Standalone Muse and Codex cards retain their native interaction when idle.
 
 ## The read model: `shoal ui status`
 
@@ -606,7 +609,7 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   else, an attached client for example, is left as it is. Spaces of hidden or retired shoals are named, never
   closed.
 - **Role state in the app.** A role card in a herdr-core terminal prints its own OSC 7501 status on every
-  refresh (`app=shoal`, title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
+  refresh (`app=<role>`, which heads the pane, and title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
   report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask or a design or
   feedback wait, `permission` for a pending grant. The app then shows the role in its agents list, colors the

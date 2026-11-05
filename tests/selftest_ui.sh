@@ -2271,6 +2271,8 @@ def row(**kw):
     r = {"slug": "r", "posture": "idle", "sub": None, "wait": None, "active": None, "session": "idle", "needs_you": False,
          "asks": [], "can_progress": {"ok": True, "reasons": []}}
     r.update(kw); return r
+# the app heads a pane with the reported `app`: a card names its role there
+assert ":app=core:" in ui_app.report_text(row(slug="core"), "lane"), ui_app.report_text(row(slug="core"), "lane")
 assert ui_app.card_report(row(), "lane")["state"] == "idle"
 w = row(posture="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
         can_progress={"ok": True, "reasons": ["waiting-on-you"]})

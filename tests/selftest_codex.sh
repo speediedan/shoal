@@ -203,6 +203,96 @@ while cx.busy(tid):
 print("viewer while busy ok")
 PY
 
+echo "== 5b a role's card observes; a native client is named apart from a turn, and a quiet one can be ended"
+python3 - <<'PYNC' || fail "native client"
+import contextlib, io, os, subprocess, sys, tempfile
+sys.path.insert(0, os.environ["SHOALD"])
+import native_client as nc
+
+
+class H:
+    BusyError = RuntimeError
+
+    def __init__(self):
+        self.p, self.age, self.lock, self.opened, self.refuse = None, 9999.0, False, 0, False
+
+    def attached_client(self, s):
+        return self.p.pid if self.p is not None and self.p.poll() is None else 0
+
+    def busy(self, s):
+        return bool(self.attached_client(s)) or self.lock
+
+    def activity_age(self, s):
+        return self.age
+
+    def interactive_view(self, s, model="", effort=""):
+        if self.attached_client(s):
+            raise self.BusyError(nc.held_message(self.attached_client(s)))
+        if self.refuse:
+            raise self.BusyError("a turn is running")
+        self.opened += 1
+
+
+def press(h, key):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        nc.on_key(h, key, "s", "", "", "keys")
+    return out.getvalue()
+
+
+h = H()
+assert nc.state(h, "s") == "idle"
+h.lock = True
+assert nc.state(h, "s") == "running"
+h.p = subprocess.Popen(["sleep", "60"])
+assert nc.state(h, "s").startswith("held: a native client (pid "), nc.state(h, "s")  # a client outranks the lock it holds
+# refused, with the way out named; other keys do nothing
+assert "[T] end that client" in press(h, "i") and h.opened == 0
+assert press(h, "x") == "" and h.opened == 0
+# a session written to recently may be mid-turn: left alone
+h.age = 5.0
+assert "may be mid-turn" in press(h, "T") and h.p.poll() is None and h.opened == 0
+# quiet: ended, then attached here
+h.age = 9999.0
+press(h, "T")
+assert h.p.poll() is not None and h.opened == 1, (h.p.poll(), h.opened)
+# `T` with no client is plain `i`; a real turn is not reported as a client and offers nothing to end
+h.p, h.lock = None, False
+press(h, "T")
+assert h.opened == 2
+h.refuse = True
+o = press(h, "i")
+assert "a turn is running" in o and "[T]" not in o, o
+print("native client ok")
+PYNC
+python3 - <<'PYIV' || fail "native client outranks the lock"
+import fcntl, os, sys
+sys.path.insert(0, os.environ["SHOALD"])
+sys.path.insert(0, os.environ["SHOALD"] + "/ui")
+import codex_harness as cx, muse, ui_view
+for h, sid in ((cx, "00000000-0000-4000-8000-00000000c0de"), (muse, "00000000-0000-7000-8000-00000000c0de")):
+    # the second viewer of a client opened from an observer finds the lock held too: that is not a turn
+    with open(os.path.join(h.sdir(sid, create=True), "lock"), "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        real, h.attached_client = h.attached_client, lambda s: os.getpid()
+        try:
+            h.interactive_view(sid)
+            raise SystemExit("no refusal")
+        except h.BusyError as exc:
+            assert "native client" in str(exc) and "a turn is running" not in str(exc), exc
+        h.attached_client = real
+        try:
+            h.interactive_view(sid)
+            raise SystemExit("no refusal under a held lock")
+        except h.BusyError as exc:
+            assert "a turn is running" in str(exc), exc
+# a role's card observes on either harness: it never resumes, so looking cannot hold the role's wakes
+for eco, tail in (("codex", "codex-tail"), ("muse", "muse-tail")):
+    argv, _ = ui_view.viewer(eco, "00000000-0000-4000-8000-00000000c0de", model="m", effort="high", observe=True)
+    assert tail in argv and "--allow-interactive" in argv and "resume" not in argv, argv
+print("viewer observes ok")
+PYIV
+
 echo "== 6 a first turn that fails before a thread starts raises, it does not hang"
 FAKE_CODEX_TID= python3 - "$S" <<'PY' || fail "no thread"
 import os, sys

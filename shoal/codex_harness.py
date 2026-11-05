@@ -382,10 +382,40 @@ def messages(session: str, limit: int = 20) -> str:
     return "\n".join(out[-limit:])
 
 
+def interactive_view(session: str, model: str = "", effort: str = "") -> int:
+    """Explicit native access, serialized with start_run so a watcher cannot win the attach race. The client is
+    checked first: one opened from another observer holds this lock too, and is not a turn."""
+    import native_client
+    pid = attached_client(session)
+    if pid:
+        raise BusyError(f"{native_client.held_message(pid)}; the live view remains available")
+    with open(os.path.join(sdir(session, create=True), "lock"), "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BusyError("a turn is running; the live view remains available")
+        print("Native interactive mode pauses automatic wakes until you exit Codex (/exit).", flush=True)
+        return subprocess.run([codex_bin(), "resume", session, *interactive_flags(model, effort)],
+                              env=turn_env()).returncode
+
+
+def observer_argv(session: str, model: str = "", effort: str = "") -> list[str]:
+    """A role always opens an observer, including between turns. Native access requires an explicit key."""
+    return [sys.executable, CLI, "codex-tail", "--session", session, "--allow-interactive",
+            "--model", model, "--effort", effort]
+
+
 def cmd_codex_tail(a) -> int:
-    """A read-only view of a thread's turns. Never starts or resumes anything."""
-    print(f"codex thread {a.session} (read-only view; `codex resume {a.session}` takes it over when no turn runs)")
-    shown = 0
+    """A read-only view of a thread's turns that holds no lock. q/Escape/Ctrl+C returns to the card. It never starts
+    or resumes anything unless a role's card allows `i`."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "ui"))
+    from ui_view import _getkey
+    import native_client
+    print(f"Codex {a.session}: live read-only view. Automatic wakes remain enabled.")
+    interactive = getattr(a, "allow_interactive", False)
+    keys = "[q/esc/ctrl+c] back to card" + ("   [i] native interactive (only when idle; /exit releases it)" if interactive else "")
+    print(keys, flush=True)
+    shown, last_state = 0, ""
     path = os.path.join(sdir(a.session), "run.jsonl")
     try:
         while True:
@@ -409,8 +439,15 @@ def cmd_codex_tail(a) -> int:
                 shown = len(lines)
             if a.once:
                 return 0
-            print(f"\r[{'running' if busy(a.session) else 'idle'}]", end="", flush=True)
-            time.sleep(2)
+            state = native_client.state(sys.modules[__name__], a.session)
+            if state != last_state:
+                print(f"\n[{state}] {keys}", flush=True)
+                last_state = state
+            k = _getkey(2)
+            if k in ("q", "Q", "\x1b", "\x03"):
+                return 0
+            if interactive:
+                native_client.on_key(sys.modules[__name__], k, a.session, getattr(a, "model", ""), getattr(a, "effort", ""), keys)
     except KeyboardInterrupt:
         return 0
 
@@ -605,4 +642,7 @@ def add_parsers(sub) -> None:
     q = sub.add_parser("codex-tail", help="read-only view of a Codex thread's turns")
     q.add_argument("--session", required=True)
     q.add_argument("--once", action="store_true")
+    q.add_argument("--allow-interactive", action="store_true", help="offer explicit native access with i while idle")
+    q.add_argument("--model", default="")
+    q.add_argument("--effort", default="")
     q.set_defaults(func=cmd_codex_tail)

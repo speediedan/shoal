@@ -14,6 +14,8 @@ set -eu
 TESTD="$(cd "$(dirname "$0")" && pwd)"
 SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 . "$TESTD/selftest_lib.sh"
+# /tmp/t1shoal is fixed and removed at the end: two runs at once fail each other, an upgrade's among them (2026-11-05)
+exec 9>"/tmp/shoal-selftest-t1shoal.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another t1shoal run holds the lock" >&2; exit 1; }
 S="${1:-${TMPDIR:-/tmp}/shoal-selftest-$$}"
 rm -rf "$S"; mkdir -p "$S/root" "$S/data" "$S/remote"
 shoal_test_setup "$S"
@@ -169,6 +171,13 @@ grep -q "LEDGER-WAKE beta@t1shoal" "$S/watch.out" || fail "watcher did not wake:
 grep -q "rc=0" "$S/watch.out" || fail "watcher exit code: $(tail -1 "$S/watch.out")"
 grep -q "session_id=ses_bbbb" /tmp/t1shoal/ledger-watch-beta.state || fail "sidecar not bound"
 check "LEDGER-WAKE-TEST" timeout 20 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 60 --ledger-dir "$B" --no-board --test
+echo "== 6b a re-armed watcher counts fetch failures afresh: a dead watcher's count must not end it on its first miss"
+git clone -q "$B" "$S/unreachable"; git -C "$S/unreachable" remote set-url origin "$S/no-such-remote.git"
+sed -i 's/^fetch_fail=.*/fetch_fail=7/' /tmp/t1shoal/ledger-watch-beta.state
+grep -q "^fetch_fail=7$" /tmp/t1shoal/ledger-watch-beta.state || fail "sidecar not seeded with a dead watcher's count"
+OUT=$(timeout 60 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 1 --ledger-dir "$S/unreachable" --no-board --session ses_bbbb 2>&1 || true)
+grep -q "FETCH-FAILED (1/5)" <<<"$OUT" && grep -q "FETCH-FAILED (5/5)" <<<"$OUT" && grep -q "INSTRUMENT-FAILED" <<<"$OUT" \
+  || fail "re-armed watcher did not count afresh :: $OUT"
 echo "== 7 transition -> ledger state; heartbeat covers via ledger; systemd plan; status; doctor; report"
 check "ledger" $H transition --shoal t1shoal --slug alpha --to waiting --sub remote-ci --holder "gate 1350" --rescan-min 30
 check "ledger" $H transition --shoal t1shoal --slug beta --to active --ledger-dir "$B"
@@ -583,6 +592,44 @@ assert [c["slug"] for c in health.host_beats(spec, Ledger("t1shoal", root=sys.ar
 single = ShoalSpec.load(sys.argv[2]); single.home = ""
 for r in single.roles: r.server = ""
 assert health.host_beats(single, led, {}) == []
+# a shared checkout that cannot take its upstream is a page; behind alone, on an idle host, is not
+import subprocess, tempfile
+with tempfile.TemporaryDirectory() as td:
+    def run(cwd, *a):
+        subprocess.run(["git", "-C", cwd, "-c", "user.email=t@example.invalid", "-c", "user.name=t", *a], check=True, capture_output=True)
+    def put(cwd, name, text, msg=""):
+        with open(os.path.join(cwd, name), "w") as fh:
+            fh.write(text)
+        if msg:
+            run(cwd, "add", name); run(cwd, "commit", "-qm", msg)
+    bare, a, b = (os.path.join(td, n) for n in ("r.git", "a", "b"))
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", bare], check=True)
+    for c in (a, b):
+        subprocess.run(["git", "clone", "-q", bare, c], check=True, capture_output=True)
+    run(a, "checkout", "-qb", "main"); put(a, "f", "1", "one"); run(a, "push", "-q", "-u", "origin", "main")
+    run(b, "pull", "-q", "origin", "main"); run(b, "branch", "-q", "--set-upstream-to=origin/main", "main")
+    assert health.stuck_checkout(b) == ("", ""), "in step"
+    put(a, "up", "upstream", "two"); run(a, "push", "-q")
+    assert health.stuck_checkout(b) == ("", ""), "behind alone is not stuck"
+    put(b, "up", "upstream")
+    assert health.stuck_checkout(b) == ("", ""), "a local copy identical to upstream does not block"
+    put(b, "up", "someone's work")
+    state, detail = health.stuck_checkout(b)
+    assert state == "blocked" and " up" in detail, (state, detail)
+    os.unlink(os.path.join(b, "up"))
+    put(b, "mine", "x", "local")
+    state, detail = health.stuck_checkout(b)
+    assert state == "diverged" and "1 ahead and 1 behind" in detail, (state, detail)
+    gd = os.path.join(b, ".git", "rebase-merge"); os.mkdir(gd)
+    assert health.stuck_checkout(b)[0] == "in-progress"
+    os.rmdir(gd)
+    assert health.stuck_checkout(os.path.join(td, "no-such-path")) == ("", ""), "not a checkout on this host"
+    wc = ShoalSpec.load(sys.argv[2])
+    assert health.watched_checkouts(wc) == [], "off when unset"
+    wc.features = {"health": {"watch_checkouts": [b, os.path.join(td, "no-such-path")]}}
+    got = health.watched_checkouts(wc, dry_run=True)
+    assert [(c["condition"], c["key"]) for c in got] == [("checkout-stuck", "diverged:" + b)] and got[0]["slug"] == "host:hostA", got
+    assert health.LADDERS["checkout-stuck"] == [(60, "page")]
 single.home = "hostA"
 n0 = len(led.events(reload=True))
 assert health.host_beats(single, led, {}, dry_run=False) == [] and len(led.events(reload=True)) == n0, "beat written"

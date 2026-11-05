@@ -69,6 +69,9 @@ LADDERS = {
     # two hosts configured with one `server` name both think the same roles are theirs (double watchers, wakes,
     # launches): a page to rename one, once per clash
     "host-name-clash": [(0, "page")],
+    # features.health.watch_checkouts: a shared checkout that cannot take its upstream. Sessions then route around it
+    # and it only gets worse, so it is a page, after an hour so that one in use mid-rebase stays quiet
+    "checkout-stuck": [(60, "page")],
     # bounded context (context.py): a role past its limit that marked a quiet boundary `--restart-ready` is
     # handed to a fresh session; `auto` mode does it from here, `page` (the default) asks the operator
     "context-restart": [(0, "page")],
@@ -924,6 +927,54 @@ def multi_host(spec: ShoalSpec) -> bool:
     return len({host_of(r, spec) for r in spec.roles}) > 1
 
 
+def stuck_checkout(path: str, fetch: bool = True) -> tuple[str, str]:
+    """(state, detail) for a shared checkout that cannot take its upstream, else ('', ''): an operation left in
+    progress, a local file differing from one upstream changed (what stops a rebase), or commits on both sides.
+    Behind alone is not stuck: an idle host's checkout just has not pulled. A path that is not a checkout on this host
+    is not judged."""
+    def git(*a: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", path, *a], capture_output=True, text=True, timeout=60, env=_ENV)
+    try:
+        if git("rev-parse", "--is-inside-work-tree").returncode:
+            return "", ""
+        if fetch:
+            git("fetch", "-q")  # a failed fetch judges the last known upstream
+        counts = git("rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        if counts.returncode:
+            return "", ""
+        ahead, behind = (int(x) for x in counts.stdout.split())
+        gitdir = git("rev-parse", "--absolute-git-dir").stdout.strip()
+        for mark in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"):
+            if os.path.exists(os.path.join(gitdir, mark)):
+                return "in-progress", f"a git operation ({mark}) was left in progress"
+        changed = set(git("diff", "--name-only", "HEAD...@{upstream}").stdout.splitlines())
+        local = set(git("ls-files", "-m", "-o", "--exclude-standard").stdout.splitlines())
+        blocked = [p for p in sorted(changed & local)
+                   if git("hash-object", "--", p).stdout != git("rev-parse", f"@{{upstream}}:{p}").stdout]
+        if blocked:
+            return "blocked", f"{len(blocked)} local file(s) differ from what upstream changed, such as {blocked[0]}"
+        if ahead and behind:
+            return "diverged", f"{ahead} ahead and {behind} behind its upstream"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass  # an unreadable checkout never stops the quorum
+    return "", ""
+
+
+def watched_checkouts(spec: ShoalSpec, dry_run: bool = False) -> list[dict]:
+    """features.health.watch_checkouts: shared checkouts this host's quorum watches. List them on one spec per host,
+    or each quorum pages about the same checkout. Off when unset."""
+    out = []
+    for raw in health_cfg(spec).get("watch_checkouts") or []:
+        path = os.path.expanduser(str(raw))
+        kind, detail = stuck_checkout(path, fetch=not dry_run)
+        if kind:
+            out.append({"slug": f"host:{config.server()}", "condition": "checkout-stuck", "key": f"{kind}:{path}",
+                        "since": iso(), "first_seen": True,
+                        "detail": f"{path}: {detail}. Sessions route around a stuck checkout, so it only gets worse: "
+                                  f"resolve it, keeping every session's work"})
+    return out
+
+
 def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list[dict]:
     """Multi-host liveness of whole hosts. Every host with a live local role writes a `host-beat` system
     event at most every `host_beat_min` (its quorum is alive); home raises `host-silent` for another host
@@ -1041,6 +1092,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     view = View(led, spec)
     conds = evaluate(spec, view, claude_busy())
     conds += host_beats(spec, led, state, dry_run)
+    conds += watched_checkouts(spec, dry_run)
     if not dry_run and is_local_any(spec) and health_cfg(spec).get("context_snapshot", True):
         try:
             # one context-cost snapshot per host per UTC day (context_cost.py): the first run after midnight writes it
@@ -1149,7 +1201,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 break
             if action == "restart":
                 ch = context_restart(spec, spec_path, role_, dry_run)
-            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart"):
+            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)
