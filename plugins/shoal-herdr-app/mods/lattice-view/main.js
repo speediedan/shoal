@@ -164,6 +164,7 @@ export default class Lattice extends View {
     this.drag = false;
     this.packets = [];
     this.legend = p.legend === true;
+    this.legendAll = false;
     this.history = new Map();
     this.hits = [];
     this.edgeHits = [];
@@ -707,21 +708,29 @@ export default class Lattice extends View {
   }
 
   renderLegend(size) {
-    const L = legendEntries(this.vm);
+    const L = legendEntries(this.vm, this.legendAll);
     const glyph = { hatch: "▨", dashed: "◌", dotted: "∴", outline: "○", fill: "●" };
     const col = v_flex().gap(1);
-    for (const s of L.states) {
-      col.child(h_flex().gap(6).items_center()
-        .child(div().w(12).text_color(s.color).child(glyph[s.style] ?? "●"))
-        .child(div().w(12).text_color(s.color).child(s.badge ?? ""))
-        .child(div().text_color(s.needsYou ? P.ink : P.dim).child(`${s.label}${s.pulse && this.policy.pulseMode ? " (pulses)" : ""}`)));
+    for (const g of L.groups) {
+      col.child(div().mt(3).text_color(P.steel2).font_semibold().child(g.label));
+      for (const s of g.states) {
+        col.child(h_flex().gap(6).items_center()
+          .child(div().w(12).text_color(s.color).child(glyph[s.style] ?? "●"))
+          .child(div().w(12).text_color(s.color).child(s.badge ?? ""))
+          .child(div().text_color(s.needsYou ? P.ink : P.dim).child(`${s.label}${s.pulse && this.policy.pulseMode ? " (pulses)" : ""}`)));
+      }
+    }
+    if (L.hiddenStates > 0 || this.legendAll) {
+      col.child(div().id("legend-all").mt(4).cursor_pointer().text_color(P.dim).hover((st) => st.text_color(P.ink))
+        .on_click((_e, cx) => { this.legendAll = !this.legendAll; cx.notify(); })
+        .child(this.legendAll ? "only what is on screen" : `${L.hiddenStates} more: the full key`));
     }
     const right = v_flex().gap(1);
-    right.child(div().text_color(P.steel2).font_semibold().child("SHAPES"));
+    right.child(div().text_color(P.steel2).font_semibold().child("NODES"));
     for (const [shape, label] of L.shapes) right.child(div().text_color(P.dim).child(`${{ circle: "●", hexagon: "⬢", diamond: "◆", square: "■", triangle: "▲", ring: "◯", dashed: "◌" }[shape]} ${label}`));
     right.child(div().mt(4).text_color(P.steel2).font_semibold().child("EDGES"));
     for (const e of L.edges) right.child(h_flex().gap(6).child(div().text_color(e.color).child(e.dash ? "┄┄" : "━━")).child(div().text_color(P.dim).child(e.cls)));
-    right.child(div().mt(4).text_color(P.steel2).font_semibold().child("HOSTS"));
+    if (L.hosts.length) right.child(div().mt(4).text_color(P.steel2).font_semibold().child("HOSTS"));
     for (const h of L.hosts) right.child(h_flex().gap(6).items_center().child(dot(h.color, 7)).child(div().text_color(P.dim).child(h.name)));
     for (const [label, color, g] of L.extra) right.child(h_flex().gap(6).child(div().text_color(color).child(g)).child(div().text_color(P.dim).child(label)));
     return v_flex().id("legend").absolute().left(16).bottom(16).p(10).gap(4).rounded(8).bg(withAlpha(P.panelSolid, 0.94)).border(1)
@@ -729,7 +738,7 @@ export default class Lattice extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().text_color(P.steel2).font_semibold().child("LEGEND (l to close)"))
       .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
-      .child(h_flex().gap(14).items_start().child(v_flex().gap(1).child(div().text_color(P.steel2).font_semibold().child("STATES")).child(col)).child(right));
+      .child(h_flex().gap(14).items_start().child(col).child(right));
   }
 
   renderRail() {
@@ -785,6 +794,7 @@ export default class Lattice extends View {
           .when(share == null, (el) => el.child(div().text_color(P.faint).child("work share n/a")))
           .child(div().flex_1())
           .child(sparkline(this.history.get(s.id) ?? [], 56, 14, withAlpha(s.tint, 0.9))))
+        .when(s.starved > 0, (el) => el.child(div().text_color(P.dim).child(`${s.starved} with no work assigned`)))
         .when(s.grants > 0 || s.pages24 > 0 || s.asks > 0, (el) => el.child(div().text_color(P.dim)
           .child(`asks ${s.asks} · grants ${s.grants} · pages ${s.pages24}/24h`))));
     }

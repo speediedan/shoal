@@ -63,6 +63,9 @@ const EVENT_KEY = {
 const GROUP_KEY = { human: "ask", system: "system", upstream: "upstream", peer: "peer" };
 
 const SOFT_MAGENTA = "#d985b6";
+// Five colors, by what you would do: needs you (magenta, hot for auth; red when something broke), working (teal), waiting on
+// a system (blue), idle (slate), off (steel). The badge and hatch say which event; the hover says the rest.
+const WAITING = "#5b9dff";
 /**
  * How each state looks. `urgency` orders the needs-you rail (lower is louder); null means the
  * state never asks for the operator. `hatch` is the pattern_slash interval (px), `badge` a text
@@ -76,18 +79,19 @@ export const STATE_STYLE = {
   assign: { label: "queue empty: assign", color: SOFT_MAGENTA, fill: 0.55, halo: { period: 1700, from: 0.08, to: 0.36, scale: 2.3 }, badge: "∅", urgency: 3, needsYou: true },
   sources: { label: "queue empty: sources", color: SOFT_MAGENTA, fill: 0.55, halo: { period: 1700, from: 0.08, to: 0.36, scale: 2.3 }, badge: "↧", urgency: 3, needsYou: true },
   working: { label: "working", color: P.teal, fill: 0.9, halo: { period: 2800, from: 0.1, to: 0.42, scale: 2.4 }, urgency: null },
-  "local-ci": { label: "local CI", color: "#4e8cff", fill: 0.3, hatch: 4, spinner: true, border: "solid", badge: "▣", urgency: null },
-  "remote-ci": { label: "remote CI", color: "#5cc8ff", fill: 0.22, hatch: 7, spinner: true, border: "solid", badge: "☁", urgency: null },
-  lease: { label: "waits for a lease", color: "#7c8cff", fill: 0.3, hatch: 2.6, border: "solid", badge: "⧖", urgency: null },
-  system: { label: "waits on system", color: P.blue, fill: 0.28, hatch: 4, border: "solid", urgency: null },
-  upstream: { label: "waits upstream", color: P.violet, fill: 0.26, hatch: 5, border: "solid", badge: "↑", urgency: null },
-  peer: { label: "blocked on a peer", color: P.amber, fill: 0.22, border: "dashed", badge: "⊘", urgency: null },
-  handover: { label: "handing over", color: P.lavender, fill: 0.35, border: "dashed", badge: "⇆", urgency: null },
-  refill: { label: "refilling", color: P.mint, fill: 0.3, border: "dashed", badge: "↺", urgency: null },
-  hold: { label: "on hold", color: "#9aa7b0", fill: 0.3, border: "solid", badge: "∥", urgency: null },
-  other: { label: "other wait", color: "#8fa3ad", fill: 0.25, border: "dashed", badge: "…", urgency: null },
+  "local-ci": { label: "local CI", color: WAITING, fill: 0.3, hatch: 4, spinner: true, border: "solid", badge: "▣", urgency: null },
+  "remote-ci": { label: "remote CI", color: WAITING, fill: 0.22, hatch: 7, spinner: true, border: "solid", badge: "☁", urgency: null },
+  lease: { label: "waits for a lease", color: WAITING, fill: 0.3, hatch: 2.6, border: "solid", badge: "⧖", urgency: null },
+  system: { label: "waits on system", color: WAITING, fill: 0.28, hatch: 4, border: "solid", urgency: null },
+  upstream: { label: "waits upstream", color: WAITING, fill: 0.26, hatch: 5, border: "solid", badge: "↑", urgency: null },
+  peer: { label: "blocked on a peer", color: WAITING, fill: 0.22, border: "dashed", badge: "⊘", urgency: null },
+  handover: { label: "handing over", color: WAITING, fill: 0.35, border: "dashed", badge: "⇆", urgency: null },
+  refill: { label: "refilling", color: WAITING, fill: 0.3, border: "dashed", badge: "↺", urgency: null },
+  hold: { label: "on hold", color: WAITING, fill: 0.3, border: "solid", badge: "∥", urgency: null },
+  other: { label: "other wait", color: WAITING, fill: 0.25, border: "dashed", badge: "…", urgency: null },
   idle: { label: "idle", color: P.slate, fill: 0.75, urgency: null },
   queued: { label: "idle, work queued", color: P.slate, fill: 0.75, badge: "•", urgency: null },
+  starved: { label: "no work assigned", color: P.slate, fill: 0.4, badge: "∅", urgency: null },
   held: { label: "held: you are offline", color: P.steel2, fill: 0.2, border: "solid", opacity: 0.7, badge: "☾", urgency: null },
   dead: { label: "session ended", color: P.red, fill: 0.12, border: "dotted", badge: "✕", urgency: 4, stall: true },
   excluded: { label: "excluded", color: P.steel2, fill: 0, border: "solid", opacity: 0.42, urgency: null },
@@ -95,19 +99,30 @@ export const STATE_STYLE = {
 };
 
 /** Loudness for picking a shoal's most urgent state (pulse dot, cluster tint). */
-export const STATE_RANK = ["auth", "ask", "prompt", "design", "assign", "sources", "unknown", "peer", "local-ci", "remote-ci", "lease", "system", "upstream", "handover", "refill", "hold", "other", "dead", "working", "held", "queued", "idle", "excluded"];
+export const STATE_RANK = ["auth", "ask", "prompt", "design", "assign", "sources", "unknown", "peer", "local-ci", "remote-ci", "lease", "system", "upstream", "handover", "refill", "hold", "other", "dead", "working", "held", "queued", "starved", "idle", "excluded"];
+
+/** The legend's groups, loudest first: what you would do about a node. */
+export const LEGEND_GROUPS = [
+  { id: "you", label: "NEEDS YOU", keys: ["auth", "ask", "prompt", "design", "assign", "sources", "dead", "unknown"] },
+  { id: "working", label: "WORKING", keys: ["working"] },
+  { id: "waiting", label: "WAITING ON A SYSTEM", keys: ["local-ci", "remote-ci", "lease", "system", "upstream", "peer", "handover", "refill", "hold", "other"] },
+  { id: "idle", label: "IDLE", keys: ["idle", "queued", "starved"] },
+  { id: "off", label: "OFF", keys: ["held", "excluded"] },
+];
 
 /** Per-host palette for host tags, bands and tethers (distinct from state hues). */
 export const HOST_COLORS = ["#9ad1ff", "#f2a7c6", "#b7e08a", "#e6c08f", "#c3a6ff", "#8fe0d2", "#f0e68c"];
 
+// Traffic is one color: an edge's hover card says which kind. What stands apart is what stops work (blocked-on).
+const TRAFFIC = "#7fb6cc";
 export const EDGE_COLOR = {
-  msg: "#7fb6cc",
-  broadcast: P.cyan,
-  ask: P.magenta,
-  health: P.amber,
-  offer: P.mint,
-  grant: P.olive,
-  handoff: P.lavender,
+  msg: TRAFFIC,
+  broadcast: TRAFFIC,
+  ask: TRAFFIC,
+  health: TRAFFIC,
+  offer: TRAFFIC,
+  grant: TRAFFIC,
+  handoff: TRAFFIC,
   "blocked-on": P.red,
   alias: "#8c8c8c",
 };
@@ -148,16 +163,29 @@ export function fmtAge(s) {
 
 /**
  * `wait:self` (idle with runnable next items, nothing running) says what the role could do, not what
- * holds it, so it is drawn as its cause: an open question, the operator being offline (`parked-work`
- * does not wake then), a session that ended, or plain idle with work queued. Role-time accounting
- * keeps the event.
+ * holds it, so it is drawn as its cause: an open question, a session that ended (offline or not: nothing
+ * else would show a silent stall), the operator being offline (`parked-work` does not wake then), or
+ * plain idle with work queued. Role-time accounting keeps the event.
  */
 function selfKey(s, node) {
   const reasons = arr(s.reasons);
   if (reasons.includes("blocked-on-question")) return "prompt";
   if (arr(obj(node?.work).asks).length || reasons.includes("waiting-on-you")) return "ask";
-  if (s.shoal_offline === true) return "held";
-  return reasons.includes("dead-worker") ? "dead" : "queued";
+  if (reasons.includes("dead-worker")) return "dead";
+  return s.shoal_offline === true ? "held" : "queued";
+}
+
+/**
+ * How long a role can wait for work before that reads as a choice. `wait:assignment` stays human wait in the accounting, but
+ * an empty queue on a fill=assigned role is usually deliberate, so after this it stops asking for attention: no halo, out of
+ * needs-you, a count on the rail. An open question still counts.
+ */
+export const STARVED_AFTER_S = 7200;
+
+function assignKey(s, node) {
+  const reasons = arr(s.reasons);
+  const asking = arr(obj(node?.work).asks).length || reasons.includes("waiting-on-you") || reasons.includes("blocked-on-question");
+  return !asking && num(s.since_s) >= STARVED_AFTER_S ? "starved" : "assign";
 }
 
 /** The state key of a node, from its role-time class and event. Never throws. */
@@ -169,6 +197,7 @@ export function stateKey(node) {
   if (cls === "work") return "working";
   if (cls === "wait") {
     if (ev === "self" || (!ev && grp === "self")) return selfKey(s, node);
+    if (ev === "assignment") return assignKey(s, node);
     if (Object.prototype.hasOwnProperty.call(EVENT_KEY, ev)) return EVENT_KEY[ev];
     if (!ev && Object.prototype.hasOwnProperty.call(GROUP_KEY, grp)) return GROUP_KEY[grp];
     return "other";
@@ -177,8 +206,6 @@ export function stateKey(node) {
   if (cls === "excluded") return "excluded";
   return "unknown";
 }
-
-const SHAPE_BY_ECOSYSTEM = { claude: "circle", codex: "hexagon", opencode: "diamond" };
 
 /** A role's identity tint: a pastel picked by the hash of its id. */
 export const roleTint = (id) => PASTELS[hash32(id) % PASTELS.length];
@@ -207,11 +234,11 @@ export function nodeVisual(node) {
   const st = STATE_STYLE[key] ?? STATE_STYLE.unknown;
   const done = num(metrics.done_24h);
   // a role held by the operator being offline asks nothing of them until they are back
-  const needsYou = key !== "held" && Boolean(st.needsYou || obj(node?.state).needs_you === true);
+  const needsYou = key !== "held" && key !== "starved" && Boolean(st.needsYou || obj(node?.state).needs_you === true);
   return {
     kind: "role",
     key,
-    shape: SHAPE_BY_ECOSYSTEM[node?.ecosystem] ?? "circle",
+    shape: "circle",  // the agent's type is in the hover card
     r: 11 + Math.min(4, done * 0.8),
     color: st.color,
     fill: st.fill,
@@ -231,18 +258,35 @@ export function nodeVisual(node) {
   };
 }
 
-/** Every encoding, for the legend (toggle `l`). Hosts come from the view model. */
-export function legendEntries(vm = null) {
-  const states = Object.entries(STATE_STYLE).map(([key, s]) => ({
-    key, label: key === "other" ? "other (unknown wait event)" : s.label, color: s.color, badge: s.badge ?? null,
-    style: s.hatch ? "hatch" : s.border === "dashed" ? "dashed" : s.border === "dotted" ? "dotted" : s.fill === 0 ? "outline" : "fill",
-    pulse: Boolean(s.ring), needsYou: Boolean(s.needsYou),
-  }));
-  const shapes = [["circle", "claude"], ["hexagon", "codex"], ["diamond", "opencode"], ["ring", "you (operator hub)"], ["dashed", "external writer"]];
-  const edges = Object.entries(EDGE_COLOR).map(([cls, color]) => ({ cls, color, dash: EDGE_DASH[cls] ?? null }));
-  edges.push({ cls: "cross-host", color: "#7fb6cc", dash: CROSS_HOST_DASH });
+/**
+ * The legend (toggle `l`): the states drawn now, in `LEGEND_GROUPS` order; `all` lists every one. Without a view model every
+ * state counts as drawn. `hiddenStates` says how many more `all` would show.
+ */
+export function legendEntries(vm = null, all = false) {
+  const entry = (key) => {
+    const s = STATE_STYLE[key];
+    return {
+      key, label: key === "other" ? "other (unknown wait event)" : s.label, color: s.color, badge: s.badge ?? null,
+      style: s.hatch ? "hatch" : s.border === "dashed" ? "dashed" : s.border === "dotted" ? "dotted" : s.fill === 0 ? "outline" : "fill",
+      pulse: Boolean(s.ring), needsYou: Boolean(s.needsYou),
+    };
+  };
+  const drawn = vm ? new Set(vm.nodes.filter((n) => n.kind === "role").map((n) => n.visual.key)) : null;
+  const shown = (key) => all || !drawn || drawn.has(key);
+  const groups = LEGEND_GROUPS.map((g) => ({ id: g.id, label: g.label, states: g.keys.filter(shown).map(entry) })).filter((g) => g.states.length);
+  const states = groups.flatMap((g) => g.states);
+  const hiddenStates = Object.keys(STATE_STYLE).length - states.length;
+  const nodes = vm ? vm.nodes : null;
+  const shapes = [["ring", "you (operator hub)"]];
+  if (!nodes || nodes.some((n) => n.kind === "external" || n.kind === "writer")) shapes.push(["dashed", "outside writer"]);
+  const edges = [{ cls: "messages", color: TRAFFIC, dash: null }];
+  if (!vm || vm.edges.some((e) => e.cls === "blocked-on")) edges.push({ cls: "blocked on", color: EDGE_COLOR["blocked-on"], dash: EDGE_DASH["blocked-on"] });
+  if (!vm || vm.edges.some((e) => e.cross)) edges.push({ cls: "cross-host", color: TRAFFIC, dash: CROSS_HOST_DASH });
   const hosts = vm ? [...vm.hostColor.entries()].map(([name, color]) => ({ name, color })) : [];
-  return { states, shapes, edges, hosts, extra: [["grant pending", P.olive, "⚑"], ["CI job on another host", "#9ad1ff", "→"]] };
+  const extra = [];
+  if (!nodes || nodes.some((n) => n.grants?.length)) extra.push(["grant pending", P.olive, "⚑"]);
+  if (!nodes || nodes.some((n) => n.jobHost)) extra.push(["CI job on another host", "#9ad1ff", "→"]);
+  return { groups, states, hiddenStates, shapes, edges, hosts: hosts.length > 1 ? hosts : [], extra };
 }
 
 
@@ -411,6 +455,7 @@ export function shoalSummaries(doc) {
       asks: num(m.asks_open),
       pages24: num(m.pages_24h),
       workShare: typeof m.work_ratio_24h === "number" ? m.work_ratio_24h : null,
+      starved: keys.filter((k) => k === "starved").length,
       offline: obj(s.mode).offline === true,
       freeze: obj(s.mode).freeze === true,
       ledgerAge: typeof s.ledger_age_s === "number" ? s.ledger_age_s : null,
@@ -746,7 +791,7 @@ export function shoalCardLines(vm, sid) {
   const s = vm.shoals.find((x) => x.id === sid);
   if (!s) return null;
   const mode = [s.offline ? "offline" : "", s.freeze ? "freeze" : ""].filter(Boolean).join(", ") || "on";
-  const rows = [["mode", mode], ["roles", `${s.roles}: ${s.working} working, ${s.waiting} waiting`], ["needs you", String(s.needsYou)],
+  const rows = [["mode", mode], ["roles", `${s.roles}: ${s.working} working, ${s.waiting} waiting`], ["needs you", String(s.needsYou)], ...(s.starved ? [["no work assigned", String(s.starved)]] : []),
     ["asks / grants", `${s.asks} / ${s.grants}`], ["pages 24h", String(s.pages24)], ["done 24h / 7d", `${s.done24} / ${s.done7}`], ["msgs per hour", String(s.msgsPerH)]];
   if (s.home) rows.push(["home", s.home]);
   if (ledgerStale(s)) rows.push(["ledger clone", `${fmtAge(s.ledgerAge)} old on ${vm.host ?? "this host"}`]);
@@ -821,7 +866,7 @@ export function visualSignature(vm, cardId = null) {
   for (const e of vm.edges) parts.push(e.id, e.tier, rateBand(e.rate), e.cross ? 1 : 0, e.stale ? 1 : 0);
   for (const b of vm.broadcasts) parts.push(b.src, b.tier);
   for (const r of vm.needsYou) parts.push(r.id, r.text, fmtAge(r.since_s));
-  for (const s of vm.shoals) parts.push(s.id, s.offline ? 1 : 0, ledgerStale(s) ? 1 : 0, s.needsYou, s.msgsPerH, s.done24, s.done7, s.asks, s.grants, s.pages24, s.workShare ?? "n");
+  for (const s of vm.shoals) parts.push(s.id, s.starved, s.offline ? 1 : 0, ledgerStale(s) ? 1 : 0, s.needsYou, s.msgsPerH, s.done24, s.done7, s.asks, s.grants, s.pages24, s.workShare ?? "n");
   for (const h of hostSummaries(vm)) parts.push(h.name, h.roles, h.working, h.waiting, h.msgsPerH, h.jobsIn);
   return hash32(parts.join("\u0001"));
 }

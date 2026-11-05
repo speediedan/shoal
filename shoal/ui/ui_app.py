@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import glob
 import hashlib
 import json
 import os
@@ -59,6 +60,7 @@ REPORT_APP = "shoal"
 # the plan's own label on each terminal it starts, so a later reconcile finds the pane again
 PANE_LABEL = "shoal.pane"
 FEED_FRESH_S = 60
+STARVED_AFTER_S = 7200
 ROLE_TAB = re.compile(r"^roles( \d+)?$")
 # Bumped when what a tab is built from changes, so a tab made before it is rebuilt once: mod tabs hold no work, and
 # a roles tab is rebuilt only if every card in it is idle. 2: lattice tabs read their own machine's feed; roles in a grid.
@@ -93,6 +95,16 @@ OSC_CLEAR = "\x1b]7501;state=clear\x1b\\"
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
+def starved(r: dict) -> bool:
+    """A fill=assigned role left with an empty queue past the grace, asking nothing: usually deliberate, so the agents list
+    reads it as idle rather than needs-you (the lattice's `STARVED_AFTER_S`; accounting keeps `wait:assignment`)."""
+    reasons = set(r["can_progress"]["reasons"])
+    age = r.get("posture_age_s")
+    return (r.get("fill") == "assigned" and r.get("sub") == "queue-empty" and not r.get("asks") and not r.get("next")
+            and not r.get("grants_pending") and isinstance(age, (int, float)) and age >= STARVED_AFTER_S
+            and not reasons & {"blocked-on-question", "blocked-says-waiting", "watcher-dead", "dead-worker"})
+
+
 def card_report(r: dict, tag: str) -> dict:
     """{state, kind, title, msg} for one role's status row. The state follows the 0.9.3 sidebar rules
     (`ui_herdr.herdr_state`): working for a turn or a job wait, blocked when the role needs you or cannot be
@@ -101,6 +113,8 @@ def card_report(r: dict, tag: str) -> dict:
     import ui_herdr
     import ui_status
     state = ui_herdr.herdr_state(r)
+    if state == "blocked" and starved(r):
+        state = "idle"
     reasons = r["can_progress"]["reasons"]
     kind = ""
     if state == "blocked":
@@ -454,15 +468,18 @@ class Reconciler:
         self.select_tab(space_id, s.get("select") or s["tabs"][0]["name"])
         return space_id
 
-    def _relayout(self, s: dict, got: dict, built: dict) -> bool:
+    def _relayout(self, s: dict, got: dict, built: dict, sync: bool = False) -> bool:
         """Rebuild a shoal's roles tabs when they no longer hold the planned roles, or were built before TABS_V (a
         tab grown one pane at a time is a stack, not a grid). A card is only a viewer, so closing it stops nothing, but
-        one in use (an attached session, or anything else that is not a card) keeps every tab as it is. True when it
-        dealt with the roles tabs."""
+        one in use (an attached session, or anything else that is not a card), or one that cannot be read (a machine out of
+        reach, whose tabs may hold anything), keeps every tab as it is. The quiet `sync` leaves a space with no roles tab
+        alone: someone closed them. True when it dealt with the roles tabs."""
         planned = [t for t in s["tabs"] if ROLE_TAB.match(t["name"]) and not t.get("mod")]
         existing = [t for t in got.get("tabs", []) if ROLE_TAB.match(t.get("name") or "")]
         if not planned and not existing:
             return False
+        if sync and not existing:
+            return True
         have: dict[str, set[str]] = {}
         busy = False
         for tab in existing:
@@ -471,6 +488,7 @@ class Reconciler:
                 try:
                     t = hc_get(x["terminal"])
                 except AppError:
+                    busy = True
                     continue
                 lab = (t.get("labels") or {}).get(PANE_LABEL)
                 if lab:
@@ -585,7 +603,7 @@ class Reconciler:
                 continue
             first = first or got["id"]
             tabs = {t.get("name"): t for t in got.get("tabs", [])}
-            relaid = s.get("kind") == "shoal" and self._relayout(s, got, built)
+            relaid = s.get("kind") == "shoal" and self._relayout(s, got, built, sync)
             for t in s["tabs"]:
                 if relaid and ROLE_TAB.match(t["name"]) and not t.get("mod"):
                     continue
@@ -843,6 +861,9 @@ def cmd_app_start(a) -> int:
             print(f"[dry-run] write {path}\n{text}")
         else:
             os.makedirs(os.path.dirname(path), exist_ok=True)
+            backup = path + ".bak-shoal"
+            if os.path.exists(path) and not os.path.exists(backup):  # one time: the entry Herdr's installer wrote
+                shutil.copy2(path, backup)
             with open(path + ".tmp", "w") as fh:
                 fh.write(text)
             os.replace(path + ".tmp", path)
@@ -874,17 +895,25 @@ def cmd_app_start(a) -> int:
 
 
 def desktop_path() -> str:
+    """The app's own entry, replaced: a desktop shell matches a window to the entry named after its app id, so only this name
+    pins and groups with the window. It also means no launcher here starts the app without the pin held."""
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return os.path.join(base, "applications", "shoal-herdr-app.desktop")
+    return os.path.join(base, "applications", "herdr-app.desktop")
+
+
+def desktop_icon() -> str:
+    """A `shoal` icon in the user's icon theme (the name the 0.9.3 launcher uses), else a splash creature."""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    if glob.glob(os.path.join(base, "icons", "hicolor", "*", "apps", "shoal.*")):
+        return "shoal"
+    icon = os.path.join(MOD_DIR, "shoal-home", "assets", "fish-teal.png")
+    return icon if os.path.exists(icon) else os.path.join(PKG, "ui", "assets", "fish-teal.png")
 
 
 def desktop_text() -> str:
-    icon = os.path.join(MOD_DIR, "shoal-home", "assets", "fish-teal.png")
-    if not os.path.exists(icon):
-        icon = os.path.join(PKG, "ui", "assets", "fish-teal.png")
     exe = shlex.join(_cli_argv("ui", "app-start"))
-    return ("[Desktop Entry]\nType=Application\nName=Shoal\nComment=Shoal groups in the Herdr app\n"
-            f"Exec={exe}\nIcon={icon}\nTerminal=false\nCategories=Development;\nStartupWMClass=herdr-app\n")
+    return ("[Desktop Entry]\nType=Application\nName=Shoal\nComment=Shoal groups in the Herdr app, with the pin held\n"
+            f"Exec={exe}\nIcon={desktop_icon()}\nTerminal=false\nCategories=Development;\nStartupWMClass=herdr-app\n")
 
 
 def feed_unit_text() -> str:

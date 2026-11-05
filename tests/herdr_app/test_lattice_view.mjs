@@ -52,8 +52,7 @@ test("node visual classes per state", () => {
   assert.equal(vis(global, `${B}:research`).border, "dashed");
   assert.equal(vis(global, `${A}:registry`).border, "dotted");
   assert.ok(vis(global, `${A}:dist-ci`).hatch > 0 && vis(global, `${B}:analysis`).hatch > 0);
-  assert.equal(vis(global, `${B}:research`).shape, "hexagon");
-  assert.equal(vis(global, `${A}:addressing`).shape, "diamond");
+  assert.equal(vis(global, `${B}:research`).shape, "circle", "the agent's type is in the hover card");
   assert.equal(vis(global, `${A}:core`).shape, "circle");
 });
 
@@ -64,7 +63,6 @@ test("every salient wait is distinguishable", () => {
   const l = M.STATE_STYLE["local-ci"], r = M.STATE_STYLE["remote-ci"];
   assert.notEqual(l.badge, r.badge);
   assert.notEqual(l.hatch, r.hatch);
-  assert.notEqual(l.color, r.color);
 });
 
 test("unknown event and class are tolerated", () => {
@@ -703,6 +701,50 @@ test("edge cards: hit test, card lines, focus and signature", () => {
   assert.equal(M.visualSignature(M.buildModel(d2, A)), M.visualSignature(vm));
 });
 
+test("the legend: five groups, what is on screen, the full key one click away", () => {
+  assert.deepEqual(M.LEGEND_GROUPS.map((g) => g.id), ["you", "working", "waiting", "idle", "off"]);
+  const grouped = M.LEGEND_GROUPS.flatMap((g) => g.keys);
+  assert.equal(new Set(grouped).size, grouped.length, "a state is in one group");
+  assert.deepEqual([...grouped].sort(), Object.keys(M.STATE_STYLE).sort(), "every state has a group");
+  for (const key of M.LEGEND_GROUPS.find((g) => g.id === "waiting").keys) assert.equal(M.STATE_STYLE[key].color, M.STATE_STYLE["local-ci"].color, key);
+  const colors = new Set(Object.values(M.STATE_STYLE).map((s) => s.color));
+  assert.ok(colors.size <= 8, `state colors: ${[...colors]}`);
+  const vm = M.buildModel(doc, A);
+  const now = M.legendEntries(vm);
+  const drawn = new Set(vm.nodes.filter((n) => n.kind === "role").map((n) => n.visual.key));
+  assert.deepEqual(new Set(now.states.map((s) => s.key)), drawn, "only what is on screen");
+  assert.ok(now.hiddenStates > 0);
+  const full = M.legendEntries(vm, true);
+  assert.equal(full.states.length, Object.keys(M.STATE_STYLE).length);
+  assert.equal(full.hiddenStates, 0);
+  assert.ok(now.edges.length <= 3 && now.edges[0].cls === "messages");
+  assert.ok(!now.shapes.some(([, l]) => /claude|codex|opencode/.test(l)));
+  assert.equal(new Set(Object.entries(M.EDGE_COLOR).filter(([c]) => c !== "blocked-on" && c !== "alias").map(([, v]) => v)).size, 1, "traffic is one color");
+  assert.equal(M.legendEntries({ ...vm, hostColor: new Map([["host-a", "#fff"]]) }).hosts.length, 0, "one host needs no key");
+});
+
+test("a role with no work assigned goes quiet after the grace, unless it asks", () => {
+  const role = (since, extra = {}, work = {}) => ({ kind: "role", id: "s:r", state: { class: "wait", event: "assignment", group: "human", since_s: since, needs_you: true, ...extra }, work });
+  assert.equal(M.stateKey(role(600)), "assign");
+  assert.equal(M.nodeVisual(role(600)).needsYou, true, "at first it does ask");
+  assert.equal(M.stateKey(role(M.STARVED_AFTER_S)), "starved");
+  const q = M.nodeVisual(role(M.STARVED_AFTER_S));
+  assert.equal(q.needsYou, false);
+  assert.equal(q.halo, null);
+  assert.equal(q.urgency, null);
+  assert.equal(M.stateKey(role(M.STARVED_AFTER_S, {}, { asks: ["ok?"] })), "assign", "an open question still counts");
+  assert.equal(M.stateKey(role(M.STARVED_AFTER_S, { reasons: ["waiting-on-you"] })), "assign");
+  const d = structuredClone(doc);
+  const n = d.nodes.find((x) => x.id === `${A}:core`);
+  n.state = { class: "wait", event: "assignment", group: "human", since_s: M.STARVED_AFTER_S + 5, needs_you: true };
+  n.work = { asks: [] };
+  const vm = M.buildModel(d, A);
+  assert.ok(!vm.needsYou.some((r) => r.id === `${A}:core`));
+  const s = vm.shoals.find((x) => x.id === A);
+  assert.equal(s.starved, 1);
+  assert.ok(M.cardLines(vm, M.SHOAL_CARD + A).rows.some(([k, v]) => k === "no work assigned" && v === "1"));
+});
+
 test("wait:self draws its cause, and is never its own state or a legend entry", () => {
   const role = (state, work = {}) => ({ kind: "role", id: "s:r", state: { class: "wait", event: "self", group: "self", ...state }, work });
   assert.equal(M.stateKey(role({})), "queued");
@@ -710,8 +752,10 @@ test("wait:self draws its cause, and is never its own state or a legend entry", 
   assert.equal(M.stateKey(role({ reasons: ["waiting-on-you"] })), "ask");
   assert.equal(M.stateKey(role({ reasons: ["blocked-on-question"], shoal_offline: true })), "prompt", "a question outranks offline");
   assert.equal(M.stateKey(role({ reasons: ["dead-worker"] })), "dead");
-  assert.equal(M.stateKey(role({ reasons: ["dead-worker", "parked-work"], shoal_offline: true, needs_you: true })), "held");
-  assert.equal(M.nodeVisual(role({ reasons: ["dead-worker"], shoal_offline: true, needs_you: true })).needsYou, false, "a held role asks nothing while you are away");
+  assert.equal(M.stateKey(role({ reasons: ["parked-work"], shoal_offline: true, needs_you: true })), "held");
+  assert.equal(M.nodeVisual(role({ reasons: ["parked-work"], shoal_offline: true, needs_you: true })).needsYou, false, "a held role asks nothing while you are away");
+  assert.equal(M.stateKey(role({ reasons: ["dead-worker", "parked-work"], shoal_offline: true, needs_you: true })), "dead", "offline never hides a dead session");
+  assert.equal(M.nodeVisual(role({ reasons: ["dead-worker"], shoal_offline: true, needs_you: true })).needsYou, true);
   assert.equal(M.nodeVisual(role({ reasons: ["waiting-on-you"], needs_you: true })).needsYou, true);
   const keys = M.legendEntries().states.map((s) => s.key);
   assert.ok(!keys.includes("self"));
@@ -723,7 +767,7 @@ test("wait:self draws its cause, and is never its own state or a legend entry", 
 
 test("legend and labels: no retired relay, no writer square, no generation", () => {
   const L0 = M.legendEntries();
-  assert.ok(!L0.shapes.some(([, label]) => /relay|writer$/.test(label) && !/external/.test(label)), JSON.stringify(L0.shapes));
+  assert.ok(!L0.shapes.some(([, label]) => /relay|shoal writer/.test(label)), JSON.stringify(L0.shapes));
   const vm = M.buildModel(doc, "global");
   const lay = L.layoutGraph(vm);
   const sc = S.buildScene(vm, lay, { width: 1200, height: 800, tf: S.fitScene(vm, lay, { width: 1200, height: 800 }), motion: "off" });

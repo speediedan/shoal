@@ -23,7 +23,7 @@ you, per-shoal throughput and per-host load.
 - **Per-shoal view:** the shoal's roles on one ring split into host sectors: translucent annular
   bands in the host color, labeled with the host name (`⌂` marks the shoal's home). The hub in the
   middle, the shoal's status on a hover anywhere in the hole of the ring, externals outside.
-- **Nodes:** shape by ecosystem (circle claude, hexagon codex, diamond opencode), size by work done
+- **Nodes:** circles (the agent's type is in the hover card), size by work done
   in 24 h, a host-colored dot before each label, a state badge top right, an olive `⚑` grant badge
   top left. State encodings:
 

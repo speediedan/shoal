@@ -2285,6 +2285,17 @@ j = row(posture="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:
 rep = ui_app.card_report(j, "lane")
 assert rep["state"] == "working" and "local-ci" in rep["msg"] and rep["title"] == "lane/r", rep
 assert ui_app.card_report(row(host="a-host"), "lane")["title"] == "lane/r@a-host", "the role's own host travels in the report"
+# a role left with no work reads idle in the agents list after the grace, unless it asks or cannot be woken
+sv = lambda age, **kw: row(**{**dict(posture="wait", sub="queue-empty", fill="assigned", needs_you=True, posture_age_s=age, asks=[], next=[],
+                                     can_progress={"ok": True, "reasons": ["waiting-on-you"]}), **kw})
+assert ui_app.card_report(sv(60), "lane")["state"] == "blocked"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S), "lane")["state"] == "idle"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S, asks=["ok?"]), "lane")["state"] == "blocked"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S, fill="self"), "lane")["state"] == "blocked"
+assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S, can_progress={"ok": False, "reasons": ["watcher-dead"]}), "lane")["state"] == "blocked"
+# the launcher takes the app's own entry name, which is what a desktop shell matches a window to, and holds the pin
+assert os.path.basename(ui_app.desktop_path()) == "herdr-app.desktop"
+assert "ui" in ui_app.desktop_text() and "app-start" in ui_app.desktop_text() and "StartupWMClass=herdr-app" in ui_app.desktop_text()
 
 # lattice tabs read the feed of the machine their space is on
 assert ui_app.Reconciler("lane-m")._mod_props({"props": {"source": {"kind": "file", "path": "/f"}}})["source"]["on"] == "lane-m"
@@ -2310,6 +2321,20 @@ assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and any(c == "tab.
 calls.clear(); fg["t2"] = "other"
 assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls and "in use" in rec.out[-1], "an attached card keeps the tabs"
 fg["t2"] = "card"; calls.clear()
+# a terminal that cannot be read (a machine out of reach) may be anything: its tabs stay, whatever the labels say
+real_get = ui_app.hc_get
+def unreadable(t):
+    if t == "t2":
+        raise ui_app.AppError("no route")
+    return real_get(t)
+ui_app.hc_get = unreadable
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls, "an unreadable terminal closed tabs"
+ui_app.hc_get = real_get
+# someone closed every roles tab: the quiet sync leaves that, an explicit open brings them back
+closed = {"id": "sp", "tabs": []}
+assert rec._relayout(space, closed, {}, sync=True) and not calls, "the sync reopened closed roles tabs"
+assert rec._relayout(space, closed, {}) and any(c == "tab.new" for c, _ in calls), "app-open restores them"
+calls.clear()
 two = ui_app.Reconciler(None, dry_run=True)
 assert two._relayout(more, got, {}) and not calls and "lay the roles out again" in two.out[-1], "a dry run only says"
 

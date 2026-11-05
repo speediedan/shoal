@@ -991,7 +991,10 @@ and the contract are in [`ui.md`](ui.md).
   out and fits the measured scene (labels and cluster titles included) inside the canvas. The `source` argv
   must stay a read-only shoal command. Encodings key on role-time class and event; unknown values
   render as "other" or "unknown". `wait:self` is drawn as its cause (an open question, held while the
-  operator is offline, a session that ended, or idle with work queued), and accounting keeps the event. A hover or
+  operator is offline, a session that ended, or idle with work queued), and accounting keeps the event. So does
+  `wait:assignment`, which after two hours with no open question stops asking for attention (no halo, out of needs-you, a
+  count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
+  which event, and the legend lists what is on screen, with the full key a click away. A hover or
   click reaches a node, then an edge, then the middle of a shoal's circle, which is the shoal's status (the
   feed's writer node is not drawn). A right-click on a role opens `shoal-actions` on it; on a shoal's circle or
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken

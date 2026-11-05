@@ -616,8 +616,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   `app-start` runs it as the user unit `shoal-herdr-app` with `HERDR_RELEASES_URL` pointed at a dead loopback
   address, passing through only the display variables. Pins: app 0.1.13, core 0.1.18 (`ui_app.APP_PIN`,
   `CORE_PIN`); upgrade deliberately by rerunning the installer, lane host first. Herdr's own desktop entry starts
-  the app without the pin held, so it can stage and apply an update by itself. `--write-desktop` writes a
-  desktop entry that runs `app-start`.
+  the app without the pin held, so it can stage and apply an update by itself. `--write-desktop` replaces that entry (`herdr-app.desktop`, the name a
+  desktop shell matches the window to, so it pins and groups; the original is kept as `.bak-shoal`) with one named
+  Shoal that runs `app-start`, using the `shoal` icon where the theme has one.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
   Spaces acts on that host's shoals, and the status bar shows each provider's usage.
