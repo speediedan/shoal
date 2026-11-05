@@ -349,7 +349,7 @@ def cmd_ledger_watch(a) -> int:
         except (OSError, ValueError):
             pass
     # fetch_fail starts over: a re-arm inheriting a dead watcher's count ended on its first miss, so every
-    # quorum re-arm during an outage was spent within a tick (2026-11-04: fts-core's reached 7, then stayed dead)
+    # quorum re-arm during an outage was spent within a tick (2026-11-04: one role's reached 7, then stayed dead)
     sc.update(session_id=session, pid=str(os.getpid()), armed_utc=now_iso(),
               wake=a.wake, interval=str(a.interval), fetch_fail="0")
     sc.setdefault("delivered", "")
