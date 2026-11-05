@@ -55,9 +55,12 @@ you, per-shoal throughput and per-host load.
 - **Satellites:** each role's active item, next items and items done in 24 h as small dots on
   short spokes fanned outward: the starburst.
 - **Rail** (272px, `#0b0e12`): the view name and feed time; NEEDS YOU rows (badge, role, shoal,
-  ask text, age), loudest first; SHOALS cards (urgent-state dot, needs-you pill, done 24h/7d,
-  msg/h, work share bar, sparkline, asks, grants, pages); HOSTS (roles, working, waiting, msg/h,
-  CI jobs placed in).
+  ask text, age), loudest first; BOARDS (per shoal in view, each priority board as a link beside how
+  old its read is, amber past 30 minutes, then done, open, in flight and assigned over a thin bar in
+  those colors: `#6a8592`, `#d4d4d4`, `#2ee6c0`, `#a58bff`, then queued work not open on the board as
+  "off the board"; a host that is not the shoal's home has the link and no counts); SHOALS cards
+  (urgent-state dot, needs-you pill, done 24h/7d, msg/h, work share bar, sparkline, asks, grants,
+  pages); HOSTS (roles, working, waiting, msg/h, CI jobs placed in).
 
 ## How it behaves
 

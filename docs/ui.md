@@ -125,7 +125,10 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
              "metrics": {"roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "stalled": 1,
                          "asks_open": 1, "pages_24h": 2, "done_24h": 6, "done_7d": 31, "claims_24h": 8,
                          "offers_24h": 5, "msgs_1h": 14, "msgs_24h": 120, "work_ratio_24h": null,
-                         "grants_pending_n": 1}}],
+                         "grants_pending_n": 1},
+             "boards": {"items": [{"id": "<owner>/<n>", "title": "<board>", "url": "https://github.com/users/<owner>/projects/<n>",
+                                   "counts": {"done": 134, "open": 58, "in_flight": 4, "assigned": 10}}],
+                        "off_board": {"in_flight": 1, "assigned": 2}, "age_s": 240, "stale": false}}],
  "nodes": [
    {"id": "user", "kind": "user", "shoal": null, "label": "you",
     "state": {"class": "work", "event": "", "group": "", "needs_you": true},

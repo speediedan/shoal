@@ -1990,6 +1990,41 @@ $H ui graph-feed --ledger-root "$GR" --once >/dev/null || fail "graph-feed --onc
 GJ="$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/graph.json"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["v"] == 1 and d["kind"] == "shoal-graph"' "$GJ" \
   || fail "graph-feed did not write $GJ"
+# a shoal's boards: a link from the spec, and counts from this host's last digest; the four add up to the board
+BD="$(mktemp -d)"
+SHOAL_DATA_ROOT="$BD" python3 - "$SHOALD" <<'PY2' || fail "board summary"
+import json, os, sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_graph
+from digest import digest_path
+spec = types.SimpleNamespace(sources=[{"kind": "github-project", "owner": "acme", "number": 7}, {"kind": "other"}])
+rows = [{"active": "proj#1:fix", "next": [{"item": "proj#2:fix"}, {"item": "proj#9:fix"}]},
+        {"active": "proj#8:fix", "next": [{"item": "proj#1:fix"}]}]
+assert ui_graph.board_doc(types.SimpleNamespace(sources=[]), rows, None, 0) is None
+link = ui_graph.board_doc(spec, rows, None, 0)
+assert link == {"items": [{"id": "acme/7", "title": "", "url": "https://github.com/users/acme/projects/7"}]}, link
+src = "github-project:acme/7"
+doc = {"generated_utc": "2026-01-01T00:00:00Z", "unused": "x" * 100,
+       "boards": [{"source": src, "title": "Priorities", "url": "https://github.com/orgs/acme/projects/7", "done": 5}],
+       "items": {f"proj#{n}": {"source": src, "bodyText": "long"} for n in (1, 2, 3, 4)}}
+b = ui_graph.GraphBuilder()
+os.makedirs(os.path.dirname(digest_path("sid1")))
+json.dump(doc, open(digest_path("sid1"), "w"))
+got = b._digest("sid1")
+assert "unused" not in got and got["items"]["proj#1"] == {"source": src}, got
+assert b._digest("nosuch") is None
+t = ui_graph._epoch(doc["generated_utc"])
+d = ui_graph.board_doc(spec, rows, got, t + 600)
+e = d["items"][0]
+assert e["title"] == "Priorities" and e["url"].startswith("https://github.com/orgs/"), e  # the page GitHub reported
+# 1 is active and queued: in flight only. 8 and 9 are queued work off the board.
+assert e["counts"] == {"done": 5, "open": 2, "in_flight": 1, "assigned": 1}, e
+assert d["off_board"] == {"in_flight": 1, "assigned": 1} and d["age_s"] == 600 and d["stale"] is False, d
+assert ui_graph.board_doc(spec, rows, got, t + 7200)["stale"] is True
+# a digest from before boards were recorded: the link, no counts
+assert "counts" not in ui_graph.board_doc(spec, rows, {"generated_utc": doc["generated_utc"], "items": doc["items"]}, t)["items"][0]
+PY2
+rm -rf "$BD"
 check "needs you: tune" $H ui graph --ledger-root "$GR"
 check "top edges" $H ui graph --ledger-root "$GR"
 # only the test's own appends changed the clone: no file was added, committed or rewritten by a graph run

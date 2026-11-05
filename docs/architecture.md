@@ -1055,7 +1055,10 @@ capped tail behind an opaque cursor of per-file byte offsets. `ui graph-feed` ke
 in memory and writes `graph.json` beside the status cache each tick, reading only appended bytes.
 It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call. So a host that is no
 shoal's home has a clone nothing refreshes; each shoal says how old its clone is (`ledger_age_s`), and the app's lattice
-tabs read the feed of the machine their space is on.
+tabs read the feed of the machine their space is on. Each shoal also carries its priority boards (`boards`): a link for
+each from the spec, and, from this host's last digest, its items as done, open, in flight (a role's active item) and assigned
+(in a role's queue, nobody's active item). The feed never reads a board itself, so those counts are as old as the digest, and a
+host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
 
 ### Herdr app adapter (`shoal ui app-*`)
 
