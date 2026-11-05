@@ -900,11 +900,13 @@ and the contract are in [`ui.md`](ui.md).
   Clients that take a model and effort per run (Muse, Codex) get the seat's own pair: a role's
   from its spec, a standalone seat's from its registry entry (saved by `ui pick --model/--effort`,
   which `muse-new`/`codex-new --pick` pass through), re-read on every attach like the entry's ids.
-  Muse role cards always open a live observer, both during and between turns. The observer reads
+  Muse and Codex role cards always open a live observer, both during and between turns. The observer reads
   public output and tool activity incrementally without owning either session lock; `q`, Escape
   or Ctrl+C returns to the card. An explicit `i` opens native interaction only after acquiring the
   same lock as automated turns. It refuses while busy; `/exit` releases native ownership and
-  returns to observation. Standalone Muse cards retain native resume when idle. Native
+  returns to observation. A native client holds the session and the role's wakes until it exits, so
+  `native_client.py` reports it apart from a turn (`held`, with pid, terminal and start) and offers `T`, which ends
+  it unless the session was written to in the last two minutes. Standalone Muse and Codex cards retain native resume when idle. Native
   `--no-session-log` replay is not used: it permits unsaved divergent turns and does not follow
   ongoing work. Modern Muse journal freshness uses `sessions/YYYY/MM/DD/<id>/session.jsonl`;
   a native lock pid must own the locked file and an interactive resume process before it counts

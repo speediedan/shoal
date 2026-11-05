@@ -40,6 +40,8 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   automated turns use before launching `muse resume`, so a concurrent wake cannot race the
   attach. A busy session stays in the observer. Native mode pauses automatic wakes until you
   quit Muse with `/exit`; the observer then returns. Model/effort remain the role's own pair.
+  A client open elsewhere reads `held`, not `running`; `T` ends it and attaches here unless the
+  session was written to in the last two minutes. Codex role cards behave the same way.
 - Native `resume --no-session-log` is a replay with unsaved new turns, not a live spectator.
   It neither follows durable appends nor prevents divergent unrecorded work, so SHOAL does not
   use it as a viewer. Newer Muse versions advertise `serve --listen` multi-client sockets;

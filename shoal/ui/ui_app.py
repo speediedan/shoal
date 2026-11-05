@@ -123,7 +123,8 @@ def card_report(r: dict, tag: str) -> dict:
 
 def report_text(r: dict, tag: str) -> str:
     rep = card_report(r, tag)
-    return osc7501(rep["state"], rep["kind"], rep["title"], rep["msg"])
+    # the app heads the pane with the reported `app`, so the role's name is what a window shows, not "shoal"
+    return osc7501(rep["state"], rep["kind"], rep["title"], rep["msg"], app=r["slug"])
 
 
 # ---- plan: what this host's shoals want ---------------------------------------------------
