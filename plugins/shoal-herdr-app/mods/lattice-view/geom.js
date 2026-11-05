@@ -224,6 +224,33 @@ export function hitNode(nodes, p, slop = 4) {
   return best;
 }
 
+/**
+ * The edge under a pointer: the closest whose curve passes within `slop`. `edges` are {id, c} with c
+ * an `edgeCurve` in the same space as `p`. Returns the id or null.
+ */
+export function hitEdge(edges, p, slop = 5, steps = 16) {
+  let best = null;
+  let bestD = slop;
+  for (const { id, c } of edges) {
+    // the curve lies inside its control points' box
+    const xs = [c.p0.x, c.c1.x, c.c2.x, c.p3.x], ys = [c.p0.y, c.c1.y, c.c2.y, c.p3.y];
+    if (p.x < Math.min(...xs) - slop || p.x > Math.max(...xs) + slop || p.y < Math.min(...ys) - slop || p.y > Math.max(...ys) + slop) continue;
+    let a = c.p0;
+    for (let i = 1; i <= steps; i++) {
+      const b = pointAt(c, i / steps);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const t = clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1), 0, 1);
+      const d = Math.hypot(a.x + t * dx - p.x, a.y + t * dy - p.y);
+      if (d <= bestD) {
+        best = id;
+        bestD = d;
+      }
+      a = b;
+    }
+  }
+  return best;
+}
+
 /** The cluster disc ({id, x, y, r}) under a pointer, or null. */
 export function hitDisc(discs, p) {
   for (const c of discs) if (Math.hypot(c.x - p.x, c.y - p.y) <= c.r) return c.id;

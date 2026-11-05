@@ -495,6 +495,7 @@ export function buildModel(doc, view = "global", opts = {}) {
       cross: typeof e.cross_host === "boolean" ? e.cross_host : Boolean(byId.get(e.src).host && byId.get(e.dst).host && byId.get(e.src).host !== byId.get(e.dst).host),
       stale: e.stale === true,
       open: typeof e.open === "number" ? e.open : null,
+      recent: arr(e.recent).filter((r) => r && typeof r.summary === "string"),
     });
   }
   edges.sort((a, b) => (a.id < b.id ? -1 : 1));
@@ -683,10 +684,29 @@ export function pulseSignature(pm) {
   return hash32(parts.join("\u0001"));
 }
 
-/** The text lines of a hover card for a node, shared by main.js and the preview. */
+/** The text lines of a hover card for an edge: its counts per window and its last few events. */
+export function edgeCardLines(vm, id) {
+  const e = vm.edges.find((x) => x.id === id);
+  if (!e) return null;
+  const a = vm.byId.get(e.src), b = vm.byId.get(e.dst);
+  const rows = [[`${fmtAge(num(vm.windows.rate_s, 300))} / 1h / 24h`, `${e.n_rate} / ${e.n_1h} / ${e.n_24h}`], ["rate", `${e.rate}/h`]];
+  if (e.last_age_s !== null) rows.push(["last", fmtAge(e.last_age_s)]);
+  if (e.open !== null) rows.push(["open", String(e.open)]);
+  if (e.stale) rows.push(["blocker", "stale"]);
+  if (e.cross) rows.push(["hosts", `${a.host ?? "?"} → ${b.host ?? "?"}`]);
+  const links = e.recent.map((r) => ({
+    kind: "event",
+    text: `${typeof r.age_s === "number" ? `${fmtAge(r.age_s)} ` : ""}${r.summary}`,
+    url: typeof r.url === "string" ? r.url : null,
+    stale: false,
+  }));
+  return { title: `${a.label} → ${b.label}`, subtitle: e.cls, color: e.color, rows, list: [], links, command: null };
+}
+
+/** The text lines of a hover card for a node, or else an edge, shared by main.js and the preview. */
 export function cardLines(vm, id) {
   const n = vm.byId.get(id);
-  if (!n) return null;
+  if (!n) return edgeCardLines(vm, id);
   const s = n.state;
   const m = n.metrics;
   if (n.kind === "user") {
@@ -733,10 +753,13 @@ export function cardLines(vm, id) {
 /**
  * A hash of everything the view draws from the doc (node states and badges, edge tiers and rate
  * bands, items, the rail's numbers and ages as shown). A poll whose doc hashes the same needs no
- * redraw; on a software renderer a redraw is the expensive part.
+ * redraw; on a software renderer a redraw is the expensive part. `cardId`: the node or edge whose
+ * card is open; an edge's card shows counts and events no other part of the picture does.
  */
-export function visualSignature(vm) {
+export function visualSignature(vm, cardId = null) {
   const parts = [vm.view];
+  const card = cardId ? vm.edges.find((e) => e.id === cardId) : null;
+  if (card) parts.push(card.id, card.n_rate, card.n_1h, card.n_24h, card.recent[0]?.ts ?? "");
   for (const n of vm.nodes) {
     const v = n.visual;
     parts.push(n.id, v.key, v.badge ?? "", v.grants ?? 0, v.needsYou ? 1 : 0, n.items.length, n.jobHost ?? "", n.host ?? "", n.label);

@@ -143,7 +143,9 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
     "view": ["shoal", "view", "<id>", "<role>"]}],
  "edges": [{"id": "<src>|<dst>|msg", "src": "<id>:<a>", "dst": "<id>:<b>", "class": "msg",
             "n_rate": 2, "n_1h": 4, "n_24h": 18, "rate_per_h": 3.5, "last_ts": "<utc>", "last_age_s": 40,
-            "shoal": "<id>", "cross_host": false}],
+            "shoal": "<id>", "cross_host": false,
+            "recent": [{"ts": "<utc>", "age_s": 40, "kind": "info", "summary": "<= 120 chars",
+                        "item": "<optional>", "url": "<optional>"}]}],
  "events": [{"seq": 101, "ts": "<utc>", "shoal": "<id>", "src": "<id>:<a>", "dst": "<id>:*",
              "type": "msg", "class": "broadcast", "kind": "info", "item": "", "summary": "<= 120 chars"}]}
 ```
@@ -212,7 +214,11 @@ an hour and a day. `rate_per_h` is an exponentially weighted rate with a one-hou
 (`ln 2` times the sum of `2^(-age_h)` over the day's events), so a steady r per hour reads r and a
 burst fades within hours. `last_ts` and `last_age_s` are the newest event's, `null` for a structural
 edge with none. `cross_host` is true when both ends have a known host and the hosts differ (the
-maintainer node has none). Writers map to node ids as above: `user`, `shoal` to `<id>:shoal`,
+maintainer node has none). `recent` holds the edge's last three events of the day, newest first
+(`ts`, `age_s`, `kind`, the same `summary` as an event, and `item` and `url` when the event has them);
+an edge with none omits it. The lattice shows them on the edge's hover card: hover a curve for its counts,
+rate and last events, click it (outside a cluster disc in the global view) to pin the card, and a pinned
+card's events link to their `url`. Writers map to node ids as above: `user`, `shoal` to `<id>:shoal`,
 `ext-x` and `ext:x` to `ext:x`, a role slug to `<id>:<slug>`.
 
 **Events** are the last `--events` (default 200) traffic and work events across every ledger file in

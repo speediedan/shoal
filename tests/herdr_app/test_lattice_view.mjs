@@ -662,4 +662,46 @@ test("right-click opens shoal-actions on a role (machine from source.on) or a sh
   }
 });
 
+test("edge cards: hit test, card lines, focus and signature", () => {
+  const vm = M.buildModel(doc, A);
+  const lay = L.layoutGraph(vm);
+  const size = { width: 1280, height: 800 };
+  const tf = S.fitScene(vm, lay, size);
+  const id = `${A}:core|${A}:dist-ci|msg`;
+  const sc = S.buildScene(vm, lay, { ...size, tf, motion: "off" });
+  assert.equal(sc.edgeHits.length, vm.edges.filter((e) => lay.pos.get(e.src) && lay.pos.get(e.dst)).length);
+  // the curve's middle hits this edge, or one running within the slop of it; far away hits nothing
+  const at = sc.edgeScreen.get(id);
+  assert.ok(at && Number.isFinite(at.x) && Number.isFinite(at.y));
+  assert.equal(G.hitEdge(sc.edgeHits.filter((h) => h.id === id), at), id);
+  assert.equal(G.hitEdge(sc.edgeHits, { x: -500, y: -500 }), null);
+  assert.equal(G.hitEdge([], at), null);
+  assert.equal(G.hitEdge(sc.edgeHits.filter((h) => h.id === id), { x: at.x + 40, y: at.y + 40 }, 5), null);
+
+  const c = M.cardLines(vm, id);
+  assert.equal(c.title, "core → dist-ci");
+  assert.equal(c.subtitle, "msg");
+  assert.deepEqual(c.rows[0][1], "2 / 4 / 18");
+  assert.deepEqual(c.links.map((l) => l.url), ["https://github.com/example-org/repo-one/pull/103", null], "newest first, a url only when the event has one");
+  assert.ok(c.links[0].text.endsWith("PR 103 rebased; please rerun the GPU leg"), c.links[0].text);
+  assert.equal(c.command, null);
+  assert.equal(M.cardLines(vm, "nope|nope|msg"), null);
+  // an edge from a feed without `recent` still has its card
+  const bare = structuredClone(doc);
+  for (const e of bare.edges) delete e.recent;
+  assert.deepEqual(M.cardLines(M.buildModel(bare, A), id).links, []);
+
+  // hovering an edge keeps it and its ends bright: a node hover's fade, on one edge
+  const hov = S.buildScene(vm, lay, { ...size, tf, motion: "off", hover: id });
+  assert.notDeepEqual(hov.items.filter((it) => it.t === "path" && it.id.startsWith("ec-")).map((it) => it.bg), sc.items.filter((it) => it.t === "path" && it.id.startsWith("ec-")).map((it) => it.bg));
+
+  // a new event on the open edge redraws; on a closed one it does not
+  const d2 = structuredClone(doc);
+  const e2 = d2.edges.find((e) => e.id === id);
+  e2.recent.unshift({ ts: "2026-11-02T20:00:30Z", age_s: 10, kind: "info", summary: "newer" });
+  e2.n_24h += 1;
+  assert.notEqual(M.visualSignature(M.buildModel(d2, A), id), M.visualSignature(vm, id));
+  assert.equal(M.visualSignature(M.buildModel(d2, A)), M.visualSignature(vm));
+});
+
 console.log(`lattice-view: ${n} tests passed`);

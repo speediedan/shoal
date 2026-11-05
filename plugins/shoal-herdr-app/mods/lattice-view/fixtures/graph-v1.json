@@ -871,7 +871,23 @@
    "rate_per_h": 3.5,
    "last_ts": "2026-11-02T20:00:00Z",
    "last_age_s": 40,
-   "shoal": "alpha-20261101-000000"
+   "shoal": "alpha-20261101-000000",
+   "recent": [
+    {
+     "ts": "2026-11-02T20:00:00Z",
+     "age_s": 40,
+     "kind": "info",
+     "summary": "PR 103 rebased; please rerun the GPU leg",
+     "item": "repo-one#103",
+     "url": "https://github.com/example-org/repo-one/pull/103"
+    },
+    {
+     "ts": "2026-11-02T19:50:00Z",
+     "age_s": 640,
+     "kind": "info",
+     "summary": "the CI wait moved to the second pool host"
+    }
+   ]
   },
   {
    "id": "alpha-20261101-000000:dist-ci|alpha-20261101-000000:core|msg",

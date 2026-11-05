@@ -44,7 +44,8 @@ export const pulseFrames = (kind) => (kind === "needs" ? [PULSE_GLYPH, " "] : [P
 
 /**
  * Builds the display list. `opts`: {width, height, tf, hover, selected, policy (motion.js) or
- * motion (a tier name), packets}. Returns {items, hits, discs, nodeScreen, animated, extent}:
+ * motion (a tier name), packets}; `hover` is a node or an edge id. Returns {items, hits, edgeHits,
+ * discs, nodeScreen, edgeScreen, animated, extent}:
  * `animated` counts elements that make the window redraw on their own (loops, frames, spins,
  * transitions); `extent` {x0, y0, x1, y1} is the screen box of everything drawn for the graph
  * (regions and their labels, edges, nodes and halos, satellites, labels, chips), which `fitScene`
@@ -59,7 +60,9 @@ export function buildScene(vm, lay, opts) {
   const S = (p) => toScreen(tf, p);
   const posOf = (id) => lay.pos.get(id);
   const hover = opts.hover && vm.byId.has(opts.hover) ? opts.hover : null;
-  const bright = hover ? new Set([hover, ...(vm.neighbors.get(hover) ?? [])]) : null;
+  // a hovered edge keeps itself and its two ends bright, as a hovered node keeps its neighbors
+  const hoverEdge = !hover && opts.hover ? vm.edges.find((e) => e.id === opts.hover) ?? null : null;
+  const bright = hover ? new Set([hover, ...(vm.neighbors.get(hover) ?? [])]) : hoverEdge ? new Set([hoverEdge.src, hoverEdge.dst]) : null;
   const dimOf = (id) => (bright && !bright.has(id) ? 0.2 : 1);
   const extent = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
   const grow = (x0, y0, x1, y1) => {
@@ -166,7 +169,9 @@ export function buildScene(vm, lay, opts) {
     curves.set(e.id, c);
     for (const t of [0.25, 0.5, 0.75]) { const q = pointAt(c, t); grow(q.x, q.y, q.x, q.y); }
   }
-  const keep = hover ? incidentEdges(vm, hover) : null;
+  const edgeHits = [...curves].map(([id, c]) => ({ id, c }));
+  const edgeScreen = new Map(edgeHits.map(({ id, c }) => [id, { ...pointAt(c, 0.5), r: 2 }]));
+  const keep = hover ? incidentEdges(vm, hover) : hoverEdge ? new Set([hoverEdge.id]) : null;
   for (const bk of edgeBuckets(vm.edges.filter((e) => curves.has(e.id)), keep)) {
     const cmds = bk.edges.flatMap((e) => curveCmds(curves.get(e.id)));
     if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
@@ -430,7 +435,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
-  return { items, hits, discs, nodeScreen, animated, extent };
+  return { items, hits, edgeHits, discs, nodeScreen, edgeScreen, animated, extent };
 }
 
 /** The world box of what scales with zoom: node centers, satellites and the cluster regions. */

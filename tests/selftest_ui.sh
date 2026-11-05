@@ -1895,6 +1895,9 @@ E = {(e["src"], e["dst"], e["class"]): e for e in d["edges"]}
 m = E[(f"{A}:core", f"{A}:dist-ci", "msg")]
 assert (m["n_rate"], m["n_1h"], m["n_24h"]) == (2, 3, 4) and m["last_age_s"] < 120 and m["shoal"] == A, m
 assert m["id"] == f"{A}:core|{A}:dist-ci|msg" and m["rate_per_h"] > 0
+# an edge's last events, newest first, capped at 3, from the last day only (the 30-hour-old message is out)
+assert [r["summary"] for r in m["recent"]] == ["PR 103 rebased; please rerun the GPU leg", "two minutes", "half an hour"], m["recent"]
+assert m["recent"][0]["kind"] == "info" and 50 <= m["recent"][0]["age_s"] < 120 and m["recent"][0]["ts"], m["recent"][0]
 assert E[(f"{A}:core", f"{A}:*", "broadcast")]["n_24h"] == 1
 bo = E[(f"{A}:core", f"{A}:dist-ci", "blocked-on")]
 assert bo["structural"] and bo["last_ts"] is None and bo["stale"] is False, bo

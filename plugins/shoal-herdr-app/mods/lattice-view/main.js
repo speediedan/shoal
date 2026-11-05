@@ -37,7 +37,7 @@ import {
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, fitScene, fitText, headerText } from "./scene.js";
-import { hitNode, hitDisc, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
+import { hitNode, hitEdge, hitDisc, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -165,6 +165,7 @@ export default class Lattice extends View {
     this.legend = p.legend === true;
     this.history = new Map();
     this.hits = [];
+    this.edgeHits = [];
     this.discs = [];
     this.cooling = null;
     this.batch = 0;
@@ -301,7 +302,7 @@ export default class Lattice extends View {
     this.rebuild(cx);
     const { fresh, lastSeq } = eventsSince(this.lastSeq, doc);
     this.lastSeq = lastSeq;
-    const sig = visualSignature(this.vm);
+    const sig = visualSignature(this.vm, this.pinned ?? this.hover);
     const urgentSig = urgentSignature(this.vm);
     const draw = shouldRender({ sig, urgentSig, lastSig: this.sig, lastUrgentSig: this.urgentSig, sinceMs: Date.now() - (this.lastRender ?? 0), renderMs: this.policy.renderMs });
     if (draw) {
@@ -462,7 +463,7 @@ export default class Lattice extends View {
       }
     }
     if (!p) return;
-    const id = hitNode(this.hits, p, 4);
+    const id = hitNode(this.hits, p, 4) ?? hitEdge(this.edgeHits, p);
     if (id !== this.hover) {
       this.hover = id;
       cx.notify();
@@ -481,7 +482,11 @@ export default class Lattice extends View {
     const id = hitNode(this.hits, p, 4);
     if (id) this.pinned = this.pinned === id ? null : id;
     else if (this.vm?.global && hitDisc(this.discs, p)) this.drill(hitDisc(this.discs, p), cx);
-    else this.pinned = null;
+    else {
+      // an edge pins only outside a cluster disc: a click inside one still drills in, however close an edge runs
+      const edge = hitEdge(this.edgeHits, p);
+      this.pinned = edge && this.pinned !== edge ? edge : null;
+    }
     cx.notify();
   }
 
@@ -573,6 +578,7 @@ export default class Lattice extends View {
       policy: this.policy, packets: this.packets,
     });
     this.hits = sc.hits;
+    this.edgeHits = sc.edgeHits;
     this.discs = sc.discs;
     for (const it of sc.items) {
       const e = el(it);
@@ -581,7 +587,8 @@ export default class Lattice extends View {
     canvas.child(this.renderHeader());
     if (this.legend) canvas.child(this.renderLegend(size));
     const cardId = this.pinned ?? this.hover;
-    if (cardId && sc.nodeScreen.has(cardId)) canvas.child(this.renderCard(cardId, sc.nodeScreen.get(cardId), size, cardId === this.pinned));
+    const cardAt = cardId && (sc.nodeScreen.get(cardId) ?? sc.edgeScreen.get(cardId));
+    if (cardAt) canvas.child(this.renderCard(cardId, cardAt, size, cardId === this.pinned));
     if (this.error) {
       canvas.child(div().absolute().left(16).bottom(12).px(8).py(4).rounded(6).bg(withAlpha(P.red, 0.16))
         .border(1).border_color(withAlpha(P.red, 0.5)).text_size(10.5).text_color(P.red).child(`feed error (showing last good): ${this.error}`));
