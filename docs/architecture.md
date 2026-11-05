@@ -1061,6 +1061,8 @@ tabs read the feed of the machine their space is on. Each shoal also carries its
 each from the spec, and, from this host's last digest, its items as done, open, in flight (a role's active item) and assigned
 (in a role's queue, nobody's active item). The feed never reads a board itself, so those counts are as old as the digest, and a
 host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
+Queue items match board items by `item_key`, which needs `default_owner` set: without it a queue item keeps its owner, and reads
+as off the board.
 An outside writer says whether this host has a saved session for it (`saved`): one with none has nothing to remove, so the
 lattice offers only to hide it.
 

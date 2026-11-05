@@ -883,6 +883,7 @@ test("each shoal's boards reach the rail with a link and their counts", () => {
   assert.deepEqual(a.offBoard, { inFlight: 1, assigned: 2 });
   assert.deepEqual(M.boardCells(a.items[0].counts).map((c) => c.n), [134, 58, 4, 10]);
   assert.deepEqual(M.boardCells(a.items[0].counts).map((c) => c.label), ["done", "open", "in flight", "assigned"]);
+  assert.ok(M.boardCells(a.items[0].counts).every((c) => c.about.length > 0), "each cell says what it counts");
   // both views carry it
   assert.equal(M.buildModel(doc, A).shoalsInView[0].boards.items.length, 1);
   // a board this host has not read is still a link, named by its id

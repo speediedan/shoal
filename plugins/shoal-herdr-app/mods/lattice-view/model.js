@@ -487,10 +487,10 @@ export function boardsOf(s, host = null) {
 /** The rail's table, in reading order: done, open, in flight, assigned. */
 export function boardCells(c) {
   return [
-    { label: "done", n: c.done, color: PALETTE.steel2 },
-    { label: "open", n: c.open, color: PALETTE.ink },
-    { label: "in flight", n: c.inFlight, color: PALETTE.teal },
-    { label: "assigned", n: c.assigned, color: PALETTE.violet },
+    { label: "done", n: c.done, color: PALETTE.steel2, about: "closed on the board however it closed, or in a Done status" },
+    { label: "open", n: c.open, color: PALETTE.ink, about: "open on the board and in no role's queue" },
+    { label: "in flight", n: c.inFlight, color: PALETTE.teal, about: "a role's active item" },
+    { label: "assigned", n: c.assigned, color: PALETTE.violet, about: "in a role's queue, and nobody's active item" },
   ];
 }
 

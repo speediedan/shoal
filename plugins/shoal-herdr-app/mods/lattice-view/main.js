@@ -709,7 +709,7 @@ export default class Lattice extends View {
     if (hideBtn) {
       card.child(div().id("card-hide").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.steel1, 0.35)).text_color(P.ink)
         .hover((st) => st.bg(withAlpha(P.steel1, 0.6)))
-        .tooltip(`takes it off this picture only, and the rail's footer brings it back${removeSpec ? "" : ". It has no saved session to remove"}`)
+        .tooltip(`takes it off this picture only, and the rail's footer brings it back${removeSpec ? "" : ". It has no saved session on this host to remove"}`)
         .on_click((_e, cx) => this.setHidden([...hiddenList(shared(HIDDEN_KEY)), id], cx))
         .child("Hide from the lattice"));
     }
@@ -844,7 +844,7 @@ export default class Lattice extends View {
         return;
       }
       const table = h_flex().justify_between();
-      boardCells(b.counts).forEach((c) => table.child(v_flex().items_center()
+      boardCells(b.counts).forEach((c) => table.child(v_flex().id(`bd-${s.id}-${i}-${c.label}`).items_center().tooltip(c.about)
         .child(div().font_semibold().text_color(c.color).child(String(c.n)))
         .child(div().text_size(9).text_color(P.dim).child(c.label))));
       box.child(table);
@@ -856,7 +856,7 @@ export default class Lattice extends View {
     const notes = [];
     if (off.inFlight) notes.push(`+${off.inFlight} in flight`);
     if (off.assigned) notes.push(`+${off.assigned} assigned`);
-    if (notes.length) box.child(div().text_size(9.5).text_color(P.dim).child(`${notes.join(", ")} off the board`));
+    if (notes.length) box.child(div().id(`bd-off-${s.id}`).text_size(9.5).text_color(P.dim).tooltip("work roles hold that is not open on this board").child(`${notes.join(", ")} off the board`));
     return box;
   }
 

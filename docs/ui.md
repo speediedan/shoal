@@ -598,7 +598,7 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
   closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back, and
-  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere. Each
+  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current. Each
   saved standalone session gets a space as well. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
   from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only

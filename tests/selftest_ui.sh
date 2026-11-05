@@ -2008,6 +2008,43 @@ with contextlib.redirect_stdout(io.StringIO()):
     assert ui_app.cmd_app_home(a) == 0
 assert seen == [(True, "home")], seen
 PY2
+# a current home space is selected with no plan of any machine; a missing or older tab goes the long way
+python3 - "$SHOALD" <<'PY2' || fail "app-home fast path"
+import importlib, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+space = {"id": "s1", "name": ui_app.HOME_SPACE, "tabs": [{"id": "t1", "name": "home"}, {"id": "t2", "name": "lattice"}]}
+ui_app.app_ls = lambda: {"spaces": [space]}
+did = []
+ui_app.app_do = lambda verb, args=None: did.append((verb, (args or {}).get("id")))
+class Asked(Exception):
+    pass
+def asked():
+    raise Asked()
+ui_app.global_lattice_props = asked
+current = {f"local/{ui_app.HOME_SPACE}/{n}": ui_app.TABS_V for n in ("home", "lattice")}
+ui_app.load_opened = lambda: {"_built": current}
+assert ui_app.home_space() == [f"{ui_app.HOME_SPACE}: home"]
+assert did == [("space.select", "s1"), ("tab.select", "t1")], did
+did.clear()
+ui_app.home_space(dry_run=True)
+assert not did, did
+for opened in ({"_built": {**current, f"local/{ui_app.HOME_SPACE}/lattice": ui_app.TABS_V - 1}}, {}):
+    ui_app.load_opened = lambda: opened
+    try:
+        ui_app.home_space()
+    except Asked:
+        continue
+    raise AssertionError(f"went straight there with {opened}")
+ui_app.load_opened = lambda: {"_built": current}
+space["tabs"] = space["tabs"][:1]
+try:
+    ui_app.home_space()
+except Asked:
+    pass
+else:
+    raise AssertionError("went straight there with a tab missing")
+PY2
 # an outside writer says whether this host has a saved session for it, which decides whether the lattice offers Remove
 python3 - "$SHOALD" "$GR" <<'PY2' || fail "external saved"
 import json, os, sys, tempfile
