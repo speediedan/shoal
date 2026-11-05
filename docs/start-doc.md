@@ -33,6 +33,9 @@ Sections are found by keyword in the headings, case-insensitive. `Mission and de
 
 - **The context advisory.** Past `features.health.context_restart_k`, `next` and every wake ask the role to refresh its start
   doc, update `Last updated`, and end with `queue --idle --restart-ready`.
+- **Durable references.** Everything the doc names must outlive the session: scripts in `tools/` beside the doc, data in a repo
+  or a data directory. A job folder goes when its incarnation is pruned, so `queue --restart-ready` refuses a doc that names one
+  still on this host, and notes one that is not. Prune keeps a job its doc names until the doc stops naming it.
 - **The proof of refresh.** `queue --restart-ready` runs this check. It refuses a doc that misses a required section, or whose
   stamp predates the first time this session was shown the advisory (or, if it never was, its previous boundary). A refused
   handover costs nothing: the role is mid-turn and fixes the doc.

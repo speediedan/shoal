@@ -310,6 +310,11 @@ try:
         fh.write(saved)
     import startdoc
     check(startdoc.job_folders("x /jobs/abcd1234/tmp y ~/.claude/jobs/abcd1234 z /jobs/abcd1234-5f/ q /jobs/zzzz1234") == ["abcd1234"], "job_folders")
+    check(startdoc.job_folders("`jobs/9ca20392/tmp/watch.sh` /jobs/abcd1234x subjobs/abcd1234 a-jobs/abcd1234") == ["9ca20392"], "job_folders: no leading slash")
+    # stray bytes neither stop a prune nor hide a reference
+    with open(docp, "wb") as fh:
+        fh.write(b"\xff\xfe `jobs/a1a1a1a1/tmp/`\n")
+    check(startdoc.doc_job_folders(docp) == ["a1a1a1a1"], "doc_job_folders on a non-UTF-8 doc")
 
     # ---- apply: Claude purge with tombstone, re-stop, transcript untouched ---------------------------------------
     res = prune.run(all_specs=True, harnesses=("claude",), standalone=True, log=quiet.append)
@@ -336,6 +341,38 @@ try:
     hev = [json.loads(ln) for f in glob.glob(os.path.join(T, "data", "_host", "telemetry", "events-*.jsonl"))
            for ln in open(f)]
     check(any(e.get("job") == "5e5e5e5e" and e.get("kind") == "standalone" for e in hev), f"host telemetry :: {hev}")
+
+    # ---- removing a role: its own doc does not keep its jobs, or nothing could ever remove them; another role's still does
+    job("a7a7a7a7", "tl-r2", conv("a7a7a7a7")); row("a7a7a7a7", "tl-r2")
+    fake = os.environ["SHOAL_FAKE_SESSIONS"]
+    os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [r for r in ROWS if r["id"] == "a7a7a7a7"], "opencode": {}})
+    saved = open(SPEC).read()
+    d_ = json.loads(saved)
+    own, other = os.path.join(T, "own.md"), os.path.join(T, "other.md")
+    for p_ in (own, other):
+        with open(p_, "w") as fh:
+            fh.write("Helpers in `jobs/a7a7a7a7/tmp/`\n")
+    d_["roles"][0]["doc"], d_["roles"][1]["doc"] = own, other
+
+    def removal(doc_of_other, trigger="remove", dry=True):
+        d_["roles"][1]["doc"] = doc_of_other
+        with open(SPEC, "w") as fh:
+            json.dump(d_, fh)
+        r = prune.run(specs=[SPEC], harnesses=("claude",), dry_run=dry, only_slug="tl", max_seq=10 ** 6, min_age=0, trigger=trigger, sizes=False, log=quiet.append)
+        return next(c for c in r["claude"]["cands"] if c.job == "a7a7a7a7")
+
+    c_ = removal("/d", trigger="manual")
+    check(c_.verdict == "keep" and "own.md names its job folder" in c_.reason, f"a role staying keeps it :: {c_.verdict} {c_.reason}")
+    c_ = removal(other)
+    check(c_.verdict == "keep" and "other.md names its job folder" in c_.reason, f"another role's doc still counts :: {c_.verdict} {c_.reason}")
+    c_ = removal("/d")
+    check(c_.verdict == "prune", f"the dry run of a removal says it goes :: {c_.verdict} {c_.reason}")
+    check(os.path.isdir(os.path.join(CC, "jobs", "a7a7a7a7")), "a dry run removed the job")
+    c_ = removal("/d", dry=False)
+    check(not os.path.exists(os.path.join(CC, "jobs", "a7a7a7a7")) and "rm a7a7a7a7" in open(CLOG).read(), "a removal did not take the job its own doc names")
+    with open(SPEC, "w") as fh:
+        fh.write(saved)
+    os.environ["SHOAL_FAKE_SESSIONS"] = fake
 
     # ---- apply: Codex archive, opencode archive (OpenChamber), Muse move -------------------------------------------
     os.makedirs(os.path.join(T, "codex-state", "t-old1"))

@@ -1630,6 +1630,7 @@ printf '\nHelpers in ~/.claude/jobs/abcd1234/tmp/ and ~/.claude/jobs/ffff0000/tm
 check "names job folder.s. abcd1234, which go" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-ready
 rmdir "$S/cc/jobs/abcd1234"
 check "posture=idle" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-ready
+check "names job folder.s. abcd1234, ffff0000, not on this host" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-ready
 cp "$S/tldoc.keep" "$TLDOC"
 check "posture=idle" $Q --slug tl --idle --restart-ready
 # handover telemetry: advised (the non-peek next above), doc-refreshed (this restart-ready), then the quorum's restart

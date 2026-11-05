@@ -123,7 +123,8 @@ itself, and that proof is thin: a Codex archive or a Muse directory move can be 
 only its transcript until Claude Code expires it. It runs on the host doing the restart, so a role moved between hosts keeps its
 old incarnations on the host it left (`prune-incarnations` there). A job whose folder a role's or seat's start doc names is kept until the doc stops naming it,
 and `queue --restart-ready` refuses a doc that names one still on this host: what the next session needs belongs somewhere
-durable, not in a job folder that goes with its incarnation. A park never prunes. `{"enabled": true,
+durable, such as `tools/` beside the doc, not in a job folder that goes with its incarnation. It notes one that is not on this
+host without refusing, since that cannot be moved. Removing a role is the one exception: its own doc does not keep its jobs. A park never prunes. `{"enabled": true,
 "delete": true}` deletes instead of archiving where a harness can. Retirement condition: fold into the default after two
 clean weeks.
 

@@ -730,12 +730,15 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             print(f"ERROR: --restart-ready needs a refreshed start doc ({role.doc or 'none'}): "
                   + "; ".join(r["problems"]) + " (nothing written)")
             return 3
-        held = _sd.live_job_folders(role.doc)
+        held, absent = _sd.split_job_folders(role.doc)
         if held:
             print(f"ERROR: --restart-ready: the start doc names job folder(s) {', '.join(held)}, which go when an incarnation "
-                  "is pruned: move what the next session needs somewhere durable (a repo, the shared checkout, a data "
-                  "directory) and update the doc, or drop the reference (nothing written)")
+                  "is pruned: move what the next session needs somewhere durable (`tools/` beside the doc for scripts, a "
+                  "repo, a data directory) and update the doc, or drop the reference (nothing written)")
             return 3
+        if absent:
+            print(f"note: the start doc names job folder(s) {', '.join(absent)}, not on this host: a next session here "
+                  "will not find them, so update those references")
     if bcfg is not None and posture == "idle" and view.freeze() is None and role.fill == "self":
         # a short queue is not a reason to idle while the board offers eligible work (measured
         # 2026-09-29: two lanes idle 2.5 h and 11.5 h beside 2 and 8 eligible candidates)
