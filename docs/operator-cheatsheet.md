@@ -154,6 +154,8 @@ export S=<id> SPEC=<path to the group's spec>
     shoal unpark --spec <spec> --only <role>      # restart --only <role>
     shoal handoff --spec <spec> --only <role> [--ecosystem E] [--model M] [--effort X] [--force] [--dry-run]
                                                   # a fresh session from its start doc, on its own host
+    shoal remove-role --spec <spec> --only <role> [--force] [--dry-run]    # out for good; the ledger keeps its history
+    shoal remove-session --session <label> [--force] [--dry-run]           # a saved standalone session, out for good
     ```
 
 - Restart into the next incarnation (all roles, or `--only` some); add a role; retire:

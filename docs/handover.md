@@ -117,8 +117,11 @@ shoal prune-incarnations --all-specs --standalone --matcher --delete --min-age 2
 ```
 
 **Automatic** (`features.prune`, default off): once incarnation N proves itself (its first queue write after a quorum
-restart, the `first-turn` handover event, or `verify_consumer` in `restart`), the role's incarnations up to N-2 are pruned
-with the harness's default mode. N-1 stays one generation as the fallback. A park never prunes. `{"enabled": true,
+restart, the `first-turn` handover event, or `verify_consumer` in `restart`), the role's earlier incarnations (N-1 and before) are pruned,
+on every harness, with each harness's default mode. That removes the fallback generation as soon as the first turn proves
+itself, and that proof is thin: a Codex archive or a Muse directory move can be undone, but a Claude N-1 is `claude rm`, which leaves
+only its transcript until Claude Code expires it. It runs on the host doing the restart, so a role moved between hosts keeps its
+old incarnations on the host it left (`prune-incarnations` there). A park never prunes. `{"enabled": true,
 "delete": true}` deletes instead of archiving where a harness can. Retirement condition: fold into the default after two
 clean weeks.
 

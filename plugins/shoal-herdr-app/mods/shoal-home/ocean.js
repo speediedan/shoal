@@ -110,17 +110,17 @@ function leafCmds(segs, t, dir, len, wid, lo, hi) {
     ["C", r2(mx - ox * 0.4), r2(my - oy * 0.4), r2(mx - ox), r2(my - oy), r2(p.x), r2(p.y)], ["Z"]];
 }
 
-// The solo vines, in the cap units of the letter each threads (logo.js capPoint: x from the letter's left, y 0 on
-// the cap line, 1 on the baseline), so they follow the letters at any scale. `way`: [x, y, over]; `over` draws the
-// stretch from that point to the next in front of the letters, so a vine goes under one stroke and over the next.
-// Each crossing's ends lie in open water, so no seam shows.
+// The solo vines, in the cap units of the letter each threads (logo.js capPoint: x from the letter's left, y 0 on the
+// cap line, 1 on the baseline), so they follow the letters at any scale. `way`: [x, y, over]; `over` draws the stretch
+// from that point to the next in front of the letters, so a vine goes under one stroke and over the next. Each
+// crossing's ends lie in open water, so no seam shows.
 export const SOLO_VINES = [
-  // up the gap between S and H, under the H's left stem, over its bar, out through its open top
-  { letter: 1, root: [-0.13, 1.28], tip: [0.62, -0.2],
-    way: [[0.02, 1.06], [0.3, 0.87], [0.5, 0.68, true], [0.45, 0.38], [0.5, 0.12]] },
-  // up the gap between A and L, under the A's right leg, over its bar, under its left stroke, out over the O
-  { letter: 3, root: [1.12, 1.28], tip: [0.02, -0.2],
-    way: [[0.99, 1.04], [0.72, 0.9], [0.47, 0.85, true], [0.45, 0.53], [0.27, 0.33], [0.1, 0.1]] },
+  // up from below the S and H gap, under the H's left stem, over its bar, out through its open top
+  { letter: 1, root: [-0.16, 1.28], tip: [0.56, -0.2],
+    way: [[-0.03, 1.08], [0.2, 0.92], [0.47, 0.76, true], [0.46, 0.26], [0.5, 0.06]] },
+  // up from below the A and L gap, under the A's right leg, over its bar, under its left stroke, out over the O
+  { letter: 3, root: [1.14, 1.28], tip: [0.08, -0.2],
+    way: [[1.06, 1.08], [0.85, 0.94], [0.52, 0.88, true], [0.52, 0.5], [0.36, 0.33], [0.18, 0.14]] },
 ];
 
 /** A curved tendril between two points, bowed by `bow` (a fraction of its length) to one side. */

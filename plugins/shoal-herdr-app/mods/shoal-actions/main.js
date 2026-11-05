@@ -12,6 +12,7 @@
 // props:
 //   shoal, role, machine: the target (machine: a herdr-core machine name, null for this computer).
 //   scope: "all" or "host:<name>" in place of a shoal: only the verbs that span shoals (offline, freeze).
+//   session: a saved standalone session's label in place of a shoal: only its removal.
 //     Without them the dialog starts on the focused card (its `shoal.pane` label and its space's
 //     machine), else on the first shoal with a role that needs you.
 //   verb: open straight on one verb ("msg", "next", "asks", ...); text, wake: prefill Message.
@@ -48,7 +49,7 @@ export default class Actions extends View {
     this.fixture = p.fixture === true || (FIXTURE_DEFAULT && p.fixture !== false);
     this.fx = null;
     const start = preselect({ props: p, focused: safe(focused, null), terminals: safe(terminals, []), spaces: safe(spaces, []), panes: safe(panes, []) });
-    this.sel = { shoal: start?.shoal ?? null, role: start?.role ?? null, scope: start?.scope ?? null };
+    this.sel = { shoal: start?.shoal ?? null, role: start?.role ?? null, scope: start?.scope ?? null, session: start?.session ?? null };
     this.origin = start?.machine ?? null; // where the roles list is read, and the fallback machine
     this.applying = false; // an apply in flight: its result must land, so the target stays put
     this.roles = null;
@@ -119,9 +120,9 @@ export default class Actions extends View {
 
   /** The role's card's machine, else the shoal's cards', else where the dialog started. */
   machine() {
-    if (this.sel.scope) return this.origin;
+    if (this.sel.scope || this.sel.session) return this.origin;
     const m = targetMachine(this.sel, safe(terminals, []), safe(spaces, []), this.origin);
-    if (this.verb !== "handoff") return m;
+    if (this.verb !== "handoff" && this.verb !== "remove-role") return m;  // a session starts or stops on its own host
     const role = this.roles?.shoals?.find((s) => s.id === this.sel.shoal)?.roles?.find((r) => r.slug === this.sel.role);
     return handoffMachine(role, safe(machines, []).map((x) => x.name).filter(Boolean), m, this.roles?.host ?? null);
   }
@@ -133,7 +134,7 @@ export default class Actions extends View {
       if (r.kind === "roles") {
         this.roles = r;
         const before = this.sel.shoal;
-        if (!this.sel.scope) this.sel = settleSelection(this.sel, r);
+        if (!this.sel.scope && !this.sel.session) this.sel = settleSelection(this.sel, r);
         if (this.sel.shoal !== before && this.view) this.view = null;
       } else this.rolesError = r.error;
       if (this.pendingVerb) {
@@ -408,13 +409,14 @@ export default class Actions extends View {
       .child(div().text_size(15).font_semibold().child("Shoal actions"))
       .child(div().text_size(11).text_color(c.dim).child(`on ${m ?? "this computer"}${this.fixture ? " · fixtures" : ""}`))
       .when(Boolean(this.sel.scope), (el) => el.child(div().text_size(11.5).font_medium().text_color(c.amber).child(scopeLabel(this.sel.scope))))
+      .when(Boolean(this.sel.session), (el) => el.child(div().text_size(11.5).font_medium().text_color(c.amber).child(this.sel.session)))
       .child(div().flex_1())
       .child(h_flex().id("refresh").px(6).rounded(5).cursor_pointer().text_size(11).text_color(c.dim)
         .hover((s) => s.text_color(c.ink).bg(c.hover)).tooltip("read the roles again")
         .on_click((_e, cx) => { this.loadRoles(cx); cx.notify(); }).child("↻"))
       .child(div().text_size(11).text_color(c.dim).child("Esc"));
     const col = v_flex().px(16).pt(14).pb(10).gap(8).flex_none().child(head);
-    if (this.sel.scope) return col; // no shoal or role to pick: the action reaches them all
+    if (this.sel.scope || this.sel.session) return col; // no shoal or role to pick
 
     const shoalRow = h_flex().gap(6).flex_wrap().items_center().child(div().w(44).flex_none().text_size(11).text_color(c.dim).child("shoal"));
     if (!this.roles) {
@@ -481,6 +483,7 @@ export default class Actions extends View {
   }
 
   target(c) {
+    if (this.sel.session) return this.sel.session;
     if (this.sel.scope) return scopeLabel(this.sel.scope);
     const role = roleFor(this.verb, this.sel.role);
     const where = this.sel.shoal ? shortShoal(this.sel.shoal) : "no shoal";

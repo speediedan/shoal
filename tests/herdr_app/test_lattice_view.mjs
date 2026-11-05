@@ -842,6 +842,20 @@ test("hiding: outside writers and parked roles only, and the count says how to b
   assert.deepEqual(M.hiddenList("x"), []);
 });
 
+test("removal: a role for good, an outside writer by its saved name, an aliased writer not at all", () => {
+  const vm = M.buildModel(doc, "global");
+  const exec = { kind: "exec", on: "lane-a" };
+  const role = M.removeOverlay(vm, `${B}:archive`, exec);
+  assert.deepEqual(role.props, { shoal: B, role: "archive", verb: "remove-role", machine: "lane-a" });
+  const ext = vm.nodes.find((x) => x.kind === "external" && !x.alias_of);
+  assert.deepEqual(M.removeOverlay(vm, ext.id, exec).props, { shoal: null, role: null, session: ext.label, verb: "remove-session", machine: "lane-a" });
+  const aliased = vm.nodes.find((x) => x.kind === "external" && x.alias_of);
+  if (aliased) assert.equal(M.removeOverlay(vm, aliased.id, exec), null);
+  assert.equal(M.removeOverlay(vm, "user", exec), null);
+  assert.equal(M.removeOverlay(vm, "nope", exec), null);
+  assert.equal(M.removeOverlay(null, ext.id, exec), null);
+});
+
 test("a role's card says its context and whether it can restart now", () => {
   const vm = M.buildModel(doc, "global");
   const row = (id, k) => M.cardLines(vm, id).rows.find(([x]) => x === k);

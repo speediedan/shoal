@@ -2,9 +2,7 @@
 // Node only, no dependencies: node --test tests/herdr_app/*.mjs (or node this file)
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -369,7 +367,6 @@ test("logo: five letters on one baseline, finite, inside the logo box at every s
     assert.equal(new Set(sc.letters.map((l) => l.baseline)).size, 1, `font ${lg.font}: one baseline`);
     assert.equal(sc.letters[0].baseline, sc.baseline);
     for (let i = 1; i < 5; i++) assert.ok(sc.letters[i].x > sc.letters[i - 1].x, "in order");
-    for (const it of sc.items) assert.ok(finitePts(it.cmds), `font ${lg.font}: ${it.kind} finite`);
     for (const l of sc.letters) {
       for (const cmds of l.loops) {
         assert.ok(finitePts(cmds));
@@ -381,90 +378,66 @@ test("logo: five letters on one baseline, finite, inside the logo box at every s
     }
     const b = sc.bounds;
     assert.ok(b.x >= lg.x - 1 && b.y >= lg.y - 1 && b.x + b.w <= lg.x + lg.w + 1 && b.y + b.h <= lg.y + lg.h + 1, `font ${lg.font}: the ink bounds fit`);
-    assert.ok(sc.items.length <= 6, `font ${lg.font}: a handful of paths, not hundreds of text copies (${sc.items.length})`);
   }
 });
 
-test("logo: every letter's body really stands on the baseline and reaches the cap line, only drips below", () => {
+test("logo: every letter stands on the baseline and reaches the cap line, and nothing hangs below", () => {
   const font = 1000;
   const lg = { x: 0, y: 0, w: font * 3.9, h: font * 1.25, font };
   const sc = Lo.logoScene(lg);
-  const capY = sc.baseline - Gl.CAP_EM * font;
+  const capY = sc.baseline - Gl.CAP_EM * sc.font;
   for (const l of sc.letters) {
+    const ys = l.loops.flatMap(Lo.sampleLoop).map(([, y]) => y);
+    assert.ok(Math.abs(Math.max(...ys) - sc.baseline) < 2, `${l.ch}: its lowest point is on the baseline (off by ${Math.max(...ys) - sc.baseline} of 1000)`);
+    assert.ok(Math.abs(Math.min(...ys) - capY) < 2, `${l.ch}: its highest point is on the cap line (off by ${Math.min(...ys) - capY} of 1000)`);
+    // the letter's foot is a real width of glass, not a point resting on the line
     const polys = l.loops.map(Lo.sampleLoop);
-    // the row's ink: {total, run}, in 1/1000 em, its widest unbroken run included
-    const row = (y) => {
-      let total = 0, run = 0, cur = 0;
-      for (let x = l.x - 300; x < l.x + l.adv + 300; x += 4) {
-        if (inInk(polys, x, y)) { total += 4; cur += 4; run = Math.max(run, cur); } else cur = 0;
-      }
-      return { total, run };
-    };
-    const inkWidth = (y) => row(y).total;
-    // the lowest and highest rows with a wider run of ink than a drip or a splash has
-    let bottom = null, top = null;
-    for (let y = sc.baseline + 300; y > capY - 200; y -= 4) if (row(y).run > 110) { bottom = y; break; }
-    for (let y = capY - 200; y < sc.baseline; y += 4) if (row(y).run > 150) { top = y; break; }
-    assert.ok(Math.abs(bottom - sc.baseline) < 30, `${l.ch}: body ends on the baseline (off by ${bottom - sc.baseline} of 1000)`);
-    assert.ok(Math.abs(top - capY) < 45, `${l.ch}: body reaches the cap line (off by ${top - capY} of 1000)`);
-    // below the baseline only drips: narrow, and at least one of them
-    assert.ok(inkWidth(sc.baseline + 90) > 0, `${l.ch}: a drip runs off it`);
-    assert.ok(inkWidth(sc.baseline + 90) < 150, `${l.ch}: only drips below the baseline`);
+    let foot = 0;
+    for (let x = l.x - 300; x < l.x + l.adv + 300; x += 4) if (inInk(polys, x, sc.baseline - 20)) foot += 4;
+    assert.ok(foot > 200, `${l.ch}: stands on a broad foot (${foot} of 1000)`);
   }
 });
 
-test("logo: outlines are simple and never cross, so either fill rule fills them the same", () => {
+test("logo: clean outlines that never cross, one for each letter and a counter for O and A, so either fill rule fills them the same", () => {
   const signed = (poly) => poly.reduce((a, [x, y], i) => { const [u, v] = poly[(i + 1) % poly.length]; return a + x * v - u * y; }, 0) / 2;
   const crosses = (a, b, c, d) => {
     const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
     return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
   };
-  for (const set of ["ink", "lite"]) {
-    const counters = {};
-    for (const ch of "SHOAL") {
-      // at 1000 px to the em, so a coordinate is a table value
-      const polys = Gl.GLYPHS[ch][set].map((flat) => {
-        const pts = [];
-        for (let i = 0; i < flat.length; i += 2) pts.push([flat[i], flat[i + 1]]);
-        return Lo.sampleLoop(Lo.loopCmds(pts)).slice(0, -1);
-      });
-      assert.ok(polys.length >= 1);
-      const outer = polys.reduce((m, p) => (Math.abs(signed(p)) > Math.abs(signed(m)) ? p : m));
-      const edges = polys.flatMap((p, pi) => p.map((q, i) => ({ a: q, b: p[(i + 1) % p.length], pi, n: p.length })));
-      for (let i = 0; i < edges.length; i++) {
-        const e = edges[i];
-        for (let j = i + 2; j < edges.length; j++) {
-          const f = edges[j];
-          if (e.pi === f.pi && j - i === e.n - 1) continue;
-          assert.ok(!crosses(e.a, e.b, f.a, f.b), `${ch} ${set}: outline edges ${i} and ${j} cross`);
-        }
+  const counters = {};
+  for (const ch of "SHOAL") {
+    const polys = Gl.GLYPHS[ch].loops.map(Lo.sampleLoop);
+    const outer = polys.reduce((m, p) => (Math.abs(signed(p)) > Math.abs(signed(m)) ? p : m));
+    const edges = polys.flatMap((p, pi) => p.map((q, i) => ({ a: q, b: p[(i + 1) % p.length], pi, n: p.length })));
+    for (let i = 0; i < edges.length; i++) {
+      for (let j = i + 2; j < edges.length; j++) {
+        if (edges[i].pi === edges[j].pi && j - i === edges[i].n - 1) continue;
+        assert.ok(!crosses(edges[i].a, edges[i].b, edges[j].a, edges[j].b), `${ch}: outline edges ${i} and ${j} cross`);
       }
-      // a counter winds against the letter's outline; a detached droplet winds with it
-      const against = polys.filter((p) => Math.sign(signed(p)) !== Math.sign(signed(outer)));
-      counters[ch] = against.length;
-      for (const p of against) assert.ok(Math.abs(signed(p)) > 3000, `${ch} ${set}: a counter is a real opening, not a pinhole`);
     }
-    assert.deepEqual(counters, { S: 0, H: 0, O: 1, A: 1, L: 0 }, `${set}: O and A have a counter, the others none`);
+    const against = polys.filter((p) => p !== outer && Math.sign(signed(p)) !== Math.sign(signed(outer)));
+    assert.equal(against.length, polys.length - 1, `${ch}: every loop but its outline is a counter, so nothing is detached`);
+    counters[ch] = against.length;
+    for (const p of against) assert.ok(Math.abs(signed(p)) > 0.015, `${ch}: a counter is a real opening at small sizes (${Math.abs(signed(p))})`);
   }
-  // detached droplets are part of the look, on every letter
-  for (const ch of "SHOAL") assert.ok(Gl.GLYPHS[ch].ink.length >= 2, `${ch} has droplets`);
+  assert.deepEqual(counters, { S: 0, H: 0, O: 1, A: 1, L: 0 }, "O and A have a counter, the others none");
 });
 
-test("logo: the blue gradient spans the ink in a box of its own", () => {
+test("logo: the fallback's gradient spans the ink in a box of its own", () => {
   const lg = { x: 100, y: 50, w: 84 * 3.9, h: 84 * 1.25, font: 84 };
-  for (const body of [Lo.logoScene(lg).items.find((it) => it.kind === "logo-body"), Lo.logoDraw(lg, false).items[0]]) {
-    assert.deepEqual(body.gradient, { angle: 180, from: Lo.LOGO.top, to: Lo.LOGO.bottom });
-    const b = O.itemBounds(body);
-    assert.ok(b.x0 > -6 && b.y0 > -6, "the body's commands are local to its box");
-    assert.ok(b.x1 < body.box.w + 8 && b.y1 < body.box.h + 8, "and stay inside it");
-  }
-  assert.deepEqual(Lo.logoScene(lg).items.find((it) => it.kind === "logo-body").box, Lo.logoScene(lg).bounds);
+  const body = Lo.logoDraw(lg, false).items[0];
+  assert.deepEqual(body.gradient, { angle: 180, from: Lo.LOGO.top, to: Lo.LOGO.bottom });
+  const b = O.itemBounds(body);
+  assert.ok(b.x0 > -6 && b.y0 > -6, "the body's commands are local to its box");
+  assert.ok(b.x1 < body.box.w + 8 && b.y1 < body.box.h + 8, "and stay inside it");
+  assert.deepEqual(body.box, Lo.logoScene(lg).bounds);
 });
 
 // ---- what a render draws
 
 const png = readPng(readFileSync(join(MOD, "assets", Lo.LOGO_IMAGE.file)));
 const pathCmds = (items) => items.reduce((n, it) => n + it.cmds.length, 0);
+const pixel = (i) => ({ r: png.rgba[i], g: png.rgba[i + 1], b: png.rgba[i + 2], alpha: png.rgba[i + 3] });
 
 test("logo image: the shipped PNG is the frame logo.js places, transparent at its edges, and not large", () => {
   const f = Lo.logoImageFrame();
@@ -481,64 +454,128 @@ test("logo image: the shipped PNG is the frame logo.js places, transparent at it
   assert.ok(Lo.logoLetters(largest)[0].font * 2 <= f.pxPerEm, "crisp at the largest size");
 });
 
+test("logo image: nothing solid below the baseline, only the soft shadow", () => {
+  const f = Lo.logoImageFrame();
+  const capPx = Gl.CAP_EM * f.pxPerEm;
+  const below = Math.ceil(f.oy + 0.03 * capPx); // the baseline and the half of the glass's rim outside it
+  for (let y = below; y < png.height; y++) {
+    for (let x = 0; x < png.width; x++) {
+      const p = pixel((y * png.width + x) * 4);
+      assert.ok(p.alpha < 200 && Math.max(p.r, p.g, p.b) < 60, `pixel ${x},${y} below the baseline: no drips, nothing but shadow (${JSON.stringify(p)})`);
+    }
+  }
+});
+
+test("logo image: glass and reef: blue water fading light to deep, coral and kelp in it, and mostly open water", () => {
+  const f = Lo.logoImageFrame();
+  const capPx = Gl.CAP_EM * f.pxPerEm;
+  const scale = { x: f.ox, y: f.oy - capPx };
+  const pens = Lo.logoLetters({ x: 0, y: 0, w: 100000, h: 100000, font: f.pxPerEm }).map((l) => l.x);
+  let orange = 0, green = 0, water = 0, inside = 0;
+  const rowLight = {};
+  // walk every letter's inside, away from its rim
+  [..."SHOAL"].forEach((ch, li) => {
+    const polys = Gl.GLYPHS[ch].loops.map(Lo.sampleLoop);
+    for (let v = 0.16; v < 0.99; v += 0.02) {
+      for (let u = 0; u < Gl.GLYPHS[ch].width; u += 0.015) {
+        const hit = [[0, 0], [0.04, 0], [-0.04, 0], [0, 0.04], [0, -0.04]].every(([du, dv]) => inInk(polys, u + du, v + dv));
+        if (!hit) continue;
+        const x = Math.round(scale.x + pens[li] - pens[0] + u * capPx), y = Math.round(scale.y + v * capPx);
+        const p = pixel((y * png.width + x) * 4);
+        assert.ok(p.alpha > 240, `${ch}: solid glass at ${u.toFixed(2)},${v.toFixed(2)}`);
+        inside++;
+        if (p.r > 200 && p.g < 175 && p.b < 130) orange++;
+        if (p.g > p.r + 30 && p.g > p.b + 8) green++;
+        if (p.b > p.r + 20) {
+          water++;
+          const k = v < 0.35 ? "top" : v > 0.75 ? "bottom" : "mid";
+          (rowLight[k] ??= []).push(p.r + p.g);
+        }
+      }
+    }
+  });
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  assert.ok(mean(rowLight.top) > mean(rowLight.mid) && mean(rowLight.mid) > mean(rowLight.bottom), "the water fades from light blue down to blue");
+  assert.ok(mean(rowLight.top) - mean(rowLight.bottom) > 150, "and by a good margin");
+  assert.ok(orange / inside > 0.005, `coral is there (${orange} of ${inside})`);
+  assert.ok(green / inside > 0.01, `kelp is there (${green} of ${inside})`);
+  assert.ok(water / inside > 0.72, `the reef stays modest: mostly open water (${((100 * water) / inside).toFixed(0)} percent), so the letters read`);
+});
+
+test("logo reef: drawn here, the same every time, with no image or text in it", async () => {
+  const R = await import(join(PREVIEW, "logo_reef.mjs"));
+  for (const ch of "SHOAL") {
+    const once = R.REEFS[ch]().join("") + R.GLINTS[ch]().join("");
+    assert.equal(once, R.REEFS[ch]().join("") + R.GLINTS[ch]().join(""), `${ch}: seeded`);
+    assert.ok(once.length > 500, `${ch}: has a reef`);
+    assert.doesNotMatch(once, /<image|<text|href|font/, `${ch}: nothing bundled, nothing typeset`);
+  }
+});
+
 test("logo image: its pixels land on the vector letters, small and large, and so do the vines' crossings", () => {
   const f = Lo.logoImageFrame();
   const boxes = [[1920, 1200], [1100, 760], [800, 560], [640, 460], [320, 240]]
     .map(([w, h]) => L.homeLayout({ width: w, height: h }, heightsOf(list)).logo);
   boxes.push({ x: 7, y: 3, w: 131, h: 43, font: 34 });
+  const at = (box, x, y) => pixel((Math.floor(((y - box.y) / box.h) * png.height) * png.width + Math.floor(((x - box.x) / box.w) * png.width)) * 4);
   for (const lg of boxes) {
     const box = Lo.logoImageBox(lg);
     assert.ok(Math.abs(box.w / box.h - f.w / f.h) < 0.01, `font ${lg.font}: the image keeps its shape`);
     const sc = Lo.logoScene(lg);
     assert.ok(box.x < sc.bounds.x && box.y < sc.bounds.y && box.x + box.w > sc.bounds.x + sc.bounds.w && box.y + box.h > sc.bounds.y + sc.bounds.h, `font ${lg.font}: the image holds all of the ink`);
-    const px = (x, y) => {
-      const i = (Math.floor(((y - box.y) / box.h) * png.height) * png.width + Math.floor(((x - box.x) / box.w) * png.width)) * 4;
-      return { blue: png.rgba[i + 2], alpha: png.rgba[i + 3] };
-    };
-    const bright = (x, y) => { const p = px(x, y); return p.alpha > 240 && p.blue > 150; };
-    const dim = (x, y) => { const p = px(x, y); return (p.blue * p.alpha) / 255 < 110; };
     // a grid over the ink: wherever the vector geometry is plainly in or out, the pixel must agree
     const polys = inkPolys(lg);
-    const m = 1.5; // px from an edge, where the rim and the antialiasing are
-    const near = [[0, 0], [m, 0], [-m, 0], [0, m], [0, -m]];
+    const m = 2; // px from an edge, where the rim and the antialiasing are
+    const near = [[0, 0], [m, 0], [-m, 0], [0, m], [0, -m], [m * 0.7, m * 0.7], [-m * 0.7, m * 0.7], [m * 0.7, -m * 0.7], [-m * 0.7, -m * 0.7]];
     const step = Math.max(1, sc.bounds.w / 56);
-    let inside = 0, outside = 0, litWater = 0;
+    let inside = 0, outside = 0, dark = 0;
     for (let y = sc.bounds.y; y < sc.bounds.y + sc.bounds.h; y += step) {
       for (let x = sc.bounds.x; x < sc.bounds.x + sc.bounds.w; x += step) {
         const hits = near.filter(([dx, dy]) => inInk(polys, x + dx, y + dy)).length;
-        if (hits === near.length) { inside++; assert.ok(bright(x, y), `font ${lg.font}: ink at ${x},${y} is bright in the image`); }
-        else if (hits === 0) { outside++; if (!dim(x, y)) litWater++; }
+        const p = at(box, x, y);
+        if (hits === near.length) {
+          inside++;
+          assert.ok(p.alpha > 240, `font ${lg.font}: glass at ${x},${y} is solid in the image (${JSON.stringify(p)})`);
+          if (p.g + p.b <= 100) dark++;
+        } else if (hits === 0) {
+          outside++;
+          assert.ok((Math.max(p.r, p.g, p.b) * p.alpha) / 255 < 110, `font ${lg.font}: open water at ${x},${y} is dark in the image (${JSON.stringify(p)})`);
+        }
       }
     }
     assert.ok(inside > 100 && outside > 100, `font ${lg.font}: the grid saw both (${inside}, ${outside})`);
-    // a droplet can sit between the five sample points, and a misplaced image lights far more water than that
-    assert.ok(litWater / outside < 0.01, `font ${lg.font}: water is dark in the image (${litWater} of ${outside} lit)`);
+    // a fish's outline or eye can be dark; the rim or the ground showing through would be far more
+    assert.ok(dark / inside < 0.02, `font ${lg.font}: the glass is lit (${dark} of ${inside} dark)`);
   }
   for (const [w, h] of ART_SIZES) {
     const lay = L.homeLayout({ width: w, height: h }, heightsOf(list), { art: true });
     const box = Lo.logoImageBox(lay.logo);
-    const bright = (x, y) => {
-      const i = (Math.floor(((y - box.y) / box.h) * png.height) * png.width + Math.floor(((x - box.x) / box.w) * png.width)) * 4;
-      return i >= 0 && i < png.rgba.length && png.rgba[i + 3] > 240 && png.rgba[i + 2] > 150;
+    const lit = (x, y) => {
+      if (x < box.x || y < box.y || x >= box.x + box.w || y >= box.y + box.h) return false;
+      const p = at(box, x, y);
+      return p.alpha > 240 && Math.max(p.r, p.g, p.b) > 90;
     };
     for (const v of O.oceanScene(lay).vines) {
       const under = v.segs.filter((g) => !v.front.includes(g));
-      assert.ok(v.front.some((g) => seg2pts(g).some((p) => bright(p.x, p.y))), `${w}x${h}: ${v.id} crosses over the image's letters`);
-      assert.ok(under.some((g) => seg2pts(g).some((p) => bright(p.x, p.y))), `${w}x${h}: ${v.id} crosses under them`);
-      for (const g of v.front) assert.ok(!bright(g[0], g[1]) && !bright(g[6], g[7]), `${w}x${h}: ${v.id}'s over-crossing ends in open water in the image too`);
+      assert.ok(v.front.some((g) => seg2pts(g).some((p) => lit(p.x, p.y))), `${w}x${h}: ${v.id} crosses over the image's letters`);
+      assert.ok(under.some((g) => seg2pts(g).some((p) => lit(p.x, p.y))), `${w}x${h}: ${v.id} crosses under them`);
+      for (const g of v.front) assert.ok(!lit(g[0], g[1]) && !lit(g[6], g[7]), `${w}x${h}: ${v.id}'s over-crossing ends in open water in the image too`);
     }
   }
 });
 
-test("logo: the fallback is the body alone, light, on the same baseline, inside the box", () => {
+test("logo: the fallback is the plain outlines and a rim, light, in the same place, inside the box", () => {
   for (const lg of LOGO_BOXES) {
     const fb = Lo.logoDraw(lg, false);
     assert.equal(fb.image, null);
-    assert.equal(fb.items.length, 1, "one path");
-    const [body] = fb.items;
-    assert.ok(finitePts(body.cmds));
-    assert.equal(body.cmds.filter((c) => c[0] === "M").length, 7, `font ${lg.font}: five letters and the counters of O and A, and nothing else`);
-    assert.ok(body.cmds.length < 300, `font ${lg.font}: light (${body.cmds.length} commands)`);
+    assert.deepEqual(fb.items.map((it) => it.kind), ["logo-body", "logo-rim"]);
+    const [body, rim] = fb.items;
+    for (const it of fb.items) {
+      assert.ok(finitePts(it.cmds));
+      assert.equal(it.cmds.filter((c) => c[0] === "M").length, 7, `font ${lg.font}: five letters and the counters of O and A, and nothing else`);
+      assert.ok(it.cmds.length < 150, `font ${lg.font}: light (${it.cmds.length} commands)`);
+    }
+    assert.deepEqual(rim.cmds, Lo.logoScene(lg).letters.flatMap((l) => l.loops).flat(), "on the letters the image is lined up with");
     const b = O.itemBounds(body);
     assert.ok(body.box.x + b.x0 >= lg.x - 4 && body.box.x + b.x1 <= lg.x + lg.w + 4, `font ${lg.font}: inside the box horizontally`);
     assert.ok(body.box.y + b.y0 >= lg.y - 4 && body.box.y + b.y1 <= lg.y + lg.h + 4, `font ${lg.font}: inside the box vertically`);
@@ -547,33 +584,18 @@ test("logo: the fallback is the body alone, light, on the same baseline, inside 
     assert.deepEqual({ ...withImage.image, file: undefined }, { ...Lo.logoImageBox(lg), file: undefined });
     assert.equal(withImage.image.file, Lo.LOGO_IMAGE.file);
   }
-  // the fallback's letters are the image's letters, so a vine crosses them the same way: its counters and feet agree
-  const lg = { x: 0, y: 0, w: 1000 * 3.9, h: 1000 * 1.25, font: 1000 };
-  const body = Lo.logoDraw(lg, false).items[0];
-  const fx = body.box.x, fy = body.box.y;
-  const sampled = [];
-  let cur = null;
-  for (const c of body.cmds) { if (c[0] === "M") { cur = [c]; sampled.push(cur); } else cur.push(c); }
-  const polys = sampled.map((c) => Lo.sampleLoop(c).map(([x, y]) => [x + fx, y + fy]));
-  const full = inkPolys(lg);
-  let same = 0, n = 0;
-  for (let y = 0; y < lg.h; y += 25) {
-    for (let x = 0; x < lg.w; x += 25) { n++; if (inInk(polys, x, y) === inInk(full, x, y)) same++; }
-  }
-  assert.ok(same / n > 0.97, `the light outline follows the full one (${((100 * same) / n).toFixed(1)} percent agree)`);
 });
 
 // Each command is a native PathBuilder call, and a render has the mod engine's time limit. Measured with `herdr-app
 // check`, 24 runs each at the default window, extra commands added to its render: about 2800 never failed, 3500 failed
 // twice, 4150 every time. The heaviest render is the one before the asset check: the sea, the vines in front, the fallback logo,
-// the background and the bloom. 1350 is that render's total at the largest window and a little room, about half the
-// highest count that never failed. The limit is on wall-clock time, so a starved CPU can trip it at any count.
+// the background and the bloom. 1350 is about half the highest count that never failed. The limit is on wall-clock time, so
+// a starved CPU can trip it at any count.
 const FIRST_RENDER_CMDS = 1350;
 
 test("first render: the path commands stay under the budget at every window size", () => {
   const src = readFileSync(join(MOD, "main.js"), "utf8");
   assert.match(src, /logoOf\(L\.logo, this\.art === true\)/, "only a confirmed image is drawn; a null art check gets the fallback");
-  assert.doesNotMatch(src, /logoScene/, "the full vector logo is never drawn on a render");
   const background = 2 * 5 + 6 * 4; // main.js: two filled rects, six ellipses
   let worst = 0;
   for (const [w, h] of [[640, 460], [1100, 760], [1425, 860], [1920, 1200], [2560, 1440], [3840, 2160]]) {
@@ -608,15 +630,4 @@ test("scenes are worked out once per layout, and again on a resize", () => {
   const src = readFileSync(join(MOD, "main.js"), "utf8");
   assert.match(src, /const seaOf = lastResult\(oceanScene\)/);
   assert.match(src, /const logoOf = lastResult\(logoDraw\)/);
-});
-
-test("logo: the glyph table is what the generator draws", () => {
-  const dir = mkdtempSync(join(tmpdir(), "shoal-glyphs-"));
-  try {
-    const out = join(dir, "glyphs.js");
-    execFileSync(process.execPath, [join(PREVIEW, "gen_logo_glyphs.mjs"), "--out", out], { stdio: "ignore" });
-    assert.equal(readFileSync(out, "utf8"), readFileSync(join(MOD, "glyphs.js"), "utf8"), "glyphs.js is stale: run preview/gen_logo_glyphs.mjs");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });

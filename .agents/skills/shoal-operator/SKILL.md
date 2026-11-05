@@ -30,7 +30,7 @@ a new incarnation. (The Claude wake relay is retired: Claude roles are woken dir
 still lists a `wake-relay` role ignores it.)
 
 Old incarnations stay in each harness's session list until pruned. With `features.prune` on, a
-restart or handover prunes the role's incarnations two generations back once the new one is proven.
+restart or handover prunes the role's earlier incarnations once the new one is proven.
 For a one-off cleanup: `shoal prune-incarnations --all-specs [--standalone] [--matcher] --dry-run`,
 read the keep/prune table, then run it without `--dry-run`. It never removes a current, parked or
 registered session, a live one, or one whose worktree still exists.

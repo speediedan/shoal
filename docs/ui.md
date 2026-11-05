@@ -625,7 +625,7 @@ shoal ui act-apply --token T [--json]              # run a planned action once
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
   Spaces acts on that host's shoals, and the status bar shows each provider's usage.
-- **The home space** (`shoal`, on this machine): the `shoal-home` mod when it is installed, else the terminal
+- **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal
   chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);
@@ -648,7 +648,10 @@ shoal ui act-apply --token T [--json]              # run a planned action once
 - **Actions.** Ctrl+Alt+S (set by `app-install` when free) opens the `shoal-actions` dialog, as does a
   right-click in the lattice: on a role, on a shoal's circle (that shoal), or anywhere else (every shoal), or on a machine
   in Spaces (its shoals). Hand off restarts a role in place from its start doc (`shoal handoff`), optionally on another
-  provider or model, on the role's own host, and refuses a role that has not said it is restart-ready unless forced. It does what the 0.9.3 palette did, with buttons, through two verbs:
+  provider or model, on the role's own host, and refuses a role that has not said it is restart-ready unless forced.
+  Remove takes a role out for good (`shoal remove-role`): it stops the session and watchers, removes the role from the shoal and its
+  incarnations from the harness's list, and keeps its ledger history. A pinned card on a parked role or an outside writer offers
+  Remove (for a writer, `shoal remove-session` on the saved standalone session of that name) and Hide, which only takes it off the picture. It does what the 0.9.3 palette did, with buttons, through two verbs:
 
   ```bash
   shoal ui act-plan VERB --shoal ID [--role SLUG] [--text T] [--item I] [--note N] [--wake]

@@ -298,6 +298,9 @@ def merge_spec(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str]]:
             res = o
         elif o is None:  # removed here
             res = None
+        elif t is None:  # modified here, removed there: a process holding an older spec must not bring the role back
+            conflicts.append(f"role {slug}: changed here, removed elsewhere: stays removed")
+            res = None
         else:  # modified here: our changed fields onto theirs
             res = copy.deepcopy(t if t is not None else b)
             for f in set(b) | set(o):
@@ -692,7 +695,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                 proved.append(role)
             reap_stale_watchers(spec, role, old_sessions)
         spec.record_generation()
-        for role in proved:  # features.prune: the successor proved itself, so incarnations up to N-2 go (N-1 stays)
+        for role in proved:  # features.prune: the successor proved itself, so its earlier incarnations go
             try:
                 did = _prune.auto(spec, role, "restart", detach=False, log=lambda m: print("  " + m))
             except Exception as exc:  # noqa: BLE001 - a prune never fails a restart

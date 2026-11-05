@@ -32,7 +32,7 @@ import { exec, readTextFile, appHome, props, theme, shared, setShared, nextComma
 import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
-  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay, scopeOverlay,
+  FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay, scopeOverlay, removeOverlay,
   SHOAL_CARD, HIDDEN_KEY, hiddenList, ledgerStale,
 } from "./model.js";
 import { Layout } from "./layout.js";
@@ -659,7 +659,8 @@ export default class Lattice extends View {
     // border and the command chip add about 28
     const LINE = 20, EXTRA = 28;
     const hideBtn = pinned && c.hideable === true;
-    const fixed = 1 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0);
+    const removeSpec = hideBtn ? removeOverlay(this.vm, id, this.source) : null;
+    const fixed = 1 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0) + (removeSpec ? 1 : 0);
     const room = Math.floor((size.height - 16 - EXTRA) / LINE) - fixed;
     const links = c.links.length > room ? c.links.slice(0, Math.max(0, room - 1)) : c.links;
     const more = c.links.length - links.length;
@@ -697,12 +698,19 @@ export default class Lattice extends View {
         .when(pinned, (el) => el.cursor_pointer().on_click((_e, cx) => cx.write_to_clipboard(c.command)).tooltip(short === cmd ? "copy" : `copy: ${c.command}`))
         .child(short));
     }
+    if (removeSpec) {
+      card.child(div().id("card-remove").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.red, 0.18)).text_color(P.ink)
+        .hover((st) => st.bg(withAlpha(P.red, 0.32)))
+        .tooltip("for good: stops it and removes it from its harness's list, with a preview first; the ledger keeps its history")
+        .on_click(() => openOverlay(removeSpec))
+        .child("Remove..."));
+    }
     if (hideBtn) {
       card.child(div().id("card-hide").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.steel1, 0.35)).text_color(P.ink)
         .hover((st) => st.bg(withAlpha(P.steel1, 0.6)))
-        .tooltip("takes it off this picture only: its ledger history stays; the rail's footer brings it back")
+        .tooltip("takes it off this picture only, and the rail's footer brings it back")
         .on_click((_e, cx) => this.setHidden([...hiddenList(shared(HIDDEN_KEY)), id], cx))
-        .child("Remove from the lattice"));
+        .child("Hide from the lattice"));
     }
     return card;
   }

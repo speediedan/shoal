@@ -721,6 +721,17 @@ function dialogSpec(target, source) {
   return { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props };
 }
 
+/**
+ * The removal dialog for a node, or null: a role, for good (stop, drop from the shoal and its harness's list), or an outside
+ * writer, as the saved standalone session of that name. An aliased writer is a role elsewhere, so it has no removal here.
+ */
+export function removeOverlay(vm, id, source = null) {
+  const n = vm?.byId?.get(id);
+  if (n?.kind === "role" && n.shoal) return dialogSpec({ shoal: n.shoal, role: n.slug ?? n.label ?? null, verb: "remove-role" }, source);
+  if (n?.kind === "external" && !n.alias_of) return dialogSpec({ shoal: null, role: null, session: n.label, verb: "remove-session" }, source);
+  return null;
+}
+
 /** Nodes a person can take off the picture: dashed outside writers, and roles parked or paused for good. */
 export const hideable = (n) => n?.kind === "external" || n?.kind === "writer" || (n?.kind === "role" && n.visual?.key === "excluded");
 

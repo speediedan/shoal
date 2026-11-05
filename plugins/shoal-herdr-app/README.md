@@ -138,7 +138,7 @@ with no hardware driver library beside it. Every Mesa ICD and no device stays un
 
 ## shoal-home
 
-The home screen: a full-window pane, best alone in a `home` tab of a `shoal` space on the laptop.
+The home screen: a full-window pane, best alone in a `home` tab of a `SHOAL-home` space on the laptop.
 It reads one list and runs one verb, both here (`on` the local machine):
 
 - the list: `shoal ui launch --list --json --summary` (read-only, the same list the terminal
@@ -236,5 +236,5 @@ node plugins/shoal-herdr-app/preview/render_svg.mjs --legend --out /tmp/lattice.
 
 `preview/render_svg.mjs` draws the same display list to SVG for hosts that cannot run the Herdr
 app, and `preview/render_home.mjs` does so for the home screen (`shoal-home/preview.png` is its render).
-`preview/gen_logo_glyphs.mjs` and `preview/gen_logo_image.mjs` regenerate the logo's outlines and its image.
+`preview/gen_logo_image.mjs` (with `preview/logo_reef.mjs`) regenerates the logo's image.
 lattice-view's `preview.png` is a screenshot of the real app (`herdr-app shot`) on the fixture.

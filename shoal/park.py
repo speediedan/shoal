@@ -4,6 +4,8 @@
     shoal park   --spec S --only ROLE[,ROLE] [--note TEXT] [--until <kind>:<ref>] [--force] [--dry-run]
     shoal unpark --spec S --only ROLE[,ROLE] [--dry-run]
     shoal handoff --spec S --only ROLE [--model M] [--effort X] [--ecosystem E] [--force] [--dry-run]
+    shoal remove-role --spec S --only ROLE [--force] [--dry-run]
+    shoal remove-session --session LABEL [--force] [--dry-run]
 
 Park, in an order that wakes nothing:
   1. refuse a remote role (park it on its own host) and a role with an active item unless --force (its
@@ -319,12 +321,155 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     return 1 if out.startswith("FAILED") else 0
 
 
+def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False) -> int:
+    """Take a role out for good: stop its session and watchers, prune its incarnations from every harness's listing, remove
+    it from the spec and write `role-removed`. The ledger keeps its history. In that order because a prune protects any
+    session the spec still names, and a role only stops being recognised once the spec drops it. Its open offers are
+    withdrawn first, because nothing else takes an offer back from a role that is gone and its item stays out of every fill.
+    Its live claims are released too: replay already ignores a claim by a writer not in the spec, but it would come back to
+    life if the slug were ever added again. A session
+    held by a turn or client nothing here can stop refuses, even forced, as does one that will not stop; an active item
+    refuses unless forced. It takes the role's restart lock, so a restart in flight cannot bring the role back."""
+    import fcntl
+    import prune
+    from cli import persist_spec
+    from ledger import SYSTEM_WRITER, Ledger, View, item_key
+    from roles import host_of, is_local, state_dir
+    role = spec.role(slug)
+    if role is None:
+        print(f"remove-role: no role {slug} (spec has {[x.slug for x in spec.roles]})")
+        return 2
+    if not is_local(role, spec):
+        print(f"REFUSED: {slug} runs on {host_of(role, spec)}: remove it on its own host")
+        return 1
+    if role.session and session_held(role, spec.dir):
+        print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing here "
+              f"can stop it; --force does not change that. Detach it or let the turn end, then try again")
+        return 1
+    os.makedirs(state_dir(spec.sid), exist_ok=True)
+    guard = open(os.path.join(state_dir(spec.sid), f"context-restart-{slug}.lock"), "a")  # the lock `context_restart` holds
+    try:
+        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(f"REFUSED: a restart of {slug} is running: try again when it ends")
+        return 1
+    led = Ledger(spec.sid, root=spec.ledger_dir)
+    led.pull()
+    view = View(led, spec)
+    q = view.current_queue(slug) or {}
+    if q.get("active") and not force:
+        print(f"REFUSED: {slug} holds active item {q['active']}; let it finish or release it, or pass --force")
+        return 1
+    st = view.role_state(slug) or {}
+    if st.get("state") == "waiting":  # a job unit keeps its lease after the role is gone: the operator is deciding about it
+        print(f"{slug} waits on {st.get('sub') or '?'}" + (f" ({st['target']})" if st.get("target") else "")
+              + ": a job or lease behind that wait stays until it ends or is stopped")
+    claims = [str(c.get("item")) for c in view.active(slug) if c.get("item")]
+    offers = sorted({key for key, os_ in view.by_item.items() for o in os_ if o.get("to") == slug and o.get("status") in ("open", "claimed")})
+    for item in q.get("next") or []:
+        print(f"{slug}: next item {item} goes back to no one: offer it elsewhere if it still matters")
+    if role.session:
+        did = stop_session(role, dry_run)
+        print(f"{slug}: {did}")
+        if "STILL LIVE" in did:
+            print(f"REFUSED: {slug}'s session did not stop, so it could go on writing as the role: nothing was changed")
+            return 1
+    if dry_run:
+        print(f"{slug}: would end ledger-watch {watchers_of(spec.sid, slug) or 'none running'}, release its claims {claims or 'none'}, "
+              f"withdraw its offers {offers or 'none'}, prune these incarnations, remove the role from the spec and write role-removed:")
+        prune.run(specs=[spec_path], min_age=0, dry_run=True, only_slug=slug, max_seq=10 ** 6, trigger="remove", sizes=False)
+        return 0
+    killed, left = end_watchers(spec.sid, slug)
+    print(f"{slug}: ledger-watch ended: {killed or 'none running'}" + (f"; STILL RUNNING: {left}" if left else ""))
+    old, role.session, role.parked = role.session, "", {}
+    persist_spec(spec, spec_path, note=f"remove {slug}: session cleared")
+    prune.run(specs=[spec_path], delete=prune.feature(spec)["delete"], min_age=0, only_slug=slug, max_seq=10 ** 6, trigger="remove", sizes=False)
+    for item in claims:  # as the role itself: a release counts only from the claim's own writer, and its session is stopped
+        led.append(slug, "release", item=item_key(item), kind="decline", reason="role removed")
+    for item in offers:
+        led.append("user", "withdraw", item=item, to=slug, reason="role removed")
+    spec.roles = [r for r in spec.roles if r.slug != slug]
+    persist_spec(spec, spec_path, note=f"remove {slug}")
+    led.append(SYSTEM_WRITER, "system", event="role-removed", role=slug, session=old)
+    print(f"removed {slug} from {spec.sid}: its ledger history stays")
+    return 0
+
+
+def remove_session(key: str, force: bool = False, dry_run: bool = False) -> int:
+    """Take a saved standalone session out for good: stop it (a live one only when forced), remove it from its harness's
+    listing and forget it. Refuses the session this runs inside, and one a worktree still hangs off unless forced."""
+    import types
+    import prune
+    import ui_herdr
+    from backends import claude_base, get as get_backend
+    entries = ui_herdr.load_standalone(raw=True)
+    e = next((x for x in entries if not x.get("host") and key in (x.get("label"), x.get("session"), x.get("job"))), None)
+    if e is None:
+        print(f"REFUSED: no saved standalone session {key!r} on this host (a writer with no saved session can only be hidden)")
+        return 1
+    label = e.get("label") or e["session"][:12]
+    harness = e.get("harness") or "claude"
+    job = str(e.get("job") or "")
+    seat = types.SimpleNamespace(ecosystem=harness, session=e["session"])
+    here = os.path.basename(os.environ.get("CLAUDE_JOB_DIR", "").rstrip("/"))
+    if here and here in (job, e["session"][:8]):
+        print(f"REFUSED: {label} is the session running this")
+        return 1
+    if session_held(seat):
+        print(f"REFUSED: {label}'s {harness} session is held by a running turn or an attached client, and nothing here can stop "
+              f"it; --force does not change that")
+        return 1
+    live = harness == "claude" and claude_live(seat)
+    if live and not force:
+        print(f"REFUSED: {label} has a live session: --force stops it first and can cut off work in progress")
+        return 1
+    if harness == "claude" and job and not force:
+        wt = prune.git_worktree_under(os.path.join(claude_base(), "jobs", job, "tmp"))
+        if wt:
+            print(f"REFUSED: a git worktree is under its job directory ({wt}): --force removes the session anyway")
+            return 1
+    if dry_run:
+        print(f"{label}: would {'stop it, ' if live else ''}remove it from the {harness} listing and forget it")
+        return 0
+    if live:
+        print(f"{label}: {stop_session(seat)}")
+    try:
+        print(f"{label}: {get_backend(harness).prune(e['session'], job)}")
+    except Exception as exc:  # noqa: BLE001 - the harness refused: the entry stays, so this can be tried again
+        print(f"REFUSED: {harness} did not remove {label} ({str(exc)[:200]}): it is still saved")
+        return 1
+    ui_herdr.save_standalone([x for x in entries if x is not e])
+    print(f"removed {label}")
+    return 0
+
+
+def cmd_remove_role(a) -> int:
+    from roles import ShoalSpec
+    return remove_role(ShoalSpec.load(a.spec), a.spec, a.only, a.force, a.dry_run)
+
+
+def cmd_remove_session(a) -> int:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+    return remove_session(a.session, a.force, a.dry_run)
+
+
 def cmd_handoff(a) -> int:
     from roles import ShoalSpec
     return handoff(ShoalSpec.load(a.spec), a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort)
 
 
 def add_parser(sub) -> None:
+    p = sub.add_parser("remove-role", help="take a role out for good: stop it, prune its incarnations, drop it from the spec; the ledger keeps its history")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--only", required=True, help="one slug")
+    p.add_argument("--force", action="store_true", help="even with an active item")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_remove_role)
+    p = sub.add_parser("remove-session", help="take a saved standalone session out for good: stop it, remove it from its harness, forget it")
+    p.add_argument("--session", required=True, help="its label, session id or job")
+    p.add_argument("--force", action="store_true", help="even when it is live or a worktree hangs off it")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_remove_session)
     p = sub.add_parser("handoff", help="hand a role to a fresh session from its start doc, optionally on another model or provider")
     p.add_argument("--spec", required=True)
     p.add_argument("--only", required=True, help="one slug")

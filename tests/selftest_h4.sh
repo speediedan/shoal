@@ -1901,7 +1901,130 @@ with patch("state.wait_status", return_value=("stale",proof)), \
 print("operational request acknowledgment ok")
 PY2
 
-echo "== 37 prune-incarnations: every guard keeps its session, tombstone before claude rm, re-stop, per-harness archive, N-2 rule"
+echo "== 36b remove a role or a saved session for good: the order that lets the prune see its incarnations, and the refusals"
+cat > "$S/remove_tool.py" <<'PY_REMOVE'
+import os, sys, types
+shoald = sys.argv[1]
+sys.path[:0] = [shoald, os.path.join(shoald, "ui")]
+import cli, ledger, park, prune, ui_herdr
+import backends
+order = []
+role = types.SimpleNamespace(slug="gone", ecosystem="claude", session="aaaa1111", parked={"at": "x", "session": "old"}, server="", doc="")
+keep = types.SimpleNamespace(slug="stays", session="bbbb2222", server="")
+spec = types.SimpleNamespace(sid="s", dir="/tmp", ledger_dir="/tmp", roles=[role, keep], home="", features={"prune": True},
+                             role=lambda s: next((r for r in spec.roles if r.slug == s), None))
+queue = {}
+class Led:
+    def __init__(self, *a, **k): pass
+    def pull(self): pass
+    def append(self, by, typ, **k):
+        if typ == "system":
+            order.append(("append", k.get("event"), k.get("role"), k.get("session")))
+        else:
+            order.append((typ, by, k.get("item"), k.get("kind") or k.get("to")))
+ledger.Ledger = Led
+claims, by_item, state = [], {}, {}
+ledger.View = lambda *a, **k: types.SimpleNamespace(current_queue=lambda s: dict(queue), active=lambda s: list(claims), by_item=by_item, role_state=lambda s: dict(state))
+import roles
+roles.is_local = lambda r, s: r.slug != "remote"
+held = [False]
+park.session_held = lambda r, d="": held[0]
+park.stop_session = lambda r, dry_run=False: order.append(("stop", r.session)) or "stopped"
+park.watchers_of = lambda sid, slug: []
+park.end_watchers = lambda sid, slug: (order.append(("watchers", slug)) or [], [])
+cli.persist_spec = lambda s, p, note="": order.append(("persist", [r.slug for r in s.roles], role.session, role.parked))
+def fake_run(**kw):
+    order.append(("prune", kw["only_slug"], kw["max_seq"] > 1000, kw["min_age"], kw.get("dry_run", False)))
+    return {}
+prune.run = fake_run
+out = []
+park.print = lambda *a, **k: out.append(" ".join(map(str, a)))
+# refusals, before anything is touched
+held[0] = True
+assert park.remove_role(spec, "p", "gone", True) == 1 and "held by a running turn" in out[-1] and not order, (out, order)
+held[0] = False
+queue["active"] = "repo#1:fix"
+assert park.remove_role(spec, "p", "gone") == 1 and "active item" in out[-1] and not order
+assert park.remove_role(spec, "p", "nope") == 2
+# a dry run only previews
+queue.clear()
+assert park.remove_role(spec, "p", "gone", False, True) == 0
+assert [x[0] for x in order] == ["stop", "prune"] and order[-1][-1] is True, order
+assert len(spec.roles) == 2 and role.session == "aaaa1111", "a dry run changed the record"
+order.clear()
+# a session that will not stop changes nothing
+real_stop = park.stop_session
+park.stop_session = lambda r, dry_run=False: "stopped a; STILL LIVE: b"
+assert park.remove_role(spec, "p", "gone") == 1 and "did not stop" in out[-1] and len(spec.roles) == 2 and role.session == "aaaa1111", out[-1]
+park.stop_session = real_stop
+# a restart in flight holds the role's lock
+import fcntl
+os.makedirs(roles.state_dir("s"), exist_ok=True)
+held_lock = open(os.path.join(roles.state_dir("s"), "context-restart-gone.lock"), "a")
+fcntl.flock(held_lock, fcntl.LOCK_EX)
+order.clear()
+assert park.remove_role(spec, "p", "gone") == 1 and "restart of gone is running" in out[-1] and not order, out[-1]
+held_lock.close()
+# applied: the session is cleared on disk before the prune, which protects any session the spec names; its claims are
+# withdrawn so their items can be filled again, and its claims released as the role itself, so they stay gone if the slug returns
+claims.append({"item": "repo#7:fix", "by": "gone"})
+by_item["repo#8"] = [{"to": "gone", "status": "open"}, {"to": "stays", "status": "open"}]
+by_item["repo#9"] = [{"to": "*", "status": "open"}, {"to": "gone", "status": "declined"}]
+state.update(state="waiting", sub="local-ci", target="job:x")
+assert park.remove_role(spec, "p", "gone") == 0, out
+assert any("job:x" in x for x in out), "a running wait is named"
+assert ("release", "gone", ledger.item_key("repo#7:fix"), "decline") in order, order
+assert ("withdraw", "user", "repo#8", "gone") in order, order
+assert not any(x[0] == "withdraw" and x[2] == "repo#9" for x in order), "only offers addressed to it, still open"
+order = [x for x in order if x[0] not in ("release", "withdraw")]
+assert [x[0] for x in order] == ["stop", "watchers", "persist", "prune", "persist", "append"], order
+assert order[2][1] == ["gone", "stays"] and order[2][2] == "" and order[2][3] == {}, order[2]
+assert order[3][:2] == ("prune", "gone") and order[3][2] is True and order[3][3] == 0, order[3]
+assert order[4][1] == ["stays"], order[4]
+assert order[5] == ("append", "role-removed", "gone", "aaaa1111"), order[5]
+# a saved session
+saved = [{"label": "seat", "session": "cccc3333", "harness": "claude", "job": "cccc3333"},
+         {"label": "other", "session": "dddd4444", "harness": "claude", "job": "dddd4444"},
+         {"label": "far", "session": "eeee5555", "harness": "claude", "job": "", "host": "lane-b"}]
+ui_herdr.load_standalone = lambda raw=False: list(saved)
+written = []
+ui_herdr.save_standalone = lambda e: written.append([x["label"] for x in e])
+pruned = []
+backends.get = lambda e: types.SimpleNamespace(prune=lambda s, j="": pruned.append(s) or "removed")
+backends.claude_base = lambda: "/nonexistent"
+live = [True]
+park.claude_live = lambda r: live[0]
+os.environ.pop("CLAUDE_JOB_DIR", None)
+assert park.remove_session("nope") == 1 and "no saved standalone session" in out[-1]
+assert park.remove_session("far") == 1, "another host's entry is not this host's to remove"
+assert park.remove_session("seat") == 1 and "live session" in out[-1] and not pruned
+os.environ["CLAUDE_JOB_DIR"] = "/x/jobs/cccc3333"
+assert park.remove_session("seat", True) == 1 and "running this" in out[-1] and not pruned
+os.environ.pop("CLAUDE_JOB_DIR")
+assert park.remove_session("seat", True, True) == 0 and not pruned and not written, "a dry run removes nothing"
+order.clear()
+assert park.remove_session("seat", True) == 0
+assert order[0][0] == "stop" and pruned == ["cccc3333"] and written[-1] == ["other", "far"], (order, pruned, written)
+# a harness that refuses keeps the entry, so it can be tried again
+written.clear()
+def refuse(s, j=""):
+    raise RuntimeError("a job with a worker")
+backends.get = lambda e: types.SimpleNamespace(prune=refuse)
+assert park.remove_session("seat", True) == 1 and "still saved" in out[-1] and not written, out[-1]
+# a process holding an older spec cannot bring a removed role back
+merged, conflicts = cli.merge_spec({"roles": [{"slug": "a", "seq": 1}, {"slug": "b", "seq": 1}]},
+                                   {"roles": [{"slug": "a", "seq": 2}, {"slug": "b", "seq": 1}]}, {"roles": [{"slug": "b", "seq": 1}]})
+assert [r["slug"] for r in merged["roles"]] == ["b"] and any("stays removed" in c for c in conflicts), (merged, conflicts)
+live[0] = False
+held[0] = True
+assert park.remove_session("other", True) == 1 and "held" in out[-1], "a session nothing can stop refuses, even forced"
+PY_REMOVE
+python3 "$S/remove_tool.py" "$SHOALD" || fail "remove-role and remove-session"
+check "no role nope" $H remove-role --spec "$SPEC" --only nope --dry-run
+check "no saved standalone session" $H remove-session --session no-such-seat --dry-run
+echo "remove ok"
+
+echo "== 37 prune-incarnations: every guard keeps its session, tombstone before claude rm, re-stop, per-harness archive, N-1 rule"
 python3 "$TESTD/test_prune.py" || fail "prune-incarnations (tests/test_prune.py)"
 check "name what to prune" $H prune-incarnations --dry-run
 check "unknown harness" $H prune-incarnations --spec "$SPEC" --harness nope --dry-run

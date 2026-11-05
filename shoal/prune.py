@@ -30,8 +30,8 @@ id in a spec's generation history; standalone predecessors only with `--standalo
                              [--matcher] [--delete] [--min-age 24h] [--batch 10] [--dry-run]
 
 Automatic (features.prune, default off): once a successor proves itself (its `first-turn` handover event, or
-`verify_consumer` in a restart), the role's incarnations up to N-2 are pruned; N-1 stays one generation as a
-fallback. Never on park. Each removal is one `pruned` telemetry event.
+`verify_consumer` in a restart), the role's earlier incarnations are pruned, on every harness (a role may have
+moved provider). Never on park. Each removal is one `pruned` telemetry event.
 """
 from __future__ import annotations
 
@@ -304,7 +304,7 @@ class World:
         return "", "", "", 0
 
     def wanted(self, c: Cand) -> bool:
-        """The auto-prune filter: only this role's incarnations at or below N-2."""
+        """The auto-prune filter: only this role's incarnations up to `max_seq`."""
         if not self.only_slug:
             return True
         return c.kind == "role" and c.slug == self.only_slug and 0 < c.seq <= self.max_seq
@@ -641,7 +641,7 @@ def run(*, specs: list[str] | None = None, all_specs: bool = False, harnesses: t
     return out
 
 
-# ---- automatic: N-2 once N proves itself --------------------------------------------------------------------
+# ---- automatic: N-1 and earlier once N proves itself --------------------------------------------------------------------
 
 def feature(spec) -> dict:
     """features.prune: false/absent (off), true (on), or {"enabled": true, "delete": false}."""
@@ -653,14 +653,14 @@ def feature(spec) -> dict:
 
 def auto(spec, role, trigger: str, spec_path: str = "", dry_run: bool = False, detach: bool = True,
          log=print) -> str:
-    """Prune `role`'s incarnations up to N-2 once incarnation N has proved itself (`trigger`: first-turn or restart);
-    N-1 stays one generation as the fallback. Off unless features.prune; never for a parked role. `detach` runs it
-    as its own process (a role's `queue` write must not wait on removals); otherwise in this process. Returns what
-    was done, '' when nothing applies."""
+    """Prune `role`'s earlier incarnations once incarnation N has proved itself (`trigger`: first-turn or restart), on
+    every harness, because a role may have moved provider. Off unless features.prune; never for a parked role. `detach`
+    runs it as its own process (a role's `queue` write must not wait on removals); otherwise in this process. Returns
+    what was done, '' when nothing applies."""
     f = feature(spec)
     if not f["enabled"] or getattr(role, "parked", None) or not getattr(role, "session", ""):
         return ""
-    max_seq = int(getattr(role, "seq", 0) or 0) - 2
+    max_seq = int(getattr(role, "seq", 0) or 0) - 1
     if max_seq < 1:
         return ""
     path = spec_path or getattr(spec, "path", "") or ""
@@ -669,7 +669,7 @@ def auto(spec, role, trigger: str, spec_path: str = "", dry_run: bool = False, d
         path = find_spec(spec.sid)
     if detach:
         argv = shlex.split(config.cli()) + ["prune-incarnations", "--spec", path, "--role", role.slug,
-                                            "--max-seq", str(max_seq), "--harness", role.ecosystem, "--min-age", "0",
+                                            "--max-seq", str(max_seq), "--min-age", "0",
                                             "--trigger", trigger] + (["--delete"] if f["delete"] else [])
         if dry_run:
             return "would run: " + " ".join(argv)
@@ -680,7 +680,7 @@ def auto(spec, role, trigger: str, spec_path: str = "", dry_run: bool = False, d
         spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(logf, "a"), stderr=subprocess.STDOUT)
         return f"pruning {role.slug} incarnations <= r{max_seq} (log {logf})"
     keep = [(r.session, f"current session of {r.slug}@{spec.sid}") for r in spec.roles if r.session]
-    res = run(specs=[path], harnesses=(role.ecosystem,), delete=f["delete"], min_age=0, dry_run=dry_run,
+    res = run(specs=[path], delete=f["delete"], min_age=0, dry_run=dry_run,
               only_slug=role.slug, max_seq=max_seq, trigger=trigger, extra_protect=keep, sizes=False, log=log)
     n = sum(1 for v in res.values() for c in v["cands"] if c.verdict == "prune")
     return f"{'would prune' if dry_run else 'pruned'} {n} {role.slug} incarnation(s) <= r{max_seq}"
