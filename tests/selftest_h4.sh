@@ -1917,9 +1917,14 @@ queue = {}
 class Led:
     def __init__(self, *a, **k): pass
     def pull(self): pass
-    def append(self, *a, **k): order.append(("append", k.get("event"), k.get("role"), k.get("session")))
+    def append(self, by, typ, **k):
+        if typ == "system":
+            order.append(("append", k.get("event"), k.get("role"), k.get("session")))
+        else:
+            order.append((typ, by, k.get("item"), k.get("kind") or k.get("to")))
 ledger.Ledger = Led
-ledger.View = lambda *a, **k: types.SimpleNamespace(current_queue=lambda s: dict(queue))
+claims, by_item, state = [], {}, {}
+ledger.View = lambda *a, **k: types.SimpleNamespace(current_queue=lambda s: dict(queue), active=lambda s: list(claims), by_item=by_item, role_state=lambda s: dict(state))
 import roles
 roles.is_local = lambda r, s: r.slug != "remote"
 held = [False]
@@ -1947,8 +1952,31 @@ assert park.remove_role(spec, "p", "gone", False, True) == 0
 assert [x[0] for x in order] == ["stop", "prune"] and order[-1][-1] is True, order
 assert len(spec.roles) == 2 and role.session == "aaaa1111", "a dry run changed the record"
 order.clear()
-# applied: the session is cleared on disk before the prune, which protects any session the spec names
+# a session that will not stop changes nothing
+real_stop = park.stop_session
+park.stop_session = lambda r, dry_run=False: "stopped a; STILL LIVE: b"
+assert park.remove_role(spec, "p", "gone") == 1 and "did not stop" in out[-1] and len(spec.roles) == 2 and role.session == "aaaa1111", out[-1]
+park.stop_session = real_stop
+# a restart in flight holds the role's lock
+import fcntl
+os.makedirs(roles.state_dir("s"), exist_ok=True)
+held_lock = open(os.path.join(roles.state_dir("s"), "context-restart-gone.lock"), "a")
+fcntl.flock(held_lock, fcntl.LOCK_EX)
+order.clear()
+assert park.remove_role(spec, "p", "gone") == 1 and "restart of gone is running" in out[-1] and not order, out[-1]
+held_lock.close()
+# applied: the session is cleared on disk before the prune, which protects any session the spec names; its claims are
+# released as the role itself and its offers withdrawn, because a claim by a gone role blocks the item for everyone
+claims.append({"item": "repo#7:fix", "by": "gone"})
+by_item["repo#8"] = [{"to": "gone", "status": "open"}, {"to": "stays", "status": "open"}]
+by_item["repo#9"] = [{"to": "*", "status": "open"}, {"to": "gone", "status": "declined"}]
+state.update(state="waiting", sub="local-ci", target="job:x")
 assert park.remove_role(spec, "p", "gone") == 0, out
+assert any("job:x" in x for x in out), "a running wait is named"
+assert ("release", "gone", ledger.item_key("repo#7:fix"), "decline") in order, order
+assert ("withdraw", "user", "repo#8", "gone") in order, order
+assert not any(x[0] == "withdraw" and x[2] == "repo#9" for x in order), "only offers addressed to it, still open"
+order = [x for x in order if x[0] not in ("release", "withdraw")]
 assert [x[0] for x in order] == ["stop", "watchers", "persist", "prune", "persist", "append"], order
 assert order[2][1] == ["gone", "stays"] and order[2][2] == "" and order[2][3] == {}, order[2]
 assert order[3][:2] == ("prune", "gone") and order[3][2] is True and order[3][3] == 0, order[3]
@@ -1977,6 +2005,16 @@ assert park.remove_session("seat", True, True) == 0 and not pruned and not writt
 order.clear()
 assert park.remove_session("seat", True) == 0
 assert order[0][0] == "stop" and pruned == ["cccc3333"] and written[-1] == ["other", "far"], (order, pruned, written)
+# a harness that refuses keeps the entry, so it can be tried again
+written.clear()
+def refuse(s, j=""):
+    raise RuntimeError("a job with a worker")
+backends.get = lambda e: types.SimpleNamespace(prune=refuse)
+assert park.remove_session("seat", True) == 1 and "still saved" in out[-1] and not written, out[-1]
+# a process holding an older spec cannot bring a removed role back
+merged, conflicts = cli.merge_spec({"roles": [{"slug": "a", "seq": 1}, {"slug": "b", "seq": 1}]},
+                                   {"roles": [{"slug": "a", "seq": 2}, {"slug": "b", "seq": 1}]}, {"roles": [{"slug": "b", "seq": 1}]})
+assert [r["slug"] for r in merged["roles"]] == ["b"] and any("stays removed" in c for c in conflicts), (merged, conflicts)
 live[0] = False
 held[0] = True
 assert park.remove_session("other", True) == 1 and "held" in out[-1], "a session nothing can stop refuses, even forced"

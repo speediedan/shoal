@@ -298,6 +298,9 @@ def merge_spec(base: dict, ours: dict, theirs: dict) -> tuple[dict, list[str]]:
             res = o
         elif o is None:  # removed here
             res = None
+        elif t is None:  # modified here, removed there: a process holding an older spec must not bring the role back
+            conflicts.append(f"role {slug}: changed here, removed elsewhere: stays removed")
+            res = None
         else:  # modified here: our changed fields onto theirs
             res = copy.deepcopy(t if t is not None else b)
             for f in set(b) | set(o):
