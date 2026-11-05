@@ -789,6 +789,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
     return run_restart(load_spec(args), args)
 
 
+OLD_SESSION_WAIT_S = 30
+
+
 def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
     if spec.retired_utc and not getattr(args, "force", False):
         print(f"spec is retired ({spec.retired_utc}); start a fresh shoal or pass --force")
@@ -842,7 +845,11 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
             return 1
         if r.ecosystem == eco:
             continue
-        # the old session must be gone first: `shoal handoff` stops it, or says why it cannot
+        # the old session must be gone first: `shoal handoff` stops it, or says why it cannot. A stopped worker can take
+        # a moment to exit, and refusing then would strand a role whose old session was just stopped.
+        gone_by = time.time() + OLD_SESSION_WAIT_S
+        while r.session and not dry and r.ecosystem == "claude" and _park.claude_live(r) and time.time() < gone_by:
+            time.sleep(1)
         if r.session and not dry and (_park.session_held(r, spec.dir) or (r.ecosystem == "claude" and _park.claude_live(r))):
             print(f"REFUSED: {slug}'s {r.ecosystem} session {r.session[:8]} is still live, so two sessions would hold the "
                   f"role: use `shoal handoff`")

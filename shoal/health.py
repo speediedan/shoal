@@ -897,8 +897,13 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
         if alive and is_detached_wake(str(sc.get("wake", ""))):
             os.kill(int(sc["pid"]), 15)  # a detached watcher: ending it wakes nobody
         if role.ecosystem == "claude" and role.session:
-            from backends import get as get_backend
-            get_backend("claude").stop(role.session[:8])
+            # every job on the conversation, watched so a respawned worker is stopped again: a copy left behind would hold
+            # the role beside the new session
+            import park
+            stopped = park.stop_session(role)
+            if "STILL LIVE" in stopped:
+                __import__("context").note_restart(spec, role, f"FAILED ({stopped})")
+                return f"FAILED ({stopped}; nothing restarted)"
         from backends import spawn_detached
         # its own scope, like a re-armed watcher: the quorum's oneshot unit would end it with its cgroup
         spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,

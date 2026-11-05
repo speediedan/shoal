@@ -786,9 +786,13 @@ cli._park.session_held = lambda r, d="": False
 cli._park.claude_live = lambda r: False
 assert restart_eco("tl", ["up:opencode"]) == 1 and ShoalSpec.load(rspec).role("up").ecosystem == "claude", "outside --only"
 assert restart_eco("up", ["up:nope"]) == 1
+cli.OLD_SESSION_WAIT_S = 1
 cli._park.claude_live = lambda r: True
 assert restart_eco("up", ["up:opencode"]) == 1 and ShoalSpec.load(rspec).role("up").ecosystem == "claude", "old session live"
-cli._park.claude_live = lambda r: False
+# a stopped worker that takes a moment to exit is waited for, not refused
+cli.OLD_SESSION_WAIT_S = 30
+alive = iter([True, True, False])
+cli._park.claude_live = lambda r: next(alive, False)
 s0 = ShoalSpec.load(rspec)
 d = json.load(open(rspec))
 next(r for r in d["roles"] if r["slug"] == "up").update(effort="high", model="old-model")
@@ -1725,14 +1729,14 @@ assert rc == 0 and "would restart" in t, (rc, t)
 # applied: the old provider stops, the restart is launched once with the new record, and the lock holds a second one back
 import subprocess
 spawned = []
-def spawn(argv, **kw):
+real_spawn = backends.spawn_detached
+def spawn(argv, **kw):  # the real spawn path on a stand-in command: the lock must survive whatever scope wraps it
     spawned.append(argv)
-    return subprocess.Popen(["sleep", "5"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, pass_fds=kw["pass_fds"], start_new_session=True)
+    kw.pop("cwd", None)
+    return real_spawn(["sleep", "5"], **kw)
 backends.spawn_detached = spawn
 stops = []
-class B:
-    def stop(self, s): stops.append(s)
-backends.get = lambda e: B()
+park.stop_session = lambda r, dry_run=False: stops.append(r.session[:8]) or f"stopped {r.session[:8]}"
 health.watcher_alive = lambda sid, slug: (False, {})
 import context
 context.note_restart = lambda *a: None
@@ -1742,6 +1746,24 @@ assert stops == [role.session[:8]], stops
 assert any("--set-ecosystem=up:muse" in x for x in spawned[0]) and any("--set-model=up:m3" in x for x in spawned[0]), spawned
 rc, t = run(dry_run=False)
 assert rc == 1 and "already running" in t and len(spawned) == 1, (rc, t, spawned)
+# the lock goes when the restart exits, however it exits
+import time
+end = time.time() + 20
+while time.time() < end:
+    rc, t = run(dry_run=False)
+    if "already running" not in t:
+        break
+    time.sleep(1)
+assert rc == 0 and len(spawned) == 2, (rc, t, spawned)
+# a copy on the conversation that will not stop: nothing restarts, and it says so
+end = time.time() + 20
+park.stop_session = lambda r, dry_run=False: "stopped a; STILL LIVE: b"
+while time.time() < end:
+    rc, t = run(dry_run=False)
+    if "already running" not in t:
+        break
+    time.sleep(1)
+assert rc == 1 and "STILL LIVE" in t and "nothing restarted" in t and len(spawned) == 2, (rc, t, spawned)
 # FAILED reaches the exit code, which is what the dialog reports
 health.context_restart = lambda *a, **k: "FAILED (no room)"
 rc, t = run(dry_run=False)
