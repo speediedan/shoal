@@ -378,6 +378,8 @@ def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: b
         print(f"{slug}: would end ledger-watch {watchers_of(spec.sid, slug) or 'none running'}, release its claims {claims or 'none'}, "
               f"withdraw its offers {offers or 'none'}, prune these incarnations, remove the role from the spec and write role-removed:")
         prune.run(specs=[spec_path], min_age=0, dry_run=True, only_slug=slug, max_seq=10 ** 6, trigger="remove", sizes=False)
+        if role.session:
+            print(f"(its current session {role.session[:12]} shows as kept above; the real run clears it first, and removes it)")
         return 0
     killed, left = end_watchers(spec.sid, slug)
     print(f"{slug}: ledger-watch ended: {killed or 'none running'}" + (f"; STILL RUNNING: {left}" if left else ""))

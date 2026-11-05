@@ -380,7 +380,7 @@ export default class Actions extends View {
       .track_focus(this.handle)
       .on_key_down((e, cx) => this.key(e, cx));
     root.child(this.header(c));
-    root.child(this.verbRow(c));
+    if (verbsFor(this.sel).length > 1) root.child(this.verbRow(c));  // one verb is already chosen: a button for it does nothing
     root.child(div().h(1).flex_none().bg(c.border));
     root.child(v_flex().id("body").flex_1().min_h(0).overflow_y_scrollbar().px(16).py(12).gap(10).child(this.body(c)));
     root.child(this.footer(c));

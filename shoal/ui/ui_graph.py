@@ -711,13 +711,15 @@ class GraphBuilder:
             n["state"].get("needs_you") for n in nodes.values() if n["kind"] == "role")
 
         # -- outside seats, aliased to a role of the same slug in another shoal
+        import ui_herdr
+        saved = {str(e.get("label")) for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
         for eid in sorted(ext_seen):
             slug = eid[4:]
             home_of = sorted(s for s, sl in role_slugs.items() if slug in sl and s not in ext_seen[eid])
             alias = f"{home_of[0]}:{slug}" if home_of else None
             st = nodes.get(alias, {}).get("state") if alias else None
             em = ext_metrics.get(eid, {})
-            nodes[eid] = {"id": eid, "kind": "external", "shoal": None, "label": slug, "alias_of": alias,
+            nodes[eid] = {"id": eid, "kind": "external", "shoal": None, "label": slug, "alias_of": alias, "saved": slug in saved,
                           "host": nodes.get(alias, {}).get("host") if alias else None,
                           "state": ({"class": st["class"], "event": st["event"], "group": st["group"]} if st
                                     else {"class": "unknown", "event": "", "group": ""}),

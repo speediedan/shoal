@@ -54,6 +54,9 @@ you, per-shoal throughput and per-host load.
   at the node (global), labeled `remote-ci -> host-b`.
 - **Satellites:** each role's active item, next items and items done in 24 h as small dots on
   short spokes fanned outward: the starburst.
+- **Outside writers:** the card offers `Remove...` only for one with a saved session on the feed's
+  host. One with none has nothing to remove (it is only ledger history): the card says so and offers
+  to hide it.
 - **Rail** (272px, `#0b0e12`): the view name and feed time; NEEDS YOU rows (badge, role, shoal,
   ask text, age), loudest first; BOARDS (per shoal in view, each priority board as a link beside how
   old its read is, amber past 30 minutes, then done, open, in flight and assigned over a thin bar in

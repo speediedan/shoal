@@ -813,6 +813,19 @@ def cmd_app_lattice(a) -> int:
     return 0
 
 
+def cmd_app_home(a) -> int:
+    if not app_running():
+        print("the Herdr app is not running here (`shoal ui app-start` starts it with the pin held)")
+        return 1
+    try:
+        for line in home_space(a.dry_run):
+            print(line)
+    except AppError as exc:
+        print(str(exc))
+        return 2
+    return 0
+
+
 def start_argv() -> list[str]:
     """How the app is started: a transient user unit (so it outlives this terminal), with the pin held and only
     the display variables passed through (names chosen here; nothing else from the environment)."""

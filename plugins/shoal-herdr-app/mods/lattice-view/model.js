@@ -556,6 +556,7 @@ export function buildModel(doc, view = "global", opts = {}) {
       jobHost: jobHostOf(n),
       grants: grantsOf(n),
       alias_of: n.alias_of ?? null,
+      saved: n.saved === true,
       state: obj(n.state),
       work: obj(n.work),
       metrics: obj(n.metrics),
@@ -770,7 +771,8 @@ function dialogSpec(target, source) {
 export function removeOverlay(vm, id, source = null) {
   const n = vm?.byId?.get(id);
   if (n?.kind === "role" && n.shoal) return dialogSpec({ shoal: n.shoal, role: n.slug ?? n.label ?? null, verb: "remove-role" }, source);
-  if (n?.kind === "external" && !n.alias_of) return dialogSpec({ shoal: null, role: null, session: n.label, verb: "remove-session" }, source);
+  // a writer with no saved session has nothing to remove: its card offers to hide it
+  if (n?.kind === "external" && !n.alias_of && n.saved) return dialogSpec({ shoal: null, role: null, session: n.label, verb: "remove-session" }, source);
   return null;
 }
 
@@ -884,6 +886,7 @@ export function cardLines(vm, id) {
   } else {
     rows.push(["kind", n.kind]);
     if (n.alias_of) rows.push(["alias of", n.alias_of]);
+    else if (n.kind === "external" && !n.saved) rows.push(["session", "none saved here"]);
     for (const [k, val] of Object.entries(m)) rows.push([k.replace(/_/g, " "), String(val)]);
   }
   const links = n.items

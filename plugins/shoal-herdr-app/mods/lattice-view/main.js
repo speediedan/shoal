@@ -709,7 +709,7 @@ export default class Lattice extends View {
     if (hideBtn) {
       card.child(div().id("card-hide").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.steel1, 0.35)).text_color(P.ink)
         .hover((st) => st.bg(withAlpha(P.steel1, 0.6)))
-        .tooltip("takes it off this picture only, and the rail's footer brings it back")
+        .tooltip(`takes it off this picture only, and the rail's footer brings it back${removeSpec ? "" : ". It has no saved session to remove"}`)
         .on_click((_e, cx) => this.setHidden([...hiddenList(shared(HIDDEN_KEY)), id], cx))
         .child("Hide from the lattice"));
     }
@@ -832,10 +832,11 @@ export default class Lattice extends View {
     const B = s.boards;
     const box = v_flex().id(`bd-${s.id}`).gap(4).p(8).rounded(6).bg(withAlpha(s.tint, 0.06)).border(1).border_color(withAlpha(s.tint, 0.22));
     B.items.forEach((b, i) => {
+      const tagged = named && b.title !== s.short;  // a board named for its shoal says so once
       box.child(h_flex().gap(7).items_center()
-        .when(named, (el) => el.child(div().flex_none().font_semibold().text_color(s.tint).child(s.short)))
+        .when(tagged, (el) => el.child(div().flex_none().font_semibold().text_color(s.tint).child(s.short)))
         .child(div().id(`bd-${s.id}-${i}`).min_w(0).truncate().tooltip(b.url)
-          .child(Link.new(`bd-link-${s.id}-${i}`).href(b.url).text_color(named ? P.ink : s.tint).child(`${b.title} ↗`)))
+          .child(Link.new(`bd-link-${s.id}-${i}`).href(b.url).text_color(tagged ? P.ink : s.tint).child(`${b.title} ↗`)))
         .child(div().flex_1())
         .when(B.age != null, (el) => el.child(div().flex_none().text_size(9.5).text_color(B.stale ? P.amber : P.faint).child(fmtAge(B.age)))));
       if (!b.counts) {

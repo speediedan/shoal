@@ -854,6 +854,14 @@ test("removal: a role for good, an outside writer by its saved name, an aliased 
   assert.equal(M.removeOverlay(vm, "user", exec), null);
   assert.equal(M.removeOverlay(vm, "nope", exec), null);
   assert.equal(M.removeOverlay(null, ext.id, exec), null);
+  // a writer with no saved session has nothing to remove, and its card says so
+  const d = structuredClone(doc);
+  d.nodes.find((x) => x.id === ext.id).saved = false;
+  const vm2 = M.buildModel(d, "global");
+  assert.equal(M.removeOverlay(vm2, ext.id, exec), null);
+  assert.ok(M.cardLines(vm2, ext.id).rows.some(([k, v]) => k === "session" && v.startsWith("none saved")));
+  assert.equal(M.cardLines(vm2, ext.id).hideable, true);
+  assert.ok(!M.cardLines(vm, ext.id).rows.some(([k]) => k === "session"));
 });
 
 test("a role's card says its context and whether it can restart now", () => {

@@ -665,7 +665,8 @@
    "metrics": {
     "msgs_out_1h": 1,
     "msgs_in_1h": 2
-   }
+   },
+   "saved": true
   },
   {
    "id": "ext:research",

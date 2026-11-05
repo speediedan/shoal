@@ -1059,6 +1059,8 @@ tabs read the feed of the machine their space is on. Each shoal also carries its
 each from the spec, and, from this host's last digest, its items as done, open, in flight (a role's active item) and assigned
 (in a role's queue, nobody's active item). The feed never reads a board itself, so those counts are as old as the digest, and a
 host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
+An outside writer says whether this host has a saved session for it (`saved`): one with none has nothing to remove, so the
+lattice offers only to hide it.
 
 ### Herdr app adapter (`shoal ui app-*`)
 
@@ -1066,7 +1068,7 @@ host that is not the shoal's home has the links alone. The digest records each b
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with three blocks swapped: `shoal-agents` and
 `shoal-spaces` are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
-`shoal-status` adds the way back to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
+`shoal-status` adds the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
 saved standalone session). `ui app-open` runs where the app runs: it reads the plan (in process, or over the

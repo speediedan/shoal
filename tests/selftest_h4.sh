@@ -1954,6 +1954,7 @@ assert park.remove_role(spec, "p", "nope") == 2
 queue.clear()
 assert park.remove_role(spec, "p", "gone", False, True) == 0
 assert [x[0] for x in order] == ["stop", "prune"] and order[-1][-1] is True, order
+assert any("shows as kept above" in x for x in out), out
 assert len(spec.roles) == 2 and role.session == "aaaa1111", "a dry run changed the record"
 order.clear()
 # a session that will not stop changes nothing

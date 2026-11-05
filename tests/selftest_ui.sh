@@ -1990,6 +1990,40 @@ $H ui graph-feed --ledger-root "$GR" --once >/dev/null || fail "graph-feed --onc
 GJ="$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/graph.json"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["v"] == 1 and d["kind"] == "shoal-graph"' "$GJ" \
   || fail "graph-feed did not write $GJ"
+# the bar's Home button: refuses plainly with no app, and shows the home tab of SHOAL-home with one
+python3 - "$SHOALD" <<'PY2' || fail "app-home"
+import contextlib, io, sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+a = types.SimpleNamespace(dry_run=True)
+ui_app.app_running = lambda: False
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    assert ui_app.cmd_app_home(a) == 1
+assert "not running" in out.getvalue(), out.getvalue()
+ui_app.app_running = lambda: True
+seen = []
+ui_app.home_space = lambda dry_run=False, select="home": seen.append((dry_run, select)) or ["SHOAL-home: home"]
+with contextlib.redirect_stdout(io.StringIO()):
+    assert ui_app.cmd_app_home(a) == 0
+assert seen == [(True, "home")], seen
+PY2
+# an outside writer says whether this host has a saved session for it, which decides whether the lattice offers Remove
+python3 - "$SHOALD" "$GR" <<'PY2' || fail "external saved"
+import json, os, sys, tempfile
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_graph, ui_herdr
+d = ui_graph.GraphBuilder(root=sys.argv[2]).build()
+ext = [n for n in d["nodes"] if n["kind"] == "external"]
+assert ext and not any(n["saved"] for n in ext), ext
+name = ext[0]["label"]
+p = os.path.join(tempfile.mkdtemp(), "ui-standalone.json")
+json.dump({"sessions": [{"label": name, "session": "s1"}, {"label": ext[-1]["label"] + "x", "session": "s2"}]}, open(p, "w"))
+ui_herdr.standalone_path = lambda: p
+d = ui_graph.GraphBuilder(root=sys.argv[2]).build()
+got = {n["label"]: n["saved"] for n in d["nodes"] if n["kind"] == "external"}
+assert got[name] is True and sum(got.values()) == 1, got
+PY2
 # a shoal's boards: a link from the spec, and counts from this host's last digest; the four add up to the board
 BD="$(mktemp -d)"
 SHOAL_DATA_ROOT="$BD" python3 - "$SHOALD" <<'PY2' || fail "board summary"

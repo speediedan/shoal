@@ -65,15 +65,19 @@ export default class ShoalStatus extends View {
   }
 
   lattice(cx) {
-    this.note = "opening the lattice";
+    this.show(cx, "lattice", "app-lattice");
+  }
+
+  show(cx, what, verb) {
+    this.note = `opening ${what}`;
     cx.spawn(async (cx) => {
       let r = null;
       try {
-        r = await exec("shoal", ["ui", "app-lattice"]);
+        r = await exec("shoal", ["ui", verb]);
       } catch (e) {
         r = { code: 1, stderr: String(e) };
       }
-      this.note = r?.code === 0 ? null : `lattice: ${String(r?.stdout || r?.stderr || "failed").trim().slice(0, 90)}`;
+      this.note = r?.code === 0 ? null : `${what}: ${String(r?.stdout || r?.stderr || "failed").trim().slice(0, 90)}`;
       cx.notify();
     });
   }
@@ -108,6 +112,7 @@ export default class ShoalStatus extends View {
       .child(div().flex_none().child(space?.machine ?? "This computer"))
       .child(h_flex().flex_none().gap(6).items_center().child(`${list.length} agents`)
         .when(needs > 0, (el) => el.child(div().text_color(t.blocked).child(`· ${needs} need you`))))
+      .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.show(cx, "home", "app-home"); cx.notify(); }, t))
       .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t))
       .child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
