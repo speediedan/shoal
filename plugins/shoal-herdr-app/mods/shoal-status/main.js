@@ -6,7 +6,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, agents, machines, theme, run, exec, nextCommand } from "herdr";
-import { parseUsage, usageMachine } from "./model.js";
+import { parseUsage, usageMachines } from "./model.js";
 
 const USAGE_MS = 60000;
 const SYNC_MS = 120000;
@@ -35,18 +35,21 @@ export default class ShoalStatus extends View {
   }
 
   readUsage(cx) {
-    const on = usageMachine(safe(spaces, []), safe(machines, []).map((m) => m.name));
+    const where = usageMachines(safe(spaces, []), safe(machines, []).map((m) => m.name));
     cx.spawn(async (cx) => {
-      let reply = null;
-      try {
-        reply = await exec("shoal", ["ui", "usage", "--json"], on ? { on } : {});
-      } catch (_e) {
-        reply = null;
-      }
-      const rows = parseUsage(reply);
-      if (rows) {
-        this.rows = rows;
-        cx.notify();
+      for (const on of where) {
+        let reply = null;
+        try {
+          reply = await exec("shoal", ["ui", "usage", "--json"], on ? { on } : {});
+        } catch (_e) {
+          reply = null;
+        }
+        const rows = parseUsage(reply);
+        if (rows?.length) {  // a host with no usage cache says nothing: the last good rows stay until one has some
+          this.rows = rows;
+          cx.notify();
+          return;
+        }
       }
     });
   }
