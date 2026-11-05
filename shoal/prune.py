@@ -21,7 +21,8 @@ id in a spec's generation history; standalone predecessors only with `--standalo
   (c) any entry in the viewer registry (ui-standalone.json), session or job, dismissed ones too
   (d) a live worker (pid), or state working, blocked or idle
   (e) a conversation shared with a job that has a worker or is protected
-  (f) its recorded worktree exists, a git worktree is registered under its job tmp/, or a process runs inside either
+  (f) its recorded worktree exists, a git worktree is registered under its job tmp/, a process runs inside either, or
+      a role's or standalone seat's start doc names its job folder
   (g) the job this runs inside
   (h) a held Muse `.session.lock` or shoal exec lock, or a ledger-watch still bound to it
   and anything younger than --min-age (default 24h).
@@ -200,6 +201,17 @@ class World:
                     self.protect.append((str(e[k]), why))
             if not (e.get("session") or e.get("job")) and e.get("label"):
                 self.protect_names.append((str(e["label"]), why + " (no recorded id: matched by label)"))
+        # (f) a job whose folder a start doc names: the next session may rely on what is in it
+        import startdoc
+        self.doc_jobs: dict[str, str] = {}
+        docs = [str(r.get("doc") or "") for _p, d in self.specs for r in d.get("roles") or []]
+        for path in sorted({x for x in docs + [str(e.get("doc") or "") for e in self.registry] if x}):
+            try:
+                text = open(os.path.expanduser(path)).read()
+            except OSError:
+                continue
+            for j in startdoc.job_folders(text):
+                self.doc_jobs.setdefault(j, os.path.basename(path))
         # (g) the session this runs inside
         me = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
         if me:
@@ -375,6 +387,8 @@ def claude_guard(w, r, st, ids, info, hard, own, min_age, c) -> str:
         return "(g) the job this runs inside"
     if why:
         return f"(a-c) {why}"
+    if w.doc_jobs.get(job):
+        return f"(f) start doc {w.doc_jobs[job]} names its job folder"
     if not job or r.get("kind") == "interactive":
         return "(d) interactive session (no background job to remove)"
     if r.get("pid"):

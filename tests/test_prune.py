@@ -294,6 +294,23 @@ try:
     out = prune.auto(sp, tl, "restart", detach=False, dry_run=True, log=quiet.append)
     check(out.startswith(f"would prune 2 tl incarnation(s) <= r{tl.seq - 1}"), f"in-process auto :: {out}")
 
+    # ---- a job whose folder a start doc names stays until the doc stops naming it ---
+    saved = open(SPEC).read()
+    d_ = json.loads(saved)
+    docp = os.path.join(T, "named.md")
+    with open(docp, "w") as fh:
+        fh.write("Helpers in `~/.claude/jobs/a1a1a1a1/tmp/` and a stale `/jobs/a1a1a1a1-not-a-job/`\n")
+    d_["roles"][0]["doc"] = docp
+    with open(SPEC, "w") as fh:
+        json.dump(d_, fh)
+    res = prune.run(specs=[SPEC], harnesses=("claude",), dry_run=True, only_slug="tl", max_seq=tl.seq - 1, min_age=0, log=quiet.append)
+    named = next(c for c in res["claude"]["cands"] if c.job == "a1a1a1a1")
+    check(named.verdict == "keep" and "named.md names its job folder" in named.reason, f"doc-named job :: {named.verdict} {named.reason}")
+    with open(SPEC, "w") as fh:
+        fh.write(saved)
+    import startdoc
+    check(startdoc.job_folders("x /jobs/abcd1234/tmp y ~/.claude/jobs/abcd1234 z /jobs/abcd1234-5f/ q /jobs/zzzz1234") == ["abcd1234"], "job_folders")
+
     # ---- apply: Claude purge with tombstone, re-stop, transcript untouched ---------------------------------------
     res = prune.run(all_specs=True, harnesses=("claude",), standalone=True, log=quiet.append)
     log = open(CLOG).read().splitlines()

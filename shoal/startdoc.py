@@ -47,6 +47,26 @@ def parse_ts(text: str) -> datetime.datetime | None:
     return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
 
 
+JOB_FOLDER = re.compile(r"/jobs/([0-9a-f]{8})(?![0-9a-f-])")
+
+
+def job_folders(text: str) -> list[str]:
+    """The Claude job ids whose folder (`~/.claude/jobs/<id>/...`) a text names. A job folder goes when its incarnation is
+    pruned, so a start doc should not depend on one."""
+    return sorted(set(JOB_FOLDER.findall(text)))
+
+
+def live_job_folders(path: str) -> list[str]:
+    """The job folders a start doc names that exist on this host: what a next session would lose. One already gone is only a
+    stale reference. An unreadable doc names none (`check` reports it)."""
+    from backends import claude_base
+    try:
+        text = open(os.path.expanduser(path)).read()
+    except OSError:
+        return []
+    return [j for j in job_folders(text) if os.path.isdir(os.path.join(claude_base(), "jobs", j))]
+
+
 def last_updated(text: str) -> datetime.datetime | None:
     """The newest `Last updated:` stamp in the doc (a doc may carry one per section; the newest counts)."""
     stamps = [parse_ts(m.group(1)) for m in STAMP.finditer(text)]

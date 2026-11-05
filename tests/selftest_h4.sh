@@ -1623,6 +1623,14 @@ env SHOAL_FAKE_CONTEXT='{"tl": 412000}' $H next --shoal $SID --spec "$SPEC" --sl
 printf '\nLast updated: 2020-01-01T00:00Z\n' >> "$TLDOC"
 check "is older than" $Q --slug tl --idle --restart-ready
 printf '\nLast updated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$TLDOC"
+# a doc that names a job folder still on this host is not ready: that folder goes with its incarnation. A gone one is only stale.
+cp "$TLDOC" "$S/tldoc.keep"
+mkdir -p "$S/cc/jobs/abcd1234"
+printf '\nHelpers in ~/.claude/jobs/abcd1234/tmp/ and ~/.claude/jobs/ffff0000/tmp/\n' >> "$TLDOC"
+check "names job folder.s. abcd1234, which go" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-ready
+rmdir "$S/cc/jobs/abcd1234"
+check "posture=idle" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-ready
+cp "$S/tldoc.keep" "$TLDOC"
 check "posture=idle" $Q --slug tl --idle --restart-ready
 # handover telemetry: advised (the non-peek next above), doc-refreshed (this restart-ready), then the quorum's restart
 # and the new session's first turn, once each

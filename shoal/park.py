@@ -301,6 +301,9 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         if not doc["ok"]:
             print(f"REFUSED: {slug}'s start doc would not carry the new session: " + "; ".join(doc["problems"]))
             return 1
+        held = startdoc.live_job_folders(role.doc)
+        if held:  # only a forced handoff gets here with one: the prune guard keeps those jobs until the doc stops naming them
+            print(f"note: its start doc still names job folder(s) {', '.join(held)}: kept until the doc stops naming them")
     if posture == "waiting":  # what the operator is deciding about: a job or lease goes on without this session
         print(f"{slug} waits on {st.get('sub') or '?'}" + (f" ({st['target']})" if st.get("target") else "")
               + ": the wait stays with the role, and the new session reads it from the ledger")
