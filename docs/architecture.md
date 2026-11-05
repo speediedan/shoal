@@ -396,6 +396,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
 | `turn-ended-active` (`continuation`) | posture `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
+| `checkout-stuck` (when `watch_checkouts` lists it) | a shared checkout has an operation left in progress, a local file differing from one its upstream changed, or commits on both sides; behind alone is not stuck | page 60 |
 | `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
@@ -472,6 +473,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | --- | --- | --- |
 | `lazy_rearm` | on | a dead watcher on a role that is not active and has nothing its watcher would wake it for raises no `watcher-dead`: its next real work raises its own condition |
 | `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder. Each arm counts fetch failures from zero, so a re-arm during an outage gets its full five attempts |
+| `watch_checkouts` | off | paths of shared checkouts this host's quorum watches for `checkout-stuck`, each fetched per tick. List them on one spec, or each quorum pages about the same checkout. A path that is not a checkout on a host is skipped there |
 | `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
 | `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
