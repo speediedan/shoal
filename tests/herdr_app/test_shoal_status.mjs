@@ -27,7 +27,7 @@ assert.deepEqual(M.parseUsage({ code: 0, stdout: JSON.stringify(doc) }).length, 
 assert.equal(M.parseUsage({ code: 1, stdout: JSON.stringify(doc) }), null, "a failed read keeps the last good rows");
 assert.equal(M.parseUsage({ code: 0, stdout: "not json" }), null);
 assert.equal(M.parseUsage(null), null);
-assert.equal(M.usageMachine([{ active: true, machine: "lane-b" }], ["lane-a"]), "lane-b");
-assert.equal(M.usageMachine([{ active: true, machine: null }], ["lane-a"]), "lane-a");
-assert.equal(M.usageMachine([], []), null);
+assert.deepEqual(M.usageMachines([{ active: true, machine: "lane-b" }], ["lane-a", "lane-b"]), ["lane-b", "lane-a", null], "the space in view first, then the rest");
+assert.deepEqual(M.usageMachines([{ active: true, machine: null }], ["lane-a", null]), ["lane-a", null]);
+assert.deepEqual(M.usageMachines([], []), [null]);
 console.log("shoal-status: ok");

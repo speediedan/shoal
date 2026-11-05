@@ -44,9 +44,12 @@ export function parseUsage(reply) {
   }
 }
 
-/** Where usage is read: the machine of the space in view, else the first machine, else this computer. */
-export function usageMachine(spaces, machineNames) {
-  const active = arr(spaces).find((s) => s?.active);
-  if (active?.machine) return active.machine;
-  return arr(machineNames).find((n) => typeof n === "string" && n) ?? null;
+/**
+ * Where usage may be read, in order: the machine of the space in view, the other machines, this computer (null). Not every
+ * host keeps the usage cache, and one without it answers with no accounts, so the first that has rows wins.
+ */
+export function usageMachines(spaces, machineNames) {
+  const active = arr(spaces).find((s) => s?.active)?.machine;
+  const names = arr(machineNames).filter((n) => typeof n === "string" && n);
+  return [...new Set([...(active ? [active] : []), ...names, null])];
 }
