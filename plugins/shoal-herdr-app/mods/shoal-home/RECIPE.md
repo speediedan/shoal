@@ -43,8 +43,8 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   (`logo.js` `capPoint`), so the weave holds at any scale.
 - **Links between the shoals:** each solo float is tied to both sets by a mint `#8af0c8` tendril (four links), and
   one stronger blue tendril is the only direct link between the sets. All five arc over the logo from floats of the
-  strands nearest it, each its own float, and each is checked point by point to stay off the letters. Below the logo,
-  two foam waves; above its right end, four rising bubbles. Items of one style are merged into one path (about 45 to
+  strands nearest it, each its own float, and each is checked point by point to stay off the letters. Above the logo's
+  right end, four rising bubbles. Items of one style are merged into one path (about 45 to
   55 layers behind the logo and 6 in front of it).
 - **Path budget:** every path command is a native call, and a render has the mod engine's time limit. The heaviest
   render is the one before the asset check, at most about 1310 commands (the largest window: sea 1031, vines in front

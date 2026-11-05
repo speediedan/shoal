@@ -8,8 +8,8 @@
 //
 // Between the shoals, two solo vines are the standalone sessions: each rises from the seabed and threads through
 // a letter, behind one stroke and in front of the next, to a single float above the logo, and each float is tied
-// to both shoals. One more tendril is the only direct link between the shoals. Below the logo, two foam waves;
-// above its right end, a few rising bubbles.
+// to both shoals. One more tendril is the only direct link between the shoals. Above the logo's right end, a few
+// rising bubbles.
 //
 // Everything is static and deterministic (from the layout alone). Only the solo vines cross the logo, and
 // nothing comes near the host cards, so the logo and every card stay readable.
@@ -23,8 +23,6 @@ export const SEA = {
   float: "#47d6b4",
   floatRing: "#9ff5de",
   tendril: "#38c8ff",
-  foam: "#9fe9ff",
-  wave: "#38c8ff",
   bubble: "#bdf2ff",
   soloDeep: "#0a4a48",
   solo: "#2aa585",
@@ -159,23 +157,9 @@ export function sampleCurve(cmds) {
 const circleCmds = (x, y, r) => [["M", r2(x - r), r2(y)], ["A", r2(r), r2(r), 0, false, true, r2(x + r), r2(y)],
   ["A", r2(r), r2(r), 0, false, true, r2(x - r), r2(y)], ["Z"]];
 
-/** A wave across [x0, x1] at y: alternating crests of height `amp` and width `w`. */
-function waveCmds(x0, x1, y, amp, w) {
-  const cmds = [["M", r2(x0), r2(y)]];
-  let x = x0, up = true;
-  while (x < x1 - 0.5) {
-    const nx = Math.min(x1, x + w);
-    const a = up ? -amp : amp;
-    cmds.push(["C", r2(x + (nx - x) / 3), r2(y + a), r2(x + (2 * (nx - x)) / 3), r2(y + a), r2(nx), r2(y)]);
-    x = nx;
-    up = !up;
-  }
-  return cmds;
-}
-
 /**
  * The sea for one art layout (`homeLayout` in art mode). Returns null in text mode.
- * {strands, vines, nodes, edges, links, bridge, waves, bubbles, seabed, items, front}: `items` is the draw order
+ * {strands, vines, nodes, edges, links, bridge, bubbles, seabed, items, front}: `items` is the draw order
  * behind the logo (back to front), `front` goes over it, each {kind, cmds, fill?, width?, color, alpha, sway?};
  * the rest is for tests and hit checks. `links` tie each solo vine's float to both shoals; `bridge` is the one
  * direct link between the shoals.
@@ -288,10 +272,6 @@ export function oceanScene(L) {
     edges.push(...links, ...bridge);
   }
 
-  const waves = [
-    { y: r2(lg.y + lg.h * 0.97), amp: 4 * u, w: 22 * u, width: 2.4 * u, alpha: 0.55 },
-    { y: r2(lg.y + lg.h * 0.97 + 9 * u), amp: 3 * u, w: 30 * u, width: 1.6 * u, alpha: 0.3 },
-  ].map((w) => ({ ...w, x0: r2(lg.x + lg.w * 0.04), x1: r2(lg.x + lg.w * 0.96) }));
   const bubbles = [0, 1, 2, 3].map((i) => ({
     x: r2(lg.x + lg.w * (0.9 + 0.035 * i)), y: r2(lg.y - (6 + 13 * i) * u), r: r2((2 + i * 0.9) * u),
   })).filter((b) => b.y - b.r > top);
@@ -348,14 +328,9 @@ export function oceanScene(L) {
     items.push({ kind: "node", cmds: circleCmds(n.x, n.y, n.r), fill: true, color: SEA.float, alpha: 0.85 });
     items.push({ kind: "node", cmds: circleCmds(n.x - n.r * 0.3, n.y - n.r * 0.3, n.r * 0.35), fill: true, color: SEA.floatRing, alpha: 0.8 });
   }
-  for (const w of waves) {
-    items.push({ kind: "wave", cmds: waveCmds(w.x0, w.x1, w.y, w.amp, w.w), width: w.width, color: SEA.wave, alpha: w.alpha });
-  }
-  items.push({ kind: "wave", cmds: waveCmds(waves[0].x0, waves[0].x1, waves[0].y - 1.2 * u, waves[0].amp, waves[0].w),
-               width: r2(0.9 * u), color: SEA.foam, alpha: 0.5 });
   for (const b of bubbles) items.push({ kind: "bubble", cmds: circleCmds(b.x, b.y, b.r), width: r2(Math.max(0.8, u)), color: SEA.bubble, alpha: 0.55 });
 
-  return { strands, vines, nodes, edges, links, bridge, waves, bubbles, seabed: r2(seabed), top: r2(top), items: mergeItems(items), front: mergeItems(front) };
+  return { strands, vines, nodes, edges, links, bridge, bubbles, seabed: r2(seabed), top: r2(top), items: mergeItems(items), front: mergeItems(front) };
 }
 
 /** `fn`, remembering its last result: a pure scene is only worked out again when its arguments (a layout, say) change,

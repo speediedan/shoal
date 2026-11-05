@@ -79,7 +79,9 @@ mid-flight): refresh your start doc so a fresh session can continue from it alon
 decisions taken, next steps), update its `Last updated: <UTC>` line, then end the turn with
 `queue --idle --restart-ready` (or your wait plus `--restart-ready`). The flag is refused for a doc not
 refreshed since the advisory or missing a required section; `shoal doc-check <doc>` says which (the
-contract: shoal `docs/start-doc.md`). The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
+contract: shoal `docs/start-doc.md`). It is also refused for a doc naming a job folder still on this host,
+since that folder goes when your incarnation is pruned: keep anything the doc names somewhere durable, such
+as `tools/` beside the doc, not under `$CLAUDE_JOB_DIR`. The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
 yourself, and never mark `--restart-ready` with an item active.
 
 ## Wakes

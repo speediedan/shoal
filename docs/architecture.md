@@ -530,7 +530,9 @@ and job ids an entry records, by label only for an entry that records neither), 
 conversation a live or protected job shares, (f) holding an existing worktree or a process's cwd, (g) the job the prune
 runs in, or (h) locked or bound to a ledger-watch, nor anything younger than `--min-age`. With `features.prune` the
 role's earlier incarnations (N-1 and before, on every harness) are pruned once incarnation N proves itself (its
-`first-turn` handover event, run detached, or `verify_consumer` in `restart`), and a park prunes nothing. Each removal is a
+`first-turn` handover event, run detached, or `verify_consumer` in `restart`), and a park prunes nothing. A job whose folder
+a start doc names is kept (a role being removed: its own doc does not count), and `queue --restart-ready` refuses a doc that
+names one still on this host and notes one that is not. Each removal is a
 `pruned` telemetry event. The matcher deletes its own session after every run.
 
 **Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
