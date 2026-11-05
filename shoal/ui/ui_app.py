@@ -826,11 +826,20 @@ def start_argv() -> list[str]:
     return ["env"] + [f"{k}={v}" for k, v in env.items()] + [app_bin()]
 
 
+HOME_SPACE = "SHOAL-home"
+
+
 def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
-    """A `shoal` space on this machine with the home screen (the shoal-home mod, else the terminal chooser in app
+    """A `SHOAL-home` space on this machine with the home screen (the shoal-home mod, else the terminal chooser in app
     mode) and the global lattice."""
     ls = app_ls()
-    got = next((s for s in ls.get("spaces", []) if not s.get("machine") and s.get("name") == "shoal"), None)
+    local = [s for s in ls.get("spaces", []) if not s.get("machine")]
+    got = next((s for s in local if s.get("name") == HOME_SPACE), None)
+    old = next((s for s in local if s.get("name") == "shoal"), None)  # its earlier name
+    if got is None and old is not None:
+        if not dry_run:
+            app_do("space.rename", {"id": old["id"], "name": HOME_SPACE})
+        got = dict(old, name=HOME_SPACE)
     rec = Reconciler(None, dry_run)
     tabs = []
     if "shoal-home" in rec.mods:
@@ -843,11 +852,11 @@ def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
             # a space starts with a terminal: the chooser, then the home mod beside it as its own tab
             tabs.insert(0, {"name": "launch", "layout": "stack",
                             "panes": [_pane("shoal/home", _cli_argv("ui", "launch"))]})
-        rec.apply({"spaces": [{"name": "shoal", "kind": "home", "folder": "", "tabs": tabs, "select": select}]},
+        rec.apply({"spaces": [{"name": HOME_SPACE, "kind": "home", "folder": "", "tabs": tabs, "select": select}]},
                   focus=True)
     else:
         # `apply` makes the missing tabs and rebuilds a lattice tab older than TABS_V, which points it at the live feed
-        rec.apply({"spaces": [{"name": "shoal", "kind": "home", "folder": "", "tabs": tabs}]}, focus=False)
+        rec.apply({"spaces": [{"name": HOME_SPACE, "kind": "home", "folder": "", "tabs": tabs}]}, focus=False)
         if not dry_run:
             app_do("space.select", {"id": got["id"]})
             rec.select_tab(got["id"], select)

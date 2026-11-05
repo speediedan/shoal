@@ -17,16 +17,17 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   `#03050b`, 165 degrees) with a navy wash (35 degrees), and a soft static bloom behind the logo
   (six stacked ellipses, blue then cyan, 2.2 percent alpha each).
 - **Top right:** a `↻ refresh` button (96 by 24, steel `#1c2a30` at half alpha).
-- **Logo** (`logo.js`, `glyphs.js`, `assets/logo.png`): `SHOAL` in original liquid brush letters, no font: rounded
-  splash crests on the terminals, drips off the feet, beads on the strokes and a few detached droplets. All five
-  letters stand on one baseline, and only the drips run below it. The em is 84 px times the scale, or less when the
-  word's ink would pass the logo box (3.9 em by 1.25 em), which holds all of it. It is drawn as a pre-rendered
-  transparent PNG with `image()`, at `logoImageBox`, exactly on the vector letters. In the image, back to front: two
-  soft blurred shadows `#020a18`, a navy `#062a4f` rim, the body in one vertical gradient across the word (aqua
-  `#b4f7ff` to `#0b4fc8`, which puts the old deep blue `#2463ca` on the baseline, since the gradient spans the drips
-  too), a soft darker inner edge (`#0a3f86` at 30 percent), and light gloss strokes (`#eafdff` at 50 percent).
+- **Logo** (`logo.js`, `glyphs.js`, `assets/logo.png`): `SHOAL` in bold, clean, rounded capitals made of glass, each
+  a small aquarium, original geometry and no font. All five stand on one baseline, and nothing hangs below it. The cap
+  height is 0.86 em and the em is 84 px times the scale, or less when the word would pass the logo box (3.9 em by 1.25
+  em). It is drawn as a pre-rendered transparent PNG with `image()`, at `logoImageBox`, exactly on the vector letters.
+  In the image, back to front: a soft blurred shadow, a dark rim, then in each letter pale air above a bright waterline
+  (a slight wave), water in a gradient from light blue `#b4f7ff` to blue `#1f62cf`, top to bottom, and a small reef:
+  a sandy floor, orange and red branching coral, green kelp, shells, a striped fish and a few bubbles, all kept to the
+  lower part of the strokes so that most of each letter is open water. Over that, the glass: a darker inner edge, a
+  highlight along the rim, a few specular streaks and a pale `#dff9ff` rim.
 - **Fallback logo:** until the assets are known to be there (the first render), or when one is missing, the logo is
-  one path: the same gradient on the body alone, from light outlines (about 260 commands, no droplets).
+  two paths: the plain outlines in the same gradient, and the pale rim (about 230 commands).
 - **The sea** (`ocean.js`, a pure display list): kelp strands rise from a seabed line just above the
   tagline, only in the room either side of the logo (a strand's sway is clamped to its side). The two sets are
   the two shoals. Each strand is a dark `#0d4f4c` body, a `#1f8f7a` middle and a light `#5fd3b0` midrib, with three
@@ -35,10 +36,10 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   creature's rim to its nearest float; a tendril that would cross the logo is dropped.
 - **Solo vines** (`SOLO_VINES` in `ocean.js`): between the two sets, two slimmer vines are the standalone sessions.
   Each rises from the seabed, threads a letter and ends on one float above the logo, either side of the coral. The
-  first goes up the S and H gap, under the H's left stem, over its bar and out through its open top; the second up
-  the A and L gap, under the A's right leg, over its bar, under its left stroke and out over the O and A gap. All of
+  first comes up from below the S and H gap, under the H's left stem, over its bar and out through its open top; the second from
+  below the A and L gap, under the A's right leg, over its bar, under its left stroke and out over the O and A gap. All of
   a vine is painted behind the logo, then its over-crossings are painted again after the letters (`front`), each
-  crossing starting and ending in open water, so no seam shows. Waypoints are in the letter's own brush units
+  crossing starting and ending in open water, so no seam shows. Waypoints are in the letter's own cap units
   (`logo.js` `capPoint`), so the weave holds at any scale.
 - **Links between the shoals:** each solo float is tied to both sets by a mint `#8af0c8` tendril (four links), and
   one stronger blue tendril is the only direct link between the sets. All five arc over the logo from floats of the
@@ -46,8 +47,8 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   two foam waves; above its right end, four rising bubbles. Items of one style are merged into one path (about 45 to
   55 layers behind the logo and 6 in front of it).
 - **Path budget:** every path command is a native call, and a render has the mod engine's time limit. The heaviest
-  render is the one before the asset check, at most about 1330 commands (the largest window: sea 1031, vines in front
-  12, fallback logo 256, background and bloom 34), and a test fails above 1350. Once the image is known, the logo
+  render is the one before the asset check, at most about 1310 commands (the largest window: sea 1031, vines in front
+  12, fallback logo about 230, background and bloom 34), and a test fails above 1350. Once the image is known, the logo
   costs no path at all.
 - **Creatures** (`assets/fish-*.png`, 384 px RGBA), placed like the terminal splash: coral
   centered above the logo, the seahorse above left, the blowfish above right, teal left of the
@@ -102,11 +103,12 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
 - `main.js` (the View), `model.js` (list parsing, card lines, keys, open results), `layout.js`
   (composition per window size), `ocean.js` (the sea), `logo.js` and `glyphs.js` (the logo), `motion.js` (a verbatim
   copy of lattice-view's). The sea and the logo are pure, so `main.js` keeps the last result per layout (`lastResult`).
-- `glyphs.js` and `assets/logo.png` are generated. To change the letters, edit the strokes in
-  `preview/gen_logo_glyphs.mjs` and run it (brush strokes stamped into a mask, blurred so they run together like
-  water, traced back into outlines), then run `preview/gen_logo_image.mjs` (`logoScene` drawn by a CPU-only headless
-  browser, 240 px to the em, which is twice the largest logo). Tests fail when `glyphs.js` disagrees with its generator,
-  when the PNG's size is not the frame `logo.js` places, or when its pixels do not land on the vector letters.
+- `assets/logo.png` is generated. The letters are built in `glyphs.js` (rounded polygons, ovals, and for the S a stroke
+  along two ovals). The reef is `preview/logo_reef.mjs`, drawn procedurally and seeded, in each letter's cap units. To
+  change either, run `preview/gen_logo_image.mjs` (a CPU-only headless browser, 244 px to the em, which is twice the
+  largest logo). Tests fail when the PNG's size is not the frame `logo.js` places, when its pixels do not land on the
+  vector letters, when anything solid hangs below the baseline, or when open water is under 72 percent of a letter's
+  inside: the reef stays modest, and the letters stay legible.
 - Herdr: `exec` (the list and `ui app-open`), `readTextFile` (the fixture; `/proc/self/environ`
   and `/proc/self/maps` once for the renderer probe), `fs/promises` `exists` (the assets), `theme()`,
   `nextCommand` (`focus`, `refresh`, `open`), `window()`.
@@ -122,10 +124,10 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
 - Card heights are computed from the line count (`layout.cardHeight`), so every line must stay
   exactly 18 px (`.h(CARD.line)`), or the cards clip.
 - Outlines in `glyphs.js` never touch, and a counter winds against its letter, so either fill rule fills them the
-  same. Keep it so when changing the strokes: a test checks every edge pair.
-- **Do not draw `logoScene` on a render.** Its six layers are about 3500 path commands, and with them `herdr-app check`
-  was interrupted in `render` in most runs, and the app showed "This view could not be re-rendered". The limit is
-  sharp and on wall-clock time: with `check` at the default window, about 2800 commands never failed in 24 runs, 3500
+  same. Keep it so when changing the letters: a test checks every edge pair.
+- **Do not draw the glass or the reef on a render.** They are far too many path commands. An earlier logo of about 3500
+  had `herdr-app check` interrupted in `render` in most runs, and the app showed "This view could not be re-rendered".
+  The limit is sharp and on wall-clock time: with `check` at the default window, about 2800 commands never failed in 24 runs, 3500
   failed twice and 4150 every time, and a starved CPU trips it at any count, this mod's old versions included. One passing
   check proves little here: run it a dozen times after adding to what a render draws, against a known-good version in
   the same loop.

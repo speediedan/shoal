@@ -412,7 +412,9 @@ left out of the daily digest, and reads `parked (no session)` in the heartbeat c
 leftover sidecar says. `shoal park` makes a role so on purpose (`park.py`): it stops the session, ends its
 watchers with SIGKILL (no exit path can deliver a wake to the stopped session) and records `parked` {at, by,
 note, until} beside the empty session, which `show` prints. A full restart keeps a parked role parked; naming
-it (`restart --only`, `unpark`) relaunches it and clears the record. `shoal handoff` hands a live role to a fresh session
+it (`restart --only`, `unpark`) relaunches it and clears the record. `shoal remove-role` takes a role out for good (stops its session and watchers, prunes its incarnations
+on every harness, removes it from the spec, writes `role-removed`; the ledger keeps its history), and `shoal remove-session`
+does the same for a saved standalone session. `shoal handoff` hands a live role to a fresh session
 in place, optionally on another model or provider (the quorum's `context_restart` run by hand, under its gate: see
 [`handover.md`](handover.md)). A `parked.until` wait target is checked
 by the quorum each run, outside a freeze: once its provider reads it resolved (unknown never counts), the role
@@ -525,8 +527,8 @@ never one that is (a) a current or (b) parked role session in any spec, (c) in t
 and job ids an entry records, by label only for an entry that records neither), (d) live, (e) on a
 conversation a live or protected job shares, (f) holding an existing worktree or a process's cwd, (g) the job the prune
 runs in, or (h) locked or bound to a ledger-watch, nor anything younger than `--min-age`. With `features.prune` the
-role's incarnations up to N-2 are pruned once incarnation N proves itself (its `first-turn` handover event, run detached,
-or `verify_consumer` in `restart`); N-1 stays one generation as a fallback, and a park prunes nothing. Each removal is a
+role's earlier incarnations (N-1 and before, on every harness) are pruned once incarnation N proves itself (its
+`first-turn` handover event, run detached, or `verify_consumer` in `restart`), and a park prunes nothing. Each removal is a
 `pruned` telemetry event. The matcher deletes its own session after every run.
 
 **Pages.** A page is always a ledger `msg` to `user`. `features.health.page` names where else it
@@ -816,7 +818,7 @@ with `next_max`), `health` (`validity_wake_min`, `page`, `direct_wake`), `contin
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
 `private_repos`), `placement` (`true`, or an object with `margin_s`, `staging_s`, `max_moves`, `interval_s`,
 `max_age_s`: queue transfers of placed jobs, section 6, off until a manual trial passes; and `ci_budget_min`, the CI
-job runtime budget, read whether or not transfers are on), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-2 pruning of old
+job runtime budget, read whether or not transfers are on), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-1 pruning of old
 incarnations, section 7; retirement condition: fold into the default after two clean weeks). An absent flag leaves the
 component off.
 
@@ -1006,9 +1008,10 @@ and the contract are in [`ui.md`](ui.md).
   clone is over an hour old, because the feed never pulls.
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
-  additive v1) every 20 s and on refresh, and draws a logo in original liquid brush letters on one baseline, shaded aqua to deep blue (a
-  pre-rendered `assets/logo.png` from `preview/gen_logo_image.mjs`, because a mod's render has a time limit and the
-  vector letters took most of it; a light vector fallback in `logo.js` while the image is not available), the acronym tagline with each initial underlined, the
+  additive v1) every 20 s and on refresh, and draws a logo in original bold rounded glass letters on one baseline, each a small aquarium with water
+  in a light blue to blue gradient, a bright waterline and a modest procedural reef (a pre-rendered `assets/logo.png`
+  from `preview/gen_logo_image.mjs` and `logo_reef.mjs`, because a mod's render has a time limit and all that detail
+  would pass it; the plain outlines in `glyphs.js`, filled, as a light vector fallback while the image is not available), the acronym tagline with each initial underlined, the
   five splash creatures with `image()` (placed like `image_rectangles`, scaled to the window; text only
   below 640 by 460 or without the assets), a kelp sea whose two sets are the shoals, joined by one direct tendril, with two solo vines for
   standalone sessions that weave through the letters and link to both sets (`ocean.js`, a static display

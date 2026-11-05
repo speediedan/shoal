@@ -35,7 +35,7 @@ for _p in (PKG, HERE):
 
 V = 1
 PLAN_TTL_S = 600
-WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff")
+WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session")
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade")
 
@@ -99,6 +99,11 @@ def _role(spec, slug: str, allow_all: bool = False) -> str:
 
 def build(verb: str, a) -> tuple[list[str], str, bool]:
     """(shoal argv, cost note, confirm) for one write verb, as `ui_herdr.act` builds it."""
+    if verb == "remove-session":
+        if not a.session:
+            raise ActError("remove-session needs --session")
+        return (["remove-session", f"--session={a.session}"] + (["--force"] if a.force else []),
+                "permanent: stops this session if it runs and removes it from its harness's list", True)
     spec = _spec(a.shoal)
     sid = spec.sid
     if verb == "msg":
@@ -133,6 +138,12 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         if a.no_wake:
             return args + ["--no-wake"], "", True
         return args, "toggling a freeze wakes every role once (tokens)", True
+    if verb == "remove-role":
+        import roles
+        if a.role not in [r.slug for r in spec.roles]:
+            raise ActError(f"{a.role or '(none)'} is not a role of {sid}")
+        return (["remove-role", "--spec", roles.find_spec(sid), "--only", a.role] + (["--force"] if a.force else []),
+                "permanent: stops its session and removes it from the shoal and its harness's list; the ledger keeps its history", True)
     if verb == "handoff":
         import roles
         role = _role(spec, a.role)
@@ -345,6 +356,7 @@ def add_parsers(u) -> None:
     q.add_argument("--state", default="", help="offline, freeze: on|off")
     q.add_argument("--until", default="", help="offline on: expected return")
     q.add_argument("--no-wake", action="store_true", help="freeze: record it without waking every role")
+    q.add_argument("--session", default="", help="remove-session: a saved standalone session's label")
     q.add_argument("--scope", default="", help="offline, freeze: across shoals, `all` or `host:<name>`, in place of --shoal")
     q.add_argument("--model", default="", help="handoff: the new session's model")
     q.add_argument("--effort", default="", help="handoff: the new session's effort")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic proof of `prune-incarnations` (shoal/prune.py): every guard keeps its session, an eligible Claude job is
 removed only after its tombstone is written (transcript untouched) and the jobs sharing its conversation are stopped
-again, Codex/opencode/Muse prunes reach the right fake API or move, a dry run changes nothing, the N-2 rule of
+again, Codex/opencode/Muse prunes reach the right fake API or move, a dry run changes nothing, the N-1 rule of
 features.prune, and pruned incarnations keep their names in `context-report`.
 
 Every harness is a fake: `claude` and `openchamber` are scripts first on PATH, `codex app-server` is a script named by
@@ -278,20 +278,21 @@ try:
     v2 = verdicts(prune.run(all_specs=True, dry_run=True, log=quiet.append))
     check(("claude", "5e5e5e5e") not in v2 and ("opencode", "ses_m1") not in v2, "standalone/matcher without the flag")
 
-    # ---- the N-2 rule (features.prune) ---------------------------------------------------------------------------
+    # ---- the N-1 rule (features.prune) ---------------------------------------------------------------------------
     from roles import ShoalSpec
     sp = ShoalSpec.load(SPEC)
     tl = sp.role("tl")
     check(prune.auto(sp, tl, "restart", dry_run=True) == "", "auto prune ran with features.prune off")
     sp.features["prune"] = True
     out = prune.auto(sp, tl, "first-turn", dry_run=True)
-    check("--max-seq 3" in out and "--role tl" in out and "--harness claude" in out, f"auto first-turn :: {out}")
-    res = prune.run(specs=[SPEC], dry_run=True, only_slug="tl", max_seq=tl.seq - 2, min_age=0, log=quiet.append)
+    # every harness, not only the role's own: a role may have moved provider, and its old incarnations are on the old one
+    check(f"--max-seq {tl.seq - 1}" in out and "--role tl" in out and "--harness" not in out, f"auto first-turn :: {out}")
+    res = prune.run(specs=[SPEC], dry_run=True, only_slug="tl", max_seq=tl.seq - 1, min_age=0, log=quiet.append)
     seqs = {c.seq for v_ in res.values() for c in v_["cands"]}
-    check(seqs and max(seqs) <= 3 and 1 in seqs, f"N-2 rule considered seqs {seqs}")
+    check(seqs and max(seqs) == tl.seq - 1 and 1 in seqs, f"N-1 rule considered seqs {seqs}")
     check(prune.auto(sp, sp.role("up"), "restart", dry_run=True) == "", "auto prune for a parked role")
     out = prune.auto(sp, tl, "restart", detach=False, dry_run=True, log=quiet.append)
-    check(out.startswith("would prune 2 tl incarnation(s) <= r3"), f"in-process auto :: {out}")
+    check(out.startswith(f"would prune 2 tl incarnation(s) <= r{tl.seq - 1}"), f"in-process auto :: {out}")
 
     # ---- apply: Claude purge with tombstone, re-stop, transcript untouched ---------------------------------------
     res = prune.run(all_specs=True, harnesses=("claude",), standalone=True, log=quiet.append)

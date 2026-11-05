@@ -37,7 +37,7 @@ export const CREATURES = [
 export const REFRESH = { y: 14, w: 96, h: 24 };
 const refreshBox = (W) => ({ x: W - PAD - REFRESH.w, y: REFRESH.y, w: REFRESH.w, h: REFRESH.h });
 
-/** The logo box: the drawn letters (logo.js) are about 3.9 em wide, and 1.25 em tall with their splashes and drips. */
+/** The logo box: the drawn letters (logo.js) fit 3.9 em wide, and stand well inside its 1.25 em height. */
 const logoBox = (font) => ({ w: font * 3.9, h: font * 1.25 });
 
 /**

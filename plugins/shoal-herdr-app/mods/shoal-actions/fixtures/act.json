@@ -120,6 +120,31 @@
       "token": "9be0f1a4c6d27e85",
       "expires_s": 600,
       "role": "core"
+    },
+    "remove-role": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "remove-role",
+      "command": "shoal remove-role --spec <spec> --only core",
+      "preview": "core: would stop aaaa1111\ncore: would end ledger-watch none running, prune these incarnations, remove the role from the spec and write role-removed",
+      "cost": "permanent: stops its session and removes it from the shoal and its harness's list; the ledger keeps its history",
+      "confirm": true,
+      "token": "9be0f1a4c6d27e85",
+      "expires_s": 600,
+      "role": "core"
+    },
+    "remove-session": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "remove-session",
+      "command": "shoal remove-session --session=<label>",
+      "preview": "<label>: would remove it from the claude listing and forget it",
+      "cost": "permanent: stops this session if it runs and removes it from its harness's list",
+      "confirm": true,
+      "token": "9be0f1a4c6d27e85",
+      "expires_s": 600,
+      "shoal": "",
+      "role": ""
     }
   },
   "result": {

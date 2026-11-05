@@ -48,6 +48,8 @@ export const VERBS = [
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
   { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
+  { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
+  { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
   { verb: "upgrade", label: "Upgrade preview", kind: "view", role: "none", about: "what an upgrade would roll out (applying stays a CLI step)" },
@@ -58,7 +60,10 @@ export const isWrite = (verb) => verbInfo(verb)?.kind === "write";
 export const isView = (verb) => verbInfo(verb)?.kind === "view";
 
 /** The verbs a target can use: a scope across shoals (`all`, `host:<name>`) takes only those that span shoals. */
-export const verbsFor = (target) => (strOrNull(target?.scope) ? VERBS.filter((v) => v.scoped) : VERBS);
+export function verbsFor(target) {
+  if (strOrNull(target?.session)) return VERBS.filter((v) => v.sessionOnly);
+  return VERBS.filter((v) => !v.sessionOnly && (!strOrNull(target?.scope) || v.scoped));
+}
 
 /** "every shoal" or "shoals on <host>", for the dialog's header. */
 export function scopeLabel(scope) {
@@ -79,6 +84,7 @@ export const FIELDS = {
   model: { key: "model", kind: "text", label: "Model", placeholder: "empty keeps the recorded model, or the new provider's default" },
   effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty keeps the recorded effort, or the new provider's default" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
+  removeForce: { key: "force", kind: "toggle", label: "Even if it is running or holds an active item", hint: "stops it first and can cut off work in progress" },
 };
 
 /** The next local `hour`:00 with its UTC offset (2026-11-04T09:00-07:00): the usual offline end. */
@@ -140,7 +146,9 @@ export function roleFor(verb, role) {
 export function validate(verb, target, form = null) {
   const info = verbInfo(verb);
   if (!info) return `unknown action ${verb}`;
-  if (strOrNull(target?.scope)) {
+  if (info.sessionOnly) {
+    if (!strOrNull(target?.session)) return "no session named";
+  } else if (strOrNull(target?.scope)) {
     if (!info.scoped) return `${info.label} works on one shoal: pick one`;
   } else if (!strOrNull(target?.shoal)) return "pick a shoal first";
   if (info.role !== "none" && !roleFor(verb, target?.role)) {
@@ -169,7 +177,7 @@ export function rolesArgv(shoal = null) {
 export function planArgv(verb, target, form = null) {
   const why = validate(verb, target, form);
   if (why) throw new Error(why);
-  const argv = ["ui", "act-plan", verb, ...(strOrNull(target.scope) ? ["--scope", target.scope] : ["--shoal", target.shoal])];
+  const argv = ["ui", "act-plan", verb, ...(strOrNull(target.session) ? [`--session=${target.session}`] : strOrNull(target.scope) ? ["--scope", target.scope] : ["--shoal", target.shoal])];
   const role = roleFor(verb, target.role);
   if (role) argv.push(`--role=${role}`);
   if (isWrite(verb)) {
@@ -196,6 +204,8 @@ export function planArgv(verb, target, form = null) {
       if (text("model")) argv.push(`--model=${text("model")}`);
       if (text("effort")) argv.push(`--effort=${text("effort")}`);
       if (v.force) argv.push("--force");
+    } else if ((verb === "remove-role" || verb === "remove-session") && v.force) {
+      argv.push("--force");
     }
   }
   argv.push("--json");
@@ -414,9 +424,10 @@ export function propsContext(p) {
   const o = obj(p);
   const shoal = strOrNull(o?.shoal);
   const scope = strOrNull(o?.scope);
-  if (!shoal && !scope) return null;
+  const session = strOrNull(o?.session);
+  if (!shoal && !scope && !session) return null;
   const machine = typeof o.machine === "string" && o.machine ? o.machine : null;
-  return { shoal, role: strOrNull(o.role), scope, machine, from: "props", machineGiven: "machine" in o };
+  return { shoal, role: strOrNull(o.role), scope, session, machine, from: "props", machineGiven: "machine" in o };
 }
 
 /**

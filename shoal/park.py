@@ -4,6 +4,8 @@
     shoal park   --spec S --only ROLE[,ROLE] [--note TEXT] [--until <kind>:<ref>] [--force] [--dry-run]
     shoal unpark --spec S --only ROLE[,ROLE] [--dry-run]
     shoal handoff --spec S --only ROLE [--model M] [--effort X] [--ecosystem E] [--force] [--dry-run]
+    shoal remove-role --spec S --only ROLE [--force] [--dry-run]
+    shoal remove-session --session LABEL [--force] [--dry-run]
 
 Park, in an order that wakes nothing:
   1. refuse a remote role (park it on its own host) and a role with an active item unless --force (its
@@ -319,12 +321,124 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     return 1 if out.startswith("FAILED") else 0
 
 
+def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False) -> int:
+    """Take a role out for good: stop its session and watchers, prune its incarnations from every harness's listing, remove
+    it from the spec and write `role-removed`. The ledger keeps its history. In that order because a prune protects any
+    session the spec still names, and a role only stops being recognised once the spec drops it. A session held by a turn or
+    client nothing here can stop refuses, even forced; an active item refuses unless forced."""
+    import prune
+    from cli import persist_spec
+    from ledger import SYSTEM_WRITER, Ledger, View
+    from roles import host_of, is_local
+    role = spec.role(slug)
+    if role is None:
+        print(f"remove-role: no role {slug} (spec has {[x.slug for x in spec.roles]})")
+        return 2
+    if not is_local(role, spec):
+        print(f"REFUSED: {slug} runs on {host_of(role, spec)}: remove it on its own host")
+        return 1
+    if role.session and session_held(role, spec.dir):
+        print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing here "
+              f"can stop it; --force does not change that. Detach it or let the turn end, then try again")
+        return 1
+    led = Ledger(spec.sid, root=spec.ledger_dir)
+    led.pull()
+    q = View(led, spec).current_queue(slug) or {}
+    if q.get("active") and not force:
+        print(f"REFUSED: {slug} holds active item {q['active']}; let it finish or release it, or pass --force")
+        return 1
+    for item in q.get("next") or []:
+        print(f"{slug}: next item {item} goes back to no one: offer it elsewhere if it still matters")
+    if role.session:
+        print(f"{slug}: {stop_session(role, dry_run)}")
+    if dry_run:
+        print(f"{slug}: would end ledger-watch {watchers_of(spec.sid, slug) or 'none running'}, prune these incarnations, remove "
+              f"the role from the spec and write role-removed:")
+        prune.run(specs=[spec_path], min_age=0, dry_run=True, only_slug=slug, max_seq=10 ** 6, trigger="remove", sizes=False)
+        return 0
+    killed, left = end_watchers(spec.sid, slug)
+    print(f"{slug}: ledger-watch ended: {killed or 'none running'}" + (f"; STILL RUNNING: {left}" if left else ""))
+    old, role.session, role.parked = role.session, "", {}
+    persist_spec(spec, spec_path, note=f"remove {slug}: session cleared")
+    prune.run(specs=[spec_path], delete=prune.feature(spec)["delete"], min_age=0, only_slug=slug, max_seq=10 ** 6, trigger="remove", sizes=False)
+    spec.roles = [r for r in spec.roles if r.slug != slug]
+    persist_spec(spec, spec_path, note=f"remove {slug}")
+    led.append(SYSTEM_WRITER, "system", event="role-removed", role=slug, session=old)
+    print(f"removed {slug} from {spec.sid}: its ledger history stays")
+    return 0
+
+
+def remove_session(key: str, force: bool = False, dry_run: bool = False) -> int:
+    """Take a saved standalone session out for good: stop it (a live one only when forced), remove it from its harness's
+    listing and forget it. Refuses the session this runs inside, and one a worktree still hangs off unless forced."""
+    import types
+    import prune
+    import ui_herdr
+    from backends import claude_base, get as get_backend
+    entries = ui_herdr.load_standalone(raw=True)
+    e = next((x for x in entries if not x.get("host") and key in (x.get("label"), x.get("session"), x.get("job"))), None)
+    if e is None:
+        print(f"REFUSED: no saved standalone session {key!r} on this host (a writer with no saved session can only be hidden)")
+        return 1
+    label = e.get("label") or e["session"][:12]
+    harness = e.get("harness") or "claude"
+    job = str(e.get("job") or "")
+    seat = types.SimpleNamespace(ecosystem=harness, session=e["session"])
+    here = os.path.basename(os.environ.get("CLAUDE_JOB_DIR", "").rstrip("/"))
+    if here and here in (job, e["session"][:8]):
+        print(f"REFUSED: {label} is the session running this")
+        return 1
+    if session_held(seat):
+        print(f"REFUSED: {label}'s {harness} session is held by a running turn or an attached client, and nothing here can stop "
+              f"it; --force does not change that")
+        return 1
+    live = harness == "claude" and claude_live(seat)
+    if live and not force:
+        print(f"REFUSED: {label} has a live session: --force stops it first and can cut off work in progress")
+        return 1
+    if harness == "claude" and job and not force:
+        wt = prune.git_worktree_under(os.path.join(claude_base(), "jobs", job, "tmp"))
+        if wt:
+            print(f"REFUSED: a git worktree is under its job directory ({wt}): --force removes the session anyway")
+            return 1
+    if dry_run:
+        print(f"{label}: would {'stop it, ' if live else ''}remove it from the {harness} listing and forget it")
+        return 0
+    if live:
+        print(f"{label}: {stop_session(seat)}")
+    print(f"{label}: {get_backend(harness).prune(e['session'], job)}")
+    ui_herdr.save_standalone([x for x in entries if x is not e])
+    print(f"removed {label}")
+    return 0
+
+
+def cmd_remove_role(a) -> int:
+    from roles import ShoalSpec
+    return remove_role(ShoalSpec.load(a.spec), a.spec, a.only, a.force, a.dry_run)
+
+
+def cmd_remove_session(a) -> int:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+    return remove_session(a.session, a.force, a.dry_run)
+
+
 def cmd_handoff(a) -> int:
     from roles import ShoalSpec
     return handoff(ShoalSpec.load(a.spec), a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort)
 
 
 def add_parser(sub) -> None:
+    p = sub.add_parser("remove-role", help="take a role out for good: stop it, prune its incarnations, drop it from the spec; the ledger keeps its history")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--only", required=True, help="one slug")
+    p.add_argument("--force", action="store_true", help="even with an active item")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_remove_role)
+    p = sub.add_parser("remove-session", help="take a saved standalone session out for good: stop it, remove it from its harness, forget it")
+    p.add_argument("--session", required=True, help="its label, session id or job")
+    p.add_argument("--force", action="store_true", help="even when it is live or a worktree hangs off it")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_remove_session)
     p = sub.add_parser("handoff", help="hand a role to a fresh session from its start doc, optionally on another model or provider")
     p.add_argument("--spec", required=True)
     p.add_argument("--only", required=True, help="one slug")

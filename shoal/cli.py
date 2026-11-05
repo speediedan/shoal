@@ -692,7 +692,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
                 proved.append(role)
             reap_stale_watchers(spec, role, old_sessions)
         spec.record_generation()
-        for role in proved:  # features.prune: the successor proved itself, so incarnations up to N-2 go (N-1 stays)
+        for role in proved:  # features.prune: the successor proved itself, so its earlier incarnations go
             try:
                 did = _prune.auto(spec, role, "restart", detach=False, log=lambda m: print("  " + m))
             except Exception as exc:  # noqa: BLE001 - a prune never fails a restart
