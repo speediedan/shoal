@@ -58,8 +58,8 @@ test("verbs: the twelve buttons in order, each with a kind and a role rule", () 
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false });
-  assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake"]);
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, dryRun: false });
+  assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake", "dryRun"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
   assert.ok(!("bogus" in M.newForm("msg", NOW, { bogus: 1 }).values));
@@ -67,9 +67,22 @@ test("forms: defaults, visible fields, Tab order", () => {
   let off = M.newForm("offline", NOW);
   assert.equal(off.values.until, M.nextMorning(NOW));
   assert.match(off.values.until, /^2026-11-04T09:00[+-]\d\d:\d\d$/);
-  assert.deepEqual(M.visibleFields(off).map((f) => f.key), ["state", "note"]);
+  assert.deepEqual(M.visibleFields(off).map((f) => f.key), ["state", "note", "dryRun"]);
   off = M.setValue(off, "state", "on");
-  assert.deepEqual(M.visibleFields(off).map((f) => f.key), ["state", "until", "note"]);
+  assert.deepEqual(M.visibleFields(off).map((f) => f.key), ["state", "until", "note", "dryRun"]);
+  assert.match(off.values.note, /^Back \w{3} Nov 4 09:00$/, "turning it on fills the note from the back time");
+  assert.equal(M.setValue(off, "note", "my own").values.note, "my own");
+  assert.equal(M.setValue(M.setValue(off, "note", "my own"), "until", "2026-11-09T10:00-08:00").values.note, "my own", "a written note stays");
+  assert.notEqual(M.setValue(off, "until", "2026-11-09T10:00-08:00").values.note, off.values.note, "the default follows the time");
+  assert.equal(M.setValue(off, "until", "").values.note, "", "no time, no default");
+  assert.equal(M.setValue(off, "state", "off").values.note, "", "coming back, the default says nothing");
+  assert.equal(M.setValue(M.setValue(off, "note", "kept"), "state", "off").values.note, "kept");
+  assert.equal(M.newForm("offline", NOW, { state: "on" }).values.note, off.values.note, "a prefilled state fills it too");
+  assert.equal(M.backNote("not a time"), "Back not a time");
+  for (const v of ["msg", "offer", "withdraw", "offline"]) assert.equal(M.newForm(v, NOW).values.dryRun, false, `${v} runs at once by default`);
+  for (const v of ["freeze", "handoff", "remove-role", "remove-session"]) assert.equal(M.newForm(v, NOW).values.dryRun, true, `${v} previews first`);
+  assert.equal(M.lastLines("a\nb\nc\n", 2), "b\nc");
+  assert.equal(M.lastLines("", 2), "");
   assert.deepEqual(M.textFields(off), ["until", "note"]);
   assert.equal(M.nextField(off, null), "until");
   assert.equal(M.nextField(off, "until"), "note");
@@ -88,7 +101,9 @@ test("forms: defaults, visible fields, Tab order", () => {
 
 test("validation and argv for every verb", () => {
   const t = { shoal: A, role: "lane-a" };
-  const f = (verb, values) => ({ ...M.newForm(verb, NOW), values: { ...M.newForm(verb, NOW).values, ...values } });
+  const f = (verb, values) => ({ ...M.newForm(verb, NOW), values: { ...M.newForm(verb, NOW).values, dryRun: true, ...values } });
+  assert.ok(M.planArgv("msg", t, f("msg", { text: "hi", dryRun: false })).includes("--no-preview"), "no preview asked for");
+  assert.ok(!M.planArgv("msg", t, f("msg", { text: "hi" })).includes("--no-preview"));
   assert.equal(M.validate("msg", t, f("msg", {})), "type a message");
   assert.equal(M.validate("msg", { shoal: A }, f("msg", { text: "hi" })), "pick a role (or * for everyone)");
   assert.equal(M.validate("msg", { role: "core" }, f("msg", { text: "hi" })), "pick a shoal first");
@@ -366,7 +381,7 @@ test("scopes: across shoals only the verbs that span them, and no shoal to pick"
   assert.deepEqual(M.verbsFor(all).map((v) => v.verb), ["offline", "freeze"]);
   assert.deepEqual(M.verbsFor({ session: "some-seat" }).map((v) => v.verb), ["remove-session"], "one verb: no row of buttons");
   assert.equal(M.verbsFor({ shoal: A, role: null }).length, M.VERBS.length - 1, "all but the standalone session's removal");
-  const form = M.setValue(M.newForm("offline", NOW), "state", "off");
+  const form = M.setValue(M.setValue(M.newForm("offline", NOW), "state", "off"), "dryRun", true);
   assert.equal(M.validate("offline", all, form), null);
   assert.deepEqual(M.planArgv("offline", all, form).slice(0, 7), ["ui", "act-plan", "offline", "--scope", "all", "--state", "off"]);
   assert.deepEqual(M.planArgv("offline", { scope: "host:lane-a" }, form).slice(3, 5), ["--scope", "host:lane-a"]);
@@ -399,7 +414,7 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   assert.deepEqual(M.planArgv("handoff", t, f), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--json"]);
   const g = M.setValue(M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "effort", "high"), "force", true);
   assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--effort=high", "--force", "--json"]);
-  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "force"]);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "force", "dryRun"]);
   assert.equal(M.handoffMachine({ host: "lane-b" }, ["lane-a", "lane-b"], "lane-a"), "lane-b", "restart refuses another host's role");
   assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);
   assert.equal(M.handoffMachine({ host: "elsewhere" }, ["lane-a"], "lane-a"), "lane-a", "the CLI's refusal then says where to run it");

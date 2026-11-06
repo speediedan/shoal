@@ -26,10 +26,12 @@ import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
-  verbsFor, scopeLabel, handoffMachine,
+  verbsFor, scopeLabel, handoffMachine, lastLines,
 } from "./model.js";
 
 const MONO = "Geist Mono";
+const PROGRESS_MS = 1000;
+const PROGRESS_BYTES = 8000;
 // Flipped to true only in a scratch copy, to look at every screen with no props (mod.open).
 const FIXTURE_DEFAULT = false;
 const TEXT_KEYS = ["text", "item", "note", "until", "model", "effort"];
@@ -74,7 +76,11 @@ export default class Actions extends View {
     for (const key of TEXT_KEYS) {
       const st = InputState.new({ placeholder: FIELDS[key].placeholder ?? "" });
       st.on("change", (_e, cx) => {
-        if (this.form) this.form = setValue(this.form, key, st.value());
+        if (this.form) {
+          const note = this.form.values.note;
+          this.form = setValue(this.form, key, st.value());
+          if (key !== "note" && this.form.values.note !== note) this.inputs.note.set_value(String(this.form.values.note ?? ""));
+        }
         if (this.hint) this.hint = null;
         cx.notify();
       });
@@ -86,6 +92,10 @@ export default class Actions extends View {
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.timer.after(400, () => { if (!this.focusKey) this.handle.focus(); });
+    this.live = "";
+    this.liveFrom = null;
+    this.liveBusy = false;
+    cx.timer.every(PROGRESS_MS, (cx) => this.followProgress(cx));
     this.loadRoles(cx);
     cx.spawn(async (cx) => {
       for (;;) {
@@ -147,6 +157,25 @@ export default class Actions extends View {
   }
 
   /** Runs a call on the target machine, ignoring a reply that a newer call has overtaken. */
+  /** While an apply runs: its output so far. `exec` returns only at the end, so the CLI writes a file and this reads its tail. */
+  followProgress(cx) {
+    if (!this.applying || !this.liveFrom || this.liveBusy) return;
+    const { path, machine } = this.liveFrom;
+    this.liveBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("tail", ["-c", String(PROGRESS_BYTES), path], { on: machine ?? null });
+        if (this.applying && r?.code === 0 && r.stdout !== this.live) {
+          this.live = r.stdout;
+          cx.notify();
+        }
+      } catch (_e) {
+        // the next tick tries again; the result still comes whole
+      }
+      this.liveBusy = false;
+    });
+  }
+
   request(what, argv, machine, expect, done, cx) {
     const seq = ++this.seq;
     this.screen = "busy";
@@ -229,7 +258,8 @@ export default class Actions extends View {
     }
     const machine = this.machine();
     this.dropPlan();
-    this.request("planning (dry run)", planArgv(this.verb, this.sel, this.form), machine, "plan", (r, cx) => {
+    const dry = this.form?.values?.dryRun === true;
+    this.request(dry ? "planning (dry run)" : "starting", planArgv(this.verb, this.sel, this.form), machine, "plan", (r, cx) => {
       if (r.kind !== "plan") {
         this.error = r.kind === "error" ? r.error : "the CLI answered with a view, not a plan";
         this.screen = "error";
@@ -238,7 +268,7 @@ export default class Actions extends View {
       const { token, ...shown } = r;
       this.token = token;
       this.plan = { ...shown, machine, plannedAt: Date.now() };
-      if (!r.confirm) this.apply(cx, true); // offline: applied right after planning, still shown
+      if (!dry) this.apply(cx, true); // no preview asked for: this click was the go
       else {
         this.screen = "plan";
         this.handle.focus();
@@ -258,8 +288,11 @@ export default class Actions extends View {
     this.token = null; // one use
     const plan = this.plan;
     this.applying = true;
+    this.live = "";
+    this.liveFrom = plan.progress ? { path: plan.progress, machine: plan.machine } : null;
     this.request("applying", applyArgv(token), plan.machine, "result", (r) => {
       this.applying = false;
+      this.liveFrom = null;
       if (r.kind === "result") {
         this.result = { ...r, auto, plan };
         this.screen = "result";
@@ -504,7 +537,7 @@ export default class Actions extends View {
 
   menuBody(c) {
     const col = v_flex().gap(2);
-    col.child(div().pb(6).text_size(11.5).text_color(c.muted).child("Pick an action. Writes show the CLI's dry-run preview and its wake cost before you confirm."));
+    col.child(div().pb(6).text_size(11.5).text_color(c.muted).child("Pick an action. Permanent or wide ones preview first; on the rest, tick Preview first to see a dry run."));
     for (const v of verbsFor(this.sel)) {
       col.child(h_flex().id(`m-${v.verb}`).gap(10).px(8).py(5).rounded(6).cursor_pointer().items_center()
         .hover((s) => s.bg(c.hover))
@@ -544,21 +577,27 @@ export default class Actions extends View {
           row.child(this.chip(`f-${f.key}-${o}`, o, {
             on: v === o,
             // an optional choice clicks off again
-            onClick: (_e, cx) => { this.form = setValue(this.form, f.key, v === o && !f.required ? null : o); this.hint = null; cx.notify(); },
+            onClick: (_e, cx) => {
+              this.form = setValue(this.form, f.key, v === o && !f.required ? null : o);
+              this.inputs.note.set_value(String(this.form.values.note ?? ""));
+              this.hint = null;
+              cx.notify();
+            },
           }, c));
         }
         col.child(v_flex().gap(5).child(this.label(f.label, c)).child(row));
       }
     }
-    if (this.verb === "offline") col.child(div().text_size(11).text_color(c.dim).child("Offline applies right after its preview (no second click); the command and its result still show."));
     if (this.hint) col.child(div().text_size(11.5).text_color(c.red).child(this.hint));
     return col;
   }
 
   busyBody(c) {
-    return h_flex().gap(8).items_center().py(8)
+    const head = h_flex().gap(8).items_center().py(8)
       .child(div().w(14).text_color(c.accent).frames(["◐", "◓", "◑", "◒"], 160))
       .child(div().text_color(c.muted).child(`${this.busyWhat}…`));
+    if (!this.applying || !this.live) return head;
+    return v_flex().gap(6).child(head).child(this.mono("live", lastLines(this.live), c));
   }
 
   planBody(c) {
@@ -587,7 +626,6 @@ export default class Actions extends View {
       .child(div().text_size(14).font_bold().text_color(r.ok ? c.green : c.red).child(r.ok ? "✓" : "✕"))
       .child(div().text_size(13.5).font_semibold().child(`${verbInfo(this.verb)?.label ?? "Action"}: ${resultLine(r)}`))
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
-    if (r.auto) col.child(div().text_size(11).text_color(c.dim).child("applied right after its preview (offline asks no second click)"));
     col.child(this.label("command", c));
     col.child(this.mono("res-cmd", r.command || r.plan?.command || "", c));
     if (r.plan?.cost) col.child(div().text_size(11.5).text_color(c.amber).child(`⚠ ${r.plan.cost}`));
@@ -653,13 +691,14 @@ export default class Actions extends View {
 
   footer(c) {
     const row = h_flex().flex_none().px(16).py(10).gap(8).items_center().border_t_1().border_color(c.border);
-    const keys = { menu: "click an action · Esc closes", form: "Enter: preview · Tab: next field · Esc: back", plan: "Enter: confirm · Esc: cancel", busy: "Esc: back", result: "Esc: back to the form", view: "Esc: back", error: "Esc: back" };
+    const keys = { menu: "click an action · Esc closes", form: `Enter: ${this.form?.values?.dryRun ? "preview" : "run"} · Tab: next field · Esc: back`, plan: "Enter: confirm · Esc: cancel", busy: "Esc: back", result: "Esc: back to the form", view: "Esc: back", error: "Esc: back" };
     row.child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(c.dim).child(keys[this.screen] ?? ""));
     const go = (f) => (_e, cx) => { f(cx); cx.notify(); };
     switch (this.screen) {
       case "form":
         row.child(this.button("b-cancel", "Cancel", "plain", go((cx) => this.back(cx)), c));
-        row.child(this.button("b-preview", "Preview", "primary", go((cx) => this.preview(cx)), c, "plan it: the CLI's --dry-run, nothing written"));
+        if (this.form?.values?.dryRun) row.child(this.button("b-preview", "Preview", "primary", go((cx) => this.preview(cx)), c, "plan it: the CLI's --dry-run, nothing written"));
+        else row.child(this.button("b-run", "Run", "primary", go((cx) => this.preview(cx)), c, "run it now; tick Preview first to see a dry run"));
         break;
       case "plan":
         row.child(this.button("b-cancel", "Cancel", "plain", go((cx) => this.back(cx)), c, "discard the plan; nothing written"));

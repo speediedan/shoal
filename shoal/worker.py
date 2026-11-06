@@ -932,6 +932,7 @@ def _offline_one(a) -> int:
     reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL)
     from health import request_wake
     for s in targets:
+        print(f"waking {s}", flush=True)
         request_wake(spec, s, reason, condition=f"user-offline-{a.state}")
     print(f"user-offline {a.state} [{ev['id']}]; woke {targets or 'nobody'}")
     if not on:

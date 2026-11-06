@@ -19,12 +19,14 @@ role except the verbs that say so in their cost note.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,12 +68,17 @@ def _store(plan: dict) -> str:
     return token
 
 
+def _progress_path(token: str) -> str:
+    """Where an apply writes its output as it runs, for a dialog to follow. Not the token: that stays out of anything shown."""
+    return os.path.join(plans_dir(), hashlib.sha256(token.encode()).hexdigest()[:24] + ".log")
+
+
 def _sweep() -> None:
-    """Drop plans past their time (a dialog closed without confirming leaves one behind)."""
+    """Drop plans and progress logs past their time (a dialog closed without confirming leaves a plan behind)."""
     try:
         for f in os.listdir(plans_dir()):
             p = os.path.join(plans_dir(), f)
-            if f.endswith(".json") and time.time() - os.path.getmtime(p) > PLAN_TTL_S:
+            if f.endswith((".json", ".log")) and time.time() - os.path.getmtime(p) > PLAN_TTL_S:
                 os.remove(p)
     except OSError:
         pass
@@ -166,6 +173,27 @@ def _shoal(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
                           timeout=timeout, env=dict(os.environ, NO_COLOR="1"), stdin=subprocess.DEVNULL)
 
 
+def _stream(args: list[str], log, timeout: int = 120) -> tuple[int, str]:
+    """One shoal verb of this checkout, its output written to `log` line by line as it comes. (rc, output)."""
+    p = subprocess.Popen([sys.executable, os.path.join(PKG, "cli.py"), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, NO_COLOR="1", PYTHONUNBUFFERED="1"))
+    timer = threading.Timer(timeout, p.kill)
+    timer.start()
+    lines = []
+    try:
+        for line in p.stdout:
+            lines.append(line)
+            log.write(line)
+            log.flush()
+    finally:
+        expired = not timer.is_alive()
+        timer.cancel()
+    rc = p.wait()
+    if expired:
+        raise subprocess.TimeoutExpired(args, timeout)
+    return rc, "".join(lines)
+
+
 def scope_shoals(scope: str) -> list[str]:
     """The shoal ids of a scope: `all` (every live shoal this host sees) or `host:<name>` (those whose home it is).
     Hidden shoals are left out, as they are from the app's spaces."""
@@ -197,17 +225,19 @@ def plan_scope(verb: str, a) -> dict:
     for sid in scope_shoals(a.scope):
         a.shoal = sid
         args, c, _confirm = build(verb, a)
+        argvs.append(args)
+        cost = cost or c
+        if getattr(a, "no_preview", False):
+            continue
         pv = _shoal(args + ["--dry-run"])
         if pv.returncode != 0:
             raise ActError(f"{sid}: the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
-        argvs.append(args)
         previews.append(f"{sid}:\n{(pv.stdout + pv.stderr).strip() or '(no preview output)'}")
-        cost = cost or c
     _sweep()
     token = _store({"verb": verb, "shoal": "", "scope": a.scope, "role": "", "argvs": argvs})
     return {"v": V, "kind": "shoal-act-plan", "verb": verb, "shoal": "", "scope": a.scope, "role": "",
             "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "preview": "\n\n".join(previews),
-            "preview_rc": 0, "cost": cost, "confirm": True, "token": token, "expires_s": PLAN_TTL_S}
+            "preview_rc": 0, "cost": cost, "confirm": True, "token": token, "progress": _progress_path(token), "expires_s": PLAN_TTL_S}
 
 
 def plan(verb: str, a) -> dict:
@@ -218,15 +248,18 @@ def plan(verb: str, a) -> dict:
     if getattr(a, "scope", ""):
         return plan_scope(verb, a)
     args, cost, confirm = build(verb, a)
-    pv = _shoal(args + ["--dry-run"])
-    if pv.returncode != 0:
-        # the verb would refuse it too: say why, and hand out no token
-        raise ActError(f"the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
+    preview, preview_rc = "", 0
+    if not getattr(a, "no_preview", False):
+        pv = _shoal(args + ["--dry-run"])
+        if pv.returncode != 0:
+            # the verb would refuse it too: say why, and hand out no token
+            raise ActError(f"the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
+        preview, preview_rc = (pv.stdout + pv.stderr).strip() or "(no preview output)", pv.returncode
     _sweep()
     token = _store({"verb": verb, "shoal": a.shoal, "role": a.role or "", "argv": args})
     return {"v": V, "kind": "shoal-act-plan", "verb": verb, "shoal": a.shoal, "role": a.role or "",
-            "command": "shoal " + shlex.join(args), "preview": (pv.stdout + pv.stderr).strip() or "(no preview output)",
-            "preview_rc": pv.returncode, "cost": cost, "confirm": confirm, "token": token, "expires_s": PLAN_TTL_S}
+            "command": "shoal " + shlex.join(args), "preview": preview,
+            "preview_rc": preview_rc, "cost": cost, "confirm": confirm, "token": token, "progress": _progress_path(token), "expires_s": PLAN_TTL_S}
 
 
 def apply(token: str) -> dict:
@@ -244,11 +277,16 @@ def apply(token: str) -> dict:
     if not all(args and args[0] in WRITE_VERBS for args in argvs):
         raise ActError("a stored plan names no write verb")
     rc, outs = 0, []
-    for args in argvs:  # each shoal's verb runs even when another's failed: the output says which
-        r = _shoal(args)
-        ui_herdr.log_action(args, r.returncode)
-        rc = rc or r.returncode
-        outs.append((r.stdout + r.stderr).strip())
+    fd = os.open(_progress_path(token), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "w") as log:
+        for args in argvs:  # each shoal's verb runs even when another's failed: the output says which
+            if len(argvs) > 1:
+                log.write(f"== {args[args.index('--shoal') + 1] if '--shoal' in args else args[0]}\n")
+                log.flush()
+            code, out = _stream(args, log)
+            ui_herdr.log_action(args, code)
+            rc = rc or code
+            outs.append(out.strip())
     return {"v": V, "kind": "shoal-act-result", "verb": p.get("verb"), "shoal": p.get("shoal"), "role": p.get("role"),
             "rc": rc, "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "output": "\n\n".join(outs)}
 
@@ -294,8 +332,9 @@ def view(verb: str, a) -> dict:
             if r["asks"] or {"blocked-on-question", "blocked-says-waiting"} & reasons:
                 rows.append({"role": r["slug"], "host": r.get("host") or "", "remote": bool(r.get("host")) and r.get("host") != here,
                              "asks": list(r["asks"]), "question": "blocked-on-question" in reasons,
-                             "says_waiting": "blocked-says-waiting" in reasons})
+                             "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or ""})
         text = "\n".join([f"{x['role']}" + ("  (a question is open in its session: attach to answer it)" if x["question"] else "")
+                          + (f"\n  it says: {x['says']}" if x["says"] else "")
                           + "".join(f"\n  ask {i}: {q}" for i, q in enumerate(x["asks"], 1)) for x in rows]) \
             or "no open asks and no role waiting on a question"
         return dict(base, text=text, asks=rows)
@@ -362,6 +401,7 @@ def add_parsers(u) -> None:
     q.add_argument("--effort", default="", help="handoff: the new session's effort")
     q.add_argument("--ecosystem", default="", help="handoff: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
+    q.add_argument("--no-preview", action="store_true", help="a write verb: skip its dry run (the apply reports any refusal)")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_act_plan)
     q = u.add_parser("act-apply", help="run a planned write verb once, by its token (from act-plan)")

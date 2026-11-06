@@ -96,7 +96,7 @@ export function buildScene(vm, lay, opts) {
       items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, hover ? 0.025 : 0.045)) });
       items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.05)) });
       items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: 1, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.22)) });
-      const label = c.label.toUpperCase();
+      const label = `${c.label.toUpperCase()}${vm.shoals?.find((s) => s.id === c.id)?.boards?.items?.length ? " ↗" : ""}`;
       items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - r - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
       grow(p.x - r - 3, p.y - r - 3, p.x + r + 3, p.y + r + 3);
       growCentered(p.x, p.y - r - 22, label, 11, 16);

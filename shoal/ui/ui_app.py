@@ -126,7 +126,7 @@ def card_report(r: dict, tag: str) -> dict:
             kind = "auth"
         elif r.get("grants_pending"):
             kind = "permission"
-        elif r.get("asks") or sub in QUESTION_SUBS:
+        elif r.get("asks") or r.get("says") or sub in QUESTION_SUBS:
             kind = "question"
     bits = [ui_status.posture_label(r)]
     w = r.get("wait") or {}
@@ -136,7 +136,10 @@ def card_report(r: dict, tag: str) -> dict:
         bits.append(f"on {str(w['target'])[:60]}")
     if r.get("active"):
         bits.append(str(r["active"])[:60])
-    why = [ui_status.ATTENTION.get(x, x) for x in reasons if x not in ("parked", "dormant")]
+    says = r.get("says") or ""
+    if says and state == "blocked":
+        bits.append(says)
+    why = [ui_status.ATTENTION.get(x, x) for x in reasons if x not in ("parked", "dormant") and not (says and x == "blocked-says-waiting")]
     if why and state == "blocked":
         bits.append("(" + ", ".join(why)[:80] + ")")
     # the role's own host in the title: the card's machine says only where the card runs (`/` and `@` never occur in a slug)
@@ -193,11 +196,13 @@ def _pane(label: str, argv: list[str], env: dict | None = None) -> dict:
 
 def shoal_space(spec, feed: dict) -> dict:
     import ui_herdr
+    import ui_status
     env = ui_herdr.pane_env(spec)
     tag = ui_herdr.shoal_tag(spec.sid)
-    tabs = [{"name": "overview", "layout": "stack",
-             "panes": [_pane(f"{spec.sid}/overview", _cli_argv("ui", "dash", "--shoal", spec.sid), env),
-                       _pane(f"{spec.sid}/ledger", _cli_argv("ui", "tail", "--shoal", spec.sid), env)]}]
+    panes = [_pane(f"{spec.sid}/overview", _cli_argv("ui", "dash", "--shoal", spec.sid), env)]
+    if ui_status.ui_config().get("overview_ledger") is True:  # hidden by default: the dashboard's `l` shows it on demand
+        panes.append(_pane(f"{spec.sid}/ledger", _cli_argv("ui", "tail", "--shoal", spec.sid), env))
+    tabs = [{"name": "overview", "layout": "stack", "panes": panes}]
     for name, chunk in ui_herdr.role_tabs(spec):
         if chunk:
             tabs.append({"name": name, "layout": "grid",
@@ -531,6 +536,21 @@ class Reconciler:
         self._new_tab(space_id, t)
         built[key] = TABS_V
 
+    def _drop_ledger(self, space: dict, tab_doc: dict, tab: dict) -> None:
+        """Close a ledger tail pane the plan no longer has: a tab made before the overview hid it, or the setting turned off."""
+        if len(tab_doc.get("terminals", [])) < 2:
+            return
+        want = {p["label"] for p in tab["panes"]}
+        for x in tab_doc["terminals"]:
+            try:
+                lab = (hc_get(x["terminal"]).get("labels") or {}).get(PANE_LABEL) or ""
+            except AppError:
+                continue
+            if lab.endswith("/ledger") and lab not in want:
+                self.say(f"{space['name']}/{tab['name']}: close {lab}")
+                if not self.dry_run:
+                    app_do("pane.close", {"pane": x["pane"]})
+
     def select_tab(self, space_id: str, name: str) -> None:
         """Show the named tab of a space (the last tab made is the one shown otherwise)."""
         if self.dry_run or not space_id:
@@ -617,6 +637,8 @@ class Reconciler:
                     self._refresh_mod(got["id"], tabs[t["name"]], t, built, s["name"])
                 elif not sync:
                     self._gaps(s, tabs[t["name"]], t)
+                if t["name"] == "overview" and t["name"] in tabs:
+                    self._drop_ledger(s, tabs[t["name"]], t)
         planned = {s["name"] for s in doc.get("spaces", [])}
         import ui_herdr
         tags = set(ui_herdr._TAGS.values()) if self.machine is None else set()

@@ -54,9 +54,13 @@ you, per-shoal throughput and per-host load.
   at the node (global), labeled `remote-ci -> host-b`.
 - **Satellites:** each role's active item, next items and items done in 24 h as small dots on
   short spokes fanned outward: the starburst.
-- **Outside writers:** the card offers `Remove...` only for one with a saved session on the feed's
-  host. One with none has nothing to remove (it is only ledger history): the card says so and offers
-  to hide it.
+- **Outside nodes:** a dashed circle is either a saved standalone session on the feed's host, shown
+  whether or not it ever wrote to a ledger, or a ledger writer with no session behind it. A saved one's
+  card gives its harness, id and whether it runs now, and offers `Remove...` and hide. A writer with no
+  session has nothing to remove: its card says so and offers to hide it. A long name wraps in the card.
+- **A shoal's name:** in the global view, hovering it shows its board's numbers and bar, and clicking
+  it opens the board (the rest of its disc drills in). In the per-shoal view the same link is in the
+  header, and the card in the ring's hole carries the same numbers.
 - **Rail** (272px, `#0b0e12`): the view name and feed time; NEEDS YOU rows (badge, role, shoal,
   ask text, age), loudest first; BOARDS (per shoal in view, each priority board as a link beside how
   old its read is, amber past 30 minutes, then done, open, in flight and assigned over a thin bar in

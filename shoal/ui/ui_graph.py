@@ -217,6 +217,21 @@ def item_url(item: str, repos: dict[str, str]) -> str | None:
     return f"https://github.com/{repo}/issues/{num}"
 
 
+def standalone_doc(e: dict, rows: list[dict]) -> dict:
+    """A saved standalone session for its lattice card: which one it is, and whether it runs now. Only Claude can be read here."""
+    session, harness = str(e.get("session") or ""), str(e.get("harness") or "claude")
+    state = "unread"
+    if harness == "claude":
+        row = ui_status.claude_session(rows, session, str(e.get("job") or "")) or {}
+        if not row or row.get("state") in ("stopped", "done"):
+            state = "stopped"
+        elif row.get("state") == "blocked":
+            state = "blocked"
+        else:
+            state = "busy" if row.get("status") == "busy" else "alive"
+    return {"harness": harness, "id": session[:12], "state": state}
+
+
 def board_doc(spec, rows: list[dict], digest: dict | None, now: float) -> dict | None:
     """The shoal's priority boards for the rail, None when it has none. Each is a link and, from this host's last
     digest (the only board read), its items as done, open, in flight (a role's active item) and assigned (in a role's
@@ -650,6 +665,7 @@ class GraphBuilder:
                               "session": row.get("session") or "", "since_s": row.get("posture_age_s"),
                               "needs_you": bool(row.get("needs_you")), "reasons": reasons,
                               "shoal_offline": bool(off),
+                              "says": row.get("says") or "",
                               "restart_ready": bool((view.current_queue(slug) or {}).get("restart_ready"))},
                     "work": {"active": {"item": active, "url": item_url(active, repos)} if active else None,
                              "next": nxt, "asks": asks, "offers_open": int(row.get("offers_open") or 0),
@@ -712,7 +728,9 @@ class GraphBuilder:
 
         # -- outside seats, aliased to a role of the same slug in another shoal
         import ui_herdr
-        saved = {str(e.get("label")) for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
+        saved = {str(e.get("label") or str(e.get("session"))[:12]): e for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
+        for label in saved:  # a saved session is on the picture whether or not it ever wrote to a ledger
+            ext_seen.setdefault("ext:" + label, set())
         for eid in sorted(ext_seen):
             slug = eid[4:]
             home_of = sorted(s for s, sl in role_slugs.items() if slug in sl and s not in ext_seen[eid])
@@ -724,6 +742,8 @@ class GraphBuilder:
                           "state": ({"class": st["class"], "event": st["event"], "group": st["group"]} if st
                                     else {"class": "unknown", "event": "", "group": ""}),
                           "metrics": {"msgs_out_1h": em.get("msgs_out_1h", 0), "msgs_in_1h": em.get("msgs_in_1h", 0)}}
+            if slug in saved:
+                nodes[eid]["standalone"] = standalone_doc(saved[slug], self._harness_rows(now))
             if alias:
                 edge(eid, alias, "alias", None, structural=True)
 

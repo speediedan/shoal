@@ -103,6 +103,9 @@ export default class Home extends View {
     this.checkAssets(cx);
     this.load(cx);
     cx.timer.every(this.pollMs, (cx) => this.load(cx));
+    cx.timer.every(2000, (cx) => {  // a render decides the drift, and a window gaining focus draws nothing by itself
+      if (resolveTier(this.motionReq, { renderer: this.renderer, focused: appWindow()?.active !== false }).tier !== this.tier?.tier) cx.notify();
+    });
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();

@@ -593,7 +593,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
-  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (four cards a tab
+  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard; its `l` shows the ledger tail in
+  place, and `overview_ledger: true` in `ui.json` keeps a tail pane, while with it off the sync closes one), `roles` (four cards a tab
   in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed

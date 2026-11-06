@@ -314,6 +314,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
         "asks": [_short(a, 160) for a in asks],
+        "says": (_short(claude_says(claude_session(rows, role.session) or {}, role.session), 160)
+                 if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else ""),
         "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
@@ -867,6 +869,16 @@ def pending_question(row: dict, session: str) -> bool:
     AskUserQuestion in the transcript tail), as opposed to a session self-reported blocked."""
     import health as _h
     return _h.claude_prompt_open(row, session)
+
+
+def claude_says(row: dict, session: str) -> str:
+    """What a blocked Claude session told its harness it needs from you (its job's `needs`), else ""."""
+    from backends import claude_base
+    try:
+        with open(os.path.join(claude_base(), "jobs", str(row.get("id") or session)[:8], "state.json")) as fh:
+            return str(json.load(fh).get("needs") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
 
 
 def _claude_transcript(session: str) -> str:

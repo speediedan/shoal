@@ -343,7 +343,9 @@ test("motion: the vines move only through the budget, natively; the logo never m
   assert.match(src, /drift && it\.sway \? el\.loop\("left"/, "sway is a native loop, gated on drift");
   assert.match(src, /motionPolicy\(tier\.tier\)\.loops/, "drift follows the budget");
   assert.doesNotMatch(src, /setTimeout|setInterval|requestAnimationFrame/, "no timer redraw");
-  assert.equal((src.match(/cx\.timer\.every/g) ?? []).length, 1, "the one timer is the host list poll");
+  // the host list poll, and a tier check that draws only when the tier changes (a window gaining focus draws nothing itself)
+  assert.equal((src.match(/cx\.timer\.every/g) ?? []).length, 2);
+  assert.match(src, /\.tier !== this\.tier\?\.tier\) cx\.notify\(\)/, "the tier check draws only on a change");
   assert.match(src, /logo\.items\) canvas\.child\(seaEl\(it\)\)/, "the logo is drawn still");
   const lay = L.homeLayout({ width: 1150, height: 770 }, heightsOf(list), { art: true });
   assert.ok(Lo.logoDraw(lay.logo, false).items.every((it) => !it.sway), "no logo layer sways");

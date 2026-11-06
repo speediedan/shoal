@@ -360,6 +360,7 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "pane_borders": "auto | off: off drops Herdr's plain pane titles so each card's colored header is on top (laptop)",
                "auto_rebalance": "true (default) | false: the feeder re-lays role tabs after a role change or a new roles_per_tab",
                "ledger_share": "percent of the overview tab for the ledger tail strip (default 12)",
+               "overview_ledger": "true | false (default): the Herdr app's overview tab keeps a ledger tail pane; else the dashboard's `l` shows it",
                "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)",
                "line_width": "columns the tab-bar status line may use (default 80); wider shows more shoals in full",
                "image_paste_key": "Herdr's remote image paste key (default alt+v; Ctrl+V pastes text in the kitty window)"}
@@ -1285,7 +1286,7 @@ def cmd_dash(a) -> int:
             body = f"status unavailable: {exc}"
         # Fit the pane: a taller frame scrolls the usage table into the scrollback on every tick.
         sys.stdout.write(ui_term.fit_frame(body, f"\x1b[2m{datetime.datetime.now():%H:%M:%S}  [r] refresh  "
-                                           "[m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m",
+                                           "[l] ledger  [m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m",
                                            cols, rows))
         sys.stdout.flush()
         k = ui_view._getkey(a.interval)
@@ -1293,6 +1294,13 @@ def cmd_dash(a) -> int:
             return 0
         if k == "m":
             subprocess.run(shoal_argv("ui", "menu"))
+        if k == "l":
+            sys.stdout.write("\x1b[2J\x1b[H\x1b[2m(Ctrl-C returns to the overview)\x1b[0m\n")
+            sys.stdout.flush()
+            try:
+                subprocess.run(shoal_argv("ui", "tail", *[x for i in a.ids or [] for x in ("--shoal", i)]))
+            except KeyboardInterrupt:
+                pass
 
 
 def _fmt_event(sid: str, e: dict) -> str:
@@ -1309,7 +1317,9 @@ def cmd_tail(a) -> int:
     """Follow the ledger files of the chosen shoals (read-only; no pull: the local clone is current
     on the lane host)."""
     import glob
+    import signal
     import ui_status
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))  # the overview's `l` runs this as a child: Ctrl-C only goes back
     from roles import ShoalSpec
     files: dict[str, tuple[str, int]] = {}
     from ledger import Ledger
