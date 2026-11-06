@@ -1853,7 +1853,7 @@ json.dump(d,open(p,"w"),indent=1)
 PY2
 
 python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "auto park"
-import os, sys, types
+import json, os, subprocess, sys, tempfile, time, types
 sys.path.insert(0, sys.argv[1])
 import health, park, providers, roles
 from roles import ShoalSpec
@@ -1868,6 +1868,9 @@ def view(**kw):
                                  role_state=lambda s: kw.get("state", {"state": "idle"}), is_idle=lambda s: True,
                                  last_by={"up": kw.get("last", OLD)}, msgs=kw.get("msgs", []), freeze=lambda: None)
 os.environ["SHOAL_HEALTH_BETWEEN"] = "up"
+scratch = tempfile.mkdtemp()
+os.environ["CLAUDE_CONFIG_DIR"] = scratch  # no transcript here unless a case below writes one
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "bbbb2222", "sessionId": "bbbb2222", "pid": 7, "kind": "background"}], "opencode": {}})
 park.session_held = lambda r, d="": False
 park._running_jobs = lambda sid_, slug: []
 import startdoc
@@ -1891,6 +1894,37 @@ os.environ["SHOAL_HEALTH_BETWEEN"] = "up"
 park.session_held = lambda r, d="": True
 assert "holds its session" in park.parkable(spec, view(), role, {}, 60)
 park.session_held = lambda r, d="": False
+# a person in a Claude session, none of which session_held reports: so these run the real checks, nothing stubbed
+fake = os.path.join(scratch, "claude")  # a real process whose command line reads `.. claude attach <job>`
+with open(fake, "w") as fh:
+    fh.write("#!/bin/sh\nsleep 30\n")
+os.chmod(fake, 0o755)
+client = subprocess.Popen([fake, "attach", "bbbb2222"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+got = ""
+for _ in range(50):
+    got = park.parkable(spec, view(), role, {}, 60)
+    if got:
+        break
+    time.sleep(0.1)
+client.kill(); client.wait()
+assert "a client (pid" in got, got
+assert park.parkable(spec, view(), role, {}, 60) == "", "a client that left still holds it"
+other = subprocess.Popen([fake, "attach", "cccc3333"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(0.5)
+assert park.parkable(spec, view(), role, {}, 60) == "", "another job's client held this one"
+other.kill(); other.wait()
+sess = {"id": "bbbb2222", "sessionId": "bbbb2222", "pid": 7}
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict(sess, kind="interactive")], "opencode": {}})
+assert "runs interactively" in park.parkable(spec, view(), role, {}, 60)
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict(sess, kind="background")], "opencode": {}})
+assert "may be waiting on an answer" in park.parkable(spec, view(), role, {"bbbb2222": "blocked"}, 60)
+assert park.parkable(spec, view(), role, {"bbbb2222": "idle"}, 60) == ""
+# direct chat writes nothing to the ledger: the transcript moving is what holds the grace
+project = os.path.join(scratch, "projects", "p"); os.makedirs(project)
+log = os.path.join(project, "bbbb2222.jsonl"); open(log, "w").close()
+assert "session was active" in park.parkable(spec, view(), role, {}, 60)
+os.utime(log, (time.time() - 7200, time.time() - 7200))
+assert park.parkable(spec, view(), role, {}, 60) == "", "an old transcript held it"
 park._running_jobs = lambda sid_, slug: ["shoal-s-up-x.service"]
 assert "job of its is running" in park.parkable(spec, view(), role, {}, 60)
 park._running_jobs = lambda sid_, slug: []

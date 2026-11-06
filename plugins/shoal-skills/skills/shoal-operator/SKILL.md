@@ -76,4 +76,5 @@ file.
 
 With `features.autopark`, an idle role holding nothing is parked after a grace (`parked until
 offer:<role>` in `show`). Offer it work and the quorum relaunches it from its start doc within a
-few minutes; a message alone does not.
+few minutes; a message alone does not. An attached client keeps a role out, so a role you leave
+attached never auto-parks.

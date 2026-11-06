@@ -236,6 +236,51 @@ def _running_jobs(sid: str, slug: str) -> list[str]:
     return [ln.split()[0] for ln in out.splitlines() if ln.strip()]
 
 
+def _claude_client(role) -> str:
+    """Why a person may be in this Claude session ('' when nothing says so): it runs interactively, or a `claude attach`
+    holds it. `session_held` is about what cannot be stopped, so it says False here, but a stop would cut this person off."""
+    from backends import get as get_backend
+    row = get_backend("claude")._row(role.session, include_stopped=True) or {}
+    if row.get("kind") == "interactive":
+        return f"it runs interactively in pid {row.get('pid')}"
+    job = str(row.get("id") or role.session.split("-", 1)[0][:8])
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return ""
+    for p in pids:
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as fh:
+                argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+        except OSError:
+            continue
+        for i in (0, 1, 2):
+            if (len(argv) > i + 2 and os.path.basename(argv[i]) == "claude" and argv[i + 1] == "attach"
+                    and job in argv[i + 2:]):
+                return f"a client (pid {p}) is attached"
+    return ""
+
+
+def _session_active_min(role) -> float | None:
+    """Minutes since the session's own record changed, or None when it cannot be read. Direct chat in a session writes
+    nothing to the ledger, so this is the only sign of a person who has been talking to the role."""
+    import health
+    if role.ecosystem == "claude":
+        path = health.claude_transcript(role.session)
+        try:
+            return (time.time() - os.path.getmtime(path)) / 60 if path else None
+        except OSError:
+            return None
+    if role.ecosystem == "muse":
+        import muse as harness
+    elif role.ecosystem == "codex":
+        import codex_harness as harness
+    else:
+        return None
+    age = harness.activity_age(role.session)
+    return age / 60 if age is not None else None
+
+
 def parkable(spec, view, role, cbusy: dict, after_min: float) -> str:
     """Why `role` stays out of auto-park, '' when nothing does."""
     import health
@@ -264,10 +309,21 @@ def parkable(spec, view, role, cbusy: dict, after_min: float) -> str:
     age = health.age_min(last) if last else None
     if age is None or age < after_min:
         return f"quiet for {age:.0f} of {after_min:g} min" if age is not None else "it has not written yet"
+    active = _session_active_min(role)
+    if active is not None and active < after_min:
+        return f"its session was active {active:.0f} min ago, inside the {after_min:g} min grace"
+    # blocked with no prompt open counts as between turns, but it is also how a role that asked for something in its session
+    # looks: the request is in the job's `needs`, not the ledger, and a stop would lose it
+    if role.ecosystem == "claude" and next((v for k, v in cbusy.items() if k.startswith(role.session)), None) == "blocked":
+        return "its session is blocked, and may be waiting on an answer"
     if health.session_between_turns(role, cbusy, spec.dir) is not True:
         return "not known to be between turns"
     if session_held(role, spec.dir):
         return "a turn or an attached client holds its session"
+    if role.ecosystem == "claude":
+        client = _claude_client(role)
+        if client:
+            return f"a person may be in its session: {client}"
     held = _running_jobs(spec.sid, slug)
     if held:
         return f"a job of its is running ({held[0]})"
