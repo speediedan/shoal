@@ -1673,8 +1673,27 @@ ui_view.viewer = lambda h, s, label="", model="", effort="": ([next(seq), "attac
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = ui_view.run_viewer("claude", "abcd1234", "seat")
-assert rc == 0 and "background service restarted" in buf.getvalue(), buf.getvalue()
+assert rc == 0 and "background service just restarted" in buf.getvalue(), buf.getvalue()
 assert open(calls).read().split() == ["a1", "a2"], open(calls).read()
+# a restart long before the client ended is not why it ended: a detach stays detached
+open(calls, "w").write("")
+late = os.path.join(d, "a3")
+open(late, "w").write("#!/bin/sh\necho a3 >> %s\necho \"[$(date -u +%%Y-%%m-%%dT%%H:%%M:%%S.000Z)] [supervisor] ─── daemon start ─── version=x\" >> %s\nsleep 3\nexit 0\n" % (calls, log))
+os.chmod(late, 0o755)
+ui_view.REATTACH_WINDOW_S = 1
+ui_view.viewer = lambda h, s, label="", model="", effort="": ([late, "attach", s], dict(os.environ))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.run_viewer("claude", "abcd1234", "seat") == 0
+assert open(calls).read().split() == ["a3"] and "restarted" not in buf.getvalue(), (open(calls).read(), buf.getvalue())
+# a restart just as it ended, and a key pressed in the pause: stays on the card
+ui_view.REATTACH_WINDOW_S = 60
+open(calls, "w").write("")
+ui_view._getkey = lambda t: "x"
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.run_viewer("claude", "abcd1234", "seat") == 0
+assert open(calls).read().split() == ["a3"] and "press a key" in buf.getvalue(), (open(calls).read(), buf.getvalue())
 print("reattach after a service restart ok")
 PY2
 
