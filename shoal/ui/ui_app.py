@@ -92,6 +92,8 @@ def osc7501(state: str, kind: str = "", title: str = "", msg: str = "", app: str
 
 
 OSC_CLEAR = "\x1b]7501;state=clear\x1b\\"
+# Set by a card for the length of an attach: under a client the core still names the card as the terminal's foreground.
+ATTACH_LABEL = "shoal.attached"
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
@@ -499,7 +501,7 @@ class Reconciler:
                 lab = (t.get("labels") or {}).get(PANE_LABEL)
                 if lab:
                     labels.add(lab)
-                busy = busy or not lab or foreground_kind(t) == "other"
+                busy = busy or not lab or foreground_kind(t) == "other" or bool((t.get("labels") or {}).get(ATTACH_LABEL))
             have[tab["name"]] = labels
         want = {t["name"]: {p["label"] for p in t["panes"]} for t in planned}
         key = f"{self.machine or 'local'}/{s['name']}"

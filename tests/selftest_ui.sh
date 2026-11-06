@@ -2072,6 +2072,33 @@ finally:
     sys.stdout = real
 assert out.getvalue() == "", out.getvalue()  # outside the app nothing; a failed read breaks nothing
 PY2
+# an attach marks the terminal, and a roles tab with a marked card is not rebuilt, though the core names the card as foreground
+HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "attached label"
+import sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_view
+marks = []
+app = types.SimpleNamespace(ATTACH_LABEL=ui_app.ATTACH_LABEL, report_text=lambda r, tag: "", hc_label=lambda t, labels: marks.append((t, labels)))
+ui_view.card = lambda *a, **k: ""
+with ui_view._report_during("s", "r", app):
+    assert marks == [("t9", {"shoal.attached": "1"})], marks
+assert marks[-1] == ("t9", {"shoal.attached": ""}), marks
+def boom(*a):
+    raise RuntimeError("no hc")
+with ui_view._report_during("s", "r", types.SimpleNamespace(ATTACH_LABEL="x", report_text=lambda r, tag: "", hc_label=boom)):
+    pass  # a failed label breaks nothing
+card_fg = {"foreground": {"name": "python", "argv": ["python", "/x/cli.py", "view", "s", "r", "--stub"]}}
+assert ui_app.foreground_kind(card_fg) == "card"
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: "s/r", ui_app.ATTACH_LABEL: "1"}, **card_fg}
+closed = []
+ui_app.app_do = lambda verb, args=None: closed.append(verb)
+said = []
+rec = types.SimpleNamespace(machine=None, dry_run=False, say=said.append)
+space = {"name": "s", "tabs": [{"name": "roles", "panes": [{"label": "s/other"}]}]}
+got = {"id": "x", "tabs": [{"name": "roles", "terminals": [{"terminal": "t9", "pane": "p9"}]}]}
+assert ui_app.Reconciler._relayout(rec, space, got, {}) is True
+assert not closed and "in use" in said[-1], (closed, said)
+PY2
 # a blocked session's own words come from its job; nothing there reads as nothing
 SAYS="$(mktemp -d)"
 CLAUDE_CONFIG_DIR="$SAYS" python3 - "$SHOALD" "$SAYS" <<'PY2' || fail "says"

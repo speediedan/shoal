@@ -568,6 +568,8 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     try:
         import ui_app
         report = ui_app.in_core_terminal()  # the Herdr app: the card reports the role's state itself (OSC 7501)
+        if report:
+            _mark_attached(ui_app, "")  # a card that died during an attach left it set
     except Exception:  # noqa: BLE001 - the app adapter can never take a 0.9.3 card down
         ui_app, report = None, False
     try:
@@ -635,6 +637,14 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             time.sleep(3)
 
 
+def _mark_attached(ui_app, value: str) -> None:
+    """Say on this terminal whether a client is attached under the card ("" removes it), so a rebuild of the roles tabs leaves it open."""
+    try:
+        ui_app.hc_label(os.environ["HC_TERMINAL_ID"], {ui_app.ATTACH_LABEL: value})
+    except Exception:  # noqa: BLE001 - a label never breaks an attach
+        pass
+
+
 @contextlib.contextmanager
 def _report_during(sid: str, slug: str, ui_app):
     """Keep the role's status current on the agents list through an attach. The card's loop waits on the attach, and a pane
@@ -648,6 +658,7 @@ def _report_during(sid: str, slug: str, ui_app):
         return
     import ui_herdr
     stop = threading.Event()
+    _mark_attached(ui_app, "1")
 
     def report() -> None:
         last = None
@@ -672,6 +683,7 @@ def _report_during(sid: str, slug: str, ui_app):
     finally:
         stop.set()
         t.join(1)
+        _mark_attached(ui_app, "")
 
 
 def _remote_host(sid: str, slug: str, spec_path: str = "") -> str:
