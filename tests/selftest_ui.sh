@@ -2039,6 +2039,36 @@ rec.dry_run = True
 drop(both, [{"label": "s/overview"}])
 assert not did and said, (did, said)
 PY2
+# a client that died leaves mouse reporting on: the card restores the terminal; a Ctrl-C returns to the card rather than ending it
+python3 - "$SHOALD" <<'PY2' || fail "after an attach"
+import contextlib, io, subprocess, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_view
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.run_attached([sys.executable, "-c", "import sys; sys.exit(3)"]) == 3
+assert "\x1b[?1003l" in buf.getvalue() and "\x1b[?1006l" in buf.getvalue() and "\x1b[?25h" in buf.getvalue(), repr(buf.getvalue())
+real = subprocess.run
+def interrupted(*a, **k):
+    raise KeyboardInterrupt
+subprocess.run = interrupted
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.run_attached(["x"]) == 130
+assert "\x1b[?1003l" in buf.getvalue()
+subprocess.run = real
+tries = []
+def flaky(*a, **k):
+    tries.append(1)
+    if len(tries) < 2:
+        raise KeyboardInterrupt
+    return 0
+ui_view._stub_loop = flaky
+assert ui_view.stub("s", "r") == 0 and len(tries) == 2
+tries.clear()
+ui_view._standalone_loop = flaky
+assert ui_view.standalone_stub("claude", "x", "seat") == 0 and len(tries) == 2
+PY2
 # a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
 python3 - "$SHOALD" <<'PY2' || fail "report during attach"
 import io, sys, time, types

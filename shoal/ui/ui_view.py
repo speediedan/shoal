@@ -76,6 +76,24 @@ ATTACH_RETRY_S = 30
 FAST_EXIT_S = 15
 
 
+# What a client turns on and turns off again on its way out: mouse reporting and its encodings, focus events, bracketed paste,
+# the keyboard protocol, the alternate screen, a hidden cursor. A client that dies with its link never does, so each mouse move
+# then prints an escape sequence into the card.
+TERM_RESET = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[<u\x1b[?1049l\x1b[?25h\x1b[0m"
+
+
+def run_attached(argv: list[str]) -> int:
+    """An attach from a card: its exit code (130 on Ctrl-C), with the terminal as the card needs it however the client ended."""
+    try:
+        return subprocess.run(argv).returncode
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        sys.stdout.write(TERM_RESET)
+        sys.stdout.flush()
+        flush_input()
+
+
 def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, str] | None = None) -> int:
     """Attach a role on another host through its route, from a card. A Claude attach is exclusive, so a session
     held by another viewer cannot open here: an attach that fails within FAST_EXIT_S says why (host unreachable,
@@ -95,7 +113,7 @@ def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, 
             print(f"no route to {server}")
             return 2
         t0 = time.time()
-        rc = subprocess.run(argv).returncode
+        rc = run_attached(argv)
         if rc == 0 or time.time() - t0 >= FAST_EXIT_S:
             return rc
         # ssh itself exits 255 for its own failures: an unreachable host, or a connection that ended under the
@@ -580,7 +598,11 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     except Exception:  # noqa: BLE001 - the app adapter can never take a 0.9.3 card down
         ui_app, report = None, False
     try:
-        return _stub_loop(sid, slug, spec_path, watch, ui_app if report else None)
+        while True:
+            try:
+                return _stub_loop(sid, slug, spec_path, watch, ui_app if report else None)
+            except KeyboardInterrupt:  # `q` leaves a card: a stray Ctrl-C ending it leaves a pane with no role in it
+                pass
     finally:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
@@ -639,7 +661,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             # a fresh process, so the attach always runs the current code: a card lives for days, and
             # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
             with _report_during(sid, slug, ui_app):
-                subprocess.run(_view_cmd(sid, slug, spec_path))
+                run_attached(_view_cmd(sid, slug, spec_path))
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
 
@@ -777,6 +799,14 @@ def standalone_tick(harness: str, session: str, label: str, job: str = "", pick:
 
 
 def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
+    while True:
+        try:
+            return _standalone_loop(harness, session, label, host, job)
+        except KeyboardInterrupt:  # as for a role's card: `q` leaves
+            pass
+
+
+def _standalone_loop(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
     import ui_term
     watch = ui_term.CodeWatch()
     notice, pick = "", 0
@@ -809,7 +839,7 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "", job:
                 pick = int(k)
             elif d["action"] == "refuse" and k in ("\r", "\n"):
                 flush_input()
-                subprocess.run(_view_cmd("", "", "", harness=harness, session=session, label=label)
+                run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
                                + (["--job", job] if job else []))
                 time.sleep(2)
             continue
@@ -841,7 +871,7 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "", job:
             return 0
         if k in ("\r", "\n"):
             flush_input()
-            subprocess.run(_view_cmd("", "", "", harness=harness, session=session, label=label)
+            run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
                            + (["--job", job] if job else []))
             time.sleep(2)
 
