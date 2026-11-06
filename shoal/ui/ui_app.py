@@ -117,9 +117,13 @@ def card_report(r: dict, tag: str) -> dict:
     state = ui_herdr.herdr_state(r)
     if state == "blocked" and starved(r):
         state = "idle"
-    # a role whose host cannot be read: what the row holds is its last state, and neither work nor a need can be claimed
-    away = r.get("remote_status") or {}
-    away = bool(away.get("stale") or away.get("ok") is False)
+    # a role whose host cannot be read: what the row holds is its last state, and neither work nor a need can be claimed.
+    # By the age of its last good pull: one failed pull keeps the row, or a dropped connection would hide a real need
+    away = False
+    if r.get("remote_status"):
+        import routes
+        age = r["remote_status"].get("age_s")
+        away = age is None or age > routes.STATUS_CACHE_S * 4
     if away:
         state = "idle"
     reasons = r["can_progress"]["reasons"]

@@ -2058,12 +2058,24 @@ assert state(job(session="working", needs_you=True, asks=["x"], can_progress={"o
 assert state(job(wait_done=True))["state"] == "idle" and ui_herdr.role_mode(job(wait_done=True)) == ""
 assert ui_status.working_wait(job()) and not ui_status.working_wait(job(wait_done=True))
 assert ui_status.job_ended("gh-run:o/r:1", "lane", "s") is False and ui_status.job_ended("", "lane", "s") is False
-for rs in ({"ok": False, "stale": True, "age_s": None}, {"ok": True, "stale": True, "age_s": 700}):
+for rs in ({"ok": False, "stale": True, "age_s": None}, {"ok": False, "stale": True, "age_s": 121}):
     got = state(job(remote_status=rs))
     assert got["state"] == "idle" and "cannot be reached" in got["msg"] and "host-a" in got["msg"], got
     got = state(dict(asked, remote_status=rs))
     assert got["state"] == "idle" and got["kind"] == "", got
 assert state(job(remote_status={"ok": True, "stale": False, "age_s": 5}))["state"] == "working"
+assert state(job(remote_status={"ok": False, "stale": True, "age_s": 40}))["state"] == "working", "one failed pull keeps the row"
+assert state(dict(asked, remote_status={"ok": False, "stale": True, "age_s": 40}))["state"] == "blocked", "and a real need stays shown"
+# a unit that cannot be read is unknown, not ended: a failed read must not make a running job look finished
+import jobs, providers
+jobs.find_unit = lambda sid, slug, name: "shoal-s-lane-pilot"
+jobs.unit_state = lambda unit: {}
+assert providers.job("pilot", "lane", "s")[0] is None
+assert ui_status.job_ended("job:pilot", "lane", "s") is False
+jobs.unit_state = lambda unit: {"ActiveState": "active", "LoadState": "loaded"}
+assert providers.job("pilot", "lane", "s")[0] is True and ui_status.job_ended("job:pilot", "lane", "s") is False
+jobs.unit_state = lambda unit: {"ActiveState": "inactive", "LoadState": "loaded"}
+assert ui_status.job_ended("job:pilot", "lane", "s") is True
 PY2
 # a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
 python3 - "$SHOALD" <<'PY2' || fail "report during attach"

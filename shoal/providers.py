@@ -143,6 +143,8 @@ def job(ref: str, slug: str, sid: str) -> Result:
     import jobs
     unit = ref if ref.startswith("shoal-") or not sid else jobs.find_unit(sid, slug, ref)
     st = jobs.unit_state(unit)
+    if not st:  # systemd could not be read (no user bus over ssh, say): unknown, not ended
+        return None, f"unit {unit} state unreadable"
     active = st.get("ActiveState", "")
     if active in ("active", "activating", "deactivating", "reloading"):
         return True, f"unit {unit} {active}"
