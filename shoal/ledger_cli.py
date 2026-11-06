@@ -110,6 +110,55 @@ def cmd_offer(a) -> int:
 
 
 @_guard
+def cmd_dismiss(a) -> int:
+    """Clear a role's needs-you from the lists until something new is raised. It stays as it is, and health is unchanged."""
+    spec = _spec(a)
+    led = _ledger(a, spec)
+    if spec is None or spec.role(a.role) is None:
+        print(f"ERROR: no role {a.role} in {a.sid}")
+        return 2
+    led.pull()
+    view = View(led, spec)
+    if a.undo:
+        if (view.dismissals.get(a.role) or {}).get("event") != "needs-dismissed":
+            print(f"{a.role}: nothing to bring back")
+            return 1
+        if a.dry_run:
+            print(f"[dry-run] {a.role}: would show as needing you again if it still does")
+            return 0
+        led.append("user", "system", event="needs-restored", role=a.role)
+        print(f"{a.role}: shows as needing you again if it still does")
+        return 0
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+    import ui_status
+    doc = ui_status.status([spec.sid], opencode_probe=False)
+    row = next((r for s in doc.get("shoals", []) for r in s.get("roles", []) if r.get("slug") == a.role), None)
+    if row is None:
+        print(f"ERROR: no status for {a.role} in {spec.sid}")
+        return 2
+    if row.get("dismissed"):
+        print(f"{a.role}: already dismissed")
+        return 0
+    if (row.get("remote_status") or {}).get("stale"):
+        print(f"{a.role}: its host's status is out of date here, so a dismissal could not match what it needs now: try again shortly")
+        return 1
+    reasons = (row.get("can_progress") or {}).get("reasons") or []
+    why = sorted(set(reasons) & (ui_status.NEEDS_REASONS | ui_status.FAILURE_REASONS))
+    if not why:
+        print(f"{a.role}: does not need you now, so there is nothing to dismiss")
+        return 1
+    lapse = sorted(set(reasons) & ui_status.FAILURE_REASONS)
+    until = (f"; because of {', '.join(lapse)} this lapses after {ui_status.DISMISS_FAILURE_S // 3600} h" if lapse else "")
+    if a.dry_run:
+        print(f"[dry-run] {a.role}: would clear needs-you ({', '.join(why)}) until something new is raised{until}")
+        return 0
+    led.append("user", "system", event="needs-dismissed", role=a.role, fp=row.get("needs_fp"), reasons=why)
+    print(f"{a.role}: needs-you dismissed ({', '.join(why)}) until something new is raised{until}. The row clears within a minute or so. "
+          "It stays as it is; health is unchanged")
+    return 0
+
+
+@_guard
 def cmd_withdraw(a) -> int:
     spec = _spec(a)
     led = _ledger(a, spec)
@@ -478,6 +527,12 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--to", default="")
     p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_withdraw)
+
+    p = sub.add_parser("dismiss", help="clear a role's needs-you until something new is raised; it stays as it is, and health is unchanged")
+    common(p)
+    p.add_argument("--role", required=True)
+    p.add_argument("--undo", action="store_true", help="show it as needing you again, if it still does")
+    p.set_defaults(func=cmd_dismiss)
 
     p = sub.add_parser("claim", help="own an item (first landed wins)")
     common(p, slug=True)

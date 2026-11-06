@@ -406,19 +406,24 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
     maintainer reads `blocked` too (measured 2026-10-12, waitingFor None, no prompt)."""
     if row.get("waitingFor") or row.get("status") == "waiting":
         return True
+    return bool(claude_open_prompt(session, tail_bytes))
+
+
+def claude_open_prompt(session: str, tail_bytes: int = 524288) -> str:
+    """The id of the newest AskUserQuestion with no result yet in the session's transcript tail, else ""."""
     from backends import fake_sessions
     if fake_sessions() is not None:
-        return False
+        return ""
     path = claude_transcript(session)
     if not path:
-        return False
+        return ""
     try:
         with open(path, "rb") as fh:
             fh.seek(max(0, os.path.getsize(path) - tail_bytes))
             chunk = fh.read().decode(errors="replace")
     except OSError:
-        return False
-    open_q = set()
+        return ""
+    open_q: dict[str, bool] = {}  # in order, so the last is the newest
     for line in chunk.splitlines():
         if "AskUserQuestion" not in line and "tool_result" not in line:
             continue
@@ -430,10 +435,10 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
             if not isinstance(c, dict):
                 continue
             if c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
-                open_q.add(c.get("id"))
+                open_q[str(c.get("id") or "?")] = True
             elif c.get("type") == "tool_result":
-                open_q.discard(c.get("tool_use_id"))
-    return bool(open_q)
+                open_q.pop(str(c.get("tool_use_id")), None)
+    return next(reversed(open_q), "")
 
 
 # ---- the account usage limit ------------------------------------------------------------

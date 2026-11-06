@@ -145,6 +145,17 @@
       "expires_s": 600,
       "shoal": "",
       "role": ""
+    },
+    "dismiss": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "dismiss",
+      "command": "shoal dismiss --shoal alpha-20261101-000000 --role core",
+      "preview": "[dry-run] core: would clear needs-you (waiting-on-you) until something new is raised",
+      "cost": "",
+      "confirm": false,
+      "token": "c4d2096e1ab57f33",
+      "expires_s": 600
     }
   },
   "result": {

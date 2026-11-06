@@ -43,10 +43,10 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
   assert.equal(modJson.overlay.height, M.SIZE.height);
 });
 
-test("verbs: the twelve buttons in order, each with a kind and a role rule", () => {
-  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Remove", "Status", "Conditions", "Upgrade preview"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["handoff", "one"], ["remove-role", "one"]]);
+test("verbs: the thirteen buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "Status", "Conditions", "Upgrade preview"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["handoff", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
     else assert.ok(fx.views[v.verb], `a view fixture for ${v.verb}`);
@@ -58,7 +58,7 @@ test("verbs: the twelve buttons in order, each with a kind and a role rule", () 
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, dryRun: false });
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, dryRun: false, undo: false });
   assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake", "dryRun"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
@@ -112,6 +112,11 @@ test("validation and argv for every verb", () => {
   const f = (verb, values) => ({ ...M.newForm(verb, NOW), values: { ...M.newForm(verb, NOW).values, dryRun: true, ...values } });
   assert.ok(M.planArgv("msg", t, f("msg", { text: "hi", dryRun: false })).includes("--no-preview"), "no preview asked for");
   assert.ok(!M.planArgv("msg", t, f("msg", { text: "hi" })).includes("--no-preview"));
+  // Dismiss runs at once, on one role, and can be undone
+  assert.equal(M.newForm("dismiss", NOW).values.dryRun, false);
+  assert.ok(M.planArgv("dismiss", t, f("dismiss", { undo: true })).includes("--undo"));
+  assert.ok(!M.planArgv("dismiss", t, f("dismiss", {})).includes("--undo"));
+  assert.match(M.validate("dismiss", { shoal: A, role: "*" }, f("dismiss", {})), /pick a role/);
   assert.equal(M.validate("msg", t, f("msg", {})), "type a message");
   assert.equal(M.validate("msg", { shoal: A }, f("msg", { text: "hi" })), "pick a role (or * for everyone)");
   assert.equal(M.validate("msg", { role: "core" }, f("msg", { text: "hi" })), "pick a shoal first");

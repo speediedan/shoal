@@ -37,7 +37,7 @@ for _p in (PKG, HERE):
 
 V = 1
 PLAN_TTL_S = 600
-WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session")
+WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session", "dismiss")
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade")
 
@@ -127,6 +127,9 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError("offer needs --item (repo#n:fix|review)")
         args = ["offer", "--shoal", sid, "--to", role, f"--item={a.item}"] + ([f"--note={a.note}"] if a.note else [])
         return args, "an offer wakes an idle role (one turn)", True
+    if verb == "dismiss":
+        role = _role(spec, a.role)
+        return ["dismiss", "--shoal", sid, "--role", role] + (["--undo"] if getattr(a, "undo", False) else []), "", False
     if verb == "withdraw":
         if not (a.item or "").strip():
             raise ActError("withdraw needs --item")
@@ -421,6 +424,7 @@ def add_parsers(u) -> None:
     q.add_argument("--effort", default="", help="handoff: the new session's effort")
     q.add_argument("--ecosystem", default="", help="handoff: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
+    q.add_argument("--undo", action="store_true", help="dismiss: show the role as needing you again")
     q.add_argument("--no-preview", action="store_true", help="a write verb: skip its dry run (the apply reports any refusal)")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_act_plan)

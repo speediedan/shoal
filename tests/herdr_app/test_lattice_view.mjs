@@ -953,6 +953,20 @@ test("a standalone session's card says which it is and whether it runs; a blocke
   assert.equal(r[0]?.text, "reply yes to apply it");
 });
 
+test("a dismissed role is quiet on the lattice, and its ask is still on its card", () => {
+  const d = structuredClone(doc);
+  const n = d.nodes.find((x) => x.kind === "role" && x.shoal === A);
+  n.state = { ...n.state, class: "wait", event: "user-ask", needs_you: false, dismissed: true };
+  n.work = { ...n.work, asks: ["ok to go?"] };
+  const vm = M.buildModel(d, "global");
+  const got = vm.byId.get(n.id);
+  assert.equal(got.visual.key, "dismissed");
+  assert.equal(got.visual.needsYou, false);
+  assert.ok(!vm.needsYou.some((r) => r.id === n.id), "off the rail's list");
+  assert.ok(M.cardLines(vm, n.id).list.includes("? ok to go?"));
+  assert.ok(M.LEGEND_GROUPS.find((g) => g.id === "idle").keys.includes("dismissed"));
+});
+
 test("a change on a board redraws the rail", () => {
   const before = M.visualSignature(M.buildModel(doc, "global"));
   const d = structuredClone(doc);

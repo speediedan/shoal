@@ -418,11 +418,15 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
     for _ in range(REATTACH_MAX):
         # the Claude background service restarted under the client (an update reinstalled the binary: measured
         # 2026-10-22, 124 restarts in a day), which drops every attached client back to its card. Reattach the same
-        # session; attaching never takes a turn.
-        if harness != "claude" or not service_restarted_since(started):
+        # session; attaching never takes a turn. Only a restart as the client ended counts: the service restarts every
+        # 30 minutes, and most leave a client running, so "since the attach began" read a person's detach from any
+        # attach that old as a drop, and put them back in (measured 2026-11-06).
+        if harness != "claude" or not service_restarted_since(max(started, time.time() - REATTACH_WINDOW_S)):
             break
-        print("shoal view: the Claude background service restarted (an update); reattaching")
-        time.sleep(2)
+        print("shoal view: the Claude background service just restarted; reattaching in 3s (press a key to stay on the card)")
+        sys.stdout.flush()
+        if _getkey(3):
+            break
         argv, env = viewer(harness, session if not job else job, label, model, effort)
         started = time.time()
         r = subprocess.run(argv, env=env)
@@ -441,6 +445,7 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
 
 
 REATTACH_MAX = 3
+REATTACH_WINDOW_S = 60  # how close to the client's end a restart must be (measured: a client dropped 12 s after one)
 SERVICE_START = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)\] \[supervisor\] .*daemon start")
 
 
@@ -551,6 +556,8 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
         rows.append([f"ask {i}", " ".join(str(a).split())])
     if r.get("says"):
         rows.append(["it says", " ".join(str(r["says"]).split())])
+    if r.get("dismissed"):
+        rows.append(["dismissed", "until something new is raised (`shoal dismiss --undo` brings it back)"])
     if r["offers_open"]:
         rows.append(["offers", f"{r['offers_open']} open"])
     reasons = [ui_status.ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x != "parked"]
