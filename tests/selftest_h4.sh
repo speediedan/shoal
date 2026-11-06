@@ -658,6 +658,24 @@ check "wait-expired step1:wake" env SHOAL_HEALTH_SHIFT_MIN=245 $H health --spec 
 M0=$(cat /tmp/$SID/mail-read-up 2>/dev/null || echo none)
 $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek >/dev/null
 [ "$(cat /tmp/$SID/mail-read-up 2>/dev/null || echo none)" = "$M0" ] || fail "--peek consumed the role's mail"
+# the same item written with its owner is scheduled: a role working it is not told that its queue does not schedule it
+python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "blocking-unscheduled read an owner-prefixed item as unscheduled"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+os.environ["SHOAL_DEFAULT_OWNER"] = "someowner"
+import health
+from ledger import Ledger, View
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+v = View(Ledger(sys.argv[3], root=spec.ledger_dir, sync=False), spec)
+def raised():
+    return [c for c in health.evaluate(spec, v, {}) if c["slug"] == "up" and c["condition"] == "blocking-unscheduled"]
+assert raised(), "the unscheduled case stopped raising"
+real = v.current_queue
+for field, value in (("active", "someowner/interpretune#9301:fix"), ("next", ["someowner/interpretune#9301:fix"])):
+    v.current_queue = lambda s, real=real, field=field, value=value: dict(real(s) or {}, **{field: value}) if s == "up" else real(s)
+    assert not raised(), (field, raised())
+PY2
 $H claim --shoal $SID --spec "$SPEC" --slug up --item interpretune#9401:fix --no-sync >/dev/null
 check "HELD-UNSCHEDULED interpretune#9401" $H queue --shoal $SID --spec "$SPEC" --slug up --active interpretune#9301:fix --next "" --reason test --no-sync
 # a holder hands its claim to a named role: an implicit offer the recipient can claim
