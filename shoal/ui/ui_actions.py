@@ -173,25 +173,44 @@ def _shoal(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
                           timeout=timeout, env=dict(os.environ, NO_COLOR="1"), stdin=subprocess.DEVNULL)
 
 
-def _stream(args: list[str], log, timeout: int = 120) -> tuple[int, str]:
-    """One shoal verb of this checkout, its output written to `log` line by line as it comes. (rc, output)."""
-    p = subprocess.Popen([sys.executable, os.path.join(PKG, "cli.py"), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, stdin=subprocess.DEVNULL, env=dict(os.environ, NO_COLOR="1", PYTHONUNBUFFERED="1"))
-    timer = threading.Timer(timeout, p.kill)
-    timer.start()
-    lines = []
-    try:
+def _follow(argv: list[str], log, timeout: int = 120) -> tuple[int, str]:
+    """Run `argv`, its output written to `log` line by line as it comes. (rc, output). A detached child can hold the pipe long
+    after the verb ended, so the read runs aside: the verb's own end, or the deadline, decides when this returns."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, stdin=subprocess.DEVNULL,
+                         env=dict(os.environ, NO_COLOR="1", PYTHONUNBUFFERED="1"))
+    lines: list[str] = []
+    done = threading.Event()
+
+    def read() -> None:
         for line in p.stdout:
+            if done.is_set():
+                return
             lines.append(line)
             log.write(line)
             log.flush()
-    finally:
-        expired = not timer.is_alive()
-        timer.cancel()
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    deadline = time.time() + timeout
+    while reader.is_alive():
+        reader.join(0.2)
+        if p.poll() is not None:
+            reader.join(1.0)  # what the verb itself wrote is already in the pipe
+            break
+        if time.time() > deadline:
+            p.kill()
+            p.wait()
+            reader.join(1.0)
+            done.set()
+            raise subprocess.TimeoutExpired(argv, timeout)
     rc = p.wait()
-    if expired:
-        raise subprocess.TimeoutExpired(args, timeout)
+    done.set()
     return rc, "".join(lines)
+
+
+def _stream(args: list[str], log, timeout: int = 120) -> tuple[int, str]:
+    """One shoal verb of this checkout, through `_follow`."""
+    return _follow([sys.executable, os.path.join(PKG, "cli.py"), *args], log, timeout)
 
 
 def scope_shoals(scope: str) -> list[str]:
@@ -217,8 +236,9 @@ def scope_shoals(scope: str) -> list[str]:
 
 
 def plan_scope(verb: str, a) -> dict:
-    """One verb across shoals: every shoal's own dry run, one token, and a confirm even for offline (it reaches
-    more than the shoal in front of you). Any refusal refuses the whole plan."""
+    """One verb across shoals, under one token. With a preview: every shoal's own dry run, and any refusal refuses the
+    whole plan. Without one, each shoal's verb runs at the apply and the output says which refused, so a shoal already
+    offline does not stop the others."""
     if verb not in SCOPED_VERBS:
         raise ActError(f"--scope applies to {', '.join(SCOPED_VERBS)}, not {verb}")
     argvs, previews, cost = [], [], ""

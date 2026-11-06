@@ -82,6 +82,14 @@ test("forms: defaults, visible fields, Tab order", () => {
   for (const v of ["msg", "offer", "withdraw", "offline"]) assert.equal(M.newForm(v, NOW).values.dryRun, false, `${v} runs at once by default`);
   for (const v of ["freeze", "handoff", "remove-role", "remove-session"]) assert.equal(M.newForm(v, NOW).values.dryRun, true, `${v} previews first`);
   assert.equal(M.lastLines("a\nb\nc\n", 2), "b\nc");
+  // across shoals with no preview, only the button that names its reach runs it
+  const run = M.newForm("offline", NOW);
+  assert.equal(M.runsAcross({ scope: "all" }, run), true);
+  assert.equal(M.runsAcross({ scope: "all" }, M.setValue(run, "dryRun", true)), false, "Enter gives the preview");
+  assert.equal(M.runsAcross({ shoal: A }, run), false);
+  assert.equal(M.runLabel({ scope: "all" }), "Run on every shoal");
+  assert.equal(M.runLabel({ scope: "host:lane-a" }), "Run on shoals on lane-a");
+  assert.equal(M.runLabel({ shoal: A }), "Run");
   assert.equal(M.lastLines("", 2), "");
   assert.deepEqual(M.textFields(off), ["until", "note"]);
   assert.equal(M.nextField(off, null), "until");

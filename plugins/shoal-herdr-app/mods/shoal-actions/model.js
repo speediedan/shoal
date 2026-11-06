@@ -116,6 +116,12 @@ export function backNote(until) {
   return `Back ${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** True when the form would run across shoals with no preview: that takes the button, naming its reach, and not Enter. */
+export const runsAcross = (target, form) => Boolean(strOrNull(target?.scope)) && form?.values?.dryRun !== true;
+
+/** The form's go button when it runs at once. */
+export const runLabel = (target) => (strOrNull(target?.scope) ? `Run on ${scopeLabel(target.scope)}` : "Run");
+
 /** The last `n` lines of an apply's output so far, for a screen that has room for those. */
 export function lastLines(text, n = 18) {
   return str(text).replace(/\n$/, "").split("\n").slice(-n).join("\n");

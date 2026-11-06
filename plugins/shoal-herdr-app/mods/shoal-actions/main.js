@@ -26,7 +26,7 @@ import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
-  verbsFor, scopeLabel, handoffMachine, lastLines,
+  verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -342,7 +342,8 @@ export default class Actions extends View {
     if (now - this.lastEnter < 250) return; // the input's submit and the key event are one press
     this.lastEnter = now;
     const a = keyAction("enter", this.screen, { canConfirm: Boolean(this.token) });
-    if (a === "preview") this.preview(cx);
+    if (a === "preview" && runsAcross(this.sel, this.form)) this.hint = `Enter does not run this across shoals: use "${runLabel(this.sel)}"`;
+    else if (a === "preview") this.preview(cx);
     else if (a === "confirm") this.apply(cx);
   }
 
@@ -691,14 +692,14 @@ export default class Actions extends View {
 
   footer(c) {
     const row = h_flex().flex_none().px(16).py(10).gap(8).items_center().border_t_1().border_color(c.border);
-    const keys = { menu: "click an action · Esc closes", form: `Enter: ${this.form?.values?.dryRun ? "preview" : "run"} · Tab: next field · Esc: back`, plan: "Enter: confirm · Esc: cancel", busy: "Esc: back", result: "Esc: back to the form", view: "Esc: back", error: "Esc: back" };
+    const keys = { menu: "click an action · Esc closes", form: `${runsAcross(this.sel, this.form) ? "" : `Enter: ${this.form?.values?.dryRun ? "preview" : "run"} · `}Tab: next field · Esc: back`, plan: "Enter: confirm · Esc: cancel", busy: "Esc: back", result: "Esc: back to the form", view: "Esc: back", error: "Esc: back" };
     row.child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(c.dim).child(keys[this.screen] ?? ""));
     const go = (f) => (_e, cx) => { f(cx); cx.notify(); };
     switch (this.screen) {
       case "form":
         row.child(this.button("b-cancel", "Cancel", "plain", go((cx) => this.back(cx)), c));
         if (this.form?.values?.dryRun) row.child(this.button("b-preview", "Preview", "primary", go((cx) => this.preview(cx)), c, "plan it: the CLI's --dry-run, nothing written"));
-        else row.child(this.button("b-run", "Run", "primary", go((cx) => this.preview(cx)), c, "run it now; tick Preview first to see a dry run"));
+        else row.child(this.button("b-run", runLabel(this.sel), "primary", go((cx) => this.preview(cx)), c, "run it now; tick Preview first to see a dry run"));
         break;
       case "plan":
         row.child(this.button("b-cancel", "Cancel", "plain", go((cx) => this.back(cx)), c, "discard the plan; nothing written"));

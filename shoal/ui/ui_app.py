@@ -543,10 +543,11 @@ class Reconciler:
         want = {p["label"] for p in tab["panes"]}
         for x in tab_doc["terminals"]:
             try:
-                lab = (hc_get(x["terminal"]).get("labels") or {}).get(PANE_LABEL) or ""
+                t = hc_get(x["terminal"])
             except AppError:
                 continue
-            if lab.endswith("/ledger") and lab not in want:
+            lab = (t.get("labels") or {}).get(PANE_LABEL) or ""
+            if lab.endswith("/ledger") and lab not in want and foreground_kind(t) != "other":  # not one a person is using
                 self.say(f"{space['name']}/{tab['name']}: close {lab}")
                 if not self.dry_run:
                     app_do("pane.close", {"pane": x["pane"]})

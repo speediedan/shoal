@@ -218,12 +218,14 @@ def item_url(item: str, repos: dict[str, str]) -> str | None:
 
 
 def standalone_doc(e: dict, rows: list[dict]) -> dict:
-    """A saved standalone session for its lattice card: which one it is, and whether it runs now. Only Claude can be read here."""
+    """A saved standalone session for its lattice card: which one it is, and whether it runs now. Live means what Remove
+    means by it, a worker's pid. Only Claude can be read here, and no rows at all is a listing that failed, not every seat stopped."""
+    from backends import claude_holders
     session, harness = str(e.get("session") or ""), str(e.get("harness") or "claude")
     state = "unread"
-    if harness == "claude":
-        row = ui_status.claude_session(rows, session, str(e.get("job") or "")) or {}
-        if not row or row.get("state") in ("stopped", "done"):
+    if harness == "claude" and rows:
+        row = next(iter(claude_holders(rows, session, str(e.get("job") or ""))), {})  # a live worker first
+        if not row.get("pid"):
             state = "stopped"
         elif row.get("state") == "blocked":
             state = "blocked"
@@ -728,7 +730,7 @@ class GraphBuilder:
 
         # -- outside seats, aliased to a role of the same slug in another shoal
         import ui_herdr
-        saved = {str(e.get("label") or str(e.get("session"))[:12]): e for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
+        saved = {str(e.get("label") or str(e.get("session"))[:12]): e for e in ui_herdr.load_standalone(raw=True) if not e.get("host") and not e.get("dismissed")}
         for label in saved:  # a saved session is on the picture whether or not it ever wrote to a ledger
             ext_seen.setdefault("ext:" + label, set())
         for eid in sorted(ext_seen):
