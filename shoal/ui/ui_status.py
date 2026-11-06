@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime
 import glob
+import hashlib
 import json
 import os
 import subprocess
@@ -299,6 +300,13 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         except Exception:  # noqa: BLE001 - a read model never fails on an advisory
             pass
     blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "context-large")]
+    says = (_short(claude_says(claude_session(rows, role.session) or {}, role.session), 160)
+            if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
+    shown_asks = [_short(a, 160) for a in asks]
+    needs_fp = needs_fingerprint(reasons, shown_asks, says, boundary)
+    ack = view.dismissals.get(slug)
+    wanting = bool(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
+    dismissed = wanting and dismissed_now(ack, needs_fp, reasons, age_s(ack["ts"], now) if ack else None)
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
         "model": role.model, "fill": role.fill,
@@ -313,17 +321,17 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "blocker_stale": bool(stale_nb),
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
-        "asks": [_short(a, 160) for a in asks],
-        "says": (_short(claude_says(claude_session(rows, role.session) or {}, role.session), 160)
-                 if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else ""),
+        "asks": shown_asks,
+        "says": says,
         "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
         "heartbeat_age_s": int(hb * 60) if hb is not None else None,
         "context_k": ctx_k,
         "can_progress": {"ok": not blocking, "reasons": reasons},
-        "needs_you": bool({"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you",
-                           "blocker-role-cannot-take"} & set(reasons)),
+        "needs_you": bool(NEEDS_REASONS & set(reasons)) and not dismissed,
+        "dismissed": dismissed,
+        "needs_fp": needs_fp,
         "view": [config.cli(), "view", spec.sid, slug],
     }
 
@@ -869,6 +877,27 @@ def pending_question(row: dict, session: str) -> bool:
     AskUserQuestion in the transcript tail), as opposed to a session self-reported blocked."""
     import health as _h
     return _h.claude_prompt_open(row, session)
+
+
+NEEDS_REASONS = {"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you", "blocker-role-cannot-take"}
+# a dismissal over one of these lapses: it must not become a silent stall
+FAILURE_REASONS = {"dead-worker", "watcher-dead"}
+DISMISS_FAILURE_S = 86400
+
+
+def needs_fingerprint(reasons, asks, says: str, boundary: str) -> str:
+    """What a dismissal is of: why the role needs you, what it asks, and its last posture. A change to any is something new."""
+    why = sorted(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
+    return hashlib.sha256(json.dumps([why, list(asks or []), says or "", boundary or ""]).encode()).hexdigest()[:16]
+
+
+def dismissed_now(ack: dict | None, fp: str, reasons, age_seconds) -> bool:
+    """True while the role's latest dismissal covers what it needs now. Display only: health's conditions and pages do not read this."""
+    if not ack or ack.get("event") != "needs-dismissed" or ack.get("fp") != fp:
+        return False
+    if set(reasons) & FAILURE_REASONS and (age_seconds is None or age_seconds >= DISMISS_FAILURE_S):
+        return False
+    return True
 
 
 def claude_says(row: dict, session: str) -> str:

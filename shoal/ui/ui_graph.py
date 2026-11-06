@@ -668,6 +668,7 @@ class GraphBuilder:
                               "needs_you": bool(row.get("needs_you")), "reasons": reasons,
                               "shoal_offline": bool(off),
                               "says": row.get("says") or "",
+                              "dismissed": bool(row.get("dismissed")),
                               "restart_ready": bool((view.current_queue(slug) or {}).get("restart_ready"))},
                     "work": {"active": {"item": active, "url": item_url(active, repos)} if active else None,
                              "next": nxt, "asks": asks, "offers_open": int(row.get("offers_open") or 0),
@@ -686,7 +687,7 @@ class GraphBuilder:
                 if isinstance(row.get("grants_pending"), list):  # the status row's own list, when it has one
                     nodes[nid]["work"]["grants_pending"] = row["grants_pending"]
                     user["work"]["grants_pending"] += len(row["grants_pending"])
-            user["work"]["asks_open"] += sum(len(r.get("asks") or []) for r in rows)
+            user["work"]["asks_open"] += sum(len(r.get("asks") or []) for r in rows if not r.get("dismissed"))
             umet = per.get("user", {})
             user["metrics"]["msgs_out_1h"] += umet.get("msgs_out_1h", 0)
             user["metrics"]["msgs_in_1h"] += umet.get("msgs_in_1h", 0)

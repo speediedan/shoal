@@ -551,6 +551,8 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
         rows.append([f"ask {i}", " ".join(str(a).split())])
     if r.get("says"):
         rows.append(["it says", " ".join(str(r["says"]).split())])
+    if r.get("dismissed"):
+        rows.append(["dismissed", "until something new is raised (`shoal dismiss --undo` brings it back)"])
     if r["offers_open"]:
         rows.append(["offers", f"{r['offers_open']} open"])
     reasons = [ui_status.ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x != "parked"]

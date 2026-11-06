@@ -48,6 +48,7 @@ export const VERBS = [
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
   { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
+  { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", fields: ["undo"], about: "clear this role's needs-you until something new is raised; it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
   { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
@@ -83,6 +84,7 @@ export const FIELDS = {
   ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
   model: { key: "model", kind: "text", label: "Model", placeholder: "empty keeps the recorded model, or the new provider's default" },
   effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty keeps the recorded effort, or the new provider's default" },
+  undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
   removeForce: { key: "force", kind: "toggle", label: "Even if it is running or holds an active item", hint: "stops it first and can cut off work in progress" },
@@ -133,6 +135,7 @@ export function newForm(verb, now = new Date(), prefill = {}) {
   if (!info || info.kind !== "write") return null;
   const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false };
   values.dryRun = PREVIEW_FIRST.has(verb);
+  values.undo = false;
   if (verb === "offline") values.until = nextMorning(now);
   for (const [k, v] of Object.entries(obj(prefill) ?? {})) if (k in values) values[k] = v;
   if (verb === "offline" && values.state === "on" && !str(values.note).trim()) values.note = backNote(values.until);
@@ -244,6 +247,8 @@ export function planArgv(verb, target, form = null) {
       if (text("model")) argv.push(`--model=${text("model")}`);
       if (text("effort")) argv.push(`--effort=${text("effort")}`);
       if (v.force) argv.push("--force");
+    } else if (verb === "dismiss" && v.undo) {
+      argv.push("--undo");
     } else if ((verb === "remove-role" || verb === "remove-session") && v.force) {
       argv.push("--force");
     }

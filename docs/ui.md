@@ -592,6 +592,11 @@ shoal ui app-home                                  # show the SHOAL-home space o
 shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
+- **Dismissing a needs-you.** Right-click a role's row in the agents list, or use `Dismiss` in the actions dialog (`shoal dismiss --shoal ID
+  --role R [--undo]`). The row leaves "needs you" until something new is raised: a change to its reasons, its asks, what its session says, or its
+  posture. The role stays as it is, its watcher runs and its work accumulates, and health's conditions and pages are unchanged. A dismissal over a
+  dead session or a dead watcher lapses after 24 hours. It is a `user` event in the shoal's ledger, so every host and app agrees. To stop a role
+  instead, park it.
 - **Zoom.** `ctrl-shift-z` (`pane.zoom`) zooms the focused pane and back. Clicking a row in the agents list while zoomed zooms that
   role, in its own tab if need be, and the key gives the grid back.
 - **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a

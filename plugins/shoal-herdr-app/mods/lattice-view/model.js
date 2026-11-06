@@ -92,6 +92,7 @@ export const STATE_STYLE = {
   idle: { label: "idle", color: P.slate, fill: 0.75, urgency: null },
   queued: { label: "idle, work queued", color: P.slate, fill: 0.75, badge: "•", urgency: null },
   starved: { label: "no work assigned", color: P.slate, fill: 0.4, badge: "∅", urgency: null },
+  dismissed: { label: "dismissed: you cleared it", color: P.slate, fill: 0.3, border: "solid", opacity: 0.7, badge: "✓", urgency: null },
   held: { label: "held: you are offline", color: P.steel2, fill: 0.2, border: "solid", opacity: 0.7, badge: "☾", urgency: null },
   dead: { label: "session ended", color: P.red, fill: 0.12, border: "dotted", badge: "✕", urgency: 4, stall: true },
   excluded: { label: "excluded", color: P.steel2, fill: 0, border: "solid", opacity: 0.42, urgency: null },
@@ -106,7 +107,7 @@ export const LEGEND_GROUPS = [
   { id: "you", label: "NEEDS YOU", keys: ["auth", "ask", "prompt", "design", "assign", "sources", "dead", "unknown"] },
   { id: "working", label: "WORKING", keys: ["working"] },
   { id: "waiting", label: "WAITING ON A SYSTEM", keys: ["local-ci", "remote-ci", "lease", "system", "upstream", "peer", "handover", "refill", "hold", "other"] },
-  { id: "idle", label: "IDLE", keys: ["idle", "queued", "starved"] },
+  { id: "idle", label: "IDLE", keys: ["idle", "queued", "starved", "dismissed"] },
   { id: "off", label: "OFF", keys: ["held", "excluded"] },
 ];
 
@@ -191,6 +192,7 @@ function assignKey(s, node) {
 /** The state key of a node, from its role-time class and event. Never throws. */
 export function stateKey(node) {
   const s = obj(node?.state);
+  if (s.dismissed === true) return "dismissed";
   const cls = str(s.class);
   const ev = str(s.event);
   const grp = str(s.group);

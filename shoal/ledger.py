@@ -532,6 +532,7 @@ class View:
         self.last_by: dict[str, str] = {}         # writer -> last ts
         self.violations: list[tuple[dict, str]] = []
         self.contested: dict[str, list[dict]] = {}
+        self.dismissals: dict[str, dict] = {}     # slug -> latest needs-dismissed or needs-restored event
         self._fold()
 
     def _viol(self, e: dict, why: str) -> None:
@@ -645,6 +646,11 @@ class View:
                     self._viol(e, f"grant event by {by}: only the maintainer grants")
                     continue
                 self.grant_events.append(e)
+            elif typ == "system" and e.get("event") in ("needs-dismissed", "needs-restored"):
+                if by not in OFFER_WRITERS:
+                    self._viol(e, f"{by} may not dismiss a role's needs-you")
+                    continue
+                self.dismissals[str(e.get("role") or "")] = e
             elif typ == "system" and e.get("mode"):
                 if by not in OFFER_WRITERS:
                     self._viol(e, f"{by} may not set mode {e.get('mode')}")
