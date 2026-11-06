@@ -21,11 +21,13 @@ role's exclusive Claude attach and cost a client process each; the card costs ne
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -566,6 +568,8 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
     try:
         import ui_app
         report = ui_app.in_core_terminal()  # the Herdr app: the card reports the role's state itself (OSC 7501)
+        if report:
+            _mark_attached(ui_app, "")  # a card that died during an attach left it set
     except Exception:  # noqa: BLE001 - the app adapter can never take a 0.9.3 card down
         ui_app, report = None, False
     try:
@@ -616,13 +620,10 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             force = True
         if k in ("\r", "\n") and remote and not routed:
             continue  # nothing to attach here: the session lives on another host with no route from here
-        if k in ("\r", "\n") and ui_app is not None and (routed or not remote):
-            # attached, this loop reports nothing: an old `blocked` would stay on the agents list after the answer
-            sys.stdout.write(ui_app.OSC_CLEAR)
-            sys.stdout.flush()
         if k in ("\r", "\n") and routed:
             flush_input()
-            remote_attach(remote, sid, slug)
+            with _report_during(sid, slug, ui_app):
+                remote_attach(remote, sid, slug)
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
             continue
@@ -630,9 +631,59 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             flush_input()
             # a fresh process, so the attach always runs the current code: a card lives for days, and
             # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
-            subprocess.run(_view_cmd(sid, slug, spec_path))
+            with _report_during(sid, slug, ui_app):
+                subprocess.run(_view_cmd(sid, slug, spec_path))
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
+
+
+def _mark_attached(ui_app, value: str) -> None:
+    """Say on this terminal whether a client is attached under the card ("" removes it), so a rebuild of the roles tabs leaves it open."""
+    try:
+        ui_app.hc_label(os.environ["HC_TERMINAL_ID"], {ui_app.ATTACH_LABEL: value})
+    except Exception:  # noqa: BLE001 - a label never breaks an attach
+        pass
+
+
+@contextlib.contextmanager
+def _report_during(sid: str, slug: str, ui_app):
+    """Keep the role's status current on the agents list through an attach. The card's loop waits on the attach, and a pane
+    can stay attached for hours, so a role's last report froze there: `blocked` long after the answer (measured 2026-11-06:
+    three of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
+    does; only a changed report is written, because the attached client is drawing on the same terminal. Claude only: its
+    client reports nothing, while Codex's writes `app=codex` itself, so two reporters would take turns on one row (Muse's is
+    not known), and those keep the frozen report as before."""
+    if ui_app is None:
+        yield
+        return
+    import ui_herdr
+    stop = threading.Event()
+    _mark_attached(ui_app, "1")
+
+    def report() -> None:
+        last = None
+        while True:
+            try:
+                rows: list = []
+                card(sid, slug, False, rows)
+                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows and rows[0].get("ecosystem") == "claude" else None
+                if osc and osc != last:
+                    sys.stdout.write(osc)
+                    sys.stdout.flush()
+                    last = osc
+            except Exception:  # noqa: BLE001 - a report never breaks an attach
+                pass
+            if stop.wait(CARD_REFRESH_S):
+                return
+
+    t = threading.Thread(target=report, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(1)
+        _mark_attached(ui_app, "")
 
 
 def _remote_host(sid: str, slug: str, spec_path: str = "") -> str:
