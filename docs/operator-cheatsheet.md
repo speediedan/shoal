@@ -153,6 +153,7 @@ export S=<id> SPEC=<path to the group's spec>
 
     ```bash
     shoal park --spec <spec> --only <role> --note "<why>" [--until gh-pr:<owner/repo>#<n>] [--dry-run]
+    # features.autopark parks an idle role with nothing queued, until offer:<role>; offering to it relaunches it
     shoal unpark --spec <spec> --only <role>      # restart --only <role>
     shoal handoff --spec <spec> --only <role> [--ecosystem E] [--model M] [--effort X] [--force] [--dry-run]
                                                   # a fresh session from its start doc, on its own host

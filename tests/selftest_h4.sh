@@ -1041,7 +1041,8 @@ grep -q "BLOCKER STALE interpretune#9902 <- hold:design (expired" <<<"$OUT" || f
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle 2>&1 || true)
 grep -q "interpretune#9902 <- hold:design is stale (expired" <<<"$OUT" || fail "idle accepted behind an expired hold :: $OUT"
 rm -f /tmp/$SID/health.json
-env SHOAL_HEALTH_SHIFT_MIN=61 $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
+OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $H health --spec "$SPEC" --instance a 2>&1)   # first sighting recorded
+! grep -q "blocker-resolved" <<<"$OUT" || fail "an expired hold woke as if it had cleared :: $OUT"
 check "tl parked-work step1:wake" env SHOAL_HEALTH_SHIFT_MIN=92 $H health --spec "$SPEC" --instance a --dry-run
 # re-recording is the re-verification; a hold kept past hold_page_min pages the maintainer once
 check "posture=idle" env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle --blocked "interpretune#9902=hold:design still"
@@ -1063,6 +1064,18 @@ check "already cleared (lease gpu free" $Q --slug tl --idle --blocked "interpret
 check "posture=idle" env LEASE_STUB=held $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
 OUT=$($NX --slug tl 2>&1)
 grep -q "BLOCKER STALE interpretune#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT" || fail "cleared lease blocker not named :: $OUT"
+# a blocker that really cleared wakes its role at once, by itself; the blocker still held does not
+check "tl blocker-resolved step1:wake" $H health --spec "$SPEC" --instance a --dry-run
+OUT=$(env LEASE_STUB=held $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "blocker-resolved" <<<"$OUT" || fail "a blocker still held read as cleared :: $OUT"
+python3 - "$SHOALD" <<'PY2' || fail "cleared() let through something that is not news"
+import sys; sys.path.insert(0, sys.argv[1])
+import blockers
+q = {"next_blocked": {"a#1": "up:a#9", "a#2": "upstream:gh-pr:a#8", "a#3": "lease:gpu", "a#4": "ask:scope", "a#5": "hold:x", "a#6": "up:a#7"}}
+stale = {"a#1": "resolved: done", "a#2": "resolved: merged", "a#3": "resolved: free", "a#4": "resolved: no ask recorded",
+         "a#5": "expired: old", "a#6": "expired: untakeable"}
+assert sorted(blockers.cleared(stale, q)) == ["a#1", "a#2", "a#3"], blockers.cleared(stale, q)
+PY2
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)
 PY2
@@ -1535,6 +1548,22 @@ spec = spec_with(wake_off=["parked-work"])
 COND[:] = [pw("v#3")]
 out, st = run(spec, {"ladders": {"tl|parked-work|parked:v#3": {"since": ago(200), "step": 0}}})
 assert "tl parked-work step1:page" in out and ":wake" not in out, out
+# blocker-resolved wakes under that wake_off and while offline (it is news, and only the role is needed), once, and never
+# pages; the same blocker re-opening is not woken again; its own wake_off entry turns it off
+def br(key="cleared:b#4"):
+    return {"slug": "tl", "condition": "blocker-resolved", "key": key, "first_seen": True, "since": ago(1), "detail": "b#4 is free"}
+MODES["user-offline"] = {"mode": "user-offline", "state": "on", "ts": ago(300)}
+COND[:] = [br()]
+out, st = run(spec, {})
+assert "tl blocker-resolved step1:wake -> " in out and "held" not in out, out
+out, st = run(spec, dict(st, last_wake={}))
+assert "blocker-resolved" not in out, out
+st["ladders"] = {}; st["last_wake"] = {}
+out, st = run(spec, st)
+assert "skipped (woken for the same at" in out, out
+MODES["user-offline"] = {"mode": "user-offline", "state": "off", "ts": ago(60)}
+out, st = run(spec_with(wake_off=["blocker-resolved"]), {})
+assert ":wake" not in out and ":page" not in out, out
 print("wake economy ladders ok")
 # dormant: a dead watcher on an idle role with nothing actionable raises nothing (lazy_rearm)
 import importlib; importlib.reload(health)
@@ -1851,6 +1880,141 @@ for r in d["roles"]:
         r["session"], r["parked"] = "bbbb2222", {}
 json.dump(d,open(p,"w"),indent=1)
 PY2
+
+python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "auto park"
+import json, os, subprocess, sys, tempfile, time, types
+sys.path.insert(0, sys.argv[1])
+import health, park, providers, roles
+from roles import ShoalSpec
+spec_path, sid = sys.argv[2], sys.argv[3]
+spec = ShoalSpec.load(spec_path)
+role = spec.role("up")
+role.fill = "assigned"  # in memory only: the fixture's up fills itself
+OLD = "2020-01-01T00:00:00Z"
+def view(**kw):
+    q = kw.get("q", {})
+    return types.SimpleNamespace(current_queue=lambda s: q, queue=lambda s: kw.get("offers", []), active=lambda s: kw.get("claims", []),
+                                 role_state=lambda s: kw.get("state", {"state": "idle"}), is_idle=lambda s: True,
+                                 last_by={"up": kw.get("last", OLD)}, msgs=kw.get("msgs", []), freeze=lambda: None)
+os.environ["SHOAL_HEALTH_BETWEEN"] = "up"
+scratch = tempfile.mkdtemp()
+os.environ["CLAUDE_CONFIG_DIR"] = scratch  # no transcript here unless a case below writes one
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [{"id": "bbbb2222", "sessionId": "bbbb2222", "pid": 7, "kind": "background"}], "opencode": {}})
+park.session_held = lambda r, d="": False
+park._running_jobs = lambda sid_, slug: []
+import startdoc
+real_check = startdoc.check
+startdoc.check = lambda p, **k: {"ok": True, "problems": []}
+assert park.parkable(spec, view(), role, {}, 60) == "", park.parkable(spec, view(), role, {}, 60)
+now = health.iso()
+for name, v, want in [
+    ("active", view(q={"active": "x#1:fix"}), "queue holds"), ("next", view(q={"next": ["x#1:fix"]}), "queue holds"),
+    ("asks", view(q={"asks": ["merge?"]}), "queue holds"), ("offer", view(offers=[{"item": "x#1"}]), "open offer"),
+    ("claim", view(claims=[{"item": "x#1"}]), "live claim"), ("posture", view(state={"state": "waiting", "sub": "local-ci"}), "posture is waiting"),
+    ("recent write", view(last=now), "quiet for"), ("recent mail", view(msgs=[{"to": "up", "ts": now}]), "quiet for"),
+]:
+    got = park.parkable(spec, v, role, {}, 60)
+    assert want in got, (name, got)
+assert park.parkable(spec, view(state={"state": "waiting", "sub": "queue-empty"}), role, {}, 60) == "", "an empty-queue wait is parkable"
+assert park.parkable(spec, view(msgs=[{"to": "tl", "ts": now}]), role, {}, 60) == "", "another role's mail does not hold it"
+os.environ["SHOAL_HEALTH_BETWEEN"] = ""
+assert "between turns" in park.parkable(spec, view(), role, {}, 60)
+os.environ["SHOAL_HEALTH_BETWEEN"] = "up"
+park.session_held = lambda r, d="": True
+assert "holds its session" in park.parkable(spec, view(), role, {}, 60)
+park.session_held = lambda r, d="": False
+# a person in a Claude session, none of which session_held reports: so these run the real checks, nothing stubbed
+fake = os.path.join(scratch, "claude")  # a real process whose command line reads `.. claude attach <job>`
+with open(fake, "w") as fh:
+    fh.write("#!/bin/sh\nsleep 30\n")
+os.chmod(fake, 0o755)
+client = subprocess.Popen([fake, "attach", "bbbb2222"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+got = ""
+for _ in range(50):
+    got = park.parkable(spec, view(), role, {}, 60)
+    if got:
+        break
+    time.sleep(0.1)
+client.kill(); client.wait()
+assert "a client (pid" in got, got
+assert park.parkable(spec, view(), role, {}, 60) == "", "a client that left still holds it"
+other = subprocess.Popen([fake, "attach", "cccc3333"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(0.5)
+assert park.parkable(spec, view(), role, {}, 60) == "", "another job's client held this one"
+other.kill(); other.wait()
+sess = {"id": "bbbb2222", "sessionId": "bbbb2222", "pid": 7}
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict(sess, kind="interactive")], "opencode": {}})
+assert "runs interactively" in park.parkable(spec, view(), role, {}, 60)
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [dict(sess, kind="background")], "opencode": {}})
+assert "may be waiting on an answer" in park.parkable(spec, view(), role, {"bbbb2222": "blocked"}, 60)
+assert park.parkable(spec, view(), role, {"bbbb2222": "idle"}, 60) == ""
+# direct chat writes nothing to the ledger: the transcript moving is what holds the grace
+project = os.path.join(scratch, "projects", "p"); os.makedirs(project)
+log = os.path.join(project, "bbbb2222.jsonl"); open(log, "w").close()
+assert "session was active" in park.parkable(spec, view(), role, {}, 60)
+os.utime(log, (time.time() - 7200, time.time() - 7200))
+assert park.parkable(spec, view(), role, {}, 60) == "", "an old transcript held it"
+park._running_jobs = lambda sid_, slug: ["shoal-s-up-x.service"]
+assert "job of its is running" in park.parkable(spec, view(), role, {}, 60)
+park._running_jobs = lambda sid_, slug: []
+startdoc.check = lambda p, **k: {"ok": False, "problems": ["no grants-needed"]}
+assert "start doc" in park.parkable(spec, view(), role, {}, 60)
+startdoc.check = lambda p, **k: {"ok": True, "problems": []}
+role.fill = "self"
+assert "fill=self" in park.parkable(spec, view(), role, {}, 60)
+role.fill = "assigned"
+
+# the sweep: off by default, one park a run, a raised condition or an exemption keeps a role out, a failed park waits a grace
+for r in spec.roles:
+    r.fill = "assigned" if r.slug == "up" else "none"
+parks = []
+rc = [0]
+park.park = lambda s, p, slugs, note="", until="", by="user", force=False, dry_run=False: parks.append((slugs, until, by)) or rc[0]
+health.claude_busy = lambda: {}
+spec.features.pop("autopark", None)
+state, acts = {}, []
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert not parks and not acts, "off unless the feature is set"
+spec.features["autopark"] = True
+park.auto_park(spec, spec_path, view(), [{"slug": "up"}], state, acts)
+assert not parks, "a raised condition keeps it out"
+spec.features["autopark"] = {"exempt": ["up"]}
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert not parks, "exempt"
+spec.features["autopark"] = {"after_min": 60}
+park.auto_park(spec, spec_path, view(), [], state, acts, dry_run=True)
+assert not parks and "would park" in acts[-1][2] and "up" not in state.get("parks", {}), acts
+rc[0] = 1
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert parks == [(["up"], "offer:up", "shoal")] and "refused" in acts[-1][2], (parks, acts)
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert len(parks) == 1, "a failed park is not retried inside the grace"
+startdoc.check = real_check
+
+# the provider: pending until an offer names the role; `*` does not count; unknown without a shoal
+roles.find_spec = lambda s: spec_path
+assert providers.normalize("offer:")[1] and providers.normalize("offer:up") == ("offer:up", "")
+assert providers.resolve("offer:up", "up", "")[0] is None
+assert providers.resolve("offer:nobody", "nobody", sid)[0] is True, providers.resolve("offer:nobody", "nobody", sid)
+print("auto park ok")
+PY2
+# an offer to everyone is no reason to restart a parked role; one naming it is (the fixture's up already holds one)
+check "interpretune#9711" $H offer --shoal $SID --spec "$SPEC" --to '*' --item interpretune#9711:fix --no-sync
+python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "auto park offer"
+import sys
+sys.path.insert(0, sys.argv[1])
+import park, providers, roles
+from roles import ShoalSpec
+roles.find_spec = lambda s: sys.argv[2]
+assert providers.resolve("offer:up", "up", sys.argv[3])[0] is False, providers.resolve("offer:up", "up", sys.argv[3])
+assert providers.resolve("offer:nobody", "nobody", sys.argv[3])[0] is True, "an offer to * counted"
+spec = ShoalSpec.load(sys.argv[2])
+r = spec.role("up")
+r.session, r.parked = "", {"until": "offer:up", "at": "x"}
+assert [x[0].slug for x in park.due(spec)] == ["up"], "the offer did not make it due"
+print("auto park offer ok")
+PY2
+check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --item interpretune#9711 --to '*' --no-sync
 
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "operational request acknowledgment"
 import sys

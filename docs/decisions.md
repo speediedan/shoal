@@ -511,7 +511,14 @@ is exactly what a model reaches for to end a turn.
 - **Banning `hold:`:** some blockers are real and uncheckable (a design direction nobody has given
   yet). Expiry keeps them expressible while making them cost a re-verification.
 - **Waking on every stale blocker immediately:** the existing `parked-work` ladder already escalates
-  wake, wake, page; stale blockers join it rather than adding a second ladder.
+  wake, wake, page; stale blockers join it rather than adding a second ladder. Revised 2026-11-06
+  for one case. `wake_off` strips that ladder to its page, and it is right to for a blocker that
+  merely expired. A role or provider blocker that cleared is different: nothing else wakes the role
+  (the watcher has no such event), and only the role is needed to look. Measured: a peer finished the
+  blocking item, its mail saying the maintainer had deferred the next one did not wake the role, the
+  role slept on behind a stale blocker, and the next signal would have been a page to the maintainer
+  at 180 minutes. So that case alone wakes once, as `blocker-resolved`, and an expired blocker still
+  joins `parked-work`. The wake says to look, not to start: a cleared blocker is not a go.
 - **A scheduled self-check prompt:** costs tokens every cycle on every lane; the checks here run in
   the token-free quorum and at the role's own boundaries.
 

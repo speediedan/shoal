@@ -17,6 +17,7 @@ Kinds shipped here:
   gh-run    <owner/repo>:<run id>, via `gh run view`
   gh-pr     <owner/repo>#<n>, via `gh pr checks` (an empty check list is unknown)
   az-build  an Azure Pipelines build, `[<project>/]<id>`, via `az pipelines build show` (optional: needs `az`)
+  offer     <role>, via the shoal's ledger: resolved once an open offer is addressed to that role
 """
 from __future__ import annotations
 
@@ -77,9 +78,24 @@ def normalize(target: str) -> tuple[str, str]:
         repo, _, rid = ref.rpartition(":")
         if not repo or not rid.isdigit():
             return target, f"gh-run target {ref!r} is not <owner/repo>:<run id>"
+    if kind == "offer" and not ref:
+        return target, "offer target needs a role: offer:<role>"
     if kind == "az-build" and not re.fullmatch(r"(?:[\w.-]+/)?\d+", ref):
         return target, f"az-build target {ref!r} is not [<project>/]<build id>"
     return target, ""
+
+
+@register("offer")
+def offer(ref: str, slug: str, sid: str) -> Result:
+    """Pending until an open offer names the role itself, a handoff to it included. One addressed to `*` does not count:
+    every other role can take that, so it is no reason to restart a parked one."""
+    if not sid:
+        return None, "no shoal to read"
+    from ledger import Ledger, View
+    from roles import ShoalSpec, find_spec
+    spec = ShoalSpec.load(find_spec(sid))
+    mine = [o for o in View(Ledger(sid, root=spec.ledger_dir, sync=False), spec).queue(ref) if o.get("to") == ref]
+    return (False, f"offer of {mine[0].get('item')} landed") if mine else (True, "no open offer")
 
 
 def resolve(target: str, slug: str, sid: str = "", upstream: bool = False) -> Result:

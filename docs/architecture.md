@@ -165,7 +165,7 @@ done; `upstream:<target>` and `lease:<key>` clear when their provider says the t
 pending (an upstream `gh-pr` target stays pending while the PR is open, whatever its checks say); `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
 `hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
 after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
-STALE`, the idle gate and `parked-work` treat its item as free, and recording a blocker that has
+STALE`, the idle gate and `parked-work` treat its item as free, `blocker-resolved` wakes the role once if a role or provider blocker cleared, and recording a blocker that has
 already cleared is refused. So is a `<role>:<repo#n>` blocker naming a `fill=assigned` or `fill=none`
 role that holds no offer, handoff or claim for the item: nothing could ever end that wait (FM-4). Re-recording a blocker is its re-verification. A hold kept past
 `hold_page_min` wakes the role to convert it, then pages the maintainer 240 minutes later if it still stands (`hold-long`). With the feature on, `queue --idle` is also
@@ -401,6 +401,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
+| `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:` or `lease:` blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
@@ -479,6 +480,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | --- | --- | --- |
 | `lazy_rearm` | on | a dead watcher on a role that is not active and has nothing its watcher would wake it for raises no `watcher-dead`: its next real work raises its own condition |
 | `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder. Each arm counts fetch failures from zero, so a re-arm during an outage gets its full five attempts |
+| `autopark` (a top-level feature) | off | a `fill=assigned` role holding nothing and quiet for `after_min` (default 60; `true`, or `{"after_min": 60, "exempt": ["<role>"]}`) is parked by the quorum `--until offer:<role>`, and the next offer to it relaunches it from its start doc. So an empty-queue episode costs at most that grace of `wait:assignment`, and parked time is excluded. It stays out for a queue, offer, claim or ask, a posture other than idle, a message or session activity newer than the grace (direct chat writes nothing to the ledger), a turn, a `blocked` Claude row (a request may sit in its job's `needs`), an attached client or interactive session (`claude attach` for Claude, `session_held` for the others), a running job, a condition raised this run, an incomplete start doc, or a freeze. At most one park per quorum run. Only an offer relaunches: a `msg --wake` to a parked role does not. A park or relaunch changes the shoal's viewable roles, so the app rebuilds its roles tabs |
 | `watch_checkouts` | off | paths of shared checkouts this host's quorum watches for `checkout-stuck`, each fetched per tick. List them on one spec, or each quorum pages about the same checkout. A path that is not a checkout on a host is skipped there |
 | `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
 | `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
@@ -492,7 +494,8 @@ And every run sends **at most one wake per role**, carrying every condition then
 **The wait gate (`features.waitgate`, default on).** `queue --wait` other than `local-ci` is refused
 while a next item has no current blocker, exactly like `queue --idle`. Refused mid-turn, it costs
 nothing; caught later by `parked-work` it cost a cold wake. `parked-work` remains for a recorded
-blocker that goes stale afterwards, and with `wake_off` it pages instead of waking. `waitgate: false`
+blocker that goes stale afterwards, and with `wake_off` it pages instead of waking (a blocker that
+cleared still wakes the role, through `blocker-resolved`, unless that is listed too). `waitgate: false`
 restores the old write.
 
 ### Bounding context
