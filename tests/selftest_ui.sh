@@ -2020,6 +2020,85 @@ rec.dry_run = True
 drop(both, [{"label": "s/overview"}])
 assert not did and said, (did, said)
 PY2
+# a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
+python3 - "$SHOALD" <<'PY2' || fail "report during attach"
+import io, sys, time, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_herdr, ui_view
+ui_view.CARD_REFRESH_S = 0.05
+ui_herdr.shoal_tag = lambda sid: "tag"
+state = {"v": "blocked"}
+def fake_card(sid, slug, force=False, rows=None):
+    rows.append({"state": state["v"], "ecosystem": state.get("eco", "claude")})
+    return ""
+ui_view.card = fake_card
+app = types.SimpleNamespace(report_text=lambda r, tag: f"<{r['state']}>")
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", app):
+        time.sleep(0.2)
+        state["v"] = "working"
+        time.sleep(0.2)
+    n = out.getvalue()
+    state["v"] = "idle"
+    time.sleep(0.15)
+    after = out.getvalue()
+finally:
+    sys.stdout = real
+assert n == "<blocked><working>", n  # the answer shows while attached, and no repeats
+assert after == n, after  # it stopped
+out = io.StringIO()
+state.update(v="blocked", eco="codex")
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", app):
+        time.sleep(0.15)
+finally:
+    sys.stdout = real
+assert out.getvalue() == "", out.getvalue()  # a client that reports itself is left to it
+state["eco"] = "claude"
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", None):
+        pass
+    def boom(*a, **k):
+        raise RuntimeError("no status")
+    ui_view.card = boom
+    with ui_view._report_during("s", "r", app):
+        time.sleep(0.1)
+finally:
+    sys.stdout = real
+assert out.getvalue() == "", out.getvalue()  # outside the app nothing; a failed read breaks nothing
+PY2
+# an attach marks the terminal, and a roles tab with a marked card is not rebuilt, though the core names the card as foreground
+HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "attached label"
+import sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_view
+marks = []
+app = types.SimpleNamespace(ATTACH_LABEL=ui_app.ATTACH_LABEL, report_text=lambda r, tag: "", hc_label=lambda t, labels: marks.append((t, labels)))
+ui_view.card = lambda *a, **k: ""
+with ui_view._report_during("s", "r", app):
+    assert marks == [("t9", {"shoal.attached": "1"})], marks
+assert marks[-1] == ("t9", {"shoal.attached": ""}), marks
+def boom(*a):
+    raise RuntimeError("no hc")
+with ui_view._report_during("s", "r", types.SimpleNamespace(ATTACH_LABEL="x", report_text=lambda r, tag: "", hc_label=boom)):
+    pass  # a failed label breaks nothing
+card_fg = {"foreground": {"name": "python", "argv": ["python", "/x/cli.py", "view", "s", "r", "--stub"]}}
+assert ui_app.foreground_kind(card_fg) == "card"
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: "s/r", ui_app.ATTACH_LABEL: "1"}, **card_fg}
+closed = []
+ui_app.app_do = lambda verb, args=None: closed.append(verb)
+said = []
+rec = types.SimpleNamespace(machine=None, dry_run=False, say=said.append)
+space = {"name": "s", "tabs": [{"name": "roles", "panes": [{"label": "s/other"}]}]}
+got = {"id": "x", "tabs": [{"name": "roles", "terminals": [{"terminal": "t9", "pane": "p9"}]}]}
+assert ui_app.Reconciler._relayout(rec, space, got, {}) is True
+assert not closed and "in use" in said[-1], (closed, said)
+PY2
 # a blocked session's own words come from its job; nothing there reads as nothing
 SAYS="$(mktemp -d)"
 CLAUDE_CONFIG_DIR="$SAYS" python3 - "$SHOALD" "$SAYS" <<'PY2' || fail "says"
@@ -2106,9 +2185,10 @@ ui_herdr.standalone_path = lambda: p
 d = ui_graph.GraphBuilder(root=sys.argv[2]).build()
 got = {n["label"]: n for n in d["nodes"] if n["kind"] == "external"}
 # saved here shows whether or not it ever wrote to a ledger; saved on another host does not, and a plain writer stays unsaved
-assert got[name]["saved"] and got[name]["standalone"] == {"harness": "muse", "id": "s1-aaaaaaaaa", "state": "unread"}, got[name]
+assert got[name]["saved"] and got[name]["standalone"] == {"harness": "muse", "id": "s1-aaaaaaaaa", "state": "unread", "dismissed": False}, got[name]
 assert got["quiet-seat"]["saved"] and got["quiet-seat"]["standalone"]["state"] in ("stopped", "unread"), got["quiet-seat"]
-assert "elsewhere" not in got and "dismissed-seat" not in got and sum(bool(n["saved"]) for n in got.values()) == 2, got
+assert "elsewhere" not in got and sum(bool(n["saved"]) for n in got.values()) == 3, got
+assert got["dismissed-seat"]["standalone"]["dismissed"] is True and got["quiet-seat"]["standalone"]["dismissed"] is False, got
 rows = [{"id": "aaaa1111", "sessionId": "aaaa1111-x", "state": "working", "status": "busy", "pid": 1},
         {"id": "bbbb2222", "sessionId": "bbbb2222-x", "state": "working", "status": "idle", "pid": 2},
         {"id": "cccc3333", "sessionId": "cccc3333-x", "state": "blocked", "status": "idle", "pid": 3},

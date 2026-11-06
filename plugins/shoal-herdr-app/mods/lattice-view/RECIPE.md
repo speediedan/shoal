@@ -55,7 +55,7 @@ you, per-shoal throughput and per-host load.
 - **Satellites:** each role's active item, next items and items done in 24 h as small dots on
   short spokes fanned outward: the starburst.
 - **Outside nodes:** a dashed circle is either a saved standalone session on the feed's host, shown
-  whether or not it ever wrote to a ledger, or a ledger writer with no session behind it. A saved one's
+  whether or not it ever wrote to a ledger or was dismissed from the app's spaces, or a ledger writer with no session behind it. A saved one's
   card gives its harness, id and whether it runs now, and offers `Remove...` and hide. A writer with no
   session has nothing to remove: its card says so and offers to hide it. A long name wraps in the card.
 - **A shoal's name:** in the global view, hovering it shows its board's numbers and bar, and clicking
