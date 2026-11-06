@@ -592,6 +592,11 @@ shoal ui app-home                                  # show the SHOAL-home space o
 shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
+- **Zoom.** `ctrl-shift-z` (`pane.zoom`) zooms the focused pane and back. Clicking a row in the agents list while zoomed zooms that
+  role, in its own tab if need be, and the key gives the grid back.
+- **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a
+  question, `\u26b7` auth, `\u2691` a grant, else `!`). It keeps reporting during an attach, writing only a changed report, since the attached
+  client draws on the same terminal.
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
   `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard; its `l` shows the ledger tail in
   place, and `overview_ledger: true` in `ui.json` keeps a tail pane, while with it off the sync closes one), `roles` (four cards a tab

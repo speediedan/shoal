@@ -231,7 +231,7 @@ def standalone_doc(e: dict, rows: list[dict]) -> dict:
             state = "blocked"
         else:
             state = "busy" if row.get("status") == "busy" else "alive"
-    return {"harness": harness, "id": session[:12], "state": state}
+    return {"harness": harness, "id": session[:12], "state": state, "dismissed": bool(e.get("dismissed"))}
 
 
 def board_doc(spec, rows: list[dict], digest: dict | None, now: float) -> dict | None:
@@ -730,7 +730,7 @@ class GraphBuilder:
 
         # -- outside seats, aliased to a role of the same slug in another shoal
         import ui_herdr
-        saved = {str(e.get("label") or str(e.get("session"))[:12]): e for e in ui_herdr.load_standalone(raw=True) if not e.get("host") and not e.get("dismissed")}
+        saved = {str(e.get("label") or str(e.get("session"))[:12]): e for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
         for label in saved:  # a saved session is on the picture whether or not it ever wrote to a ledger
             ext_seen.setdefault("ext:" + label, set())
         for eid in sorted(ext_seen):

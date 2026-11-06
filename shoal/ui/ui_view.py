@@ -21,11 +21,13 @@ role's exclusive Claude attach and cost a client process each; the card costs ne
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -616,13 +618,10 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             force = True
         if k in ("\r", "\n") and remote and not routed:
             continue  # nothing to attach here: the session lives on another host with no route from here
-        if k in ("\r", "\n") and ui_app is not None and (routed or not remote):
-            # attached, this loop reports nothing: an old `blocked` would stay on the agents list after the answer
-            sys.stdout.write(ui_app.OSC_CLEAR)
-            sys.stdout.flush()
         if k in ("\r", "\n") and routed:
             flush_input()
-            remote_attach(remote, sid, slug)
+            with _report_during(sid, slug, ui_app):
+                remote_attach(remote, sid, slug)
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
             continue
@@ -630,9 +629,47 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             flush_input()
             # a fresh process, so the attach always runs the current code: a card lives for days, and
             # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
-            subprocess.run(_view_cmd(sid, slug, spec_path))
+            with _report_during(sid, slug, ui_app):
+                subprocess.run(_view_cmd(sid, slug, spec_path))
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
+
+
+@contextlib.contextmanager
+def _report_during(sid: str, slug: str, ui_app):
+    """Keep the role's status current on the agents list through an attach. The card's loop waits on the attach, and a pane
+    can stay attached for hours, so a role's last report froze there: `blocked` long after the answer (measured 2026-11-06:
+    four of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
+    does; only a changed report is written, because the attached client is drawing on the same terminal."""
+    if ui_app is None:
+        yield
+        return
+    import ui_herdr
+    stop = threading.Event()
+
+    def report() -> None:
+        last = None
+        while True:
+            try:
+                rows: list = []
+                card(sid, slug, False, rows)
+                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows else None
+                if osc and osc != last:
+                    sys.stdout.write(osc)
+                    sys.stdout.flush()
+                    last = osc
+            except Exception:  # noqa: BLE001 - a report never breaks an attach
+                pass
+            if stop.wait(CARD_REFRESH_S):
+                return
+
+    t = threading.Thread(target=report, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(1)
 
 
 def _remote_host(sid: str, slug: str, spec_path: str = "") -> str:

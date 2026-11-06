@@ -923,6 +923,7 @@ export function cardLines(vm, id) {
     else if (n.kind === "external" && n.standalone) {
       rows.push(["session", `${n.standalone.harness} ${n.standalone.id}`]);
       rows.push(["now", STANDALONE_NOW[n.standalone.state] ?? "not read here"]);
+      if (n.standalone.dismissed) rows.push(["app", "dismissed: no space of its own"]);
     } else if (n.kind === "external" && !n.saved) rows.push(["session", "none saved here"]);
     for (const [k, val] of Object.entries(m)) rows.push([k.replace(/_/g, " "), String(val)]);
   }

@@ -940,6 +940,9 @@ test("a standalone session's card says which it is and whether it runs; a blocke
   const row = (k) => M.cardLines(vm, ext.id).rows.find(([x]) => x === k)?.[1];
   assert.equal(row("session"), "claude abcdef123456");
   assert.equal(row("now"), "alive, between turns");
+  assert.equal(row("app"), undefined);
+  ext.standalone.dismissed = true;
+  assert.equal(M.cardLines(M.buildModel(d, "global"), ext.id).rows.find(([x]) => x === "app")[1], "dismissed: no space of its own");
   ext.standalone.state = "unread";
   assert.equal(M.cardLines(M.buildModel(d, "global"), ext.id).rows.find(([x]) => x === "now")[1], "not read here");
   const n = d.nodes.find((x) => x.kind === "role" && x.shoal === A);
