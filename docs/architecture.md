@@ -165,7 +165,7 @@ done; `upstream:<target>` and `lease:<key>` clear when their provider says the t
 pending (an upstream `gh-pr` target stays pending while the PR is open, whatever its checks say); `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
 `hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
 after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
-STALE`, the idle gate and `parked-work` treat its item as free, and recording a blocker that has
+STALE`, the idle gate and `parked-work` treat its item as free, `blocker-resolved` wakes the role once if a role or provider blocker cleared, and recording a blocker that has
 already cleared is refused. So is a `<role>:<repo#n>` blocker naming a `fill=assigned` or `fill=none`
 role that holds no offer, handoff or claim for the item: nothing could ever end that wait (FM-4). Re-recording a blocker is its re-verification. A hold kept past
 `hold_page_min` wakes the role to convert it, then pages the maintainer 240 minutes later if it still stands (`hold-long`). With the feature on, `queue --idle` is also
@@ -401,6 +401,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
+| `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:` or `lease:` blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
@@ -493,7 +494,8 @@ And every run sends **at most one wake per role**, carrying every condition then
 **The wait gate (`features.waitgate`, default on).** `queue --wait` other than `local-ci` is refused
 while a next item has no current blocker, exactly like `queue --idle`. Refused mid-turn, it costs
 nothing; caught later by `parked-work` it cost a cold wake. `parked-work` remains for a recorded
-blocker that goes stale afterwards, and with `wake_off` it pages instead of waking. `waitgate: false`
+blocker that goes stale afterwards, and with `wake_off` it pages instead of waking (a blocker that
+cleared still wakes the role, through `blocker-resolved`, unless that is listed too). `waitgate: false`
 restores the old write.
 
 ### Bounding context
@@ -1064,8 +1066,8 @@ each from the spec, and, from this host's last digest, its items as done, open, 
 host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
 Queue items match board items by `item_key`, which needs `default_owner` set: without it a queue item keeps its owner, and reads
 as off the board.
-A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger, and says which session
-it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
+A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger or was dismissed from the
+app's spaces, and says which session it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
 offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`.
 
 ### Herdr app adapter (`shoal ui app-*`)

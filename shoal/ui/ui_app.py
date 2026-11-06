@@ -92,6 +92,8 @@ def osc7501(state: str, kind: str = "", title: str = "", msg: str = "", app: str
 
 
 OSC_CLEAR = "\x1b]7501;state=clear\x1b\\"
+# Set by a card for the length of an attach: under a client the core still names the card as the terminal's foreground.
+ATTACH_LABEL = "shoal.attached"
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
@@ -499,7 +501,7 @@ class Reconciler:
                 lab = (t.get("labels") or {}).get(PANE_LABEL)
                 if lab:
                     labels.add(lab)
-                busy = busy or not lab or foreground_kind(t) == "other"
+                busy = busy or not lab or foreground_kind(t) == "other" or bool((t.get("labels") or {}).get(ATTACH_LABEL))
             have[tab["name"]] = labels
         want = {t["name"]: {p["label"] for p in t["panes"]} for t in planned}
         key = f"{self.machine or 'local'}/{s['name']}"
@@ -1127,6 +1129,22 @@ function shoalRole(a) {
   return { role: label.slice(cut + 1), host: at >= 0 ? title.slice(at + 1) : null, color: stored.startsWith("#") ? stored : SHOAL_MARK[stored] ?? null };
 }
 
+// A row shows its role. Focus alone moves to a pane the zoom hides, so a zoomed view stays zoomed, on this role:
+// the zoom key (pane.zoom, ctrl-shift-z) gives the grid back.
+function shoalGo(a) {
+  const all = panes();
+  const there = all.find((p) => p.pane === a.pane);
+  const zoomed = all.some((p) => p.zoomed && (p.tab === there?.tab || p.focused));
+  run("pane.focus", { pane: a.pane });
+  if (zoomed && !there?.zoomed) run("pane.zoom", { pane: a.pane });
+}
+
+// A blocked role's badge says what it wants: its report's kind, in the lattice's marks.
+function shoalBadge(a) {
+  const kind = a.address ? terminals().find((x) => x.address === a.address)?.report?.kind : null;
+  return kind === "question" ? "?" : kind === "auth" ? "\u26b7" : kind === "permission" ? "\u2691" : "!";
+}
+
 export default class Agents extends View {"""
 # (exact text in Herdr's shipped mod, its replacement): a text that is gone leaves that block on Herdr's own mod
 CLONES = {
@@ -1138,6 +1156,9 @@ CLONES = {
          'const machine = sr?.host ?? (a.address.includes("/") ? a.address.split("/")[0] : null);'),
         ("const name = full ? a.space_name || label(a) :", "const name = sr ? sr.role : full ? a.space_name || label(a) :"),
         (".text_color(idle ? t.muted : t.foreground).child(name))", ".text_color(sr?.color ?? (idle ? t.muted : t.foreground)).child(name))"),
+        ('.items_center().justify_center().child("!");', '.items_center().justify_center().child(shoalBadge(a));'),
+        ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
+        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .when(Boolean(pic)'),
     ]),
     "spaces": ("shoal-spaces", [
         ('const head = h_flex().id(`machine-${m ?? "local"}`).h(26)',

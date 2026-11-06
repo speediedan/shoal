@@ -16,6 +16,7 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   condition          evidence                                   ladder (minutes since evidence)
   unacked-work       open offer to an idle role (or --now) newer than its queue version   wake@10 wake@30 page@60
   wait-resolved      a machine-checkable wait target is no longer pending                  wake@15 page@60
+  blocker-resolved   a next item's role or provider blocker cleared                         wake@0
   wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V page@3V
                      (not a target its provider confirms pending, under wait discipline)
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
@@ -63,6 +64,8 @@ LADDERS = {
     "blocking-unscheduled": [(30, "wake"), (120, "page")],
     "parked-work": [(30, "wake"), (90, "wake"), (180, "page")],
     "hold-long": [(0, "wake"), (240, "page")],
+    # a blocker that cleared is news only its role can judge. Once: if the role does nothing, parked-work escalates
+    "blocker-resolved": [(0, "wake")],
     # multi-host: a host that stopped beating has no quorum for its roles and nothing here can wake them,
     # so its silence is a page once per episode (the key carries its last beat)
     "host-silent": [(0, "page")],
@@ -81,7 +84,7 @@ CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 # the same evidence at most once per REWAKE_MIN, quiet for a while after the maintainer returns (the
 # return wakes roles with asks itself), and at least WAKE_GAP_MIN between two health wakes of one role
 OFFLINE_HOLD = ("parked-work", "hold-long", "blocking-unscheduled")
-REWAKE_CONDS = ("parked-work", "hold-long")
+REWAKE_CONDS = ("parked-work", "hold-long", "blocker-resolved")
 REWAKE_MIN = 720
 ONLINE_SETTLE_MIN = 20
 WAKE_GAP_MIN = 30
@@ -727,6 +730,24 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                   f"pop one (`queue --active <item>`) or record why each cannot start "
                                   f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
                                   f"hold:<why>`); a busy lease is a wait on `lease:<key>`, never idle"})
+            # a blocker that cleared is news, unlike the rest of parked-work: nothing else wakes the role, and without
+            # this a wake_off spec reaches the maintainer 3 h later for a look that needs only the role. The wake says to
+            # look, not to start: cleared is not a go (measured 2026-11-06: a peer finished the blocking item, its mail saying
+            # the maintainer had deferred the next one did not wake the role, and the role slept on behind a stale blocker)
+            import blockers as _bl
+            from ledger import item_key
+            meta = q.get("next_blocked_meta") or {}
+            news = _bl.cleared(stale_nb, q)
+            for x in free:
+                k = item_key(x)
+                if k in news:
+                    b = (q.get("next_blocked") or {}).get(k, "")
+                    out.append({"slug": slug, "condition": "blocker-resolved", "first_seen": True,
+                                "key": f"cleared:{k}:{b}:{(meta.get(k) or {}).get('since', '')}",
+                                "since": boundary or iso(),
+                                "detail": f"{x}: its blocker {b[:120]} cleared ({news[k][:160]}). That is not by itself "
+                                          f"a go: read your mail and the item's latest notes, then take it "
+                                          f"(`queue --active {x}`) or record what holds it now"})
         # long holds (features.blockers): a hold re-recorded past hold_page_min is a question for the
         # maintainer, raised once per hold; deferred while offline like every page
         import blockers as _bl
