@@ -2029,7 +2029,7 @@ ui_view.CARD_REFRESH_S = 0.05
 ui_herdr.shoal_tag = lambda sid: "tag"
 state = {"v": "blocked"}
 def fake_card(sid, slug, force=False, rows=None):
-    rows.append({"state": state["v"]})
+    rows.append({"state": state["v"], "ecosystem": state.get("eco", "claude")})
     return ""
 ui_view.card = fake_card
 app = types.SimpleNamespace(report_text=lambda r, tag: f"<{r['state']}>")
@@ -2048,6 +2048,16 @@ finally:
     sys.stdout = real
 assert n == "<blocked><working>", n  # the answer shows while attached, and no repeats
 assert after == n, after  # it stopped
+out = io.StringIO()
+state.update(v="blocked", eco="codex")
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", app):
+        time.sleep(0.15)
+finally:
+    sys.stdout = real
+assert out.getvalue() == "", out.getvalue()  # a client that reports itself is left to it
+state["eco"] = "claude"
 out = io.StringIO()
 real, sys.stdout = sys.stdout, out
 try:

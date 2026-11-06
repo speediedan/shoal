@@ -639,8 +639,10 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
 def _report_during(sid: str, slug: str, ui_app):
     """Keep the role's status current on the agents list through an attach. The card's loop waits on the attach, and a pane
     can stay attached for hours, so a role's last report froze there: `blocked` long after the answer (measured 2026-11-06:
-    four of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
-    does; only a changed report is written, because the attached client is drawing on the same terminal."""
+    three of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
+    does; only a changed report is written, because the attached client is drawing on the same terminal. Claude only: its
+    client reports nothing, while Codex's writes `app=codex` itself, so two reporters would take turns on one row (Muse's is
+    not known), and those keep the frozen report as before."""
     if ui_app is None:
         yield
         return
@@ -653,7 +655,7 @@ def _report_during(sid: str, slug: str, ui_app):
             try:
                 rows: list = []
                 card(sid, slug, False, rows)
-                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows else None
+                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows and rows[0].get("ecosystem") == "claude" else None
                 if osc and osc != last:
                     sys.stdout.write(osc)
                     sys.stdout.flush()
