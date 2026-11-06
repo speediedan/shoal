@@ -21,6 +21,12 @@ Unpark is `restart --only ROLE`, which clears `parked`; a full restart keeps par
 health quorum unparks the role itself once that wait target resolves (any provider kind: job:, lease:, gh-run:, gh-pr:,
 gh-issue:, az-build:), so a hold that ends on a known event needs nobody to remember it.
 
+Auto-park (`features.autopark`, off unless set): a role that holds nothing and has been quiet for a grace period is parked
+`--until offer:<role>` by the quorum, and the next offer to it relaunches it. An empty queue is time the role waits on
+someone assigning it work, and that wait has no end by itself; parked time is excluded from role-time, so each empty-queue
+episode costs at most the grace. `parkable` lists everything that keeps a role out, and each reason errs towards leaving
+it alone: a wrongly parked role costs one restart, but a role parked with something open loses its next wake.
+
 Why a verb: measured 2026-10-24, fts-core had to be parked by hand (a spec edit, `claude stop`, then a `kill -9` of a
 watcher still bound to the stopped session, which an incoming offer would have used to resume it), and a role left
 waiting on a `hold:` instead would have been paged as stale after `hold_ttl_min`.
@@ -39,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
 UNPARK_RETRY_MIN = 30  # a quorum run that started an unpark does not start another for this long
+AUTOPARK_AFTER_MIN = 60.0
 
 
 def utcnow() -> str:
@@ -208,6 +215,97 @@ def auto_unpark(spec, spec_path: str, state: dict, acts: list, dry_run: bool = F
                        cwd=spec.dir or None)
         seen[r.slug] = iso()
         acts.append((r.slug, "unpark", f"{r.parked.get('until')} {why}: restart started (log {log})"))
+
+
+def autopark_cfg(spec) -> dict | None:
+    """features.autopark: absent or false (off), true (on), or {"after_min": 60, "exempt": ["<role>"]}."""
+    v = (getattr(spec, "features", {}) or {}).get("autopark")
+    if not v:
+        return None
+    return dict(v) if isinstance(v, dict) else {}
+
+
+def _running_jobs(sid: str, slug: str) -> list[str]:
+    """This role's running job units (their prefix may also match a longer slug, which only keeps a role from parking)."""
+    import jobs
+    try:
+        out = subprocess.run(["systemctl", "--user", "list-units", "--state=running", "--no-legend", "--plain",
+                              jobs.unit_name(sid, slug, "*")], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [ln.split()[0] for ln in out.splitlines() if ln.strip()]
+
+
+def parkable(spec, view, role, cbusy: dict, after_min: float) -> str:
+    """Why `role` stays out of auto-park, '' when nothing does."""
+    import health
+    import startdoc
+    from roles import is_local
+    slug = role.slug
+    if not role.session or getattr(role, "parked", None):
+        return "no session"
+    if not is_local(role, spec):
+        return "another host's quorum decides"
+    if role.fill != "assigned" or getattr(role, "aux", False):
+        return f"fill={role.fill}: it does not wait on an assignment"
+    q = view.current_queue(slug) or {}
+    if q.get("active") or q.get("next") or q.get("asks"):
+        return "its queue holds something"
+    if view.queue(slug) or view.active(slug):
+        return "it has an open offer or a live claim"
+    st = view.role_state(slug) or {}
+    posture = st.get("state") or ("idle" if view.is_idle(slug) else "active")
+    if posture != "idle" and not (posture == "waiting" and st.get("sub") == "queue-empty"):
+        return f"its posture is {posture}"
+    # the grace runs from the role's last write or the last message addressed to it: a message that has not been answered
+    # yet may be about to wake it, and a park would drop that wake
+    stamps = [view.last_by.get(slug, "")] + [m["ts"] for m in view.msgs if m.get("to") == slug]
+    last = max(stamps)
+    age = health.age_min(last) if last else None
+    if age is None or age < after_min:
+        return f"quiet for {age:.0f} of {after_min:g} min" if age is not None else "it has not written yet"
+    if health.session_between_turns(role, cbusy, spec.dir) is not True:
+        return "not known to be between turns"
+    if session_held(role, spec.dir):
+        return "a turn or an attached client holds its session"
+    held = _running_jobs(spec.sid, slug)
+    if held:
+        return f"a job of its is running ({held[0]})"
+    if role.doc:  # the offer relaunches it from this doc, and a restart refuses one that is incomplete
+        doc = startdoc.check(role.doc)
+        if not doc["ok"]:
+            return "its start doc would not carry a new session: " + "; ".join(doc["problems"])
+    return ""
+
+
+def auto_park(spec, spec_path: str, view, conds: list, state: dict, acts: list, dry_run: bool = False) -> None:
+    """Health quorum: park at most one role a run (a park stops a session and can take seconds), one no condition is
+    open on, and try a role again only after a full grace if its park failed."""
+    cfg = autopark_cfg(spec)
+    if cfg is None or not spec_path:
+        return
+    from health import age_min, claude_busy, iso
+    from ledger import SYSTEM_WRITER
+    cbusy = claude_busy()
+    after = float(cfg.get("after_min", AUTOPARK_AFTER_MIN))
+    exempt = set(cfg.get("exempt") or [])
+    raised = {c.get("slug") for c in conds}
+    tried = state.setdefault("parks", {})
+    for r in spec.roles:
+        if r.slug in exempt or r.slug in raised:
+            continue
+        if tried.get(r.slug) and (age_min(tried[r.slug]) or 0.0) < after:
+            continue
+        if parkable(spec, view, r, cbusy, after):
+            continue
+        if dry_run:
+            acts.append((r.slug, "auto-park", f"would park until an offer lands (dry-run; quiet past {after:g} min)"))
+            return
+        tried[r.slug] = iso()
+        rc = park(spec, spec_path, [r.slug], note=f"auto-park: nothing queued for {after:g} min; the next offer relaunches it",
+                  until=f"offer:{r.slug}", by=SYSTEM_WRITER)
+        acts.append((r.slug, "auto-park", "parked until an offer lands" if rc == 0 else f"park refused (rc {rc})"))
+        return
 
 
 def cmd_park(a) -> int:

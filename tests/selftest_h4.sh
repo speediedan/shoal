@@ -1852,6 +1852,107 @@ for r in d["roles"]:
 json.dump(d,open(p,"w"),indent=1)
 PY2
 
+python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "auto park"
+import os, sys, types
+sys.path.insert(0, sys.argv[1])
+import health, park, providers, roles
+from roles import ShoalSpec
+spec_path, sid = sys.argv[2], sys.argv[3]
+spec = ShoalSpec.load(spec_path)
+role = spec.role("up")
+role.fill = "assigned"  # in memory only: the fixture's up fills itself
+OLD = "2020-01-01T00:00:00Z"
+def view(**kw):
+    q = kw.get("q", {})
+    return types.SimpleNamespace(current_queue=lambda s: q, queue=lambda s: kw.get("offers", []), active=lambda s: kw.get("claims", []),
+                                 role_state=lambda s: kw.get("state", {"state": "idle"}), is_idle=lambda s: True,
+                                 last_by={"up": kw.get("last", OLD)}, msgs=kw.get("msgs", []), freeze=lambda: None)
+os.environ["SHOAL_HEALTH_BETWEEN"] = "up"
+park.session_held = lambda r, d="": False
+park._running_jobs = lambda sid_, slug: []
+import startdoc
+real_check = startdoc.check
+startdoc.check = lambda p, **k: {"ok": True, "problems": []}
+assert park.parkable(spec, view(), role, {}, 60) == "", park.parkable(spec, view(), role, {}, 60)
+now = health.iso()
+for name, v, want in [
+    ("active", view(q={"active": "x#1:fix"}), "queue holds"), ("next", view(q={"next": ["x#1:fix"]}), "queue holds"),
+    ("asks", view(q={"asks": ["merge?"]}), "queue holds"), ("offer", view(offers=[{"item": "x#1"}]), "open offer"),
+    ("claim", view(claims=[{"item": "x#1"}]), "live claim"), ("posture", view(state={"state": "waiting", "sub": "local-ci"}), "posture is waiting"),
+    ("recent write", view(last=now), "quiet for"), ("recent mail", view(msgs=[{"to": "up", "ts": now}]), "quiet for"),
+]:
+    got = park.parkable(spec, v, role, {}, 60)
+    assert want in got, (name, got)
+assert park.parkable(spec, view(state={"state": "waiting", "sub": "queue-empty"}), role, {}, 60) == "", "an empty-queue wait is parkable"
+assert park.parkable(spec, view(msgs=[{"to": "tl", "ts": now}]), role, {}, 60) == "", "another role's mail does not hold it"
+os.environ["SHOAL_HEALTH_BETWEEN"] = ""
+assert "between turns" in park.parkable(spec, view(), role, {}, 60)
+os.environ["SHOAL_HEALTH_BETWEEN"] = "up"
+park.session_held = lambda r, d="": True
+assert "holds its session" in park.parkable(spec, view(), role, {}, 60)
+park.session_held = lambda r, d="": False
+park._running_jobs = lambda sid_, slug: ["shoal-s-up-x.service"]
+assert "job of its is running" in park.parkable(spec, view(), role, {}, 60)
+park._running_jobs = lambda sid_, slug: []
+startdoc.check = lambda p, **k: {"ok": False, "problems": ["no grants-needed"]}
+assert "start doc" in park.parkable(spec, view(), role, {}, 60)
+startdoc.check = lambda p, **k: {"ok": True, "problems": []}
+role.fill = "self"
+assert "fill=self" in park.parkable(spec, view(), role, {}, 60)
+role.fill = "assigned"
+
+# the sweep: off by default, one park a run, a raised condition or an exemption keeps a role out, a failed park waits a grace
+for r in spec.roles:
+    r.fill = "assigned" if r.slug == "up" else "none"
+parks = []
+rc = [0]
+park.park = lambda s, p, slugs, note="", until="", by="user", force=False, dry_run=False: parks.append((slugs, until, by)) or rc[0]
+health.claude_busy = lambda: {}
+spec.features.pop("autopark", None)
+state, acts = {}, []
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert not parks and not acts, "off unless the feature is set"
+spec.features["autopark"] = True
+park.auto_park(spec, spec_path, view(), [{"slug": "up"}], state, acts)
+assert not parks, "a raised condition keeps it out"
+spec.features["autopark"] = {"exempt": ["up"]}
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert not parks, "exempt"
+spec.features["autopark"] = {"after_min": 60}
+park.auto_park(spec, spec_path, view(), [], state, acts, dry_run=True)
+assert not parks and "would park" in acts[-1][2] and "up" not in state.get("parks", {}), acts
+rc[0] = 1
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert parks == [(["up"], "offer:up", "shoal")] and "refused" in acts[-1][2], (parks, acts)
+park.auto_park(spec, spec_path, view(), [], state, acts)
+assert len(parks) == 1, "a failed park is not retried inside the grace"
+startdoc.check = real_check
+
+# the provider: pending until an offer names the role; `*` does not count; unknown without a shoal
+roles.find_spec = lambda s: spec_path
+assert providers.normalize("offer:")[1] and providers.normalize("offer:up") == ("offer:up", "")
+assert providers.resolve("offer:up", "up", "")[0] is None
+assert providers.resolve("offer:nobody", "nobody", sid)[0] is True, providers.resolve("offer:nobody", "nobody", sid)
+print("auto park ok")
+PY2
+# an offer to everyone is no reason to restart a parked role; one naming it is (the fixture's up already holds one)
+check "interpretune#9711" $H offer --shoal $SID --spec "$SPEC" --to '*' --item interpretune#9711:fix --no-sync
+python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "auto park offer"
+import sys
+sys.path.insert(0, sys.argv[1])
+import park, providers, roles
+from roles import ShoalSpec
+roles.find_spec = lambda s: sys.argv[2]
+assert providers.resolve("offer:up", "up", sys.argv[3])[0] is False, providers.resolve("offer:up", "up", sys.argv[3])
+assert providers.resolve("offer:nobody", "nobody", sys.argv[3])[0] is True, "an offer to * counted"
+spec = ShoalSpec.load(sys.argv[2])
+r = spec.role("up")
+r.session, r.parked = "", {"until": "offer:up", "at": "x"}
+assert [x[0].slug for x in park.due(spec)] == ["up"], "the offer did not make it due"
+print("auto park offer ok")
+PY2
+check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --item interpretune#9711 --to '*' --no-sync
+
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "operational request acknowledgment"
 import sys
 from unittest.mock import patch
