@@ -1279,6 +1279,12 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         dp = state.pop("deferred_pages")
         acts.append(("user", "deferred pages", page_user(spec, f"{len(dp)} pages deferred while offline: "
                                                           + " | ".join(p["text"][:120] for p in dp), state, dry_run)))
+    if view.freeze() is None:
+        try:  # after the ladders: a condition raised this run keeps its role out, and nothing above acts on a stopped session
+            import park
+            park.auto_park(spec, spec_path, view, conds, state, acts, dry_run)
+        except Exception as exc:  # noqa: BLE001 - never breaks a health run
+            acts.append(("health", "auto-park", f"skipped ({str(exc)[:80]})"))
     if not dry_run:
         with open(spath + ".tmp", "w") as fh:
             json.dump(state, fh, indent=1)

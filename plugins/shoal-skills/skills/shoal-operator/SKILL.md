@@ -73,3 +73,8 @@ and into the review itself.
 Give work with `offer` (`--now` only when it cannot wait), take it back with `withdraw`, and
 message with `msg` (mail does not wake a role; `--wake` does). Never write to a role's own ledger
 file.
+
+With `features.autopark`, an idle role holding nothing is parked after a grace (`parked until
+offer:<role>` in `show`). Offer it work and the quorum relaunches it from its start doc within a
+few minutes; a message alone does not. An attached client keeps a role out, so a role you leave
+attached never auto-parks.
