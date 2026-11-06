@@ -93,6 +93,10 @@ check '\[dry-run\] digest h4selftest' $H digest --shoal $SID --spec "$SPEC" --re
 check 'open items' $H digest --shoal $SID --spec "$SPEC" --refresh --no-sync
 [ -f "$S/data/$SID/board_digest.json" ] || fail "digest not written"
 check 'BOARD ' $H digest --shoal $SID --spec "$SPEC" --slug tl --limit 3
+python3 - "$S/data/$SID/board_digest.json" <<'PY' || fail "the digest did not record its board"
+import json,sys; d=json.load(open(sys.argv[1])); b=d["boards"]
+assert len(b)==1 and b[0]["source"]==d["sources"][0] and b[0]["done"]>=0, b
+PY
 TOP=$(python3 -c "import json;d=json.load(open('$S/data/$SID/board_digest.json'));print(d['roles']['tl'][0]['item'])")
 SECOND=$(python3 -c "import json;d=json.load(open('$S/data/$SID/board_digest.json'));print(d['roles']['tl'][1]['item'])")
 THIRD=$(python3 -c "import json;d=json.load(open('$S/data/$SID/board_digest.json'));print(d['roles']['tl'][2]['item'])")
@@ -1959,6 +1963,7 @@ assert park.remove_role(spec, "p", "nope") == 2
 queue.clear()
 assert park.remove_role(spec, "p", "gone", False, True) == 0
 assert [x[0] for x in order] == ["stop", "prune"] and order[-1][-1] is True, order
+assert any("shows as kept above" in x for x in out), out
 assert len(spec.roles) == 2 and role.session == "aaaa1111", "a dry run changed the record"
 order.clear()
 # a session that will not stop changes nothing

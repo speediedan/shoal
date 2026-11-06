@@ -364,6 +364,7 @@ test("public gate: fixtures and module hold no local paths or host names", () =>
 test("scopes: across shoals only the verbs that span them, and no shoal to pick", () => {
   const all = { shoal: null, role: null, scope: "all" };
   assert.deepEqual(M.verbsFor(all).map((v) => v.verb), ["offline", "freeze"]);
+  assert.deepEqual(M.verbsFor({ session: "some-seat" }).map((v) => v.verb), ["remove-session"], "one verb: no row of buttons");
   assert.equal(M.verbsFor({ shoal: A, role: null }).length, M.VERBS.length - 1, "all but the standalone session's removal");
   const form = M.setValue(M.newForm("offline", NOW), "state", "off");
   assert.equal(M.validate("offline", all, form), null);

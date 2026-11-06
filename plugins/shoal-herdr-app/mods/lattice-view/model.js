@@ -459,8 +459,50 @@ export function shoalSummaries(doc) {
       offline: obj(s.mode).offline === true,
       freeze: obj(s.mode).freeze === true,
       ledgerAge: typeof s.ledger_age_s === "number" ? s.ledger_age_s : null,
+      boards: boardsOf(s, doc?.host),
     };
   });
+}
+
+/**
+ * A shoal's priority boards for the rail: each a link and, where this host holds a digest, its counts. `note` says why
+ * a board has none; a digest is read on the shoal's home only.
+ */
+export function boardsOf(s, host = null) {
+  const b = obj(s?.boards);
+  const count = (c) => ({ done: num(c.done), open: num(c.open), inFlight: num(c.in_flight), assigned: num(c.assigned) });
+  const items = (Array.isArray(b.items) ? b.items : [])
+    .filter((x) => typeof x?.url === "string" && x.url.startsWith("https://"))
+    .map((x) => ({ id: String(x.id ?? x.url), title: String(x.title || x.id || "board"), url: x.url, counts: x.counts ? count(x.counts) : null }));
+  const off = obj(b.off_board);
+  return {
+    items,
+    note: s?.home && host && s.home !== host ? `counts are read on ${s.home}` : "no board read yet",
+    offBoard: { inFlight: num(off.in_flight), assigned: num(off.assigned) },
+    age: typeof b.age_s === "number" ? b.age_s : null,
+    stale: b.stale === true,
+  };
+}
+
+/** The rail's table, in reading order: done, open, in flight, assigned. */
+export function boardCells(c) {
+  return [
+    { label: "done", n: c.done, color: PALETTE.steel2, about: "closed on the board however it closed, or in a Done status" },
+    { label: "open", n: c.open, color: PALETTE.ink, about: "open on the board and in no role's queue" },
+    { label: "in flight", n: c.inFlight, color: PALETTE.teal, about: "a role's active item" },
+    { label: "assigned", n: c.assigned, color: PALETTE.violet, about: "in a role's queue, and nobody's active item" },
+  ];
+}
+
+/** The table as a bar `width` wide: a cell with anything in it stays visible, however large the rest. */
+export function boardBar(c, width) {
+  const cells = boardCells(c).filter((x) => x.n > 0);
+  const total = cells.reduce((t, x) => t + x.n, 0);
+  if (!total) return [];
+  const widths = cells.map((x) => Math.max(2, Math.round((width * x.n) / total)));
+  const big = widths.indexOf(Math.max(...widths));
+  widths[big] -= widths.reduce((t, w) => t + w, 0) - width;
+  return cells.map((x, i) => ({ color: x.color, w: widths[i] }));
 }
 
 /**
@@ -514,6 +556,7 @@ export function buildModel(doc, view = "global", opts = {}) {
       jobHost: jobHostOf(n),
       grants: grantsOf(n),
       alias_of: n.alias_of ?? null,
+      saved: n.saved === true,
       state: obj(n.state),
       work: obj(n.work),
       metrics: obj(n.metrics),
@@ -728,7 +771,8 @@ function dialogSpec(target, source) {
 export function removeOverlay(vm, id, source = null) {
   const n = vm?.byId?.get(id);
   if (n?.kind === "role" && n.shoal) return dialogSpec({ shoal: n.shoal, role: n.slug ?? n.label ?? null, verb: "remove-role" }, source);
-  if (n?.kind === "external" && !n.alias_of) return dialogSpec({ shoal: null, role: null, session: n.label, verb: "remove-session" }, source);
+  // a writer with no saved session has nothing to remove: its card offers to hide it
+  if (n?.kind === "external" && !n.alias_of && n.saved) return dialogSpec({ shoal: null, role: null, session: n.label, verb: "remove-session" }, source);
   return null;
 }
 
@@ -842,6 +886,7 @@ export function cardLines(vm, id) {
   } else {
     rows.push(["kind", n.kind]);
     if (n.alias_of) rows.push(["alias of", n.alias_of]);
+    else if (n.kind === "external" && !n.saved) rows.push(["session", "none saved here"]);
     for (const [k, val] of Object.entries(m)) rows.push([k.replace(/_/g, " "), String(val)]);
   }
   const links = n.items
@@ -878,6 +923,11 @@ export function visualSignature(vm, cardId = null) {
   for (const b of vm.broadcasts) parts.push(b.src, b.tier);
   for (const r of vm.needsYou) parts.push(r.id, r.text, fmtAge(r.since_s));
   for (const s of vm.shoals) parts.push(s.id, s.starved, s.offline ? 1 : 0, ledgerStale(s) ? 1 : 0, s.needsYou, s.msgsPerH, s.done24, s.done7, s.asks, s.grants, s.pages24, s.workShare ?? "n");
+  for (const s of vm.shoals) {
+    const B = s.boards;
+    parts.push(fmtAge(B.age), B.stale ? 1 : 0, B.offBoard.inFlight, B.offBoard.assigned);
+    for (const b of B.items) parts.push(b.id, b.title, b.url, ...(b.counts ? Object.values(b.counts) : []));
+  }
   for (const h of hostSummaries(vm)) parts.push(h.name, h.roles, h.working, h.waiting, h.msgsPerH, h.jobsIn);
   return hash32(parts.join("\u0001"));
 }

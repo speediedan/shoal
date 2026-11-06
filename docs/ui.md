@@ -125,7 +125,10 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
              "metrics": {"roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "stalled": 1,
                          "asks_open": 1, "pages_24h": 2, "done_24h": 6, "done_7d": 31, "claims_24h": 8,
                          "offers_24h": 5, "msgs_1h": 14, "msgs_24h": 120, "work_ratio_24h": null,
-                         "grants_pending_n": 1}}],
+                         "grants_pending_n": 1},
+             "boards": {"items": [{"id": "<owner>/<n>", "title": "<board>", "url": "https://github.com/users/<owner>/projects/<n>",
+                                   "counts": {"done": 134, "open": 58, "in_flight": 4, "assigned": 10}}],
+                        "off_board": {"in_flight": 1, "assigned": 2}, "age_s": 240, "stale": false}}],
  "nodes": [
    {"id": "user", "kind": "user", "shoal": null, "label": "you",
     "state": {"class": "work", "event": "", "group": "", "needs_you": true},
@@ -585,6 +588,7 @@ shoal ui act-plan VERB --shoal ID [...] [--json]   # an action's preview and one
 shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # the same across shoals, always confirmed
 shoal ui app-sync                                  # roles tabs follow the roles, everywhere; nothing else changes
 shoal ui app-lattice                               # show this space's lattice, or the global one
+shoal ui app-home                                  # show the SHOAL-home space on this machine
 shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
@@ -593,7 +597,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
-  closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back. Each
+  closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back, and
+  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current. Each
   saved standalone session gets a space as well. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
   from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only

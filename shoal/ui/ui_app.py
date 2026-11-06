@@ -813,6 +813,19 @@ def cmd_app_lattice(a) -> int:
     return 0
 
 
+def cmd_app_home(a) -> int:
+    if not app_running():
+        print("the Herdr app is not running here (`shoal ui app-start` starts it with the pin held)")
+        return 1
+    try:
+        for line in home_space(a.dry_run):
+            print(line)
+    except AppError as exc:
+        print(str(exc))
+        return 2
+    return 0
+
+
 def start_argv() -> list[str]:
     """How the app is started: a transient user unit (so it outlives this terminal), with the pin held and only
     the display variables passed through (names chosen here; nothing else from the environment)."""
@@ -829,12 +842,26 @@ def start_argv() -> list[str]:
 HOME_SPACE = "SHOAL-home"
 
 
+def _home_current(space: dict) -> bool:
+    """Both of the home space's mod tabs are there and made at TABS_V, so there is nothing to reconcile."""
+    built = load_opened().get("_built") or {}
+    have = {t.get("name") for t in space.get("tabs", [])}
+    return all(n in have and built.get(f"local/{HOME_SPACE}/{n}") == TABS_V for n in ("home", "lattice"))
+
+
 def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
     """A `SHOAL-home` space on this machine with the home screen (the shoal-home mod, else the terminal chooser in app
     mode) and the global lattice."""
     ls = app_ls()
     local = [s for s in ls.get("spaces", []) if not s.get("machine")]
     got = next((s for s in local if s.get("name") == HOME_SPACE), None)
+    if got is not None and _home_current(got):  # go straight there: the lattice's props below can ask every machine
+        tab = next((t for t in got.get("tabs", []) if t.get("name") == select), None)
+        if not dry_run:
+            app_do("space.select", {"id": got["id"]})
+            if tab is not None:
+                app_do("tab.select", {"id": tab["id"]})
+        return [f"{HOME_SPACE}: {select}"]
     old = next((s for s in local if s.get("name") == "shoal"), None)  # its earlier name
     if got is None and old is not None:
         if not dry_run:

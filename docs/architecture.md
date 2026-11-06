@@ -1057,7 +1057,14 @@ capped tail behind an opaque cursor of per-file byte offsets. `ui graph-feed` ke
 in memory and writes `graph.json` beside the status cache each tick, reading only appended bytes.
 It is read-only like the rest of the UI: no pull, commit, wake, `next` or provider call. So a host that is no
 shoal's home has a clone nothing refreshes; each shoal says how old its clone is (`ledger_age_s`), and the app's lattice
-tabs read the feed of the machine their space is on.
+tabs read the feed of the machine their space is on. Each shoal also carries its priority boards (`boards`): a link for
+each from the spec, and, from this host's last digest, its items as done, open, in flight (a role's active item) and assigned
+(in a role's queue, nobody's active item). The feed never reads a board itself, so those counts are as old as the digest, and a
+host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
+Queue items match board items by `item_key`, which needs `default_owner` set: without it a queue item keeps its owner, and reads
+as off the board.
+An outside writer says whether this host has a saved session for it (`saved`): one with none has nothing to remove, so the
+lattice offers only to hide it.
 
 ### Herdr app adapter (`shoal ui app-*`)
 
@@ -1065,7 +1072,7 @@ tabs read the feed of the machine their space is on.
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with three blocks swapped: `shoal-agents` and
 `shoal-spaces` are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
-`shoal-status` adds the way back to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
+`shoal-status` adds the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
 saved standalone session). `ui app-open` runs where the app runs: it reads the plan (in process, or over the

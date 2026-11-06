@@ -854,6 +854,14 @@ test("removal: a role for good, an outside writer by its saved name, an aliased 
   assert.equal(M.removeOverlay(vm, "user", exec), null);
   assert.equal(M.removeOverlay(vm, "nope", exec), null);
   assert.equal(M.removeOverlay(null, ext.id, exec), null);
+  // a writer with no saved session has nothing to remove, and its card says so
+  const d = structuredClone(doc);
+  d.nodes.find((x) => x.id === ext.id).saved = false;
+  const vm2 = M.buildModel(d, "global");
+  assert.equal(M.removeOverlay(vm2, ext.id, exec), null);
+  assert.ok(M.cardLines(vm2, ext.id).rows.some(([k, v]) => k === "session" && v.startsWith("none saved")));
+  assert.equal(M.cardLines(vm2, ext.id).hideable, true);
+  assert.ok(!M.cardLines(vm, ext.id).rows.some(([k]) => k === "session"));
 });
 
 test("a role's card says its context and whether it can restart now", () => {
@@ -865,6 +873,46 @@ test("a role's card says its context and whether it can restart now", () => {
   const d = structuredClone(doc);
   d.nodes.find((x) => x.id === `${A}:addressing`).state.restart_ready = true;
   assert.deepEqual(M.cardLines(M.buildModel(d, "global"), `${A}:addressing`).rows.find(([x]) => x === "restart-ready"), ["restart-ready", "yes"]);
+});
+
+test("each shoal's boards reach the rail with a link and their counts", () => {
+  const vm = M.buildModel(doc, "global");
+  const a = vm.shoals.find((s) => s.id === A).boards;
+  assert.equal(a.items[0].url, "https://github.com/users/acme/projects/2");
+  assert.deepEqual(a.items[0].counts, { done: 134, open: 58, inFlight: 4, assigned: 10 });
+  assert.deepEqual(a.offBoard, { inFlight: 1, assigned: 2 });
+  assert.deepEqual(M.boardCells(a.items[0].counts).map((c) => c.n), [134, 58, 4, 10]);
+  assert.deepEqual(M.boardCells(a.items[0].counts).map((c) => c.label), ["done", "open", "in flight", "assigned"]);
+  assert.ok(M.boardCells(a.items[0].counts).every((c) => c.about.length > 0), "each cell says what it counts");
+  // both views carry it
+  assert.equal(M.buildModel(doc, A).shoalsInView[0].boards.items.length, 1);
+  // a board this host has not read is still a link, named by its id
+  const b = vm.shoals.find((s) => s.id === B).boards.items[0];
+  assert.equal(b.counts, null);
+  assert.equal(b.title, "acme/3");
+});
+
+test("a board's note says why it has no counts, and a bad link is dropped", () => {
+  assert.equal(M.boardsOf({ home: "host-b" }, "host-a").note, "counts are read on host-b");
+  assert.equal(M.boardsOf({ home: "host-a" }, "host-a").note, "no board read yet");
+  assert.deepEqual(M.boardsOf({}).items, []);
+  assert.deepEqual(M.boardsOf({ boards: { items: [{ id: "x", url: "javascript:alert(1)" }, { id: "y" }] } }).items, []);
+});
+
+test("the board bar fills its width and keeps a small cell visible", () => {
+  const widths = (c, w) => M.boardBar(c, w).map((s) => s.w);
+  const big = widths({ done: 500, open: 300, inFlight: 1, assigned: 1 }, 226);
+  assert.equal(big.reduce((t, x) => t + x, 0), 226);
+  assert.ok(big[2] >= 2 && big[3] >= 2);
+  assert.deepEqual(widths({ done: 0, open: 0, inFlight: 0, assigned: 0 }, 226), []);
+  assert.deepEqual(widths({ done: 0, open: 3, inFlight: 0, assigned: 0 }, 226), [226]);
+});
+
+test("a change on a board redraws the rail", () => {
+  const before = M.visualSignature(M.buildModel(doc, "global"));
+  const d = structuredClone(doc);
+  d.shoals[0].boards.items[0].counts.in_flight += 1;
+  assert.notEqual(M.visualSignature(M.buildModel(d, "global")), before);
 });
 
 console.log(`lattice-view: ${n} tests passed`);

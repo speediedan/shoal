@@ -61,6 +61,7 @@ query($login:String!, $number:Int!, $after:String) {
   %s(login:$login) {
     projectV2(number:$number) {
       title
+      url
       items(first:50, after:$after) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -89,6 +90,9 @@ query($login:String!, $number:Int!, $after:String) {
   }
 }
 """
+
+
+BOARD_META: dict[str, dict] = {}  # `<owner>/<number>` -> the title and page a board read reported
 
 
 def now_iso() -> str:
@@ -124,6 +128,7 @@ def fetch_board(owner: str, number: int) -> list[dict]:
                 break
         if data is None:
             raise RuntimeError(f"project {owner}/{number} not readable as user or organization project")
+        BOARD_META[f"{owner}/{number}"] = {"title": data.get("title") or "", "url": data.get("url") or ""}
         for n in data["items"]["nodes"]:
             c = n.get("content") or {}
             if not c or "number" not in c:
@@ -322,7 +327,7 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
     features.matcher in shadow mode the semantic document rides along under `shadow`."""
     from ledger import item_key
     fillers = [r for r in spec.roles if r.fill == "self"]
-    src_desc = []
+    src_desc, boards = [], []
     if items is None:
         items = []
         for src in spec.sources or []:
@@ -331,12 +336,16 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
             src_desc.append(f"github-project:{src['owner']}/{src['number']}")
             skip = set(src.get("skip_status") or ["Done"])
             src_repos = {r.lower() for r in (src.get("repos") or [])}
+            board = {"source": src_desc[-1], "title": "", "url": "", "done": 0}
             for it in fetch_board(src["owner"], int(src["number"])):
-                if it["state"] not in ("OPEN", "") or it["status"] in skip:
-                    continue
                 if src_repos and it["repo"].lower() not in src_repos:
                     continue
+                if it["state"] not in ("OPEN", "") or it["status"] in skip:
+                    board["done"] += 1
+                    continue
                 items.append(dict(it, source=src_desc[-1]))
+            board.update(BOARD_META.get(f"{src['owner']}/{src['number']}") or {})
+            boards.append(board)
     taken = (view.taken() | view.offered_open()) if view is not None else set()
     routing = _routing(view) if view is not None else {}
     declined = {r.slug: set(view.declined(r.slug)) for r in spec.roles} if view is not None else {}
@@ -388,11 +397,11 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
             if key not in taken and all(key in declined.get(r.slug, set()) for r in fillers):
                 unowned.append(it["item"])
     if live:
-        doc = dict(sem_doc, unowned=unowned)
+        doc = dict(sem_doc, unowned=unowned, boards=boards)
         return doc
     doc = {"shoal": spec.sid, "generated_utc": now_iso(), "sources": src_desc, "ranking": "keyword",
            "n_items": len(items), "items": {it["item"]: it for it in items},
-           "roles": roles, "unowned": unowned}
+           "roles": roles, "unowned": unowned, "boards": boards}
     if sem_doc is not None:
         for r in fillers:  # the keyword ranking means nothing for a lane with no brief
             if getattr(r, "aux", False):

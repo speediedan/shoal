@@ -217,6 +217,43 @@ def item_url(item: str, repos: dict[str, str]) -> str | None:
     return f"https://github.com/{repo}/issues/{num}"
 
 
+def board_doc(spec, rows: list[dict], digest: dict | None, now: float) -> dict | None:
+    """The shoal's priority boards for the rail, None when it has none. Each is a link and, from this host's last
+    digest (the only board read), its items as done, open, in flight (a role's active item) and assigned (in a role's
+    queue, nobody's active item). Queued work not open on a board counts under `off_board`, so the four add up to the board."""
+    from digest import DIGEST_MAX_AGE_MIN
+    from ledger import item_key
+    from sources import project_url
+    srcs = [s for s in spec.sources or [] if s.get("kind") == "github-project"]
+    if not srcs:
+        return None
+    active = {item_key(r["active"]) for r in rows if r.get("active")}
+    queued = {item_key(str(n.get("item") or "")) for r in rows for n in r.get("next") or []} - active
+    digest = digest or {}
+    read = {b.get("source"): b for b in digest.get("boards") or []}
+    entries, on_board = [], set()
+    for src in srcs:
+        desc = f"github-project:{src['owner']}/{src['number']}"
+        got = read.get(desc)
+        entry = {"id": f"{src['owner']}/{src['number']}", "title": (got or {}).get("title") or "",
+                 "url": (got or {}).get("url") or project_url(src)}
+        if got:
+            keys = {item_key(k) for k, it in (digest.get("items") or {}).items() if it.get("source") == desc}
+            on_board |= keys
+            flying, assigned = len(keys & active), len(keys & queued)
+            entry["counts"] = {"done": int(got.get("done") or 0), "open": len(keys) - flying - assigned,
+                               "in_flight": flying, "assigned": assigned}
+        entries.append(entry)
+    out = {"items": entries}
+    if read:
+        out["off_board"] = {"in_flight": len(active - on_board), "assigned": len(queued - on_board)}
+        t = _epoch(str(digest.get("generated_utc") or ""))
+        if t is not None:
+            age = int(max(0.0, now - t))
+            out.update(age_s=age, stale=age > DIGEST_MAX_AGE_MIN * 60)
+    return out
+
+
 def classify_event(sid: str, e: dict, roles: set[str]) -> tuple[str, str, str | None]:
     """(class, src, dst) for one ledger event. `dst` is None for events with no target."""
     typ, by = e.get("type"), e.get("by", "")
@@ -419,6 +456,26 @@ class GraphBuilder:
         self._rows: dict[str, tuple[float, list[dict]]] = {}
         self._harness: tuple[float, list[dict]] | None = None
         self._slugs: dict[str, set[str]] = {}
+        self._digests: dict[str, tuple[float, dict]] = {}
+
+    def _digest(self, sid: str) -> dict | None:
+        """This host's last digest of the shoal, only what the rail needs; reread when the file changes, since it holds
+        a board's worth of bodies and the feed ticks every few seconds."""
+        from digest import digest_path
+        p = digest_path(sid)
+        try:
+            mtime = os.path.getmtime(p)
+            memo = self._digests.get(sid)
+            if memo is not None and memo[0] == mtime:
+                return memo[1]
+            with open(p) as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        keep = {"generated_utc": d.get("generated_utc"), "boards": d.get("boards") or [],
+                "items": {k: {"source": it.get("source")} for k, it in (d.get("items") or {}).items()}}
+        self._digests[sid] = (mtime, keep)
+        return keep
 
     # -- role rows: the status cache when fresh, else role_row over this builder's own View
     def _cached_shoals(self) -> dict[str, dict]:
@@ -638,6 +695,9 @@ class GraphBuilder:
                 gp = sum(len(r.get("grants_pending") or []) for r in rows)
             if gp is not None:
                 sdoc["metrics"]["grants_pending_n"] = gp
+            boards = board_doc(spec, rows, self._digest(sid), now)
+            if boards:
+                sdoc["boards"] = boards
             shoals.append(sdoc)
             # metrics keyed by node id for the synthetic nodes
             for nid_, c in per.items():
@@ -651,13 +711,15 @@ class GraphBuilder:
             n["state"].get("needs_you") for n in nodes.values() if n["kind"] == "role")
 
         # -- outside seats, aliased to a role of the same slug in another shoal
+        import ui_herdr
+        saved = {str(e.get("label")) for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
         for eid in sorted(ext_seen):
             slug = eid[4:]
             home_of = sorted(s for s, sl in role_slugs.items() if slug in sl and s not in ext_seen[eid])
             alias = f"{home_of[0]}:{slug}" if home_of else None
             st = nodes.get(alias, {}).get("state") if alias else None
             em = ext_metrics.get(eid, {})
-            nodes[eid] = {"id": eid, "kind": "external", "shoal": None, "label": slug, "alias_of": alias,
+            nodes[eid] = {"id": eid, "kind": "external", "shoal": None, "label": slug, "alias_of": alias, "saved": slug in saved,
                           "host": nodes.get(alias, {}).get("host") if alias else None,
                           "state": ({"class": st["class"], "event": st["event"], "group": st["group"]} if st
                                     else {"class": "unknown", "event": "", "group": ""}),

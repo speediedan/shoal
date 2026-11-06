@@ -184,6 +184,11 @@ def candidates(sources: list[dict], scope: dict | None, taken: set[str],
     return out
 
 
+def project_url(src: dict) -> str:
+    """A user project's board page. A digest records the page GitHub reports, which also covers an organization's."""
+    return f"https://github.com/users/{src['owner']}/projects/{src['number']}"
+
+
 def parse_source(spec: str) -> dict:
     """CLI form: github-project:OWNER/NUMBER[:repo1|repo2]"""
     parts = spec.split(":")

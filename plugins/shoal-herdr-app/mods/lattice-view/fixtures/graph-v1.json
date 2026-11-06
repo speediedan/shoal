@@ -47,7 +47,28 @@
     "msgs_24h": 120,
     "work_ratio_24h": 0.41
    },
-   "grants_pending_n": 1
+   "grants_pending_n": 1,
+   "boards": {
+    "items": [
+     {
+      "id": "acme/2",
+      "title": "alpha priorities",
+      "url": "https://github.com/users/acme/projects/2",
+      "counts": {
+       "done": 134,
+       "open": 58,
+       "in_flight": 4,
+       "assigned": 10
+      }
+     }
+    ],
+    "off_board": {
+     "in_flight": 1,
+     "assigned": 2
+    },
+    "age_s": 240,
+    "stale": false
+   }
   },
   {
    "id": "beta-20261101-000000",
@@ -73,6 +94,15 @@
     "msgs_1h": 2,
     "msgs_24h": 17,
     "work_ratio_24h": 0.18
+   },
+   "boards": {
+    "items": [
+     {
+      "id": "acme/3",
+      "title": "",
+      "url": "https://github.com/users/acme/projects/3"
+     }
+    ]
    }
   }
  ],
@@ -635,7 +665,8 @@
    "metrics": {
     "msgs_out_1h": 1,
     "msgs_in_1h": 2
-   }
+   },
+   "saved": true
   },
   {
    "id": "ext:research",
