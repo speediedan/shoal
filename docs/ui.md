@@ -600,6 +600,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   of it, dismissed or not. To stop a role instead, park it.
 - **Zoom.** `ctrl-shift-z` (`pane.zoom`) zooms the focused pane and back. Clicking a row in the agents list while zoomed zooms that
   role, in its own tab if need be, and the key gives the grid back.
+- **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
+  an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
+  has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
 - **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a
   question, `\u26b7` auth, `\u2691` a grant, else `!`). A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two

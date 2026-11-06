@@ -117,6 +117,11 @@ def card_report(r: dict, tag: str) -> dict:
     state = ui_herdr.herdr_state(r)
     if state == "blocked" and starved(r):
         state = "idle"
+    # a role whose host cannot be read: what the row holds is its last state, and neither work nor a need can be claimed
+    away = r.get("remote_status") or {}
+    away = bool(away.get("stale") or away.get("ok") is False)
+    if away:
+        state = "idle"
     reasons = r["can_progress"]["reasons"]
     kind = ""
     if state == "blocked":
@@ -131,8 +136,10 @@ def card_report(r: dict, tag: str) -> dict:
         elif r.get("asks") or r.get("says") or sub in QUESTION_SUBS:
             kind = "question"
     bits = [ui_status.posture_label(r)]
+    if away:
+        bits = [f"{r.get('host') or 'its host'} cannot be reached; last known: {bits[0]}"]
     w = r.get("wait") or {}
-    if ui_herdr.role_mode(r) == ui_herdr.MODE_JOB:
+    if ui_herdr.role_mode(r) == ui_herdr.MODE_JOB and not away:
         bits = [f"{ui_herdr.MODE_JOB} {w.get('sub') or r.get('sub')}"]
     if w.get("target") and r.get("posture") == "wait":
         bits.append(f"on {str(w['target'])[:60]}")

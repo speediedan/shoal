@@ -861,10 +861,15 @@ def herdr_state(r: dict) -> str:
     role also waits on the maintainer: the sidebar showed a busy lane as blocked (2026-10-12), and
     the needs-you signal stays in the row's posture and ask tokens. An open question prompt is the
     exception: it is the maintainer's to answer even while subagents keep the job working, so it reads
-    `blocked` (unless the role waits on its own job or CI build). `blocked` (drawn as x in symbols
-    mode) means the role needs the maintainer, or cannot be woken (watcher dead). `working` covers a
-    turn and a wait on its own job; the `mode` token (role_mode) says which."""
-    if role_mode(r):
+    `blocked`. So does a question or an ask beside a wait on its own job: the job runs on, but the question was
+    hidden for hours under `working` (measured 2026-11-06: a merge ask raised beside a `local-ci` wait), and the
+    report's message still says the job runs. `blocked` (drawn as x in symbols mode) means the role needs the
+    maintainer, or cannot be woken (watcher dead). `working` covers a turn and a wait on its own job; the `mode`
+    token (role_mode) says which."""
+    mode = role_mode(r)
+    if mode == MODE_TURN:
+        return "working"
+    if mode and not (r["needs_you"] and (r.get("asks") or "blocked-on-question" in r["can_progress"]["reasons"])):
         return "working"
     if r["needs_you"] or ("watcher-dead" in r["can_progress"]["reasons"] and not r.get("dismissed")):
         return "blocked"

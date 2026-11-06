@@ -347,7 +347,7 @@ q = {"can_progress": {"reasons": ["blocked-on-question", "waiting-on-you"]}, "po
      "next": [], "session": "blocked", "needs_you": True}
 assert u.posture_label(q) == "wait:local-ci", u.posture_label(q)
 import ui_herdr
-assert ui_herdr.herdr_state(q) == "working"
+assert ui_herdr.herdr_state(q) == "blocked"  # a question beside its own job: the job runs on, and the question is yours
 q["sub"] = "user-auth"
 assert u.posture_label(q) == "QUESTION" and ui_herdr.herdr_state(q) == "blocked"
 t = u.ascii_table(["k", "v"], [["posture", "idle"]], 40, paint={1: lambda v, row: u.state_color(v)})
@@ -543,7 +543,7 @@ ui_status.BACKGROUND_CONDITIONS = False
 # an open prompt on a session its subagents keep working is blocked; a job or CI wait still reads working
 q = mk("working", True, ["blocked-on-question"])
 assert ui_herdr.herdr_state(q) == "blocked", ui_herdr.herdr_state(q)
-assert ui_herdr.herdr_state(dict(q, posture="wait", sub="local-ci")) == "working"
+assert ui_herdr.herdr_state(dict(q, posture="wait", sub="local-ci")) == "blocked"
 assert ui_status.posture_label(dict(q, posture="wait", sub="user-auth", next=[], active="x")) == "QUESTION"
 PY2
 check 'CLAUDE_CODE_ENABLE_AWAY_SUMMARY' $H view $SID cl --spec "$SPEC" --dry-run
@@ -2038,6 +2038,32 @@ ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: labels[t]}, **fg}
 rec.dry_run = True
 drop(both, [{"label": "s/overview"}])
 assert not did and said, (did, said)
+PY2
+# what the agents list says: an ask raised beside a job wait needs you (measured 2026-11-06: read Working for hours); a job alone is
+# work, a finished job is not, and a role on a host that cannot be reached claims neither
+python3 - "$SHOALD" <<'PY2' || fail "agents list state"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_herdr, ui_status
+base = dict(slug="lane", posture="wait", sub="local-ci", session="idle", needs_you=False, asks=[], says="", next=[], active="repo#1:fix", host="host-a",
+            fill="assigned", posture_age_s=60, grants_pending=[], wait={"sub": "local-ci", "target": "job:pilot"}, can_progress={"ok": True, "reasons": []})
+job = lambda **k: {**base, **k}
+state = lambda r: ui_app.card_report(r, "t")
+assert state(job())["state"] == "working"
+asked = job(needs_you=True, asks=["Merge PR 1?"], can_progress={"ok": True, "reasons": ["waiting-on-you"]})
+got = state(asked)
+assert got["state"] == "blocked" and got["kind"] == "question" and "local-ci" in got["msg"], got  # and it still says the job runs
+assert state(dict(asked, needs_you=False, dismissed=True))["state"] == "working", "a dismissed ask leaves the job"
+assert state(job(session="working", needs_you=True, asks=["x"], can_progress={"ok": True, "reasons": ["waiting-on-you"]}))["state"] == "working", "a turn in progress stays work"
+assert state(job(wait_done=True))["state"] == "idle" and ui_herdr.role_mode(job(wait_done=True)) == ""
+assert ui_status.working_wait(job()) and not ui_status.working_wait(job(wait_done=True))
+assert ui_status.job_ended("gh-run:o/r:1", "lane", "s") is False and ui_status.job_ended("", "lane", "s") is False
+for rs in ({"ok": False, "stale": True, "age_s": None}, {"ok": True, "stale": True, "age_s": 700}):
+    got = state(job(remote_status=rs))
+    assert got["state"] == "idle" and "cannot be reached" in got["msg"] and "host-a" in got["msg"], got
+    got = state(dict(asked, remote_status=rs))
+    assert got["state"] == "idle" and got["kind"] == "", got
+assert state(job(remote_status={"ok": True, "stale": False, "age_s": 5}))["state"] == "working"
 PY2
 # a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
 python3 - "$SHOALD" <<'PY2' || fail "report during attach"
