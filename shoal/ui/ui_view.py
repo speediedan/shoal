@@ -547,6 +547,8 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
                 pass
     for i, a in enumerate(r["asks"], 1):
         rows.append([f"ask {i}", " ".join(str(a).split())])
+    if r.get("says"):
+        rows.append(["it says", " ".join(str(r["says"]).split())])
     if r["offers_open"]:
         rows.append(["offers", f"{r['offers_open']} open"])
     reasons = [ui_status.ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x != "parked"]
@@ -614,6 +616,10 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             force = True
         if k in ("\r", "\n") and remote and not routed:
             continue  # nothing to attach here: the session lives on another host with no route from here
+        if k in ("\r", "\n") and ui_app is not None and (routed or not remote):
+            # attached, this loop reports nothing: an old `blocked` would stay on the agents list after the answer
+            sys.stdout.write(ui_app.OSC_CLEAR)
+            sys.stdout.flush()
         if k in ("\r", "\n") and routed:
             flush_input()
             remote_attach(remote, sid, slug)

@@ -257,6 +257,12 @@ export function hitDisc(discs, p) {
   return null;
 }
 
+/** The disc whose name is under a pointer, or null. */
+export function hitTitle(discs, p) {
+  for (const c of discs) if (inRect(c.title, p)) return c.id;
+  return null;
+}
+
 /** The disc whose middle ({hole}: a radius) is under a pointer, or null. */
 export function hitHole(discs, p) {
   for (const c of discs) if (c.hole && Math.hypot(c.x - p.x, c.y - p.y) <= c.hole) return c.id;

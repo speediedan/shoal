@@ -585,7 +585,7 @@ shoal ui app-plan [--shoal ID] [--json]            # this host's wanted spaces (
 shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; the mods installed into the app
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
 shoal ui act-plan VERB --shoal ID [...] [--json]   # an action's preview and one-time token, or a view
-shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # the same across shoals, always confirmed
+shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # the same across shoals
 shoal ui app-sync                                  # roles tabs follow the roles, everywhere; nothing else changes
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
@@ -593,7 +593,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
 ```
 
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
-  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard and the ledger tail), `roles` (four cards a tab
+  `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard; its `l` shows the ledger tail in
+  place, and `overview_ledger: true` in `ui.json` keeps a tail pane, while with it off the sync closes one), `roles` (four cards a tab
   in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
@@ -664,12 +665,17 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   shoal ui act-apply --token T [--json]
   ```
 
-  For a write verb (`msg`, `offer`, `withdraw`, `offline`, `freeze`), `act-plan` builds the argv the palette
-  builds, runs its `--dry-run`, names the wake cost, and keeps the argv under a one-time token (mode 0600 in
-  the runtime dir, ten minutes): `{"kind": "shoal-act-plan", "command", "preview", "cost", "confirm",
-  "token", "expires_s"}`. `act-apply` runs exactly that argv once, logs it to `ui-actions.jsonl` and forgets
-  the token (`{"kind": "shoal-act-result", "rc", "command", "output"}`); the caller can confirm only a plan it
-  was shown. `offline` carries `confirm: false` (the palette runs it without a confirm). Views store nothing:
+  For a write verb (`msg`, `offer`, `withdraw`, `offline`, `freeze`, `handoff`, `remove-role`, `remove-session`), `act-plan`
+  builds the argv the palette builds, runs its `--dry-run`, names the wake cost, and keeps the argv under a one-time token (mode
+  0600 in the runtime dir, ten minutes): `{"kind": "shoal-act-plan", "command", "preview", "cost", "confirm", "token",
+  "progress", "expires_s"}`. `--no-preview` skips the dry run (`preview` is empty), so a verb that would refuse reports it from the
+  apply; across shoals each then runs and the output says which refused. `act-apply` runs exactly that argv once, logs it to
+  `ui-actions.jsonl`, forgets the token, and writes the output to the `progress` file as it runs, for a caller to follow, since
+  the app's `exec` returns only at the end (`{"kind": "shoal-act-result", "rc", "command", "output"}`). It returns when the verb
+  ends, or kills it at its timeout, even if a detached child still holds the pipe. The dialog decides from its `Preview first`
+  toggle: on, it shows the plan and waits for a confirm; off, the click was the go, and across shoals only the button
+  (`Run on every shoal`) runs it, not Enter. The toggle starts on for `freeze`, `handoff`, `remove-role` and `remove-session`.
+  `confirm` remains for other callers (false for `offline` on one shoal). Views store nothing:
   `next`, `status`, `conditions`, `asks` (also as data) and `upgrade` (a preview) return
   `{"kind": "shoal-act-view", "text"}`, and `roles` lists the shoals and their roles with a session. An
   error is `{"kind": "shoal-act-error", "error"}` with exit 2, and so is a write whose own `--dry-run` refuses

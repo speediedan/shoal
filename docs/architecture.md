@@ -1063,8 +1063,9 @@ each from the spec, and, from this host's last digest, its items as done, open, 
 host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
 Queue items match board items by `item_key`, which needs `default_owner` set: without it a queue item keeps its owner, and reads
 as off the board.
-An outside writer says whether this host has a saved session for it (`saved`): one with none has nothing to remove, so the
-lattice offers only to hide it.
+A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger, and says which session
+it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
+offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`.
 
 ### Herdr app adapter (`shoal ui app-*`)
 

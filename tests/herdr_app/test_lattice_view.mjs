@@ -908,6 +908,48 @@ test("the board bar fills its width and keeps a small cell visible", () => {
   assert.deepEqual(widths({ done: 0, open: 3, inFlight: 0, assigned: 0 }, 226), [226]);
 });
 
+test("a shoal's name: its board's numbers on hover, and the same numbers in the ring's hole", () => {
+  const vm = M.buildModel(doc, "global");
+  const c = M.cardLines(vm, M.BOARD_CARD + A);
+  assert.equal(c.title, "alpha priorities");
+  assert.deepEqual(c.boards[0].counts, { done: 134, open: 58, inFlight: 4, assigned: 10 });
+  assert.ok(c.rows.some(([k, v]) => k === "off the board" && v === "+1 in flight, +2 assigned"));
+  assert.ok(c.rows.some(([k, v]) => k === "read" && v === "4m ago"));
+  assert.equal(M.cardLines(vm, M.SHOAL_CARD + A).boards.length, 1);
+  // a board with no read here still says why
+  const b = M.cardLines(vm, M.BOARD_CARD + B);
+  assert.deepEqual(b.boards, []);
+  assert.ok(b.rows.some(([k]) => k === "counts"));
+  assert.equal(M.boardSummary(c.boards[0].counts), "134 done · 58 open · 4 in flight · 10 assigned");
+  assert.equal(M.offBoardText({ inFlight: 0, assigned: 0 }), "");
+  // no board: no card, and hitTitle finds the name only
+  const d = structuredClone(doc);
+  delete d.shoals[0].boards;
+  assert.equal(M.cardLines(M.buildModel(d, "global"), M.BOARD_CARD + A), null);
+  const discs = [{ id: "s", x: 0, y: 0, r: 50, title: { x: -20, y: -70, w: 40, h: 16 } }];
+  assert.equal(G.hitTitle(discs, { x: 0, y: -60 }), "s");
+  assert.equal(G.hitTitle(discs, { x: 0, y: 0 }), null, "the disc itself drills in");
+  assert.equal(G.hitDisc(discs, { x: 0, y: 0 }), "s");
+});
+
+test("a standalone session's card says which it is and whether it runs; a blocked session's own words reach you", () => {
+  const d = structuredClone(doc);
+  const ext = d.nodes.find((x) => x.id === "ext:evolution");
+  ext.standalone = { harness: "claude", id: "abcdef123456", state: "alive" };
+  const vm = M.buildModel(d, "global");
+  const row = (k) => M.cardLines(vm, ext.id).rows.find(([x]) => x === k)?.[1];
+  assert.equal(row("session"), "claude abcdef123456");
+  assert.equal(row("now"), "alive, between turns");
+  ext.standalone.state = "unread";
+  assert.equal(M.cardLines(M.buildModel(d, "global"), ext.id).rows.find(([x]) => x === "now")[1], "not read here");
+  const n = d.nodes.find((x) => x.kind === "role" && x.shoal === A);
+  n.state = { ...n.state, says: "reply yes to apply it" };
+  n.work = { ...n.work, asks: [] };
+  assert.ok(M.cardLines(M.buildModel(d, "global"), n.id).list.includes("? reply yes to apply it"));
+  const r = M.needsYouList([{ ...n, state: { ...n.state, class: "wait", event: "session-blocked", needs_you: true } }]);
+  assert.equal(r[0]?.text, "reply yes to apply it");
+});
+
 test("a change on a board redraws the rail", () => {
   const before = M.visualSignature(M.buildModel(doc, "global"));
   const d = structuredClone(doc);

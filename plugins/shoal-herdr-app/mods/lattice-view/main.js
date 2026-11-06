@@ -33,16 +33,17 @@ import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
   FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay, scopeOverlay, removeOverlay,
-  SHOAL_CARD, HIDDEN_KEY, hiddenList, ledgerStale, boardCells, boardBar,
+  SHOAL_CARD, BOARD_CARD, HIDDEN_KEY, hiddenList, ledgerStale, boardCells, boardBar, boardSummary, offBoardText,
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, fitScene, fitText, headerText } from "./scene.js";
-import { hitNode, hitEdge, hitDisc, hitHole, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
+import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
 const BOARD_BAR_W = 226;
+const TIER_MS = 2000;
 const P = PALETTE;
 const MONO = "Geist Mono";
 
@@ -179,6 +180,11 @@ export default class Lattice extends View {
     if (!this.renderer) this.probeRenderer(cx);
     this.load(cx);
     cx.timer.every(this.pollMs, (cx) => this.load(cx));
+    cx.timer.every(TIER_MS, (cx) => {  // a render decides the motion, and a window gaining focus draws nothing by itself
+      const was = this.tier?.tier;
+      this.resolveMotion();
+      if (this.tier.tier !== was) cx.notify();
+    });
     if (this.mode === "full") {
       cx.spawn(async (cx) => {
         for (;;) {
@@ -467,7 +473,8 @@ export default class Lattice extends View {
     }
     if (!p) return;
     const hole = hitHole(this.discs, p);
-    const id = hitNode(this.hits, p, 4) ?? hitEdge(this.edgeHits, p) ?? (hole ? SHOAL_CARD + hole : null);
+    const named = this.boardUrl(hitTitle(this.discs, p)) ? hitTitle(this.discs, p) : null;
+    const id = hitNode(this.hits, p, 4) ?? (named ? BOARD_CARD + named : null) ?? hitEdge(this.edgeHits, p) ?? (hole ? SHOAL_CARD + hole : null);
     if (id !== this.hover) {
       this.hover = id;
       cx.notify();
@@ -484,7 +491,9 @@ export default class Lattice extends View {
     }
     const p = e.local_position ?? { x: press.lx, y: press.ly };
     const id = hitNode(this.hits, p, 4);
+    const board = id ? null : this.boardUrl(hitTitle(this.discs, p));
     if (id) this.pinned = this.pinned === id ? null : id;
+    else if (board) cx.open_url(board); // a shoal's name opens its board; the rest of its disc drills in
     else if (this.vm?.global && hitDisc(this.discs, p)) this.drill(hitDisc(this.discs, p), cx);
     else {
       // an edge pins only outside a cluster disc: a click inside one still drills in, however close an edge runs
@@ -493,6 +502,11 @@ export default class Lattice extends View {
       this.pinned = what && this.pinned !== what ? what : null;
     }
     cx.notify();
+  }
+
+  /** A shoal's first priority board, or null. */
+  boardUrl(sid) {
+    return sid ? this.vm?.shoals.find((s) => s.id === sid)?.boards.items[0]?.url ?? null : null;
   }
 
   /** Right-click: a role opens the shoal-actions dialog on it; an outside writer pins its card, which offers to hide
@@ -613,6 +627,10 @@ export default class Lattice extends View {
         const d = sc.discs.find((x) => x.id === id.slice(SHOAL_CARD.length));
         return d ? { x: d.x, y: d.y, r: 0 } : null;
       }
+      if (id.startsWith(BOARD_CARD)) {
+        const t = sc.discs.find((x) => x.id === id.slice(BOARD_CARD.length))?.title;
+        return t ? { x: t.x + t.w / 2, y: t.y + t.h, r: 0 } : null;
+      }
       return sc.nodeScreen.get(id) ?? sc.edgeScreen.get(id) ?? null;
     };
     // an edge with nothing left in the day leaves the feed: a pin on it must not block the hover's card
@@ -638,11 +656,18 @@ export default class Lattice extends View {
         .on_click((_e, cx) => { this.toggleGlobal(cx); cx.notify(); })
         .child(this.vm.global ? `‹ ${shortShoal(home)}` : "all shoals ›")
       : null;
-    const back = this.vm.global ? (home !== "global" ? ` · esc: back to ${shortShoal(home)}` : " · click a cluster to drill in") : atHome ? " · g: all shoals" : " · esc: back";
+    const board = this.vm.global ? null : this.vm.shoalsInView[0]?.boards.items[0] ?? null;
+    const back = this.vm.global ? (home !== "global" ? ` · esc: back to ${shortShoal(home)}` : " · click a cluster to drill in, its name for its board") : atHome ? " · g: all shoals" : " · esc: back";
     return v_flex().absolute().left(16).top(12).gap(2)
       .child(h_flex().gap(8).items_center()
         .child(div().text_size(11).font_semibold().text_color(P.ink).child("LATTICE"))
         .child(div().text_size(11).text_color(P.steel2).child(`› ${h.where}`))
+        .when(Boolean(board), (el) => el.child(div().id("header-board").cursor_pointer().text_size(10.5).text_color(P.ink)
+          .hover((st) => st.text_color(P.teal))
+          .tooltip(board.counts ? boardSummary(board.counts) : "open this shoal's board")
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => cx.open_url(board.url))
+          .child(`${board.title} ↗`)))
         .when(chip !== null, (el) => el.child(chip))
         .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
       .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
@@ -661,7 +686,9 @@ export default class Lattice extends View {
     const LINE = 20, EXTRA = 28;
     const hideBtn = pinned && c.hideable === true;
     const removeSpec = hideBtn ? removeOverlay(this.vm, id, this.source) : null;
-    const fixed = 1 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0) + (removeSpec ? 1 : 0);
+    const boards = c.boards ?? [];
+    const longTitle = fitText(c.title, textW - 96, 12) !== c.title; // it wraps onto a second line
+    const fixed = 1 + (longTitle ? 1 : 0) + boards.length * 3 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0) + (removeSpec ? 1 : 0);
     const room = Math.floor((size.height - 16 - EXTRA) / LINE) - fixed;
     const links = c.links.length > room ? c.links.slice(0, Math.max(0, room - 1)) : c.links;
     const more = c.links.length - links.length;
@@ -676,12 +703,18 @@ export default class Lattice extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(h_flex().gap(6).items_center()
         .child(dot(color, 9))
-        .child(div().text_size(12).font_semibold().text_color(P.ink).child(c.title))
-        .child(div().flex_1().min_w(0).truncate().text_color(P.dim).child(c.subtitle ?? ""))
+        .child(div().flex_1().min_w(0).text_size(12).font_semibold().text_color(P.ink).child(c.title))
+        .when(!longTitle, (el) => el.child(div().flex_none().text_color(P.dim).child(c.subtitle ?? ""))
+          .when(pinned, (el2) => el2.child(div().text_color(P.faint).child("pinned")))));
+    // a long name has the whole first line, so it reads in full
+    if (longTitle) {
+      card.child(h_flex().gap(6).child(div().flex_1().min_w(0).truncate().text_color(P.dim).child(c.subtitle ?? ""))
         .when(pinned, (el) => el.child(div().text_color(P.faint).child("pinned"))));
+    }
     for (const [k, v] of c.rows) {
       card.child(h_flex().gap(8).child(div().w(104).flex_none().text_color(P.dim).child(k)).child(div().flex_1().min_w(0).truncate().text_color(P.ink).child(v)));
     }
+    boards.forEach((b, i) => card.child(this.boardTable(b.counts, `card-bd-${i}`, textW)));
     c.list.forEach((text, i) => card.child(line(`card-ask-${i}`, text, P.magenta)));
     links.forEach((l, i) => {
       const color2 = l.stale ? P.red : l.kind === "active" ? P.teal : l.kind === "next" ? P.ink : P.dim;
@@ -827,6 +860,17 @@ export default class Lattice extends View {
     return rail;
   }
 
+  /** A board's numbers: the table, with a bar under it. */
+  boardTable(counts, key, width) {
+    const table = h_flex().justify_between();
+    boardCells(counts).forEach((c) => table.child(v_flex().id(`${key}-${c.label}`).items_center().tooltip(c.about)
+      .child(div().font_semibold().text_color(c.color).child(String(c.n)))
+      .child(div().text_size(9).text_color(P.dim).child(c.label))));
+    const bar = h_flex().h(4).rounded(2).overflow_hidden();
+    boardBar(counts, width).forEach((seg) => bar.child(div().h(4).flex_none().w(seg.w).bg(seg.color)));
+    return v_flex().gap(4).child(table).child(bar);
+  }
+
   /** One shoal's priority boards: a link and how old the counts are, then the table with a bar under it. */
   renderBoards(s, named) {
     const B = s.boards;
@@ -843,20 +887,10 @@ export default class Lattice extends View {
         box.child(div().text_color(P.faint).child(B.note));
         return;
       }
-      const table = h_flex().justify_between();
-      boardCells(b.counts).forEach((c) => table.child(v_flex().id(`bd-${s.id}-${i}-${c.label}`).items_center().tooltip(c.about)
-        .child(div().font_semibold().text_color(c.color).child(String(c.n)))
-        .child(div().text_size(9).text_color(P.dim).child(c.label))));
-      box.child(table);
-      const bar = h_flex().h(4).rounded(2).overflow_hidden();
-      boardBar(b.counts, BOARD_BAR_W).forEach((seg) => bar.child(div().h(4).flex_none().w(seg.w).bg(seg.color)));
-      box.child(bar);
+      box.child(this.boardTable(b.counts, `bd-${s.id}-${i}`, BOARD_BAR_W));
     });
-    const off = B.offBoard;
-    const notes = [];
-    if (off.inFlight) notes.push(`+${off.inFlight} in flight`);
-    if (off.assigned) notes.push(`+${off.assigned} assigned`);
-    if (notes.length) box.child(div().id(`bd-off-${s.id}`).text_size(9.5).text_color(P.dim).tooltip("work roles hold that is not open on this board").child(`${notes.join(", ")} off the board`));
+    const off = offBoardText(B.offBoard);
+    if (off) box.child(div().id(`bd-off-${s.id}`).text_size(9.5).text_color(P.dim).tooltip("work roles hold that is not open on this board").child(off));
     return box;
   }
 

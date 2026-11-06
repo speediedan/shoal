@@ -416,7 +416,7 @@ export function needsYouList(nodes) {
       badge: v.badge,
       rank: v.urgency ?? 9,
       since_s: num(s.since_s, 0),
-      text: asks[0] ?? (s.event === "self" ? v.label : s.event ? `${s.class}:${s.event}` : s.class ?? ""),
+      text: asks[0] ?? (s.says ? str(s.says) : s.event === "self" ? v.label : s.event ? `${s.class}:${s.event}` : s.class ?? ""),
     });
   }
   rows.sort((a, b) => a.rank - b.rank || b.since_s - a.since_s || (a.id < b.id ? -1 : 1));
@@ -482,6 +482,35 @@ export function boardsOf(s, host = null) {
     age: typeof b.age_s === "number" ? b.age_s : null,
     stale: b.stale === true,
   };
+}
+
+/** The hover id of a shoal's name on the lattice. */
+export const BOARD_CARD = "board-card:";
+
+/** One line of a board's numbers, for a tooltip. */
+export const boardSummary = (c) => `${c.done} done · ${c.open} open · ${c.inFlight} in flight · ${c.assigned} assigned`;
+
+/** Queued work that is not open on the board, in words; "" when there is none. */
+export function offBoardText(off) {
+  const bits = [];
+  if (off?.inFlight) bits.push(`+${off.inFlight} in flight`);
+  if (off?.assigned) bits.push(`+${off.assigned} assigned`);
+  return bits.length ? `${bits.join(", ")} off the board` : "";
+}
+
+/** The hover card of a shoal's name: its boards' numbers, drawn as the rail draws them. */
+export function boardCardLines(vm, sid) {
+  const s = vm.shoals.find((x) => x.id === sid);
+  const B = s?.boards;
+  if (!B?.items.length) return null;
+  const rows = [];
+  if (B.age !== null) rows.push(["read", `${fmtAge(B.age)} ago${B.stale ? " (old)" : ""}`]);
+  if (!B.items.some((b) => b.counts)) rows.push(["counts", B.note]);
+  const off = offBoardText(B.offBoard);
+  if (off) rows.push(["off the board", off.replace(" off the board", "")]);
+  rows.push(["click", "opens the board"]);
+  return { title: B.items.length === 1 ? B.items[0].title : `${s.short} boards`, subtitle: "board", color: s.tint, rows, list: [], links: [], command: null,
+           boards: B.items.filter((b) => b.counts) };
 }
 
 /** The rail's table, in reading order: done, open, in flight, assigned. */
@@ -557,6 +586,7 @@ export function buildModel(doc, view = "global", opts = {}) {
       grants: grantsOf(n),
       alias_of: n.alias_of ?? null,
       saved: n.saved === true,
+      standalone: obj(n.standalone).id ? obj(n.standalone) : null,
       state: obj(n.state),
       work: obj(n.work),
       metrics: obj(n.metrics),
@@ -850,12 +880,16 @@ export function shoalCardLines(vm, sid) {
     ["asks / grants", `${s.asks} / ${s.grants}`], ["pages 24h", String(s.pages24)], ["done 24h / 7d", `${s.done24} / ${s.done7}`], ["msgs per hour", String(s.msgsPerH)]];
   if (s.home) rows.push(["home", s.home]);
   if (ledgerStale(s)) rows.push(["ledger clone", `${fmtAge(s.ledgerAge)} old on ${vm.host ?? "this host"}`]);
-  return { title: s.short, subtitle: "shoal", color: s.urgentColor, rows, list: [], links: [], command: null };
+  return { title: s.short, subtitle: "shoal", color: s.urgentColor, rows, list: [], links: [], command: null, boards: s.boards.items.filter((b) => b.counts) };
 }
+
+/** A saved standalone session's state, in the words its card uses. */
+const STANDALONE_NOW = { busy: "running a turn", alive: "alive, between turns", blocked: "alive, waiting on you", stopped: "stopped" };
 
 /** The text lines of a hover card for a node, an edge or a shoal, shared by main.js and the preview. */
 export function cardLines(vm, id) {
   if (typeof id === "string" && id.startsWith(SHOAL_CARD)) return shoalCardLines(vm, id.slice(SHOAL_CARD.length));
+  if (typeof id === "string" && id.startsWith(BOARD_CARD)) return boardCardLines(vm, id.slice(BOARD_CARD.length));
   const n = vm.byId.get(id);
   if (!n) return edgeCardLines(vm, id);
   const s = n.state;
@@ -886,13 +920,16 @@ export function cardLines(vm, id) {
   } else {
     rows.push(["kind", n.kind]);
     if (n.alias_of) rows.push(["alias of", n.alias_of]);
-    else if (n.kind === "external" && !n.saved) rows.push(["session", "none saved here"]);
+    else if (n.kind === "external" && n.standalone) {
+      rows.push(["session", `${n.standalone.harness} ${n.standalone.id}`]);
+      rows.push(["now", STANDALONE_NOW[n.standalone.state] ?? "not read here"]);
+    } else if (n.kind === "external" && !n.saved) rows.push(["session", "none saved here"]);
     for (const [k, val] of Object.entries(m)) rows.push([k.replace(/_/g, " "), String(val)]);
   }
   const links = n.items
     .filter((it) => it.kind !== "done" || n.items.length <= 6)
     .map((it) => ({ kind: it.kind, text: `${it.kind === "active" ? "▶" : it.kind === "next" ? "•" : "✓"} ${it.item}${it.blocker ? ` ← ${it.blocker}` : ""}${it.stale ? " (stale)" : ""}`, url: it.url, stale: it.stale === true }));
-  const asks = arr(n.work.asks).map((a) => `? ${a}`);
+  const asks = [...arr(n.work.asks), ...(s?.says ? [str(s.says)] : [])].map((a) => `? ${a}`);
   return {
     title: n.label,
     subtitle: n.shoal ? shortShoal(n.shoal) : n.kind,

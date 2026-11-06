@@ -83,6 +83,7 @@ export const FIELDS = {
   ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
   model: { key: "model", kind: "text", label: "Model", placeholder: "empty keeps the recorded model, or the new provider's default" },
   effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty keeps the recorded effort, or the new provider's default" },
+  dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
   removeForce: { key: "force", kind: "toggle", label: "Even if it is running or holds an active item", hint: "stops it first and can cut off work in progress" },
 };
@@ -99,13 +100,42 @@ export function nextMorning(now = new Date(), hour = 9) {
   return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)}`;
 }
 
+/** The verbs that preview unless told not to: permanent, able to cut off work, or waking every role. */
+export const PREVIEW_FIRST = new Set(["freeze", "handoff", "remove-role", "remove-session"]);
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** An offline note's default, from its `until`: "Back Wed Nov 4 09:00". Empty for no time. */
+export function backNote(until) {
+  const u = str(until).trim();
+  if (!u) return "";
+  const d = new Date(u);
+  if (Number.isNaN(d.getTime())) return `Back ${u}`;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `Back ${WEEKDAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** True when the form would run across shoals with no preview: that takes the button, naming its reach, and not Enter. */
+export const runsAcross = (target, form) => Boolean(strOrNull(target?.scope)) && form?.values?.dryRun !== true;
+
+/** The form's go button when it runs at once. */
+export const runLabel = (target) => (strOrNull(target?.scope) ? `Run on ${scopeLabel(target.scope)}` : "Run");
+
+/** The last `n` lines of an apply's output so far, for a screen that has room for those. */
+export function lastLines(text, n = 18) {
+  return str(text).replace(/\n$/, "").split("\n").slice(-n).join("\n");
+}
+
 /** A fresh form for a write verb, with its defaults (wake off, freeze records without a wake). */
 export function newForm(verb, now = new Date(), prefill = {}) {
   const info = verbInfo(verb);
   if (!info || info.kind !== "write") return null;
   const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false };
+  values.dryRun = PREVIEW_FIRST.has(verb);
   if (verb === "offline") values.until = nextMorning(now);
   for (const [k, v] of Object.entries(obj(prefill) ?? {})) if (k in values) values[k] = v;
+  if (verb === "offline" && values.state === "on" && !str(values.note).trim()) values.note = backNote(values.until);
   return { verb, values };
 }
 
@@ -113,7 +143,7 @@ export function newForm(verb, now = new Date(), prefill = {}) {
 export function visibleFields(form) {
   if (!form) return [];
   const info = verbInfo(form.verb);
-  return arr(info?.fields).filter((k) => k !== "until" || form.values.state === "on").map((k) => FIELDS[k]);
+  return [...arr(info?.fields).filter((k) => k !== "until" || form.values.state === "on"), "dryRun"].map((k) => FIELDS[k]);
 }
 
 /** The text inputs of a form in Tab order (keys). */
@@ -131,7 +161,16 @@ export function nextField(form, at, back = false) {
 /** Sets one value; returns a new form. */
 export function setValue(form, key, value) {
   if (!form) return form;
-  return { ...form, values: { ...form.values, [key]: value } };
+  const values = { ...form.values, [key]: value };
+  if (form.verb === "offline") {
+    // the note follows the back time until someone writes their own; coming back, a default says nothing
+    const was = backNote(form.values.until);
+    const untouched = !str(form.values.note).trim() || form.values.note === was;
+    if (key === "state" && value === "on" && untouched) values.note = backNote(values.until);
+    if (key === "state" && value !== "on" && form.values.note === was) values.note = "";
+    if (key === "until" && form.values.state === "on" && untouched) values.note = backNote(value);
+  }
+  return { ...form, values };
 }
 
 /** The role a verb would act on, given the picked role (`*` only where the verb allows it). */
@@ -183,6 +222,7 @@ export function planArgv(verb, target, form = null) {
   if (isWrite(verb)) {
     const v = form.values;
     const text = (k) => str(v[k]).trim();
+    if (!v.dryRun) argv.push("--no-preview");
     if (verb === "msg") {
       argv.push(`--text=${str(v.text).trim()}`);
       if (v.wake) argv.push("--wake");
@@ -536,7 +576,7 @@ export function resultLine(res) {
  * fixture. `last`: the last plan shown (its command goes on the result).
  */
 export function fixtureReply(fx, argv, last = null) {
-  const a = arr(argv).map(str);
+  const a = arr(argv).map(str).filter((x) => x !== "--no-preview"); // the fixture has no dry run to skip
   const reply = (doc, code = 0, stderr = "") => ({ code, stdout: JSON.stringify(doc), stderr });
   const err = (doc) => reply(doc ?? { v: 1, kind: KINDS.error, error: "fixture: error" }, 2, "shoal: error");
   if (a[0] !== "ui") return err();

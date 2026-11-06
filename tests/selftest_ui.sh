@@ -1990,6 +1990,49 @@ $H ui graph-feed --ledger-root "$GR" --once >/dev/null || fail "graph-feed --onc
 GJ="$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/graph.json"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["v"] == 1 and d["kind"] == "shoal-graph"' "$GJ" \
   || fail "graph-feed did not write $GJ"
+# the overview hides the ledger tail: a pane left from before closes, only with two panes and only one the plan does not want
+python3 - "$SHOALD" <<'PY2' || fail "overview ledger pane"
+import sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+did, said = [], []
+labels = {"t1": "s/overview", "t2": "s/ledger"}
+fg = {"foreground": {"name": "python3", "argv": ["python3", "/x/cli.py", "ui", "tail"]}}
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: labels[t]}, **fg}
+ui_app.app_do = lambda verb, args=None: did.append((verb, args))
+rec = types.SimpleNamespace(say=said.append, dry_run=False)
+drop = lambda doc, panes: ui_app.Reconciler._drop_ledger(rec, {"name": "s"}, doc, {"name": "overview", "panes": panes})
+both = {"terminals": [{"terminal": "t1", "pane": "p1"}, {"terminal": "t2", "pane": "p2"}]}
+drop(both, [{"label": "s/overview"}, {"label": "s/ledger"}])
+assert not did, did  # the setting keeps it
+drop({"terminals": both["terminals"][:1]}, [{"label": "s/overview"}])
+assert not did, did
+drop(both, [{"label": "s/overview"}])
+assert did == [("pane.close", {"pane": "p2"})], did
+did.clear()
+fg = {"foreground": {"name": "vim", "argv": ["vim", "notes"]}}
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: labels[t]}, **fg}
+drop(both, [{"label": "s/overview"}])
+assert not did, did  # someone typed a command there
+fg = {"foreground": {"name": "python3", "argv": ["python3", "/x/cli.py", "ui", "tail"]}}
+ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: labels[t]}, **fg}
+rec.dry_run = True
+drop(both, [{"label": "s/overview"}])
+assert not did and said, (did, said)
+PY2
+# a blocked session's own words come from its job; nothing there reads as nothing
+SAYS="$(mktemp -d)"
+CLAUDE_CONFIG_DIR="$SAYS" python3 - "$SHOALD" "$SAYS" <<'PY2' || fail "says"
+import json, os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_status
+os.makedirs(sys.argv[2] + "/jobs/abcd1234")
+json.dump({"state": "blocked", "needs": "reply yes to apply it"}, open(sys.argv[2] + "/jobs/abcd1234/state.json", "w"))
+assert ui_status.claude_says({"id": "abcd1234"}, "ignored") == "reply yes to apply it"
+assert ui_status.claude_says({}, "abcd1234-0000") == "reply yes to apply it"
+assert ui_status.claude_says({}, "ffff0000") == ""
+PY2
+rm -rf "$SAYS"
 # the bar's Home button: refuses plainly with no app, and shows the home tab of SHOAL-home with one
 python3 - "$SHOALD" <<'PY2' || fail "app-home"
 import contextlib, io, sys, types
@@ -2049,17 +2092,35 @@ PY2
 python3 - "$SHOALD" "$GR" <<'PY2' || fail "external saved"
 import json, os, sys, tempfile
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
-import ui_graph, ui_herdr
+import ui_graph, ui_herdr, ui_status
 d = ui_graph.GraphBuilder(root=sys.argv[2]).build()
 ext = [n for n in d["nodes"] if n["kind"] == "external"]
-assert ext and not any(n["saved"] for n in ext), ext
+assert ext and not any(n["saved"] or n.get("standalone") for n in ext), ext
 name = ext[0]["label"]
 p = os.path.join(tempfile.mkdtemp(), "ui-standalone.json")
-json.dump({"sessions": [{"label": name, "session": "s1"}, {"label": ext[-1]["label"] + "x", "session": "s2"}]}, open(p, "w"))
+json.dump({"sessions": [{"label": name, "session": "s1-aaaaaaaaaaaaaaaa", "harness": "muse"},
+                        {"label": "quiet-seat", "session": "s2", "harness": "claude"},
+                        {"label": "elsewhere", "session": "s3", "host": "other"},
+                        {"label": "dismissed-seat", "session": "s4", "harness": "claude", "dismissed": True}]}, open(p, "w"))
 ui_herdr.standalone_path = lambda: p
 d = ui_graph.GraphBuilder(root=sys.argv[2]).build()
-got = {n["label"]: n["saved"] for n in d["nodes"] if n["kind"] == "external"}
-assert got[name] is True and sum(got.values()) == 1, got
+got = {n["label"]: n for n in d["nodes"] if n["kind"] == "external"}
+# saved here shows whether or not it ever wrote to a ledger; saved on another host does not, and a plain writer stays unsaved
+assert got[name]["saved"] and got[name]["standalone"] == {"harness": "muse", "id": "s1-aaaaaaaaa", "state": "unread"}, got[name]
+assert got["quiet-seat"]["saved"] and got["quiet-seat"]["standalone"]["state"] in ("stopped", "unread"), got["quiet-seat"]
+assert "elsewhere" not in got and "dismissed-seat" not in got and sum(bool(n["saved"]) for n in got.values()) == 2, got
+rows = [{"id": "aaaa1111", "sessionId": "aaaa1111-x", "state": "working", "status": "busy", "pid": 1},
+        {"id": "bbbb2222", "sessionId": "bbbb2222-x", "state": "working", "status": "idle", "pid": 2},
+        {"id": "cccc3333", "sessionId": "cccc3333-x", "state": "blocked", "status": "idle", "pid": 3},
+        {"id": "dddd4444", "sessionId": "dddd4444-x", "state": "stopped"},
+        {"id": "eeee5555", "sessionId": "eeee5555-x", "state": "done", "pid": 5},   # live by its pid, as Remove reads it
+        {"id": "ffff6666", "sessionId": "ffff6666-x", "state": "blocked"},          # blocked with nothing running
+        {"id": "aaaa7777", "sessionId": "shared-x", "state": "stopped"},            # the stopped copy of a conversation
+        {"id": "bbbb8888", "sessionId": "shared-x", "state": "working", "pid": 8}]  # and its live one
+state = lambda s, r=rows: ui_graph.standalone_doc({"session": s, "harness": "claude"}, r)["state"]
+assert [state(s) for s in ("aaaa1111-x", "bbbb2222-x", "cccc3333-x", "dddd4444-x", "gone", "eeee5555-x", "ffff6666-x", "shared-x")] \
+    == ["busy", "alive", "blocked", "stopped", "stopped", "alive", "stopped", "alive"]
+assert state("aaaa1111-x", []) == "unread"  # a failed listing is not every seat stopped
 PY2
 # a shoal's boards: a link from the spec, and counts from this host's last digest; the four add up to the board
 BD="$(mktemp -d)"
@@ -2328,9 +2389,9 @@ import json, sys
 st = json.load(open(sys.argv[1])); log = [json.loads(l) for l in open(sys.argv[2])]; sid = sys.argv[3]
 s = next(x for x in st["spaces"] if x["name"] == sid)
 assert [t["name"] for t in s["tabs"]] == ["overview", "roles", "lattice"], s["tabs"]
-assert len(s["tabs"][0]["terminals"]) == 2 and s["tabs"][2].get("mod") == "lattice-view", s["tabs"]
+assert len(s["tabs"][0]["terminals"]) == 1 and s["tabs"][2].get("mod") == "lattice-view", s["tabs"]
 labels = sorted(t["labels"].get("shoal.pane", "") for t in st["terms"].values())
-assert f"{sid}/overview" in labels and f"{sid}/ledger" in labels and f"{sid}/cl" in labels, labels
+assert f"{sid}/overview" in labels and f"{sid}/ledger" not in labels and f"{sid}/cl" in labels, labels
 cmds = [l[2] for l in log if l[:2] == ["herdr-app", "do"]]
 assert cmds.count("space.new") == 1 and "space.select" in cmds and "tab.select" in cmds, cmds
 assert not any(c in ("pane.close", "space.close", "tab.close", "terminal.kill") for c in cmds), cmds
@@ -2620,6 +2681,43 @@ for verb, kw in (("msg", dict(role="nope", text="x")), ("msg", dict(role="cl")),
         pass
 print("act rules ok")
 PY11
+# the apply's timeout holds, and its return does not wait, with a detached child on the pipe; output arrives as it comes
+python3 - "$SHOALD" <<'PY10' || fail "follow"
+import io, subprocess, sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_actions
+HOLD = "import subprocess,sys; subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); print('verb said', flush=True)"
+log = io.StringIO()
+t = time.time()
+rc, out = ui_actions._follow([sys.executable, "-c", HOLD], log, timeout=20)
+assert rc == 0 and out == "verb said\n" and log.getvalue() == out and time.time() - t < 8, (rc, out, time.time() - t)
+log = io.StringIO()
+t = time.time()
+try:
+    ui_actions._follow([sys.executable, "-c", HOLD + "; import time; time.sleep(30)"], log, timeout=2)
+except subprocess.TimeoutExpired:
+    assert time.time() - t < 8 and log.getvalue() == "verb said\n", (time.time() - t, log.getvalue())
+else:
+    raise AssertionError("no timeout")
+rc, out = ui_actions._follow([sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"], io.StringIO(), timeout=20)
+assert rc == 3 and "out" in out and "err" in out, (rc, out)
+PY10
+# no preview asked for: no dry run, the same one-time token; the apply writes its output to the progress file as it runs
+OUT=$(env $AE $H ui act-plan msg --shoal $SID --role cl --text "no preview" --no-preview --json) || fail "act-plan --no-preview :: $OUT"
+read -r TOK PROG < <(python3 - "$OUT" <<'PY10'
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["kind"] == "shoal-act-plan" and d["preview"] == "" and d["progress"].endswith(".log") and d["token"] not in d["progress"], d
+print(d["token"], d["progress"])
+PY10
+)
+[ ! -e "$PROG" ] || fail "a progress file before the apply"
+OUT=$(env $AE $H ui act-apply --token "$TOK" --json) || fail "act-apply no preview :: $OUT"
+python3 - "$OUT" "$PROG" <<'PY10' || fail "progress file"
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["rc"] == 0 and d["output"] and d["output"] in open(sys.argv[2]).read(), (d, sys.argv[2])
+PY10
 # one verb across every shoal here: one token, each shoal's own preview, a confirm even for a verb that needs none alone
 # (a real offline on wakes roles, so the plan is offline's and the apply is a freeze that wakes nobody)
 OUT=$(env $AE $H ui act-plan offline --scope all --state on --json) || fail "act-plan offline --scope :: $OUT"
