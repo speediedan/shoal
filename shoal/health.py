@@ -699,7 +699,8 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                     if sub in USER_WAITS else " Re-verify the blocker (is it still pending?), then write a fresh wait or pivot."
                 out.append({"slug": slug, "condition": "wait-expired", "key": f"rescan:{ru}", "since": ru,
                             "detail": f"{sub} wait on '{str(st.get('holder', ''))[:80]}' passed its rescan {ru} unproven.{ask}"})
-            planned = {x.lower() for x in [q.get("active") or ""] + list(q.get("next") or []) if x}
+            from ledger import item_key
+            planned = {item_key(x) for x in [q.get("active") or ""] + list(q.get("next") or []) if x}
             import blockers as _blk
             for b in view.blocked_by(slug):
                 item = (b["item"] or "").lower()
@@ -707,7 +708,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                 # waking this role about it cannot help (measured 2026-10-08: three wakes in a minute)
                 if item and _blk.takeable(spec, view, f"{slug}:{item}"):
                     continue
-                if item and item.split(":", 1)[0] not in {p.split(":", 1)[0] for p in planned}:
+                if item and item_key(item) not in planned:
                     out.append({"slug": slug, "condition": "blocking-unscheduled", "key": f"block:{b['role']}:{item}",
                                 "since": b["since"],
                                 "detail": f"{b['role']} has waited on your {b['item']} since {b['since']}, and your queue "
