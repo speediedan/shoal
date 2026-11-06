@@ -598,7 +598,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   question, `\u26b7` auth, `\u2691` a grant, else `!`). A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two
   reporters would take turns on one row. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
-  the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open.
+  the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open. That hold covers every roles tab of the shoal until the last card detaches: a
+  new role's card appears, and a removed role's card goes, at the next sync after that, so the grid can change just after a detach.
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
   `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard; its `l` shows the ledger tail in
   place, and `overview_ledger: true` in `ui.json` keeps a tail pane, while with it off the sync closes one), `roles` (four cards a tab
