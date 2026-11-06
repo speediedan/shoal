@@ -139,6 +139,9 @@ def cmd_dismiss(a) -> int:
     if row.get("dismissed"):
         print(f"{a.role}: already dismissed")
         return 0
+    if (row.get("remote_status") or {}).get("stale"):
+        print(f"{a.role}: its host's status is out of date here, so a dismissal could not match what it needs now: try again shortly")
+        return 1
     reasons = (row.get("can_progress") or {}).get("reasons") or []
     why = sorted(set(reasons) & (ui_status.NEEDS_REASONS | ui_status.FAILURE_REASONS))
     if not why:
@@ -150,10 +153,12 @@ def cmd_dismiss(a) -> int:
         print(f"[dry-run] {a.role}: would clear needs-you ({', '.join(why)}) until something new is raised{until}")
         return 0
     led.append("user", "system", event="needs-dismissed", role=a.role, fp=row.get("needs_fp"), reasons=why)
-    print(f"{a.role}: needs-you cleared ({', '.join(why)}) until something new is raised{until}. It stays as it is; health is unchanged")
+    print(f"{a.role}: needs-you dismissed ({', '.join(why)}) until something new is raised{until}. The row clears within a minute or so. "
+          "It stays as it is; health is unchanged")
     return 0
 
 
+@_guard
 def cmd_withdraw(a) -> int:
     spec = _spec(a)
     led = _ledger(a, spec)

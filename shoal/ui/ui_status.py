@@ -300,10 +300,11 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         except Exception:  # noqa: BLE001 - a read model never fails on an advisory
             pass
     blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "context-large")]
-    says = (_short(claude_says(claude_session(rows, role.session) or {}, role.session), 160)
-            if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
-    shown_asks = [_short(a, 160) for a in asks]
-    needs_fp = needs_fingerprint(reasons, shown_asks, says, boundary)
+    words = (claude_says(claude_session(rows, role.session) or {}, role.session)
+             if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
+    prompt = (_h.claude_open_prompt(role.session)
+              if role.ecosystem == "claude" and "blocked-on-question" in reasons else "")
+    needs_fp = needs_fingerprint(reasons, asks, words, boundary, prompt)
     ack = view.dismissals.get(slug)
     wanting = bool(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
     dismissed = wanting and dismissed_now(ack, needs_fp, reasons, age_s(ack["ts"], now) if ack else None)
@@ -321,8 +322,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "blocker_stale": bool(stale_nb),
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
-        "asks": shown_asks,
-        "says": says,
+        "asks": [_short(a, 160) for a in asks],
+        "says": _short(words, 160),
         "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
@@ -885,10 +886,11 @@ FAILURE_REASONS = {"dead-worker", "watcher-dead"}
 DISMISS_FAILURE_S = 86400
 
 
-def needs_fingerprint(reasons, asks, says: str, boundary: str) -> str:
-    """What a dismissal is of: why the role needs you, what it asks, and its last posture. A change to any is something new."""
+def needs_fingerprint(reasons, asks, says: str, boundary: str, prompt: str = "") -> str:
+    """What a dismissal is of: why the role needs you, what it asks, which question its session has open, and its last
+    posture. A change to any is something new. The asks and words uncut: a row shows only their first part."""
     why = sorted(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
-    return hashlib.sha256(json.dumps([why, list(asks or []), says or "", boundary or ""]).encode()).hexdigest()[:16]
+    return hashlib.sha256(json.dumps([why, [str(a) for a in asks or []], says or "", boundary or "", prompt or ""]).encode()).hexdigest()[:16]
 
 
 def dismissed_now(ack: dict | None, fp: str, reasons, age_seconds) -> bool:
