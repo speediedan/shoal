@@ -102,6 +102,8 @@ export S=<id> SPEC=<path to the group's spec>
     shoal asks --shoal $S --slug <role>
     ```
 
+- Clearing a "needs you" you have seen: `shoal dismiss --shoal $S --role R` (right-click in the app's agents list). It comes back when
+  something new is raised; `--undo` brings it back now. The role keeps running, and health is unchanged. To stop a role, `shoal park`.
 - Going away and coming back. Roles record their asks while you are offline; on return each one
   drops the stale asks and raises the rest as question sets:
 

@@ -1068,7 +1068,10 @@ Queue items match board items by `item_key`, which needs `default_owner` set: wi
 as off the board.
 A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger or was dismissed from the
 app's spaces, and says which session it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
-offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`.
+offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`. `shoal dismiss` records a
+`needs-dismissed` system event with a fingerprint of the role's reasons, asks, words and last posture; while the fingerprint holds, the row's
+`needs_you` is false and `dismissed` true, and any change raises it again. It is display only: health reads neither, and a dismissal over a
+`dead-worker` or `watcher-dead` lapses after 24 hours.
 
 ### Herdr app adapter (`shoal ui app-*`)
 

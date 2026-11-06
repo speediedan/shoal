@@ -866,7 +866,7 @@ def herdr_state(r: dict) -> str:
     turn and a wait on its own job; the `mode` token (role_mode) says which."""
     if role_mode(r):
         return "working"
-    if r["needs_you"] or "watcher-dead" in r["can_progress"]["reasons"]:
+    if r["needs_you"] or ("watcher-dead" in r["can_progress"]["reasons"] and not r.get("dismissed")):
         return "blocked"
     return "idle"
 

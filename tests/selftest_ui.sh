@@ -2241,6 +2241,68 @@ check "needs you: tune" $H ui graph --ledger-root "$GR"
 check "top edges" $H ui graph --ledger-root "$GR"
 # only the test's own appends changed the clone: no file was added, committed or rewritten by a graph run
 [ "$(cd "$GL" && git status --porcelain)" = " M shoals/$GA/ledger/core.jsonl" ] || fail "graph run changed the ledger clone"
+# a ledger error is an error line and not a traceback, on withdraw as on the rest
+for V in "withdraw --item x#1" "dismiss --role tune"; do
+  OUT=$(env $H $V --shoal nosuch-shoal --ledger-dir "$S/no-such-ledger" --no-sync 2>&1); RC=$?
+  [ "$RC" != 0 ] && ! grep -q Traceback <<<"$OUT" || fail "$V on no ledger, rc $RC :: $OUT"
+done
+# dismiss: display only, comes back on anything new, and a failure's dismissal lapses
+SP="$GR/shoals/$GA/shoal.json"
+DE="SHOAL_UI_LEDGER_ROOTS=$GR"
+OUT=$(env $DE $H dismiss --shoal $GA --spec "$SP" --ledger-dir "$GL" --no-sync --role tune --dry-run) || fail "dismiss dry run :: $OUT"
+grep -q "would clear needs-you" <<<"$OUT" || fail "dismiss dry run said :: $OUT"
+OUT=$(env $DE $H dismiss --shoal $GA --spec "$SP" --ledger-dir "$GL" --no-sync --role tune --undo 2>&1); [ $? = 1 ] || fail "undo with nothing to undo :: $OUT"
+OUT=$(env $DE $H dismiss --shoal $GA --spec "$SP" --ledger-dir "$GL" --no-sync --role tune) || fail "dismiss :: $OUT"
+grep -q "within a minute" <<<"$OUT" || fail "dismiss said :: $OUT"
+python3 - "$SHOALD" "$GR" "$GL" "$GA" <<'PY2' || fail "dismiss in the feed"
+import json, os, subprocess, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_graph, ui_status
+root, GL, GA = sys.argv[2:5]
+node = lambda: next(n for n in ui_graph.GraphBuilder(root=root).build()["nodes"] if n["id"] == f"{GA}:tune")
+n = node()
+assert n["state"]["dismissed"] is True and n["state"]["needs_you"] is False, n["state"]
+hub = next(x for x in ui_graph.GraphBuilder(root=root).build()["nodes"] if x["id"] == "user")
+assert hub["work"]["asks_open"] == 0, hub["work"]
+assert n["work"]["asks"], "the ask itself is still there"
+# something new: a further ask raises it again
+p = os.path.join(GL, "shoals", GA, "ledger", "tune.jsonl")
+last = [json.loads(l) for l in open(p) if json.loads(l).get("type") == "queue"][-1]
+with open(p, "a") as fh:
+    fh.write(json.dumps({**last, "id": "aaaa000001", "version": last.get("version", 1) + 1, "ts": "2099-01-01T00:00:00Z",
+                         "asks": list(last.get("asks") or []) + ["and this?"]}) + "\n")
+n = node()
+assert n["state"]["dismissed"] is False and n["state"]["needs_you"] is True, n["state"]
+# the pure rules
+fp = ui_status.needs_fingerprint(["waiting-on-you"], ["a"], "", "t")
+assert fp != ui_status.needs_fingerprint(["waiting-on-you"], ["b"], "", "t") and fp != ui_status.needs_fingerprint(["waiting-on-you"], ["a"], "x", "t")
+assert fp != ui_status.needs_fingerprint(["waiting-on-you"], ["a"], "", "t2") and fp != ui_status.needs_fingerprint(["dead-worker"], ["a"], "", "t")
+assert fp == ui_status.needs_fingerprint(["waiting-on-you", "context-large"], ["a"], "", "t"), "a reason that needs nobody is not news"
+assert fp != ui_status.needs_fingerprint(["waiting-on-you"], ["a"], "", "t", "toolu_2"), "a new question in the session is news"
+long = "x" * 160
+assert ui_status.needs_fingerprint([], [long + "a"], "", "") != ui_status.needs_fingerprint([], [long + "b"], "", ""), "past what a row shows"
+# the newest open question in a transcript; a late answer does not reopen one
+import health, tempfile
+os.environ.pop("SHOAL_FAKE_SESSIONS", None)
+tp = os.path.join(tempfile.mkdtemp(), "t.jsonl")
+ask = lambda i: json.dumps({"message": {"content": [{"type": "tool_use", "name": "AskUserQuestion", "id": i}]}})
+ans = lambda i: json.dumps({"message": {"content": [{"type": "tool_result", "tool_use_id": i}]}})
+health.claude_transcript = lambda s: tp
+for lines, want, is_open in (([ask("q1")], "q1", True), ([ask("q1"), ask("q2")], "q2", True), ([ask("q1"), ans("q1")], "", False),
+                             ([ask("q1"), ans("q1"), ask("q2")], "q2", True), ([], "", False)):
+    open(tp, "w").write("\n".join(lines) + "\n")
+    assert health.claude_open_prompt("s") == want and health.claude_prompt_open({}, "s") is is_open, (lines, want)
+assert health.claude_prompt_open({"waitingFor": "input needed"}, "s") is True
+ack = {"event": "needs-dismissed", "fp": fp}
+assert ui_status.dismissed_now(ack, fp, ["waiting-on-you"], 10 ** 7) is True, "an ask's dismissal does not lapse"
+assert ui_status.dismissed_now(ack, fp, ["dead-worker"], 3600) is True
+assert ui_status.dismissed_now(ack, fp, ["dead-worker"], 86400) is False and ui_status.dismissed_now(ack, fp, ["watcher-dead"], 86400) is False
+assert ui_status.dismissed_now({"event": "needs-restored", "fp": fp}, fp, ["waiting-on-you"], 1) is False
+assert ui_status.dismissed_now(ack, "other", ["waiting-on-you"], 1) is False and ui_status.dismissed_now(None, fp, ["waiting-on-you"], 1) is False
+import ui_herdr
+row = {"needs_you": False, "dismissed": True, "can_progress": {"reasons": ["watcher-dead"]}, "posture": "idle", "wait": None, "sub": None, "session": "dead", "active": None}
+assert ui_herdr.herdr_state(row) == "idle", "a dismissed dead watcher does not read blocked"
+PY2
 rm -rf "/tmp/$GA" "/tmp/$GB"
 echo "graph feed ok"
 

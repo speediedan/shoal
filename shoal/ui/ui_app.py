@@ -1139,6 +1139,16 @@ function shoalGo(a) {
   if (zoomed && !there?.zoomed) run("pane.zoom", { pane: a.pane });
 }
 
+// Right-click a role's row: the dialog's Dismiss, which clears its needs-you until something new is raised.
+function shoalDismiss(a, cx) {
+  const label = terminals().find((x) => x.address === a.address)?.labels?.["shoal.pane"] ?? "";
+  const cut = label.lastIndexOf("/");
+  if (cut < 0 || label.startsWith("standalone/")) return;
+  cx.stop_propagation();
+  const at = a.address.indexOf("/");
+  openOverlay({ mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: label.slice(0, cut), role: label.slice(cut + 1), verb: "dismiss", machine: at > 0 ? a.address.slice(0, at) : null } });
+}
+
 // A blocked role's badge says what it wants: its report's kind, in the lattice's marks.
 function shoalBadge(a) {
   const kind = a.address ? terminals().find((x) => x.address === a.address)?.report?.kind : null;
@@ -1158,7 +1168,7 @@ CLONES = {
         (".text_color(idle ? t.muted : t.foreground).child(name))", ".text_color(sr?.color ?? (idle ? t.muted : t.foreground)).child(name))"),
         ('.items_center().justify_center().child("!");', '.items_center().justify_center().child(shoalBadge(a));'),
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
-        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .when(Boolean(pic)'),
+        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(pic)'),
     ]),
     "spaces": ("shoal-spaces", [
         ('const head = h_flex().id(`machine-${m ?? "local"}`).h(26)',
