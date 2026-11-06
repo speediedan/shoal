@@ -20,7 +20,8 @@ and is checked by kind:
   past `hold_page_min` pages the maintainer.
 
 A stale blocker (resolved or expired) no longer counts toward the idle gate or the health quorum's
-parked-work check, and `next` names it. Re-recording it is the re-verification.
+parked-work check, and `next` names it. Re-recording it is the re-verification. A role or provider
+blocker that cleared (`cleared`) also wakes the role once (blocker-resolved in the health quorum).
 """
 from __future__ import annotations
 
@@ -161,6 +162,15 @@ def stale(spec, view, slug: str, q: dict | None = None, live: bool = True) -> di
         if st in ("resolved", "expired"):
             out[k] = f"{st}: {why}"
     return out
+
+
+def cleared(stale_nb: dict[str, str], q: dict) -> dict[str, str]:
+    """The part of `stale` that is news: {item key: why} for role and provider blockers whose target really cleared.
+    An expired blocker only needs re-checking, and an `ask:` with no ask recorded is the maintainer's or the role's own
+    doing, so neither says that anything changed."""
+    nb = q.get("next_blocked") or {}
+    return {k: why for k, why in stale_nb.items()
+            if why.startswith("resolved:") and kind(nb.get(k, "")) in ("role", "upstream", "lease")}
 
 
 def long_holds(spec, q: dict | None) -> list[tuple[str, str, str, float, int]]:
