@@ -175,5 +175,6 @@ and drops every attached client: measured 2026-10-22, 124 restarts in a day, dri
 - A busy one is reported once per version, to be relaunched at a quiet moment.
 - The running version comes from the background service's roster (`~/.claude/daemon/roster.json`).
 
-**Reattach.** When the background service restarts under an attached card, the card reattaches the same session, up to three
-times. A card whose client binary was replaced by an update reattaches once on the new version.
+**Reattach.** When the background service restarts as an attached client ends (within a minute), the card reattaches the same
+session, up to three times, after saying so and giving three seconds to press a key and stay on the card. The service restarts
+every 30 minutes and most restarts leave a client running, so a detach at any other time returns to the card. A card whose client binary was replaced by an update reattaches once on the new version.
