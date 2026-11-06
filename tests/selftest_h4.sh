@@ -1041,7 +1041,8 @@ grep -q "BLOCKER STALE interpretune#9902 <- hold:design (expired" <<<"$OUT" || f
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle 2>&1 || true)
 grep -q "interpretune#9902 <- hold:design is stale (expired" <<<"$OUT" || fail "idle accepted behind an expired hold :: $OUT"
 rm -f /tmp/$SID/health.json
-env SHOAL_HEALTH_SHIFT_MIN=61 $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
+OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $H health --spec "$SPEC" --instance a 2>&1)   # first sighting recorded
+! grep -q "blocker-resolved" <<<"$OUT" || fail "an expired hold woke as if it had cleared :: $OUT"
 check "tl parked-work step1:wake" env SHOAL_HEALTH_SHIFT_MIN=92 $H health --spec "$SPEC" --instance a --dry-run
 # re-recording is the re-verification; a hold kept past hold_page_min pages the maintainer once
 check "posture=idle" env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle --blocked "interpretune#9902=hold:design still"
@@ -1063,6 +1064,18 @@ check "already cleared (lease gpu free" $Q --slug tl --idle --blocked "interpret
 check "posture=idle" env LEASE_STUB=held $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
 OUT=$($NX --slug tl 2>&1)
 grep -q "BLOCKER STALE interpretune#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT" || fail "cleared lease blocker not named :: $OUT"
+# a blocker that really cleared wakes its role at once, by itself; the blocker still held does not
+check "tl blocker-resolved step1:wake" $H health --spec "$SPEC" --instance a --dry-run
+OUT=$(env LEASE_STUB=held $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+! grep -q "blocker-resolved" <<<"$OUT" || fail "a blocker still held read as cleared :: $OUT"
+python3 - "$SHOALD" <<'PY2' || fail "cleared() let through something that is not news"
+import sys; sys.path.insert(0, sys.argv[1])
+import blockers
+q = {"next_blocked": {"a#1": "up:a#9", "a#2": "upstream:gh-pr:a#8", "a#3": "lease:gpu", "a#4": "ask:scope", "a#5": "hold:x", "a#6": "up:a#7"}}
+stale = {"a#1": "resolved: done", "a#2": "resolved: merged", "a#3": "resolved: free", "a#4": "resolved: no ask recorded",
+         "a#5": "expired: old", "a#6": "expired: untakeable"}
+assert sorted(blockers.cleared(stale, q)) == ["a#1", "a#2", "a#3"], blockers.cleared(stale, q)
+PY2
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)
 PY2
@@ -1535,6 +1548,22 @@ spec = spec_with(wake_off=["parked-work"])
 COND[:] = [pw("v#3")]
 out, st = run(spec, {"ladders": {"tl|parked-work|parked:v#3": {"since": ago(200), "step": 0}}})
 assert "tl parked-work step1:page" in out and ":wake" not in out, out
+# blocker-resolved wakes under that wake_off and while offline (it is news, and only the role is needed), once, and never
+# pages; the same blocker re-opening is not woken again; its own wake_off entry turns it off
+def br(key="cleared:b#4"):
+    return {"slug": "tl", "condition": "blocker-resolved", "key": key, "first_seen": True, "since": ago(1), "detail": "b#4 is free"}
+MODES["user-offline"] = {"mode": "user-offline", "state": "on", "ts": ago(300)}
+COND[:] = [br()]
+out, st = run(spec, {})
+assert "tl blocker-resolved step1:wake -> " in out and "held" not in out, out
+out, st = run(spec, dict(st, last_wake={}))
+assert "blocker-resolved" not in out, out
+st["ladders"] = {}; st["last_wake"] = {}
+out, st = run(spec, st)
+assert "skipped (woken for the same at" in out, out
+MODES["user-offline"] = {"mode": "user-offline", "state": "off", "ts": ago(60)}
+out, st = run(spec_with(wake_off=["blocker-resolved"]), {})
+assert ":wake" not in out and ":page" not in out, out
 print("wake economy ladders ok")
 # dormant: a dead watcher on an idle role with nothing actionable raises nothing (lazy_rearm)
 import importlib; importlib.reload(health)
