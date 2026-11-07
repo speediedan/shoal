@@ -905,6 +905,8 @@ export default class Lattice extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().text_color(P.steel2).font_semibold().child("LEGEND (l to close)"))
       .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
+      // the one exception to the tier: a replay asked for with `r` draws its packets at any tier, `off` included
+      .child(div().text_color(P.dim).child("r: replay 24 h (its packets move at any motion tier)"))
       .child(h_flex().gap(14).items_start().child(col).child(right));
   }
 

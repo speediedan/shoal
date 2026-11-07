@@ -970,8 +970,10 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
             return 0
         if k in ("\r", "\n"):
             flush_input()
-            s, j = session, job
-            with _report_during("", "", ui_app, make=lambda: seat.text(s, j)) if seat is not None else contextlib.nullcontext():
+            # the attach's reporter is a thread of its own with its own state: nothing it touches is the loop's, and a
+            # fresh latch says no `done` while you are in the session
+            s, j, att = session, job, _SeatReport(ui_app, label) if seat is not None else None
+            with _report_during("", "", ui_app, make=lambda: att.text(s, j)) if att is not None else contextlib.nullcontext():
                 run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
                                + (["--job", job] if job else []))
             if seat is not None:
