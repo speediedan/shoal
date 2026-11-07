@@ -64,7 +64,7 @@ const KIND_RANK = { auth: 0, question: 1, permission: 2 };
 export function needsYouOrder(list, kindOf = () => null) {
   const rank = (a) => KIND_RANK[kindOf(a)] ?? 3;
   return arr(list).filter((a) => a?.status === "blocked" && a.pane)
-    .sort((x, y) => rank(x) - rank(y) || x.seq - y.seq || (x.address < y.address ? -1 : 1));
+    .sort((x, y) => rank(x) - rank(y) || (x.seq ?? 0) - (y.seq ?? 0) || (x.address < y.address ? -1 : 1));
 }
 
 /** The needs-you agent after `current` (an address) in that order, wrapping; the first when `current` is not one. */

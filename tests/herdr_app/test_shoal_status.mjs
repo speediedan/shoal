@@ -45,6 +45,7 @@ assert.equal(M.nextNeedsYou(ag, kindOf, "t2").address, "t4", "from an agent that
 assert.equal(M.nextNeedsYou(ag, kindOf, "t4").address, "t1");
 assert.equal(M.nextNeedsYou(ag, kindOf, "t3").address, "t4", "wraps");
 assert.equal(M.nextNeedsYou([ag[1]], kindOf, null), null, "nobody needs you");
+assert.deepEqual(M.needsYouOrder([{ address: "b", pane: "p", status: "blocked" }, { address: "a", pane: "q", status: "blocked", seq: 0 }]).map((a) => a.address), ["a", "b"], "no seq reads as 0: a stable order");
 assert.deepEqual(M.usageMachines([{ active: true, machine: null }], ["lane-a", null]), ["lane-a", null]);
 assert.deepEqual(M.usageMachines([], []), [null]);
 console.log("shoal-status: ok");

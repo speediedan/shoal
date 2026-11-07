@@ -648,7 +648,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
   seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until
-  you look, and anything the role does next, or an attach, replaces it. The app then shows the role in its agents list, colors the
+  you look, and anything the role does next, or an attach, replaces it. A card restarted by an upgrade (every card re-execs
+  on new code) forgets a `done` not yet seen. The app then shows the role in its agents list, colors the
   space and tab dots, plays its sound and posts a toast that leads to the card. Leaving the card clears the
   report. The 0.9.3 feeder's socket push is not used here.
 - **The pin.** The app downloads its own updates and then updates herdr-core, and no setting stops it.
