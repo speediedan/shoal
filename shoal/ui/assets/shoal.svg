@@ -5,44 +5,85 @@
       <stop offset="0" stop-color="#14405a"/>
       <stop offset="1" stop-color="#071422"/>
     </radialGradient>
-    <radialGradient id="body" cx="60%" cy="34%" r="72%">
-      <stop offset="0" stop-color="#6fe3da"/>
+    <radialGradient id="teal" cx="60%" cy="30%" r="75%">
+      <stop offset="0" stop-color="#7ae8df"/>
       <stop offset="1" stop-color="#1f9e9a"/>
     </radialGradient>
+    <radialGradient id="coral" cx="60%" cy="30%" r="75%">
+      <stop offset="0" stop-color="#ffc08a"/>
+      <stop offset="1" stop-color="#ef6438"/>
+    </radialGradient>
+    <radialGradient id="violet" cx="60%" cy="30%" r="75%">
+      <stop offset="0" stop-color="#f0c8ff"/>
+      <stop offset="1" stop-color="#a35de4"/>
+    </radialGradient>
     <clipPath id="tile"><rect x="2" y="2" width="60" height="60" rx="14"/></clipPath>
-    <clipPath id="fish"><ellipse cx="33" cy="40" rx="13.5" ry="12"/></clipPath>
+    <clipPath id="tealBody"><ellipse cx="0" cy="0" rx="6.4" ry="5.6"/></clipPath>
+    <clipPath id="coralBody"><ellipse cx="0" cy="0" rx="7" ry="4.5"/></clipPath>
   </defs>
   <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#sea)"/>
   <g clip-path="url(#tile)">
-    <!-- the lattice: two seaweed stalks, their nodes joined by arcs -->
+    <!-- the lattice: three seaweed stalks, their nodes joined by arcs -->
     <g fill="none" stroke-linecap="round">
-      <path d="M12 20 Q22 8 32 12" stroke="#38bdf8" stroke-opacity="0.7" stroke-width="1.5"/>
-      <path d="M32 12 Q42 7 52 18" stroke="#38bdf8" stroke-opacity="0.7" stroke-width="1.5"/>
-      <path d="M11 33 Q32 14 53 31" stroke="#38bdf8" stroke-opacity="0.4" stroke-width="1.2"/>
-      <path d="M10 64 C5 52 15 44 11 33 C8 27 14 24 12 20" stroke="#22b8a0" stroke-width="2.8"/>
-      <path d="M54 64 C59 52 49 43 53 31 C56 25 50 22 52 18" stroke="#22b8a0" stroke-width="2.8"/>
+      <path d="M11 17 Q21 6 32 10" stroke="#38bdf8" stroke-opacity="0.75" stroke-width="1.4"/>
+      <path d="M32 10 Q43 6 53 17" stroke="#38bdf8" stroke-opacity="0.75" stroke-width="1.4"/>
+      <path d="M10 37 Q21 30 32 33" stroke="#38bdf8" stroke-opacity="0.4" stroke-width="1.1"/>
+      <path d="M32 33 Q43 29 54 35" stroke="#38bdf8" stroke-opacity="0.4" stroke-width="1.1"/>
+      <path d="M9 64 C4 53 14 46 10 37 C6 29 13 24 11 17" stroke="#22b8a0" stroke-width="2.4"/>
+      <path d="M32 64 C28 54 36 45 32 33 C29 25 35 18 32 10" stroke="#22b8a0" stroke-width="2.4"/>
+      <path d="M55 64 C60 53 50 45 54 35 C58 28 51 23 53 17" stroke="#22b8a0" stroke-width="2.4"/>
     </g>
     <g fill="#22b8a0">
-      <path d="M10.5 46 C4 44 3 39 4 37 C8 39 10 42 10.5 46 Z"/>
-      <path d="M53.5 45 C60 43 61 38 60 36 C56 38 54 41 53.5 45 Z"/>
+      <path d="M9.6 50 C4 48.5 3.2 44 4 42 C7.6 43.6 9.3 46.6 9.6 50 Z"/>
+      <path d="M31.4 47 C26.4 46 25.2 42 26 40 C29.4 41.4 31 44 31.4 47 Z"/>
+      <path d="M54.6 49 C60 47.5 60.8 43 60 41 C56.6 42.6 54.9 45.6 54.6 49 Z"/>
     </g>
     <g fill="#7af5dc">
-      <circle cx="12" cy="20" r="2.4"/>
-      <circle cx="11" cy="33" r="2.1"/>
-      <circle cx="32" cy="12" r="2.3"/>
-      <circle cx="52" cy="18" r="2.4"/>
-      <circle cx="53" cy="31" r="2.1"/>
+      <circle cx="11" cy="17" r="2.2"/>
+      <circle cx="10" cy="37" r="1.9"/>
+      <circle cx="32" cy="10" r="2.2"/>
+      <circle cx="32" cy="33" r="1.9"/>
+      <circle cx="53" cy="17" r="2.2"/>
+      <circle cx="54" cy="35" r="1.9"/>
     </g>
-    <!-- the fish -->
-    <path d="M22 40 C15 30 9 31 9.5 36 C10.5 38.5 10.5 41.5 9.5 44 C9 49 15 50 22 40 Z" fill="#137a77" stroke="#0a3d40" stroke-width="0.9" stroke-linejoin="round"/>
-    <path d="M27 29 C29 22 37 21 41 27 Z" fill="#137a77" stroke="#0a3d40" stroke-width="0.9" stroke-linejoin="round"/>
-    <ellipse cx="33" cy="40" rx="13.5" ry="12" fill="url(#body)"/>
-    <ellipse cx="34" cy="53" rx="15" ry="9" fill="#c9f7ea" clip-path="url(#fish)"/>
-    <ellipse cx="33" cy="40" rx="13.5" ry="12" fill="none" stroke="#0a3d40" stroke-width="0.9"/>
-    <path d="M28 43 C24 45 24.5 49.5 29 49 C32 48.5 32 45.5 28 43 Z" fill="#178a86"/>
-    <circle cx="39" cy="37" r="3.2" fill="#0b1320"/>
-    <circle cx="40.1" cy="35.8" r="1.1" fill="#ffffff"/>
-    <ellipse cx="38" cy="43" rx="2.4" ry="1.5" fill="#ff9aa8" fill-opacity="0.8"/>
-    <path d="M42.6 41.6 Q44 43.2 45.5 41.4" fill="none" stroke="#0b1320" stroke-width="1" stroke-linecap="round"/>
+
+    <!-- bottom, between the first two stalks: the round teal fish, facing right -->
+    <g transform="translate(22.4 52)">
+      <path d="M-5 0 C-9 -5 -12 -4.5 -11.6 -1.2 C-11.2 -0.4 -11.2 0.4 -11.6 1.2 C-12 4.5 -9 5 -5 0 Z" fill="#137a77" stroke="#0a3d40" stroke-width="0.6" stroke-linejoin="round"/>
+      <path d="M-2.5 -5 C-1.6 -8.6 2.6 -8.8 3.6 -5 Z" fill="#137a77" stroke="#0a3d40" stroke-width="0.6" stroke-linejoin="round"/>
+      <ellipse cx="0" cy="0" rx="6.4" ry="5.6" fill="url(#teal)"/>
+      <ellipse cx="0.6" cy="6.2" rx="7" ry="4.4" fill="#c9f7ea" clip-path="url(#tealBody)"/>
+      <ellipse cx="0" cy="0" rx="6.4" ry="5.6" fill="none" stroke="#0a3d40" stroke-width="0.6"/>
+      <circle cx="2.8" cy="-1.2" r="1.6" fill="#0b1320"/>
+      <circle cx="3.35" cy="-1.8" r="0.55" fill="#ffffff"/>
+      <ellipse cx="2.2" cy="1.8" rx="1.2" ry="0.75" fill="#ff9aa8" fill-opacity="0.85"/>
+      <path d="M4.5 1.2 Q5.2 2 6 1.1" fill="none" stroke="#0b1320" stroke-width="0.55" stroke-linecap="round"/>
+    </g>
+
+    <!-- the middle, between the second and third stalks: the slim coral fish, facing left -->
+    <g transform="translate(42.2 42) scale(-1 1)">
+      <path d="M-5.6 0 L-10 -4.2 L-8.6 0 L-10 4.2 Z" fill="#d9532c" stroke="#5a1e0c" stroke-width="0.6" stroke-linejoin="round"/>
+      <path d="M-2.6 -4 C-1.4 -7.2 2.4 -7 3.2 -4.1 Z" fill="#d9532c" stroke="#5a1e0c" stroke-width="0.6" stroke-linejoin="round"/>
+      <ellipse cx="0" cy="0" rx="7" ry="4.5" fill="url(#coral)"/>
+      <rect x="-1.9" y="-5" width="1.8" height="10" fill="#fff4ea" clip-path="url(#coralBody)"/>
+      <ellipse cx="0" cy="0" rx="7" ry="4.5" fill="none" stroke="#5a1e0c" stroke-width="0.6"/>
+      <circle cx="3.6" cy="-1" r="1.45" fill="#0b1320"/>
+      <circle cx="4.1" cy="-1.55" r="0.5" fill="#ffffff"/>
+      <ellipse cx="3.2" cy="1.6" rx="1.05" ry="0.65" fill="#ff8a8a" fill-opacity="0.8"/>
+      <path d="M5.2 1 Q5.9 1.7 6.6 0.9" fill="none" stroke="#0b1320" stroke-width="0.5" stroke-linecap="round"/>
+    </g>
+
+    <!-- the top, between the first two stalks: the puffy violet fish, facing right -->
+    <g transform="translate(21.5 25)">
+      <path d="M-4.6 0 C-8 -3.8 -10.4 -3.2 -10 -0.6 C-9.8 0 -9.8 0.6 -10 1.2 C-10.4 3.8 -8 3.8 -4.6 0 Z" fill="#8a45c9" stroke="#3b1660" stroke-width="0.6" stroke-linejoin="round"/>
+      <path d="M-3 -4.6 L-2 -7.2 L-0.6 -5.2 L0.8 -7.6 L1.8 -5.2 L3.4 -6.8 L3.6 -4.4 Z" fill="#8a45c9" stroke="#3b1660" stroke-width="0.6" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="5.6" fill="url(#violet)"/>
+      <circle cx="0" cy="0" r="5.6" fill="none" stroke="#3b1660" stroke-width="0.6"/>
+      <path d="M-1.6 1.2 C-4.6 1.6 -5 4.2 -2.6 4.2 C-1.4 4.2 -0.8 2.6 -1.6 1.2 Z" fill="#c785ff" stroke="#3b1660" stroke-width="0.45"/>
+      <circle cx="2.4" cy="-1.1" r="1.55" fill="#0b1320"/>
+      <circle cx="2.95" cy="-1.7" r="0.55" fill="#ffffff"/>
+      <ellipse cx="2" cy="1.6" rx="1.1" ry="0.7" fill="#ff9ad0" fill-opacity="0.85"/>
+      <path d="M4 1 Q4.7 1.8 5.4 0.9" fill="none" stroke="#0b1320" stroke-width="0.5" stroke-linecap="round"/>
+    </g>
   </g>
 </svg>

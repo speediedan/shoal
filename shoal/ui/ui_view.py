@@ -878,7 +878,7 @@ class _SeatReport:
 
     def text(self, session: str, job: str, rows: list | None = None) -> str:
         import ui_status
-        rep = self.ui_app.standalone_report(ui_status.claude_rows() if rows is None else rows, session, job, self.label)
+        rep = self.ui_app.standalone_report(ui_status.claude_rows_cached()[1] if rows is None else rows, session, job, self.label)
         if rep is None:
             return ""
         if self.prev == "working" and rep["state"] == "idle":
@@ -908,7 +908,8 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
         if not host and harness == "claude":
             try:
                 import ui_status
-                listed = (time.time(), ui_status.claude_rows())  # once a tick: the /bg check and the report share it
+                # one listing a tick, and one per host for every card (`claude_rows_cached`): the /bg check and the report share it
+                listed = ui_status.claude_rows_cached() if seat is not None else (time.time(), ui_status.claude_rows())
                 d = standalone_tick(harness, session, label, job, pick, listed)
             except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
                 d = {"action": "none", "message": f"/bg successor check unavailable ({exc})"}

@@ -651,7 +651,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   `question` for an open prompt or a session that says it waits on you, else `idle` (`stopped` in the message when no
   worker runs). A turn the card saw running that has ended is a `done`, written once, as a role's. It keeps reporting
   through an attach (the Claude client reports nothing itself), and while it reports it refreshes every 30 s instead
-  of every 5 minutes, listing `claude agents` once a refresh for both its `/bg` check and its report. A remote, opencode, Muse or Codex seat's card reports nothing.
+  of every 5 minutes. Every reporting card on a host shares one `claude agents` listing (`claude-rows.json` beside the
+  status cache, at most 25 s old, refreshed under a lock by the first card to find it stale), which serves both a card's
+  `/bg` check and its report. A remote, opencode, Muse or Codex seat's card reports nothing.
 - **Role state in the app.** A role card in a herdr-core terminal prints its own OSC 7501 status on every
   refresh (`app=<role>`, which heads the pane, and title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked

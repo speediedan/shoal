@@ -174,21 +174,32 @@ export function circleCmds(cx, cy, r) {
   ];
 }
 
+/** An axis-aligned ellipse: a circle on a plane the depth camera tilts back. */
+export function ellipseCmds(cx, cy, rx, ry) {
+  return [
+    ["M", cx + rx, cy],
+    ["A", rx, ry, 0, false, true, cx - rx, cy],
+    ["A", rx, ry, 0, false, true, cx + rx, cy],
+    ["Z"],
+  ];
+}
+
 /** Node outline commands for a shape kind ("circle" uses arcs, the rest polygons). */
 export function shapeCmds(kind, cx, cy, r) {
   return kind === "circle" || !kind ? circleCmds(cx, cy, r) : polygonCmds(shapePoints(kind, cx, cy, r));
 }
 
 /** An annular sector (a host band): angles in radians, clockwise from a0 to a1. */
-export function annularSectorCmds(cx, cy, r0, r1, a0, a1) {
-  const p = (r, a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+export function annularSectorCmds(cx, cy, r0, r1, a0, a1, ry = 1) {
+  // ry < 1: the sector of a ring on a tilted plane, squashed vertically
+  const p = (r, a) => [cx + r * Math.cos(a), cy + r * ry * Math.sin(a)];
   const large = a1 - a0 > Math.PI;
   const [ox0, oy0] = p(r1, a0), [ox1, oy1] = p(r1, a1), [ix1, iy1] = p(r0, a1), [ix0, iy0] = p(r0, a0);
   return [
     ["M", ox0, oy0],
-    ["A", r1, r1, 0, large, true, ox1, oy1],
+    ["A", r1, r1 * ry, 0, large, true, ox1, oy1],
     ["L", ix1, iy1],
-    ["A", r0, r0, 0, large, false, ix0, iy0],
+    ["A", r0, r0 * ry, 0, large, false, ix0, iy0],
     ["Z"],
   ];
 }
