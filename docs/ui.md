@@ -600,6 +600,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   of it, dismissed or not. To stop a role instead, park it.
 - **Zoom.** `ctrl-shift-z` (`pane.zoom`) zooms the focused pane and back. Clicking a row in the agents list while zoomed zooms that
   role, in its own tab if need be, and the key gives the grid back.
+- **Leaving an attach.** A card restores the terminal's modes after every attach, since a client that dies with its link cannot, and a Ctrl-C
+  returns to the card: `q` is what leaves one.
 - **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a
   question, `\u26b7` auth, `\u2691` a grant, else `!`). A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two
