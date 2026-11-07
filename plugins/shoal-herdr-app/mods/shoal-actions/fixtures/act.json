@@ -156,6 +156,17 @@
       "confirm": false,
       "token": "c4d2096e1ab57f33",
       "expires_s": 600
+    },
+    "add-session": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "add-session",
+      "command": "shoal ui pick --harness=claude --id=<id> --label=<label> --save --no-open",
+      "preview": "[dry-run] would save the claude session <id> as the standalone seat <label>",
+      "cost": "",
+      "confirm": true,
+      "token": "ffffffffffffffffffffffffffffffff",
+      "expires_s": 600
     }
   },
   "result": {
@@ -216,6 +227,35 @@
       "kind": "shoal-act-view",
       "verb": "upgrade",
       "text": "Upgrades stay a CLI step (operator-only). Preview of what this commit would roll out:\n\n  skills: shoal-protocol 1.41 -> 1.42 (4 roles)\n  hooks: unchanged\n  watchers: rearm lazy (no session wakes)\n\nTo apply with zero session wakes: shoal upgrade --spec <spec>"
+    },
+    "sessions": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "sessions",
+      "host": "host-a",
+      "sessions": [
+        {
+          "harness": "claude",
+          "session": "0b1c2d3e-0000-4000-8000-000000000001",
+          "label": "release-notes",
+          "state": "alive",
+          "cwd": "/srv/<repo>",
+          "job": "0b1c2d3e",
+          "model": "",
+          "effort": ""
+        },
+        {
+          "harness": "opencode",
+          "session": "ses_0123456789",
+          "label": "triage",
+          "state": "idle",
+          "cwd": "/srv/<other>",
+          "job": "",
+          "model": "",
+          "effort": ""
+        }
+      ],
+      "text": ""
     }
   },
   "error": {

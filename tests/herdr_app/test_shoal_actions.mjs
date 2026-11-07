@@ -43,9 +43,9 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
   assert.equal(modJson.overlay.height, M.SIZE.height);
 });
 
-test("verbs: the thirteen buttons in order, each with a kind and a role rule", () => {
-  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "Status", "Conditions", "Upgrade preview"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session"]);
+test("verbs: the fourteen buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "Add session", "Status", "Conditions", "Upgrade preview"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session", "add-session"]);
   assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["handoff", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
@@ -58,7 +58,7 @@ test("verbs: the thirteen buttons in order, each with a kind and a role rule", (
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, dryRun: false, undo: false });
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", dryRun: false, undo: false });
   assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake", "dryRun"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
@@ -391,7 +391,7 @@ test("public gate: fixtures and module hold no local paths or host names", () =>
 
 test("scopes: across shoals only the verbs that span them, and no shoal to pick", () => {
   const all = { shoal: null, role: null, scope: "all" };
-  assert.deepEqual(M.verbsFor(all).map((v) => v.verb), ["offline", "freeze"]);
+  assert.deepEqual(M.verbsFor(all).map((v) => v.verb), ["offline", "freeze", "add-session"], "and Add session, a host's");
   assert.deepEqual(M.verbsFor({ session: "some-seat" }).map((v) => v.verb), ["remove-session"], "one verb: no row of buttons");
   assert.equal(M.verbsFor({ shoal: A, role: null }).length, M.VERBS.length - 1, "all but the standalone session's removal");
   const form = M.setValue(M.setValue(M.newForm("offline", NOW), "state", "off"), "dryRun", true);
@@ -432,4 +432,32 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);
   assert.equal(M.handoffMachine({ host: "elsewhere" }, ["lane-a"], "lane-a"), "lane-a", "the CLI's refusal then says where to run it");
   assert.equal(M.handoffMachine(null, ["lane-a"], "lane-a"), "lane-a");
+});
+
+test("Add session: on any target, a list fed from every machine, saved on the session's own machine", () => {
+  const addInfo = M.verbInfo("add-session");
+  assert.ok(addInfo && addInfo.hostLevel && addInfo.kind === "write");
+  assert.ok(M.verbsFor({ shoal: "a" }).some((v) => v.verb === "add-session"));
+  assert.ok(M.verbsFor({ scope: "host:lane-b" }).some((v) => v.verb === "add-session"), "a host's right-click offers it");
+  assert.ok(!M.verbsFor({ session: "seat" }).some((v) => v.verb === "add-session"));
+  const f = M.newForm("add-session");
+  assert.equal(M.validate("add-session", {}, f), "pick a session");
+  const merged = M.mergeSessions([
+    { machine: null, sessions: [{ harness: "claude", session: "s1", label: "notes", state: "alive", cwd: "/x", job: "j1" }] },
+    { machine: "lane-b", sessions: [{ harness: "claude", session: "s1", label: "dup" }, { harness: "opencode", session: "o1", label: "" }, { label: "no id" }] },
+    { machine: "lane-c", sessions: [], error: "unreachable" },
+  ]);
+  assert.deepEqual(merged.rows.map((r) => [r.machine, r.session, r.label]), [[null, "s1", "notes"], ["lane-b", "o1", "o1"]], "first machine wins; no id, no row");
+  assert.equal(merged.note, "not read: lane-c: unreachable");
+  let g = M.setValue(f, "pick", merged.rows[0]);
+  assert.equal(M.validate("add-session", {}, g), "type the seat name");
+  g = M.setValue(g, "label", "notes");
+  assert.equal(M.validate("add-session", {}, g), null);
+  assert.deepEqual(M.planArgv("add-session", { shoal: "ignored" }, g),
+    ["ui", "act-plan", "add-session", "--no-preview", "--harness=claude", "--id=s1", "--label=notes", "--cwd=/x", "--job=j1", "--json"]);
+  assert.deepEqual(M.sessionsArgv(), ["ui", "act-plan", "sessions", "--json"]);
+  assert.deepEqual(M.openSeatArgv("notes"), ["ui", "app-open", "--show", "notes"]);
+  const view = M.parseReply({ code: 0, stdout: JSON.stringify({ v: 1, kind: "shoal-act-view", verb: "sessions", sessions: [{ harness: "claude", session: "s1" }, 3] }) }, "view");
+  assert.equal(view.sessions.length, 1);
+  assert.equal(M.fixtureReply({}, M.openSeatArgv("x")).code, 0, "the fixture opens a space without the CLI");
 });

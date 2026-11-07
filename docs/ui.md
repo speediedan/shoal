@@ -646,6 +646,14 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   as a shell in its last folder, and its command is never run again) is replaced. A pane running anything
   else, an attached client for example, is left as it is. Spaces of hidden or retired shoals are named, never
   closed.
+- **Adding a standalone seat in the app.** The actions dialog's **Add session** (any target, also on a machine's
+  right-click in Spaces) lists the sessions a seat could be made of on every machine (`ui act-plan sessions`, the 0.9.3
+  picker's own discovery: Claude background sessions, opencode, Codex and Muse, with roles, old incarnations and internal
+  runs left out), saves the one picked on its own machine (`ui pick --harness --id --label --save --no-open`, so its
+  `/bg` following, model and effort work as for any seat), and opens its space here (`ui app-open --show <label>`). By
+  hand: `shoal ui pick --harness <h> --id <id> --label <name> --save` on the session's host, then `shoal ui app-open`
+  where the app runs. `ui pick` opens a 0.9.3 card only from a 0.9.3 pane (or with `--open`); elsewhere it saves and
+  says so, and `--dry-run` saves nothing.
 - **Standalone state in the app.** A local standalone Claude card reports its session the same way (`app=<label>`,
   title `standalone/<label>`), read from `claude agents` as its lattice card is: `working` for a turn, `blocked` with
   `question` for an open prompt or a session that says it waits on you, else `idle` (`stopped` in the message when no

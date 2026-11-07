@@ -13,6 +13,8 @@
 //   shoal, role, machine: the target (machine: a herdr-core machine name, null for this computer).
 //   scope: "all" or "host:<name>" in place of a shoal: only the verbs that span shoals (offline, freeze).
 //   session: a saved standalone session's label in place of a shoal: only its removal.
+//   Add session (any target): lists every machine's candidate sessions, saves the one picked on its own
+//     machine (`ui pick --save`), then opens its space here (`ui app-open --show`).
 //     Without them the dialog starts on the focused card (its `shoal.pane` label and its space's
 //     machine), else on the first shoal with a role that needs you.
 //   verb: open straight on one verb ("msg", "next", "asks", ...); text, wake: prefill Message.
@@ -26,7 +28,7 @@ import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
-  verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel,
+  verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -34,7 +36,9 @@ const PROGRESS_MS = 1000;
 const PROGRESS_BYTES = 8000;
 // Flipped to true only in a scratch copy, to look at every screen with no props (mod.open).
 const FIXTURE_DEFAULT = false;
-const TEXT_KEYS = ["text", "item", "note", "until", "model", "effort"];
+const TEXT_KEYS = ["text", "item", "note", "until", "model", "effort", "label"];
+
+const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
 
 const safe = (f, d) => {
   try {
@@ -70,6 +74,9 @@ export default class Actions extends View {
     this.lastEnter = 0;
     this.focusKey = null;
     this.pendingVerb = verbInfo(p.verb) ? p.verb : null;
+    this.sessions = null; // Add session: every machine's candidates, merged
+    this.sessionsNote = null;
+    this.sessionsSeq = 0;
     this.prefill = { text: typeof p.text === "string" ? p.text : undefined, wake: p.wake === true ? true : undefined };
 
     this.inputs = {};
@@ -130,6 +137,8 @@ export default class Actions extends View {
 
   /** The role's card's machine, else the shoal's cards', else where the dialog started. */
   machine() {
+    // a seat is saved on the machine its session runs on
+    if (this.verb === "add-session") return this.form?.values?.pick?.machine ?? null;
     if (this.sel.scope || this.sel.session) return this.origin;
     const m = targetMachine(this.sel, safe(terminals, []), safe(spaces, []), this.origin);
     if (this.verb !== "handoff" && this.verb !== "remove-role") return m;  // a session starts or stops on its own host
@@ -210,10 +219,57 @@ export default class Actions extends View {
       }
       this.screen = "form";
       this.focusFirst(cx);
+      if (verb === "add-session") this.loadSessions(cx);
     } else {
       this.form = null;
       this.runView(cx);
     }
+  }
+
+  /** Every machine's candidate sessions (one shoal machine when the dialog was opened on a host), read in parallel. */
+  loadSessions(cx) {
+    this.sessions = null;
+    this.sessionsNote = null;
+    const host = this.sel.scope?.startsWith("host:") ? this.sel.scope.slice(5) : null;
+    const names = host ? [host] : [null, ...safe(machines, []).map((m) => m.name).filter(Boolean)];
+    const seq = ++this.sessionsSeq;
+    cx.spawn(async (cx) => {
+      const replies = await Promise.all(names.map(async (m) => {
+        const r = parseReply(await this.call(sessionsArgv(), m), "view");
+        return { machine: m, sessions: r.kind === "view" ? r.sessions ?? [] : [], error: r.kind === "error" ? r.error : null };
+      }));
+      if (seq !== this.sessionsSeq) return;
+      const got = mergeSessions(replies);
+      this.sessions = got.rows;
+      this.sessionsNote = got.note;
+      cx.notify();
+    });
+  }
+
+  /** Picks a candidate; its label becomes the seat's name unless one was typed. */
+  chooseSession(s) {
+    const was = this.form.values;
+    const typed = str(was.label).trim() && was.label !== was.pick?.label;
+    this.form = setValue(this.form, "pick", s);
+    if (!typed) {
+      this.form = setValue(this.form, "label", s.label);
+      this.inputs.label.set_value(s.label);
+    }
+    this.hint = null;
+  }
+
+  /** After a seat is saved: open its space in this app, as `ui app-open --show` does by hand. */
+  openSeat(label, cx) {
+    if (!this.result) return;
+    this.result.open = "opening its space…";
+    cx.spawn(async (cx) => {
+      const r = await this.call(openSeatArgv(label), null);
+      if (this.result) {
+        this.result.open = r instanceof Error ? `could not open its space: ${r.message} (run \`shoal ui app-open --show ${label}\`)`
+          : r.code === 0 ? "its space is open" : `app-open exit ${r.code}: ${(r.stderr || r.stdout || "").trim().split("\n").pop()}`;
+      }
+      cx.notify();
+    });
   }
 
   syncInputs() {
@@ -296,6 +352,7 @@ export default class Actions extends View {
       if (r.kind === "result") {
         this.result = { ...r, auto, plan };
         this.screen = "result";
+        if (r.ok && this.verb === "add-session") this.openSeat(str(this.form?.values?.label).trim(), cx);
       } else {
         this.error = r.error;
         this.screen = "error";
@@ -517,6 +574,7 @@ export default class Actions extends View {
   }
 
   target(c) {
+    if (verbInfo(this.verb)?.hostLevel) return this.form?.values?.pick ? `on ${this.form.values.pick.machine ?? "this computer"}` : "any machine";
     if (this.sel.session) return this.sel.session;
     if (this.sel.scope) return scopeLabel(this.sel.scope);
     const role = roleFor(this.verb, this.sel.role);
@@ -572,6 +630,23 @@ export default class Actions extends View {
           .child(v_flex().gap(1)
             .child(div().text_color(c.ink).child(f.label))
             .when(Boolean(f.hint), (el) => el.child(div().text_size(11).text_color(c.dim).child(f.hint)))));
+      } else if (f.kind === "sessions") {
+        const list = v_flex().id("f-sessions").gap(2).max_h(196).overflow_y_scrollbar();
+        if (!this.sessions) list.child(div().px(8).text_size(11.5).text_color(c.dim).child("reading the sessions on every machine…"));
+        else if (!this.sessions.length) list.child(div().px(8).text_size(11.5).text_color(c.dim).child("no standalone sessions found (roles are left out)"));
+        for (const s of this.sessions ?? []) {
+          const on = v?.key === s.key;
+          list.child(h_flex().id(`s-${s.key}`).gap(8).px(8).py(4).rounded(6).cursor_pointer().items_center().flex_none()
+            .bg(on ? withAlpha(c.accent, 0.2) : c.panel).hover((st) => st.bg(on ? withAlpha(c.accent, 0.26) : c.hover))
+            .on_click((_e, cx) => { this.chooseSession(s); cx.notify(); })
+            .child(div().w(62).flex_none().text_size(11).text_color(c.muted).child(s.harness))
+            .child(div().w(168).flex_none().truncate().text_color(c.ink).child(s.label))
+            .child(div().w(72).flex_none().truncate().text_size(11).text_color(c.dim).child(s.state || "?"))
+            .child(div().w(92).flex_none().truncate().text_size(11).text_color(c.dim).child(s.machine ?? "this computer"))
+            .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(c.dim).child(s.cwd)));
+        }
+        col.child(v_flex().gap(5).child(this.label(f.label, c)).child(list));
+        if (this.sessionsNote) col.child(div().text_size(11).text_color(c.amber).child(this.sessionsNote));
       } else if (f.kind === "choice") {
         const row = h_flex().gap(6).items_center();
         for (const o of f.options) {
@@ -627,6 +702,7 @@ export default class Actions extends View {
       .child(div().text_size(14).font_bold().text_color(r.ok ? c.green : c.red).child(r.ok ? "✓" : "✕"))
       .child(div().text_size(13.5).font_semibold().child(`${verbInfo(this.verb)?.label ?? "Action"}: ${resultLine(r)}`))
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
+    if (r.open) col.child(div().text_size(12).text_color(r.open === "its space is open" ? c.green : c.muted).child(r.open));
     col.child(this.label("command", c));
     col.child(this.mono("res-cmd", r.command || r.plan?.command || "", c));
     if (r.plan?.cost) col.child(div().text_size(11.5).text_color(c.amber).child(`⚠ ${r.plan.cost}`));

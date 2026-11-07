@@ -122,7 +122,8 @@ def add_parsers(sub) -> None:
     q.add_argument("--pause", action="store_true")
     q.set_defaults(func=ui_herdr.cmd_act)
 
-    q = u.add_parser("pick", help="open a standalone session from Claude, opencode, Muse or Codex")
+    q = u.add_parser("pick", help="save a standalone session (Claude, opencode, Muse or Codex) as a seat; without --id, "
+                                  "choose one in this terminal (the Herdr app: the actions dialog's Add session)")
     session_arg(q)
     q.add_argument("--harness", default="", choices=("", *backends.ecosystems()))
     q.add_argument("--id", dest="session_id", default="")
@@ -130,8 +131,12 @@ def add_parsers(sub) -> None:
     q.add_argument("--cwd", default="", help="with --harness/--id: the session's working directory")
     q.add_argument("--model", default="", help="the seat's model (saved; its card resumes with it)")
     q.add_argument("--effort", default="", help="the seat's effort (saved; its card resumes with it)")
-    q.add_argument("--save", action="store_true", help="restore it on every `ui open`")
-    q.add_argument("--pause", action="store_true", help="keep errors visible until dismissed (popup use)")
+    q.add_argument("--job", default="", help="with --harness claude --id: its background job id (its card follows /bg)")
+    q.add_argument("--save", action="store_true", help="keep it as a seat: `ui app-open` (and 0.9.3 `ui open`) restore it")
+    q.add_argument("--dry-run", action="store_true", help="with --save: say what would be saved, save nothing")
+    q.add_argument("--open", action="store_true", help="open its Herdr 0.9.3 card even outside a 0.9.3 pane")
+    q.add_argument("--no-open", action="store_true", help="save only; open nothing (the app's dialog opens the space)")
+    q.add_argument("--pause", action="store_true", help="keep errors visible until dismissed (0.9.3 popup use)")
     q.set_defaults(func=ui_herdr.cmd_pick)
 
     q = u.add_parser("legend", help="what the viewer's state icons and glyphs mean")

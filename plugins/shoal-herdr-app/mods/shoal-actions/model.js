@@ -10,6 +10,8 @@
 //     -> {"v":1,"kind":"shoal-act-result","rc","command","output"}
 //   shoal ui act-plan <view verb> --shoal ID [--role SLUG] --json
 //     -> {"v":1,"kind":"shoal-act-view","verb","shoal","role","text", "asks"?: [...]}
+//   shoal ui act-plan sessions --json   (on each machine: the sessions a standalone seat could be made of)
+//     -> {"v":1,"kind":"shoal-act-view","verb":"sessions","host","sessions":[{"harness","session","label","state","cwd","job"}]}
 //   errors: a non-zero exit with {"v":1,"kind":"shoal-act-error","error"} on stdout.
 // Every write is the CLI's apply; this module only builds argv and reads replies.
 
@@ -51,6 +53,7 @@ export const VERBS = [
   { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", fields: ["undo"], about: "clear this role's needs-you until something new is raised; it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
   { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
+  { verb: "add-session", label: "Add session", kind: "write", role: "none", hostLevel: true, fields: ["pick", "label"], about: "save a standalone session (Claude, opencode, Codex, Muse) as a seat and open its space" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
   { verb: "upgrade", label: "Upgrade preview", kind: "view", role: "none", about: "what an upgrade would roll out (applying stays a CLI step)" },
@@ -63,7 +66,7 @@ export const isView = (verb) => verbInfo(verb)?.kind === "view";
 /** The verbs a target can use: a scope across shoals (`all`, `host:<name>`) takes only those that span shoals. */
 export function verbsFor(target) {
   if (strOrNull(target?.session)) return VERBS.filter((v) => v.sessionOnly);
-  return VERBS.filter((v) => !v.sessionOnly && (!strOrNull(target?.scope) || v.scoped));
+  return VERBS.filter((v) => !v.sessionOnly && (v.hostLevel || !strOrNull(target?.scope) || v.scoped));
 }
 
 /** "every shoal" or "shoals on <host>", for the dialog's header. */
@@ -87,6 +90,8 @@ export const FIELDS = {
   undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
+  pick: { key: "pick", kind: "sessions", label: "Session (every machine's, roles left out)", required: true },
+  label: { key: "label", kind: "text", label: "Seat name", placeholder: "its space's and card's name", required: true },
   removeForce: { key: "force", kind: "toggle", label: "Even if it is running or holds an active item", hint: "stops it first and can cut off work in progress" },
 };
 
@@ -133,7 +138,7 @@ export function lastLines(text, n = 18) {
 export function newForm(verb, now = new Date(), prefill = {}) {
   const info = verbInfo(verb);
   if (!info || info.kind !== "write") return null;
-  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false };
+  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "" };
   values.dryRun = PREVIEW_FIRST.has(verb);
   values.undo = false;
   if (verb === "offline") values.until = nextMorning(now);
@@ -190,6 +195,8 @@ export function validate(verb, target, form = null) {
   if (!info) return `unknown action ${verb}`;
   if (info.sessionOnly) {
     if (!strOrNull(target?.session)) return "no session named";
+  } else if (info.hostLevel) {
+    // a seat is a host's, not a shoal's: nothing to pick above the form
   } else if (strOrNull(target?.scope)) {
     if (!info.scoped) return `${info.label} works on one shoal: pick one`;
   } else if (!strOrNull(target?.shoal)) return "pick a shoal first";
@@ -202,6 +209,7 @@ export function validate(verb, target, form = null) {
     if (!f.required) continue;
     const v = form.values[f.key];
     if (f.kind === "choice" && !f.options.includes(v)) return `pick ${f.options.join(" or ")}`;
+    if (f.kind === "sessions" && !obj(v)) return "pick a session";
     if (f.kind === "text" && !str(v).trim()) return f.key === "text" ? "type a message" : `type the ${f.label.toLowerCase()}`;
   }
   return null;
@@ -219,7 +227,9 @@ export function rolesArgv(shoal = null) {
 export function planArgv(verb, target, form = null) {
   const why = validate(verb, target, form);
   if (why) throw new Error(why);
-  const argv = ["ui", "act-plan", verb, ...(strOrNull(target.session) ? [`--session=${target.session}`] : strOrNull(target.scope) ? ["--scope", target.scope] : ["--shoal", target.shoal])];
+  const info = verbInfo(verb);
+  const argv = ["ui", "act-plan", verb, ...(info.hostLevel ? [] : strOrNull(target.session) ? [`--session=${target.session}`]
+    : strOrNull(target.scope) ? ["--scope", target.scope] : ["--shoal", target.shoal])];
   const role = roleFor(verb, target.role);
   if (role) argv.push(`--role=${role}`);
   if (isWrite(verb)) {
@@ -251,10 +261,41 @@ export function planArgv(verb, target, form = null) {
       argv.push("--undo");
     } else if ((verb === "remove-role" || verb === "remove-session") && v.force) {
       argv.push("--force");
+    } else if (verb === "add-session") {
+      const s = v.pick;
+      argv.push(`--harness=${s.harness}`, `--id=${s.session}`, `--label=${text("label")}`);
+      for (const k of ["cwd", "job", "model", "effort"]) if (strOrNull(s[k])) argv.push(`--${k}=${s[k]}`);
     }
   }
   argv.push("--json");
   return argv;
+}
+
+/** argv for one machine's candidate sessions. */
+export const sessionsArgv = () => ["ui", "act-plan", "sessions", "--json"];
+
+/** argv, run where the app runs, that opens a just-saved seat's space (`app-open` mirrors routed hosts' seats). */
+export const openSeatArgv = (label) => ["ui", "app-open", "--show", str(label)];
+
+/**
+ * Every machine's candidates as one list: [{machine, sessions, error}] in machine order (this computer first) to rows
+ * {key, machine, harness, session, label, state, cwd, job, model, effort}, and a note naming any machine that could not
+ * be read. A session listed twice (the same harness seen from two machines) keeps its first machine.
+ */
+export function mergeSessions(replies) {
+  const rows = [], seen = new Set(), failed = [];
+  for (const r of arr(replies)) {
+    if (r?.error) failed.push(`${r.machine ?? "this computer"}: ${r.error}`);
+    for (const s of arr(r?.sessions)) {
+      if (!strOrNull(s?.session) || !strOrNull(s?.harness)) continue;
+      const id = `${s.harness}:${s.session}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rows.push({ key: `${r.machine ?? "local"}|${id}`, machine: r.machine ?? null, harness: s.harness, session: s.session,
+        label: str(s.label) || s.session.slice(0, 12), state: str(s.state), cwd: str(s.cwd), job: str(s.job), model: str(s.model), effort: str(s.effort) });
+    }
+  }
+  return { rows, note: failed.length ? `not read: ${failed.join("; ")}` : null };
 }
 
 /** argv to apply a plan. The token stays in memory: it is never shown or logged. */
@@ -375,6 +416,7 @@ export function parseReply(r, expect = null) {
   } else if (d.kind === KINDS.view) {
     out = { kind: "view", verb: strOrNull(d.verb), shoal: strOrNull(d.shoal), role: strOrNull(d.role), text: str(d.text) };
     if (Array.isArray(d.asks)) out.asks = normAsks(d.asks);
+    if (Array.isArray(d.sessions)) out.sessions = d.sessions.filter((s) => obj(s));
   }
   if (!out) return { kind: "error", error: clip(`unexpected reply${d.kind ? ` (${d.kind})` : ""}`), code: r.code };
   if (out.kind !== "result" && r.code !== 0) {
@@ -590,6 +632,7 @@ export function fixtureReply(fx, argv, last = null) {
     if (last?.command) doc.command = last.command;
     return reply(doc);
   }
+  if (a[1] === "app-open") return { code: 0, stdout: "", stderr: "" };
   if (a[1] !== "act-plan") return err();
   const verb = a[2];
   if (verb === "roles") return reply(fx?.roles ?? { v: 1, kind: KINDS.roles, shoals: [] });
