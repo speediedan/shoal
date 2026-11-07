@@ -199,6 +199,33 @@ class DoneLatch:
         self.item = None
 
 
+def standalone_report(rows: list[dict], session: str, job: str, label: str) -> dict | None:
+    """{state, kind, title, msg} for a saved standalone Claude session, from the same listing its lattice card reads
+    (`claude agents`): working for a turn, blocked on a question (an open prompt, or the session saying it waits),
+    else idle. None when the listing failed: no rows is not every session stopped."""
+    import ui_status
+    from backends import claude_holders
+    if not rows:
+        return None
+    row = next(iter(claude_holders(rows, session, job)), {})
+    turn = ui_status.claude_turn(row) if row else "dead"
+    state, kind, msg = "idle", "", {"working": "running a turn", "idle": "alive, between turns"}.get(turn, "stopped")
+    if turn == "working":
+        state = "working"
+    elif turn == "blocked":
+        state, kind = "blocked", "question"
+        msg = "waits at a question" if ui_status.pending_question(row, session) else "says it waits on you"
+    return {"state": state, "kind": kind, "need": "", "title": f"standalone/{label}", "msg": msg}
+
+
+def standalone_text(rep: dict, label: str, latch: DoneLatch, ended: str, last: str | None) -> str:
+    """The standalone card's report for this tick, as `report_text` writes a role's: a turn that ended (`ended`, when the
+    card saw it) is the `done`, written once."""
+    rep = latch.apply({"last_done": {"item": "its turn", "ts": ended} if ended else None}, rep)
+    osc = osc7501(rep["state"], rep["kind"], rep["title"], rep["msg"], app=label)
+    return "" if latch.once(rep) and osc == last else osc
+
+
 def report_text(r: dict, tag: str, latch: DoneLatch | None = None, last: str | None = None) -> str:
     """The card's report for this tick: "" when it is a `done` already written (`last`), which must not be written again."""
     rep = card_report(r, tag)
@@ -1260,6 +1287,11 @@ CLONES = {
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
         ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(pic)'),
     ]),
+    # the window's mark, top left: SHOAL and its icon (copied in, CLONE_FILES), as the splash and the launchers show it
+    "workspace-chrome": ("shoal-chrome", [
+        ('.child(image("frame/welcome/herdr.png").size(20).rounded(5)).child(div().font_semibold().text_color(t.foreground).child("Herdr"))',
+         '.child(image("mods/shoal-chrome/shoal.png").size(20).rounded(5)).child(div().font_semibold().text_color(t.foreground).child("SHOAL"))'),
+    ]),
     "spaces": ("shoal-spaces", [
         ('const head = h_flex().id(`machine-${m ?? "local"}`).h(26)',
          'const head = h_flex().id(`machine-${m ?? "local"}`)'
@@ -1267,7 +1299,11 @@ CLONES = {
          'width: 640, height: 540, props: { scope: m ? `host:${m}` : "all", machine: m } }); }).h(26)'),
     ]),
 }
-LAYOUT_BLOCKS = {"agents": "shoal-agents", "spaces": "shoal-spaces", "workspace-status": "shoal-status"}
+LAYOUT_BLOCKS = {"agents": "shoal-agents", "spaces": "shoal-spaces", "workspace-status": "shoal-status",
+                 "workspace-chrome": "shoal-chrome"}
+# files a clone carries that its shipped mod has not: {clone file: shoal's source}. Copied, since the app loads no picture
+# through a link; their bytes are part of the clone's mark, so a new icon redoes the copy
+CLONE_FILES = {"workspace-chrome": {"shoal.png": os.path.join(PKG, "ui", "assets", "shoal-64.png")}}
 
 
 def patch_clone(text: str, name: str, patches: list[tuple[str, str]]) -> str | None:
@@ -1290,7 +1326,12 @@ def install_clone(name: str, dry_run: bool = False) -> tuple[bool, str]:
         text = open(os.path.join(src, "main.js")).read()
     except OSError as exc:
         return False, f"mod {clone}: {exc}"
-    mark = hashlib.sha256(json.dumps([text, patches]).encode()).hexdigest()
+    extra = CLONE_FILES.get(name, {})
+    try:
+        blobs = {k: hashlib.sha256(open(v, "rb").read()).hexdigest() for k, v in extra.items()}
+    except OSError as exc:
+        return False, f"mod {clone}: {exc}"
+    mark = hashlib.sha256(json.dumps([text, patches, blobs]).encode()).hexdigest()
     try:
         if open(os.path.join(dest, CLONE_MARK)).read().strip() == mark:
             return True, ""
@@ -1306,6 +1347,8 @@ def install_clone(name: str, dry_run: bool = False) -> tuple[bool, str]:
     shutil.copytree(src, tmp, ignore=shutil.ignore_patterns("*.d.ts", "jsconfig.json", "node_modules"))
     with open(os.path.join(tmp, "main.js"), "w") as fh:
         fh.write(out)
+    for k, v in extra.items():
+        shutil.copy2(v, os.path.join(tmp, k))
     with open(os.path.join(tmp, CLONE_MARK), "w") as fh:
         fh.write(mark + "\n")
     shutil.rmtree(dest, ignore_errors=True)

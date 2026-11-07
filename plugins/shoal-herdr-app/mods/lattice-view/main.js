@@ -19,6 +19,7 @@
 //          narrows the drawer to that shoal.
 //   view: a shoal id to open drilled into once (Escape then goes to the home view)
 //   pin: a node id whose card opens pinned
+//   replay: true starts the 24 h replay once the first doc is in (as `r` does)
 //   motion: "auto" (default) | "full" | "balanced" | "low" | "off" (motion.js; `m` cycles)
 //   budget: {max_dots, max_pulses, frame_ms, packets} overrides for the tier
 //   renderer: "cpu" | "gpu" (a launcher hint for auto; else read from the app process)
@@ -39,6 +40,7 @@ import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, fitScene, fitText, headerText } from "./scene.js";
 import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
+import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS } from "./replay.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -168,6 +170,7 @@ export default class Lattice extends View {
     this.legend = p.legend === true;
     this.legendAll = false;
     this.history = new Map();
+    this.replay = null; // {rm, t, playing, timer, note}: the last day played back as packets (r)
     this.hits = [];
     this.satHits = [];
     this.edgeHits = [];
@@ -177,6 +180,7 @@ export default class Lattice extends View {
     // a focus request persisted from an earlier run is not replayed
     try { this.focusSeen = focusKeyOf(shared(FOCUS_KEY)); } catch (_e) { this.focusSeen = null; }
     this.pinned = typeof p.pin === "string" ? p.pin : null;
+    this.replayAtStart = p.replay === true;
     this.handle = cx.focus_handle();
     if (!this.renderer) this.probeRenderer(cx);
     this.load(cx);
@@ -250,6 +254,10 @@ export default class Lattice extends View {
       try {
         const doc = await this.fetchDoc();
         if (doc) draw = this.accept(doc, cx);
+        if (doc && this.replayAtStart) {
+          this.replayAtStart = false;
+          this.startReplay(cx);
+        }
         this.error = null;
       } catch (e) {
         this.error = String(e?.message ?? e).slice(0, 300);
@@ -319,7 +327,74 @@ export default class Lattice extends View {
       this.sig = sig;
       this.urgentSig = urgentSig;
     }
-    return this.spawnPackets(fresh, cx) || draw;
+    // a replay owns the packets: the live ones would read as part of the past
+    return this.spawnPackets(this.replay ? [] : fresh, cx) || draw;
+  }
+
+  // ---- replay: the last 24 h by `ts`, as packets on the live picture
+
+  /** `r`: fetch the day's events (the feed's `--replay`, on the machine the feed reads) and start playing them. */
+  startReplay(cx) {
+    if (this.replay) return this.stopReplay();
+    this.replay = { rm: null, t: 0, playing: false, timer: null, note: "loading the last 24 h..." };
+    cx.spawn(async (cx) => {
+      let doc = null;
+      try {
+        const s = this.source;
+        if (s.kind === "fixture") doc = { replay: replayOfDoc(this.fixture ?? this.doc) };
+        else {
+          const argv = s.kind === "exec" ? [...s.argv] : ["shoal", "ui", "graph", "--json"];
+          const r = await exec(argv[0], [...argv.slice(1), "--replay", "--events", "0"], { on: s.on });
+          if (r.code !== 0) throw new Error(`exit ${r.code}: ${(r.stderr || r.stdout || "").trim().slice(-160)}`);
+          doc = JSON.parse(r.stdout);
+        }
+      } catch (e) {
+        if (this.replay) this.replay.note = `replay unavailable: ${String(e?.message ?? e).slice(0, 120)}`;
+        cx.notify();
+        return;
+      }
+      const rm = replayModel(doc);
+      if (!this.replay) return;
+      if (!rm) {
+        this.replay.note = "the feed gave no replay";
+      } else {
+        Object.assign(this.replay, { rm, t: rm.from, note: rm.events.length ? null : "nothing happened in the last 24 h" });
+        this.playReplay(cx, rm.events.length > 0);
+      }
+      cx.notify();
+    });
+  }
+
+  playReplay(cx, on) {
+    const rp = this.replay;
+    if (!rp?.rm) return;
+    rp.timer?.cancel();
+    rp.timer = null;
+    rp.playing = on;
+    if (!on) return;
+    if (rp.t >= rp.rm.to) rp.t = rp.rm.from;
+    rp.timer = cx.timer.every(REPLAY_TICK_MS, (cx) => {
+      const r = this.replay;
+      if (!r?.rm) return;
+      const t1 = Math.min(r.rm.to, r.t + replayAdvance(r.rm));
+      const step = replayStep(r.rm, r.t, t1);
+      r.t = t1;
+      if (step.events.length) this.spawnPackets(step.events, cx, true);
+      if (r.t >= r.rm.to) this.playReplay(cx, false);
+      cx.notify();
+    });
+  }
+
+  seekReplay(cx, i) {
+    if (!this.replay?.rm) return;
+    this.replay.t = binStart(this.replay.rm, i);
+    if (!this.replay.playing) this.playReplay(cx, true);
+  }
+
+  stopReplay() {
+    this.replay?.timer?.cancel();
+    this.replay = null;
+    this.packets = [];
   }
 
   rebuild(cx) {
@@ -384,8 +459,9 @@ export default class Lattice extends View {
     this.tf = fitScene(this.vm, this.lay, this.canvasSize(), { pad: 24, top: 48, kMax: 1.6, iterations: quick ? 2 : 5 });
   }
 
-  spawnPackets(fresh, cx) {
-    if (!this.policy.packets || !fresh.length || !this.vm) return false;
+  spawnPackets(fresh, cx, force = false) {
+    // a replay asked for is drawn whatever the motion tier: it is the point of the view while it runs
+    if ((!this.policy.packets && !force) || !fresh.length || !this.vm) return false;
     const batch = ++this.batch;
     let added = 0;
     for (const e of fresh) {
@@ -439,7 +515,8 @@ export default class Lattice extends View {
   key(e, cx) {
     const k = e.keystroke;
     const center = { x: this.canvasSize().width / 2, y: this.canvasSize().height / 2 };
-    if (k === "escape") {
+    if (k === "escape" && this.replay) this.stopReplay();
+    else if (k === "escape") {
       const step = escapeStep({ pinned: this.pinned, legend: this.legend, view: this.vm?.view ?? this.view, home: this.home.home });
       if (!step) return;
       if ("pinned" in step) this.pinned = null;
@@ -450,6 +527,8 @@ export default class Lattice extends View {
     else if (k === "m") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
     else if (k === "f" || k === "0") this.relayout(cx);
     else if (k === "i") { this.items = !this.items; this.needFit = this.autoFit; this.rebuild(cx); }
+    else if (k === "r") this.startReplay(cx);
+    else if (k === "space" && this.replay?.rm) this.playReplay(cx, !this.replay.playing);
     else if (k === "=" || k === "+" || k === "shift-=") { this.tf = zoomAt(this.tf, center, 1.2); this.autoFit = false; }
     else if (k === "-") { this.tf = zoomAt(this.tf, center, 1 / 1.2); this.autoFit = false; }
     else if (k === "left" || k === "right" || k === "up" || k === "down") {
@@ -630,6 +709,7 @@ export default class Lattice extends View {
       if (e) canvas.child(e);
     }
     canvas.child(this.renderHeader());
+    if (this.replay) canvas.child(this.renderReplay(size));
     if (this.legend) canvas.child(this.renderLegend(size));
     const screenOf = (id) => {
       if (!id) return null;
@@ -652,6 +732,41 @@ export default class Lattice extends View {
         .border(1).border_color(withAlpha(P.red, 0.5)).text_size(10.5).text_color(P.red).child(`feed error (showing last good): ${this.error}`));
     }
     return canvas;
+  }
+
+  /** The replay bar along the canvas's foot: a quarter hour a column, its height the events in it; a click plays from there. */
+  renderReplay(size) {
+    const rp = this.replay;
+    const W = Math.max(240, size.width - 32);
+    const bar = v_flex().id("replay").absolute().left(16).bottom(12).w(W).gap(4).px(8).py(6).rounded(6)
+      .bg(P.panel).border(1).border_color(withAlpha(P.steel1, 0.6)).text_size(10).text_color(P.dim)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation());
+    const btn = (id, text, tip, f) => div().id(id).px(6).rounded(4).cursor_pointer().text_color(P.ink).border(1)
+      .border_color(withAlpha(P.steel1, 0.7)).hover((st) => st.bg(withAlpha(P.steel1, 0.4))).tooltip(tip)
+      .on_click((_e, cx) => { f(cx); cx.notify(); }).child(text);
+    const rm = rp.rm;
+    const head = h_flex().gap(8).items_center()
+      .child(div().font_semibold().text_color(P.ink).child("REPLAY"))
+      .child(div().text_color(P.steel2).child(rm ? `${clock(rp.t)} · last 24 h · ${rm.events.length} events${rm.dropped ? ` (+${rm.dropped} older not drawn)` : ""}` : rp.note ?? ""));
+    if (rm) head.child(btn("replay-play", rp.playing ? "❚❚" : "▶", "play or pause (space)", (cx) => this.playReplay(cx, !rp.playing)));
+    head.child(btn("replay-live", "live ✕", "back to live (r or esc)", () => this.stopReplay()));
+    if (rm && rp.note) head.child(div().text_color(P.amber).child(rp.note));
+    bar.child(head);
+    if (rm) {
+      const cw = (W - 16) / REPLAY_BINS;
+      const now = binOf(rm, rp.t);
+      const cols = h_flex().h(26).items_end();
+      rm.bins.forEach((n, i) => {
+        const h = n ? 3 + Math.round((n / rm.max) * 23) : 1;
+        const tint = i === now ? P.teal : i < now ? withAlpha(P.cyan, 0.75) : withAlpha(P.steel2, 0.55);
+        cols.child(div().id(`rb-${i}`).w(cw).h(26).flex_none().items_end().cursor_pointer()
+          .tooltip(`${clock(binStart(rm, i))}: ${n} event${n === 1 ? "" : "s"}`)
+          .on_click((_e, cx) => { this.seekReplay(cx, i); cx.notify(); })
+          .child(div().w(Math.max(1, cw - 1)).h(h).mt(26 - h).bg(tint)));
+      });
+      bar.child(cols);
+    }
+    return bar;
   }
 
   renderHeader() {
@@ -680,7 +795,7 @@ export default class Lattice extends View {
           .child(`${board.title} ↗`)))
         .when(chip !== null, (el) => el.child(chip))
         .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
-      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
+      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
   }
 
   renderCard(id, at, size, pinned) {
@@ -790,6 +905,8 @@ export default class Lattice extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(div().text_color(P.steel2).font_semibold().child("LEGEND (l to close)"))
       .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
+      // the one exception to the tier: a replay asked for with `r` draws its packets at any tier, `off` included
+      .child(div().text_color(P.dim).child("r: replay 24 h (its packets move at any motion tier)"))
       .child(h_flex().gap(14).items_start().child(col).child(right));
   }
 
