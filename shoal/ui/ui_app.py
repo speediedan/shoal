@@ -94,6 +94,9 @@ def osc7501(state: str, kind: str = "", title: str = "", msg: str = "", app: str
 OSC_CLEAR = "\x1b]7501;state=clear\x1b\\"
 # Set by a card for the length of an attach: under a client the core still names the card as the terminal's foreground.
 ATTACH_LABEL = "shoal.attached"
+# a blocked card's cause where no report kind says it: herdr-core drops a report whose kind it does not know
+# (auth, question and permission are the ones it keeps), so the cause goes in a label the agents list's badge reads
+NEED_LABEL = "shoal.need"
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
@@ -137,8 +140,13 @@ def card_report(r: dict, tag: str) -> dict:
             kind = "auth"
         elif r.get("grants_pending"):
             kind = "permission"
-        elif r.get("asks") or r.get("says") or sub in QUESTION_SUBS:
+        elif r.get("asks") or r.get("says") or sub in QUESTION_SUBS or "blocked-says-waiting" in reasons:
             kind = "question"
+    # what a blocked card with no kind is blocked on, for its badge: a stated reason behind every `!`
+    need = ""
+    if state == "blocked" and not kind:
+        need = ("dead" if "dead-worker" in reasons else "nowatch" if "watcher-dead" in reasons
+                else "stuck" if "blocker-role-cannot-take" in reasons else "")
     bits = [ui_status.posture_label(r)]
     if away:
         bits = [f"{r.get('host') or 'its host'} cannot be reached; last known: {bits[0]}"]
@@ -157,13 +165,48 @@ def card_report(r: dict, tag: str) -> dict:
         bits.append("(" + ", ".join(why)[:80] + ")")
     # the role's own host in the title: the card's machine says only where the card runs (`/` and `@` never occur in a slug)
     where = f"@{r['host']}" if r.get("host") else ""
-    return {"state": state, "kind": kind, "title": f"{tag}/{r['slug']}{where}", "msg": " ".join(bits)[:200]}
+    return {"state": state, "kind": kind, "need": need, "title": f"{tag}/{r['slug']}{where}", "msg": " ".join(bits)[:200]}
 
 
-def report_text(r: dict, tag: str) -> str:
+class DoneLatch:
+    """A role's `done`, reported once: when the row's last done is newer than any this card has seen and the role rests
+    (would report idle), the card says `done`, which the app shows as finished until someone looks. The card writes that
+    report once (`once`), since a written `done` would raise it again after the look; anything else the role does next
+    replaces it, and an attach clears it (`looked`): the operator was in the session. What was done before the card
+    started is not news."""
+
+    def __init__(self):
+        self.seen = None
+        self.item = None
+
+    def apply(self, r: dict, rep: dict) -> dict:
+        d = r.get("last_done") or {}
+        ts = str(d.get("ts") or "")
+        if self.seen is None:
+            self.seen = ts
+        elif ts > self.seen:
+            self.seen, self.item = ts, str(d.get("item") or "an item")
+        if self.item and rep["state"] != "idle":
+            self.item = None
+        if not self.item:
+            return rep
+        return dict(rep, state="done", kind="", need="", msg=f"done {self.item[:60]}; {rep['msg']}"[:200])
+
+    def once(self, rep: dict) -> bool:
+        return rep["state"] == "done"
+
+    def looked(self) -> None:
+        self.item = None
+
+
+def report_text(r: dict, tag: str, latch: DoneLatch | None = None, last: str | None = None) -> str:
+    """The card's report for this tick: "" when it is a `done` already written (`last`), which must not be written again."""
     rep = card_report(r, tag)
+    if latch is not None:
+        rep = latch.apply(r, rep)
     # the app heads the pane with the reported `app`, so the role's name is what a window shows, not "shoal"
-    return osc7501(rep["state"], rep["kind"], rep["title"], rep["msg"], app=r["slug"])
+    osc = osc7501(rep["state"], rep["kind"], rep["title"], rep["msg"], app=r["slug"])
+    return "" if latch is not None and latch.once(rep) and osc == last else osc
 
 
 # ---- plan: what this host's shoals want ---------------------------------------------------
@@ -977,12 +1020,42 @@ def desktop_path() -> str:
 
 
 def desktop_icon() -> str:
-    """A `shoal` icon in the user's icon theme (the name the 0.9.3 launcher uses), else a splash creature."""
+    """The `shoal` icon in the user's icon theme (`install_icon`, also the name the 0.9.3 launcher uses), else the icon file."""
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     if glob.glob(os.path.join(base, "icons", "hicolor", "*", "apps", "shoal.*")):
         return "shoal"
-    icon = os.path.join(MOD_DIR, "shoal-home", "assets", "fish-teal.png")
-    return icon if os.path.exists(icon) else os.path.join(PKG, "ui", "assets", "fish-teal.png")
+    return os.path.join(PKG, "ui", "assets", "shoal-256.png")
+
+
+ICONS = (("scalable", "shoal.svg"), ("64x64", "shoal-64.png"), ("256x256", "shoal-256.png"))
+
+
+def install_icon(dry_run: bool = False) -> list[str]:
+    """The shoal icon (a fish before the seaweed lattice of the splash) into the user's icon theme, under the name every
+    shoal launcher uses (`Icon=shoal`). A different icon already there is kept once as `.bak-shoal`."""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    theme = os.path.join(base, "icons", "hicolor")
+    out = []
+    for size, name in ICONS:
+        src = os.path.join(PKG, "ui", "assets", name)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(theme, size, "apps", "shoal" + os.path.splitext(name)[1])
+        new = open(src, "rb").read()
+        if os.path.exists(dst) and open(dst, "rb").read() == new:
+            continue
+        out.append(("[dry-run] " if dry_run else "") + f"icon {dst}")
+        if dry_run:
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.exists(dst) and not os.path.exists(dst + ".bak-shoal"):
+            shutil.copy2(dst, dst + ".bak-shoal")
+        with open(dst + ".tmp", "wb") as fh:
+            fh.write(new)
+        os.replace(dst + ".tmp", dst)
+    if out and not dry_run:
+        os.utime(theme)  # a desktop shell rescans a theme whose folder changed
+    return out
 
 
 def desktop_text() -> str:
@@ -1120,7 +1193,7 @@ def cmd_app_install(a) -> int:
                 line = install_mod(name, a.dry_run)
                 if line:
                     print(line)
-        for line in install_keys(a.dry_run) + install_theme(a.dry_run) + install_layout(a.dry_run):
+        for line in install_keys(a.dry_run) + install_theme(a.dry_run) + install_layout(a.dry_run) + install_icon(a.dry_run):
             print(line)
     return 0
 
@@ -1162,10 +1235,14 @@ function shoalDismiss(a, cx) {
   openOverlay({ mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: label.slice(0, cut), role: label.slice(cut + 1), verb: "dismiss", machine: at > 0 ? a.address.slice(0, at) : null } });
 }
 
-// A blocked role's badge says what it wants: its report's kind, in the lattice's marks.
+// A blocked role's badge says what it wants: its report's kind, or the card's shoal.need label where no kind fits
+// (the core keeps only auth, question and permission), in the lattice's marks. `!` is left for a cause nobody named.
+const SHOAL_NEED = { dead: "\u2715", nowatch: "\u25cc", stuck: "\u2298" };
 function shoalBadge(a) {
-  const kind = a.address ? terminals().find((x) => x.address === a.address)?.report?.kind : null;
-  return kind === "question" ? "?" : kind === "auth" ? "\u26b7" : kind === "permission" ? "\u2691" : "!";
+  const term = a.address ? terminals().find((x) => x.address === a.address) : null;
+  const kind = term?.report?.kind;
+  return kind === "question" ? "?" : kind === "auth" ? "\u26b7" : kind === "permission" ? "\u2691"
+    : SHOAL_NEED[term?.labels?.["shoal.need"]] ?? "!";
 }
 
 export default class Agents extends View {"""
@@ -1297,7 +1374,7 @@ def install_layout(dry_run: bool = False) -> list[str]:
 PASTE_KEYS = {"ctrl-v": "terminal.paste", "ctrl-shift-v": "terminal.paste_image"}
 APP_DEFAULT_PASTE_KEYS = {"ctrl-v": "terminal.paste_image", "ctrl-shift-v": "terminal.paste"}
 # The actions dialog (the 0.9.3 palette's Alt+s, after the Herdr prefix): one global key, mouse for the rest.
-ACTION_KEYS = {"ctrl-alt-s": "mod.open:shoal-actions", "ctrl-alt-l": "shoal-status.lattice"}
+ACTION_KEYS = {"ctrl-alt-s": "mod.open:shoal-actions", "ctrl-alt-l": "shoal-status.lattice", "ctrl-alt-n": "shoal-status.next"}
 THEME = "shoal-ocean"
 THEME_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "themes")
 
@@ -1378,7 +1455,7 @@ def install_keys(dry_run: bool = False) -> list[str]:
         return [f"keys: {path} is not valid JSON ({exc}): left as it is"]
     want_keys = [("terminal", k, v, APP_DEFAULT_PASTE_KEYS[k], "the 0.9.3 paste keys") for k, v in PASTE_KEYS.items()]
     if os.path.isdir(os.path.join(MOD_DIR, "shoal-actions")):
-        want_keys += [("global", k, v, None, "the actions dialog and the lattice") for k, v in ACTION_KEYS.items()]
+        want_keys += [("global", k, v, None, "the actions dialog, the lattice and the next needs-you agent") for k, v in ACTION_KEYS.items()]
     if not isinstance(doc, dict) or any(not isinstance(doc.get(s, {}), dict) for s in {w[0] for w in want_keys}):
         return [f"keys: {path} has a section shoal can edit that is not an object: left as it is"]
     out, changed = [], False

@@ -270,10 +270,12 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         elif sess == "blocked":
             reasons.append("blocked-says-waiting")
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
-        # turn's end, and a dead worker is reported as dead-worker instead
+        # turn's end, and a dead worker is reported as dead-worker instead. As the quorum judges it, a dead
+        # watcher whose role's next real work raises its own wake (lazy_rearm, nothing it would have woken
+        # for) is dormant, not a need: it read `!` beside a running job (measured 2026-11-07, a local-ci wait)
         if not remote and sess != "dead" and \
                 _h.watcher_dead(alive, hposture, BETWEEN.get(sess)):
-            reasons.append("watcher-dead")
+            reasons.append("watcher-dormant" if _h.watcher_dormant(spec, view, role, hposture) else "watcher-dead")
         for x in q.get("next") or []:
             b = next((v for kk, v in nb.items() if item_key(kk) == item_key(x)), "")
             if b and _bl.kind(b) == "role" and _bl.takeable(spec, view, b):
@@ -299,7 +301,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                 reasons.append("context-large")
         except Exception:  # noqa: BLE001 - a read model never fails on an advisory
             pass
-    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "context-large")]
+    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "watcher-dormant", "context-large")]
     words = (claude_says(claude_session(rows, role.session) or {}, role.session)
              if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
     prompt = (_h.claude_open_prompt(role.session)
@@ -319,6 +321,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                   "rescan_utc": st.get("rescan_utc") or None} if posture == "wait" else None),
         "active": q.get("active") or None,
         "next": nxt,
+        "last_done": ({"item": done[-1]["item"], "ts": done[-1]["ts"]} if (done := view.last_done(slug, 1)) else None),
         "blocker_stale": bool(stale_nb),
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
@@ -683,7 +686,8 @@ ATTENTION = {"blocked-on-question": "question for you",
              "blocked-says-waiting": "says it waits on you (no prompt: reply by message or mail)",
              "stopped-active": "says active, but its turn ended (health wakes it; pages if it repeats)",
              "waiting-on-you": "waiting on you",
-             "dead-worker": "session dead", "watcher-dead": "watcher dead", "parked-work": "free next items it could start",
+             "dead-worker": "session dead", "watcher-dead": "watcher dead",
+             "watcher-dormant": "watcher stopped; its next work wakes it", "parked-work": "free next items it could start",
              "blocker-role-cannot-take": "blocker cannot move",
              "context-large": "context past its limit (hand over to a fresh session at a quiet boundary)"}
 

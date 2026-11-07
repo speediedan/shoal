@@ -28,6 +28,23 @@ assert.equal(M.parseUsage({ code: 1, stdout: JSON.stringify(doc) }), null, "a fa
 assert.equal(M.parseUsage({ code: 0, stdout: "not json" }), null);
 assert.equal(M.parseUsage(null), null);
 assert.deepEqual(M.usageMachines([{ active: true, machine: "lane-b" }], ["lane-a", "lane-b"]), ["lane-b", "lane-a", null], "the space in view first, then the rest");
+
+// Ctrl+Alt+N: the needs-you agents in the pulse's order (auth, asks, grants, the rest; the longest unchanged first), wrapping
+const ag = [
+  { address: "t1", pane: "p1", status: "blocked", seq: 9 },
+  { address: "t2", pane: "p2", status: "working", seq: 1 },
+  { address: "t3", pane: "p3", status: "blocked", seq: 5 },
+  { address: "t4", pane: "p4", status: "blocked", seq: 7 },
+  { address: "t5", pane: null, status: "blocked", seq: 1 },
+];
+const kind = { t1: "question", t3: null, t4: "auth" };
+const kindOf = (a) => kind[a.address];
+assert.deepEqual(M.needsYouOrder(ag, kindOf).map((a) => a.address), ["t4", "t1", "t3"], "auth first, then a question, then the rest; no pane, no stop");
+assert.deepEqual(M.needsYouOrder(ag).map((a) => a.address), ["t3", "t4", "t1"], "with no kinds: the longest unchanged first");
+assert.equal(M.nextNeedsYou(ag, kindOf, "t2").address, "t4", "from an agent that needs nothing: the first");
+assert.equal(M.nextNeedsYou(ag, kindOf, "t4").address, "t1");
+assert.equal(M.nextNeedsYou(ag, kindOf, "t3").address, "t4", "wraps");
+assert.equal(M.nextNeedsYou([ag[1]], kindOf, null), null, "nobody needs you");
 assert.deepEqual(M.usageMachines([{ active: true, machine: null }], ["lane-a", null]), ["lane-a", null]);
 assert.deepEqual(M.usageMachines([], []), [null]);
 console.log("shoal-status: ok");

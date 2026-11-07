@@ -288,7 +288,7 @@ $H queue --shoal $SID --spec "$SPEC" --slug oc --wait user-feedback --holder mai
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "ui reasons drift from health.evaluate"
 import sys
 sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
-import health, ui_status
+import health, ui_herdr, ui_status
 from ledger import Ledger, View
 from roles import ShoalSpec
 spec = ShoalSpec.load(sys.argv[2])
@@ -308,6 +308,24 @@ ev = {x for x in ev if x[0] not in ("dead", "far")}
 assert ui == ev, (sorted(ui), sorted(ev))
 assert ("oc", "parked-work") in ui, sorted(ui)
 print("predicates agree:", sorted(ui))
+# no watcher runs here, so every live role's is dead: one the quorum judges dormant reads watcher-dormant, never
+# watcher-dead, and does not block (it read `!` beside a running job, 2026-11-07)
+seen = 0
+for r in spec.roles:
+    if not r.session or ui_status.is_remote(r):
+        continue
+    for dormant in (True, False):
+        health.watcher_dormant = lambda *a, d=dormant: d
+        row = ui_status.role_row(spec, view, r, rows, ui_status.utcnow())
+        rs = row["can_progress"]["reasons"]
+        if dormant:
+            assert "watcher-dead" not in rs, rs
+            if "watcher-dormant" in rs:
+                seen += 1
+                assert row["needs_you"] or ui_herdr.herdr_state(row) != "blocked", (r.slug, rs)
+        else:
+            assert "watcher-dormant" not in rs, rs
+assert seen, "some role's dead watcher was judged dormant"
 PY2
 HEAD0=$(git -C "$A" rev-parse HEAD); SUM0=$(cat "$A"/shoals/$SID/ledger/*.jsonl | sha256sum)
 $H ui status --shoal $SID --ledger-root "$ROOT" --json >/dev/null || fail "ui status rc (2)"
@@ -2177,6 +2195,83 @@ assert ui_graph.item_titles(None) == {}
 sp = ui_app.standalone_space({"label": "seat", "session": "abcd1234", "harness": "claude"})
 assert [t["name"] for t in sp["tabs"]] == ["session", "lattice"] and sp["tabs"][1]["mod"] == "lattice-view", sp["tabs"]
 assert "source" in sp["tabs"][1]["props"], sp["tabs"][1]
+PY2
+# a dead watcher the role's next work re-arms is dormant: working on its job, not blocked; a dead watcher that matters
+# still blocks, and every blocked card names its cause (a kind the core keeps, else the shoal.need label): no bare `!`
+python3 - "$SHOALD" <<'PY2' || fail "dormant watcher and named needs"
+import sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import health, ui_app, ui_herdr, ui_status
+def row(reasons, session="idle", posture="wait", sub="local-ci", **kw):
+    r = {"slug": "r", "host": "", "posture": posture, "sub": sub, "session": session, "active": None, "next": [], "asks": [],
+         "says": "", "needs_you": bool(set(reasons) & ui_status.NEEDS_REASONS), "dismissed": False, "wait_done": False,
+         "wait": {"sub": sub, "target": "job:x", "holder": None, "rescan_utc": None} if posture == "wait" else None,
+         "can_progress": {"ok": False, "reasons": reasons}, "grants_pending": 0, "fill": "self", "blocker_stale": False}
+    r.update(kw)
+    return r
+dormant = row(["watcher-dormant"])
+assert ui_herdr.herdr_state(dormant) == "working" and ui_herdr.role_mode(dormant) == ui_herdr.MODE_JOB, ui_herdr.herdr_state(dormant)
+assert ui_app.card_report(dormant, "t")["need"] == "" and ui_status.posture_label(dormant) == "wait:local-ci"
+dead = row(["watcher-dead"], posture="active", sub=None)
+rep = ui_app.card_report(dead, "t")
+assert rep["state"] == "blocked" and rep["kind"] == "" and rep["need"] == "nowatch", rep
+assert ui_app.card_report(row(["dead-worker"], session="dead", posture="idle", sub=None), "t")["need"] == "dead"
+assert ui_app.card_report(row(["blocker-role-cannot-take"], posture="idle", sub=None), "t")["need"] == "stuck"
+says = ui_app.card_report(row(["blocked-says-waiting"], session="blocked", posture="idle", sub=None), "t")
+assert says["state"] == "blocked" and says["kind"] == "question", says
+assert ui_app.card_report(row([], posture="idle", sub=None), "t")["need"] == ""
+assert "watcher-dormant" in ui_status.ATTENTION
+helper = ui_app.AGENTS_HELPER
+assert 'SHOAL_NEED[term?.labels?.["shoal.need"]]' in helper and ui_app.NEED_LABEL == "shoal.need"
+PY2
+# a card says `done` once when its role finishes an item and rests; anything newer replaces it, an attach clears it
+python3 - "$SHOALD" <<'PY2' || fail "the one-shot done report"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+rep = lambda st="idle": {"state": st, "kind": "", "title": "t/r", "msg": "idle"}
+row = lambda ts=None, item="repo#7:fix": {"slug": "r", "last_done": {"item": item, "ts": ts} if ts else None}
+L = ui_app.DoneLatch()
+assert L.apply(row("2026-01-01T00:00:00Z"), rep())["state"] == "idle", "what was done before the card started is not news"
+got = L.apply(row("2026-01-01T01:00:00Z"), rep())
+assert got["state"] == "done" and got["msg"].startswith("done repo#7:fix; ") and got["kind"] == "", got
+assert L.apply(row("2026-01-01T01:00:00Z"), rep())["state"] == "done", "it holds while the role rests"
+assert L.apply(row("2026-01-01T01:00:00Z"), rep("working"))["state"] == "working", "anything newer replaces it"
+assert L.apply(row("2026-01-01T01:00:00Z"), rep())["state"] == "idle", "and it does not come back"
+L.apply(row("2026-01-01T02:00:00Z"), rep())
+L.looked()
+assert L.apply(row("2026-01-01T02:00:00Z"), rep())["state"] == "idle", "an attach clears it"
+assert L.apply(row("2026-01-01T03:00:00Z"), rep("working"))["state"] == "working", "finished and straight on: no done"
+assert ui_app.DoneLatch().apply(row(), rep())["state"] == "idle", "a role with nothing done"
+# the card writes a `done` once: the same `done` again would raise it after the operator looked
+import ui_herdr
+orig = ui_app.card_report
+ui_app.card_report = lambda r, tag: rep()
+try:
+    L2 = ui_app.DoneLatch()
+    assert ui_app.report_text(row("a"), "t", L2) and ui_app.report_text(row("a"), "t", L2, "x")
+    first = ui_app.report_text(row("b"), "t", L2, "x")
+    assert "state=done" in first, first
+    assert ui_app.report_text(row("b"), "t", L2, first) == "", "not written twice"
+    assert "state=idle" in ui_app.report_text(row("b"), "t", None, first), "a card with no latch reports as before"
+finally:
+    ui_app.card_report = orig
+PY2
+# the shoal icon goes into the user's icon theme under the launchers' name, once, keeping what was there
+XDG_DATA_HOME="$S/icons-home" python3 - "$SHOALD" <<'PY2' || fail "the shoal icon"
+import os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+theme = os.path.join(os.environ["XDG_DATA_HOME"], "icons", "hicolor")
+old = os.path.join(theme, "scalable", "apps", "shoal.svg")
+os.makedirs(os.path.dirname(old))
+open(old, "w").write("<svg/>")
+assert all(x.startswith("[dry-run] icon ") for x in ui_app.install_icon(True)) and open(old).read() == "<svg/>"
+assert len(ui_app.install_icon()) == 3
+assert open(old + ".bak-shoal").read() == "<svg/>" and "<title>shoal</title>" in open(old).read()
+assert os.path.getsize(os.path.join(theme, "256x256", "apps", "shoal.png")) > 1000
+assert ui_app.install_icon() == [], "a second install changes nothing"
+assert ui_app.desktop_icon() == "shoal"
 PY2
 # a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
 python3 - "$SHOALD" <<'PY2' || fail "report during attach"

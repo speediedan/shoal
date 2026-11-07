@@ -53,3 +53,24 @@ export function usageMachines(spaces, machineNames) {
   const names = arr(machineNames).filter((n) => typeof n === "string" && n);
   return [...new Set([...(active ? [active] : []), ...names, null])];
 }
+
+// What a blocked card wants, as its report names it: the lattice pulse's order (auth, then asks, then grants).
+const KIND_RANK = { auth: 0, question: 1, permission: 2 };
+
+/**
+ * The agents that need you, in the pulse's order: by what they want (`kindOf(agent)`, the card's report kind), then the
+ * one unchanged longest first (`seq` rises with every change), so the key reaches the oldest question first.
+ */
+export function needsYouOrder(list, kindOf = () => null) {
+  const rank = (a) => KIND_RANK[kindOf(a)] ?? 3;
+  return arr(list).filter((a) => a?.status === "blocked" && a.pane)
+    .sort((x, y) => rank(x) - rank(y) || x.seq - y.seq || (x.address < y.address ? -1 : 1));
+}
+
+/** The needs-you agent after `current` (an address) in that order, wrapping; the first when `current` is not one. */
+export function nextNeedsYou(list, kindOf, current) {
+  const order = needsYouOrder(list, kindOf);
+  if (!order.length) return null;
+  const i = order.findIndex((a) => a.address === current);
+  return order[(i + 1) % order.length];
+}
