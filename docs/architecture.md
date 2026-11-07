@@ -1010,7 +1010,9 @@ and the contract are in [`ui.md`](ui.md).
   which event, and the legend lists what is on screen, with the full key a click away. Each role's active, next and
   recently done items are satellites on short spokes: a next item with a recorded blocker is a ring, a stale
   blocker red, and a hover shows the item's card (its title, what it waits on, how many are queued past those
-  drawn) while a click opens its issue. A hover or
+  drawn) while a click opens its issue (an `http` or `https` link only, since a role writes it). A ring is the
+  blocker as last recorded, judged stale by age as `ui status` does, so one that has cleared reads as held until
+  re-recorded. A hover or
   click reaches a node, then an item, then an edge, then the middle of a shoal's circle, which is the shoal's status (the
   feed's writer node is not drawn). A right-click on a role opens `shoal-actions` on it; on a shoal's circle or
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken

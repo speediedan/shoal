@@ -979,6 +979,14 @@ test("a satellite can be hovered and clicked: its card names the item, its title
   assert.ok(c.rows.some(([k]) => k === "blocked on"));
   assert.deepEqual(c.links, [{ kind: "next", text: "open it", url: "https://github.com/acme/repo/issues/7" }]);
   assert.equal(M.itemOf(vm, `${n.id}#99`), null);
+  // a click opens only a web link: item urls are ledger text
+  assert.equal(M.webUrl("file:///etc/passwd"), null);
+  assert.equal(M.webUrl("javascript:alert(1)"), null);
+  assert.equal(M.webUrl("HTTPS://github.com/x"), "HTTPS://github.com/x");
+  const bad = structuredClone(d);
+  bad.nodes.find((x) => x.id === n.id).work.next[0].url = "vscode://open?x";
+  const bvm = M.buildModel(bad, "global");
+  assert.deepEqual(M.cardLines(bvm, id).links, []);
   assert.equal(M.itemOf(vm, "nope"), null);
   // the scene gives every satellite a hit target, and a blocked next item is a ring
   const lay = L.layoutGraph(vm);
