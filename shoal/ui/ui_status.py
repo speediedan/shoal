@@ -179,7 +179,8 @@ def claude_rows_cached(max_age_s: float = ROWS_MAX_AGE_S) -> tuple[float, list[d
             t, rows = time.time(), claude_rows()
             if rows:
                 tmp = p + f".{os.getpid()}.tmp"
-                with open(tmp, "w") as fh:
+                # every Claude session's id, name and folder: private wherever the runtime dir falls back to
+                with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
                     json.dump({"t": t, "rows": rows}, fh, default=str)
                 os.replace(tmp, p)
             return t, rows

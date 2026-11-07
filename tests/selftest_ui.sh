@@ -2281,6 +2281,7 @@ t2, rows2 = ui_status.claude_rows_cached(max_age_s=-1)
 assert len(calls) == 2 and rows2 == [], "stale: listed again"
 p = os.path.join(os.path.dirname(ui_status.cache_path()), "claude-rows.json")
 assert abs(__import__("json").load(open(p))["t"] - t) < 1e-6, "a failed listing does not replace the last good one"
+assert os.stat(p).st_mode & 0o077 == 0, "the listing is private to its user"
 PY2
 # a local standalone Claude card reports its session: working, a question, idle, stopped; done once when a turn ends
 python3 - "$SHOALD" <<'PY2' || fail "standalone card reports"

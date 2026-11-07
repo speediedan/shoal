@@ -928,6 +928,7 @@ export default class Lattice extends View {
       .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
       // the one exception to the tier: a replay asked for with `r` draws its packets at any tier, `off` included
       .child(div().text_color(P.dim).child("r: replay 24 h (its packets move at any motion tier)"))
+      .child(div().text_color(P.dim).child(`d: depth (flat, tilt, iso; now ${this.depthNow ?? "flat"}) \u00b7 , and .: turn it`))
       .child(h_flex().gap(14).items_start().child(col).child(right));
   }
 
