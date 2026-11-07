@@ -317,6 +317,7 @@ export class Layout {
           item: it.item,
           url: it.url ?? null,
           stale: it.stale === true,
+          blocker: it.blocker ?? null,
           x: p.x + len * Math.cos(a),
           y: p.y + len * Math.sin(a),
           ax: p.x + (r + 2) * Math.cos(a),

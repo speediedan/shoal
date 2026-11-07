@@ -231,7 +231,9 @@ def standalone_space(e: dict) -> dict:
     return {"name": ui_herdr.standalone_ws_label(e), "kind": "standalone", "standalone": ui_herdr.standalone_label(e),
             "folder": e.get("cwd") or "",
             "tabs": [{"name": "session", "layout": "stack",
-                      "panes": [_pane(ui_herdr.standalone_label(e), ui_herdr.standalone_argv(e))]}]}
+                      "panes": [_pane(ui_herdr.standalone_label(e), ui_herdr.standalone_argv(e))]},
+                     # the whole picture is a tab away from any seat, as from any shoal
+                     {"name": "lattice", "mod": "lattice-view", "props": lattice_props("")}]}
 
 
 def home_here(spec) -> bool:

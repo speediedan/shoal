@@ -2166,6 +2166,18 @@ tries.clear()
 ui_view._standalone_loop = flaky
 assert ui_view.standalone_stub("claude", "x", "seat") == 0 and len(tries) == 2
 PY2
+# items carry their titles from this host's digest; every standalone space has a lattice tab
+python3 - "$SHOALD" <<'PY2' || fail "item titles and the standalone lattice tab"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_graph
+dg = {"items": {"repo-one#7": {"title": "Make it fast", "source": "s"}, "repo-one#8": {"title": "", "source": "s"}}}
+assert ui_graph.item_titles(dg) == {"repo-one#7": "Make it fast"}, ui_graph.item_titles(dg)
+assert ui_graph.item_titles(None) == {}
+sp = ui_app.standalone_space({"label": "seat", "session": "abcd1234", "harness": "claude"})
+assert [t["name"] for t in sp["tabs"]] == ["session", "lattice"] and sp["tabs"][1]["mod"] == "lattice-view", sp["tabs"]
+assert "source" in sp["tabs"][1]["props"], sp["tabs"][1]
+PY2
 # a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
 python3 - "$SHOALD" <<'PY2' || fail "report during attach"
 import io, sys, time, types
@@ -2365,11 +2377,13 @@ src = "github-project:acme/7"
 doc = {"generated_utc": "2026-01-01T00:00:00Z", "unused": "x" * 100,
        "boards": [{"source": src, "title": "Priorities", "url": "https://github.com/orgs/acme/projects/7", "done": 5}],
        "items": {f"proj#{n}": {"source": src, "bodyText": "long"} for n in (1, 2, 3, 4)}}
+doc["items"]["proj#2"]["title"] = "Make it fast"
 b = ui_graph.GraphBuilder()
 os.makedirs(os.path.dirname(digest_path("sid1")))
 json.dump(doc, open(digest_path("sid1"), "w"))
 got = b._digest("sid1")
 assert "unused" not in got and got["items"]["proj#1"] == {"source": src}, got
+assert got["items"]["proj#2"] == {"source": src, "title": "Make it fast"} and ui_graph.item_titles(got) == {"proj#2": "Make it fast"}, got
 assert b._digest("nosuch") is None
 t = ui_graph._epoch(doc["generated_utc"])
 d = ui_graph.board_doc(spec, rows, got, t + 600)

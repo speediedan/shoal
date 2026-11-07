@@ -394,9 +394,9 @@ export function roleItems(node, caps = { next: 4, done: 5 }) {
   const work = obj(node?.work);
   const out = [];
   const active = work.active && typeof work.active === "object" ? work.active : null;
-  if (active?.item) out.push({ kind: "active", item: active.item, url: active.url ?? null });
-  for (const n of arr(work.next).slice(0, caps.next)) if (n?.item) out.push({ kind: "next", item: n.item, url: n.url ?? null, blocker: n.blocker ?? null, stale: n.stale === true });
-  for (const d of arr(work.done_recent).slice(-caps.done)) if (d?.item) out.push({ kind: "done", item: d.item, url: d.url ?? null, ts: d.ts ?? null });
+  if (active?.item) out.push({ kind: "active", item: active.item, url: active.url ?? null, title: active.title ?? null });
+  for (const n of arr(work.next).slice(0, caps.next)) if (n?.item) out.push({ kind: "next", item: n.item, url: n.url ?? null, blocker: n.blocker ?? null, stale: n.stale === true, title: n.title ?? null });
+  for (const d of arr(work.done_recent).slice(-caps.done)) if (d?.item) out.push({ kind: "done", item: d.item, url: d.url ?? null, ts: d.ts ?? null, title: d.title ?? null });
   return out;
 }
 
@@ -888,12 +888,37 @@ export function shoalCardLines(vm, sid) {
 /** A saved standalone session's state, in the words its card uses. */
 const STANDALONE_NOW = { busy: "running a turn", alive: "alive, between turns", blocked: "alive, waiting on you", stopped: "stopped" };
 
+/** A satellite's item, from its id (`<role node id>#<index>`, as the layout names it), or null. */
+export function itemOf(vm, id) {
+  const cut = typeof id === "string" ? id.lastIndexOf("#") : -1;
+  if (cut < 0) return null;
+  const n = vm?.byId?.get(id.slice(0, cut));
+  const it = n?.items?.[Number(id.slice(cut + 1))];
+  return it ? { node: n, it } : null;
+}
+
+const ITEM_KIND = { active: "working on it", next: "queued", done: "done in the last 24 h" };
+
+/** A satellite's hover card: the item, its title, why it waits, and the issue a click opens. */
+export function itemCardLines(vm, id) {
+  const { node: n, it } = itemOf(vm, id);
+  const rows = [["role", `${n.label}${vm.global && n.shoal ? ` @${shortShoal(n.shoal)}` : ""}`], ["now", ITEM_KIND[it.kind] ?? it.kind]];
+  if (it.title) rows.push(["title", it.title]);
+  if (it.blocker) rows.push(["blocked on", `${it.blocker}${it.stale ? " (stale)" : ""}`]);
+  else if (it.kind === "next") rows.push(["blocked on", "nothing: it can start"]);
+  if (it.ts) rows.push(["when", it.ts]);
+  const drawn = n.items.filter((x) => x.kind === "next").length;
+  const total = num(obj(n.work).next_total, arr(obj(n.work).next).length);
+  if (it.kind === "next" && total > drawn) rows.push(["queue", `${total} queued, ${drawn} drawn`]);
+  return { title: it.item, subtitle: it.kind, color: n.visual.color, rows, list: [], links: it.url ? [{ kind: it.kind, text: "open it", url: it.url }] : [], command: null };
+}
+
 /** The text lines of a hover card for a node, an edge or a shoal, shared by main.js and the preview. */
 export function cardLines(vm, id) {
   if (typeof id === "string" && id.startsWith(SHOAL_CARD)) return shoalCardLines(vm, id.slice(SHOAL_CARD.length));
   if (typeof id === "string" && id.startsWith(BOARD_CARD)) return boardCardLines(vm, id.slice(BOARD_CARD.length));
   const n = vm.byId.get(id);
-  if (!n) return edgeCardLines(vm, id);
+  if (!n) return itemOf(vm, id) ? itemCardLines(vm, id) : edgeCardLines(vm, id);
   const s = n.state;
   const m = n.metrics;
   if (n.kind === "user") {

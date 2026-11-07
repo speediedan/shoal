@@ -33,7 +33,7 @@ import {
   PALETTE, STATE_STYLE, EDGE_COLOR, buildModel, eventsSince, demoEvents, shoalSummaries, hostSummaries,
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
   FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay, scopeOverlay, removeOverlay,
-  SHOAL_CARD, BOARD_CARD, HIDDEN_KEY, hiddenList, ledgerStale, boardCells, boardBar, boardSummary, offBoardText,
+  SHOAL_CARD, BOARD_CARD, HIDDEN_KEY, itemOf, hiddenList, ledgerStale, boardCells, boardBar, boardSummary, offBoardText,
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
@@ -169,6 +169,7 @@ export default class Lattice extends View {
     this.legendAll = false;
     this.history = new Map();
     this.hits = [];
+    this.satHits = [];
     this.edgeHits = [];
     this.discs = [];
     this.cooling = null;
@@ -474,7 +475,8 @@ export default class Lattice extends View {
     if (!p) return;
     const hole = hitHole(this.discs, p);
     const named = this.boardUrl(hitTitle(this.discs, p)) ? hitTitle(this.discs, p) : null;
-    const id = hitNode(this.hits, p, 4) ?? (named ? BOARD_CARD + named : null) ?? hitEdge(this.edgeHits, p) ?? (hole ? SHOAL_CARD + hole : null);
+    const id = hitNode(this.hits, p, 4) ?? hitNode(this.satHits, p, 2) ?? (named ? BOARD_CARD + named : null) ?? hitEdge(this.edgeHits, p)
+      ?? (hole ? SHOAL_CARD + hole : null);
     if (id !== this.hover) {
       this.hover = id;
       cx.notify();
@@ -491,8 +493,15 @@ export default class Lattice extends View {
     }
     const p = e.local_position ?? { x: press.lx, y: press.ly };
     const id = hitNode(this.hits, p, 4);
-    const board = id ? null : this.boardUrl(hitTitle(this.discs, p));
+    const sat = id ? null : hitNode(this.satHits, p, 2);
+    const board = id || sat ? null : this.boardUrl(hitTitle(this.discs, p));
     if (id) this.pinned = this.pinned === id ? null : id;
+    else if (sat) {
+      // an item opens its issue; one with no link pins its card
+      const url = itemOf(this.vm, sat)?.it.url;
+      if (url) cx.open_url(url);
+      else this.pinned = this.pinned === sat ? null : sat;
+    }
     else if (board) cx.open_url(board); // a shoal's name opens its board; the rest of its disc drills in
     else if (this.vm?.global && hitDisc(this.discs, p)) this.drill(hitDisc(this.discs, p), cx);
     else {
@@ -613,6 +622,7 @@ export default class Lattice extends View {
       policy: this.policy, packets: this.packets,
     });
     this.hits = sc.hits;
+    this.satHits = sc.satHits ?? [];
     this.edgeHits = sc.edgeHits;
     this.discs = sc.discs;
     for (const it of sc.items) {
@@ -631,7 +641,7 @@ export default class Lattice extends View {
         const t = sc.discs.find((x) => x.id === id.slice(BOARD_CARD.length))?.title;
         return t ? { x: t.x + t.w / 2, y: t.y + t.h, r: 0 } : null;
       }
-      return sc.nodeScreen.get(id) ?? sc.edgeScreen.get(id) ?? null;
+      return sc.nodeScreen.get(id) ?? sc.satScreen?.get(id) ?? sc.edgeScreen.get(id) ?? null;
     };
     // an edge with nothing left in the day leaves the feed: a pin on it must not block the hover's card
     const cardId = screenOf(this.pinned) ? this.pinned : this.hover;

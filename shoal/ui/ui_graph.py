@@ -234,6 +234,12 @@ def standalone_doc(e: dict, rows: list[dict]) -> dict:
     return {"harness": harness, "id": session[:12], "state": state, "dismissed": bool(e.get("dismissed"))}
 
 
+def item_titles(digest: dict | None) -> dict[str, str]:
+    """{item key: title} from this host's last digest: the board's open items, which is what a role's queue mostly holds."""
+    from ledger import item_key
+    return {item_key(k): str(it.get("title")) for k, it in ((digest or {}).get("items") or {}).items() if it.get("title")}
+
+
 def board_doc(spec, rows: list[dict], digest: dict | None, now: float) -> dict | None:
     """The shoal's priority boards for the rail, None when it has none. Each is a link and, from this host's last
     digest (the only board read), its items as done, open, in flight (a role's active item) and assigned (in a role's
@@ -490,7 +496,8 @@ class GraphBuilder:
         except (OSError, ValueError):
             return None
         keep = {"generated_utc": d.get("generated_utc"), "boards": d.get("boards") or [],
-                "items": {k: {"source": it.get("source")} for k, it in (d.get("items") or {}).items()}}
+                "items": {k: {"source": it.get("source"), **({"title": str(it["title"])[:160]} if it.get("title") else {})}
+                          for k, it in (d.get("items") or {}).items()}}
         self._digests[sid] = (mtime, keep)
         return keep
 
@@ -627,6 +634,9 @@ class GraphBuilder:
                                      "metrics": {"pages_24h": m["pages_24h"]}}
 
             # -- roles
+            from ledger import item_key
+            titles = item_titles(self._digest(sid))
+            titled = lambda d: dict(d, title=titles[item_key(str(d["item"]))]) if d.get("item") and item_key(str(d["item"])) in titles else d
             off, frz = view.user_offline(), view.freeze()
             counts = collections.Counter()
             for row in rows:
@@ -649,7 +659,7 @@ class GraphBuilder:
                             be = edge(nid, f"{sid}:{dst_role}", "blocked-on", sid, structural=True)
                             # one edge per role pair: stale only when every blocker behind it is stale
                             be.stale = bool(n.get("stale")) and be.stale is not False
-                    nxt.append(x)
+                    nxt.append(titled(x))
                 asks = list(row.get("asks") or [])
                 if asks:
                     edge(nid, "user", "ask", sid).open = len(asks)
@@ -670,10 +680,11 @@ class GraphBuilder:
                               "says": row.get("says") or "",
                               "dismissed": bool(row.get("dismissed")),
                               "restart_ready": bool((view.current_queue(slug) or {}).get("restart_ready"))},
-                    "work": {"active": {"item": active, "url": item_url(active, repos)} if active else None,
+                    "work": {"active": titled({"item": active, "url": item_url(active, repos)}) if active else None,
                              "next": nxt, "asks": asks, "offers_open": int(row.get("offers_open") or 0),
-                             "done_recent": [{"item": d.get("item"), "url": d.get("url") or item_url(d.get("item"), repos),
-                                              "ts": d["ts"]} for d in done]},
+                             "done_recent": [titled({"item": d.get("item"), "url": d.get("url") or item_url(d.get("item"), repos),
+                                                     "ts": d["ts"]}) for d in done],
+                             "next_total": len(nxt)},
                     "metrics": {"done_24h": pr.get("done_24h", 0), "claims_24h": pr.get("claims_24h", 0),
                                 "msgs_out_1h": pr.get("msgs_out_1h", 0), "msgs_in_1h": pr.get("msgs_in_1h", 0),
                                 "last_write_age_s": row.get("last_write_age_s"),
