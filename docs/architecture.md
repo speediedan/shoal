@@ -892,7 +892,8 @@ and the contract are in [`ui.md`](ui.md).
   blockers, asks, offers, liveness and `can_progress` with reasons: `dead-worker`,
   `blocked-on-question`, `watcher-dead`, `blocker-role-cannot-take`, `parked-work` and
   `waiting-on-you`. `watcher-dead` and `parked-work` call the quorum's own predicates
-  (`health.watcher_dead`, `health.parked_free`), so the two never drift; the UI checks blockers
+  (`health.watcher_dead` gated by `health.watcher_dormant`, else the informational `watcher-dormant`;
+  `health.parked_free`), so the two never drift; the UI checks blockers
   without provider calls. `--conditions` adds the quorum's own `evaluate()` output, cached five minutes
   per shoal. It never pulls (unless `--pull`), commits or marks mail read.
 - **Viewer** (`shoal/ui/ui_view.py`, `Backend.view_argv`): `view <shoal> <role>` runs the
@@ -1085,7 +1086,7 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with three blocks swapped: `shoal-agents` and
 `shoal-spaces` are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
-`shoal-status` adds the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
+`shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
 saved standalone session, with its `session` tab and a global `lattice` tab). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
@@ -1094,11 +1095,14 @@ route for another host, which it first adds as a herdr-core machine named after 
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground
 is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
-feeder push; a blocked role names `auth`, `question` or `permission`. `ui app-start` starts the app as a user
+feeder push; a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
+session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
+`done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. `ui app-start` starts the app as a user
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
 its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit, installs the mods
 into the app's home, and sets the 0.9.3 paste keys, the actions key and the `shoal-ocean` theme where the
-person has not chosen their own. `ui launch` in an app terminal opens the chosen host in the app, and `ui
+person has not chosen their own; it also installs the `shoal` icon (`shoal/ui/assets/shoal.svg`) into the user's icon
+theme for every `Icon=shoal` launcher. `ui launch` in an app terminal opens the chosen host in the app, and `ui
 launch --list --json [--summary]` gives the host list the app's home screen reads. Nothing here wakes a role,
 types into a pane or writes the ledger; herdr 0.9.3 is untouched.
 

@@ -1,12 +1,13 @@
 // shoal-status: the window's status bar in the shoal layout (Herdr app mod). Where you are and how many agents need you,
 // as in Herdr's own bar, plus two things that are always within reach: the way back to a lattice (a button and
-// Ctrl+Alt+L: `shoal ui app-lattice` reopens a closed tab) and each provider's usage. Reads usage from the cached
+// Ctrl+Alt+L: `shoal ui app-lattice` reopens a closed tab) and each provider's usage. Ctrl+Alt+N, or a click on the
+// needs-you count, goes to the next agent that needs you, in the lattice pulse's order. Reads usage from the cached
 // `shoal ui usage --json` (no model turns), and on a slow timer runs `shoal ui app-sync`, so roles tabs follow the roles.
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, machines, theme, run, exec, nextCommand } from "herdr";
-import { parseUsage, usageMachines } from "./model.js";
+import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand } from "herdr";
+import { parseUsage, usageMachines, nextNeedsYou } from "./model.js";
 
 const USAGE_MS = 60000;
 const SYNC_MS = 120000;
@@ -28,7 +29,9 @@ export default class ShoalStatus extends View {
     cx.timer.every(SYNC_MS, (cx) => this.sync(cx));
     cx.spawn(async (cx) => {
       for (;;) {
-        if ((await nextCommand()) === "lattice") this.lattice(cx);
+        const c = await nextCommand();
+        if (c === "lattice") this.lattice(cx);
+        else if (c === "next") this.nextNeedsYou();
         cx.notify();
       }
     });
@@ -66,6 +69,23 @@ export default class ShoalStatus extends View {
 
   lattice(cx) {
     this.show(cx, "lattice", "app-lattice");
+  }
+
+  /** The next agent that needs you, its pane focused; a zoomed view stays zoomed, on it (as a click in the agents list). */
+  nextNeedsYou() {
+    const list = safe(agents, []);
+    const kinds = new Map(safe(terminals, []).map((x) => [x.address, x.report?.kind ?? null]));
+    const a = nextNeedsYou(list, (x) => kinds.get(x.address), list.find((x) => x.focused)?.address);
+    if (!a) {
+      this.note = "nobody needs you";
+      return;
+    }
+    this.note = null;
+    const all = safe(panes, []);
+    const there = all.find((p) => p.pane === a.pane);
+    const zoomed = all.some((p) => p.zoomed && (p.tab === there?.tab || p.focused));
+    run("pane.focus", { pane: a.pane });
+    if (zoomed && !there?.zoomed) run("pane.zoom", { pane: a.pane });
   }
 
   show(cx, what, verb) {
@@ -111,7 +131,8 @@ export default class ShoalStatus extends View {
     const bar = h_flex().size_full().overflow_hidden().px(14).gap(14).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.5).text_color(t.muted)
       .child(div().flex_none().child(space?.machine ?? "This computer"))
       .child(h_flex().flex_none().gap(6).items_center().child(`${list.length} agents`)
-        .when(needs > 0, (el) => el.child(div().text_color(t.blocked).child(`· ${needs} need you`))))
+        .when(needs > 0, (el) => el.child(div().id("to-next").cursor_pointer().text_color(t.blocked).tooltip("the next one (Ctrl+Alt+N)")
+          .on_click((_e, cx) => { this.nextNeedsYou(); cx.notify(); }).child(`· ${needs} need you`))))
       .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.show(cx, "home", "app-home"); cx.notify(); }, t))
       .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t))
       .child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))

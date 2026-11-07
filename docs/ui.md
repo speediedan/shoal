@@ -57,6 +57,7 @@ reader ignores fields it does not know.
      "wait": {"sub": "...", "target": "...", "holder": "...", "rescan_utc": "..."},
      "active": "<repo>#<n>:fix",
      "next": [{"item": "<repo>#<m>:review", "blocker": "<role>:<repo>#<k>", "stale": true}],
+     "last_done": {"item": "<repo>#<j>:fix", "ts": "<utc>"},
      "blocker_stale": true, "offers_open": 0, "mail_since_boundary": 1, "asks": ["..."],
      "watcher": "alive|dead|none", "session": "working|blocked|idle|dead|unknown|parked",
      "last_write_age_s": 900, "heartbeat_age_s": 60,
@@ -85,15 +86,18 @@ reader ignores fields it does not know.
   detached watcher. The watcher resumes it directly when work arrives, so it is not blocking and shows
   as `DORMANT`.
 - `blocked-on-question`: the session waits on a pending question to the maintainer.
-- `watcher-dead`: the session is between turns with no `ledger-watch`.
+- `watcher-dead`: the session is between turns with no `ledger-watch`, and the role is active or has work its watcher
+  would deliver.
+- `watcher-dormant`: the same dead watcher on a role with nothing it would be woken for (`lazy_rearm`): its next real
+  work raises its own wake, which re-arms it. Informational, so a role waiting on its own job reads working on it.
 - `blocker-role-cannot-take`: a next item is blocked on a role that cannot take it.
 - `parked-work`: the role sleeps while a next item has no current blocker.
 - `waiting-on-you`: the role has recorded asks, or a user wait.
 
-`parked`, `dormant` and `context-large` are informational. `ok` is false for any other reason except `waiting-on-you`.
+`parked`, `dormant`, `watcher-dormant` and `context-large` are informational. `ok` is false for any other reason except `waiting-on-you`.
 
 `watcher-dead` and `parked-work` come from the health quorum's own predicates
-(`health.watcher_dead`, `health.parked_free`). Blocker checks there run with `live=False` (no
+(`health.watcher_dead` with `health.watcher_dormant`, `health.parked_free`). Blocker checks there run with `live=False` (no
 provider calls), so a provider-checkable blocker (`upstream:`, `lease:`) that resolved minutes ago
 still reads as current until the quorum's next run marks it stale. This is deliberate: never turn
 provider calls on in the 20-second feed. `--conditions` (the quorum's own `evaluate()`, live, cached
@@ -607,7 +611,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
 - **Leaving an attach.** A card restores the terminal's modes after every attach, since a client that dies with its link cannot, and a Ctrl-C
   returns to the card: `q` is what leaves one.
 - **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a
-  question, `\u26b7` auth, `\u2691` a grant, else `!`). A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
+  question, `\u26b7` auth, `\u2691` a grant). herdr-core drops a report whose `kind` it does not know, so a cause with no
+  kind goes in the card's `shoal.need` label instead: `\u2715` its session is dead, `\u25cc` its watcher is dead and it has
+  work, `\u2298` a blocker that cannot move; `!` is left for a cause nobody named. A session that says it waits on you reads `?`. A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two
   reporters would take turns on one row. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
   the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open. That hold covers every roles tab of the shoal until the last card detaches: a
@@ -619,7 +625,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
   closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back, and
-  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current. Each
+  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current.
+  Ctrl+Alt+N (or a click on the bar's `need you` count) focuses the next agent that needs you, in the lattice pulse's order:
+  a sign-in first, then a question, then a grant, the longest unchanged first; a zoomed view stays zoomed, on it. Each
   saved standalone session gets a space as well, with its `session` tab and a `lattice` tab on the global view. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
   from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only
@@ -638,7 +646,10 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   refresh (`app=<role>`, which heads the pane, and title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
   report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask or a design or
-  feedback wait, `permission` for a pending grant. The app then shows the role in its agents list, colors the
+  feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
+  seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until
+  you look, and anything the role does next, or an attach, replaces it. A card restarted by an upgrade (every card re-execs
+  on new code) forgets a `done` not yet seen. The app then shows the role in its agents list, colors the
   space and tab dots, plays its sound and posts a toast that leads to the card. Leaving the card clears the
   report. The 0.9.3 feeder's socket push is not used here.
 - **The pin.** The app downloads its own updates and then updates herdr-core, and no setting stops it.
@@ -647,7 +658,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   `CORE_PIN`); upgrade deliberately by rerunning the installer, lane host first. Herdr's own desktop entry starts
   the app without the pin held, so it can stage and apply an update by itself. `--write-desktop` replaces that entry (`herdr-app.desktop`, the name a
   desktop shell matches the window to, so it pins and groups; the original is kept as `.bak-shoal`) with one named
-  Shoal that runs `app-start`, using the `shoal` icon where the theme has one.
+  Shoal that runs `app-start`, using the `shoal` icon. `app-install` puts that icon (a fish before the splash's
+  seaweed lattice, `shoal/ui/assets/shoal.svg` with 64 and 256 px renders) into the user's `hicolor` theme, so every
+  launcher with `Icon=shoal` shows it; a different icon already there is kept once as `.bak-shoal`.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
   Spaces acts on that host's shoals, and the status bar shows each provider's usage.

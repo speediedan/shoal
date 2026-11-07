@@ -1,3 +1,5 @@
+<img src="shoal/ui/assets/shoal.svg" alt="SHOAL: a fish before a seaweed lattice" width="96" align="right">
+
 # SHOAL
 
 **SHOAL (Stigmergic Heterogeneous Open Agent Lattice)** runs a group of long-lived agent sessions,

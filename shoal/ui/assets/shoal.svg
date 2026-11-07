@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64">
+  <title>shoal</title>
+  <defs>
+    <radialGradient id="sea" cx="50%" cy="42%" r="65%">
+      <stop offset="0" stop-color="#14405a"/>
+      <stop offset="1" stop-color="#071422"/>
+    </radialGradient>
+    <radialGradient id="body" cx="60%" cy="34%" r="72%">
+      <stop offset="0" stop-color="#6fe3da"/>
+      <stop offset="1" stop-color="#1f9e9a"/>
+    </radialGradient>
+    <clipPath id="tile"><rect x="2" y="2" width="60" height="60" rx="14"/></clipPath>
+    <clipPath id="fish"><ellipse cx="33" cy="40" rx="13.5" ry="12"/></clipPath>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#sea)"/>
+  <g clip-path="url(#tile)">
+    <!-- the lattice: two seaweed stalks, their nodes joined by arcs -->
+    <g fill="none" stroke-linecap="round">
+      <path d="M12 20 Q22 8 32 12" stroke="#38bdf8" stroke-opacity="0.7" stroke-width="1.5"/>
+      <path d="M32 12 Q42 7 52 18" stroke="#38bdf8" stroke-opacity="0.7" stroke-width="1.5"/>
+      <path d="M11 33 Q32 14 53 31" stroke="#38bdf8" stroke-opacity="0.4" stroke-width="1.2"/>
+      <path d="M10 64 C5 52 15 44 11 33 C8 27 14 24 12 20" stroke="#22b8a0" stroke-width="2.8"/>
+      <path d="M54 64 C59 52 49 43 53 31 C56 25 50 22 52 18" stroke="#22b8a0" stroke-width="2.8"/>
+    </g>
+    <g fill="#22b8a0">
+      <path d="M10.5 46 C4 44 3 39 4 37 C8 39 10 42 10.5 46 Z"/>
+      <path d="M53.5 45 C60 43 61 38 60 36 C56 38 54 41 53.5 45 Z"/>
+    </g>
+    <g fill="#7af5dc">
+      <circle cx="12" cy="20" r="2.4"/>
+      <circle cx="11" cy="33" r="2.1"/>
+      <circle cx="32" cy="12" r="2.3"/>
+      <circle cx="52" cy="18" r="2.4"/>
+      <circle cx="53" cy="31" r="2.1"/>
+    </g>
+    <!-- the fish -->
+    <path d="M22 40 C15 30 9 31 9.5 36 C10.5 38.5 10.5 41.5 9.5 44 C9 49 15 50 22 40 Z" fill="#137a77" stroke="#0a3d40" stroke-width="0.9" stroke-linejoin="round"/>
+    <path d="M27 29 C29 22 37 21 41 27 Z" fill="#137a77" stroke="#0a3d40" stroke-width="0.9" stroke-linejoin="round"/>
+    <ellipse cx="33" cy="40" rx="13.5" ry="12" fill="url(#body)"/>
+    <ellipse cx="34" cy="53" rx="15" ry="9" fill="#c9f7ea" clip-path="url(#fish)"/>
+    <ellipse cx="33" cy="40" rx="13.5" ry="12" fill="none" stroke="#0a3d40" stroke-width="0.9"/>
+    <path d="M28 43 C24 45 24.5 49.5 29 49 C32 48.5 32 45.5 28 43 Z" fill="#178a86"/>
+    <circle cx="39" cy="37" r="3.2" fill="#0b1320"/>
+    <circle cx="40.1" cy="35.8" r="1.1" fill="#ffffff"/>
+    <ellipse cx="38" cy="43" rx="2.4" ry="1.5" fill="#ff9aa8" fill-opacity="0.8"/>
+    <path d="M42.6 41.6 Q44 43.2 45.5 41.4" fill="none" stroke="#0b1320" stroke-width="1" stroke-linecap="round"/>
+  </g>
+</svg>

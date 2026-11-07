@@ -630,6 +630,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
+            _mark(ui_app, ui_app.NEED_LABEL, "")
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -637,6 +638,9 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
     import routes
     import ui_term
     force = False
+    latch = ui_app.DoneLatch() if ui_app is not None else None
+    sent = None
+    need = None  # the cause last labelled (shoal.need); None: not yet written, so a stale one is cleared
     while True:
         watch.check()
         # re-read each tick: a role moved to another host (its spec `server`) is attached there at once
@@ -652,7 +656,12 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
         if ui_app is not None and rows:
             try:
                 import ui_herdr
-                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid))
+                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid), latch, sent)
+                sent = osc or sent
+                now = ui_app.card_report(rows[0], "").get("need", "")
+                if now != need:
+                    _mark(ui_app, ui_app.NEED_LABEL, now)
+                    need = now
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
         if routed:
@@ -676,6 +685,8 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             flush_input()
             with _report_during(sid, slug, ui_app):
                 remote_attach(remote, sid, slug)
+            if latch is not None:
+                latch.looked()
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
             continue
@@ -685,6 +696,8 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
             with _report_during(sid, slug, ui_app):
                 run_attached(_view_cmd(sid, slug, spec_path))
+            if latch is not None:
+                latch.looked()
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
             time.sleep(3)
 
@@ -694,6 +707,14 @@ def _mark_attached(ui_app, value: str) -> None:
     try:
         ui_app.hc_label(os.environ["HC_TERMINAL_ID"], {ui_app.ATTACH_LABEL: value})
     except Exception:  # noqa: BLE001 - a label never breaks an attach
+        pass
+
+
+def _mark(ui_app, key: str, value: str) -> None:
+    """Set one label on this card's terminal ("" removes it)."""
+    try:
+        ui_app.hc_label(os.environ["HC_TERMINAL_ID"], {key: value})
+    except Exception:  # noqa: BLE001 - a label never breaks a card
         pass
 
 
