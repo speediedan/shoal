@@ -2077,6 +2077,95 @@ assert providers.job("pilot", "lane", "s")[0] is True and ui_status.job_ended("j
 jobs.unit_state = lambda unit: {"ActiveState": "inactive", "LoadState": "loaded"}
 assert ui_status.job_ended("job:pilot", "lane", "s") is True
 PY2
+# a client that died leaves mouse reporting on: the card restores the terminal; a Ctrl-C returns to the card rather than ending it
+python3 - "$SHOALD" <<'PY2' || fail "after an attach"
+import contextlib, io, subprocess, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_view
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.run_attached([sys.executable, "-c", "import sys; sys.exit(3)"]) == 3
+assert "\x1b[?1003l" in buf.getvalue() and "\x1b[?1006l" in buf.getvalue() and "\x1b[?25h" in buf.getvalue(), repr(buf.getvalue())
+assert "\x1b7\x1b[?1049l" in buf.getvalue(), "the cursor saved just before: on the normal screen the restore would move it"
+real = subprocess.run
+def interrupted(*a, **k):
+    raise KeyboardInterrupt
+subprocess.run = interrupted
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_view.run_attached(["x"]) == 130
+assert "\x1b[?1003l" in buf.getvalue()
+subprocess.run = real
+# a client killed outright leaves the tty raw: its settings come back too
+import os, pty, termios
+master, slave = pty.openpty()
+os.dup2(slave, 0)
+sys.stdin = os.fdopen(0, "r", closefd=False)
+before = termios.tcgetattr(0)
+with contextlib.redirect_stdout(io.StringIO()):
+    ui_view.run_attached([sys.executable, "-c", "import tty; tty.setraw(0)"])
+assert termios.tcgetattr(0) == before, "the tty stayed raw"
+sys.stdin = io.StringIO()
+# on a dead host: only r retries, q and Ctrl-C leave, and a stray mouse report does nothing
+import routes
+routes.view_argv = lambda *a: ["x"]
+routes.reachable = lambda *a, **k: False
+ui_view.FAST_EXIT_S, ui_view.ATTACH_RETRY_S = 60, 1
+runs = []
+def attempt(argv):
+    runs.append(1)
+    return 255
+ui_view.run_attached = attempt
+keys = iter(["\x1b", "<", "q"])
+ui_view._getkey = lambda t: next(keys)
+with contextlib.redirect_stdout(io.StringIO()):
+    assert ui_view.remote_attach("h", "s", "r") == 255
+assert len(runs) == 1, runs  # mouse bytes fired no attempt
+runs.clear()
+keys = iter(["r", "q"])
+with contextlib.redirect_stdout(io.StringIO()):
+    ui_view.remote_attach("h", "s", "r")
+assert len(runs) == 2, runs
+runs.clear()
+def stopped(argv):
+    runs.append(1)
+    return 130
+ui_view.run_attached = stopped
+with contextlib.redirect_stdout(io.StringIO()):
+    assert ui_view.remote_attach("h", "s", "r") == 130
+assert len(runs) == 1, runs  # Ctrl-C gives up
+# stdin at EOF returns from a read at once: the retries stay paced, and this ends under its own bound
+import time
+ui_view.ATTACH_RETRY_S = 1
+ui_view._getkey = lambda t: ""
+runs.clear()
+class Enough(Exception):
+    pass
+def bounded(argv):
+    runs.append(1)
+    if len(runs) >= 3:
+        raise Enough()
+    return 255
+ui_view.run_attached = bounded
+t0 = time.time()
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        ui_view.remote_attach("h", "s", "r")
+except Enough:
+    pass
+assert len(runs) == 3 and time.time() - t0 >= 1.9, (len(runs), time.time() - t0)
+tries = []
+def flaky(*a, **k):
+    tries.append(1)
+    if len(tries) < 2:
+        raise KeyboardInterrupt
+    return 0
+ui_view._stub_loop = flaky
+assert ui_view.stub("s", "r") == 0 and len(tries) == 2
+tries.clear()
+ui_view._standalone_loop = flaky
+assert ui_view.standalone_stub("claude", "x", "seat") == 0 and len(tries) == 2
+PY2
 # a card keeps reporting through an attach, writes only a changed report, and stops when the attach ends
 python3 - "$SHOALD" <<'PY2' || fail "report during attach"
 import io, sys, time, types
