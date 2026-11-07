@@ -117,6 +117,13 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError("add-session needs --id (the session)")
         if not (a.label or "").strip():
             raise ActError("add-session needs --label (the seat's name)")
+        # one name, one card: `ui pick --save` would replace the seat that holds it, so a different session's is refused
+        import ui_herdr
+        held = next((x for x in ui_herdr.load_standalone(raw=True) if not x.get("host")
+                     and (x.get("label") or x["session"][:12]) == a.label.strip() and x["session"] != a.session_id.strip()), None)
+        if held:
+            raise ActError(f"the seat {a.label.strip()} already holds the {held['harness']} session {held['session'][:12]} here: "
+                           "pick another name (one name, one card)")
         args = ["ui", "pick", f"--harness={a.harness}", f"--id={a.session_id.strip()}", f"--label={a.label.strip()}",
                 "--save", "--no-open"]
         for k in ("cwd", "job", "model", "effort"):

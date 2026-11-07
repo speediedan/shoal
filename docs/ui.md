@@ -650,7 +650,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   right-click in Spaces) lists the sessions a seat could be made of on every machine (`ui act-plan sessions`, the 0.9.3
   picker's own discovery: Claude background sessions, opencode, Codex and Muse, with roles, old incarnations and internal
   runs left out), saves the one picked on its own machine (`ui pick --harness --id --label --save --no-open`, so its
-  `/bg` following, model and effort work as for any seat), and opens its space here (`ui app-open --show <label>`). By
+  `/bg` following, model and effort work as for any seat; a name another seat holds is refused), and opens its space
+  here (`ui app-open --show <label> --machine <its machine>`). By
   hand: `shoal ui pick --harness <h> --id <id> --label <name> --save` on the session's host, then `shoal ui app-open`
   where the app runs. `ui pick` opens a 0.9.3 card only from a 0.9.3 pane (or with `--open`); elsewhere it saves and
   says so, and `--dry-run` saves nothing.

@@ -457,6 +457,7 @@ test("Add session: on any target, a list fed from every machine, saved on the se
     ["ui", "act-plan", "add-session", "--no-preview", "--harness=claude", "--id=s1", "--label=notes", "--cwd=/x", "--job=j1", "--json"]);
   assert.deepEqual(M.sessionsArgv(), ["ui", "act-plan", "sessions", "--json"]);
   assert.deepEqual(M.openSeatArgv("notes"), ["ui", "app-open", "--show", "notes"]);
+  assert.deepEqual(M.openSeatArgv("notes", "lane-b"), ["ui", "app-open", "--show", "notes", "--machine", "lane-b"], "a seat saved on lane-b opens from lane-b's plan");
   const view = M.parseReply({ code: 0, stdout: JSON.stringify({ v: 1, kind: "shoal-act-view", verb: "sessions", sessions: [{ harness: "claude", session: "s1" }, 3] }) }, "view");
   assert.equal(view.sessions.length, 1);
   assert.equal(M.fixtureReply({}, M.openSeatArgv("x")).code, 0, "the fixture opens a space without the CLI");

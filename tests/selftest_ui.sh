@@ -536,7 +536,7 @@ e = next(x for x in ui_herdr.load_standalone(raw=True) if x["label"] == "notes")
 assert e["job"] == "abcd1234" and e["cwd"] == "/srv/x" and "shoal ui app-open" in buf.getvalue(), (e, buf.getvalue())
 PY2
 # the app's Add session: a host's candidates as a view, and a plan that saves one there (a `ui pick`, which apply allows)
-python3 - "$SHOALD" <<'PY2' || fail "add-session plan"
+XDG_CONFIG_HOME="$S/xdg-addsess" python3 - "$SHOALD" <<'PY2' || fail "add-session plan"
 import sys, types
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import ui_actions, ui_herdr
@@ -556,6 +556,16 @@ for bad in ({"harness": "nope"}, {"session_id": " "}, {"label": ""}):
     except ui_actions.ActError:
         pass
 assert "add-session" in ui_actions.WRITE_VERBS and "sessions" in ui_actions.VIEW_VERBS
+# a name another session's seat holds is refused (pick --save would replace that seat); the same session again is fine
+ui_herdr.load_standalone = lambda raw=False: [{"harness": "codex", "session": "other-9", "label": "notes"},
+                                             {"harness": "claude", "session": "far-1", "label": "notes", "host": "lane-b"}]
+try:
+    ui_actions.build("add-session", a)
+    raise SystemExit("a held name was accepted")
+except ui_actions.ActError as exc:
+    assert "already holds the codex session other-9" in str(exc), exc
+ui_herdr.load_standalone = lambda raw=False: [{"harness": "claude", "session": "s1", "label": "notes"}]
+assert ui_actions.build("add-session", a)[0][:2] == ["ui", "pick"], "re-adding the same session keeps its seat"
 PY2
 # a standalone seat's saved model and effort (ui pick --model/--effort, from muse-new --pick) ride every resume
 mkdir -p "$S/xdg-view/shoal"

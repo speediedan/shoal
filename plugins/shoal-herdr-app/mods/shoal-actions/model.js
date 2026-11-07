@@ -274,8 +274,8 @@ export function planArgv(verb, target, form = null) {
 /** argv for one machine's candidate sessions. */
 export const sessionsArgv = () => ["ui", "act-plan", "sessions", "--json"];
 
-/** argv, run where the app runs, that opens a just-saved seat's space (`app-open` mirrors routed hosts' seats). */
-export const openSeatArgv = (label) => ["ui", "app-open", "--show", str(label)];
+/** argv, run where the app runs, that opens a just-saved seat's space: from the plan of the machine it was saved on. */
+export const openSeatArgv = (label, machine = null) => ["ui", "app-open", "--show", str(label), ...(strOrNull(machine) ? ["--machine", machine] : [])];
 
 /**
  * Every machine's candidates as one list: [{machine, sessions, error}] in machine order (this computer first) to rows

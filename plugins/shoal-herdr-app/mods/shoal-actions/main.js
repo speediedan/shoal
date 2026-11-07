@@ -259,13 +259,13 @@ export default class Actions extends View {
   }
 
   /** After a seat is saved: open its space in this app, as `ui app-open --show` does by hand. */
-  openSeat(label, cx) {
+  openSeat(label, machine, cx) {
     if (!this.result) return;
     this.result.open = "opening its space…";
     cx.spawn(async (cx) => {
-      const r = await this.call(openSeatArgv(label), null);
+      const r = await this.call(openSeatArgv(label, machine), null); // runs here; it reads that machine's plan
       if (this.result) {
-        this.result.open = r instanceof Error ? `could not open its space: ${r.message} (run \`shoal ui app-open --show ${label}\`)`
+        this.result.open = r instanceof Error ? `could not open its space: ${r.message} (run \`shoal ui app-open --show ${label}${machine ? ` --machine ${machine}` : ""}\`)`
           : r.code === 0 ? "its space is open" : `app-open exit ${r.code}: ${(r.stderr || r.stdout || "").trim().split("\n").pop()}`;
       }
       cx.notify();
@@ -352,7 +352,7 @@ export default class Actions extends View {
       if (r.kind === "result") {
         this.result = { ...r, auto, plan };
         this.screen = "result";
-        if (r.ok && this.verb === "add-session") this.openSeat(str(this.form?.values?.label).trim(), cx);
+        if (r.ok && this.verb === "add-session") this.openSeat(str(this.form?.values?.label).trim(), plan.machine, cx);
       } else {
         this.error = r.error;
         this.screen = "error";
