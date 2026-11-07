@@ -53,7 +53,10 @@ you, per-shoal throughput and per-host load.
   whose CI job runs on another host has a dotted tether to that host's band (per shoal) or a chip
   at the node (global), labeled `remote-ci -> host-b`.
 - **Satellites:** each role's active item, next items and items done in 24 h as small dots on
-  short spokes fanned outward: the starburst.
+  short spokes fanned outward: the starburst. A next item that waits on something is a ring, so what
+  can start stands out; a stale blocker is red. Hovering a dot shows its item, title and blocker, and
+  clicking it opens the issue (http and https links only). A ring is the blocker as last recorded: one that has
+  cleared still reads as held until the role re-records it or it ages to stale.
 - **Outside nodes:** a dashed circle is either a saved standalone session on the feed's host, shown
   whether or not it ever wrote to a ledger or was dismissed from the app's spaces, or a ledger writer with no session behind it. A saved one's
   card gives its harness, id and whether it runs now, and offers `Remove...` and hide. A writer with no

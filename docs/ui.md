@@ -142,7 +142,8 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
               "job": {"unit": "<unit>", "host": "<pool host>", "placed": true, "granted": true,
                       "started_age_s": 840}},
     "work": {"active": {"item": "<repo>#103:fix", "url": "https://github.com/<owner>/<repo>/issues/103"},
-             "next": [{"item": "<repo>#104:review", "url": "...", "blocker": "<role>:<repo>#103", "stale": false}],
+             "next": [{"item": "<repo>#104:review", "url": "...", "title": "<board title>", "blocker": "<role>:<repo>#103", "stale": false}],
+             "next_total": 1,
              "asks": [], "offers_open": 0, "grants_pending": [{"item": "<text>", "kind": "<kind>"}],
              "done_recent": [{"item": "<repo>#90", "url": "<the done event's url>", "ts": "<utc>"}]},
     "metrics": {"done_24h": 1, "claims_24h": 1, "msgs_out_1h": 2, "msgs_in_1h": 3,
@@ -619,7 +620,7 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
   closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back, and
   `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current. Each
-  saved standalone session gets a space as well. A standalone space closed in the app stays closed
+  saved standalone session gets a space as well, with its `session` tab and a `lattice` tab on the global view. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
   from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only
   the shoals whose home it is (`--shoal ID` names one anyway); a role that runs on another host keeps its

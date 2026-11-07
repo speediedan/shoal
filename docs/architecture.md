@@ -1007,8 +1007,13 @@ and the contract are in [`ui.md`](ui.md).
   operator is offline, a session that ended, or idle with work queued), and accounting keeps the event. So does
   `wait:assignment`, which after two hours with no open question stops asking for attention (no halo, out of needs-you, a
   count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
-  which event, and the legend lists what is on screen, with the full key a click away. A hover or
-  click reaches a node, then an edge, then the middle of a shoal's circle, which is the shoal's status (the
+  which event, and the legend lists what is on screen, with the full key a click away. Each role's active, next and
+  recently done items are satellites on short spokes: a next item with a recorded blocker is a ring, a stale
+  blocker red, and a hover shows the item's card (its title, what it waits on, how many are queued past those
+  drawn) while a click opens its issue (an `http` or `https` link only, since a role writes it). A ring is the
+  blocker as last recorded, judged stale by age as `ui status` does, so one that has cleared reads as held until
+  re-recorded. A hover or
+  click reaches a node, then an item, then an edge, then the middle of a shoal's circle, which is the shoal's status (the
   feed's writer node is not drawn). A right-click on a role opens `shoal-actions` on it; on a shoal's circle or
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
   off the picture (shared `lattice.hidden`, restored from the rail). The rail warns when the feed's ledger
@@ -1065,7 +1070,8 @@ each from the spec, and, from this host's last digest, its items as done, open, 
 (in a role's queue, nobody's active item). The feed never reads a board itself, so those counts are as old as the digest, and a
 host that is not the shoal's home has the links alone. The digest records each board's title, page and done count for this.
 Queue items match board items by `item_key`, which needs `default_owner` set: without it a queue item keeps its owner, and reads
-as off the board.
+as off the board. The same match gives a role's work items their board titles; an item not in the digest has none.
+`next_total` counts the whole queue, since the lattice draws only the first few.
 A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger or was dismissed from the
 app's spaces, and says which session it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
 offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`. `shoal dismiss` records a
@@ -1082,7 +1088,7 @@ block on Herdr's mod), and name each role in its shoal's color on its real host,
 `shoal-status` adds the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
-saved standalone session). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
+saved standalone session, with its `session` tab and a global `lattice` tab). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
 route for another host, which it first adds as a herdr-core machine named after the route), compares it with
 `herdr-app ls`, and adds only what is missing with `herdr-app do`, labelling each terminal it starts
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground

@@ -191,25 +191,36 @@ export function buildScene(vm, lay, opts) {
   // 4. item satellites: spokes, then dots, batched by color
   const spokes = new Map();
   const satFill = new Map();
+  const satRing = new Map(); // a next item that waits on something: a ring, so what can start stands out
+  const satHits = [];
+  const satScreen = new Map();
   const ownerOf = (s) => vm.byId.get(s.owner);
   for (const s of lay.sats) {
     const o = ownerOf(s);
     if (!o) continue;
     const dim = dimOf(o.id);
     const a = S({ x: s.ax, y: s.ay }), b = S(s);
+    const color = s.kind === "active" ? withAlpha(o.visual.color, 0.95 * dim) : s.stale ? withAlpha(P.red, 0.85 * dim) : withAlpha(o.tint, (s.kind === "next" ? 0.9 : 0.5) * dim);
+    const sr = s.r * clamp(Math.sqrt(k), 0.7, 1.4);
+    const ring = s.kind === "next" && s.blocker && !s.stale;
+    const into = ring ? satRing : satFill;
+    // a ring's spoke stops at its rim
+    const len = Math.hypot(b.x - a.x, b.y - a.y), cut = ring && len > sr ? (len - sr) / len : 1;
     const sc = withAlpha(o.tint, 0.5 * dim);
     if (!spokes.has(sc)) spokes.set(sc, []);
-    spokes.get(sc).push(["M", a.x, a.y], ["L", b.x, b.y]);
-    const color = s.kind === "active" ? withAlpha(o.visual.color, 0.95 * dim) : s.stale ? withAlpha(P.red, 0.85 * dim) : withAlpha(o.tint, (s.kind === "next" ? 0.9 : 0.5) * dim);
-    if (!satFill.has(color)) satFill.set(color, []);
-    const sr = s.r * clamp(Math.sqrt(k), 0.7, 1.4);
-    satFill.get(color).push(...circleCmds(b.x, b.y, sr));
+    spokes.get(sc).push(["M", a.x, a.y], ["L", a.x + (b.x - a.x) * cut, a.y + (b.y - a.y) * cut]);
+    if (!into.has(color)) into.set(color, []);
+    into.get(color).push(...circleCmds(b.x, b.y, sr));
+    satHits.push({ id: s.id, x: b.x, y: b.y, r: Math.max(sr, 4) });
+    satScreen.set(s.id, { x: b.x, y: b.y, r: sr });
     grow(b.x - sr, b.y - sr, b.x + sr, b.y + sr);
   }
   let si = 0;
   for (const [color, cmds] of spokes) items.push({ t: "path", id: `spoke-${si++}`, fill: false, width: 1.2, cmds, bg: solid(color) });
   si = 0;
   for (const [color, cmds] of satFill) items.push({ t: "path", id: `sat-${si++}`, fill: true, cmds, bg: solid(color) });
+  si = 0;
+  for (const [color, cmds] of satRing) items.push({ t: "path", id: `sat-ring-${si++}`, fill: false, width: 1.3, cmds, bg: solid(color) });
 
   // 5. flow: marching dots along hot and warm edges, motion native through .frames()
   // (full: every flowing edge at its own speed; balanced: the busiest few on one shared interval,
@@ -440,7 +451,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
-  return { items, hits, edgeHits, discs, nodeScreen, edgeScreen, animated, extent };
+  return { items, hits, satHits, edgeHits, discs, nodeScreen, satScreen, edgeScreen, animated, extent };
 }
 
 /** The world box of what scales with zoom: node centers, satellites and the cluster regions. */

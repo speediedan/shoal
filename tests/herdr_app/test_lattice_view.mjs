@@ -967,6 +967,38 @@ test("a dismissed role is quiet on the lattice, and its ask is still on its card
   assert.ok(M.LEGEND_GROUPS.find((g) => g.id === "idle").keys.includes("dismissed"));
 });
 
+test("a satellite can be hovered and clicked: its card names the item, its title and what it waits on", () => {
+  const d = structuredClone(doc);
+  const n = d.nodes.find((x) => x.kind === "role" && x.work?.next?.length);
+  n.work.next[0] = { ...n.work.next[0], title: "Make it fast", url: "https://github.com/acme/repo/issues/7" };
+  const vm = M.buildModel(d, "global");
+  const id = `${n.id}#${vm.byId.get(n.id).items.findIndex((x) => x.kind === "next")}`;
+  const c = M.cardLines(vm, id);
+  assert.equal(c.title, n.work.next[0].item);
+  assert.ok(c.rows.some(([k, v]) => k === "title" && v === "Make it fast"));
+  assert.ok(c.rows.some(([k]) => k === "blocked on"));
+  assert.deepEqual(c.links, [{ kind: "next", text: "open it", url: "https://github.com/acme/repo/issues/7" }]);
+  assert.equal(M.itemOf(vm, `${n.id}#99`), null);
+  // a click opens only a web link: item urls are ledger text
+  assert.equal(M.webUrl("file:///etc/passwd"), null);
+  assert.equal(M.webUrl("javascript:alert(1)"), null);
+  assert.equal(M.webUrl("HTTPS://github.com/x"), "HTTPS://github.com/x");
+  const bad = structuredClone(d);
+  bad.nodes.find((x) => x.id === n.id).work.next[0].url = "vscode://open?x";
+  const bvm = M.buildModel(bad, "global");
+  assert.deepEqual(M.cardLines(bvm, id).links, []);
+  assert.equal(M.itemOf(vm, "nope"), null);
+  // the scene gives every satellite a hit target, and a blocked next item is a ring
+  const lay = L.layoutGraph(vm);
+  const sc = S.buildScene(vm, lay, { width: 1000, height: 700, tf: G.identity() });
+  assert.equal(sc.satHits.length, lay.sats.length);
+  const blocked = lay.sats.some((s) => s.kind === "next" && s.blocker && !s.stale);
+  assert.equal(sc.items.some((it) => it.id.startsWith("sat-ring-")), blocked);
+  assert.ok(sc.satScreen.get(id), "a satellite's card has a place on screen");
+  const at = sc.satScreen.get(id);
+  assert.equal(G.hitNode(sc.satHits, { x: at.x + 1, y: at.y }, 2), id, "a point on the dot hits it");
+});
+
 test("a change on a board redraws the rail", () => {
   const before = M.visualSignature(M.buildModel(doc, "global"));
   const d = structuredClone(doc);
