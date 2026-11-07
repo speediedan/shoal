@@ -54,6 +54,7 @@ def add_parsers(sub) -> None:
                                    "ledger traffic as edges, the event tail (read-only)")
     ui_graph.add_args(q)
     q.add_argument("--since", default="", metavar="CURSOR", help="only events after this cursor (from a previous doc)")
+    q.add_argument("--replay", action="store_true", help="add the last 24 h of events in ts order (the lattice's replay)")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=ui_graph.cmd_graph)
 

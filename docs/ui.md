@@ -106,7 +106,7 @@ five minutes) is the up-to-date view.
 ## The graph feed: `shoal ui graph`
 
 ```bash
-shoal ui graph [--shoal <id> ...] [--json] [--since <cursor>] [--events N] [--window-rate S]
+shoal ui graph [--shoal <id> ...] [--json] [--since <cursor>] [--events N] [--window-rate S] [--replay]
 shoal ui graph-feed [--interval S] [--out PATH] [--once]
 ```
 
@@ -239,6 +239,10 @@ card's events link to their `url`. Writers map to node ids as above: `user`, `sh
 (URL-safe base64 of each file's byte offset plus the last `seq`). With `--since <cursor>`, `events`
 holds only lines appended after it, numbered on from its `seq`; nodes, edges and shoals are always
 complete. A cursor that does not parse returns the plain tail with `cursor_reset: true`.
+
+**Replay** (`--replay`) adds `replay: {from, to, dropped, events}`: every tail event of the last 24 h in `ts` order,
+numbered on their own from 1 (the cursor chain is untouched), the newest 4000 kept and the rest counted in `dropped`.
+The lattice's replay asks for it once (with `--events 0`), on the machine its feed reads.
 
 **Hosts** are this host, every role's host, every shoal's home and every job host, with `home` true
 for this host and per-host role aggregates: `roles`, `working`, `waiting`, `needs_you` and `msgs_1h`
@@ -642,6 +646,12 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   as a shell in its last folder, and its command is never run again) is replaced. A pane running anything
   else, an attached client for example, is left as it is. Spaces of hidden or retired shoals are named, never
   closed.
+- **Standalone state in the app.** A local standalone Claude card reports its session the same way (`app=<label>`,
+  title `standalone/<label>`), read from `claude agents` as its lattice card is: `working` for a turn, `blocked` with
+  `question` for an open prompt or a session that says it waits on you, else `idle` (`stopped` in the message when no
+  worker runs). A turn the card saw running that has ended is a `done`, written once, as a role's. It keeps reporting
+  through an attach (the Claude client reports nothing itself), and while it reports it refreshes every 30 s instead
+  of every 5 minutes, listing `claude agents` once a refresh for both its `/bg` check and its report. A remote, opencode, Muse or Codex seat's card reports nothing.
 - **Role state in the app.** A role card in a herdr-core terminal prints its own OSC 7501 status on every
   refresh (`app=<role>`, which heads the pane, and title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
@@ -663,7 +673,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   launcher with `Icon=shoal` shows it; a different icon already there is kept once as `.bak-shoal`.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
-  Spaces acts on that host's shoals, and the status bar shows each provider's usage.
+  Spaces acts on that host's shoals, the status bar shows each provider's usage, and the window's mark (top left) is
+  SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
+  loads no picture through a link).
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal
   chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.

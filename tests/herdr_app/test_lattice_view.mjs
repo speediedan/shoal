@@ -10,6 +10,7 @@ const MOD = join(here, "..", "..", "plugins", "shoal-herdr-app", "mods", "lattic
 const M = await import(join(MOD, "model.js"));
 const L = await import(join(MOD, "layout.js"));
 const G = await import(join(MOD, "geom.js"));
+const R = await import(join(MOD, "replay.js"));
 const S = await import(join(MOD, "scene.js"));
 const doc = JSON.parse(readFileSync(join(MOD, "fixtures", "graph-v1.json"), "utf8"));
 
@@ -997,6 +998,31 @@ test("a satellite can be hovered and clicked: its card names the item, its title
   assert.ok(sc.satScreen.get(id), "a satellite's card has a place on screen");
   const at = sc.satScreen.get(id);
   assert.equal(G.hitNode(sc.satHits, { x: at.x + 1, y: at.y }, 2), id, "a point on the dot hits it");
+});
+
+test("replay: the day's events in order, binned by quarter hour, stepped and sought", () => {
+  assert.equal(R.replayModel({}), null);
+  assert.equal(R.replayModel({ replay: { from: "2026-01-02T00:00:00Z", to: "2026-01-01T00:00:00Z", events: [] } }), null);
+  const ev = (seq, ts) => ({ seq, ts, src: "a", dst: "b", type: "msg", class: "msg" });
+  const rm = R.replayModel({ replay: { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", dropped: 3,
+    events: [ev(2, "2026-01-01T06:10:00Z"), ev(1, "2026-01-01T00:05:00Z"), ev(3, "2026-01-01T06:11:00Z"), ev(4, "2027-01-01T00:00:00Z"), ev(5, "bad")] } });
+  assert.deepEqual(rm.events.map((e) => e.seq), [1, 2, 3], "in time order; out of the day or unreadable: left out");
+  assert.equal(rm.bins.length, R.REPLAY_BINS);
+  assert.equal(rm.bins[0], 1);
+  assert.equal(rm.bins[24], 2, "06:10 and 06:11 share the 06:00 quarter hour");
+  assert.equal(rm.max, 2);
+  assert.equal(rm.dropped, 3);
+  assert.deepEqual(R.replayStep(rm, rm.from, rm.from + 6 * 3600 + 600).events.map((e) => e.seq), [1, 2]);
+  assert.equal(R.replayStep(rm, rm.from + 6 * 3600 + 600, rm.to).n, 1, "a step takes what is after its start");
+  assert.equal(R.replayAdvance(rm) * (1000 / R.REPLAY_TICK_MS) * R.REPLAY_DAY_S, 86400, "a day in REPLAY_DAY_S");
+  assert.equal(R.binOf(rm, R.binStart(rm, 24)), 24);
+  assert.equal(R.clock(rm.from + 6 * 3600 + 600), "06:10Z");
+  const many = { replay: { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", events: Array.from({ length: 40 }, (_, i) => ev(i + 1, "2026-01-01T01:00:00Z")) } };
+  const st = R.replayStep(R.replayModel(many), 0, Infinity);
+  assert.equal(st.n, 40);
+  assert.equal(st.events.length, R.REPLAY_BURST, "a busy quarter hour is counted, not flooded");
+  const own = R.replayOfDoc(doc);
+  assert.ok(own && own.to === doc.ts && Array.isArray(own.events), "the fixture replays its own events");
 });
 
 test("a change on a board redraws the rail", () => {

@@ -2224,6 +2224,73 @@ assert "watcher-dormant" in ui_status.ATTENTION
 helper = ui_app.AGENTS_HELPER
 assert 'SHOAL_NEED[term?.labels?.["shoal.need"]]' in helper and ui_app.NEED_LABEL == "shoal.need"
 PY2
+# the window's mark: SHOAL and its icon, through a patched copy of workspace-chrome that carries the icon file itself
+python3 - "$SHOALD" "$S" <<'PY2' || fail "the SHOAL mark"
+import os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+os.environ["HERDR_APP_HOME"] = os.path.join(sys.argv[2], "apphome-chrome")
+import ui_app
+name, (clone, patches) = "workspace-chrome", ui_app.CLONES["workspace-chrome"]
+src = os.path.join(ui_app.app_home(), "mods", name)
+os.makedirs(src)
+open(os.path.join(src, "main.js"), "w").write("a" + patches[0][0] + 'svg("mods/workspace-chrome/search.svg")\n')
+open(os.path.join(src, "search.svg"), "w").write("<svg/>")
+ok, line = ui_app.install_clone(name)
+dest = os.path.join(ui_app.app_home(), "mods", clone)
+text = open(os.path.join(dest, "main.js")).read()
+assert ok and 'child("SHOAL")' in text and "mods/shoal-chrome/shoal.png" in text and "mods/shoal-chrome/search.svg" in text, text
+assert open(os.path.join(dest, "shoal.png"), "rb").read() == open(ui_app.CLONE_FILES[name]["shoal.png"], "rb").read()
+assert os.path.exists(os.path.join(dest, "search.svg")) and ui_app.install_clone(name) == (True, ""), "current: nothing redone"
+assert ui_app.LAYOUT_BLOCKS["workspace-chrome"] == clone
+PY2
+# the replay: the last day's tail events in ts order, numbered on their own, the live cursor untouched
+python3 - "$SHOALD" <<'PY2' || fail "the graph replay"
+import sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_graph
+b = ui_graph.GraphBuilder()
+now = time.time()
+mk = lambda n, age, typ="msg": {"ts": ui_graph._iso(now - age), "type": typ, "by": "a", "to": "b", "_t": now - age, "_n": n,
+                                 "_off": n, "_key": "s/a.jsonl", "_sid": "s", "_writer_file": "a"}
+b.tail.files["s/a.jsonl"] = {"off": 0, "n": 4, "events": [mk(0, 90000), mk(1, 7200), mk(2, 60, "state"), mk(3, 30)]}
+r = b._replay(now)
+assert [e["seq"] for e in r["events"]] == [1, 2] and r["dropped"] == 0, r
+assert r["events"][0]["ts"] < r["events"][1]["ts"] and r["from"] < r["to"], r
+old = ui_graph.REPLAY_MAX
+ui_graph.REPLAY_MAX = 1
+try:
+    r = b._replay(now)
+    assert len(r["events"]) == 1 and r["dropped"] == 1 and r["events"][0]["ts"] == mk(3, 30)["ts"], r
+finally:
+    ui_graph.REPLAY_MAX = old
+PY2
+# a local standalone Claude card reports its session: working, a question, idle, stopped; done once when a turn ends
+python3 - "$SHOALD" <<'PY2' || fail "standalone card reports"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import health, ui_app, ui_status, ui_view
+rows = lambda st: [{"sessionId": "abcd1234-0000", "id": "abcd1234", "pid": 0 if st == "dead" else 7, "x": st}]
+orig = (ui_status.claude_turn, ui_status.pending_question)
+ui_status.claude_turn = lambda r: r["x"] if r.get("pid") else "dead"
+ui_status.pending_question = lambda r, s: r.get("x") == "blocked"
+try:
+    sr = lambda st: ui_app.standalone_report(rows(st), "abcd1234-0000", "abcd1234", "seat")
+    assert sr("working")["state"] == "working" and sr("idle")["state"] == "idle" and sr("dead")["msg"] == "stopped"
+    b = sr("blocked")
+    assert b["state"] == "blocked" and b["kind"] == "question" and b["msg"] == "waits at a question" and b["title"] == "standalone/seat", b
+    assert ui_app.standalone_report([], "abcd1234-0000", "", "seat") is None, "a failed listing says nothing"
+    # the card: a turn it saw end is the `done`, once; an attach clears it
+    seq = iter(["working", "idle", "idle", "working", "idle"])
+    ui_status.claude_rows = lambda: rows(next(seq))
+    seat = ui_view._SeatReport(ui_app, "seat")
+    got = [seat.text("abcd1234-0000", "abcd1234") for _ in range(3)]
+    assert "state=working" in got[0] and "state=done" in got[1] and got[2] == "", got
+    assert "state=working" in seat.text("abcd1234-0000", "abcd1234")
+    seat.looked()
+    assert "state=idle" in seat.text("abcd1234-0000", "abcd1234"), "seen after an attach: no done"
+finally:
+    ui_status.claude_turn, ui_status.pending_question = orig
+PY2
 # a card says `done` once when its role finishes an item and rests; anything newer replaces it, an attach clears it
 python3 - "$SHOALD" <<'PY2' || fail "the one-shot done report"
 import sys

@@ -38,6 +38,8 @@ for _p in (PKG, HERE):
 
 STRIP_PREFIXES = ("HERDR_", "ZELLIJ")
 CARD_REFRESH_S = 15
+# a standalone card that reports its session: each refresh lists `claude agents` (about 0.4 s of CPU), so half a role card's rate
+SEAT_REFRESH_S = 30
 # measured 2026-10-12 under a pty: Ctrl+Z ends `claude attach` (exit 0) and Ctrl+C ends the opencode
 # client; the session keeps running either way, and the card comes back
 DETACH_HINT = "back: ctrl+z (claude), ctrl+c (opencode), q/esc (Muse live view); native Muse: /exit"
@@ -719,7 +721,7 @@ def _mark(ui_app, key: str, value: str) -> None:
 
 
 @contextlib.contextmanager
-def _report_during(sid: str, slug: str, ui_app):
+def _report_during(sid: str, slug: str, ui_app, make=None):
     """Keep the role's status current on the agents list through an attach. The card's loop waits on the attach, and a pane
     can stay attached for hours, so a role's last report froze there: `blocked` long after the answer (measured 2026-11-06:
     three of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
@@ -733,13 +735,16 @@ def _report_during(sid: str, slug: str, ui_app):
     stop = threading.Event()
     _mark_attached(ui_app, "1")
 
+    def role_osc() -> str | None:
+        rows: list = []
+        card(sid, slug, False, rows)
+        return ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows and rows[0].get("ecosystem") == "claude" else None
+
     def report() -> None:
         last = None
         while True:
             try:
-                rows: list = []
-                card(sid, slug, False, rows)
-                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows and rows[0].get("ecosystem") == "claude" else None
+                osc = (make or role_osc)()
                 if osc and osc != last:
                     sys.stdout.write(osc)
                     sys.stdout.flush()
@@ -818,7 +823,8 @@ def follow_successor(entry: dict, succ: dict) -> str:
     return f"followed /bg successor {succ['id']} (was {orig[:8]})" if ok else ""
 
 
-def standalone_tick(harness: str, session: str, label: str, job: str = "", pick: int = 0) -> dict:
+def standalone_tick(harness: str, session: str, label: str, job: str = "", pick: int = 0,
+                    listed: tuple[float, list] | None = None) -> dict:
     """One refresh of a local standalone Claude card: resolve_standalone on its saved entry, then act on it. A listed
     session refreshes the entry's `seen_utc` (at most every SEEN_REFRESH_S); a unique successor is followed; with
     `pick` (a digit the operator pressed) the numbered candidate of a `pick` decision is followed. Never stops,
@@ -828,8 +834,9 @@ def standalone_tick(harness: str, session: str, label: str, job: str = "", pick:
         return {"action": "none", "successors": [], "message": ""}
     import ui_herdr
     import ui_status
-    t0 = time.time()  # before the listing: a job started after this cannot be missing from it
-    d = resolve_standalone(ui_status.claude_rows(), entry, entries, claude_jobs_dir())
+    # `listed`: (when it was taken, rows), a listing this tick already holds
+    t0, rows = listed if listed is not None else (time.time(), None)  # t0 before the listing: a job started after it cannot be missing
+    d = resolve_standalone(ui_status.claude_rows() if rows is None else rows, entry, entries, claude_jobs_dir())
     if d["action"] == "attach" or (d["action"] == "refuse" and d["row"] is not None):
         if (_epoch(entry.get("seen_utc")) or 0) < t0 - SEEN_REFRESH_S:
             ui_herdr.update_standalone(entry, {"seen_utc": _iso(t0)})
@@ -843,25 +850,66 @@ def standalone_tick(harness: str, session: str, label: str, job: str = "", pick:
 
 
 def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
-    while True:
-        try:
-            return _standalone_loop(harness, session, label, host, job)
-        except KeyboardInterrupt:  # as for a role's card: `q` leaves
-            pass
+    try:
+        import ui_app
+        report = ui_app.in_core_terminal() and harness == "claude" and not host  # only a local Claude session can be read
+    except Exception:  # noqa: BLE001 - the app adapter can never take a card down
+        ui_app, report = None, False
+    try:
+        while True:
+            try:
+                return _standalone_loop(harness, session, label, host, job, ui_app if report else None)
+            except KeyboardInterrupt:  # as for a role's card: `q` leaves
+                pass
+    finally:
+        if report:
+            sys.stdout.write(ui_app.OSC_CLEAR)
+            sys.stdout.flush()
 
 
-def _standalone_loop(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
+class _SeatReport:
+    """A local standalone Claude card's reports to the app: its session's state each refresh, `done` once when a turn the
+    card saw running has ended, and the same through an attach (the Claude client reports nothing itself)."""
+
+    def __init__(self, ui_app, label: str):
+        self.ui_app, self.label = ui_app, label
+        self.latch = ui_app.DoneLatch()
+        self.prev, self.ended, self.sent = None, "", None
+
+    def text(self, session: str, job: str, rows: list | None = None) -> str:
+        import ui_status
+        rep = self.ui_app.standalone_report(ui_status.claude_rows() if rows is None else rows, session, job, self.label)
+        if rep is None:
+            return ""
+        if self.prev == "working" and rep["state"] == "idle":
+            self.ended = _iso(time.time())
+        self.prev = rep["state"]
+        osc = self.ui_app.standalone_text(rep, self.label, self.latch, self.ended, self.sent)
+        self.sent = osc or self.sent
+        return osc
+
+    def looked(self) -> None:
+        self.latch.looked()
+        self.prev = None
+
+
+def _standalone_loop(harness: str, session: str, label: str, host: str = "", job: str = "", ui_app=None) -> int:
+    """`ui_app`: the adapter when this card reports its session to the Herdr app, else None."""
     import ui_term
     watch = ui_term.CodeWatch()
     notice, pick = "", 0
+    seat = _SeatReport(ui_app, label) if ui_app is not None else None
     while True:
         watch.check()
         d = {"action": "none", "message": ""}
+        listed = None
         if not host:
             session, job = registry_follow(harness, session, label, job)
         if not host and harness == "claude":
             try:
-                d = standalone_tick(harness, session, label, job, pick)
+                import ui_status
+                listed = (time.time(), ui_status.claude_rows())  # once a tick: the /bg check and the report share it
+                d = standalone_tick(harness, session, label, job, pick, listed)
             except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
                 d = {"action": "none", "message": f"/bg successor check unavailable ({exc})"}
             if d["action"] == "followed":
@@ -905,18 +953,29 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
         hint = (DETACH_HINT if harness not in ("muse", "codex") else
                 f"this card hosts the {harness.capitalize()} client itself: quit {harness} to come back here; the "
                 "session is saved on disk and [enter] resumes it (a name that does not exist yet starts a new session)")
+        osc = ""
+        if seat is not None:
+            try:
+                osc = seat.text(session, job, listed[1] if listed else None)
+            except Exception:  # noqa: BLE001 - a report never breaks the card
+                pass
         sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
                          + (f"\x1b[32m{notice}\x1b[0m\n" if notice else "")
                          + (f"\x1b[33m{d['message']}\x1b[0m\n" if d.get("message") else "")
-                         + f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n")
+                         + f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n" + osc)
         sys.stdout.flush()
-        k = _getkey(300)
+        # a card that reports refreshes far more often: its 5 minutes was too slow for a live state
+        k = _getkey(SEAT_REFRESH_S if seat is not None else 300)
         if k in ("q", "Q"):
             return 0
         if k in ("\r", "\n"):
             flush_input()
-            run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
-                           + (["--job", job] if job else []))
+            s, j = session, job
+            with _report_during("", "", ui_app, make=lambda: seat.text(s, j)) if seat is not None else contextlib.nullcontext():
+                run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
+                               + (["--job", job] if job else []))
+            if seat is not None:
+                seat.looked()
             time.sleep(2)
 
 

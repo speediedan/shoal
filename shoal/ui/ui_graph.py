@@ -45,6 +45,7 @@ RECENT_S = 3600
 DAY_S = 86400
 WEEK_S = 7 * DAY_S
 EVENTS_MAX = 200
+REPLAY_MAX = 4000  # the replay's events: the newest of a day, the rest counted as `dropped`
 FEED_INTERVAL_S = 5.0
 ROWS_MAX_AGE_S = ui_status.CACHE_MAX_AGE_S  # a role row built here is reused this long (no re-probe per tick)
 RATE_HALF_LIFE_S = 3600.0
@@ -525,7 +526,7 @@ class GraphBuilder:
         return rows
 
     # -- one document
-    def build(self, since: str = "", now: float | None = None) -> dict:
+    def build(self, since: str = "", now: float | None = None, replay: bool = False) -> dict:
         from ledger import Ledger, View
         from roles import ShoalSpec
         now = time.time() if now is None else float(now)
@@ -798,6 +799,8 @@ class GraphBuilder:
                "events": tail_events["events"]}
         if tail_events.get("cursor_reset"):
             doc["cursor_reset"] = True
+        if replay:
+            doc["replay"] = self._replay(now)
         return doc
 
     def _event_doc(self, e: dict, seq: int) -> dict:
@@ -809,6 +812,16 @@ class GraphBuilder:
         if e.get("url"):
             d["url"] = e["url"]
         return d
+
+    def _replay(self, now: float) -> dict:
+        """The last day's tail events in `ts` order, for the lattice's replay: numbered on their own from 1 (the live
+        cursor is untouched), the newest REPLAY_MAX kept."""
+        day = [e for st in self.tail.files.values() for e in st["events"]
+               if tail_event(e) and e.get("_t") is not None and now - DAY_S <= e["_t"] <= now]
+        day.sort(key=lambda e: (e["_t"], e.get("by", ""), e["_n"]))
+        keep = day[-REPLAY_MAX:]
+        return {"from": _iso(now - DAY_S), "to": _iso(now), "dropped": len(day) - len(keep),
+                "events": [self._event_doc(e, i + 1) for i, e in enumerate(keep)]}
 
     def _tail(self, since: str) -> dict:
         """The events section and the next cursor. Without `since`: the last N tail events this
@@ -870,8 +883,8 @@ def blocker_role(blocker: str, slugs: set[str]) -> str:
 
 
 def build(ids: list[str] | None = None, root: str = "", since: str = "", max_events: int = EVENTS_MAX,
-          rate_s: float = RATE_WINDOW_S, now: float | None = None) -> dict:
-    return GraphBuilder(ids, root, rate_s, max_events).build(since, now)
+          rate_s: float = RATE_WINDOW_S, now: float | None = None, replay: bool = False) -> dict:
+    return GraphBuilder(ids, root, rate_s, max_events).build(since, now, replay)
 
 
 # ---- output ---------------------------------------------------------------------------------
@@ -935,7 +948,7 @@ def add_args(p) -> None:
 
 
 def cmd_graph(a) -> int:
-    doc = build(a.ids or None, a.ledger_root, a.since, a.events, a.window_rate)
+    doc = build(a.ids or None, a.ledger_root, a.since, a.events, a.window_rate, replay=getattr(a, "replay", False))
     print(json.dumps(doc, indent=1, default=str) if a.json else render_text(doc))
     return 0 if not any(s.get("error") for s in doc["shoals"]) else 1
 

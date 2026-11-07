@@ -1017,7 +1017,8 @@ and the contract are in [`ui.md`](ui.md).
   click reaches a node, then an item, then an edge, then the middle of a shoal's circle, which is the shoal's status (the
   feed's writer node is not drawn). A right-click on a role opens `shoal-actions` on it; on a shoal's circle or
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
-  off the picture (shared `lattice.hidden`, restored from the rail). The rail warns when the feed's ledger
+  off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
+  packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click. The rail warns when the feed's ledger
   clone is over an hour old, because the feed never pulls.
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
@@ -1083,8 +1084,8 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 ### Herdr app adapter (`shoal ui app-*`)
 
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
-machine's herdr-core. Its `shoal` layout is Herdr's own `main` with three blocks swapped: `shoal-agents` and
-`shoal-spaces` are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
+machine's herdr-core. Its `shoal` layout is Herdr's own `main` with four blocks swapped: `shoal-agents`,
+`shoal-spaces` and `shoal-chrome` (the window's mark: SHOAL and its icon, a file the copy carries) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
@@ -1097,7 +1098,8 @@ is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_T
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
 feeder push; a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
-`done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. `ui app-start` starts the app as a user
+`done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A local standalone
+Claude card reports its session too (`standalone_report` over `claude agents`; `done` when a turn it saw has ended). `ui app-start` starts the app as a user
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
 its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit, installs the mods
 into the app's home, and sets the 0.9.3 paste keys, the actions key and the `shoal-ocean` theme where the
