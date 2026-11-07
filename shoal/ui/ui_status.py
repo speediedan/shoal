@@ -324,6 +324,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "mail_since_boundary": len(mail),
         "asks": [_short(a, 160) for a in asks],
         "says": _short(words, 160),
+        "wait_done": (not remote and posture == "wait" and sub in CI_SUBS and job_ended(st.get("target") or "", slug, spec.sid)),
         "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
@@ -606,8 +607,20 @@ CI_SUBS = ("local-ci", "remote-ci")
 
 def working_wait(r: dict) -> bool:
     """The role waits on something running for it (a job, a CI build), not on the maintainer, even
-    when it also has a question out."""
-    return r.get("posture") == "wait" and r.get("sub") in CI_SUBS
+    when it also has a question out. A job that has ended is not running: the role has yet to take it up."""
+    return r.get("posture") == "wait" and r.get("sub") in CI_SUBS and not r.get("wait_done")
+
+
+def job_ended(target: str, slug: str, sid: str) -> bool:
+    """True when a `job:` wait target has finished, the same check health's `wait-resolved` makes, and local. Other kinds
+    take the network or a provider, so a status read leaves them to health."""
+    if not str(target or "").startswith("job:"):
+        return False
+    try:
+        import providers
+        return providers.resolve(target, slug, sid)[0] is False
+    except Exception:  # noqa: BLE001 - a read model never fails on an advisory
+        return False
 
 
 def posture_label(r: dict) -> str:
