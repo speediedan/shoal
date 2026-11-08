@@ -159,6 +159,8 @@ export S=<id> SPEC=<path to the group's spec>
                                                   # a fresh session from its start doc, on its own host
     shoal remove-role --spec <spec> --only <role> [--force] [--dry-run]    # out for good; the ledger keeps its history
     shoal set-fill --spec <spec> --only <role> --fill self|assigned|none [--note N] [--no-wake] [--dry-run]   # no restart
+    shoal queue-order --shoal <id> --to <role> --next a,b,c [--note N] [--dry-run]   # the role applies and acks it
+    shoal transfer --shoal <id> --item <repo#n> --to <role> [--prio N] [--note N] [--dry-run]   # a held item via its holder
     shoal remove-session --session <label> [--force] [--dry-run]           # a saved standalone session, out for good
     ```
 

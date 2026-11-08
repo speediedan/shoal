@@ -371,6 +371,13 @@ def cmd_next(a) -> int:
                 _ctx.mark_advised(spec, me)
     except Exception:  # noqa: BLE001 - an advisory never breaks `next`
         pass
+    # the maintainer's queue order comes first: it changes what the role does next (a request, chased by unacked-work)
+    for o in view.queue_orders(slug):
+        if o["status"] == "pending":
+            out.append(f"QUEUE-ORDER {o['id']} from the maintainer: next={','.join(o['order']) or '(none)'}, in that "
+                       f"order; keep your active item" + (f" ({o['note']})" if o["note"] else "")
+                       + f". Apply it now: `queue --shoal {spec.sid} --slug {slug} --next '{','.join(o['order'])}'`, "
+                       f"then `msg --kind ack --to user --re {o['id']} --text applied`")
     # MAIL prints right after the identity and offline lines: a `next` piped through `head` must still
     # show it, because this call marks it read (measured 2026-09-24: a lane's piped `next` consumed a
     # maintainer rules update unseen). Maintainer mail prints in full; peer mail is shortened.

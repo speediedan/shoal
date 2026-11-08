@@ -130,15 +130,29 @@ generation holds it.
   `release --kind lost-race`.
 - **Declines are data.** `release --kind decline --reason .. --retry <condition>`; the item never
   re-surfaces to that role.
-- **Handoffs.** `release --kind handoff --to <role>` turns the holder's claim into an implicit
-  offer to that role. It is the only way a role gives another role work.
+- **Handoffs.** `release --kind handoff --to <role> [--prio N]` turns the holder's claim into an
+  implicit offer to that role. It is the only way a role gives another role work.
+- **Withdrawals never end a claim.** `withdraw` takes back an open or claimed offer; a claim on it
+  stays live until its holder releases it, and the holder's watcher wakes it with `WITHDRAWN`.
+- **Transfers.** `shoal transfer --item X --to <role>` moves an item between roles. An item that is
+  only offered moves at once (its offers withdrawn, a new offer to the target). A held item moves
+  through its holder: a woken `request` asks it to hand the item off, and a `system` event
+  `transfer` (`item from to prio req note`) records it. `View.transfers()` reads each one as
+  `pending`, `done` (the handoff to the target landed), `failed` (released another way) or
+  `superseded` (a later transfer, or `done`).
 - **Completion is verified against GitHub** by reconcile, never taken from `done` events.
 
 ## 4. The work loop and wakes
 
 **The queue stream.** A role's latest `queue` event (`active`, `next` of up to `next_max`, `asks`,
 `reason`, `posture`) is its queue and its posture. The maintainer influences it with `offer`
-(`--prio`, and `--now` to interrupt a busy role) and `withdraw`.
+(`--prio`, and `--now` to interrupt a busy role) and `withdraw`. shoal never writes a role's
+queue: `shoal queue-order --to <role> --next a,b,c` checks each item (held, offered, or a board item
+for a self-filler; never another role's, done, or the active item) and sends a woken `request`
+carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applies it with its own
+`queue --next` and acks; `View.queue_orders()` reads each order as `pending`, `applied` or
+`superseded`, and a replaced order leaves the `unacked-work` ladder. Both verbs print one
+`REFUSED <item>: <reason>` line per refused item and write nothing when any is refused.
 
 **Two verbs per boundary.**
 
