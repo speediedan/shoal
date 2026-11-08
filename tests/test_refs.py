@@ -2,8 +2,9 @@
 """Hermetic proof of `shoal refs` (shoal/refs.py) on a scratch repository, ledger and standalone registry:
 
 - `--roots` (JSON `v` 1) names every role doc of a live spec, parked roles included, and every standalone entry's doc,
-  never a retired spec's, and says which host it read; with `--all-hosts` it reads each routed host's registry and
-  names a host that does not answer;
+  never a retired spec's, and says which host it read; with `--all-hosts` each routed host answers for itself over
+  its route, and one that cannot (an old shoal, another contract) is named with the reason; a relative standalone
+  doc resolves against the entry's cwd or is reported, never resolved against this process's;
 - a role directory's files are classed root (the start doc, a symlinked spec doc and its target), live (transitively,
   and from a live document outside the directory), history-only, superseded and unreferenced (on both sides of the age
   floor), with `keep:` honoured and the candidates listed;
@@ -145,19 +146,40 @@ import ui_herdr  # noqa: E402
 assert ui_herdr.load_standalone is standalone.load_standalone and ui_herdr.standalone_path is standalone.standalone_path
 print("standalone registry in core ok")
 
-# --all-hosts: each routed host's registry through its route; a host that does not answer is named, not dropped
-import types  # noqa: E402
-os.environ.update(SHOAL_LEDGER_DIR=ENV["SHOAL_LEDGER_DIR"], XDG_CONFIG_HOME=ENV["XDG_CONFIG_HOME"], SHOAL_SERVER="host-a")
-sys.modules["routes"] = types.SimpleNamespace(
-    routes=lambda: {"host-a": {}, "host-b": {}, "host-c": {}},
-    remote_standalone=lambda s: ([{"label": "far", "session": "s0000002", "doc": "/elsewhere/far_start.md"}], True)
-    if s == "host-b" else ([], False))
-import refs  # noqa: E402
-r = refs.roots(all_hosts=True)
-assert r["hosts"] == ["host-a", "host-b"] and r["unreachable"] == ["host-c"], r
+# --all-hosts: each routed host answers `refs --roots --json` for itself over its route (a stand-in ssh here); a host
+# whose answer is missing or of another contract is named in `unreachable` with the reason, never silently dropped
+STUB = os.path.join(T, "ssh-stub")
+FAR = os.path.join(T, "far.json")
+with open(STUB, "w") as fh:
+    fh.write('#!/bin/sh\ncase "$*" in *c.invalid*) echo "refs: no such command" >&2; exit 2;; '
+             '*d.invalid*) echo \'{"v": 2, "roots": {}}\'; exit 0;; esac\ncat "$STUB_FAR"\n')
+os.chmod(STUB, 0o755)
+json.dump({"v": 1, "hosts": ["host-b"], "roots": {"/elsewhere/far_start.md": [
+    {"kind": "standalone", "label": "far", "host": "host-b"}]}}, open(FAR, "w"))
+with open(os.path.join(T, "host.toml"), "w") as fh:
+    fh.write('[hosts.host-b]\nssh = "u@b.invalid"\n[hosts.host-c]\nssh = "u@c.invalid"\n[hosts.host-d]\nssh = "u@d.invalid"\n')
+ENV.update(SHOAL_CONFIG=os.path.join(T, "host.toml"), SHOAL_SSH=STUB, STUB_FAR=FAR,
+           SHOAL_ROUTE_CACHE=os.path.join(T, "route-cache"))
+rc, r = refs("--roots", "--all-hosts", "--json")
+assert rc == 0 and r["hosts"] == ["host-a", "host-b"], r
 assert r["roots"]["/elsewhere/far_start.md"] == [{"kind": "standalone", "label": "far", "host": "host-b"}], r["roots"]
-assert refs.roots()["hosts"] == ["host-a"], "without --all-hosts only this host is read"
+why = {u["host"]: u["reason"] for u in r["unreachable"]}
+assert set(why) == {"host-c", "host-d"} and "too old" in why["host-c"] and "contract v2" in why["host-d"], why
+rc, r = refs("--roots", "--json")
+assert r["hosts"] == ["host-a"] and "/elsewhere/far_start.md" not in r["roots"], "without --all-hosts only this host"
+rc, out = refs("--roots")
+assert "--all-hosts" in out, out  # the text form says what it did not read
 print("refs --roots --all-hosts ok")
+
+# a relative standalone doc resolves against the entry's cwd, or is reported and left out, never resolved here
+json.dump({"v": 1, "sessions": [{"harness": "claude", "session": "s0000003", "label": "rel", "cwd": LANE, "doc": "kept.md"},
+                                {"harness": "claude", "session": "s0000004", "label": "nocwd", "doc": "orphan.md"}]},
+          open(os.path.join(T, "xdg", "shoal", "ui-standalone.json"), "w"))
+rc, r = refs("--roots", "--json")
+names = {os.path.basename(p) for p in r["roots"]}
+assert "kept.md" in names and "orphan.md" not in names, names
+assert any("'orphan.md'" in n and "nocwd" in n for n in r["notes"]), r["notes"]
+print("relative standalone docs ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_refs OK")

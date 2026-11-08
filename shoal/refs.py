@@ -71,24 +71,32 @@ def _entry_docs(e: dict) -> list[str]:
 
 
 def roots(all_hosts: bool = False) -> dict:
-    """{v, hosts, unreachable, specs_from, roots: {abs path: [who, ...]}}. `who` is a dict: kind `role` (shoal, slug,
-    parked) or kind `standalone` (label, host). The registry is per host, so without `all_hosts` other hosts' standalone
-    seats are not seen; `hosts` says which were."""
+    """{v, hosts, unreachable, specs_from, specs_live, notes, roots: {abs path: [who, ...]}}. `who` is a dict: kind
+    `role` (shoal, slug, parked) or kind `standalone` (label, host). The registry is per host, so without `all_hosts`
+    other hosts' standalone seats are not seen; `hosts` says which were. With it, each routed host answers for itself
+    (`_remote_roots`), and one that cannot is in `unreachable` with the reason."""
     here = config.server()
-    out: dict = {"v": ROOTS_V, "hosts": [here], "unreachable": [], "specs_from": "", "specs_live": 0, "errors": [],
+    out: dict = {"v": ROOTS_V, "hosts": [here], "unreachable": [], "specs_from": "", "specs_live": 0, "notes": [],
                  "roots": {}}
 
     def add(path: str, base: str, who: dict) -> None:
         p = os.path.expanduser(path)
-        p = os.path.normpath(p if os.path.isabs(p) else os.path.join(base or os.getcwd(), p))
-        out["roots"].setdefault(p, []).append(who)
+        if not os.path.isabs(p):
+            if not base:
+                # resolving against this process's cwd would name a file nobody meant: report it instead
+                out["notes"].append(f"relative doc {path!r} of {who_text(who)} has no directory to resolve against")
+                return
+            p = os.path.join(os.path.expanduser(base), p)
+        p = os.path.normpath(p)
+        if who not in out["roots"].setdefault(p, []):
+            out["roots"][p].append(who)
 
     files, out["specs_from"] = _spec_files()
     for f in files:
         try:
             d = json.load(open(f))
         except (OSError, ValueError) as exc:
-            out["errors"].append(f"{f}: {exc}")
+            out["notes"].append(f"unreadable spec {f}: {exc}")
             continue
         if d.get("retired_utc"):
             continue
@@ -98,19 +106,58 @@ def roots(all_hosts: bool = False) -> dict:
             if r.get("doc"):
                 add(r["doc"], d.get("dir", ""), {"kind": "role", "shoal": sid, "slug": r.get("slug", ""),
                                                  "parked": bool(r.get("parked"))})
-    seats = [(e, e.get("host") or here) for e in standalone.load_standalone(raw=True)]
+    for e in standalone.load_standalone(raw=True):
+        for doc in _entry_docs(e):
+            add(doc, e.get("cwd") or "", {"kind": "standalone", "label": e.get("label") or str(e.get("session", ""))[:12],
+                                          "host": e.get("host") or here})
     if all_hosts:
         import routes
         for server in sorted(routes.routes()):
             if server == here:
                 continue
-            got, ok = routes.remote_standalone(server)
-            (out["hosts"] if ok else out["unreachable"]).append(server)
-            seats += [(e, server) for e in got]
-    for e, host in seats:
-        for doc in _entry_docs(e):
-            add(doc, "", {"kind": "standalone", "label": e.get("label") or str(e.get("session", ""))[:12], "host": host})
+            got, why = _remote_roots(server)
+            if got is None:
+                out["unreachable"].append({"host": server, "reason": why})
+                continue
+            out["hosts"] += [h for h in got.get("hosts") or [server] if h not in out["hosts"]]
+            for p, whos in (got.get("roots") or {}).items():
+                for w in whos:
+                    if w not in out["roots"].setdefault(p, []):
+                        out["roots"][p].append(w)
     return out
+
+
+ROOTS_CACHE_S = 120
+
+
+def _remote_roots(server: str) -> tuple[dict | None, str]:
+    """(the routed host's own `refs --roots --json`, "") or (None, why not). Its standalone listing carries no docs,
+    so the host is asked for its roots directly: its registry and its specs, from its own clone. Cached briefly, so a
+    commit hook run in a burst asks once."""
+    import routes
+    r = routes.route(server)
+    if r is None:
+        return None, "no route"
+    key = f"refs-roots-{server}"
+    c = routes._cached(key, ROOTS_CACHE_S)
+    if c is not None and isinstance(c.get("got"), dict):
+        return c["got"], ""
+    try:
+        res = subprocess.run(routes.ssh_argv(r) + [routes.remote_cmd(r, "refs", "--roots", "--json")],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"no answer ({exc.__class__.__name__})"
+    if res.returncode != 0:
+        tail = (res.stderr.strip().splitlines() or [f"exit {res.returncode}"])[-1][:160]
+        return None, f"`refs --roots` failed there ({tail}): unreachable, or a shoal too old to have it"
+    try:
+        got = json.loads(res.stdout)
+    except ValueError:
+        return None, "its answer is not JSON"
+    if not isinstance(got, dict) or got.get("v") != ROOTS_V:
+        return None, f"its answer is contract v{got.get('v') if isinstance(got, dict) else '?'}, this host reads v{ROOTS_V}"
+    routes._store(key, {"got": got})
+    return got, ""
 
 
 def who_text(w: dict) -> str:
@@ -121,8 +168,15 @@ def who_text(w: dict) -> str:
 
 # ---- the repository ----------------------------------------------------------------------
 
+GIT_TIMEOUT_S = 60
+
+
 def _git(repo: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    """A git call that cannot hang its caller (a commit hook among them) on a held lock."""
+    try:
+        r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=GIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git {' '.join(args)}: no answer in {GIT_TIMEOUT_S} s (a held lock?)") from None
     if r.returncode:
         raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()}")
     return r.stdout
@@ -365,12 +419,13 @@ def cmd_refs(a) -> int:
             print(json.dumps(r, indent=1))
             return 0
         print(f"start-doc roots seen from {', '.join(r['hosts'])} (specs from {r['specs_from']})"
-              + (f"; unreachable: {', '.join(r['unreachable'])}" if r["unreachable"] else "")
+              + (f"; unreachable: {', '.join(u['host'] + ' (' + u['reason'] + ')' for u in r['unreachable'])}"
+                 if r["unreachable"] else "")
               + ("" if a.all_hosts else "; other hosts' standalone sessions not read (--all-hosts)"))
         for p, whos in sorted(r["roots"].items()):
             print(f"  {p}  ({'; '.join(who_text(w) for w in whos)})")
-        for e in r["errors"]:
-            print(f"  note: unreadable spec {e}")
+        for n in r["notes"]:
+            print(f"  note: {n}")
         return 0
     docs, directory = list(a.doc or []), a.dir
     if a.slug:

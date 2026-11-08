@@ -24,14 +24,20 @@ No file in the repository holding these docs says that shoal needs them, so a ch
 The JSON form is a versioned contract for such checks:
 
 ```json
-{"v": 1, "hosts": ["<host>"], "unreachable": [], "specs_from": "<ledger clone>", "specs_live": 2, "errors": [],
+{"v": 1, "hosts": ["<host>"], "unreachable": [{"host": "<host>", "reason": "<why>"}], "specs_from": "<ledger clone>",
+ "specs_live": 2, "notes": [],
  "roots": {"<absolute path>": [{"kind": "role", "shoal": "<id>", "slug": "<role>", "parked": false},
                                {"kind": "standalone", "label": "<label>", "host": "<host>"}]}}
 ```
 
 Specs are the same on every host once the ledger syncs, but the standalone registry is per host. Without `--all-hosts` the
-answer covers this host's standalone sessions only, and `hosts` says so. With it, each routed host's registry is read
-through its route (cached), and a host that does not answer is listed in `unreachable`.
+answer covers this host's standalone sessions only, and `hosts` says so. With it, each routed host is asked for its own
+`refs --roots --json` over its route (cached for two minutes), and the answers are merged: each host reports its own
+registry, and its specs from its own clone. A host that cannot answer, or answers in another contract version (a shoal
+too old to have `refs`, for one), is listed in `unreachable` with the reason, never dropped silently.
+
+A relative doc resolves against the spec's `dir` (a role) or the entry's `cwd` (a standalone session). One with neither is
+left out and named in `notes`, rather than resolved against wherever the command happens to run.
 
 ## A role directory
 
