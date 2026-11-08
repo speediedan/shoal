@@ -100,6 +100,7 @@ NEED_LABEL = "shoal.need"
 # how many ledger asks a card's question badge stands for ("" when its question is an open prompt, or none): the agents
 # list's badge opens them in the actions dialog, while a prompt is answered in the session
 ASKS_LABEL = "shoal.asks"
+ASKS_BADGE_LABEL = "shoal.asks-badge"  # "1" when the badge's question is those asks (not an open prompt): its click opens them
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
@@ -168,13 +169,16 @@ def card_report(r: dict, tag: str) -> dict:
         # the badge says a question; the message says which: the asks first, the posture after (it is cut at 200)
         each = max(40, (150 - 10) // len(asks))
         bits.insert(0, f"{len(asks)} ask{'s' if len(asks) > 1 else ''}: " + "; ".join(a[:each].rstrip() + ("…" if len(a) > each else "") for a in asks) + " ·")
-    n_asks = len(asks) if asks and state == "blocked" and kind == "question" and "blocked-on-question" not in reasons else 0
+    # every ask the role has, for the row's right-click; whether they are the badge's question, for its click
+    n_asks = len(asks) if asks and state == "blocked" else 0
+    asks_badge = bool(n_asks) and kind == "question" and "blocked-on-question" not in reasons
     why = [ui_status.ATTENTION.get(x, x) for x in reasons if x not in ("parked", "dormant") and not (says and x == "blocked-says-waiting")]
     if why and state == "blocked":
         bits.append("(" + ", ".join(why)[:80] + ")")
     # the role's own host in the title: the card's machine says only where the card runs (`/` and `@` never occur in a slug)
     where = f"@{r['host']}" if r.get("host") else ""
-    return {"state": state, "kind": kind, "need": need, "asks": n_asks, "title": f"{tag}/{r['slug']}{where}", "msg": " ".join(bits)[:200]}
+    return {"state": state, "kind": kind, "need": need, "asks": n_asks, "asks_badge": asks_badge, "title": f"{tag}/{r['slug']}{where}",
+            "msg": " ".join(bits)[:200]}
 
 
 class DoneLatch:
@@ -1269,12 +1273,13 @@ function shoalDismiss(a, cx) {
   shoalDialog(a, cx, shoalHasAsks(a) ? "asks" : "dismiss");
 }
 
-// A role card's ledger asks behind its badge (the card's shoal.asks label): a click opens them, where a reply goes.
+// A role card's ledger asks (its shoal.asks label): the right-click opens them whenever there are some. The badge's click
+// does only when they are its question (shoal.asks-badge): an open prompt keeps the row's click, which focuses its pane.
 function shoalHasAsks(a) {
   return Number(terminals().find((x) => x.address === a.address)?.labels?.["shoal.asks"] ?? 0) > 0;
 }
 function shoalAsks(a, cx) {
-  if (shoalHasAsks(a)) shoalDialog(a, cx, "asks"); // an open prompt keeps the row's click: focusing its pane
+  if (terminals().find((x) => x.address === a.address)?.labels?.["shoal.asks-badge"] === "1") shoalDialog(a, cx, "asks");
 }
 
 function shoalDialog(a, cx, verb) {

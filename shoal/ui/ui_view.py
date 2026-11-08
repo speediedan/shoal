@@ -632,7 +632,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
-            _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: ""})
+            _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: ""})
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -661,9 +661,9 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
                 osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid), latch, sent)
                 sent = osc or sent
                 rep = ui_app.card_report(rows[0], "")
-                now = (rep.get("need", ""), str(rep.get("asks") or ""))
+                now = (rep.get("need", ""), str(rep.get("asks") or ""), "1" if rep.get("asks_badge") else "")
                 if now != need:
-                    _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1]})
+                    _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1], ui_app.ASKS_BADGE_LABEL: now[2]})
                     need = now
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass

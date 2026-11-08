@@ -414,6 +414,8 @@ def apply(token: str) -> dict:
 
 
 ITEM_RE = r"(?<![\w/#])((?:[A-Za-z0-9][\w.-]*/)?[A-Za-z0-9][\w.-]*)?#(\d+)\b"
+# a bare #n right after one of these is a build, run or gate number, not an issue: no link for it
+NOT_ISSUE = ("gate", "build", "run", "job", "pipeline", "workflow", "ci", "pr head", "attempt")
 
 
 def ask_links(text: str, active: str, repos: dict) -> list[dict]:
@@ -424,6 +426,8 @@ def ask_links(text: str, active: str, repos: dict) -> list[dict]:
     here = active.split("#", 1)[0] if "#" in active else ""
     out, seen = [], set()
     for m in re.finditer(ITEM_RE, text or ""):
+        if not m.group(1) and re.search(r"\b(" + "|".join(NOT_ISSUE) + r")\s*$", (text or "")[max(0, m.start() - 14):m.start()], re.I):
+            continue
         repo = m.group(1) or here
         if not repo:
             continue

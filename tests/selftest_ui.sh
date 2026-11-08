@@ -2341,11 +2341,13 @@ one = ui_app.card_report(dict(r, asks=["#945: which map?"]), "t")["msg"]
 assert one.startswith("1 ask: #945: which map? ·"), one
 assert not ui_app.card_report(dict(r, asks=[], needs_you=False, can_progress={"ok": True, "reasons": []}), "t")["msg"].startswith("0 ask")
 # the badge's asks: the card says how many (its shoal.asks label); none for an open prompt, which is answered in the session
-assert rep["asks"] == 2 and ui_app.ASKS_LABEL == "shoal.asks"
+assert rep["asks"] == 2 and rep["asks_badge"] and ui_app.ASKS_LABEL == "shoal.asks"
 prompt = dict(r, can_progress={"ok": False, "reasons": ["blocked-on-question", "waiting-on-you"]})
-assert ui_app.card_report(prompt, "t")["asks"] == 0, "an open prompt: the click focuses the pane"
+pr = ui_app.card_report(prompt, "t")
+assert pr["asks"] == 2 and not pr["asks_badge"], "an open prompt beside asks: the badge focuses the pane, the right-click opens the asks"
 helper = ui_app.AGENTS_HELPER
 assert 'shoalDialog(a, cx, shoalHasAsks(a) ? "asks" : "dismiss")' in helper and 'labels?.["shoal.asks"]' in helper
+assert 'labels?.["shoal.asks-badge"] === "1"' in helper, "the badge opens them only when they are its question"
 badge = next(n for o, n in ui_app.CLONES["agents"][1] if o == '.items_center().justify_center().child("!");')
 assert "on_click((_e, cx) => shoalAsks(a, cx))" in badge and ".id(`shoal-badge-" in badge, badge
 # the issues and PRs an ask names: owner/repo#n, repo#n, a bare #n in the active item's repo; web links only, each once
@@ -2354,6 +2356,8 @@ links = ui_actions.ask_links("#945 map it, see acme/other#3 and repo-one#7; agai
 assert [l["text"] for l in links] == ["acme/repo-one#945", "acme/other#3", "repo-one#7"], links
 assert all(l["url"].startswith("https://github.com/") for l in links)
 assert ui_actions.ask_links("no item here, just text", "", {}) == [] and ui_actions.ask_links("#5", "", {}) == [], "no repo: no link"
+assert ui_actions.ask_links("gate #1916 failed; build #1929 passed; run #3; see #945", "acme/repo-one#927:fix", {})[0]["text"] == "acme/repo-one#945" \
+    and len(ui_actions.ask_links("gate #1916 failed; build #1929 passed; run #3; see #945", "acme/repo-one#927:fix", {})) == 1, "build numbers are not issues"
 assert ui_actions.ask_links("see lonely#4", "", {}) == [] or ui_graph.item_url("lonely#4", {}), "an owner it cannot name: no link"
 PY2
 # a dead watcher the role's next work re-arms is dormant: working on its job, not blocked; a dead watcher that matters
