@@ -178,6 +178,17 @@
       "confirm": true,
       "token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "expires_s": 600
+    },
+    "fill": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "fill",
+      "command": "shoal set-fill --spec <spec> --only <role> --fill self",
+      "preview": "[dry-run] <role>: fill assigned -> self; save the spec, record role-fill, wake it with: <message>",
+      "cost": "wakes <role> once to tell it (a turn); it takes work from the board from now",
+      "confirm": true,
+      "token": "dddddddddddddddddddddddddddddddd",
+      "expires_s": 600
     }
   },
   "result": {

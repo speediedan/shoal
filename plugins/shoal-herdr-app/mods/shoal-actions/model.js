@@ -50,6 +50,7 @@ export const VERBS = [
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
   { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
+  { verb: "fill", label: "Fill", kind: "write", role: "one", fields: ["fillTo", "note"], about: "where this role's work comes from: the board (self) or your offers (assigned)" },
   { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", fields: ["undo"], about: "clear this role's needs-you until something new is raised; it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
   { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
@@ -94,6 +95,7 @@ export const FIELDS = {
   slug: { key: "slug", kind: "text", label: "Role name", placeholder: "its slug: a-z, 0-9 and -", required: true },
   title: { key: "title", kind: "text", label: "Title", placeholder: "what the role is for", required: true },
   doc: { key: "doc", kind: "text", label: "Start doc", placeholder: "its plan_state.md on the shoal's home host (## Mission, ## Current state, grants-needed)", required: true },
+  fillTo: { key: "fill", kind: "choice", label: "Its work comes from", options: ["self", "assigned"], required: true },
   starter: { key: "starter", kind: "toggle", label: "Write a starter doc from guidance", hint: "a plan_state.md at the path above, from what you type below; never over an existing file" },
   guidance: { key: "guidance", kind: "text", label: "Guidance (its mission)", placeholder: "what the role is for and delivers, in a sentence or two", required: true },
   nextSteps: { key: "nextSteps", kind: "text", label: "First steps", placeholder: "separated by ; (the doc adds taking work and keeping it current)" },
@@ -277,6 +279,9 @@ export function planArgv(verb, target, form = null) {
       argv.push("--undo");
     } else if ((verb === "remove-role" || verb === "remove-session") && v.force) {
       argv.push("--force");
+    } else if (verb === "fill") {
+      argv.push(`--fill=${v.fill}`);
+      if (text("note")) argv.push(`--note=${text("note")}`);
     } else if (verb === "add-role") {
       argv.push(`--slug=${text("slug")}`, `--title=${text("title")}`, `--doc=${text("doc")}`, `--ecosystem=${v.ecosystem}`);
       for (const k of ["model", "effort", "host"]) if (text(k)) argv.push(`--${k}=${text(k)}`);

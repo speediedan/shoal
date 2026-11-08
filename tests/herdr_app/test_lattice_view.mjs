@@ -89,10 +89,12 @@ test("needs-you ordering: auth > ask/prompt > design > assign > stalls", () => {
   assert.deepEqual(global.needsYou.map((r) => r.id), [`${A}:integration`, `${A}:tune`, `${A}:registry`]);
   const mk = (id, cls, event, since) => ({ id, kind: "role", state: { class: cls, event, since_s: since } });
   const rows = M.needsYouList([
-    mk("stall", "unknown", "", 9999), mk("design", "wait", "user-design", 10), mk("assign", "wait", "assignment", 50),
+    mk("stall", "unknown", "", 9999), mk("design", "wait", "user-design", 10), { ...mk("assign", "wait", "assignment", 50), state: { class: "wait", event: "assignment", since_s: 50, needs_you: true } },
+    mk("quiet", "wait", "assignment", 60),
     mk("ask", "wait", "user-ask", 5), mk("prompt", "wait", "user-prompt", 500), mk("auth", "wait", "user-auth", 1), mk("busy", "work", "turn", 1),
   ]);
-  assert.deepEqual(rows.map((r) => r.id), ["auth", "prompt", "ask", "design", "assign", "stall"]);
+  assert.deepEqual(rows.map((r) => r.id), ["auth", "prompt", "ask", "design", "assign", "stall"],
+    "an empty queue needs you only when its status row says so (one rule with the agents list)");
 });
 
 test("edge bucketing by color x tier (and cross-host dash)", () => {
@@ -680,7 +682,7 @@ test("edge cards: hit test, card lines, focus and signature", () => {
   const c = M.cardLines(vm, id);
   assert.equal(c.title, "core → dist-ci");
   assert.equal(c.subtitle, "msg");
-  assert.deepEqual(c.rows[0][1], "2 / 4 / 18");
+  assert.deepEqual(c.rows[0], ["1h / 24h", "4 / 18"], "the rate window is no longer quoted: 1 h / 24 h");
   assert.deepEqual(c.links.map((l) => l.url), ["https://github.com/example-org/repo-one/pull/103", null], "newest first, a url only when the event has one");
   assert.ok(c.links[0].text.endsWith("PR 103 rebased; please rerun the GPU leg"), c.links[0].text);
   assert.equal(c.command, null);
@@ -1043,10 +1045,10 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
   assert.ok(finiteDeep([...pl.pos.values()]) && finiteDeep(pl.sats) && pl.clusters.every((c) => c.ry === 1), "global: spheres, circles at any tilt");
   assert.ok(pl.grid.length === 22 && finiteDeep(pl.grid), "a floor grid, ten lines each way plus the edges");
   assert.ok(pl.stems.some((s) => s.id === "n-user") && pl.stems.every((s) => s.y1 >= s.y0 - 1e-9), "stems drop to the floor, the operator's too");
-  assert.ok([...pl.fogOf.values()].every((f) => f >= 0.55 * 0.55 - 1e-9 && f <= 1 + 1e-9), "far fades; round the back of a sphere, more");
+  assert.ok([...pl.fogOf.values()].every((f) => f >= 0.55 * 0.3 - 1e-9 && f <= 1 + 1e-9), "far fades; round the back of a sphere, more");
   assert.equal(pl.order.length, global.nodes.length);
   for (let i = 1; i < pl.clusters.length; i++) assert.ok(pl.clusters[i - 1].depth <= pl.clusters[i].depth, "far to near");
-  assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.62 - 1e-9 && s <= 1.45 + 1e-9));
+  assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.55 * 0.66 - 1e-9 && s <= 1.6 * 1.28 + 1e-9));
   assert.ok(Math.max(...pl.scaleOf.values()) / Math.min(...pl.scaleOf.values()) > 1.15, "perspective: sizes differ visibly with depth");
   // per shoal: each host's band on its own plane
   const la = L.layoutGraph(alpha);
@@ -1091,3 +1093,34 @@ test("a change on a board redraws the rail", () => {
 });
 
 console.log(`lattice-view: ${n} tests passed`);
+
+test("2026-11-08: replay speeds, rates per 24 h, the edge card's 1 h / 24 h", () => {
+  const rm = R.replayModel({ replay: { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z", events: [] } });
+  assert.equal(R.REPLAY_DAY_S, 32, "three times faster than 96 s");
+  assert.equal(R.replayAdvance(rm) * (1000 / R.REPLAY_TICK_MS) * 32, 86400);
+  assert.equal(R.replayAdvance(rm, 3.2) / R.replayAdvance(rm, 32), 10, "a picked speed");
+  assert.deepEqual(R.REPLAY_SPEEDS.map((s) => s.day_s), [96, 32, 11, 3.2]);
+  const e = global.edges.find((x) => x.n_24h > 0) ?? global.edges[0];
+  const card = M.cardLines(global, e.id);
+  assert.deepEqual(card.rows[0], ["1h / 24h", `${e.n_1h} / ${e.n_24h}`]);
+  assert.ok(!card.rows.some(([k]) => k === "rate"));
+  assert.ok(M.hostSummaries(global).every((h) => typeof h.msgs24 === "number"));
+  assert.ok(M.shoalCardLines(global, A).rows.some(([k]) => k === "msgs 1h / 24h"));
+});
+
+test("2026-11-08: spheres that pop (a limb, a hot spot), front larger than back", () => {
+  const cam = D.camera("iso");
+  const pl = D.projectLayout(global, L.layoutGraph(global), cam);
+  const sc = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity() });
+  assert.ok(sc.items.some((it) => it.id.startsWith("sphere-limb-")) && sc.items.some((it) => it.id.startsWith("sphere-spec-")));
+  const ranked = global.nodes.filter((n) => n.kind === "role" && n.shoal === A)
+    .sort((a, b) => { const x = D.sphereRank(a), y = D.sphereRank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || (a.id < b.id ? -1 : 1); });
+  assert.ok(pl.scaleOf.get(ranked[0].id) > pl.scaleOf.get(ranked.at(-1).id) * 1.2, "the front of a sphere is clearly larger than its back");
+});
+
+test("2026-11-08: a renamed standalone seat's Remove uses its saved label", () => {
+  const d = structuredClone(doc);
+  d.nodes.push({ id: "ext:old-label", kind: "external", label: "new-name", seat: "old-label", saved: true, alias_of: null, state: { class: "unknown" } });
+  const vm = M.buildModel(d, "global");
+  assert.equal(M.removeOverlay(vm, "ext:old-label").props.session, "old-label");
+});

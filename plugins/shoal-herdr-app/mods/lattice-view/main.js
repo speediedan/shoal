@@ -41,7 +41,7 @@ import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, fitScene, fitText, headerText } from "./scene.js";
 import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
-import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS } from "./replay.js";
+import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS, REPLAY_SPEEDS, REPLAY_DAY_S } from "./replay.js";
 import { camera, projectLayout, nextDepth, depthFor, YAW_STEP } from "./depth.js";
 
 const MOD = "lattice-view";
@@ -340,7 +340,7 @@ export default class Lattice extends View {
   /** `r`: fetch the day's events (the feed's `--replay`, on the machine the feed reads) and start playing them. */
   startReplay(cx) {
     if (this.replay) return this.stopReplay();
-    this.replay = { rm: null, t: 0, playing: false, timer: null, note: "loading the last 24 h..." };
+    this.replay = { rm: null, t: 0, playing: false, timer: null, note: "loading the last 24 h...", dayS: this.replayDayS ?? REPLAY_DAY_S };
     cx.spawn(async (cx) => {
       let doc = null;
       try {
@@ -380,7 +380,7 @@ export default class Lattice extends View {
     rp.timer = cx.timer.every(REPLAY_TICK_MS, (cx) => {
       const r = this.replay;
       if (!r?.rm) return;
-      const t1 = Math.min(r.rm.to, r.t + replayAdvance(r.rm));
+      const t1 = Math.min(r.rm.to, r.t + replayAdvance(r.rm, r.dayS));
       const step = replayStep(r.rm, r.t, t1);
       r.t = t1;
       if (step.events.length) this.spawnPackets(step.events, cx, true);
@@ -393,6 +393,19 @@ export default class Lattice extends View {
     if (!this.replay?.rm) return;
     this.replay.t = binStart(this.replay.rm, i);
     if (!this.replay.playing) this.playReplay(cx, true);
+  }
+
+  /** A replay's speed, kept for the next one too. */
+  replaySpeed(dayS) {
+    this.replayDayS = dayS;
+    if (this.replay) this.replay.dayS = dayS;
+  }
+
+  stepReplaySpeed(d) {
+    const cur = this.replay?.dayS ?? this.replayDayS ?? REPLAY_DAY_S;
+    const i = REPLAY_SPEEDS.findIndex((s) => Math.abs(s.day_s - cur) < 0.01);
+    const j = Math.max(0, Math.min(REPLAY_SPEEDS.length - 1, (i < 0 ? 1 : i) + d));
+    this.replaySpeed(REPLAY_SPEEDS[j].day_s);
   }
 
   stopReplay() {
@@ -550,6 +563,7 @@ export default class Lattice extends View {
     else if (k === "d") this.setDepth(nextDepth(this.depth), cx);
     else if ((k === "," || k === ".") && this.depth !== "flat") { this.yawTurn += k === "," ? -YAW_STEP : YAW_STEP; this.setDepth(this.depth, cx); }
     else if (k === "space" && this.replay?.rm) this.playReplay(cx, !this.replay.playing);
+    else if ((k === "[" || k === "]") && this.replay) this.stepReplaySpeed(k === "]" ? 1 : -1);
     else if (k === "=" || k === "+" || k === "shift-=") { this.tf = zoomAt(this.tf, center, 1.2); this.autoFit = false; }
     else if (k === "-") { this.tf = zoomAt(this.tf, center, 1 / 1.2); this.autoFit = false; }
     else if (k === "left" || k === "right" || k === "up" || k === "down") {
@@ -575,7 +589,10 @@ export default class Lattice extends View {
     if (!p) return;
     const hole = hitHole(this.discs, p);
     const named = this.boardUrl(hitTitle(this.discs, p)) ? hitTitle(this.discs, p) : null;
-    const id = hitNode(this.hits, p, 4) ?? hitNode(this.satHits, p, 2) ?? (named ? BOARD_CARD + named : null) ?? hitEdge(this.edgeHits, p)
+    // the pointer on the card shown keeps it: its links (each queued or done item) can then be clicked
+    const b = this.cardBox;
+    if (b && this.hover && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return;
+    const id = hitNode(this.hits, p, 4) ?? hitNode(this.satHits, p, 5) ?? (named ? BOARD_CARD + named : null) ?? hitEdge(this.edgeHits, p)
       ?? (hole ? SHOAL_CARD + hole : null);
     if (id !== this.hover) {
       this.hover = id;
@@ -593,7 +610,7 @@ export default class Lattice extends View {
     }
     const p = e.local_position ?? { x: press.lx, y: press.ly };
     const id = hitNode(this.hits, p, 4);
-    const sat = id ? null : hitNode(this.satHits, p, 2);
+    const sat = id ? null : hitNode(this.satHits, p, 5);
     const board = id || sat ? null : this.boardUrl(hitTitle(this.discs, p));
     if (id) this.pinned = this.pinned === id ? null : id;
     else if (sat) {
@@ -747,6 +764,7 @@ export default class Lattice extends View {
     // an edge with nothing left in the day leaves the feed: a pin on it must not block the hover's card
     const cardId = screenOf(this.pinned) ? this.pinned : this.hover;
     const cardAt = screenOf(cardId);
+    this.cardBox = null;
     if (cardAt) canvas.child(this.renderCard(cardId, cardAt, size, cardId === this.pinned));
     if (this.error) {
       canvas.child(div().absolute().left(16).bottom(12).px(8).py(4).rounded(6).bg(withAlpha(P.red, 0.16))
@@ -770,6 +788,14 @@ export default class Lattice extends View {
       .child(div().font_semibold().text_color(P.ink).child("REPLAY"))
       .child(div().text_color(P.steel2).child(rm ? `${clock(rp.t)} · last 24 h · ${rm.events.length} events${rm.dropped ? ` (+${rm.dropped} older not drawn)` : ""}` : rp.note ?? ""));
     if (rm) head.child(btn("replay-play", rp.playing ? "❚❚" : "▶", "play or pause (space)", (cx) => this.playReplay(cx, !rp.playing)));
+    if (rm) {
+      // the speed: a whole day in 96, 32 (the default), 11 or 3.2 seconds; [ and ] step it
+      for (const [i, sp] of REPLAY_SPEEDS.entries()) {
+        const on = Math.abs((rp.dayS ?? REPLAY_DAY_S) - sp.day_s) < 0.01;
+        head.child(div().id(`replay-speed-${i}`).px(5).rounded(4).cursor_pointer().text_color(on ? P.void : P.ink).bg(on ? P.teal : withAlpha(P.steel1, 0.25))
+          .tooltip(`a day in ${sp.day_s} s`).on_click((_e, cx) => { this.replaySpeed(sp.day_s); cx.notify(); }).child(sp.label));
+      }
+    }
     head.child(btn("replay-live", "live ✕", "back to live (r or esc)", () => this.stopReplay()));
     if (rm && rp.note) head.child(div().text_color(P.amber).child(rp.note));
     bar.child(head);
@@ -839,6 +865,7 @@ export default class Lattice extends View {
     const links = c.links.length > room ? c.links.slice(0, Math.max(0, room - 1)) : c.links;
     const more = c.links.length - links.length;
     const box = placeCard(at, size, W, EXTRA + (fixed + links.length + (more ? 1 : 0)) * LINE);
+    this.cardBox = box; // where the card is, so a pointer reaching it keeps it
     const color = c.color ?? P.ink;
     const line = (key, text, color2) => {
       const short = fit(text);
@@ -864,7 +891,7 @@ export default class Lattice extends View {
     c.list.forEach((text, i) => card.child(line(`card-ask-${i}`, text, P.magenta)));
     links.forEach((l, i) => {
       const color2 = l.stale ? P.red : l.kind === "active" ? P.teal : l.kind === "next" ? P.ink : P.dim;
-      if (pinned && l.url) {
+      if (l.url) { // a link on a hovered card too: the card stays while the pointer is on it
         const short = fit(l.text);
         card.child(div().id(`card-item-${i}`).when(short !== l.text, (el) => el.tooltip(l.text))
           .child(Link.new(`card-link-${i}`).href(l.url).text_color(color2).child(short)));
@@ -981,7 +1008,7 @@ export default class Lattice extends View {
           .when(s.needsYou > 0, (el) => el.child(div().px(5).rounded(7).bg(P.magenta).text_color("#0b0b10").font_bold().text_size(9.5).child(String(s.needsYou)))))
         .child(h_flex().gap(10).text_color(P.dim)
           .child(div().child(`done ${s.done24}/24h ${s.done7}/7d`))
-          .child(div().child(`${s.msgsPerH} msg/h`)))
+          .child(div().child(`${s.msgs24} msg/24h`)))
         .child(h_flex().gap(8).items_center()
           .when(share != null, (el) => el
             .child(div().w(80).h(4).rounded(2).bg(withAlpha(P.steel1, 0.6)).child(div().h(4).rounded(2).bg(P.teal).w(Math.round(80 * clamp(share, 0, 1)))))
@@ -999,7 +1026,7 @@ export default class Lattice extends View {
       rail.child(v_flex().gap(1).px(6)
         .child(h_flex().gap(7).items_center().child(dot(h.color, 8)).child(div().font_semibold().text_color(h.color).child(`${h.name}${h.home ? " ⌂" : ""}`))
           .child(div().flex_1()).child(div().text_color(P.dim).child(`${h.roles} roles`)))
-        .child(div().pl(15).text_color(P.dim).child(`work ${h.working} · wait ${h.waiting}${h.needsYou ? ` · you ${h.needsYou}` : ""} · ${h.msgsPerH}/h${h.jobsIn ? ` · CI in ${h.jobsIn}` : ""}`)));
+        .child(div().pl(15).text_color(P.dim).child(`work ${h.working} · wait ${h.waiting}${h.needsYou ? ` · you ${h.needsYou}` : ""} · ${h.msgs24}/24h${h.jobsIn ? ` · CI in ${h.jobsIn}` : ""}`)));
     }
     if (vm.hiddenN > 0) {
       rail.child(div().id("show-hidden").px(6).cursor_pointer().text_color(P.dim).hover((st) => st.text_color(P.ink))
@@ -1075,7 +1102,7 @@ export default class Lattice extends View {
         .child(lead(this.pulseDot(s.urgentColor, 9, animate && s.needsYou > 0)))
         .child(div().w(18).flex_none().text_color(s.needsYou ? P.magenta : faint).font_bold().child(s.needsYou ? String(s.needsYou) : "·"))
         .child(div().w(84).flex_none().truncate().text_color(s.tint).child(s.short))
-        .child(div().w(44).flex_none().text_color(dim).child(`${s.msgsPerH}/h`))));
+        .child(div().w(52).flex_none().text_color(dim).child(`${s.msgs24}/24h`))));
     }
     if (pm.needs.length) {
       col.child(vertical ? div().mx(10).my(3).h(1).bg(rule) : div().my(4).mx(2).w(1).bg(rule));

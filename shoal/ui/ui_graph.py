@@ -168,6 +168,10 @@ def decode_cursor(c: str) -> tuple[dict[str, int], int] | None:
 
 # ---- node ids, item URLs, edge classes ------------------------------------------------------
 
+# a saved Claude seat whose session was renamed writes under its new name: {that name: the seat's label}, per build
+EXT_ALIAS: dict[str, str] = {}
+
+
 def node_id(sid: str, name: str, roles: set[str]) -> str:
     """Writer or target name to node id: `user`, `<shoal>:shoal` (also the retired wake relay's
     writer, folded into the system node), `<shoal>:*` (a broadcast target, not a node), `ext:<slug>`,
@@ -182,7 +186,7 @@ def node_id(sid: str, name: str, roles: set[str]) -> str:
     if name == "*":
         return f"{sid}:*"
     if name.startswith("ext:") or name.startswith("ext-"):
-        return "ext:" + name[4:]
+        return "ext:" + EXT_ALIAS.get(name[4:], name[4:])
     return f"{sid}:{name}"
 
 
@@ -509,6 +513,25 @@ class GraphBuilder:
         d = ui_status.read_cache()
         return {s["id"]: s for s in (d or {}).get("shoals", []) if s.get("id") and not s.get("error")}
 
+    def _alias_seats(self, now: float) -> None:
+        """EXT_ALIAS for this build: each saved Claude seat whose session's own name (claude agents) is not its label, so
+        what that session writes under its new name lands on the seat's node (2026-11-08: a seat saved as `shoal` and
+        renamed `shoal-role-lifecycle` was two nodes). A name another seat holds is left alone."""
+        import ui_herdr
+        EXT_ALIAS.clear()
+        try:
+            saved = [e for e in ui_herdr.load_standalone(raw=True) if not e.get("host") and e.get("harness") == "claude"]
+        except Exception:  # noqa: BLE001 - the registry is a convenience here
+            return
+        labels = {str(e.get("label") or str(e.get("session"))[:12]) for e in saved}
+        rows = self._harness_rows(now)
+        for e in saved:
+            row = ui_status.claude_session(rows, str(e.get("session") or ""), str(e.get("job") or "")) or {}
+            name = str(row.get("name") or "")
+            label = str(e.get("label") or str(e.get("session"))[:12])
+            if name and name != label and name not in labels:
+                EXT_ALIAS[name] = label
+
     def _harness_rows(self, now: float) -> list[dict]:
         if self._harness is None or now - self._harness[0] > ROWS_MAX_AGE_S:
             self._harness = (now, ui_status.claude_rows())
@@ -530,6 +553,7 @@ class GraphBuilder:
         from ledger import Ledger, View
         from roles import ShoalSpec
         now = time.time() if now is None else float(now)
+        self._alias_seats(now)
         this_host = config.server()
         cached = self._cached_shoals()
         specs, new_events = [], []
@@ -613,6 +637,9 @@ class GraphBuilder:
                     m["offers_24h"] += 1
                 elif typ == "msg":
                     m["msgs_24h"] += 1
+                    per[src]["msgs_out_24h"] += 1
+                    if cls != "broadcast":
+                        per[dst]["msgs_in_24h"] += 1
                     if cls == "health" and dst == "user":
                         m["pages_24h"] += 1
                     if age < RECENT_S:
@@ -622,12 +649,12 @@ class GraphBuilder:
                             per[dst]["msgs_in_1h"] += 1
                 for name in (by, str(e.get("to") or "")):
                     if (name.startswith("ext:") or name.startswith("ext-")) and name not in slugs:
-                        ext_seen.setdefault("ext:" + name[4:], set()).add(sid)
+                        ext_seen.setdefault("ext:" + EXT_ALIAS.get(name[4:], name[4:]), set()).add(sid)
                 if dst is not None and cls in EDGE_CLASSES:
                     edge(src, dst, cls, sid).add(t, now, self.rate_s, e)
             for w in self.tail.writers(sid):
                 if w.startswith("ext-") and w not in slugs:
-                    ext_seen.setdefault("ext:" + w[4:], set()).add(sid)
+                    ext_seen.setdefault("ext:" + EXT_ALIAS.get(w[4:], w[4:]), set()).add(sid)
 
             # -- the system writer (the retired wake relay's writer folds into it: node_id)
             nodes[f"{sid}:shoal"] = {"id": f"{sid}:shoal", "kind": "system", "shoal": sid, "label": "shoal", "host": home,
@@ -688,6 +715,7 @@ class GraphBuilder:
                              "next_total": len(nxt)},
                     "metrics": {"done_24h": pr.get("done_24h", 0), "claims_24h": pr.get("claims_24h", 0),
                                 "msgs_out_1h": pr.get("msgs_out_1h", 0), "msgs_in_1h": pr.get("msgs_in_1h", 0),
+                                "msgs_out_24h": pr.get("msgs_out_24h", 0), "msgs_in_24h": pr.get("msgs_in_24h", 0),
                                 "last_write_age_s": row.get("last_write_age_s"),
                                 "heartbeat_age_s": row.get("heartbeat_age_s"), "context_k": row.get("context_k")},
                     "view": row.get("view") or [config.cli(), "view", sid, slug],
@@ -746,6 +774,7 @@ class GraphBuilder:
         saved = {str(e.get("label") or str(e.get("session"))[:12]): e for e in ui_herdr.load_standalone(raw=True) if not e.get("host")}
         for label in saved:  # a saved session is on the picture whether or not it ever wrote to a ledger
             ext_seen.setdefault("ext:" + label, set())
+        renamed = {label: name for name, label in EXT_ALIAS.items()}
         for eid in sorted(ext_seen):
             slug = eid[4:]
             home_of = sorted(s for s, sl in role_slugs.items() if slug in sl and s not in ext_seen[eid])
@@ -759,6 +788,8 @@ class GraphBuilder:
                           "metrics": {"msgs_out_1h": em.get("msgs_out_1h", 0), "msgs_in_1h": em.get("msgs_in_1h", 0)}}
             if slug in saved:
                 nodes[eid]["standalone"] = standalone_doc(saved[slug], self._harness_rows(now))
+                if slug in renamed:  # shown by the session's own name; `seat` keeps the saved label (Remove uses it)
+                    nodes[eid].update(label=renamed[slug], seat=slug)
             if alias:
                 edge(eid, alias, "alias", None, structural=True)
 
@@ -782,6 +813,7 @@ class GraphBuilder:
                 c["waiting"] += n["state"]["class"] == "wait"
                 c["needs_you"] += bool(n["state"]["needs_you"])
                 c["msgs_1h"] += n["metrics"]["msgs_out_1h"]
+                c["msgs_24h"] += n["metrics"].get("msgs_out_24h", 0)
         host_of = {i: n.get("host") for i, n in nodes.items()}
         edocs = []
         for e in sorted(edges.values(), key=lambda e: (e.sid or "", e.src, e.dst, e.cls)):
@@ -793,7 +825,7 @@ class GraphBuilder:
                "cursor": tail_events["cursor"],
                "windows": {"rate_s": int(self.rate_s), "recent_s": RECENT_S, "day_s": DAY_S},
                "hosts": [{"id": f"host:{h}", "name": h, "home": h == this_host,
-                          **{k: hagg[h][k] for k in ("roles", "working", "waiting", "needs_you", "msgs_1h")}}
+                          **{k: hagg[h][k] for k in ("roles", "working", "waiting", "needs_you", "msgs_1h", "msgs_24h")}}
                          for h in sorted(hagg)],
                "shoals": shoals, "nodes": list(nodes.values()), "edges": edocs,
                "events": tail_events["events"]}

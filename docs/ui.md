@@ -634,12 +634,13 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
-  closed. The bar's Lattice button (Ctrl+Alt+L) switches straight to the space's open lattice tab; when it has none,
-  `shoal ui app-lattice` brings a closed one back (or the global one), and
+  closed. A shoal's or a seat's space has no lattice tab of its own any more (one shoal made before is closed, once): the
+  top bar's **Lattice** (Ctrl+Alt+L) opens the global lattice in `SHOAL-home`, drilled into the shoal of the space in view,
+  and `shoal ui app-lattice` does the same from a terminal, and
   `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current.
   Ctrl+Alt+N (or a click on the bar's `need you` count) focuses the next agent that needs you, in the lattice pulse's order:
   a sign-in first, then a question, then a grant, the longest unchanged first; a zoomed view stays zoomed, on it. Each
-  saved standalone session gets a space as well, with its `session` tab and a `lattice` tab on the global view. A standalone space closed in the app stays closed
+  saved standalone session gets a space as well, with its `session` tab. A standalone space closed in the app stays closed
   (`--show <label>` reopens it); this record (`$XDG_STATE_HOME/shoal/app-open.json`) is the app's own, apart
   from the 0.9.3 registry flags. Every host reads every shoal through the shared ledger, so a host plans only
   the shoals whose home it is (`--shoal ID` names one anyway); a role that runs on another host keeps its
@@ -709,9 +710,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   launcher with `Icon=shoal` shows it; a different icon already there is kept once as `.bak-shoal`.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
-  Spaces acts on that host's shoals, the top bar has **Home** and **Lattice** beside Files and Changes (`shoal-tabs`, a
-  patched copy of Herdr's `tabs`; the status bar shows them instead only when that copy is not in the layout), the status
-  bar shows each provider's usage, and the window's mark (top left) is
+  Spaces acts on that host's shoals, the top bar has **Home**, **Lattice** and **Actions** beside Files and Changes
+  (`shoal-tabs`, a patched copy of Herdr's `tabs`; the status bar shows them instead only when that copy is not in the
+  layout), the status bar shows each provider's usage, and the window's mark (top left) is
   SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
   loads no picture through a link).
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal
