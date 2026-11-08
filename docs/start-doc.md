@@ -55,3 +55,4 @@ shoal doc-check <path> --json
 ```
 
 The whole handover, including opt-in handover for standalone sessions and the reset per harness: [`handover.md`](handover.md).
+What names each file in a start doc's directory, before anything there is moved: [`refs.md`](refs.md).

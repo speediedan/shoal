@@ -2288,5 +2288,9 @@ OUT=$(env XDG_CONFIG_HOME="$S/xdg-prune" CLAUDE_CONFIG_DIR="$S/cc-prune" $H prun
 grep -q "== claude: 0 listed, 0 shoal-created" <<<"$OUT" && grep -q "\[dry-run\] total: prune 0" <<<"$OUT" \
   || fail "prune-incarnations dry-run table :: $OUT"
 
+echo "== 38 refs: start-doc roots (parked roles, standalone docs, never a retired spec), a role directory's classes, --check"
+python3 "$TESTD/test_refs.py" || fail "refs (tests/test_refs.py)"
+check "name a directory" $H refs
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
