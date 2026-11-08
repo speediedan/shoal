@@ -510,6 +510,12 @@ class Perms:
 
 # ---- projection --------------------------------------------------------------
 
+def _settle(t: dict, release: dict) -> None:
+    """A pending transfer answered by its holder's release: done when it handed the item to the target, else failed."""
+    ok = release.get("kind") == "handoff" and release.get("to") == t["to"]
+    t.update(status="done" if ok else "failed", release=release)
+
+
 class View:
     """Fold the ledger into queue posture. Invalid events (permission
     violations) are collected in `violations` and otherwise ignored."""
@@ -610,8 +616,7 @@ class View:
                 self.releases.append(e)
                 for t in self._transfers:  # the holder's answer to a `shoal transfer` of this item
                     if t["status"] == "pending" and t["item"] == key and t["from"] == by:
-                        ok = e.get("kind") == "handoff" and e.get("to") == t["to"]
-                        t.update(status="done" if ok else "failed", release=e)
+                        _settle(t, e)
                 if e.get("kind") == "handoff" and e.get("to") and mine:
                     # the holder hands ITS OWN claim to a named role: an implicit offer, so the
                     # recipient can claim it (and is woken if idle); no peer write to a queue
@@ -667,9 +672,17 @@ class View:
                 for t in self._transfers:  # a later transfer of the same item replaces a pending one
                     if t["status"] == "pending" and t["item"] == key:
                         t.update(status="superseded", by_event=e["id"])
-                self._transfers.append({"id": e["id"], "ts": e["ts"], "item": key, "from": e.get("from") or "",
-                                        "to": e.get("to") or "", "prio": e.get("prio"), "req": e.get("req"),
-                                        "note": e.get("note") or "", "status": "pending" if e.get("req") else "done"})
+                t = {"id": e["id"], "ts": e["ts"], "item": key, "from": e.get("from") or "", "to": e.get("to") or "",
+                     "prio": e.get("prio"), "req": e.get("req"), "note": e.get("note") or "",
+                     "status": "pending" if e.get("req") else "done"}
+                self._transfers.append(t)
+                # events of one second fold by writer, so a holder's release in the transfer's own second folds
+                # first (measured 2026-11-08: a fast run left a landed handoff's transfer pending); the transfer
+                # verb checks the holder before it writes, so such a release answers it
+                for r in self.releases:
+                    if t["status"] == "pending" and r["ts"] == t["ts"] and r["by"] == t["from"] \
+                            and item_key(r.get("item", "")) == key:
+                        _settle(t, r)
             elif typ == "system" and e.get("mode"):
                 if by not in OFFER_WRITERS:
                     self._viol(e, f"{by} may not set mode {e.get('mode')}")

@@ -749,6 +749,22 @@ $VIEWPY
 assert v.queue_orders("alpha")[-1]["status"] == "applied", v.queue_orders("alpha")
 PY2
 $H next --shoal t1shoal --slug alpha --peek 2>&1 | grep -q "^QUEUE-ORDER" && fail "an applied order still shows in next"
+# one second's events fold by writer, so a holder's release in the transfer's own second folds first
+python3 - "$SHOALD" "$S/sametick" <<'PY2' || fail "a release in the transfer's own second settles it"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import ledger
+from ledger import Ledger, View
+ledger.iso = lambda dt=None: "2026-11-08T00:00:00Z"
+led = Ledger("sametick", root=sys.argv[2], sync=False)
+os.makedirs(led.ldir, exist_ok=True)
+led.append("alpha", "claim", item="interpretune#9790", _commit=False)
+led.append("user", "system", event="transfer", item="interpretune#9790", to="beta", prio=20, req="rq1",
+           _commit=False, **{"from": "alpha"})
+led.append("alpha", "release", item="interpretune#9790", kind="handoff", to="beta", _commit=False)
+t = View(led, None).transfers()
+assert [x["status"] for x in t] == ["done"], t
+PY2
 echo "queue-order and transfer ok"
 
 echo "== signed grants: sign, verify at read, forged excluded, revoke and expiry"
