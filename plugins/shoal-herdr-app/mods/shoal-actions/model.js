@@ -53,7 +53,8 @@ export const VERBS = [
   { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", fields: ["undo"], about: "clear this role's needs-you until something new is raised; it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
   { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
-  { verb: "add-session", label: "Add session", kind: "write", role: "none", hostLevel: true, fields: ["pick", "label"], about: "save a standalone session (Claude, opencode, Codex, Muse) as a seat and open its space" },
+  { verb: "add-role", label: "New role", kind: "write", role: "none", fields: ["slug", "title", "doc", "starter", "guidance", "nextSteps", "grants", "provider", "model", "effort", "host", "fill"], about: "start a new session as a role of this shoal, from its start doc (or one written for it)" },
+  { verb: "add-session", label: "Add session", kind: "write", role: "none", hostLevel: true, fields: ["label", "pick"], about: "save a standalone session (Claude, opencode, Codex, Muse) as a seat and open its space" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
   { verb: "upgrade", label: "Upgrade preview", kind: "view", role: "none", about: "what an upgrade would roll out (applying stays a CLI step)" },
@@ -85,13 +86,23 @@ export const FIELDS = {
   until: { key: "until", kind: "text", label: "Back at", placeholder: "ISO time with offset; empty for no time" },
   noWake: { key: "noWake", kind: "toggle", label: "Record without waking every role (--no-wake)", hint: "off: every role wakes once to see the change (tokens)" },
   ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
-  model: { key: "model", kind: "text", label: "Model", placeholder: "empty keeps the recorded model, or the new provider's default" },
-  effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty keeps the recorded effort, or the new provider's default" },
+  model: { key: "model", kind: "text", label: "Model", placeholder: "empty: the provider's default (a hand-off keeps the recorded one)" },
+  effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty: the provider's default (a hand-off keeps the recorded one)" },
   undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
+  slug: { key: "slug", kind: "text", label: "Role name", placeholder: "its slug: a-z, 0-9 and -", required: true },
+  title: { key: "title", kind: "text", label: "Title", placeholder: "what the role is for", required: true },
+  doc: { key: "doc", kind: "text", label: "Start doc", placeholder: "its plan_state.md on the shoal's home host (## Mission, ## Current state, grants-needed)", required: true },
+  starter: { key: "starter", kind: "toggle", label: "Write a starter doc from guidance", hint: "a plan_state.md at the path above, from what you type below; never over an existing file" },
+  guidance: { key: "guidance", kind: "text", label: "Guidance (its mission)", placeholder: "what the role is for and delivers, in a sentence or two", required: true },
+  nextSteps: { key: "nextSteps", kind: "text", label: "First steps", placeholder: "separated by ; (the doc adds taking work and keeping it current)" },
+  grants: { key: "grants", kind: "text", label: "Grants it needs", placeholder: "scope and giver, separated by ; (empty: none pending)" },
+  provider: { key: "ecosystem", kind: "choice", label: "Provider", options: ["claude", "codex", "opencode", "muse"], required: true },
+  host: { key: "host", kind: "text", label: "Host", placeholder: "empty: the shoal's home; else a [hosts.*] route name" },
+  fill: { key: "fill", kind: "choice", label: "Work comes from (unpicked: the board, self)", options: ["self", "assigned"] },
   pick: { key: "pick", kind: "sessions", label: "Session (every machine's, roles left out)", required: true },
-  label: { key: "label", kind: "text", label: "Seat name", placeholder: "its space's and card's name", required: true },
+  label: { key: "label", kind: "text", label: "Seat name (filters the list as you type)", placeholder: "type to filter, or pick a session below", required: true },
   removeForce: { key: "force", kind: "toggle", label: "Even if it is running or holds an active item", hint: "stops it first and can cut off work in progress" },
 };
 
@@ -108,7 +119,7 @@ export function nextMorning(now = new Date(), hour = 9) {
 }
 
 /** The verbs that preview unless told not to: permanent, able to cut off work, or waking every role. */
-export const PREVIEW_FIRST = new Set(["freeze", "handoff", "remove-role", "remove-session"]);
+export const PREVIEW_FIRST = new Set(["freeze", "handoff", "remove-role", "remove-session", "add-role"]);
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -138,7 +149,7 @@ export function lastLines(text, n = 18) {
 export function newForm(verb, now = new Date(), prefill = {}) {
   const info = verbInfo(verb);
   if (!info || info.kind !== "write") return null;
-  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "" };
+  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "" };
   values.dryRun = PREVIEW_FIRST.has(verb);
   values.undo = false;
   if (verb === "offline") values.until = nextMorning(now);
@@ -151,7 +162,9 @@ export function newForm(verb, now = new Date(), prefill = {}) {
 export function visibleFields(form) {
   if (!form) return [];
   const info = verbInfo(form.verb);
-  return [...arr(info?.fields).filter((k) => k !== "until" || form.values.state === "on"), "dryRun"].map((k) => FIELDS[k]);
+  const starterOnly = new Set(["guidance", "nextSteps", "grants"]);
+  return [...arr(info?.fields).filter((k) => (k !== "until" || form.values.state === "on") && (!starterOnly.has(k) || form.values.starter)), "dryRun"]
+    .map((k) => FIELDS[k]);
 }
 
 /** The text inputs of a form in Tab order (keys). */
@@ -261,6 +274,15 @@ export function planArgv(verb, target, form = null) {
       argv.push("--undo");
     } else if ((verb === "remove-role" || verb === "remove-session") && v.force) {
       argv.push("--force");
+    } else if (verb === "add-role") {
+      argv.push(`--slug=${text("slug")}`, `--title=${text("title")}`, `--doc=${text("doc")}`, `--ecosystem=${v.ecosystem}`);
+      for (const k of ["model", "effort", "host"]) if (text(k)) argv.push(`--${k}=${text(k)}`);
+      if (strOrNull(v.fill)) argv.push(`--fill=${v.fill}`);
+      if (v.starter) {
+        argv.push("--starter", `--guidance=${text("guidance")}`);
+        if (text("nextSteps")) argv.push(`--next=${text("nextSteps")}`);
+        if (text("grants")) argv.push(`--grants=${text("grants")}`);
+      }
     } else if (verb === "add-session") {
       const s = v.pick;
       argv.push(`--harness=${s.harness}`, `--id=${s.session}`, `--label=${text("label")}`);
@@ -269,6 +291,20 @@ export function planArgv(verb, target, form = null) {
   }
   argv.push("--json");
   return argv;
+}
+
+/**
+ * The candidates the list shows while a name is typed: those whose label, folder, harness or machine holds it (case
+ * aside), labels that start with it first, and the picked one always. No text: all of them.
+ */
+export function filterSessions(rows, text, picked = null) {
+  const q = str(text).trim().toLowerCase();
+  const all = arr(rows);
+  if (!q) return all;
+  const hay = (r) => [r.label, r.cwd, r.harness, r.machine ?? "this computer"].map((x) => str(x).toLowerCase());
+  const hit = all.filter((r) => r.key === picked?.key || hay(r).some((h) => h.includes(q)));
+  const starts = (r) => (str(r.label).toLowerCase().startsWith(q) ? 0 : 1);
+  return hit.map((r, i) => [r, i]).sort((x, y) => starts(x[0]) - starts(y[0]) || x[1] - y[1]).map(([r]) => r);
 }
 
 /** argv for one machine's candidate sessions. */

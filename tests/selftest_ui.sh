@@ -556,6 +556,82 @@ for bad in ({"harness": "nope"}, {"session_id": " "}, {"label": ""}):
     except ui_actions.ActError:
         pass
 assert "add-session" in ui_actions.WRITE_VERBS and "sessions" in ui_actions.VIEW_VERBS
+# New role: add-role from the dialog, checked before its plan (name, provider, commas, a start doc that briefs)
+import os, tempfile
+spec = types.SimpleNamespace(sid="sh-1", role=lambda s: object() if s == "core" else None)
+ui_actions._spec = lambda sid: spec
+import roles
+roles.find_spec = lambda sid, explicit="": "/specs/sh-1/shoal.json"
+d = tempfile.mkdtemp()
+good = os.path.join(d, "plan_state.md")
+open(good, "w").write("# lifecycle: plan_state\n\n## Mission\nx\n\n## Current state\ny\n\n## grants-needed\nnone\n")
+r = lambda **k: types.SimpleNamespace(**{"shoal": "sh-1", "role": "", "slug": "lifecycle", "title": "role lifecycle", "doc": good,
+                                         "ecosystem": "claude", "model": "", "effort": "high", "host": "", "fill": "", **k})
+args, cost, confirm = ui_actions.build("add-role", r())
+assert args == ["add-role", "--spec", "/specs/sh-1/shoal.json", f"--role=lifecycle,claude,role lifecycle,{good},effort=high"] and confirm, args
+assert "first turn" in cost
+ra = ui_actions.build("add-role", r(host="lane-b", fill="assigned"))
+assert ra[0][-1].endswith(",effort=high,server=lane-b,fill=assigned") and "lane-b's checkout" in ra[1], ra
+for bad, why in (({"slug": "Core!"}, "slug"), ({"slug": "core"}, "already a role"), ({"ecosystem": ""}, "provider"),
+                 ({"title": "a, b"}, "comma"), ({"doc": os.path.join(d, "nope.md")}, "MISSING"), ({"fill": "x"}, "fill")):
+    try:
+        ui_actions.build("add-role", r(**bad))
+        raise SystemExit(f"accepted {bad}")
+    except ui_actions.ActError as exc:
+        assert why in str(exc), (bad, exc)
+open(good, "w").write("# notes\n")
+try:
+    ui_actions.build("add-role", r())
+    raise SystemExit("a doc that would not brief was accepted")
+except ui_actions.ActError as exc:
+    assert "INCOMPLETE" in str(exc), exc
+# the starter doc: New role writes one from guidance (doc-init), then adds the role; never over an existing file
+import startdoc, contextlib, io
+text = startdoc.starter("lifecycle", "Own the lifecycle verbs.\n\nKeep their docs honest.", "sh-1", "role lifecycle",
+                        "read docs/handover.md; list the open issues", "push to branches (maintainer)", "Runs on claude.")
+sd = os.path.join(d, "new", "plan_state.md")
+os.makedirs(os.path.dirname(sd))
+open(sd, "w").write(text)
+assert startdoc.check(sd)["ok"], startdoc.check(sd)
+import cli as _cli
+assert not _cli._doc_problem(_cli.parse_role(f"lifecycle,claude,t,{sd}"), True) and not _cli._doc_problem(_cli.parse_role(f"lifecycle,claude,t,{sd}"), False), "it briefs"
+assert "2. read docs/handover.md" in text and "- push to branches (maintainer)" in text and "## Mission\n\nOwn the lifecycle verbs." in text
+assert "- None pending" in startdoc.starter("x", "m"), "no grants named: none pending"
+na = lambda **k: types.SimpleNamespace(**{"path": sd, "role": "lifecycle", "mission": "m", "sid": "", "title": "", "next": "", "grants": "",
+                                          "about": "", "force": False, "dry_run": False, **k})
+with contextlib.redirect_stdout(io.StringIO()) as out:
+    assert startdoc.cmd_doc_init(na()) == 1, "an existing file is refused"
+assert open(sd).read() == text and "refused" in out.getvalue()
+with contextlib.redirect_stdout(io.StringIO()):
+    assert startdoc.cmd_doc_init(na(path=os.path.join(d, "x.txt"))) == 2, "a start doc is a .md file"
+    assert startdoc.cmd_doc_init(na(path=os.path.join(d, "no", "such", "plan_state.md"))) == 2, "a typo makes no tree"
+fresh = os.path.join(d, "fresh", "plan_state.md")
+with contextlib.redirect_stdout(io.StringIO()):
+    assert startdoc.cmd_doc_init(na(path=fresh, dry_run=True)) == 0 and not os.path.exists(fresh), "a dry run writes nothing"
+    assert startdoc.cmd_doc_init(na(path=fresh)) == 0 and startdoc.check(fresh)["ok"]
+# the plan: doc-init first, then add-role, previewed both, stopping at a failure
+starter = r(doc=os.path.join(d, "later", "plan_state.md"), starter=True, guidance="own the lifecycle verbs", next_steps="a; b", grants="")
+assert ui_actions.build("add-role", starter)[0][0] == "add-role", "a starter skips the doc check: the doc comes first"
+pre = ui_actions.pre_steps("add-role", starter)
+assert pre and pre[0][:2] == ["doc-init", os.path.join(d, "later", "plan_state.md")] and "--mission=own the lifecycle verbs" in pre[0], pre
+assert ui_actions.pre_steps("add-role", r()) == [], "no starter: nothing before"
+for bad, why in (({"guidance": ""}, "guidance"), ({"doc": sd}, "exists"), ({"host": "lane-b"}, "write and commit the doc first")):
+    try:
+        ui_actions.build("add-role", r(**{"starter": True, "guidance": "g", **bad}))
+        raise SystemExit(f"accepted {bad}")
+    except ui_actions.ActError as exc:
+        assert why in str(exc), (bad, exc)
+ran = []
+ui_actions._shoal = lambda args, timeout=120: (ran.append(args) or types.SimpleNamespace(returncode=0, stdout="ok", stderr=""))
+ui_actions._sweep = lambda: None
+p = ui_actions.plan("add-role", starter)
+assert [x[0] for x in ran] == ["doc-init", "add-role"] and all(x[-1] == "--dry-run" for x in ran), ran
+assert p["command"].splitlines()[0].startswith("shoal doc-init") and p["command"].splitlines()[1].startswith("shoal add-role"), p["command"]
+codes = iter([3, 0])
+ui_actions._stream = lambda args, log, timeout=120: (next(codes), f"{args[0]} out")
+ui_herdr.log_action = lambda args, code: None
+res = ui_actions.apply(p["token"])
+assert res["rc"] == 3 and "stopped: `doc-init` failed" in res["output"] and "add-role out" not in res["output"], res
 # a name another session's seat holds is refused (pick --save would replace that seat); the same session again is fine
 ui_herdr.load_standalone = lambda raw=False: [{"harness": "codex", "session": "other-9", "label": "notes"},
                                              {"harness": "claude", "session": "far-1", "label": "notes", "host": "lane-b"}]

@@ -1037,8 +1037,8 @@ and the contract are in [`ui.md`](ui.md).
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
   off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
   packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click.
-  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent plane stacked in depth
-  under a tilted camera (tilt, iso; `,` and `.` turn it), the operator and outside seats on a plane above; the layout
+  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent slab stacked in depth
+  under a tilted camera seen in perspective (tilt, iso; `,` and `.` turn it), over a floor grid with stems and shadows, the operator and outside seats on a plane above; the layout
   is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
   stays flat. The rail warns when the feed's ledger
   clone is over an hour old, because the feed never pulls.
@@ -1132,7 +1132,8 @@ launch --list --json [--summary]` gives the host list the app's home screen read
 types into a pane or writes the ledger; herdr 0.9.3 is untouched.
 
 `shoal/ui/ui_actions.py` (`ui act-plan`, `ui act-apply`) is the palette without a terminal, for the app's
-actions dialog. Its `sessions` view and `add-session` verb add a standalone seat from the app: every machine's
+actions dialog. Its `add-role` verb starts a new role from the app (`shoal add-role`, its start doc checked before the
+plan, or first written from guidance by `shoal doc-init`, the plan then stopping at a failed step), and its `sessions` view and `add-session` verb add a standalone seat: every machine's
 candidates, saved by `ui pick --save` on the session's own machine, then opened with `ui app-open --show`. A write verb's plan builds the palette's argv, runs its `--dry-run`, names the wake cost, and
 stores the argv under a one-time token (0600, runtime dir, ten minutes); apply runs only a stored argv, once,
 and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own.

@@ -28,7 +28,7 @@ import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
-  verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions,
+  verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -36,7 +36,7 @@ const PROGRESS_MS = 1000;
 const PROGRESS_BYTES = 8000;
 // Flipped to true only in a scratch copy, to look at every screen with no props (mod.open).
 const FIXTURE_DEFAULT = false;
-const TEXT_KEYS = ["text", "item", "note", "until", "model", "effort", "label"];
+const TEXT_KEYS = ["text", "item", "note", "until", "model", "effort", "label", "slug", "title", "doc", "host", "guidance", "nextSteps", "grants"];
 
 const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
 
@@ -632,9 +632,12 @@ export default class Actions extends View {
             .when(Boolean(f.hint), (el) => el.child(div().text_size(11).text_color(c.dim).child(f.hint)))));
       } else if (f.kind === "sessions") {
         const list = v_flex().id("f-sessions").gap(2).max_h(196).overflow_y_scrollbar();
+        // the seat name filters the list as it is typed; the picked one stays in it
+        const shown = filterSessions(this.sessions, this.form.values.label, v);
         if (!this.sessions) list.child(div().px(8).text_size(11.5).text_color(c.dim).child("reading the sessions on every machine…"));
         else if (!this.sessions.length) list.child(div().px(8).text_size(11.5).text_color(c.dim).child("no standalone sessions found (roles are left out)"));
-        for (const s of this.sessions ?? []) {
+        else if (!shown.length) list.child(div().px(8).text_size(11.5).text_color(c.dim).child(`no session matches "${str(this.form.values.label).trim()}": clear the name to see all ${this.sessions.length}`));
+        for (const s of shown) {
           const on = v?.key === s.key;
           list.child(h_flex().id(`s-${s.key}`).gap(8).px(8).py(4).rounded(6).cursor_pointer().items_center().flex_none()
             .bg(on ? withAlpha(c.accent, 0.2) : c.panel).hover((st) => st.bg(on ? withAlpha(c.accent, 0.26) : c.hover))
@@ -645,7 +648,8 @@ export default class Actions extends View {
             .child(div().w(92).flex_none().truncate().text_size(11).text_color(c.dim).child(s.machine ?? "this computer"))
             .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(c.dim).child(s.cwd)));
         }
-        col.child(v_flex().gap(5).child(this.label(f.label, c)).child(list));
+        const count = this.sessions && shown.length !== this.sessions.length ? ` · ${shown.length} of ${this.sessions.length} match the name` : "";
+        col.child(v_flex().gap(5).child(this.label(f.label + count, c)).child(list));
         if (this.sessionsNote) col.child(div().text_size(11).text_color(c.amber).child(this.sessionsNote));
       } else if (f.kind === "choice") {
         const row = h_flex().gap(6).items_center();

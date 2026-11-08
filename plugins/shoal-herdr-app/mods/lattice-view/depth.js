@@ -1,34 +1,46 @@
 // depth.js: the lattice's depth mode (P3b), pure (no Herdr imports, so it tests under Node). GPUI has no 3D, but every
 // position is the mod's own: each node gets a plane (its shoal in the global view, its host per shoal; the operator and
-// outside seats on a plane above), and the layout is projected before the scene draws it. A camera turns the plane
-// (yaw) and tilts it back (pitch), so a circle on a plane is an ellipse whose height is cos(pitch) of its width.
+// outside seats on a plane above), and the layout is projected before the scene draws it. A camera turns the planes
+// (yaw), tilts them back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon
+// and near ones grow. The scene adds what makes it read as space: slab rims, a floor grid, stems from each plane and from
+// the operator down to the floor with their shadows, and fog on what is far.
 
 const DEG = Math.PI / 180;
 
 /** The camera presets `d` cycles through; flat is the 2D view, untouched. */
 export const CAMERAS = {
   flat: null,
-  tilt: { pitch: 38 * DEG, yaw: 0 },
-  iso: { pitch: 54.7 * DEG, yaw: 45 * DEG },
+  tilt: { pitch: 52 * DEG, yaw: 0 },
+  iso: { pitch: 58 * DEG, yaw: 45 * DEG },
 };
 export const DEPTH_CYCLE = ["flat", "tilt", "iso"];
-export const PLANE_GAP = 110; // world units between planes, before the tilt
+export const PLANE_GAP = 190; // world units between planes, before the tilt
 export const YAW_STEP = 15 * DEG;
-const NEAR = 1.15, FAR = 0.8; // a node's size from the far plane to the near one
+const DIST = 2.6; // the camera's distance, in layout radii: smaller is stronger perspective
+const SCALE_MIN = 0.62, SCALE_MAX = 1.45; // what perspective may do to a size
+const FLOOR_BELOW = 0.55; // the floor, below the lowest plane, in plane gaps
+const GRID = 10; // floor grid lines each way
 
 /** The camera for a preset and a yaw turned on top of it (`,` and `.`), or null for flat. */
 export function camera(name, yawTurn = 0) {
   const c = CAMERAS[name];
   if (!c) return null;
   const yaw = c.yaw + yawTurn;
-  return { name, pitch: c.pitch, yaw, c: Math.cos(c.pitch), s: Math.sin(c.pitch), cyaw: Math.cos(yaw), syaw: Math.sin(yaw) };
+  return { name, pitch: c.pitch, yaw, c: Math.cos(c.pitch), s: Math.sin(c.pitch), cyaw: Math.cos(yaw), syaw: Math.sin(yaw), d: 0, o: { x: 0, y: 0 } };
 }
 
-/** A plane point (x, y) at height z, seen through `cam`: its place in the layout's 2D space, and its depth (larger is nearer). */
+/**
+ * A plane point (x, y) at height z, seen through `cam`: its place in the layout's 2D space, its depth (larger is nearer)
+ * and `f`, the perspective scale there. With `cam.d` 0 (no distance set) the view is orthographic, `f` 1.
+ */
 export function project(cam, p, z = 0) {
-  const xr = p.x * cam.cyaw - p.y * cam.syaw;
-  const yr = p.x * cam.syaw + p.y * cam.cyaw;
-  return { x: xr, y: yr * cam.c - z * cam.s, depth: yr * cam.s + z * cam.c };
+  const x = p.x - cam.o.x, y = p.y - cam.o.y;
+  const xr = x * cam.cyaw - y * cam.syaw;
+  const yr = x * cam.syaw + y * cam.cyaw;
+  const sy = yr * cam.c - z * cam.s;
+  const depth = yr * cam.s + z * cam.c;
+  const f = cam.d > 0 ? Math.min(SCALE_MAX, Math.max(SCALE_MIN, cam.d / Math.max(cam.d * 0.2, cam.d - depth))) : 1;
+  return { x: cam.o.x + xr * f, y: cam.o.y + sy * f, depth, f };
 }
 
 /**
@@ -55,49 +67,86 @@ export function planesOf(vm, lay) {
 }
 
 /**
- * The layout as the camera sees it: every position projected, clusters and bands carrying their projected centers and
- * the vertical squash `ry` (cos(pitch)) and the yaw their angles turn by, drawn far to near; `scaleOf` (a node's size
- * from the far plane to the near) and `order` (vm.nodes far to near) for the scene. Flat (no camera): the layout as is.
+ * The layout as the camera sees it: every position projected in perspective about the layout's middle; clusters and
+ * bands with their projected centers, their perspective scale `s` and vertical squash `ry`, drawn far to near; and for
+ * the scene `scaleOf` (a node's size), `fogOf` (how much of it shows: far fades), `order` (vm.nodes far to near),
+ * `grid` (floor lines), `stems` (plane centers and lifted nodes down to the floor, with a shadow). Flat: the layout as is.
  */
-export function projectLayout(vm, lay, cam) {
-  if (!cam || !lay) return lay;
+export function projectLayout(vm, lay, cam0) {
+  if (!cam0 || !lay) return lay;
   const { zOf, planes } = planesOf(vm, lay);
   const z = (id) => zOf.get(id) ?? 0;
-  const pos = new Map();
-  const depth = new Map();
+  const pts = [...lay.pos.values()];
+  const o = pts.length ? { x: pts.reduce((t, p) => t + p.x, 0) / pts.length, y: pts.reduce((t, p) => t + p.y, 0) / pts.length } : { x: 0, y: 0 };
+  const radius = Math.max(200, ...pts.map((p) => Math.hypot(p.x - o.x, p.y - o.y)), ...(lay.clusters ?? []).map((c) => Math.hypot(c.x - o.x, c.y - o.y) + c.r));
+  const top = planes.at(-1).z;
+  // the eye looks at the middle of the stack, from DIST radii away
+  const cam = { ...cam0, o, d: DIST * Math.max(radius, top) };
+  const mid = top / 2;
+  const P = (p, zz) => project(cam, p, zz - mid);
+  const pos = new Map(), depth = new Map(), scaleOf = new Map();
   for (const [id, p] of lay.pos) {
-    const q = project(cam, p, z(id));
+    const q = P(p, z(id));
     pos.set(id, { x: q.x, y: q.y });
     depth.set(id, q.depth);
+    scaleOf.set(id, q.f);
   }
   const ds = [...depth.values()];
   const d0 = Math.min(...ds), d1 = Math.max(...ds);
-  const scaleOf = new Map([...depth].map(([id, d]) => [id, d1 > d0 ? FAR + ((d - d0) / (d1 - d0)) * (NEAR - FAR) : 1]));
+  const fogOf = new Map([...depth].map(([id, d]) => [id, d1 > d0 ? 0.55 + 0.45 * ((d - d0) / (d1 - d0)) : 1]));
   const sats = (lay.sats ?? []).map((s) => {
-    const a = project(cam, { x: s.x, y: s.y }, z(s.owner)), b = project(cam, { x: s.ax, y: s.ay }, z(s.owner));
+    const a = P({ x: s.x, y: s.y }, z(s.owner)), b = P({ x: s.ax, y: s.ay }, z(s.owner));
     return { ...s, x: a.x, y: a.y, ax: b.x, ay: b.y };
   });
   const planeZ = new Map(planes.map((p) => [p.id, p.z]));
   const clusters = (lay.clusters ?? []).map((c) => {
     const zc = vm.global ? planeZ.get(c.id) ?? 0 : 0;
-    const q = project(cam, c, zc);
-    return { ...c, x: q.x, y: q.y, ry: cam.c, depth: q.depth };
+    const q = P(c, zc);
+    return { ...c, x: q.x, y: q.y, r: c.r * q.f, ry: cam.c, s: q.f, depth: q.depth, zw: zc };
   }).sort((a, b) => a.depth - b.depth);
+  const regionFog = (xs) => {
+    const lo = Math.min(...xs.map((x) => x.depth)), hi = Math.max(...xs.map((x) => x.depth));
+    for (const x of xs) x.fog = hi > lo ? 0.5 + 0.5 * ((x.depth - lo) / (hi - lo)) : 1;
+    return xs;
+  };
+  regionFog(clusters);
+  const center = vm.global ? null : { x: 0, y: 0 };
   const bands = (lay.bands ?? []).map((b) => {
-    const q = project(cam, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0);
-    return { ...b, cx: q.x, cy: q.y, ry: cam.c, a0: b.a0 + cam.yaw, a1: b.a1 + cam.yaw, depth: q.depth };
+    const q = P(center ?? { x: 0, y: 0 }, planeZ.get(b.host) ?? 0);
+    return { ...b, cx: q.x, cy: q.y, ry: cam.c, s: q.f, a0: b.a0 + cam.yaw, a1: b.a1 + cam.yaw, depth: q.depth };
   }).sort((a, b) => a.depth - b.depth);
+  regionFog(bands);
   const anchors = new Map([...(lay.anchors ?? new Map())].map(([h, a]) => {
-    const q = project(cam, a, planeZ.get(h) ?? 0);
+    const q = P(a, planeZ.get(h) ?? 0);
     return [h, { ...a, x: q.x, y: q.y }];
   }));
   const tethers = (lay.tethers ?? []).map((t) => ({
     ...t,
     from: pos.get(t.id) ?? t.from,
-    to: t.to ? (() => { const q = project(cam, t.to, planeZ.get(t.host) ?? 0); return { x: q.x, y: q.y }; })() : null,
+    to: t.to ? (() => { const q = P(t.to, planeZ.get(t.host) ?? 0); return { x: q.x, y: q.y }; })() : null,
   }));
+  // the floor: a grid below the lowest plane, its lines converging with distance
+  const floorZ = -FLOOR_BELOW * PLANE_GAP;
+  const R = radius * 1.15;
+  const grid = [];
+  for (let i = 0; i <= GRID; i++) {
+    const t = -R + (2 * R * i) / GRID;
+    for (const [a, b] of [[{ x: o.x + t, y: o.y - R }, { x: o.x + t, y: o.y + R }], [{ x: o.x - R, y: o.y + t }, { x: o.x + R, y: o.y + t }]]) {
+      const p = P(a, floorZ), q = P(b, floorZ);
+      grid.push({ x0: p.x, y0: p.y, x1: q.x, y1: q.y, edge: i === 0 || i === GRID });
+    }
+  }
+  // stems: each plane's middle (per shoal: the band ring's), and every lifted node, down to the floor, with a shadow there
+  const stems = [];
+  const stem = (id, p, zz, r) => {
+    const a = P(p, zz), b = P(p, floorZ);
+    stems.push({ id, x0: a.x, y0: a.y, x1: b.x, y1: b.y, r: r * b.f, ry: r * b.f * cam.c });
+  };
+  if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * 0.35);
+  else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
+  for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, order, planes };
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, order, planes, grid, stems };
 }
 
 /** The next preset in the cycle. */

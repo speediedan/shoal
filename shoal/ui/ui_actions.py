@@ -38,7 +38,8 @@ for _p in (PKG, HERE):
 V = 1
 PLAN_TTL_S = 600
 WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session", "dismiss",
-               "add-session")
+               "add-session", "add-role")
+SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions")
 SESSION_KEYS = ("harness", "session", "label", "state", "cwd", "job", "model", "effort")
@@ -178,6 +179,54 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError(f"{a.role or '(none)'} is not a role of {sid}")
         return (["remove-role", "--spec", roles.find_spec(sid), "--only", a.role] + (["--force"] if a.force else []),
                 "permanent: stops its session and removes it from the shoal and its harness's list; the ledger keeps its history", True)
+    if verb == "add-role":
+        # a new session as a role of this shoal, from its start doc: `add-role` briefs and launches it (on its host)
+        import re
+        import backends
+        import roles
+        import cli as _cli
+        slug, title = (a.slug or "").strip(), (a.title or "").strip()
+        doc = os.path.abspath(os.path.expanduser((a.doc or "").strip())) if (a.doc or "").strip() else ""
+        if not re.match(SLUG_RE, slug):
+            raise ActError("the role's name (slug) is 2 to 48 of a-z, 0-9 and -, starting with a letter or digit")
+        if spec.role(slug) is not None:
+            raise ActError(f"{slug} is already a role of {sid}: pick another name (or hand it off to restart it)")
+        if a.ecosystem not in backends.ecosystems():
+            raise ActError(f"pick a provider ({'|'.join(backends.ecosystems())})")
+        if not title:
+            raise ActError("add-role needs --title (what the role is for)")
+        if not doc:
+            raise ActError("add-role needs --doc (the role's start doc, its plan_state.md on this host)")
+        starter = bool(getattr(a, "starter", False))
+        if starter and not (getattr(a, "guidance", "") or "").strip():
+            raise ActError("a starter doc needs --guidance (what the role is for and delivers)")
+        host = (getattr(a, "host", "") or "").strip()
+        import config
+        remote = bool(host) and host != (getattr(spec, "home", "") or config.server() or "")
+        if starter and remote:
+            # the doc is written here, uncommitted, and a session on another host reads its own checkout
+            raise ActError(f"a starter doc is written on this host, and a role on {host} reads its doc from {host}'s checkout: "
+                           "write and commit the doc first, then add the role (or leave Host empty)")
+        if starter and os.path.exists(doc):
+            raise ActError(f"{doc} exists: turn off the starter doc to use it, or give another path (it is never overwritten)")
+        extra = [(k, (getattr(a, k, "") or "").strip()) for k in ("model", "effort", "host", "fill")]
+        if any("," in x for x in [title, doc] + [v for _, v in extra]):
+            raise ActError("a comma cannot go in a role's title, doc, model, effort or host (the role spec is comma-separated)")
+        fill = dict(extra)["fill"]
+        if fill and fill not in ("self", "assigned", "none"):
+            raise ActError("fill is self, assigned or none")
+        role = _cli.parse_role(",".join([slug, a.ecosystem, title, doc]))
+        problem = "" if starter else _cli._doc_problem(role, True) or _cli._doc_problem(role, False)
+        if problem:
+            # the dry run only says it would verify the doc: refuse here, before a plan with nothing behind it
+            raise ActError(f"{problem}; write it first (## Mission, ## Current state, a grants-needed section)")
+        tokens = [f"{'server' if k == 'host' else k}={v}" for k, v in extra if v]
+        args = ["add-role", "--spec", roles.find_spec(sid), "--role=" + ",".join([slug, a.ecosystem, title, doc] + tokens)]
+        where = dict(extra)["host"] or "the shoal's home host"
+        cost = f"starts a new {a.ecosystem} session for {slug} on {where}: its first turn (tokens)"
+        if remote:
+            cost += f"; it reads {doc} from {host}'s checkout, which must have it (committed and pulled there)"
+        return args, cost, True
     if verb == "handoff":
         import roles
         role = _role(spec, a.role)
@@ -287,6 +336,19 @@ def plan_scope(verb: str, a) -> dict:
             "preview_rc": 0, "cost": cost, "confirm": True, "token": token, "progress": _progress_path(token), "expires_s": PLAN_TTL_S}
 
 
+def pre_steps(verb: str, a) -> list[list[str]]:
+    """Verbs a plan runs before its own, each previewed with --dry-run: New role's starter doc (`doc-init`)."""
+    if verb != "add-role" or not getattr(a, "starter", False):
+        return []
+    doc = os.path.abspath(os.path.expanduser(a.doc.strip()))
+    about = f"Runs on {a.ecosystem}" + (f" {a.model.strip()}" if (a.model or "").strip() else "") \
+        + (f" ({a.effort.strip()} effort)" if (a.effort or "").strip() else "") \
+        + f", on {(a.host or '').strip() or 'the shoal home host'}; its work comes from {'offers' if a.fill == 'assigned' else 'the board'}."
+    return [["doc-init", doc, f"--role={a.slug.strip()}", f"--shoal={a.shoal}", f"--title={(a.title or '').strip()}",
+             f"--mission={a.guidance.strip()}", f"--next={(getattr(a, 'next_steps', '') or '').strip()}",
+             f"--grants={(getattr(a, 'grants', '') or '').strip()}", f"--about={about}"]]
+
+
 def plan(verb: str, a) -> dict:
     if verb in VIEW_VERBS:
         return view(verb, a)
@@ -295,17 +357,23 @@ def plan(verb: str, a) -> dict:
     if getattr(a, "scope", ""):
         return plan_scope(verb, a)
     args, cost, confirm = build(verb, a)
+    pre = pre_steps(verb, a)
     preview, preview_rc = "", 0
     if not getattr(a, "no_preview", False):
-        pv = _shoal(args + ["--dry-run"])
-        if pv.returncode != 0:
-            # the verb would refuse it too: say why, and hand out no token
-            raise ActError(f"the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
-        preview, preview_rc = (pv.stdout + pv.stderr).strip() or "(no preview output)", pv.returncode
+        shown = []
+        for step in pre + [args]:
+            pv = _shoal(step + ["--dry-run"])
+            if pv.returncode != 0:
+                # the verb would refuse it too: say why, and hand out no token
+                raise ActError(f"the dry run refused it (exit {pv.returncode}): {(pv.stdout + pv.stderr).strip()[-400:]}")
+            shown.append((pv.stdout + pv.stderr).strip() or "(no preview output)")
+        preview = "\n\n".join(shown)
     _sweep()
-    token = _store({"verb": verb, "shoal": a.shoal, "role": a.role or "", "argv": args})
+    # with steps before it, the plan stops at the first failure: a role is not added without the doc it starts from
+    token = _store({"verb": verb, "shoal": a.shoal, "role": a.role or "", "argvs": pre + [args], "stop_on_fail": bool(pre)}
+                   if pre else {"verb": verb, "shoal": a.shoal, "role": a.role or "", "argv": args})
     return {"v": V, "kind": "shoal-act-plan", "verb": verb, "shoal": a.shoal, "role": a.role or "",
-            "command": "shoal " + shlex.join(args), "preview": preview,
+            "command": "\n".join("shoal " + shlex.join(x) for x in pre + [args]), "preview": preview,
             "preview_rc": preview_rc, "cost": cost, "confirm": confirm, "token": token, "progress": _progress_path(token), "expires_s": PLAN_TTL_S}
 
 
@@ -321,7 +389,7 @@ def apply(token: str) -> dict:
     if time.time() - float(p.get("created", 0)) > PLAN_TTL_S:
         raise ActError("the plan expired: plan it again")
     argvs = [[str(x) for x in argv] for argv in (p.get("argvs") or [p["argv"]])]
-    if not all(args and (args[0] in WRITE_VERBS or args[:2] == ["ui", "pick"]) for args in argvs):
+    if not all(args and (args[0] in WRITE_VERBS or args[0] == "doc-init" or args[:2] == ["ui", "pick"]) for args in argvs):
         raise ActError("a stored plan names no write verb")
     rc, outs = 0, []
     fd = os.open(_progress_path(token), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -334,6 +402,9 @@ def apply(token: str) -> dict:
             ui_herdr.log_action(args, code)
             rc = rc or code
             outs.append(out.strip())
+            if code and p.get("stop_on_fail"):
+                outs.append(f"stopped: `{args[0]}` failed (exit {code}), so nothing after it ran")
+                break
     return {"v": V, "kind": "shoal-act-result", "verb": p.get("verb"), "shoal": p.get("shoal"), "role": p.get("role"),
             "rc": rc, "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "output": "\n\n".join(outs)}
 
@@ -461,10 +532,19 @@ def add_parsers(u) -> None:
     q.add_argument("--label", default="", help="add-session: the seat's name")
     q.add_argument("--cwd", default="", help="add-session: the session's folder")
     q.add_argument("--job", default="", help="add-session: a Claude background job id")
+    q.add_argument("--slug", default="", help="add-role: the new role's name")
+    q.add_argument("--title", default="", help="add-role: what the role is for")
+    q.add_argument("--doc", default="", help="add-role: its start doc (plan_state.md) on the shoal's home host")
+    q.add_argument("--host", default="", help="add-role: the host it runs on (a [hosts.*] route; empty: the home)")
+    q.add_argument("--fill", default="", help="add-role: self (default), assigned or none")
+    q.add_argument("--starter", action="store_true", help="add-role: write its start doc first, from --guidance (doc-init)")
+    q.add_argument("--guidance", default="", help="add-role --starter: what the role is for and delivers")
+    q.add_argument("--next", dest="next_steps", default="", help="add-role --starter: first steps, separated by ;")
+    q.add_argument("--grants", default="", help="add-role --starter: authorizations it needs, separated by ;")
     q.add_argument("--scope", default="", help="offline, freeze: across shoals, `all` or `host:<name>`, in place of --shoal")
     q.add_argument("--model", default="", help="handoff: the new session's model")
     q.add_argument("--effort", default="", help="handoff: the new session's effort")
-    q.add_argument("--ecosystem", default="", help="handoff: the new session's provider")
+    q.add_argument("--ecosystem", default="", help="handoff, add-role: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--undo", action="store_true", help="dismiss: show the role as needing you again")
     q.add_argument("--no-preview", action="store_true", help="a write verb: skip its dry run (the apply reports any refusal)")

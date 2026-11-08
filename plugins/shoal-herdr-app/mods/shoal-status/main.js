@@ -7,7 +7,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand } from "herdr";
-import { parseUsage, usageMachines, nextNeedsYou } from "./model.js";
+import { parseUsage, usageMachines, nextNeedsYou, latticeTab, homeTab } from "./model.js";
 
 const USAGE_MS = 60000;
 const SYNC_MS = 120000;
@@ -68,7 +68,27 @@ export default class ShoalStatus extends View {
   }
 
   lattice(cx) {
+    // an open lattice tab is a switch away: no process (`ui app-lattice` took a second or more, and more over ssh)
+    if (this.go(latticeTab(safe(spaces, [])))) return;
     this.show(cx, "lattice", "app-lattice");
+  }
+
+  home(cx) {
+    if (this.go(homeTab(safe(spaces, [])))) return;
+    this.show(cx, "home", "app-home");
+  }
+
+  /** Shows a space's tab at once; false when there is none to show (the CLI opens one). */
+  go(where) {
+    if (!where) return false;
+    try {
+      run("space.select", { id: where.space });
+      run("tab.select", { id: where.tab });
+      this.note = null;
+      return true;
+    } catch (_e) {
+      return false;
+    }
   }
 
   /** The next agent that needs you, its pane focused; a zoomed view stays zoomed, on it (as a click in the agents list). */
@@ -133,7 +153,7 @@ export default class ShoalStatus extends View {
       .child(h_flex().flex_none().gap(6).items_center().child(`${list.length} agents`)
         .when(needs > 0, (el) => el.child(div().id("to-next").cursor_pointer().text_color(t.blocked).tooltip("the next one (Ctrl+Alt+N)")
           .on_click((_e, cx) => { this.nextNeedsYou(); cx.notify(); }).child(`· ${needs} need you`))))
-      .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.show(cx, "home", "app-home"); cx.notify(); }, t))
+      .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.home(cx); cx.notify(); }, t))
       .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t))
       .child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
