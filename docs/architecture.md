@@ -1147,7 +1147,16 @@ plan, or first written from guidance by `shoal doc-init`, the plan then stopping
 candidates, saved by `ui pick --save` on the session's own machine, then opened with `ui app-open --show`. A write verb's plan builds the palette's argv, runs its `--dry-run`, names the wake cost, and
 stores the argv under a one-time token (0600, runtime dir, ten minutes); apply runs only a stored argv, once,
 and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own.
-Read-only views (`next`, `status`, `conditions`, `asks`, `upgrade`, `roles`) store nothing.
+Read-only views (`next`, `status`, `conditions`, `asks`, `queue`, `upgrade`, `roles`) store nothing.
+
+`shoal/ui/ui_queue.py` (`ui queue`, and `act-plan queue` and `queue-set`) is the queue manager's read side and batch. The read
+is one role's queue from its latest queue version (active, next, recorded blockers) and its candidates, each with a source:
+`offer`, `held` (a claim its queue omits), `board`, `released` (another role gave it up lately) or `other` (another role holds
+or was offered it, with that owner). Pending transfers and the latest queue order come from `View.transfers` and
+`View.queue_orders` where the ledger has them; their state rules live there. The batch turns a proposed layout into shoal
+verbs, `withdraw`, `offer`, `transfer`, `msg --kind request` and `queue-order` last, each previewed by its own `--dry-run`,
+with `REFUSED <item>: <reason>` lines returned by item. The plan stops at the first failed step. shoal never writes a role's
+queue: the role applies the order with its own `queue` write.
 
 ### Host resource observations and placement pilot
 
