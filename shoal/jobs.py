@@ -369,7 +369,7 @@ def yield_for_rescan(a, unit: str) -> bool:
         return False
     from state import wait_status
     status, proof = wait_status(a.sid, a.slug)
-    if status != "stale" or not proof or proof.get("sub") not in ("local-ci", "remote-ci"):
+    if status != "stale" or not proof or proof.get("sub") not in ("local-ci", "remote-ci", "research-proto"):
         return False
     kind, _, ref = str(proof.get("target") or "").partition(":")
     if kind != "job":

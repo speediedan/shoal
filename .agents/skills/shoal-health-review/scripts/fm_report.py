@@ -205,7 +205,7 @@ def main():
                         C[(day(p), "FM1:active_silent_segments")] += 1 if inw(p) else 0
                     p = x
             # FM-6: blank-target CI wait right after a targeted one
-            if (c["posture"] == "waiting" and c["sub"] in ("local-ci", "remote-ci") and not c["target"] and i
+            if (c["posture"] == "waiting" and c["sub"] in ("local-ci", "remote-ci", "research-proto") and not c["target"] and i
                     and seq[i - 1][1]["target"] and seq[i - 1][1]["sub"] == c["sub"] and (t - seq[i - 1][0]).total_seconds() <= FM6_PAIR_S and inw(t)):
                 C[(day(t), "FM6:target_blanked")] += 1
 

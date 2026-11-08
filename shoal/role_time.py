@@ -54,7 +54,7 @@ WORK = ("turn",)
 # v5 adds three waits that v4.1 charged to idle: `self` (between turns with runnable ready work),
 # `assignment` (an empty queue on a fill=assigned role: nobody assigned it work) and `sources` (a
 # fill=self role whose cached priority table is empty). The last two are human waits.
-WAITS = ("local-ci", "remote-ci", "lease", "upstream", "session-blocked", "user-auth", "user-design",
+WAITS = ("local-ci", "remote-ci", "research-proto", "lease", "upstream", "session-blocked", "user-auth", "user-design",
          "user-ask", "user-prompt", "hold", "handover", "refill", "mixed", "unverified",
          "self", "assignment", "sources")
 IDLE = ("ready-work", "no-work")
@@ -63,12 +63,13 @@ UNKNOWN = ("missing-source", "stale-source", "session-missing", "conflicting-ses
            "unmapped-state", "no-observation", "gap")
 VOCABULARY = {"work": WORK, "wait": WAITS, "idle": IDLE, "excluded": EXCLUDED, "unknown": UNKNOWN}
 # display grouping of non-idle waits (no effect on accounting)
-WAIT_GROUP = {"local-ci": "system", "remote-ci": "system", "lease": "system", "upstream": "upstream",
+WAIT_GROUP = {"local-ci": "system", "remote-ci": "system", "lease": "system", "research-proto": "research",
+              "upstream": "upstream",
               "session-blocked": "peer", "user-auth": "human", "user-design": "human", "user-ask": "human",
               "user-prompt": "human", "assignment": "human", "sources": "human", "self": "self",
               "hold": "policy", "handover": "coordination", "refill": "coordination",
               "mixed": "mixed", "unverified": "unverified"}
-POSTURE_WAITS = ("local-ci", "remote-ci", "user-auth", "user-design", "session-blocked", "upstream")
+POSTURE_WAITS = ("local-ci", "remote-ci", "research-proto", "user-auth", "user-design", "session-blocked", "upstream")
 BLOCKER_EVENT = {"role": "session-blocked", "upstream": "upstream", "lease": "lease", "ask": "user-ask",
                  "hold": "hold"}
 INF = math.inf
@@ -201,6 +202,8 @@ def classify(snap, now):
     if state in ("paused", "offline"):
         return out("excluded", state, until)
     if state == "waiting":
+        if sub == "research-proto":
+            return out("wait", sub, until)  # research waits are research whatever they wait on, a lease included
         if str(ledger.get("target") or "").startswith("lease:"):
             return out("wait", "lease", until)
         job = ledger.get("job") or {}

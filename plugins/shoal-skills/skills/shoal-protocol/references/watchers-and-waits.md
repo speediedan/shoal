@@ -62,7 +62,10 @@ below; the job may move to another host while still queued (`JOB-MOVED`), and it
 takes one with `shoal pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy --for
 <shoal>/<you> --until <ISO|job:<name>>`; a research job outside a reservation is refused. Release a
 reservation as soon as the research is done (`shoal pool release <id> --host <host>`): it is taken out
-of everyone's CI.
+of everyone's CI. Never run research as a `ci` job or under the host's lease directly: in the lease's
+first-come queue it sits ahead of CI builds, whose acquire steps then time out (measured 2026-11-08:
+three chains of recovery runs held a CI GPU for six hours ahead of two gated builds). Wait on research
+runs as `research-proto` (`--wait research-proto --target job:<name>`).
 
 **Write the wait in one `queue` call, with a checkable target** (`--wait local-ci --holder "job
 <name>" --target job:<name>`). Do not follow it with a separate `shoal transition`: re-declaring a

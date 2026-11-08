@@ -76,7 +76,7 @@ TYPES = {
 }
 
 VALID_STATES = {"active", "waiting", "idle", "paused", "offline"}
-VALID_SUB = {"local-ci", "remote-ci", "user-auth", "user-design", "session-blocked",
+VALID_SUB = {"local-ci", "remote-ci", "research-proto", "user-auth", "user-design", "session-blocked",
              "queue-empty", "upstream"}
 # NOTE (2026-09-15): `monitor-armed` was removed. Every real wait already has a precise
 # substate: CI waits (however watched) are local-ci/remote-ci with the watch named in the
@@ -89,6 +89,10 @@ ALIASES = {
     "gate": "remote-ci",
     "blocked": "session-blocked",
     "queue-exhausted": "queue-empty",
+    "research": "research-proto",
+    "research_proto": "research-proto",
+    "proto": "research-proto",
+    "prototype": "research-proto",
 }
 
 SCRIPT_FILES = ("cli.py", "roles.py", "backends.py", "briefs.py", "watchers.py",

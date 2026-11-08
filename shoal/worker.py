@@ -978,7 +978,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--sha", default="")
     p.add_argument("--claim", action="append", help="extra claims (repeatable)")
     p.add_argument("--pass", dest="pass_", action="append", help="ITEM:CLASS[:suggest=ROLE][:note=TEXT]")
-    p.add_argument("--wait", default="", help="waiting substate: local-ci|remote-ci|session-blocked|user-auth|...")
+    p.add_argument("--wait", default="", help="waiting substate: local-ci|remote-ci|research-proto|session-blocked|user-auth|...")
     p.add_argument("--holder", default="")
     p.add_argument("--target", default="", help="lease:<key>|job:<name>|gh-run:<owner/repo>:<id>|gh-pr:<owner/repo>#<n>|gh-issue:<owner/repo>#<n>|"
                         "az-build:<id>; malformed or already-resolved targets are refused")
