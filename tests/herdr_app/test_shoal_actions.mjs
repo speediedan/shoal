@@ -508,3 +508,12 @@ test("New role with a starter doc: guidance asked only then, and sent with the p
   const argv = M.planArgv("add-role", { shoal: A }, f);
   assert.deepEqual(argv.slice(-5), ["--starter", "--guidance=own the lifecycle verbs", "--next=read the docs; list issues", "--grants=push (maintainer)", "--json"]);
 });
+
+test("Add session's button: one seat on one machine, whatever scope the dialog was opened with", () => {
+  const f = M.newForm("add-session");
+  assert.equal(M.runsAcross({ scope: "all" }, f), false, "not run across shoals");
+  assert.equal(M.runLabel({ scope: "all" }, "add-session"), "Add standalone seat");
+  assert.equal(M.runLabel({ scope: "all" }, "offline"), "Run on every shoal", "a verb that spans shoals still says so");
+  assert.ok(!M.planArgv("add-session", { scope: "all" }, M.setValue(M.setValue(f, "label", "x"), "pick", { harness: "claude", session: "s1" })).includes("--scope"),
+    "and its plan carries no scope: it runs once");
+});

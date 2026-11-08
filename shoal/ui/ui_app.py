@@ -160,6 +160,11 @@ def card_report(r: dict, tag: str) -> dict:
     says = r.get("says") or ""
     if says and state == "blocked":
         bits.append(says)
+    asks = [str(x) for x in r.get("asks") or [] if str(x).strip()]
+    if asks and state == "blocked" and kind == "question" and "blocked-on-question" not in reasons:
+        # the badge says a question; the message says which: the asks first, the posture after (it is cut at 200)
+        each = max(40, (150 - 10) // len(asks))
+        bits.insert(0, f"{len(asks)} ask{'s' if len(asks) > 1 else ''}: " + "; ".join(a[:each].rstrip() + ("…" if len(a) > each else "") for a in asks) + " ·")
     why = [ui_status.ATTENTION.get(x, x) for x in reasons if x not in ("parked", "dormant") and not (says and x == "blocked-says-waiting")]
     if why and state == "blocked":
         bits.append("(" + ", ".join(why)[:80] + ")")
@@ -201,8 +206,9 @@ class DoneLatch:
 
 def standalone_report(rows: list[dict], session: str, job: str, label: str) -> dict | None:
     """{state, kind, title, msg} for a saved standalone Claude session, from the same listing its lattice card reads
-    (`claude agents`): working for a turn, blocked on a question (an open prompt, or the session saying it waits),
-    else idle. None when the listing failed: no rows is not every session stopped."""
+    (`claude agents`): working for a turn, blocked on a question only while a prompt is open, else idle. A standalone seat
+    is a conversation with you, so the end of each reply reads `blocked` in the listing: that is your turn to type, not a
+    question, and as needs-you it buried the seats that do ask (2026-11-08). None when the listing failed."""
     import ui_status
     from backends import claude_holders
     if not rows:
@@ -212,9 +218,10 @@ def standalone_report(rows: list[dict], session: str, job: str, label: str) -> d
     state, kind, msg = "idle", "", {"working": "running a turn", "idle": "alive, between turns"}.get(turn, "stopped")
     if turn == "working":
         state = "working"
+    elif turn == "blocked" and ui_status.pending_question(row, session):
+        state, kind, msg = "blocked", "question", "waits at a question"
     elif turn == "blocked":
-        state, kind = "blocked", "question"
-        msg = "waits at a question" if ui_status.pending_question(row, session) else "says it waits on you"
+        msg = "your turn: waiting for a reply"
     return {"state": state, "kind": kind, "need": "", "title": f"standalone/{label}", "msg": msg}
 
 
@@ -1287,6 +1294,18 @@ CLONES = {
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
         ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(pic)'),
     ]),
+    # the top bar: Home and Lattice beside Files and Changes, where they are always in reach (the status bar's own
+    # commands, so one path does the switching: an open tab at once, else the CLI)
+    "tabs": ("shoal-tabs", [
+        ('      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))',
+         '      .child(h_flex().id("shoal-home").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
+         '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
+         '.on_click(() => run("shoal-status.home")).child("\u2302 Home"))\n'
+         '      .child(h_flex().id("shoal-lattice").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
+         '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
+         '.on_click(() => run("shoal-status.lattice")).child("\u25ce Lattice"))\n'
+         '      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))'),
+    ]),
     # the window's mark, top left: SHOAL and its icon (copied in, CLONE_FILES), as the splash and the launchers show it
     "workspace-chrome": ("shoal-chrome", [
         ('.child(image("frame/welcome/herdr.png").size(20).rounded(5)).child(div().font_semibold().text_color(t.foreground).child("Herdr"))',
@@ -1300,7 +1319,7 @@ CLONES = {
     ]),
 }
 LAYOUT_BLOCKS = {"agents": "shoal-agents", "spaces": "shoal-spaces", "workspace-status": "shoal-status",
-                 "workspace-chrome": "shoal-chrome"}
+                 "workspace-chrome": "shoal-chrome", "tabs": "shoal-tabs"}
 # files a clone carries that its shipped mod has not: {clone file: shoal's source}. Copied, since the app loads no picture
 # through a link; their bytes are part of the clone's mark, so a new icon redoes the copy
 CLONE_FILES = {"workspace-chrome": {"shoal.png": os.path.join(PKG, "ui", "assets", "shoal-64.png")}}
@@ -1364,6 +1383,9 @@ def shoal_layout_doc(main: dict, usable: set[str]) -> dict:
         content = node.get("content")
         if isinstance(content, dict) and LAYOUT_BLOCKS.get(content.get("mod")) in usable:
             content["mod"] = LAYOUT_BLOCKS[content["mod"]]
+            if content["mod"] == "shoal-status" and "shoal-tabs" in usable:
+                # Home and Lattice are in the top bar: the status bar leaves them out
+                content["props"] = dict(content.get("props") or {}, topbar=True)
         for child in node.get("children") or []:
             walk(child)
     walk(doc)

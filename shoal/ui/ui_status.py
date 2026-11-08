@@ -93,6 +93,25 @@ def ui_config() -> dict:
         return {}
 
 
+# a subscription provider's agent ecosystem (usage names opencode's account `opencode-go`)
+USAGE_ECOSYSTEM = {"codex": "codex", "claude": "claude", "muse": "muse", "opencode-go": "opencode"}
+
+
+def active_ecosystems() -> list[str]:
+    """The agent ecosystems in use on this host (`shoal ui set ecosystems`; default every one shoal knows). One that
+    is set aside drops out of usage, standalone discovery and the actions dialog's providers; its roles keep running."""
+    import backends
+    known = list(backends.ecosystems())
+    want = ui_config().get("ecosystems")
+    return [e for e in known if e in want] if isinstance(want, list) and want else known
+
+
+def usage_providers() -> list[str]:
+    """The subscription providers to read: the `usage_providers` setting, less those of an ecosystem set aside."""
+    on = set(active_ecosystems())
+    return [p for p in ui_config().get("usage_providers", []) if USAGE_ECOSYSTEM.get(p, p) in on]
+
+
 def save_ui_config(d: dict) -> None:
     p = ui_config_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -579,7 +598,7 @@ def status(ids: list[str] | None = None, root: str = "", include_retired: bool =
         return {"v": CONTRACT_V, "host": socket.gethostname(), "ts": iso(), "shoals": shoals}
     import subscription_usage
     return {"v": CONTRACT_V, "host": socket.gethostname(), "ts": iso(), "shoals": shoals,
-            "usage": subscription_usage.snapshot(ui_config().get("usage_providers", []))}
+            "usage": subscription_usage.snapshot(usage_providers())}
 
 
 # ---- shared cache: one status computation per host, many readers -----------------------

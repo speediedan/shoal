@@ -2324,6 +2324,23 @@ sp = ui_app.standalone_space({"label": "seat", "session": "abcd1234", "harness":
 assert [t["name"] for t in sp["tabs"]] == ["session", "lattice"] and sp["tabs"][1]["mod"] == "lattice-view", sp["tabs"]
 assert "source" in sp["tabs"][1]["props"], sp["tabs"][1]
 PY2
+# a question badge from ledger asks says what they ask, asks first, inside the report's 200 characters
+python3 - "$SHOALD" <<'PY2' || fail "asks in the card's message"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+r = {"slug": "jl", "host": "", "posture": "wait", "sub": "local-ci", "session": "idle", "active": "repo#927:fix", "next": [],
+     "asks": ["#945: map attention as two layer-restricted components, or one?", "#925 step 7: may I publish the converted lens privately?"],
+     "says": "", "needs_you": True, "dismissed": False, "wait_done": False, "grants_pending": 0, "fill": "self", "blocker_stale": False,
+     "wait": {"sub": "local-ci", "target": "job:rec666a", "holder": None, "rescan_utc": None},
+     "can_progress": {"ok": True, "reasons": ["waiting-on-you"]}}
+rep = ui_app.card_report(r, "t")
+assert rep["state"] == "blocked" and rep["kind"] == "question", rep
+assert rep["msg"].startswith("2 asks: #945: map attention") and "#925 step 7" in rep["msg"] and len(rep["msg"]) <= 200, rep["msg"]
+one = ui_app.card_report(dict(r, asks=["#945: which map?"]), "t")["msg"]
+assert one.startswith("1 ask: #945: which map? ·"), one
+assert not ui_app.card_report(dict(r, asks=[], needs_you=False, can_progress={"ok": True, "reasons": []}), "t")["msg"].startswith("0 ask")
+PY2
 # a dead watcher the role's next work re-arms is dormant: working on its job, not blocked; a dead watcher that matters
 # still blocks, and every blocked card names its cause (a kind the core keeps, else the shoal.need label): no bare `!`
 python3 - "$SHOALD" <<'PY2' || fail "dormant watcher and named needs"
@@ -2370,6 +2387,45 @@ assert ok and 'child("SHOAL")' in text and "mods/shoal-chrome/shoal.png" in text
 assert open(os.path.join(dest, "shoal.png"), "rb").read() == open(ui_app.CLONE_FILES[name]["shoal.png"], "rb").read()
 assert os.path.exists(os.path.join(dest, "search.svg")) and ui_app.install_clone(name) == (True, ""), "current: nothing redone"
 assert ui_app.LAYOUT_BLOCKS["workspace-chrome"] == clone
+# the top bar: Home and Lattice beside Files and Changes, as the status bar's own commands
+tname, (tclone, tpatches) = "tabs", ui_app.CLONES["tabs"]
+tout = ui_app.patch_clone("x" + tpatches[0][0] + 'svg("mods/tabs/win-min.svg")', tname, tpatches)
+assert 'run("shoal-status.home")' in tout and 'run("shoal-status.lattice")' in tout and "mods/shoal-tabs/win-min.svg" in tout, tout
+assert tout.index("shoal-lattice") < tout.index('panelButton("files"') and ui_app.LAYOUT_BLOCKS["tabs"] == "shoal-tabs"
+PY2
+# an idle subscription keeps its weekly reset (its last known schedule, rolled forward); ecosystems set aside drop out
+XDG_CONFIG_HOME="$S/xdg-eco" python3 - "$SHOALD" <<'PY2' || fail "usage resets and ecosystems"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import time
+import subscription_usage as su, ui_status
+T0 = time.time() - 3 * 604800 - 3600  # the last reading saw a weekly reset three weeks and an hour ago
+seen = [{"bucket": "muse", "windows": [{"name": "5h", "used_percent": 40, "resets_at": T0 - 100, "minutes": 300},
+                                       {"name": "week", "used_percent": 12, "resets_at": T0, "minutes": 10080}]}]
+k = su.known_resets({}, seen)
+assert k == {"muse/week": {"resets_at": T0, "minutes": 10080}}, "a 5h window starts at first use: only the week"
+assert su.known_resets({"known_resets": k}, [{"bucket": "muse", "windows": [], "idle": True}]) == k, "an idle reading keeps it"
+row = {"rows": [{"bucket": "muse", "windows": [], "idle": True}], "known_resets": k}
+now = time.time()
+w = su.projected(row, now)["rows"][0]["windows"]
+assert len(w) == 1 and w[0]["name"] == "week" and w[0]["used_percent"] == 0 and w[0]["projected"], w
+assert now < w[0]["resets_at"] <= now + 604800 and abs((w[0]["resets_at"] - T0) / 604800 - round((w[0]["resets_at"] - T0) / 604800)) < 1e-9, w
+assert su.projected({"rows": [{"bucket": "muse", "windows": [], "idle": True}]}, now)["rows"][0]["windows"] == [], "never seen: none"
+line = su.render_lines({"accounts": [dict(su.projected(row, now), provider="muse")]})
+assert "unused since its last reset" in line and "week 0%" in line, line
+# ecosystems: the default is every one; one set aside drops its usage provider and is refused as a provider
+assert ui_status.active_ecosystems() == ["opencode", "claude", "codex", "muse"] or set(ui_status.active_ecosystems()) == {"opencode", "claude", "codex", "muse"}
+ui_status.save_ui_config({"usage_providers": ["codex", "claude", "muse", "opencode-go"], "ecosystems": ["claude", "codex", "opencode"]})
+assert "muse" not in ui_status.active_ecosystems() and ui_status.usage_providers() == ["codex", "claude", "opencode-go"]
+import types, ui_actions
+spec = types.SimpleNamespace(sid="sh-1", home="", role=lambda s: None)
+ui_actions._spec = lambda sid: spec
+try:
+    ui_actions.build("add-role", types.SimpleNamespace(shoal="sh-1", role="", slug="newrole", title="t", doc="/x.md", ecosystem="muse",
+                                                       model="", effort="", host="", fill="", starter=False))
+    raise SystemExit("a provider set aside was accepted")
+except ui_actions.ActError as exc:
+    assert "in use here" in str(exc), exc
 PY2
 # the replay: the last day's tail events in ts order, numbered on their own, the live cursor untouched
 python3 - "$SHOALD" <<'PY2' || fail "the graph replay"
@@ -2425,6 +2481,11 @@ try:
     assert sr("working")["state"] == "working" and sr("idle")["state"] == "idle" and sr("dead")["msg"] == "stopped"
     b = sr("blocked")
     assert b["state"] == "blocked" and b["kind"] == "question" and b["msg"] == "waits at a question" and b["title"] == "standalone/seat", b
+    # blocked with no prompt open: a seat's turn to be answered, not a question; idle, and it says so
+    ui_status.pending_question = lambda r, s: False
+    t = sr("blocked")
+    assert t["state"] == "idle" and t["kind"] == "" and t["msg"] == "your turn: waiting for a reply", t
+    ui_status.pending_question = lambda r, s: r.get("x") == "blocked"
     assert ui_app.standalone_report([], "abcd1234-0000", "", "seat") is None, "a failed listing says nothing"
     # the card: a turn it saw end is the `done`, once; an attach clears it
     seq = iter(["working", "idle", "idle", "working", "idle"])
@@ -3131,6 +3192,11 @@ main = {"id": "root", "children": [{"id": "a", "content": {"mod": "agents"}}, {"
 doc = ui_app.shoal_layout_doc(main, {"shoal-agents", "shoal-status"})
 assert [c["content"]["mod"] for c in doc["children"]] == ["shoal-agents", "shoal-status", "spaces", "files"] and doc["shoal_layout"], doc
 assert main["children"][0]["content"]["mod"] == "agents", "Herdr's own document is not touched"
+# with shoal's top bar in the layout, the status bar is told to leave Home and Lattice to it
+st = next(c for c in ui_app.shoal_layout_doc(main, {"shoal-status", "shoal-tabs"})["children"] if c["content"]["mod"] == "shoal-status")
+assert st["content"].get("props", {}).get("topbar") is True, st
+st = next(c for c in ui_app.shoal_layout_doc(main, {"shoal-status"})["children"] if c["content"]["mod"] == "shoal-status")
+assert "topbar" not in st["content"].get("props", {}), "no shoal top bar: the status bar keeps them"
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["-bash"]}}) == "shell"
 assert ui_app.foreground_kind({"foreground": {"name": "bash", "argv": ["bash", "-c", "x"]}}) == "other"
 assert ui_app.foreground_kind({"foreground": {"name": "claude", "argv": ["claude", "attach", "x"]}}) == "other"

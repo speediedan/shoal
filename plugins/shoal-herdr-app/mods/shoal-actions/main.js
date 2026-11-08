@@ -29,6 +29,7 @@ import {
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
+  providerOptions,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -399,7 +400,7 @@ export default class Actions extends View {
     if (now - this.lastEnter < 250) return; // the input's submit and the key event are one press
     this.lastEnter = now;
     const a = keyAction("enter", this.screen, { canConfirm: Boolean(this.token) });
-    if (a === "preview" && runsAcross(this.sel, this.form)) this.hint = `Enter does not run this across shoals: use "${runLabel(this.sel)}"`;
+    if (a === "preview" && runsAcross(this.sel, this.form)) this.hint = `Enter does not run this across shoals: use "${runLabel(this.sel, this.verb)}"`;
     else if (a === "preview") this.preview(cx);
     else if (a === "confirm") this.apply(cx);
   }
@@ -653,7 +654,8 @@ export default class Actions extends View {
         if (this.sessionsNote) col.child(div().text_size(11).text_color(c.amber).child(this.sessionsNote));
       } else if (f.kind === "choice") {
         const row = h_flex().gap(6).items_center();
-        for (const o of f.options) {
+        // a provider set aside on this host (`shoal ui set ecosystems`) is not offered
+        for (const o of f.key === "ecosystem" ? providerOptions(f.options, this.roles) : f.options) {
           row.child(this.chip(`f-${f.key}-${o}`, o, {
             on: v === o,
             // an optional choice clicks off again
@@ -779,7 +781,7 @@ export default class Actions extends View {
       case "form":
         row.child(this.button("b-cancel", "Cancel", "plain", go((cx) => this.back(cx)), c));
         if (this.form?.values?.dryRun) row.child(this.button("b-preview", "Preview", "primary", go((cx) => this.preview(cx)), c, "plan it: the CLI's --dry-run, nothing written"));
-        else row.child(this.button("b-run", runLabel(this.sel), "primary", go((cx) => this.preview(cx)), c, "run it now; tick Preview first to see a dry run"));
+        else row.child(this.button("b-run", runLabel(this.sel, this.verb), "primary", go((cx) => this.preview(cx)), c, "run it now; tick Preview first to see a dry run"));
         break;
       case "plan":
         row.child(this.button("b-cancel", "Cancel", "plain", go((cx) => this.back(cx)), c, "discard the plan; nothing written"));

@@ -112,7 +112,17 @@ export function buildScene(vm, lay, opts) {
       const ring = (dy = 0) => ellipseCmds(p.x, p.y + dy, r, ry);
       discs.push({ id: c.id, x: p.x, y: p.y, r, hole: r * 0.5 });
       const fog = c.fog ?? 1;
-      if (c.ry !== undefined) {
+      if (c.sphere) {
+        // a sphere: a dark core, a lit cap toward the upper left, an equator and a rim; no slab
+        items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.09 * fog)) });
+        [[0.78, 0.05], [0.56, 0.06], [0.34, 0.08]].forEach(([f, a], i) => {
+          items.push({ t: "path", id: `sphere-lit-${c.id}-${i}`, fill: true, cmds: circleCmds(p.x - r * (1 - f) * 0.55, p.y - r * (1 - f) * 0.62, r * f),
+            bg: solid(withAlpha(mix(c.tint, "#ffffff", 0.35), a * fog)) });
+        });
+        const eq = ellipseCmds(p.x, p.y, r, r * Math.cos(lay.cam?.pitch ?? 0.9));
+        items.push({ t: "path", id: `sphere-equator-${c.id}`, fill: false, width: 1, dash: [3, 5], cmds: eq, bg: solid(withAlpha(c.tint, 0.28 * fog)) });
+        items.push({ t: "path", id: `sphere-rim-${c.id}`, fill: false, width: 1.5, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.55 * fog)) });
+      } else if (c.ry !== undefined) {
         // the slab's thickness: its near edge as a band between the top ellipse's lower half and the same one dropped
         const t = 11 * k * (c.s ?? 1);
         const edge = [["M", p.x - r, p.y], ["A", r, ry, 0, false, false, p.x + r, p.y], ["L", p.x + r, p.y + t],
@@ -121,9 +131,11 @@ export function buildScene(vm, lay, opts) {
         items.push({ t: "path", id: `disc-slab-rim-${c.id}`, fill: false, width: 1, cmds: [["M", p.x - r, p.y + t], ["A", r, ry, 0, false, false, p.x + r, p.y + t]],
           bg: solid(withAlpha(c.tint, 0.35 * fog)) });
       }
-      items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: ring(), bg: solid(withAlpha(c.tint, hover ? 0.025 : c.ry !== undefined ? 0.11 * fog : 0.045)) });
-      items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: ring(), bg: solid(withAlpha(c.tint, 0.05)) });
-      items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: c.ry !== undefined ? 1.4 : 1, cmds: ring(), bg: solid(withAlpha(c.tint, c.ry !== undefined ? 0.5 * fog : 0.22)) });
+      if (!c.sphere) {
+        items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: ring(), bg: solid(withAlpha(c.tint, hover ? 0.025 : c.ry !== undefined ? 0.11 * fog : 0.045)) });
+        items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: ring(), bg: solid(withAlpha(c.tint, 0.05)) });
+      }
+      if (!c.sphere) items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: c.ry !== undefined ? 1.4 : 1, cmds: ring(), bg: solid(withAlpha(c.tint, c.ry !== undefined ? 0.5 * fog : 0.22)) });
       const label = `${c.label.toUpperCase()}${vm.shoals?.find((s) => s.id === c.id)?.boards?.items?.length ? " ↗" : ""}`;
       items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - ry - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
       grow(p.x - r - 3, p.y - ry - 3, p.x + r + 3, p.y + ry + 3 + (c.ry !== undefined ? 7 * k : 0));

@@ -7,6 +7,45 @@
 
 const DEG = Math.PI / 180;
 
+// A role's place on its shoal's sphere, by rank: what it needs of you first (the needs-you order: auth, a question,
+// a prompt, a design call, an empty queue; a stalled session), then what it is doing (a turn, its own job, a hand-over,
+// waiting on others, idle with work queued, idle), then how fresh its last ledger write is. Rank 0 is the point that faces
+// you; the rest follow a spiral back from it, so the sphere is evenly used and what needs you is nearest.
+const ACTIVITY = { working: 0, "local-ci": 1, "remote-ci": 1, handover: 2, refill: 2, lease: 3, upstream: 3, peer: 3, hold: 3, other: 3,
+  queued: 4, starved: 5, held: 5, dismissed: 5, excluded: 6 };
+const SPHERE_R = 0.78; // of the shoal's disc radius
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+const CAP = 0.88; // how far back the spiral reaches: 1 is the far pole
+
+/** [need, activity, staleness] for sorting: lower is nearer you. */
+export function sphereRank(n) {
+  const v = n?.visual ?? {};
+  const need = v.needsYou || v.stall ? (Number.isFinite(v.urgency) ? v.urgency : 4) : 9;
+  const act = ACTIVITY[v.key] ?? 3;
+  const age = Number(n?.metrics?.last_write_age_s);
+  return [need, act, Number.isFinite(age) ? age : 1e12];
+}
+
+const byRank = (a, b) => {
+  const x = sphereRank(a), y = sphereRank(b);
+  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || (a.id < b.id ? -1 : 1);
+};
+
+/**
+ * The i-th of n points on a unit sphere, as a world offset {x, y, z} for `cam`: i = 0 faces the camera, and the rest
+ * spiral back from it (a Fibonacci spiral over the front CAP of the sphere).
+ */
+export function spherePoint(cam, i, n) {
+  const cos = 1 - (2 * CAP * i) / Math.max(1, n);
+  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+  const phi = i * GOLDEN;
+  // in the camera's turned frame: toward it is (0, s, c); across is (1, 0, 0); up the screen is (0, c, -s)
+  const xr = sin * Math.cos(phi);
+  const yr = cos * cam.s + sin * Math.sin(phi) * cam.c;
+  const z = cos * cam.c - sin * Math.sin(phi) * cam.s;
+  return { x: xr * cam.cyaw + yr * cam.syaw, y: -xr * cam.syaw + yr * cam.cyaw, z };
+}
+
 /** The camera presets `d` cycles through; flat is the 2D view, untouched. */
 export const CAMERAS = {
   flat: null,
@@ -84,25 +123,46 @@ export function projectLayout(vm, lay, cam0) {
   const cam = { ...cam0, o, d: DIST * Math.max(radius, top) };
   const mid = top / 2;
   const P = (p, zz) => project(cam, p, zz - mid);
+  // global view: each shoal's roles on its sphere, by rank; a role keeps its satellites' offsets
+  const placed = new Map(); // role id -> {x, y, z} in the world
+  const behind = new Map(); // role id -> how far round the back of its sphere it is (0 front, 1 far pole)
+  if (vm.global) {
+    const planeZ0 = new Map(planes.map((p) => [p.id, p.z]));
+    for (const c of lay.clusters ?? []) {
+      const roles = vm.nodes.filter((n) => n.kind === "role" && n.shoal === c.id && lay.pos.has(n.id)).sort(byRank);
+      const R = c.r * SPHERE_R;
+      roles.forEach((n, i) => {
+        const u = spherePoint(cam, i, roles.length);
+        placed.set(n.id, { x: c.x + R * u.x, y: c.y + R * u.y, z: (planeZ0.get(c.id) ?? 0) + R * u.z });
+        behind.set(n.id, (2 * CAP * i) / Math.max(1, roles.length) / 2);
+      });
+    }
+  }
   const pos = new Map(), depth = new Map(), scaleOf = new Map();
   for (const [id, p] of lay.pos) {
-    const q = P(p, z(id));
+    const w = placed.get(id);
+    const q = w ? P(w, w.z) : P(p, z(id));
     pos.set(id, { x: q.x, y: q.y });
     depth.set(id, q.depth);
     scaleOf.set(id, q.f);
   }
   const ds = [...depth.values()];
   const d0 = Math.min(...ds), d1 = Math.max(...ds);
-  const fogOf = new Map([...depth].map(([id, d]) => [id, d1 > d0 ? 0.55 + 0.45 * ((d - d0) / (d1 - d0)) : 1]));
+  // far fades; a role round the back of its sphere fades more, as seen through it
+  const fogOf = new Map([...depth].map(([id, d]) => [id, (d1 > d0 ? 0.55 + 0.45 * ((d - d0) / (d1 - d0)) : 1)
+    * (behind.has(id) ? 1 - 0.45 * Math.max(0, behind.get(id) - 0.5) / 0.5 : 1)]));
   const sats = (lay.sats ?? []).map((s) => {
-    const a = P({ x: s.x, y: s.y }, z(s.owner)), b = P({ x: s.ax, y: s.ay }, z(s.owner));
+    const w = placed.get(s.owner), p0 = lay.pos.get(s.owner);
+    const at = (x, y) => (w && p0 ? P({ x: w.x + x - p0.x, y: w.y + y - p0.y }, w.z) : P({ x, y }, z(s.owner)));
+    const a = at(s.x, s.y), b = at(s.ax, s.ay);
     return { ...s, x: a.x, y: a.y, ax: b.x, ay: b.y };
   });
   const planeZ = new Map(planes.map((p) => [p.id, p.z]));
   const clusters = (lay.clusters ?? []).map((c) => {
     const zc = vm.global ? planeZ.get(c.id) ?? 0 : 0;
     const q = P(c, zc);
-    return { ...c, x: q.x, y: q.y, r: c.r * q.f, ry: cam.c, s: q.f, depth: q.depth, zw: zc };
+    // global: a sphere (its outline a circle at any tilt); per shoal the cluster is only the hit area
+    return { ...c, x: q.x, y: q.y, r: c.r * (vm.global ? SPHERE_R : 1) * q.f, ry: vm.global ? 1 : cam.c, sphere: vm.global, s: q.f, depth: q.depth, zw: zc };
   }).sort((a, b) => a.depth - b.depth);
   const regionFog = (xs) => {
     const lo = Math.min(...xs.map((x) => x.depth)), hi = Math.max(...xs.map((x) => x.depth));
@@ -142,7 +202,7 @@ export function projectLayout(vm, lay, cam0) {
     const a = P(p, zz), b = P(p, floorZ);
     stems.push({ id, x0: a.x, y0: a.y, x1: b.x, y1: b.y, r: r * b.f, ry: r * b.f * cam.c });
   };
-  if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * 0.35);
+  if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * SPHERE_R * 0.7);
   else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
   for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));

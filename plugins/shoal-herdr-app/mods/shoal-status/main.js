@@ -6,7 +6,7 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand } from "herdr";
+import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand, props } from "herdr";
 import { parseUsage, usageMachines, nextNeedsYou, latticeTab, homeTab } from "./model.js";
 
 const USAGE_MS = 60000;
@@ -31,6 +31,7 @@ export default class ShoalStatus extends View {
       for (;;) {
         const c = await nextCommand();
         if (c === "lattice") this.lattice(cx);
+        else if (c === "home") this.home(cx);
         else if (c === "next") this.nextNeedsYou();
         cx.notify();
       }
@@ -148,13 +149,17 @@ export default class ShoalStatus extends View {
     const space = safe(spaces, []).find((s) => s.active);
     const list = safe(agents, []);
     const needs = list.filter((a) => a.status === "blocked").length;
+    // the shoal layout says so when its top bar is shoal's copy (`ui app-install` sets this block's props.topbar)
+    const topBar = safe(props, {})?.topbar === true;
     const bar = h_flex().size_full().overflow_hidden().px(14).gap(14).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.5).text_color(t.muted)
       .child(div().flex_none().child(space?.machine ?? "This computer"))
       .child(h_flex().flex_none().gap(6).items_center().child(`${list.length} agents`)
         .when(needs > 0, (el) => el.child(div().id("to-next").cursor_pointer().text_color(t.blocked).tooltip("the next one (Ctrl+Alt+N)")
           .on_click((_e, cx) => { this.nextNeedsYou(); cx.notify(); }).child(`· ${needs} need you`))))
-      .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.home(cx); cx.notify(); }, t))
-      .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t))
+      // Home and Lattice live in the top bar (shoal-tabs); here only when that copy is not in the layout (a Herdr release moved it)
+      .when(!topBar, (el) => el
+        .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.home(cx); cx.notify(); }, t))
+        .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t)))
       .child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
       .child(div().flex_1());
