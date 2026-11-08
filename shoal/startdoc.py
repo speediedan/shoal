@@ -3,6 +3,7 @@
 it alone, and `shoal doc-check`, which says whether a doc meets it.
 
     shoal doc-check <path> [--since UTC] [--json]
+    shoal doc-init <path> --role SLUG --mission TEXT [--shoal ID] [--title T] [--next "a; b"] [--grants "a; b"] [--dry-run]
 
 A start doc is a present-tense live plan. Required:
   - a `Last updated: <UTC timestamp>` line (the handover's proof of refresh);
@@ -148,6 +149,63 @@ def cmd_doc_check(a) -> int:
     return 0 if r["ok"] else 1
 
 
+def _items(text: str) -> list[str]:
+    """`a; b` (or one per line) as items, blanks and list marks dropped."""
+    return [x.strip().lstrip("-*0123456789. ").strip() for x in re.split(r"[;\n]", text or "") if x.strip().lstrip("-*0123456789. ").strip()]
+
+
+def starter(slug: str, mission: str, sid: str = "", title: str = "", next_steps: str = "", grants: str = "",
+            about: str = "", now: datetime.datetime | None = None) -> str:
+    """A start doc for a new role from the maintainer's guidance, meeting the contract (`check`): a Last updated stamp,
+    the mission as given, a dated current state, the next steps (the guidance's, then keeping this doc current),
+    decisions and monitors (none yet), and grants-needed (`- None pending` when nothing was named). The new session
+    reads it first and keeps it current; it is a start, not a plan a person must finish."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    stamp, day = now.strftime("%Y-%m-%dT%H:%MZ"), now.strftime("%Y-%m-%d")
+    paras = [p.strip() for p in re.split(r"\n\s*\n", (mission or "").strip()) if p.strip()]
+    steps = _items(next_steps)
+    where = f" of shoal `{sid}`" if sid else ""
+    lines = [f"# {slug}: plan state", "",
+             f"{title.strip() or slug}: the start doc of the role `{slug}`{where}, written from the maintainer's guidance when the role",
+             "was added. Its session reads it first and keeps it current (`shoal doc-check` says whether it meets the contract).", "",
+             f"Last updated: {stamp}", "", "## Mission", ""]
+    lines += [x for p in paras for x in (p, "")] or ["(no guidance given)", ""]
+    lines += [f"## Current state ({day})", "", f"- New role, added {day} with this starter doc. No work done yet: no item taken, nothing decided."]
+    if about.strip():
+        lines.append(f"- {about.strip()}")
+    lines += ["", "## Next steps", "", f"1. Run `shoal next{' --shoal ' + sid if sid else ''} --slug {slug}` and take the first item it gives (or ask for one)."]
+    for i, s in enumerate(steps, 2):
+        lines.append(f"{i}. {s}")
+    lines += [f"{len(steps) + 2}. Keep this doc current at every boundary: Current state, Decisions in force, Next steps and the",
+              "   `Last updated` stamp, so a fresh session can continue from it alone.", "",
+              "## Decisions in force", "", "- None yet.", "", "## Running monitors", "", "- None.", "", "## grants-needed", ""]
+    lines += [f"- {g}" for g in _items(grants)] or ["- None pending"]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_doc_init(a) -> int:
+    path = os.path.abspath(os.path.expanduser(a.path))
+    if not (a.mission or "").strip():
+        print("doc-init: --mission is the guidance the doc is written from")
+        return 2
+    if os.path.exists(path) and not a.force:
+        print(f"doc-init: {path} exists: refused (it may be a role's live plan); use that doc, or another path")
+        return 1
+    text = starter(a.role, a.mission, a.sid, a.title, a.next, a.grants, a.about)
+    if a.dry_run:
+        print(f"[dry-run] would write {path} ({len(text.splitlines())} lines):\n")
+        print(text, end="")
+        return 0
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as fh:
+        fh.write(text)
+    os.replace(path + ".tmp", path)
+    r = check(path)
+    print(f"wrote {path}: {'meets the start-doc contract' if r['ok'] else 'PROBLEMS: ' + '; '.join(r['problems'])} "
+          "(not committed: commit it where its folder is tracked)")
+    return 0 if r["ok"] else 1
+
+
 def add_parser(sub) -> None:
     p = sub.add_parser("doc-check", help="does a start doc (plan_state) meet the start-doc contract? (read-only)")
     p.add_argument("path")
@@ -157,6 +215,18 @@ def add_parser(sub) -> None:
     p.add_argument("--slug", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doc_check)
+    p = sub.add_parser("doc-init", help="write a new role's starter start doc (plan_state.md) from guidance; never overwrites")
+    p.add_argument("path")
+    p.add_argument("--role", required=True, help="the role's slug")
+    p.add_argument("--mission", required=True, help="the guidance: what the role is for and delivers (paragraphs by blank lines)")
+    p.add_argument("--shoal", dest="sid", default="", help="the shoal it joins")
+    p.add_argument("--title", default="", help="the role's title")
+    p.add_argument("--next", default="", help="first steps, separated by ;")
+    p.add_argument("--grants", default="", help="authorizations it needs (scope and giver), separated by ;")
+    p.add_argument("--about", default="", help="one line for the current state (provider, host)")
+    p.add_argument("--force", action="store_true", help="overwrite an existing file")
+    p.add_argument("--dry-run", action="store_true", help="print the doc, write nothing")
+    p.set_defaults(func=cmd_doc_init)
 
 
 if __name__ == "__main__":

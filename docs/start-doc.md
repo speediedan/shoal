@@ -42,7 +42,13 @@ Sections are found by keyword in the headings, case-insensitive. `Mission and de
 - **The restart.** In `page` mode the operator restarts the role. In `auto` mode the quorum does: it stops the old session
   and runs `restart --only <role>`. The new session reads the start doc first.
 
+A new role's first doc can be written from a few lines of guidance: `shoal doc-init <path> --role <slug> --mission "<what
+it is for>" [--shoal <id>] [--title T] [--next "a; b"] [--grants "scope (giver); ..."]` writes one that meets this contract
+(the Herdr app's New role does the same with "Write a starter doc"). It never overwrites an existing file, and the new
+session is expected to make it its own at its first boundary.
+
 ```bash
+shoal doc-init <path> --role <slug> --mission "<guidance>"   # a starter doc; --dry-run prints it
 shoal doc-check <path>                          # ok, or each missing section
 shoal doc-check <path> --since 2026-10-22T19:00Z   # also: stamped at or after this time
 shoal doc-check <path> --json

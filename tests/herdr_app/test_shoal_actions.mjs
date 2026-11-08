@@ -43,9 +43,9 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
   assert.equal(modJson.overlay.height, M.SIZE.height);
 });
 
-test("verbs: the fourteen buttons in order, each with a kind and a role rule", () => {
-  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "Add session", "Status", "Conditions", "Upgrade preview"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session", "add-session"]);
+test("verbs: the fifteen buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "New role", "Add session", "Status", "Conditions", "Upgrade preview"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session", "add-role", "add-session"]);
   assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["handoff", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
@@ -58,7 +58,7 @@ test("verbs: the fourteen buttons in order, each with a kind and a role rule", (
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", dryRun: false, undo: false });
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "", dryRun: false, undo: false });
   assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake", "dryRun"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
@@ -441,7 +441,8 @@ test("Add session: on any target, a list fed from every machine, saved on the se
   assert.ok(M.verbsFor({ scope: "host:lane-b" }).some((v) => v.verb === "add-session"), "a host's right-click offers it");
   assert.ok(!M.verbsFor({ session: "seat" }).some((v) => v.verb === "add-session"));
   const f = M.newForm("add-session");
-  assert.equal(M.validate("add-session", {}, f), "pick a session");
+  assert.equal(M.validate("add-session", {}, f), "type the seat name (filters the list as you type)");
+  assert.equal(M.validate("add-session", {}, M.setValue(f, "label", "x")), "pick a session");
   const merged = M.mergeSessions([
     { machine: null, sessions: [{ harness: "claude", session: "s1", label: "notes", state: "alive", cwd: "/x", job: "j1" }] },
     { machine: "lane-b", sessions: [{ harness: "claude", session: "s1", label: "dup" }, { harness: "opencode", session: "o1", label: "" }, { label: "no id" }] },
@@ -450,7 +451,7 @@ test("Add session: on any target, a list fed from every machine, saved on the se
   assert.deepEqual(merged.rows.map((r) => [r.machine, r.session, r.label]), [[null, "s1", "notes"], ["lane-b", "o1", "o1"]], "first machine wins; no id, no row");
   assert.equal(merged.note, "not read: lane-c: unreachable");
   let g = M.setValue(f, "pick", merged.rows[0]);
-  assert.equal(M.validate("add-session", {}, g), "type the seat name");
+  assert.equal(M.validate("add-session", {}, g), "type the seat name (filters the list as you type)");
   g = M.setValue(g, "label", "notes");
   assert.equal(M.validate("add-session", {}, g), null);
   assert.deepEqual(M.planArgv("add-session", { shoal: "ignored" }, g),
@@ -461,4 +462,49 @@ test("Add session: on any target, a list fed from every machine, saved on the se
   const view = M.parseReply({ code: 0, stdout: JSON.stringify({ v: 1, kind: "shoal-act-view", verb: "sessions", sessions: [{ harness: "claude", session: "s1" }, 3] }) }, "view");
   assert.equal(view.sessions.length, 1);
   assert.equal(M.fixtureReply({}, M.openSeatArgv("x")).code, 0, "the fixture opens a space without the CLI");
+});
+
+test("Add session: the name filters the list as it is typed, the picked one stays", () => {
+  const rows = [
+    { key: "a", label: "Implementing Zellij", cwd: "/repos/x", harness: "opencode", machine: null },
+    { key: "b", label: "shoal-role-lifecycle", cwd: "/repos/shoal", harness: "claude", machine: "lane-b" },
+    { key: "c", label: "notes on shoal", cwd: "/tmp", harness: "codex", machine: null },
+    { key: "d", label: "triage", cwd: "/srv/shoal-ledgers", harness: "muse", machine: null },
+  ];
+  assert.equal(M.filterSessions(rows, "").length, 4, "no text: all of them");
+  assert.deepEqual(M.filterSessions(rows, "SHOAL").map((r) => r.key), ["b", "c", "d"], "case aside; a label that starts with it first");
+  assert.deepEqual(M.filterSessions(rows, "lane-b").map((r) => r.key), ["b"], "the machine too");
+  assert.deepEqual(M.filterSessions(rows, "zzz", rows[0]).map((r) => r.key), ["a"], "the picked one stays in view");
+  assert.deepEqual(M.verbInfo("add-session").fields, ["label", "pick"], "the name first: it is the filter");
+});
+
+test("New role: a new session as a role of the shoal, previewed first", () => {
+  const info = M.verbInfo("add-role");
+  assert.ok(info && !info.hostLevel && info.role === "none");
+  assert.ok(M.verbsFor({ shoal: A }).some((v) => v.verb === "add-role"));
+  assert.ok(!M.verbsFor({ scope: "all" }).some((v) => v.verb === "add-role"), "one shoal's: not across shoals");
+  let f = M.newForm("add-role");
+  assert.equal(f.values.dryRun, true, "it starts a session: preview first");
+  assert.match(M.validate("add-role", { shoal: A }, f), /role name/i);
+  for (const [k, v] of [["slug", "lifecycle"], ["title", "role lifecycle"], ["doc", "/docs/lifecycle/plan_state.md"]]) f = M.setValue(f, k, v);
+  assert.equal(M.validate("add-role", { shoal: A }, f), "pick claude or codex or opencode or muse");
+  f = M.setValue(M.setValue(M.setValue(f, "ecosystem", "claude"), "model", "claude-opus-5-5"), "effort", "high");
+  f = M.setValue(M.setValue(f, "host", "lane-b"), "fill", "assigned");
+  assert.equal(M.validate("add-role", { shoal: A }, f), null);
+  assert.deepEqual(M.planArgv("add-role", { shoal: A, role: "core" }, f),
+    ["ui", "act-plan", "add-role", "--shoal", A, "--slug=lifecycle", "--title=role lifecycle", "--doc=/docs/lifecycle/plan_state.md",
+      "--ecosystem=claude", "--model=claude-opus-5-5", "--effort=high", "--host=lane-b", "--fill=assigned", "--json"]);
+  assert.equal(M.validate("handoff", { shoal: A, role: "core" }, M.newForm("handoff")), null, "a handoff's provider stays optional");
+});
+
+test("New role with a starter doc: guidance asked only then, and sent with the plan", () => {
+  let f = M.newForm("add-role");
+  assert.ok(!M.visibleFields(f).some((x) => x.key === "guidance"), "no guidance while the starter doc is off");
+  f = M.setValue(f, "starter", true);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key).slice(3, 7), ["starter", "guidance", "nextSteps", "grants"]);
+  for (const [k, v] of [["slug", "lifecycle"], ["title", "role lifecycle"], ["doc", "/docs/lifecycle/plan_state.md"], ["ecosystem", "claude"]]) f = M.setValue(f, k, v);
+  assert.equal(M.validate("add-role", { shoal: A }, f), "type the guidance (its mission)");
+  f = M.setValue(M.setValue(M.setValue(f, "guidance", "own the lifecycle verbs"), "nextSteps", "read the docs; list issues"), "grants", "push (maintainer)");
+  const argv = M.planArgv("add-role", { shoal: A }, f);
+  assert.deepEqual(argv.slice(-5), ["--starter", "--guidance=own the lifecycle verbs", "--next=read the docs; list issues", "--grants=push (maintainer)", "--json"]);
 });

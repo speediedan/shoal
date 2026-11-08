@@ -167,6 +167,17 @@
       "confirm": true,
       "token": "ffffffffffffffffffffffffffffffff",
       "expires_s": 600
+    },
+    "add-role": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "add-role",
+      "command": "shoal add-role --spec <spec> --role=<slug>,claude,<title>,<doc>",
+      "preview": "[dry-run] would write <doc> (34 lines):\n\n# <slug>: plan state\n...\n\n[dry-run] add <slug> to <shoal>: brief from <doc>, launch on its home host",
+      "cost": "starts a new claude session for <slug> on the shoal's home host: its first turn (tokens)",
+      "confirm": true,
+      "token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expires_s": 600
     }
   },
   "result": {
