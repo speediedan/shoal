@@ -1034,7 +1034,9 @@ and the contract are in [`ui.md`](ui.md).
   operator is offline, a session that ended, or idle with work queued), and accounting keeps the event. So does
   `wait:assignment`, which after two hours with no open question stops asking for attention (no halo, out of needs-you, a
   count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
-  which event, and the legend lists what is on screen, with the full key a click away. Each role's active, next and
+  which event, and the legend lists what is on screen, with the full key a click away. A research or prototyping run
+  (`wait:research-proto`, role-time group `research`) spins like a CI wait but reads apart from both: a dashed outline, a
+  wide hatch and `⚗`. Each role's active, next and
   recently done items are satellites on short spokes: a next item with a recorded blocker is a ring, a stale
   blocker red, and a hover shows the item's card (its title, what it waits on, how many are queued past those
   drawn) while a click opens its issue (an `http` or `https` link only, since a role writes it). A ring is the
