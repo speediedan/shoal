@@ -3505,6 +3505,147 @@ python3 -c 'import json,sys;d=json.loads(sys.argv[1]);s=d["shoals"][0];assert d[
   || fail "roles view (roles with a session only) :: $OUT"
 echo "act plan and apply ok"
 
+# the Queue dialog: one role's queue and candidates (read-only), and its batch as one plan
+python3 - "$SHOALD" <<'PYQ' || fail "queue manager: state and batch"
+"""ui_queue on a synthetic ledger: the read side's rows and sources, and the batch's steps."""
+import os
+import sys
+import types
+
+D = sys.argv[1]
+sys.path[:0] = [D, D + "/ui"]
+os.environ.setdefault("SHOAL_DEFAULT_OWNER", "example")
+import ui_queue  # noqa: E402
+from ledger import View  # noqa: E402
+
+
+class Led:
+    def __init__(self, evs):
+        self.evs = evs
+
+    def events(self, reload=False):
+        return self.evs
+
+    def landed_order(self, ids):
+        return {i: n for n, i in enumerate(ids)}
+
+
+def R(slug, fill="self"):
+    return types.SimpleNamespace(slug=slug, fill=fill, session="s-" + slug, scope={}, aux=False)
+
+
+roles = [R("cl"), R("oc", "assigned"), R("cx")]
+spec = types.SimpleNamespace(sid="qtest", roles=roles, features={}, sources=[], effective_repos=["example/repo"],
+                             role=lambda s: next((r for r in roles if r.slug == s), None), ledger_dir="")
+n = [0]
+
+
+def ev(by, typ, **kw):
+    n[0] += 1
+    e = {"id": f"e{n[0]}", "ts": f"2026-11-08T0{n[0] // 10}:{n[0] % 10}0:00Z", "by": by, "type": typ, **kw}
+    if typ == "queue":
+        e["_writer_file"] = by
+    return e
+
+
+evs = [
+    ev("user", "offer", to="cl", item="repo#1:fix", prio=50),
+    ev("cl", "claim", item="repo#1:fix"),
+    ev("user", "offer", to="cl", item="repo#2:fix", prio=50),    # queued offer
+    ev("user", "offer", to="cl", item="repo#3:review", prio=40),  # an offer not in the queue yet
+    ev("cl", "claim", item="repo#4:fix", src="board"),            # held, not in the queue
+    ev("cl", "queue", active="repo#1:fix", next=["repo#2:fix", "repo#9:fix"], next_blocked={"repo#9:fix": "cx:repo#5"}),
+    ev("cx", "claim", item="repo#5:fix", src="board"),            # another role's claim
+    ev("user", "offer", to="oc", item="repo#6:fix", prio=50),     # another role's offer
+    ev("oc", "claim", item="repo#7:fix"),                         # oc claims without offer: refused (assigned) -> not live
+    ev("cx", "claim", item="repo#8:fix", src="board"),
+    ev("cx", "release", item="repo#8:fix", kind="blocked", reason="needs a GPU"),
+]
+spec.ledger_dir = ""
+view = View(Led(evs), spec)
+st = ui_queue.state(spec, view, "cl")
+q = [(r["item"], r["src"], r.get("blocked", ""), bool(r.get("active"))) for r in st["queue"]]
+assert q == [("repo#1:fix", "held", "", True), ("repo#2:fix", "offer", "", False), ("repo#9:fix", "board", "cx:repo#5", False)], q
+c = {r["key"]: (r["src"], r.get("owner"), r.get("how")) for r in st["candidates"]}
+assert c["repo#3"] == ("offer", None, None), c
+assert c["repo#4"] == ("held", None, None), c
+assert c["repo#5"] == ("other", "cx", "claimed"), c
+assert c["repo#6"] == ("other", "oc", "offered"), c
+assert c["repo#8"][0] == "released", c
+assert "repo#7" not in c and "repo#1" not in c, c
+assert st["queue"][0]["url"] == "https://github.com/example/repo/issues/1", st["queue"][0]
+assert st["transfers"] == [] and st["order"] is None and set(st["verbs"]) == {"transfer", "queue-order"}, st
+assert "repo#5:fix" in ui_queue.text(st) and "(cx, claimed)" in ui_queue.text(st)
+
+# the batch: reorder, add an offer, take another role's claim, add a released item, drop a held one, mark one blocked
+b = ui_queue.batch(spec, view, "cl", ["repo#9:fix", "repo#3:review", "repo#5:fix", "repo#8:fix"], ["repo#2:fix", "repo#4:fix"],
+                   ["repo#9:fix=waits on cx's repo#5"])
+verbs = [a[0] for a in b["argvs"]]
+assert verbs == ["withdraw", "offer", "transfer", "msg", "queue-order"], verbs
+w, o, t, m, qo = b["argvs"]
+assert w == ["withdraw", "--shoal", "qtest", "--item=repo#2:fix", "--to", "cl"], w
+assert o[:6] == ["offer", "--shoal", "qtest", "--to", "cl", "--item=repo#8:fix"] and "--prio=13" in o, o
+assert t[:5] == ["transfer", "--shoal", "qtest", "--item=repo#5:fix", "--to"] and t[5] == "cl" and "--prio=12" in t, t
+assert "--kind" in m and "request" in m and "--ack" in m and "--wake" not in m and "repo#4:fix" in m[-1] and "waits on cx" in m[-1], m
+assert qo == ["queue-order", "--shoal", "qtest", "--to", "cl", "--next=repo#9:fix,repo#3:review,repo#8:fix"], qo
+assert b["placed"] == ["repo#9:fix", "repo#3:review", "repo#8:fix"] and b["transfer"] == ["repo#5:fix"] and b["offered"] == ["repo#8:fix"], b
+
+# a fill=assigned role: a board item is offered first; an unchanged queue is no change; the rules refuse
+st_oc = ui_queue.state(spec, view, "oc")
+assert st_oc["fill"] == "assigned"
+for args, why in ((["repo#2:fix", "repo#9:fix"], "no change"), (["repo#1:fix"], "active item"), (["repo#77:fix"], "neither"),
+                  (["repo#3:review", "repo#3:fix"], "twice")):
+    try:
+        ui_queue.batch(spec, view, "cl", args, [], [])
+        raise SystemExit(f"{args} accepted")
+    except ui_queue.QueueError as exc:
+        assert why in str(exc), (args, exc)
+try:
+    ui_queue.batch(spec, view, "cl", ["repo#2:fix", "repo#9:fix"], [], ["repo#2:fix"])
+    raise SystemExit("blocked without a reason accepted")
+except ui_queue.QueueError as exc:
+    assert "item=reason" in str(exc), exc
+# only a reorder: just the order, which wakes the role itself
+b = ui_queue.batch(spec, view, "cl", ["repo#9:fix", "repo#2:fix"], [], [])
+assert [a[0] for a in b["argvs"]] == ["queue-order"], b
+# refusals by item
+assert ui_queue.refusals("OK repo#1: x\nREFUSED repo#2:fix: not offered to cl\nnoise") == {"repo#2:fix": "not offered to cl"}
+
+
+# arch-evo's View queries, when present, flow through
+class V2(View):
+    def transfers(self, slug=None):
+        return [{"id": "t1", "item": "repo#5:fix", "from": "cx", "to": "cl", "prio": 12, "status": "pending", "req": "m1"},
+                {"id": "t2", "item": "repo#6:fix", "from": "oc", "to": "cx", "status": "done"}]
+
+    def queue_orders(self, slug):
+        return {"id": "m2", "order": ["repo#9:fix"], "status": "pending", "ts": "x"}
+
+
+st = ui_queue.state(spec, V2(Led(evs), spec), "cl")
+assert [t["id"] for t in st["transfers"]] == ["t1"] and st["order"]["status"] == "pending", st
+print("ui_queue ok")
+PYQ
+OUT=$(env $AE $H ui queue --shoal $SID --role cl --json) || fail "ui queue :: $OUT"
+python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="shoal-act-view" and d["verb"]=="queue" and d["role"]=="cl" and isinstance(d["candidates"],list) and set(d["verbs"])=={"transfer","queue-order"},d' "$OUT" \
+  || fail "ui queue shape :: $(head -c 400 <<<"$OUT")"
+OUT=$(env $AE $H ui act-plan queue --shoal $SID --role cl --json) || fail "act-plan queue :: $OUT"
+grep -q '"verb": "queue"' <<<"$OUT" || fail "act-plan queue view :: $(head -c 400 <<<"$OUT")"
+env $AE $H offer --shoal $SID --to cl --item example/repo#31:fix >/dev/null 2>&1 || fail "offer for the queue test"
+N=$(ls "$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/act-plans" | wc -l)
+OUT=$(env $AE $H ui act-plan queue-set --shoal $SID --role cl --order=example/repo#31:fix --json 2>&1); RC=$?
+if PYTHONPATH="$SHOALD:$SHOALD/ui" python3 -c 'import sys,ui_queue;sys.exit(0 if all(ui_queue.has_verbs().values()) else 1)' 2>/dev/null; then
+  [ "$RC" = 0 ] && grep -q "queue-order --shoal $SID --to cl" <<<"$OUT" || fail "queue-set plans queue-order :: rc $RC :: $OUT"
+else
+  # before the queue verbs land, a plan that needs them says so and stores nothing
+  [ "$RC" = 2 ] && grep -q "no \`queue-order\` yet" <<<"$OUT" || fail "queue-set without the verbs :: rc $RC :: $OUT"
+  [ "$(ls "$XDG_RUNTIME_DIR/shoal-ui-$(id -u)/act-plans" | wc -l)" = "$N" ] || fail "queue-set without the verbs stored a plan"
+fi
+OUT=$(env $AE $H ui act-plan queue-set --shoal $SID --role cl --order=example/repo#999:fix --json 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q "neither in cl's queue nor one of its candidates" <<<"$OUT" || fail "queue-set refuses an unknown item :: $OUT"
+env $AE $H withdraw --shoal $SID --to cl --item example/repo#31:fix >/dev/null 2>&1 || fail "withdraw after the queue test"
+echo "queue manager ok"
+
 # every routed card probes on its own: concurrent writes of one route cache entry never take a card down
 python3 "$TESTD/route_cache_stress.py" "$SHOALD" "$S/route-stress" || fail "concurrent route cache writes"
 echo "route cache writes ok"

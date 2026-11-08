@@ -41,12 +41,15 @@ WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remo
                "add-session", "add-role", "fill")
 SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
-VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions")
+VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions", "queue")
 SESSION_KEYS = ("harness", "session", "label", "state", "cwd", "job", "model", "effort")
+QUEUE_SET = "queue-set"  # the Queue dialog's batch (ui_queue.batch): several verbs under one token
 
 
 class ActError(ValueError):
-    pass
+    def __init__(self, msg: str, refused: dict | None = None):
+        super().__init__(msg)
+        self.refused = refused or {}  # {item: reason} a verb's dry run refused, for the dialog to mark its rows
 
 
 def plans_dir() -> str:
@@ -364,9 +367,64 @@ def pre_steps(verb: str, a) -> list[list[str]]:
              f"--grants={(getattr(a, 'grants', '') or '').strip()}", f"--about={about}"]]
 
 
+def _view_of(spec):
+    from ledger import Ledger, View
+    return View(Ledger(spec.sid, root=spec.ledger_dir or None, sync=False), spec)
+
+
+def plan_queue(a) -> dict:
+    """The Queue dialog's proposed queue as one plan (ui_queue.batch), each step previewed with its --dry-run.
+    A step's `REFUSED <item>: <reason>` lines come back by item, and no token is handed out."""
+    import ui_queue
+    from ledger import item_key
+    spec = _spec(a.shoal)
+    role = _role(spec, a.role)
+    try:
+        b = ui_queue.batch(spec, _view_of(spec), role, ui_queue._items(a.order), ui_queue._items(a.drop),
+                           list(a.blocked or []), a.note)
+    except ui_queue.QueueError as exc:
+        raise ActError(str(exc)) from exc
+    have = ui_queue.has_verbs()
+    missing = sorted({x[0] for x in b["argvs"] if x[0] in have and not have[x[0]]})
+    if missing:
+        raise ActError(f"this host's shoal has no `{'` or `'.join(missing)}` yet (the queue verbs land in their own PR): "
+                       "nothing can be applied here until they do")
+    preview, refused = [], {}
+    first = {item_key(x) for x in b["offered"]}
+    if not getattr(a, "no_preview", False):
+        for step in b["argvs"]:
+            pv = _shoal(step + ["--dry-run"])
+            out = (pv.stdout + pv.stderr).strip()
+            got = ui_queue.refusals(out)
+            if step[0] == "queue-order":
+                # an item this plan offers first is not offered yet in a dry run: its refusal is expected
+                got = {k: v for k, v in got.items() if item_key(k) not in first}
+                ok = not got and (pv.returncode == 0 or bool(ui_queue.refusals(out)))
+            else:
+                ok = pv.returncode == 0 and not got
+            if not ok and not got:
+                raise ActError(f"`{step[0]}` dry run refused it (exit {pv.returncode}): {out[-400:]}")
+            refused.update(got)
+            preview.append(f"$ shoal {shlex.join(step)}\n{out or '(no preview output)'}")
+    if refused:
+        raise ActError("refused: " + "; ".join(f"{k}: {v}" for k, v in refused.items()), refused)
+    _sweep()
+    token = _store({"verb": QUEUE_SET, "shoal": spec.sid, "role": role, "argvs": b["argvs"], "stop_on_fail": True})
+    woken = [role] if any(x[0] in ("queue-order", "offer") or "--wake" in x for x in b["argvs"]) else []
+    cost = "; ".join(filter(None, [
+        f"wakes {role} once to apply it (a turn); the order is a request it acks" if woken else "",
+        f"each move wakes the holder once to hand the item off ({len(b['transfer'])})" if b["transfer"] else ""]))
+    return {"v": V, "kind": "shoal-act-plan", "verb": QUEUE_SET, "shoal": spec.sid, "role": role,
+            "command": "\n".join("shoal " + shlex.join(x) for x in b["argvs"]), "preview": "\n\n".join(preview),
+            "preview_rc": 0, "cost": cost, "confirm": True, "token": token, "progress": _progress_path(token),
+            "expires_s": PLAN_TTL_S, "summary": b["summary"], "placed": b["placed"], "transfer": b["transfer"]}
+
+
 def plan(verb: str, a) -> dict:
     if verb in VIEW_VERBS:
         return view(verb, a)
+    if verb == QUEUE_SET:
+        return plan_queue(a)
     if verb not in WRITE_VERBS:
         raise ActError(f"unknown verb {verb} (write: {', '.join(WRITE_VERBS)}; view: {', '.join(VIEW_VERBS)})")
     if getattr(a, "scope", ""):
@@ -404,14 +462,16 @@ def apply(token: str) -> dict:
     if time.time() - float(p.get("created", 0)) > PLAN_TTL_S:
         raise ActError("the plan expired: plan it again")
     argvs = [[str(x) for x in argv] for argv in (p.get("argvs") or [p["argv"]])]
-    if not all(args and (args[0] in WRITE_VERBS or args[0] == "doc-init" or args[:2] == ["ui", "pick"]) for args in argvs):
+    import ui_queue
+    if not all(args and (args[0] in WRITE_VERBS + ui_queue.BATCH_VERBS or args[0] == "doc-init" or args[:2] == ["ui", "pick"])
+               for args in argvs):
         raise ActError("a stored plan names no write verb")
     rc, outs = 0, []
     fd = os.open(_progress_path(token), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "w") as log:
         for args in argvs:  # each shoal's verb runs even when another's failed: the output says which
             if len(argvs) > 1:
-                log.write(f"== {args[args.index('--shoal') + 1] if '--shoal' in args else args[0]}\n")
+                log.write(f"== {args[args.index('--shoal') + 1] if p.get('scope') and '--shoal' in args else args[0]}\n")
                 log.flush()
             code, out = _stream(args, log)
             ui_herdr.log_action(args, code)
@@ -517,6 +577,13 @@ def view(verb: str, a) -> dict:
                           + "".join(f"\n  ask {i}: {q}" for i, q in enumerate(x["asks"], 1)) for x in rows]) \
             or "no open asks and no role waiting on a question"
         return dict(base, text=text, asks=rows)
+    if verb == "queue":
+        import ui_queue
+        try:
+            st = ui_queue.state(spec, _view_of(spec), _role(spec, a.role))
+        except ui_queue.QueueError as exc:
+            raise ActError(str(exc)) from exc
+        return dict(base, text=ui_queue.text(st), **st)
     if verb == "upgrade":
         from roles import find_spec
         r = _shoal(["upgrade", "--spec", find_spec(spec.sid), "--dry-run", "--skip-selftests"], timeout=300)
@@ -547,7 +614,8 @@ def cmd_act_plan(a) -> int:
         _emit(plan(a.verb, a), a.json)
         return 0
     except (ActError, subprocess.TimeoutExpired) as exc:
-        _emit({"v": V, "kind": "shoal-act-error", "error": str(exc)}, a.json)
+        _emit({"v": V, "kind": "shoal-act-error", "error": str(exc), **({"refused": exc.refused} if getattr(exc, "refused", None) else {})},
+              a.json)
         return 2
 
 
@@ -564,7 +632,7 @@ def cmd_act_apply(a) -> int:
 def add_parsers(u) -> None:
     q = u.add_parser("act-plan", help="an operator verb without a terminal: a write verb's preview and confirm token, "
                      "or a read-only view (the Herdr app's actions dialog)")
-    q.add_argument("verb", help=f"write: {', '.join(WRITE_VERBS)}; view: {', '.join(VIEW_VERBS)}")
+    q.add_argument("verb", help=f"write: {', '.join(WRITE_VERBS + (QUEUE_SET,))}; view: {', '.join(VIEW_VERBS)}")
     q.add_argument("--shoal", default="")
     q.add_argument("--role", default="", help="role slug (msg also takes *)")
     q.add_argument("--text", default="")
@@ -595,6 +663,9 @@ def add_parsers(u) -> None:
     q.add_argument("--ecosystem", default="", help="handoff, add-role: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--undo", action="store_true", help="dismiss: show the role as needing you again")
+    q.add_argument("--order", default="", help=f"{QUEUE_SET}: the proposed next items, in order, comma-separated")
+    q.add_argument("--drop", default="", help=f"{QUEUE_SET}: items to take out of the role's queue, comma-separated")
+    q.add_argument("--blocked", action="append", default=[], help=f"{QUEUE_SET}: item=what it waits on (repeatable)")
     q.add_argument("--no-preview", action="store_true", help="a write verb: skip its dry run (the apply reports any refusal)")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_act_plan)

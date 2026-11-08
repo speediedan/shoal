@@ -46,6 +46,7 @@ export const VERBS = [
   { verb: "offer", label: "Offer", kind: "write", role: "one", fields: ["item", "note"], about: "offer an item to a role" },
   { verb: "withdraw", label: "Withdraw", kind: "write", role: "none", fields: ["item"], about: "withdraw an open offer" },
   { verb: "next", label: "Next", kind: "view", role: "one", about: "a role's queue, offers and mail (marks nothing read)" },
+  { verb: "queue", label: "Queue", kind: "queue", role: "one", about: "lay out this role's queue: reorder, add candidates (another role's items move by transfer), drop, mark blocked" },
   { verb: "asks", label: "Asks", kind: "view", role: "opt", about: "open asks and roles waiting on a question (one role's, when one is picked)" },
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
@@ -64,6 +65,7 @@ export const VERBS = [
 export const verbInfo = (verb) => VERBS.find((v) => v.verb === verb) ?? null;
 export const isWrite = (verb) => verbInfo(verb)?.kind === "write";
 export const isView = (verb) => verbInfo(verb)?.kind === "view";
+export const isQueue = (verb) => verbInfo(verb)?.kind === "queue";
 
 /** The verbs a target can use: a scope across shoals (`all`, `host:<name>`) takes only those that span shoals. */
 export function verbsFor(target) {
@@ -442,7 +444,8 @@ export function parseReply(r, expect = null) {
   }
   const d = obj(parseJson(r.stdout));
   if (d && d.kind === KINDS.error) {
-    return { kind: "error", error: clip(plainText(str(d.error)).trim() || `exit ${r.code}`), code: r.code };
+    const refused = obj(d.refused) ? Object.fromEntries(Object.entries(d.refused).map(([k, v]) => [str(k), str(v)])) : null;
+    return { kind: "error", error: clip(plainText(str(d.error)).trim() || `exit ${r.code}`), code: r.code, ...(refused ? { refused } : {}) };
   }
   if (!d) {
     const why = lastLine(r.stderr) || lastLine(r.stdout) || "no output";
@@ -463,6 +466,7 @@ export function parseReply(r, expect = null) {
       confirm: d.confirm !== false,
       token: strOrNull(d.token),
       expiresS: typeof d.expires_s === "number" && d.expires_s > 0 ? d.expires_s : null,
+      summary: arr(d.summary).map(str).filter((x) => x.trim()),
     };
   } else if (d.kind === KINDS.result) {
     const rc = typeof d.rc === "number" ? d.rc : r.code;
@@ -471,6 +475,7 @@ export function parseReply(r, expect = null) {
     out = { kind: "view", verb: strOrNull(d.verb), shoal: strOrNull(d.shoal), role: strOrNull(d.role), text: str(d.text) };
     if (Array.isArray(d.asks)) out.asks = normAsks(d.asks);
     if (Array.isArray(d.sessions)) out.sessions = d.sessions.filter((s) => obj(s));
+    if (d.verb === "queue") out.queue = normQueue(d);
   }
   if (!out) return { kind: "error", error: clip(`unexpected reply${d.kind ? ` (${d.kind})` : ""}`), code: r.code };
   if (out.kind !== "result" && r.code !== 0) {
@@ -631,6 +636,7 @@ export function targetMachine(target, terminals, spaces, fallback = null) {
  * Esc goes back one step, and closes from the menu.
  */
 export function backStep(screen, verb) {
+  if (isQueue(verb) && ["plan", "error", "result", "busy"].includes(screen)) return "queue";
   switch (screen) {
     case "menu": return "close";
     case "plan": return "form";
@@ -700,6 +706,10 @@ export function fixtureReply(fx, argv, last = null) {
   if (a.some((x) => /^--(text|item|note|until)=.*fail/i.test(x))) return err(fx?.error);
   const shoal = opt("shoal");
   const role = opt("role");
+  if (verb === "queue-set" && fx?.plans?.[verb]) {
+    if (a.some((x) => /^--order=.*fail/i.test(x))) return err(fx?.refusedQueue);
+    return reply({ ...fx.plans[verb], shoal, role, command: ["shoal", "queue-order", "--shoal", str(shoal), "--to", str(role), `--next=${opt("order") ?? ""}`].join(" ") });
+  }
   if (fx?.views?.[verb]) {
     return reply({ ...fx.views[verb], shoal, role });
   }
@@ -749,6 +759,7 @@ export function palette(t = {}) {
     working: pick("working", "ansi3") ?? "#ffb547",
     amber: pick("ansi11", "ansi3", "working") ?? "#ffb547",
     red: pick("ansi9", "ansi1", "blocked") ?? "#ff4d5e",
+    violet: pick("ansi13", "ansi5") ?? "#b48cff",
     green: pick("done", "ansi10", "ansi2") ?? "#50d090",
   };
 }
@@ -759,4 +770,176 @@ export function withAlpha(hex, a) {
   if (h.length === 3) h = h.split("").map((x) => x + x).join("");
   const n = Math.round(Math.min(1, Math.max(0, Number(a) || 0)) * 255).toString(16).padStart(2, "0");
   return `#${h.slice(0, 6)}${n}`;
+}
+
+// ---- the queue manager (verb "queue")
+//
+//   shoal ui act-plan queue --shoal ID --role SLUG --json
+//     -> {"kind":"shoal-act-view","verb":"queue","fill","next_max","queue":[row],"candidates":[row],"transfers","order","verbs"}
+//     row: {item, key, src: held|offer|board|released|other, title, url, owner?, how?, blocked?, active?, by?, prio?}
+//   shoal ui act-plan queue-set --shoal ID --role SLUG --order=a,b --drop=c --blocked=item=why --json
+//     -> a plan (several verbs under one token), or an error with {refused: {item: reason}}
+// The draft is the dialog's proposed queue; nothing is written until the plan is confirmed.
+
+/** Where a candidate comes from, in the order the list shows them, with its tag. */
+export const QUEUE_SRCS = ["offer", "held", "board", "released", "other"];
+export const SRC_LABEL = { offer: "offered", held: "held", board: "board", released: "released", other: "another role's" };
+
+/** A source's color: another role's items stand apart (violet), so a move between roles is plain. */
+export function srcColor(src, c) {
+  return { offer: c.accent, held: c.green, board: c.muted, released: c.amber, other: c.violet }[src] ?? c.dim;
+}
+
+const keyOf = (item) => str(item).trim().toLowerCase().replace(/:[a-z-]+$/, "");
+
+function normRow(r) {
+  const x = obj(r);
+  if (!x || !strOrNull(x.item)) return null;
+  const src = QUEUE_SRCS.includes(x.src) ? x.src : "board";
+  return {
+    item: str(x.item).trim(),
+    key: strOrNull(x.key) ?? keyOf(x.item),
+    src,
+    title: str(x.title),
+    url: /^https:\/\//i.test(str(x.url)) ? str(x.url) : null,
+    owner: strOrNull(x.owner),
+    how: strOrNull(x.how),
+    blocked: strOrNull(x.blocked),
+    active: x.active === true,
+    by: strOrNull(x.by),
+    prio: typeof x.prio === "number" ? x.prio : null,
+    kind: strOrNull(x.kind),
+    reason: strOrNull(x.reason),
+  };
+}
+
+/** The queue view's reply, normalized. */
+export function normQueue(d) {
+  const verbs = obj(d.verbs) ?? {};
+  return {
+    role: strOrNull(d.role),
+    fill: strOrNull(d.fill) ?? "self",
+    nextMax: typeof d.next_max === "number" && d.next_max > 0 ? d.next_max : 3,
+    queue: arr(d.queue).map(normRow).filter(Boolean),
+    candidates: arr(d.candidates).map(normRow).filter(Boolean),
+    transfers: arr(d.transfers).map(obj).filter((t) => t && strOrNull(t.item))
+      .map((t) => ({ item: str(t.item), from: strOrNull(t.from), to: strOrNull(t.to), status: strOrNull(t.status) ?? "pending" })),
+    order: obj(d.order) ? { order: arr(d.order.order).map(str), status: strOrNull(d.order.status) ?? "pending" } : null,
+    // false only when the CLI says the verb is missing: an older CLI that says nothing is not held back here
+    verbs: { transfer: verbs.transfer !== false, queueOrder: verbs["queue-order"] !== false },
+  };
+}
+
+/** A fresh draft: the role's next items as they are, nothing dropped, picked or marked. */
+export function newDraft(q) {
+  return { rows: arr(q?.queue).filter((r) => !r.active).map((r) => ({ ...r })), dropped: [], blocked: {}, picked: null, refused: {} };
+}
+
+const findRow = (d, key) => d.rows.findIndex((r) => r.key === key);
+
+/** Picks a row or candidate to place (click a slot next); picking it again unpicks it. */
+export function draftPick(d, key) {
+  return { ...d, picked: d.picked === key ? null : key };
+}
+
+/**
+ * Places `key` at `pos` (0 = first next item): a row moves, a candidate or a dropped row joins. The pick clears.
+ * An unknown key changes nothing.
+ */
+export function draftPlace(d, q, key, pos) {
+  const rows = d.rows.slice();
+  let dropped = d.dropped;
+  let row = null;
+  const at = findRow(d, key);
+  if (at >= 0) [row] = rows.splice(at, 1);
+  else {
+    row = dropped.find((r) => r.key === key) ?? arr(q?.candidates).find((r) => r.key === key) ?? null;
+    dropped = dropped.filter((r) => r.key !== key);
+  }
+  if (!row) return { ...d, picked: null };
+  const p = Math.max(0, Math.min(rows.length, Number.isInteger(pos) ? pos : rows.length));
+  rows.splice(p, 0, { ...row });
+  return { ...d, rows, dropped, picked: null };
+}
+
+/** Moves a row up (-1) or down (+1). */
+export function draftMove(d, key, delta) {
+  const at = findRow(d, key);
+  const to = at + delta;
+  if (at < 0 || to < 0 || to >= d.rows.length) return d;
+  const rows = d.rows.slice();
+  [rows[at], rows[to]] = [rows[to], rows[at]];
+  return { ...d, rows };
+}
+
+/** Takes a row out: one the queue had is dropped (Undo brings it back); a placed candidate goes back to the candidates. */
+export function draftRemove(d, q, key) {
+  const at = findRow(d, key);
+  if (at < 0) return d;
+  const row = d.rows[at];
+  const rows = d.rows.filter((r) => r.key !== key);
+  const blocked = { ...d.blocked };
+  delete blocked[row.item];
+  const had = arr(q?.queue).some((r) => r.key === key && !r.active);
+  return { ...d, rows, blocked, picked: d.picked === key ? null : d.picked, dropped: had ? [...d.dropped, row] : d.dropped };
+}
+
+/** Marks a row blocked with what it waits on; an empty reason clears it. */
+export function draftBlock(d, item, reason) {
+  const blocked = { ...d.blocked };
+  const why = str(reason).trim();
+  if (why) blocked[item] = why;
+  else delete blocked[item];
+  return { ...d, blocked };
+}
+
+/** Whether the draft differs from the queue as read. */
+export function draftChanged(d, q) {
+  const was = arr(q?.queue).filter((r) => !r.active).map((r) => r.key);
+  const now = d.rows.map((r) => r.key);
+  return d.dropped.length > 0 || Object.keys(d.blocked).length > 0 || was.length !== now.length || was.some((k, i) => k !== now[i]);
+}
+
+/** The candidates not in the draft, by source then as read, whose item, title, owner or source holds `text`. */
+export function draftCandidates(d, q, text = "") {
+  const placed = new Set(d.rows.map((r) => r.key));
+  const t = str(text).trim().toLowerCase();
+  const hit = (r) => !t || [r.item, r.title, r.owner, SRC_LABEL[r.src], r.src].some((x) => str(x).toLowerCase().includes(t));
+  const order = (r) => QUEUE_SRCS.indexOf(r.src);
+  return arr(q?.candidates).filter((r) => !placed.has(r.key) && hit(r))
+    .map((r, i) => [r, i]).sort((a, b) => order(a[0]) - order(b[0]) || a[1] - b[1]).map(([r]) => r);
+}
+
+/** Why the draft cannot be planned yet, or null. */
+export function draftProblem(d, q) {
+  if (!draftChanged(d, q)) return "no change to the queue yet";
+  const own = d.rows.filter((r) => r.src !== "other").length;
+  if (own > q.nextMax) return `at most ${q.nextMax} next items (the group's next_max): drop ${own - q.nextMax}`;
+  if (!q.verbs.queueOrder) return "this host's shoal has no queue-order yet: the layout can be planned once it lands";
+  if (!q.verbs.transfer && d.rows.some((r) => r.src === "other")) return "this host's shoal has no transfer yet: another role's item cannot move";
+  return null;
+}
+
+/** The transfers still pending into or out of this role, by item key. */
+export function pendingTransfers(q) {
+  return new Map(arr(q?.transfers).filter((t) => t.status === "pending").map((t) => [keyOf(t.item), t]));
+}
+
+/** argv for the draft's plan (queue-set). */
+export function queueSetArgv(target, d) {
+  const why = validate("queue", target);
+  if (why) throw new Error(why);
+  const argv = ["ui", "act-plan", "queue-set", "--shoal", target.shoal, `--role=${target.role}`, `--order=${d.rows.map((r) => r.item).join(",")}`];
+  if (d.dropped.length) argv.push(`--drop=${d.dropped.map((r) => r.item).join(",")}`);
+  for (const [item, why] of Object.entries(d.blocked)) argv.push(`--blocked=${item}=${why}`);
+  argv.push("--json");
+  return argv;
+}
+
+/** A refused plan's reasons on the draft's rows (by item, as the CLI names them). */
+export function draftRefused(d, refused) {
+  const r = obj(refused) ?? {};
+  const out = {};
+  for (const [item, why] of Object.entries(r)) out[keyOf(item)] = str(why);
+  return { ...d, refused: out };
 }
