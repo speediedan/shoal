@@ -1122,7 +1122,8 @@ route for another host, which it first adds as a herdr-core machine named after 
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground
 is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
-feeder push; a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
+feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
+actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
 `done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A local standalone
 Claude card reports its session too (`standalone_report` over `claude agents`; `done` when a turn it saw has ended),

@@ -632,7 +632,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
-            _mark(ui_app, ui_app.NEED_LABEL, "")
+            _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: ""})
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -642,7 +642,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
     force = False
     latch = ui_app.DoneLatch() if ui_app is not None else None
     sent = None
-    need = None  # the cause last labelled (shoal.need); None: not yet written, so a stale one is cleared
+    need = None  # the labels last written (shoal.need, shoal.asks); None: not yet written, so stale ones are cleared
     while True:
         watch.check()
         # re-read each tick: a role moved to another host (its spec `server`) is attached there at once
@@ -660,9 +660,10 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
                 import ui_herdr
                 osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid), latch, sent)
                 sent = osc or sent
-                now = ui_app.card_report(rows[0], "").get("need", "")
+                rep = ui_app.card_report(rows[0], "")
+                now = (rep.get("need", ""), str(rep.get("asks") or ""), "1" if rep.get("asks_badge") else "")
                 if now != need:
-                    _mark(ui_app, ui_app.NEED_LABEL, now)
+                    _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1], ui_app.ASKS_BADGE_LABEL: now[2]})
                     need = now
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
@@ -709,6 +710,14 @@ def _mark_attached(ui_app, value: str) -> None:
     try:
         ui_app.hc_label(os.environ["HC_TERMINAL_ID"], {ui_app.ATTACH_LABEL: value})
     except Exception:  # noqa: BLE001 - a label never breaks an attach
+        pass
+
+
+def _marks(ui_app, labels: dict) -> None:
+    """Set labels on this card's terminal in one call ("" removes one)."""
+    try:
+        ui_app.hc_label(os.environ["HC_TERMINAL_ID"], labels)
+    except Exception:  # noqa: BLE001 - a label never breaks a card
         pass
 
 

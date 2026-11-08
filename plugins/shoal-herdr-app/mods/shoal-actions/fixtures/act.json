@@ -207,7 +207,15 @@
             "Which branch should the fix target: main or release-1.2?"
           ],
           "question": true,
-          "says_waiting": false
+          "says_waiting": false,
+          "links": [
+            [
+              {
+                "text": "repo-one#104",
+                "url": "https://github.com/acme/repo-one/issues/104"
+              }
+            ]
+          ]
         },
         {
           "role": "lane-b",
@@ -217,7 +225,16 @@
             "Should the flaky test be quarantined?"
           ],
           "question": false,
-          "says_waiting": true
+          "says_waiting": true,
+          "links": [
+            [
+              {
+                "text": "repo-one#104",
+                "url": "https://github.com/acme/repo-one/issues/104"
+              }
+            ],
+            []
+          ]
         }
       ]
     },

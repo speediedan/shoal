@@ -413,6 +413,34 @@ def apply(token: str) -> dict:
             "rc": rc, "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "output": "\n\n".join(outs)}
 
 
+ITEM_RE = r"(?<![\w/#])((?:[A-Za-z0-9][\w.-]*/)?[A-Za-z0-9][\w.-]*)?#(\d+)\b"
+# a bare #n right after one of these is a build, run or gate number, not an issue: no link for it
+NOT_ISSUE = ("gate", "build", "run", "job", "pipeline", "workflow", "ci", "pr head", "attempt")
+
+
+def ask_links(text: str, active: str, repos: dict) -> list[dict]:
+    """[{text, url}] for the issues and PRs an ask names: `owner/repo#n`, `repo#n`, or a bare `#n`, read in the repo of
+    the role's active item (the one an ask is usually about). At most four, in order, each once."""
+    import re
+    import ui_graph
+    here = active.split("#", 1)[0] if "#" in active else ""
+    out, seen = [], set()
+    for m in re.finditer(ITEM_RE, text or ""):
+        if not m.group(1) and re.search(r"\b(" + "|".join(NOT_ISSUE) + r")\s*$", (text or "")[max(0, m.start() - 14):m.start()], re.I):
+            continue
+        repo = m.group(1) or here
+        if not repo:
+            continue
+        item = f"{repo}#{m.group(2)}"
+        url = ui_graph.item_url(item, repos)
+        if url and url not in seen and url.startswith("https://"):
+            seen.add(url)
+            out.append({"text": item, "url": url})
+        if len(out) == 4:
+            break
+    return out
+
+
 def view(verb: str, a) -> dict:
     import ui_status
     base = {"v": V, "kind": "shoal-act-view", "verb": verb, "shoal": a.shoal or "", "role": a.role or ""}
@@ -458,16 +486,21 @@ def view(verb: str, a) -> dict:
         lines.append(f"{len(c.get('open', []))} open condition(s) (the health quorum's own evaluate, refreshed now)")
         return dict(base, text="\n".join(lines), conditions=c.get("open", []))
     if verb == "asks":
+        import ui_graph
         doc = ui_status.status([spec.sid], opencode_probe=False)
         s = doc["shoals"][0] if doc.get("shoals") else {}
         here = s.get("this_host", "")
+        repos = ui_graph.repo_map(spec)
         rows = []
         for r in s.get("roles", []):
+            if a.role and r["slug"] != a.role:
+                continue  # one role's asks (its badge in the agents list opens them)
             reasons = set(r["can_progress"]["reasons"])
             if r["asks"] or {"blocked-on-question", "blocked-says-waiting"} & reasons:
                 rows.append({"role": r["slug"], "host": r.get("host") or "", "remote": bool(r.get("host")) and r.get("host") != here,
                              "asks": list(r["asks"]), "question": "blocked-on-question" in reasons,
-                             "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or ""})
+                             "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or "",
+                             "links": [ask_links(q, r.get("active") or "", repos) for q in r["asks"]]})
         text = "\n".join([f"{x['role']}" + ("  (a question is open in its session: attach to answer it)" if x["question"] else "")
                           + (f"\n  it says: {x['says']}" if x["says"] else "")
                           + "".join(f"\n  ask {i}: {q}" for i, q in enumerate(x["asks"], 1)) for x in rows]) \
