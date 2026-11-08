@@ -54,7 +54,7 @@ export const VERBS = [
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
   { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
   { verb: "add-role", label: "New role", kind: "write", role: "none", fields: ["slug", "title", "doc", "starter", "guidance", "nextSteps", "grants", "provider", "model", "effort", "host", "fill"], about: "start a new session as a role of this shoal, from its start doc (or one written for it)" },
-  { verb: "add-session", label: "Add session", kind: "write", role: "none", hostLevel: true, fields: ["label", "pick"], about: "save a standalone session (Claude, opencode, Codex, Muse) as a seat and open its space" },
+  { verb: "add-session", label: "Add session", kind: "write", role: "none", hostLevel: true, run: "Add standalone seat", fields: ["label", "pick"], about: "save a standalone session (Claude, opencode, Codex, Muse) as a seat and open its space" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
   { verb: "upgrade", label: "Upgrade preview", kind: "view", role: "none", about: "what an upgrade would roll out (applying stays a CLI step)" },
@@ -135,10 +135,12 @@ export function backNote(until) {
 }
 
 /** True when the form would run across shoals with no preview: that takes the button, naming its reach, and not Enter. */
-export const runsAcross = (target, form) => Boolean(strOrNull(target?.scope)) && form?.values?.dryRun !== true;
+export const runsAcross = (target, form) => Boolean(strOrNull(target?.scope)) && form?.values?.dryRun !== true
+  && !verbInfo(form?.verb)?.hostLevel; // a host's verb (Add session) runs once, on its session's machine, whatever the scope
 
 /** The form's go button when it runs at once. */
-export const runLabel = (target) => (strOrNull(target?.scope) ? `Run on ${scopeLabel(target.scope)}` : "Run");
+export const runLabel = (target, verb = null) => (verbInfo(verb)?.hostLevel ? verbInfo(verb).run ?? "Run"
+  : strOrNull(target?.scope) ? `Run on ${scopeLabel(target.scope)}` : "Run");
 
 /** The last `n` lines of an apply's output so far, for a screen that has room for those. */
 export function lastLines(text, n = 18) {
@@ -399,7 +401,14 @@ function normRoles(d) {
     }
     shoals.push({ id, tag: strOrNull(s.tag) ?? shortShoal(id), roles, needsYou: roles.filter((r) => r.needsYou).length });
   }
-  return { kind: "roles", shoals };
+  const ecosystems = arr(d.ecosystems).filter((e) => typeof e === "string" && e);
+  return { kind: "roles", shoals, ...(ecosystems.length ? { ecosystems } : {}) };
+}
+
+/** A provider choice's options: those the host has in use, when it says (the roles reply), else all. */
+export function providerOptions(options, roles) {
+  const on = arr(roles?.ecosystems);
+  return on.length ? arr(options).filter((o) => on.includes(o)) : arr(options);
 }
 
 function normAsks(list) {

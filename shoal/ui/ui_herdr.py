@@ -354,6 +354,8 @@ def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = Non
 
 UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "usage_providers": "comma-separated subscription providers; empty disables account polling",
+               "ecosystems": "comma-separated agent ecosystems in use here (default all: claude,codex,opencode,muse); one set aside "
+                             "drops out of usage, standalone discovery and the actions dialog's providers",
                "usage_bridge": "JSON object: providers and command argv for an operator-owned quota reader",
                "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
@@ -386,6 +388,21 @@ def cmd_set(a) -> int:
                 print("usage_bridge needs providers and a nonempty command argv array")
                 return 1
             d[key] = b
+        else:
+            d.pop(key, None)
+    elif key == "ecosystems":
+        import backends
+        ecos = [s.strip() for s in a.value.split(",") if s.strip()]
+        if any(s not in backends.ecosystems() for s in ecos):
+            print("ui set: ecosystems are " + ",".join(backends.ecosystems()))
+            return 1
+        if ecos:
+            d[key] = list(dict.fromkeys(ecos))
+            # a role still running on one set aside keeps spending it: say so, and its meter stays (usage_providers)
+            held = ui_status.roles_on(set(backends.ecosystems()) - set(ecos))
+            if held:
+                print(f"set aside, but still used by {len(held)} role(s): {', '.join(held)}; their usage stays shown until "
+                      "they are handed off to an ecosystem in use")
         else:
             d.pop(key, None)
     elif key == "usage_providers":
@@ -790,9 +807,10 @@ def internal_session(name: str, role_slugs: set[str]) -> bool:
 def candidates_standalone(exclude: set[str]) -> list[dict]:
     """Available sessions on this host, excluding roles, old incarnations and internal runs."""
     import backends
+    import ui_status
     slugs = role_slugs()
     out = []
-    for harness in backends.ecosystems():
+    for harness in ui_status.active_ecosystems():
         try:
             for row in backends.get(harness).sessions():
                 sid = str(row.get("session") or "")
@@ -969,7 +987,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
     import ui_status
     import subscription_usage
     settings = ui_status.ui_config()
-    subscription_usage.refresh_async(settings.get("usage_providers", []), bridge=settings.get("usage_bridge"))
+    subscription_usage.refresh_async(ui_status.usage_providers(), bridge=settings.get("usage_bridge"))
     ui_status.BACKGROUND_CONDITIONS = True  # a tick never waits on the provider probes behind conditions
     doc = ui_status.status(None, with_conditions=True,
                            refresh_conditions=False)  # conditions come from their own 5-minute cache

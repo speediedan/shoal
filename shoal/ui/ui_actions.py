@@ -191,8 +191,9 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError("the role's name (slug) is 2 to 48 of a-z, 0-9 and -, starting with a letter or digit")
         if spec.role(slug) is not None:
             raise ActError(f"{slug} is already a role of {sid}: pick another name (or hand it off to restart it)")
-        if a.ecosystem not in backends.ecosystems():
-            raise ActError(f"pick a provider ({'|'.join(backends.ecosystems())})")
+        import ui_status
+        if a.ecosystem not in ui_status.active_ecosystems():
+            raise ActError(f"pick a provider in use here ({'|'.join(ui_status.active_ecosystems())}; `shoal ui set ecosystems`)")
         if not title:
             raise ActError("add-role needs --title (what the role is for)")
         if not doc:
@@ -236,6 +237,9 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         if a.effort:
             args.append(f"--effort={a.effort}")
         if a.ecosystem:
+            import ui_status
+            if a.ecosystem not in ui_status.active_ecosystems():
+                raise ActError(f"{a.ecosystem} is set aside on this host (`shoal ui set ecosystems`): hand off to one in use")
             args.append(f"--ecosystem={a.ecosystem}")
         if a.force:
             args.append("--force")
@@ -423,7 +427,7 @@ def view(verb: str, a) -> dict:
             shoals.append({"id": s["id"], "tag": ui_herdr.shoal_tag(s["id"]), "roles": [
                 {"slug": r["slug"], "host": r.get("host") or "", "needs_you": bool(r.get("needs_you")),
                  "posture": ui_status.posture_label(r)} for r in s.get("roles", []) if r.get("session_id")]})
-        return {"v": V, "kind": "shoal-act-roles", "shoals": shoals}
+        return {"v": V, "kind": "shoal-act-roles", "shoals": shoals, "ecosystems": ui_status.active_ecosystems()}
     if verb == "sessions":
         # this host's sessions a seat could be made of: the 0.9.3 picker's own list (roles, old incarnations and
         # internal runs left out; saved seats stay, so one closed can be added back)

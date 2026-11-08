@@ -286,7 +286,13 @@ line per provider instead. The status line (the quick view in the tab bar)
 shows each provider's used percent for 5h, week and month, for example
 `codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`, with `-` for a window the provider does not report and no reset times. Use `shoal ui usage` for the
 same snapshot outside Herdr. `--providers` temporarily chooses a comma-separated
-list; an empty `usage_providers` setting disables background collection.
+list; an empty `usage_providers` setting disables background collection. A subscription that reports nothing until
+its first use in a window (Muse, `idle`) keeps showing its next weekly reset: the last one a reading reported, rolled
+forward by whole weeks, shown at 0% and "unused since its last reset" (until it has been used once, there is none to
+show). `shoal ui set ecosystems claude,codex,opencode` names the agent ecosystems in use on a host (default all four):
+one set aside drops out of Add session's discovery and New role's and Hand off's providers at once, and out of usage
+(overview and status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
+and `ui set` names those roles, until they are handed off to an ecosystem in use.
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without
@@ -670,7 +676,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   says so, and `--dry-run` saves nothing.
 - **Standalone state in the app.** A local standalone Claude card reports its session the same way (`app=<label>`,
   title `standalone/<label>`), read from `claude agents` as its lattice card is: `working` for a turn, `blocked` with
-  `question` for an open prompt or a session that says it waits on you, else `idle` (`stopped` in the message when no
+  `question` only while a prompt is open (a seat's reply ending reads `blocked` in the listing: that is your turn to
+  type, so it reads `idle`, "your turn: waiting for a reply", and stays out of Needs you), else `idle` (`stopped` in the message when no
   worker runs). A turn the card saw running that has ended is a `done`, written once, as a role's. It keeps reporting
   through an attach (the Claude client reports nothing itself), and while it reports it refreshes every 30 s instead
   of every 5 minutes. Every reporting card on a host shares one `claude agents` listing (`claude-rows.json` beside the
@@ -679,7 +686,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
 - **Role state in the app.** A role card in a herdr-core terminal prints its own OSC 7501 status on every
   refresh (`app=<role>`, which heads the pane, and title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
-  report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask or a design or
+  report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask (the message then leads with the
+  asks themselves, `2 asks: <first>; <second> ·`, so the badge's question can be read; `shoal asks` answers them) or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
   seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until
   you look, and anything the role does next, or an attach, replaces it. A card restarted by an upgrade (every card re-execs
@@ -697,7 +705,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   launcher with `Icon=shoal` shows it; a different icon already there is kept once as `.bak-shoal`.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
-  Spaces acts on that host's shoals, the status bar shows each provider's usage, and the window's mark (top left) is
+  Spaces acts on that host's shoals, the top bar has **Home** and **Lattice** beside Files and Changes (`shoal-tabs`, a
+  patched copy of Herdr's `tabs`; the status bar shows them instead only when that copy is not in the layout), the status
+  bar shows each provider's usage, and the window's mark (top left) is
   SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
   loads no picture through a link).
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal

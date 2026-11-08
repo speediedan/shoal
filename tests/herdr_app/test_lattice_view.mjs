@@ -1040,10 +1040,10 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
   assert.ok(zOf.get("user") > Math.max(...planes.filter((p) => p.kind === "shoal").map((p) => p.z)), "the operator above the shoals");
   const pl = D.projectLayout(global, lay, cam);
   assert.equal(pl.pos.size, lay.pos.size);
-  assert.ok(finiteDeep([...pl.pos.values()]) && finiteDeep(pl.sats) && pl.clusters.every((c) => c.ry === cam.c));
+  assert.ok(finiteDeep([...pl.pos.values()]) && finiteDeep(pl.sats) && pl.clusters.every((c) => c.ry === 1), "global: spheres, circles at any tilt");
   assert.ok(pl.grid.length === 22 && finiteDeep(pl.grid), "a floor grid, ten lines each way plus the edges");
   assert.ok(pl.stems.some((s) => s.id === "n-user") && pl.stems.every((s) => s.y1 >= s.y0 - 1e-9), "stems drop to the floor, the operator's too");
-  assert.ok([...pl.fogOf.values()].every((f) => f >= 0.55 - 1e-9 && f <= 1 + 1e-9));
+  assert.ok([...pl.fogOf.values()].every((f) => f >= 0.55 * 0.55 - 1e-9 && f <= 1 + 1e-9), "far fades; round the back of a sphere, more");
   assert.equal(pl.order.length, global.nodes.length);
   for (let i = 1; i < pl.clusters.length; i++) assert.ok(pl.clusters[i - 1].depth <= pl.clusters[i].depth, "far to near");
   assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.62 - 1e-9 && s <= 1.45 + 1e-9));
@@ -1056,10 +1056,28 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
   for (const [vm, l] of [[global, pl], [alpha, pa]]) {
     const sc = S.buildScene(vm, l, { width: 1000, height: 700, tf: G.identity() });
     assert.ok(finiteDeep(sc.items), "no NaN in the depth scene");
-    assert.ok(sc.items.some((it) => it.id.startsWith("disc-slab-") || it.id.startsWith("band-slab-")));
+    assert.ok(sc.items.some((it) => it.id.startsWith("sphere-body-") || it.id.startsWith("band-slab-")), "a sphere (global) or a host slab (per shoal)");
     assert.ok(sc.items.some((it) => it.id === "floor-grid") && sc.items.some((it) => it.id.startsWith("stem-")), "the floor and the stems");
   }
   assert.ok(!S.buildScene(global, lay, { width: 1000, height: 700, tf: G.identity() }).items.some((it) => it.id.startsWith("disc-slab-")));
+  // spheres: global depth view; the role that needs you most sits on the side facing you
+  assert.ok(pl.clusters.every((c) => c.sphere && c.ry === 1), "each shoal a sphere");
+  const sc2 = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity() });
+  assert.ok(sc2.items.some((it) => it.id.startsWith("sphere-rim-")) && !sc2.items.some((it) => it.id.startsWith("disc-rim-")));
+  const front = D.spherePoint(cam, 0, 5);
+  assert.ok(Math.abs(front.z - cam.c) < 1e-9 && Math.hypot(front.x, front.y, front.z) > 0.999, "rank 0 faces the camera");
+  const backmost = D.spherePoint(cam, 4, 5);
+  const toward = (u) => u.x * 0 + (u.x * cam.syaw + u.y * cam.cyaw) * cam.s + u.z * cam.c;
+  assert.ok(toward(front) > toward(backmost), "later ranks are further round");
+  const mk = (key, extra = {}) => ({ id: key, visual: { key, needsYou: false, stall: false, urgency: null, ...extra }, metrics: { last_write_age_s: 60 } });
+  const order = [mk("queued"), mk("working"), mk("ask", { needsYou: true, urgency: 1 }), mk("local-ci"), mk("auth", { needsYou: true, urgency: 0 })]
+    .sort((a, b) => { const x = D.sphereRank(a), y = D.sphereRank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }).map((n) => n.id);
+  assert.deepEqual(order, ["auth", "ask", "working", "local-ci", "queued"], "need first, then activity");
+  const ranked = global.nodes.filter((n) => n.kind === "role" && n.shoal === A)
+    .sort((a, b) => { const x = D.sphereRank(a), y = D.sphereRank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || (a.id < b.id ? -1 : 1); });
+  const at = (n) => pl.order.findIndex((x) => x.id === n.id); // order runs far to near
+  assert.ok(at(ranked[0]) > at(ranked.at(-1)), "the role that needs you most is drawn nearer than the least");
+  assert.ok(pl.fogOf.get(ranked[0].id) > pl.fogOf.get(ranked.at(-1).id), "and the one round the back is fainter");
   assert.equal(D.depthFor("tilt", "off", "cpu"), "flat", "a CPU renderer at off stays flat");
   assert.equal(D.depthFor("tilt", "full", "gpu"), "tilt");
   assert.equal(D.nextDepth("iso"), "flat");

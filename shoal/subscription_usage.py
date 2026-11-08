@@ -354,7 +354,8 @@ def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
                 continue
             row = dict(prev, provider=provider, attempted_at=now)
             try:
-                row.update(rows=normalize(provider, fetcher(provider)), observed_at=now,
+                rows = normalize(provider, fetcher(provider))
+                row.update(rows=rows, known_resets=known_resets(prev, rows), observed_at=now,
                            source="account API",
                            error="", failures=0, next_poll_at=now + POLL_S)
             except Exception as e:  # credentials, HTTP, CLI and parser failures never crash the feeder
@@ -388,6 +389,42 @@ def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
         return doc
 
 
+FIXED_WINDOWS = {"week": 10080}  # windows on a schedule of their own; a 5h one starts at the first use after it ends
+
+
+def known_resets(prev, rows):
+    """{"<bucket>/<window>": {resets_at, minutes}} for the fixed-schedule windows a reading reports, over the ones kept
+    before: an idle account (Muse reports nothing before the first use in a window) still has a next reset to show."""
+    known = dict((prev or {}).get("known_resets") or {})
+    for r in rows or []:
+        for w in r.get("windows") or []:
+            if w.get("name") in FIXED_WINDOWS and w.get("resets_at") is not None:
+                known[f"{r.get('bucket')}/{w['name']}"] = {"resets_at": w["resets_at"], "minutes": w.get("minutes") or FIXED_WINDOWS[w["name"]]}
+    return known
+
+
+def projected(row, now):
+    """The account row with each idle bucket's fixed windows filled in from its known schedule: unused (0%), the
+    reset rolled forward past `now` by whole periods, marked `projected`."""
+    known = row.get("known_resets") or {}
+    out = []
+    for r in row.get("rows") or []:
+        if r.get("idle") and not r.get("windows"):
+            ws = []
+            for name in FIXED_WINDOWS:
+                k = known.get(f"{r.get('bucket')}/{name}")
+                if not k or not k.get("minutes"):
+                    continue
+                step = float(k["minutes"]) * 60
+                t = float(k["resets_at"])
+                if t <= now:
+                    t += step * (math.floor((now - t) / step) + 1)
+                ws.append({"name": name, "used_percent": 0, "resets_at": t, "minutes": k["minutes"], "projected": True})
+            r = dict(r, windows=ws) if ws else r
+        out.append(r)
+    return dict(row, rows=out)
+
+
 def refresh_async(providers, bridge=None):
     global _RUNNING
     if not providers:
@@ -417,7 +454,7 @@ def snapshot(providers, *, now=None):
     for provider in dict.fromkeys(providers):
         if provider not in PROVIDERS:
             continue
-        row = dict(accounts.get(provider) or {}, provider=provider)
+        row = projected(dict(accounts.get(provider) or {}, provider=provider), now)
         observed = row.get("observed_at")
         row["age_s"] = max(0, now - observed) if observed is not None else None
         row["stale"] = bool(row.get("error")) or observed is None or now - observed > STALE_S
@@ -464,6 +501,8 @@ def render_lines(doc, *, color=False):
             label = a["provider"] + ("/" + r["bucket"] if r["bucket"] != a["provider"] else "")
             state = severity(a, r)
             body = f"  {label}: " + ("  ".join(cells) if cells else IDLE_TEXT if r.get("idle") else "? unavailable")
+            if cells and r.get("idle"):
+                body += "  (unused since its last reset)"
             missing = [n for n in ("5h", "week", "month") if n not in {w["name"] for w in r["windows"]}]
             if cells and missing:
                 body += "  " + "/".join(missing) + " --"
@@ -628,7 +667,7 @@ def summary(doc, compact=False):
 
 def cmd_usage(a):
     import ui_status
-    providers = a.providers.split(",") if a.providers else ui_status.ui_config().get("usage_providers", [])
+    providers = a.providers.split(",") if a.providers else ui_status.usage_providers()
     if any(p not in PROVIDERS for p in providers):
         print("Supported subscription providers: " + ",".join(PROVIDERS))
         return 1

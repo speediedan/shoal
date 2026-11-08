@@ -56,6 +56,7 @@ assert.deepEqual(M.latticeTab(sps), { space: "s1", tab: "t2" }, "the shown space
 assert.equal(M.latticeTab([{ ...sps[0], tabs: [{ id: "t1", name: "overview" }] }]), null, "none: the CLI reopens it");
 assert.deepEqual(M.homeTab(sps), { space: "s2", tab: "t4" }, "this computer's home space, its home tab");
 assert.equal(M.homeTab([sps[2]]), null, "another machine's home space is not this computer's");
+
 assert.deepEqual(M.needsYouOrder([{ address: "b", pane: "p", status: "blocked" }, { address: "a", pane: "q", status: "blocked", seq: 0 }]).map((a) => a.address), ["a", "b"], "no seq reads as 0: a stable order");
 assert.deepEqual(M.usageMachines([{ active: true, machine: null }], ["lane-a", null]), ["lane-a", null]);
 assert.deepEqual(M.usageMachines([], []), [null]);
