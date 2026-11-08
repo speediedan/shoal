@@ -66,6 +66,11 @@ It also reports three things a checkout or an archive would lose or break, and `
 The report says how many live specs the roots came from. When none was found it warns, because then the start docs of
 other roles in the directory read as unreferenced. `--no-known-roots` skips the roots on purpose (and says so).
 
+The history and excluded globs and the age floor come from the repository's `.shoal/lifecycle.toml`
+([`lifecycle.md`](lifecycle.md)) unless `--history`, `--exclude` or `--min-age-days` name them; the JSON says which were used.
+A dangling reference is reported only from a live document: a history document that a live one links still records old
+paths as they were.
+
 ## What counts as a reference
 
 Any path-shaped token in a text file: a markdown link, a backticked path, a path in prose. It resolves relative to the

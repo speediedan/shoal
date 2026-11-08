@@ -97,3 +97,8 @@
 # [ci_envs.<name>]
 # python = "/path/to/venvs/<name>/bin/python"
 # repos = ["<owner>/<repo>"]
+
+# Repositories whose .shoal/lifecycle.toml [hooks] this host runs (docs/lifecycle.md). Hooks are code
+# execution from repository content, so they are ignored for any repository not listed. Default: []
+# [lifecycle]
+# trusted_repos = ["/path/to/repository"]

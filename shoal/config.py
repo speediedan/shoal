@@ -26,6 +26,7 @@ when neither is importable the file is skipped with one warning on stderr.
   worktree_root  SHOAL_WORKTREE_ROOT                         <data_root>/_pool/worktrees (placed jobs' staged checkouts)
   ci_envs        (none)                                      {} (named CI environments a placed job may ask for)
   pool           (none)                                      true (false: this host stays out of CI pool placement)
+  lifecycle.trusted_repos (none)                             [] (repositories whose .shoal/lifecycle.toml hooks run here)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 

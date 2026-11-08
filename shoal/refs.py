@@ -39,15 +39,13 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import config  # noqa: E402
+import lifecycle  # noqa: E402
 import layout  # noqa: E402
 import standalone  # noqa: E402
 
 ROOTS_V = 1
 REFS_V = 1
 TEXT_EXT = {".md", ".sh", ".py", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".txt", ".cfg", ".ini"}
-HISTORY = ["*_log.md", "*_log_*.md"]
-EXCLUDE = ["archive/*"]
-MIN_AGE_DAYS = 7
 # the characters a path uses, so link syntax, backticks, quotes and brackets all delimit one
 TOKEN = re.compile(r"[A-Za-z0-9_.~/+@%-]*[A-Za-z0-9_/]")
 MD_LINK = re.compile(r"\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
@@ -235,15 +233,19 @@ def candidates(token: str, here: str, repo: Repo) -> set[str]:
 
 
 def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] | None = None, scope: str = "repo",
-         min_age_days: float = MIN_AGE_DAYS, history: list[str] | None = None, exclude: list[str] | None = None,
+         min_age_days: float | None = None, history: list[str] | None = None, exclude: list[str] | None = None,
          known_roots: dict | None = None, now: float | None = None) -> dict:
     repo = Repo(directory)
     d = repo.rel(os.path.abspath(directory))
     if d is None:
         raise RuntimeError(f"{directory} is not inside {repo.root}")
     d = "" if d == "." else d
-    history = list(history or HISTORY)
-    exclude = list(exclude or EXCLUDE)
+    # the repository's own tiers (.shoal/lifecycle.toml) unless the caller names them: a repository whose history and
+    # excluded trees differ from the defaults otherwise reads its logs and generated output as live
+    lc = lifecycle.load(repo.root)
+    history = list(history or lc["values"]["tiers"]["history"])
+    exclude = list(exclude or lc["values"]["tiers"]["exclude"])
+    min_age_days = lc["values"]["checkpoint"]["min_age_days"] if min_age_days is None else min_age_days
     inside = (lambda p: p.startswith(d + "/")) if d else (lambda p: True)
 
     def tier(p: str) -> str:
@@ -335,7 +337,8 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
     # directory explicitly (repository-relative or absolute) and nothing tracked. A bare relative path is not judged: it is
     # as often a path in another repository (`config/host.toml`) as one here.
     for src in sorted(live | set(root_paths)):
-        if src not in repo.mode or not src.endswith(".md"):
+        # a history document that a live one links still records old paths as written: not dangling
+        if src not in repo.mode or not src.endswith(".md") or tier(src) != "live":
             continue
         here = posixpath.dirname(src)
         for n, line in enumerate(repo.read(src).splitlines(), 1):
@@ -386,7 +389,10 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
         out_files.append(rec)
     untracked = [x for x in _git(repo.root, "ls-files", "-o", "--exclude-standard", "-z", "--", d or ".").split("\0") if x]
     deleted = [x for x in _git(repo.root, "ls-files", "--deleted", "-z", "--", d or ".").split("\0") if x]
-    return {"v": REFS_V, "repo": repo.root, "dir": d, "scope": scope, "roots": sorted(root_paths), "files": out_files,
+    return {"v": REFS_V, "repo": repo.root, "dir": d, "scope": scope,
+            "lifecycle": {"file": lc["file"], "found": lc["found"], "notes": lc["notes"]},
+            "tiers": {"history": history, "exclude": exclude, "min_age_days": min_age_days},
+            "roots": sorted(root_paths), "files": out_files,
             "candidates": candidates_out, "dangling": dangling, "untracked": untracked, "deleted": deleted,
             "ok": not (dangling or untracked or deleted)}
 
@@ -497,10 +503,10 @@ def add_parser(sub) -> None:
     p.add_argument("--root", action="append", default=[], help="another root document (repeatable)")
     p.add_argument("--scope", choices=("repo", "dir"), default="repo",
                    help="look for references in the whole repository (default) or the directory only")
-    p.add_argument("--min-age-days", type=float, default=MIN_AGE_DAYS,
+    p.add_argument("--min-age-days", type=float, default=None,
                    help="an unreferenced file younger than this is not a candidate yet")
-    p.add_argument("--history", action="append", default=[], help=f"a history-document glob (default {HISTORY})")
-    p.add_argument("--exclude", action="append", default=[], help=f"a glob not scanned (default {EXCLUDE})")
+    p.add_argument("--history", action="append", default=[], help="a history-document glob (default: the repository's .shoal/lifecycle.toml, else *_log.md)")
+    p.add_argument("--exclude", action="append", default=[], help="a glob not scanned (default: the repository's .shoal/lifecycle.toml, else archive/*)")
     p.add_argument("--no-known-roots", action="store_true", help="do not treat --roots paths inside the directory as roots")
     p.add_argument("--json", action="store_true")
     p.add_argument("--check", action="store_true", help="exit 1 on dangling references, untracked or uncommitted deletions")
