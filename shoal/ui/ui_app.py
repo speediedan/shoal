@@ -97,6 +97,9 @@ ATTACH_LABEL = "shoal.attached"
 # a blocked card's cause where no report kind says it: herdr-core drops a report whose kind it does not know
 # (auth, question and permission are the ones it keeps), so the cause goes in a label the agents list's badge reads
 NEED_LABEL = "shoal.need"
+# how many ledger asks a card's question badge stands for ("" when its question is an open prompt, or none): the agents
+# list's badge opens them in the actions dialog, while a prompt is answered in the session
+ASKS_LABEL = "shoal.asks"
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 
 
@@ -165,12 +168,13 @@ def card_report(r: dict, tag: str) -> dict:
         # the badge says a question; the message says which: the asks first, the posture after (it is cut at 200)
         each = max(40, (150 - 10) // len(asks))
         bits.insert(0, f"{len(asks)} ask{'s' if len(asks) > 1 else ''}: " + "; ".join(a[:each].rstrip() + ("…" if len(a) > each else "") for a in asks) + " ·")
+    n_asks = len(asks) if asks and state == "blocked" and kind == "question" and "blocked-on-question" not in reasons else 0
     why = [ui_status.ATTENTION.get(x, x) for x in reasons if x not in ("parked", "dormant") and not (says and x == "blocked-says-waiting")]
     if why and state == "blocked":
         bits.append("(" + ", ".join(why)[:80] + ")")
     # the role's own host in the title: the card's machine says only where the card runs (`/` and `@` never occur in a slug)
     where = f"@{r['host']}" if r.get("host") else ""
-    return {"state": state, "kind": kind, "need": need, "title": f"{tag}/{r['slug']}{where}", "msg": " ".join(bits)[:200]}
+    return {"state": state, "kind": kind, "need": need, "asks": n_asks, "title": f"{tag}/{r['slug']}{where}", "msg": " ".join(bits)[:200]}
 
 
 class DoneLatch:
@@ -1259,14 +1263,27 @@ function shoalGo(a) {
   if (zoomed && !there?.zoomed) run("pane.zoom", { pane: a.pane });
 }
 
-// Right-click a role's row: the dialog's Dismiss, which clears its needs-you until something new is raised.
+// Right-click a role's row: its asks when it has some (they are what it needs of you), else the dialog's Dismiss,
+// which clears its needs-you until something new is raised.
 function shoalDismiss(a, cx) {
+  shoalDialog(a, cx, shoalHasAsks(a) ? "asks" : "dismiss");
+}
+
+// A role card's ledger asks behind its badge (the card's shoal.asks label): a click opens them, where a reply goes.
+function shoalHasAsks(a) {
+  return Number(terminals().find((x) => x.address === a.address)?.labels?.["shoal.asks"] ?? 0) > 0;
+}
+function shoalAsks(a, cx) {
+  if (shoalHasAsks(a)) shoalDialog(a, cx, "asks"); // an open prompt keeps the row's click: focusing its pane
+}
+
+function shoalDialog(a, cx, verb) {
   const label = terminals().find((x) => x.address === a.address)?.labels?.["shoal.pane"] ?? "";
   const cut = label.lastIndexOf("/");
   if (cut < 0 || label.startsWith("standalone/")) return;
   cx.stop_propagation();
   const at = a.address.indexOf("/");
-  openOverlay({ mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: label.slice(0, cut), role: label.slice(cut + 1), verb: "dismiss", machine: at > 0 ? a.address.slice(0, at) : null } });
+  openOverlay({ mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: label.slice(0, cut), role: label.slice(cut + 1), verb, machine: at > 0 ? a.address.slice(0, at) : null } });
 }
 
 // A blocked role's badge says what it wants: its report's kind, or the card's shoal.need label where no kind fits
@@ -1290,7 +1307,8 @@ CLONES = {
          'const machine = sr?.host ?? (a.address.includes("/") ? a.address.split("/")[0] : null);'),
         ("const name = full ? a.space_name || label(a) :", "const name = sr ? sr.role : full ? a.space_name || label(a) :"),
         (".text_color(idle ? t.muted : t.foreground).child(name))", ".text_color(sr?.color ?? (idle ? t.muted : t.foreground)).child(name))"),
-        ('.items_center().justify_center().child("!");', '.items_center().justify_center().child(shoalBadge(a));'),
+        ('.items_center().justify_center().child("!");',
+         '.items_center().justify_center().id(`shoal-badge-${a.address}`).cursor_pointer().on_click((_e, cx) => shoalAsks(a, cx)).child(shoalBadge(a));'),
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
         ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(pic)'),
     ]),

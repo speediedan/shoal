@@ -687,7 +687,10 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   refresh (`app=<role>`, which heads the pane, and title `<tag>/<role>`): `working` for a turn or a job wait (the message names the
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
   report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask (the message then leads with the
-  asks themselves, `2 asks: <first>; <second> ·`, so the badge's question can be read; `shoal asks` answers them) or a design or
+  asks themselves, `2 asks: <first>; <second> ·`, so the badge's question can be read, and labels the count, `shoal.asks`:
+  a click on the badge, or a right-click on the row, opens the actions dialog's Asks on that role, every ask in full with
+  Reply (a message to the role, `re ask <n>:`, wake on) and a link to each issue or PR it names; an open prompt keeps the
+  row's click, which focuses the pane where it is answered) or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
   seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until
   you look, and anything the role does next, or an attach, replaces it. A card restarted by an upgrade (every card re-execs
