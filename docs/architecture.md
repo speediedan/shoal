@@ -441,7 +441,10 @@ gone if the slug ever returns, removes it from the spec, writes
 `role-removed`; the ledger keeps its history), and `shoal remove-session`
 does the same for a saved standalone session. `shoal handoff` hands a live role to a fresh session
 in place, optionally on another model or provider (the quorum's `context_restart` run by hand, under its gate: see
-[`handover.md`](handover.md)). A `parked.until` wait target is checked
+[`handover.md`](handover.md)). `shoal set-fill --only <role> --fill self|assigned|none` changes how a role gets its work
+without a restart: it saves the spec, records a `role-fill` event, and wakes the role with what the new fill means, since
+its brief keeps the old fill until its next restart. A running watcher reloads the spec when the file changes, so a
+self-filling role's board wakes follow at its next tick. The aux lane always fills itself. A `parked.until` wait target is checked
 by the quorum each run, outside a freeze: once its provider reads it resolved (unknown never counts), the role
 is restarted, at most once per 30 minutes.
 
@@ -1113,13 +1116,13 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with five blocks swapped: `shoal-agents`,
-`shoal-spaces`, `shoal-chrome` (the window's mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home and
-Lattice in the top bar, beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
+`shoal-spaces`, `shoal-chrome` (the window's mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home,
+Lattice and Actions in the top bar, beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
-and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
-saved standalone session, with its `session` tab and a global `lattice` tab). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
+and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone
+session, with its `session` tab; the top bar's Lattice opens the global lattice, drilled into the shoal in view). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
 route for another host, which it first adds as a herdr-core machine named after the route), compares it with
 `herdr-app ls`, and adds only what is missing with `herdr-app do`, labelling each terminal it starts
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground

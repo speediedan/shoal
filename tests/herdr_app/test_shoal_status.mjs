@@ -56,6 +56,13 @@ assert.deepEqual(M.latticeTab(sps), { space: "s1", tab: "t2" }, "the shown space
 assert.equal(M.latticeTab([{ ...sps[0], tabs: [{ id: "t1", name: "overview" }] }]), null, "none: the CLI reopens it");
 assert.deepEqual(M.homeTab(sps), { space: "s2", tab: "t4" }, "this computer's home space, its home tab");
 assert.equal(M.homeTab([sps[2]]), null, "another machine's home space is not this computer's");
+assert.deepEqual(M.homeTab(sps, "SHOAL-home", "lattice"), { space: "s2", tab: "t3" }, "the home space's global lattice");
+assert.equal(M.homeTab([{ ...sps[1], tabs: [{ id: "t4", name: "home" }] }], "SHOAL-home", "lattice"), null, "no lattice tab there: none");
+// the shoal in view, from a card terminal in the shown space (a remote one's space id carries its machine)
+const terms = [{ address: "lane-b/t9", labels: { "herdr.space": "s1-local", "shoal.pane": "it-mvp-1/core" } },
+               { address: "t2", labels: { "herdr.space": "s5", "shoal.pane": "standalone/seat" } }];
+assert.equal(M.shoalInView([{ id: "lane-b/s1-local", active: true, tabs: [] }], terms), "it-mvp-1");
+assert.equal(M.shoalInView([{ id: "s5", active: true, tabs: [] }], terms), null, "a standalone space has no shoal");
 
 assert.deepEqual(M.needsYouOrder([{ address: "b", pane: "p", status: "blocked" }, { address: "a", pane: "q", status: "blocked", seq: 0 }]).map((a) => a.address), ["a", "b"], "no seq reads as 0: a stable order");
 assert.deepEqual(M.usageMachines([{ active: true, machine: null }], ["lane-a", null]), ["lane-a", null]);

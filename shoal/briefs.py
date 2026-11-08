@@ -166,6 +166,11 @@ def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
                     "kill is a wake: re-arm")
 
 
+FILL_SENTENCE = {"self": "You fill your own queue: from offers first (by prio), then your digest/board candidates.",
+                 "assigned": "You work only offers addressed to you (or `*`); you never pop the board.",
+                 "none": "You never claim."}
+
+
 def workwake_brief(role: Role, spec: ShoalSpec) -> str:
     """The work-loop brief (architecture doc §3): wake on work only, two verbs per boundary."""
     sid = spec.sid
@@ -173,9 +178,7 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
     wake, how_arm = arming(role, spec)
     arm = (f"{SHOAL_CLI} ledger-watch --shoal {sid} --slug {role.slug} --wake {wake} "
            f"--session <your-full-session-id> --interval 120")
-    fill = {"self": "You fill your own queue: from offers first (by prio), then your digest/board candidates.",
-            "assigned": "You work only offers addressed to you (or `*`); you never pop the board.",
-            "none": "You never claim."}.get(role.fill, "")
+    fill = FILL_SENTENCE.get(role.fill, "")
     if getattr(role, "aux", False):
         fill += (" You are the RESIDUAL lane (aux): your candidates are the free workable items no other active "
                  "lane's brief covers, unblockers of their work first; `next` prints an AUX line naming the lanes "

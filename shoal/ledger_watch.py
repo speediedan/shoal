@@ -304,6 +304,13 @@ def emit_wake(sid: str, slug: str, session: str, eco: str, reason: str, n: int) 
         pass
 
 
+def _mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path) if path else 0.0
+    except OSError:
+        return 0.0
+
+
 def cmd_ledger_watch(a) -> int:
     sid, slug = a.sid, a.slug
     try:
@@ -311,9 +318,11 @@ def cmd_ledger_watch(a) -> int:
     except Exception:
         pass
     try:
-        spec = ShoalSpec.load(find_spec(sid, a.spec))
+        spec_path = find_spec(sid, a.spec)
+        spec = ShoalSpec.load(spec_path)
     except OSError:
-        spec = None
+        spec_path, spec = "", None
+    spec_mtime = _mtime(spec_path)
     role = spec.role(slug) if spec else None
     repo_dir = a.dir or (spec.dir if spec else os.getcwd())
     sc_path = a.sidecar or sidecar_path(sid, slug)
@@ -397,6 +406,14 @@ def cmd_ledger_watch(a) -> int:
                 return 2
         else:
             fails = 0
+        m = _mtime(spec_path)
+        if m and m != spec_mtime:  # the spec changed (a `set-fill`, say): read the role again, keep the session
+            try:
+                spec = ShoalSpec.load(spec_path)
+                role = spec.role(slug) or role
+            except (OSError, ValueError) as exc:
+                print(f"{now_iso()} spec reload failed: {short(str(exc), 120)}", file=sys.stderr)
+            spec_mtime = m
         board_now = time.time() - last_board >= a.board_interval
         if board_now:
             last_board = time.time()

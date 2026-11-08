@@ -63,7 +63,8 @@ you, per-shoal throughput and per-host load.
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
   turn the camera 15 degrees. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
-- **Replay:** `r` plays the last 24 h back on the live picture, a quarter hour a second: each event a packet
+- **Replay:** `r` plays the last 24 h back on the live picture, a day in 32 s by default (the bar's speeds: a day in
+  96, 32, 11 or 3.2 s; `[` and `]` step them): each event a packet
   along its edge, a done a flash, at most a dozen a tick. A bar along the foot shows a quarter hour a column, its
   height that slot's events; a click plays from there, space pauses, `r` or Esc goes back to live. It asks the
   feed's `ui graph --replay` once, on the machine the feed reads; live packets wait while it runs. It is the one thing

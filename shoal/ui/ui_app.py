@@ -306,7 +306,7 @@ def shoal_space(spec, feed: dict) -> dict:
             tabs.append({"name": name, "layout": "grid",
                          "panes": [_pane(ui_herdr.role_label(spec.sid, r.slug),
                                          _cli_argv("view", spec.sid, r.slug, "--stub"), env) for r in chunk]})
-    tabs.append({"name": "lattice", "mod": "lattice-view", "props": lattice_props(spec.sid, feed)})
+    # no lattice tab here: the top bar's Lattice opens the global one, drilled into this shoal (2026-11-08)
     return {"name": tag, "kind": "shoal", "shoal": spec.sid, "folder": spec.dir or "", "tabs": tabs}
 
 
@@ -316,9 +316,7 @@ def standalone_space(e: dict) -> dict:
     return {"name": ui_herdr.standalone_ws_label(e), "kind": "standalone", "standalone": ui_herdr.standalone_label(e),
             "folder": e.get("cwd") or "",
             "tabs": [{"name": "session", "layout": "stack",
-                      "panes": [_pane(ui_herdr.standalone_label(e), ui_herdr.standalone_argv(e))]},
-                     # the whole picture is a tab away from any seat, as from any shoal
-                     {"name": "lattice", "mod": "lattice-view", "props": lattice_props("")}]}
+                      "panes": [_pane(ui_herdr.standalone_label(e), ui_herdr.standalone_argv(e))]}]}
 
 
 def home_here(spec) -> bool:
@@ -740,6 +738,13 @@ class Reconciler:
                     self._gaps(s, tabs[t["name"]], t)
                 if t["name"] == "overview" and t["name"] in tabs:
                     self._drop_ledger(s, tabs[t["name"]], t)
+            # a lattice tab shoal made here before the top bar's Lattice replaced them: closed, once
+            lt = tabs.get("lattice")
+            if lt is not None and not any(t["name"] == "lattice" for t in s["tabs"]) and built.get(f"{key}/{s['name']}/lattice"):
+                self.say(f"{s['name']}: close its lattice tab (the top bar's Lattice opens the global one on this shoal)")
+                if not self.dry_run:
+                    app_do("tab.close", {"id": lt["id"], "confirmed": True})
+                    built.pop(f"{key}/{s['name']}/lattice", None)
         planned = {s["name"] for s in doc.get("spaces", [])}
         import ui_herdr
         tags = set(ui_herdr._TAGS.values()) if self.machine is None else set()
@@ -1327,6 +1332,9 @@ CLONES = {
          '      .child(h_flex().id("shoal-lattice").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
          '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
          '.on_click(() => run("shoal-status.lattice")).child("\u25ce Lattice"))\n'
+         '      .child(h_flex().id("shoal-actions").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
+         '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
+         '.on_click(() => run("mod.open", { name: "shoal-actions" })).child("Actions"))\n'
          '      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))'),
     ]),
     # the window's mark, top left: SHOAL and its icon (copied in, CLONE_FILES), as the splash and the launchers show it
