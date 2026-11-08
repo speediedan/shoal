@@ -19,7 +19,9 @@ archived file goes to `archive/<original path>`, and each archived directory kee
 Nothing is moved when any path in the run is:
 
 - not tracked (an untracked file is its owner's to commit or delete), or carries uncommitted changes;
-- a start doc that a live spec or a standalone session names ([`refs.md`](refs.md), `--roots`);
+- a start doc that a live spec or a standalone session names, on any routed host ([`refs.md`](refs.md),
+  `--roots --all-hosts`). When a routed host cannot answer, the run is refused: a file here could be a start doc there.
+  `--force` archives anyway and records that it did;
 - named by a live document anywhere in the repository, or by a tracked symlink: that reader would break. Point those
   references elsewhere first, or keep the file. History documents (the repository's history tiers) keep their
   references as written: the manifest is what resolves them.
@@ -40,7 +42,8 @@ One JSON object per line, appended, never rewritten:
 | `event` | `archive`, `restore` or `cold` (`migrate`, for files arriving from a legacy archive folder, is reserved) |
 | `path`, `archive_path` | the original path, and where the file went |
 | `reason` | `--reason`, for `archive` |
-| `restore_from` | `cold` only: the commit that still holds `archive_path`; `--restore` reads it from there |
+| `blob`, `mode` | `cold` only: the file's blob id and git mode; `--restore` reads the blob first, so a binary comes back byte for byte and an executable keeps its bit |
+| `restore_from` | `cold` only: a commit that holds `archive_path`: the merge base with the upstream when that holds the file (already published), else HEAD. A shared checkout's HEAD may be a local commit that a commit hook rebases before pushing, which orphans it; the blob survives that rebase, so it is read first |
 
 ## One commit, or nothing
 
@@ -52,3 +55,6 @@ Whether the run landed is decided by content: HEAD must hold every manifest exac
 when another session commits meanwhile, and it tells a hook that refused (nothing landed) from one that committed and
 then failed later, a rejected push for one (landed, reported as a note). When nothing landed, every move is undone and
 each manifest is returned to HEAD's copy, or removed if the run created it.
+
+A `[hooks] commit` must commit every path it is given in one commit. Landing is judged by the manifests, so a hook that
+committed the manifests but not the moves would count as landed with the moves still staged.

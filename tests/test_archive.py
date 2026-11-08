@@ -10,7 +10,10 @@
   then fails (a rejected push) is a landed run with a note, not undone;
 - `--restore` from warm; `--cold` refused before warm_days and when a live document names the archive path, done with
   `--force`, its `restore_from` holding the file; `--restore` from cold brings the content back;
-- a root's companion log (`<stem>_log.md`) is live in `refs` even when nothing links it.
+- a root's companion log (`<stem>_log.md`) is live in `refs` even when nothing links it;
+- another host's start-doc roots are honoured, and a host that cannot answer refuses unless `--force`;
+- going cold records the blob and mode: a binary and an executable come back exactly, and an orphaned `restore_from`
+  (a rebase rewrote that commit) still restores by blob; a hook template's other braces are left as written.
 
 Synthetic paths and ids only."""
 from __future__ import annotations
@@ -28,9 +31,13 @@ D = "proj/design/lane"
 LANE = os.path.join(REPO, D)
 HOST = os.path.join(T, "host.toml")
 ENV = dict(os.environ, SHOAL_CONFIG=HOST, SHOAL_LEDGER_DIR=os.path.join(T, "ledger"), XDG_CONFIG_HOME=os.path.join(T, "xdg"),
-           SHOAL_SERVER="host-a", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+           SHOAL_SERVER="host-a", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+           SHOAL_ROUTE_CACHE=os.path.join(T, "route-cache"), SHOAL_SSH=os.path.join(T, "ssh-stub"))
 for k in ("SHOAL_SPEC", "SHOAL_SLUG"):
     ENV.pop(k, None)
+
+
+BINARY = bytes(range(256)) + b"\xff\xfe\x00"
 
 
 def write(rel: str, text: str) -> None:
@@ -72,8 +79,12 @@ git("config", "user.email", "t@example.invalid")
 git("config", "user.name", "t")
 write(f"{D}/lane_start.md", "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nSee [aux](aux.md).\n")
 write(f"{D}/lane_log.md", "C1: wrote old.md, tmp.md and gone.md.\n")
-for name in ("aux", "old", "tmp", "gone", "pair"):
+for name in ("aux", "old", "tmp", "gone", "pair", "far_start", "lone"):
     write(f"{D}/{name}.md", f"{name}\n")
+with open(os.path.join(LANE, "blob.bin"), "wb") as fh:
+    fh.write(BINARY)
+write(f"{D}/tool.sh", "#!/bin/sh\necho tool\n")
+os.chmod(os.path.join(LANE, "tool.sh"), 0o755)
 write("proj/shared/x.md", "shared\n")
 write("proj/README.md", "unrelated\n")
 os.symlink("../../shared/x.md", os.path.join(LANE, "alias.md"))
@@ -90,6 +101,25 @@ r = json.loads(subprocess.run([sys.executable, os.path.join(SHOALD, "cli.py"), "
                               capture_output=True, text=True).stdout)
 assert {os.path.basename(f["path"]): f["class"] for f in r["files"]}["lane_log.md"] == "live", r["files"]
 print("companion log ok")
+
+# another host's start-doc roots: a doc a standalone seat there uses is refused here; a host that cannot answer refuses
+# unless --force, which says so
+FAR = os.path.join(T, "far.json")
+json.dump({"v": 1, "hosts": ["host-b"], "roots": {os.path.join(LANE, "far_start.md"): [
+    {"kind": "standalone", "label": "far-seat", "host": "host-b"}]}}, open(FAR, "w"))
+with open(ENV["SHOAL_SSH"], "w") as fh:
+    fh.write(f'#!/bin/sh\ncase "$*" in *c.invalid*) exit 255;; esac\ncat "{FAR}"\n')
+os.chmod(ENV["SHOAL_SSH"], 0o755)
+open(HOST, "w").write('[hosts.host-b]\nssh = "u@b.invalid"\n')
+rc, out = archive("proj/design/lane/far_start.md")
+assert rc == 1 and "is a start doc (standalone session far-seat on host-b)" in out["refused"], out
+open(HOST, "w").write('[hosts.host-b]\nssh = "u@b.invalid"\n[hosts.host-c]\nssh = "u@c.invalid"\n')
+rc, out = archive("proj/design/lane/lone.md")
+assert rc == 1 and "cannot read the start-doc roots of host-c" in out["refused"], out
+rc, out = archive("proj/design/lane/lone.md", "--force")
+assert rc == 0 and any("without the roots of host-c" in n for n in out["notes"]), out
+open(HOST, "w").write("")
+print("other hosts' roots ok")
 
 # refusals change nothing
 before = state()
@@ -136,7 +166,8 @@ assert rc == 0 and open(os.path.join(REPO, "archive", D, "pair_link.md")).read()
 print("symlinks ok")
 
 # a trusted hook that refuses: nothing left behind; one that commits then fails: landed, with a note
-write(".shoal/lifecycle.toml", '[hooks]\ncommit = "sh hook.sh {message} {paths}"\n')
+# a template with other braces (shell ${VAR}, awk-style {x}) is left as written; only {message} and {paths} expand
+write(".shoal/lifecycle.toml", "[hooks]\ncommit = 'sh hook.sh {message} {paths} # ${HOME} {print}'\n")
 write("hook.sh", 'exit 1\n')
 git("add", "-A")
 git("commit", "-q", "-m", "hooks")
@@ -179,6 +210,35 @@ assert git("cat-file", "blob", f"{holder}:archive/{D}/gone.md") == "gone\n"
 rc, out = archive("--restore", "proj/design/lane/gone.md")
 assert rc == 0 and open(os.path.join(LANE, "gone.md")).read() == "gone\n" and manifest()[-1]["event"] == "restore", out
 print("cold and restore from cold ok")
+
+# cold keeps content and mode: a binary and an executable come back byte for byte, exec bit set
+rc, out = archive("proj/design/lane/blob.bin", "proj/design/lane/tool.sh")
+assert rc == 0, out
+rc, out = archive("--cold", "proj/design/lane/blob.bin", "proj/design/lane/tool.sh", "--force")
+assert rc == 0, out
+cold = {e["path"]: e for e in manifest() if e["event"] == "cold"}
+assert cold[f"{D}/tool.sh"]["mode"] == "100755" and cold[f"{D}/blob.bin"]["blob"], cold
+for f in ("blob.bin", "tool.sh"):
+    rc, out = archive("--restore", f"proj/design/lane/{f}")
+    assert rc == 0, out
+assert open(os.path.join(LANE, "blob.bin"), "rb").read() == BINARY, "a binary is restored byte for byte"
+assert os.access(os.path.join(LANE, "tool.sh"), os.X_OK) and open(os.path.join(LANE, "tool.sh")).read() == "#!/bin/sh\necho tool\n"
+print("binary and mode ok")
+
+# an orphaned restore_from (a rebase rewrote the commit it names): the blob id still restores the file
+rc, out = archive("proj/design/lane/blob.bin")
+assert rc == 0, out
+rc, out = archive("--cold", "proj/design/lane/blob.bin", "--force")
+assert rc == 0, out
+mpath = os.path.join(REPO, "archive", D, "MANIFEST.jsonl")
+lines = open(mpath).read().splitlines()
+last = json.loads(lines[-1])
+last["restore_from"] = "0" * 40
+open(mpath, "w").write("\n".join(lines[:-1] + [json.dumps(last, sort_keys=True)]) + "\n")
+git("commit", "-q", "-am", "simulate an orphaned restore_from")
+rc, out = archive("--restore", "proj/design/lane/blob.bin")
+assert rc == 0 and open(os.path.join(LANE, "blob.bin"), "rb").read() == BINARY, out
+print("restore by blob ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_archive OK")

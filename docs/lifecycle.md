@@ -48,6 +48,7 @@ every_days = 14                        # instruction-tier distillation, as propo
 
 [hooks]
 commit = ""                            # how to commit by exact path; "" : git commit -- <paths>
+                                       # {message} and {paths} expand shell-quoted: write them unquoted
 on_retire = ""                         # run when a role or standalone session retires
 ```
 
@@ -72,6 +73,9 @@ in:
 [lifecycle]
 trusted_repos = ["/path/to/repository"]
 ```
+
+In a hook, only `{message}` and `{paths}` are replaced, each already shell-quoted, so write them unquoted
+(`commit = "my-commit.sh -m {message} {paths}"`); any other brace (`${VAR}`, awk's `{print}`) is left as written.
 
 For any other repository the hooks are ignored, with a note, and the defaults apply. The other settings run nothing and
 are read from any repository.

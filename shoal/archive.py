@@ -55,6 +55,39 @@ def _git(repo: str, *args: str, check: bool = True) -> subprocess.CompletedProce
     return r
 
 
+def _git_bytes(repo: str, *args: str) -> bytes:
+    """A git call whose output is file content: bytes, so a binary blob comes back intact."""
+    try:
+        r = subprocess.run(["git", "-C", repo, *args], capture_output=True, timeout=GIT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise Refused(f"git {' '.join(args)}: no answer in {GIT_TIMEOUT_S} s (a held lock?)") from None
+    if r.returncode:
+        raise Refused(f"git {' '.join(args)}: {r.stderr.decode(errors='replace').strip()}")
+    return r.stdout
+
+
+def _ls_tree(repo: str, rev: str, path: str) -> tuple[str, str]:
+    """(mode, blob id) of `path` in `rev`, or ("", "") when it holds no such file."""
+    out = _git(repo, "ls-tree", rev, "--", path, check=False).stdout.strip()
+    if not out:
+        return "", ""
+    meta = out.split("\t", 1)[0].split()
+    return meta[0], meta[2]
+
+
+def _durable_holder(repo: str, path: str) -> str:
+    """A commit holding `path` that a rebase will not rewrite: the merge base with the upstream when that holds the file
+    (it is already published), else HEAD. A shared checkout's HEAD may be a local commit that the commit hook rebases
+    before pushing, which would orphan it; the blob id the event also records survives that rebase."""
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if _git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False).returncode:
+        return head
+    base = _git(repo, "merge-base", "HEAD", "@{u}", check=False).stdout.strip()
+    if base and not _git(repo, "cat-file", "-e", f"{base}:{path}", check=False).returncode:
+        return base
+    return head
+
+
 def utcnow() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -67,7 +100,7 @@ class Plan:
         self.lc = lifecycle.load(self.repo.root)
         self.layout = self.lc["values"]["layout"]
         self.moves: list[tuple[str, str]] = []           # (from, to), repository-relative
-        self.restores: list[tuple[str, str, str]] = []   # from cold: (archive path, original, restore_from)
+        self.restores: list[tuple[str, str, dict]] = []  # from cold: (archive path, original, {blob, mode})
         self.deletes: list[str] = []
         self.events: dict[str, list[dict]] = {}          # manifest path -> new events
         self.notes: list[str] = []
@@ -145,7 +178,7 @@ def _live_referrers(plan: Plan, targets: list[str]) -> dict[str, list[dict]]:
     return {t: [e for e in es if e["tier"] in ("live", "symlink") and e["file"] not in targets] for t, es in edges.items()}
 
 
-def plan_archive(paths: list[str], reason: str, by: str) -> Plan:
+def plan_archive(paths: list[str], reason: str, by: str, force: bool = False) -> Plan:
     plan = Plan(paths[0])
     rels = [plan.rel(p) for p in paths]
     for r in rels:
@@ -155,7 +188,15 @@ def plan_archive(paths: list[str], reason: str, by: str) -> Plan:
             raise Refused(f"{r}: the layout maps it to {a!r}, outside the archive")
         if a in plan.repo.mode or os.path.lexists(os.path.join(plan.repo.root, a)):
             raise Refused(f"{r}: {a} already exists in the archive")
-    roots = {plan.repo.rel(p): whos for p, whos in refs.roots()["roots"].items()}
+    # every host's roots: a document here may be another host's standalone seat's start doc, which no file here names
+    known = refs.roots(all_hosts=True)
+    if known["unreachable"]:
+        silent = "; ".join(f"{u['host']} ({u['reason']})" for u in known["unreachable"])
+        if not force:
+            raise Refused(f"cannot read the start-doc roots of {silent}, so a file here could be a start doc there: "
+                          "--force to archive anyway")
+        plan.notes.append(f"archived without the roots of {silent} (--force)")
+    roots = {plan.repo.rel(p): whos for p, whos in known["roots"].items()}
     for r in rels:
         if r in roots:
             raise Refused(f"{r} is a start doc ({'; '.join(refs.who_text(w) for w in roots[r])}): retire or move the role first")
@@ -183,10 +224,16 @@ def plan_restore(path: str, by: str) -> Plan:
         raise Refused(f"{r} is not in the archive (no manifest event in {plan.manifest_path(r)})")
     last, a = hist[-1], hist[-1]["archive_path"]
     if last["event"] == "cold":
-        sha = last.get("restore_from", "")
-        if _git(plan.repo.root, "cat-file", "-e", f"{sha}:{a}", check=False).returncode:
-            raise Refused(f"{r}: its cold event's restore_from {sha!r} does not hold {a}")
-        plan.restores.append((a, r, sha))
+        # the blob first: it survives the rebase that can orphan restore_from's commit; then restore_from
+        blob, mode, sha = last.get("blob", ""), last.get("mode", ""), last.get("restore_from", "")
+        if blob and not _git(plan.repo.root, "cat-file", "-e", blob, check=False).returncode:
+            src = {"blob": blob, "mode": mode or "100644"}
+        else:
+            m, b = _ls_tree(plan.repo.root, sha, a) if sha else ("", "")
+            if not b:
+                raise Refused(f"{r}: neither its cold event's blob {blob[:12]!r} nor restore_from {sha[:12]!r} holds {a}")
+            src = {"blob": b, "mode": m}
+        plan.restores.append((a, r, src))
     else:
         if a not in plan.repo.mode:
             raise Refused(f"{r}: {a} is not tracked, and no cold event says where it went")
@@ -198,7 +245,6 @@ def plan_restore(path: str, by: str) -> Plan:
 
 def plan_cold(paths: list[str], force: bool, by: str) -> Plan:
     plan = Plan(paths[0])
-    head = _git(plan.repo.root, "rev-parse", "HEAD").stdout.strip()
     warm_days = plan.lc["values"]["cold"]["warm_days"]
     now = datetime.datetime.now(datetime.timezone.utc)
     targets = []
@@ -224,8 +270,10 @@ def plan_cold(paths: list[str], force: bool, by: str) -> Plan:
         raise Refused("still named by live documents: " + "; ".join(
             f"{t} ({', '.join(e['file'] for e in es[:4])})" for t, es in sorted(blocked.items())))
     for r, a in targets:
+        mode, blob = _ls_tree(plan.repo.root, "HEAD", a)
         plan.deletes.append(a)
-        plan.add_event(r, {"ts": utcnow(), "by": by, "event": "cold", "path": r, "archive_path": a, "restore_from": head})
+        plan.add_event(r, {"ts": utcnow(), "by": by, "event": "cold", "path": r, "archive_path": a,
+                           "restore_from": _durable_holder(plan.repo.root, a), "blob": blob, "mode": mode})
     return plan
 
 
@@ -247,7 +295,9 @@ def _commit(plan: Plan, message: str, written: dict[str, str]) -> str:
     why = ""
     try:
         if hook:
-            cmd = hook.format(message=shlex.quote(message), paths=" ".join(shlex.quote(p) for p in paths))
+            # only the two placeholders are replaced, so any other brace in the hook (${VAR}, awk's {print}) is left as
+            # written; each expands already shell-quoted, so the template writes them unquoted
+            cmd = hook.replace("{message}", shlex.quote(message)).replace("{paths}", " ".join(shlex.quote(p) for p in paths))
             r = subprocess.run(["bash", "-c", cmd], cwd=root, capture_output=True, text=True, timeout=600)
             why = f"the commit hook exited {r.returncode}: {(r.stderr or r.stdout).strip()[-600:]}" if r.returncode else ""
         else:
@@ -275,14 +325,19 @@ def apply(plan: Plan, message: str) -> dict:
             _git(root, "mv", "--", src, dst)
             done.append(("mv", src, dst, moved))
             _repoint_symlink(root, src, dst, moved)
-        for a, original, sha in plan.restores:
-            if sha:
-                blob = _git(root, "cat-file", "blob", f"{sha}:{a}").stdout
-                os.makedirs(os.path.join(root, posixpath.dirname(original)), exist_ok=True)
-                with open(os.path.join(root, original), "w") as fh:
-                    fh.write(blob)
-                _git(root, "add", "--", original)
-                done.append(("add", original))
+        for a, original, src in plan.restores:
+            data = _git_bytes(root, "cat-file", "blob", src["blob"])
+            dest = os.path.join(root, original)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if src["mode"] == "120000":
+                os.symlink(data.decode(), dest)
+            else:
+                with open(dest, "wb") as fh:
+                    fh.write(data)
+                if src["mode"] == "100755":
+                    os.chmod(dest, os.stat(dest).st_mode | 0o111)
+            _git(root, "add", "--", original)
+            done.append(("add", original))
         for a in plan.deletes:
             _git(root, "rm", "-q", "--", a)
             done.append(("rm", a))
@@ -347,7 +402,7 @@ def _repoint_symlink(root: str, src: str, dst: str, moved: dict[str, str] | None
 
 def describe(plan: Plan) -> list[str]:
     out = [f"move {a} -> {b}" for a, b in plan.moves]
-    out += [f"restore {o} from {sha[:12]}:{a}" for a, o, sha in plan.restores if sha]
+    out += [f"restore {o} from blob {src['blob'][:12]} (mode {src['mode']})" for _, o, src in plan.restores]
     out += [f"delete {a} (cold)" for a in plan.deletes]
     out += [f"append {len(es)} event(s) to {m}" for m, es in plan.events.items()]
     return out
@@ -364,10 +419,10 @@ def cmd_archive(a) -> int:
         elif a.cold:
             plan, verb = plan_cold(a.paths, a.force, by), "cold"
         else:
-            plan, verb = plan_archive(a.paths, a.reason, by), "archive"
+            plan, verb = plan_archive(a.paths, a.reason, by, a.force), "archive"
         steps = describe(plan)
         if a.dry_run:
-            out = {"ok": True, "dry_run": True, "steps": steps, "events": plan.events}
+            out = {"ok": True, "dry_run": True, "steps": steps, "events": plan.events, "notes": plan.notes}
         else:
             what = ", ".join(sorted({e["path"] for es in plan.events.values() for e in es}))
             out = dict(apply(plan, f"{verb}: {what}" + (f" ({a.reason})" if a.reason and verb == "archive" else "")),
@@ -394,7 +449,8 @@ def add_parser(sub) -> None:
     p.add_argument("paths", nargs="*")
     p.add_argument("--restore", default="", metavar="PATH", help="move an archived file back to its original path")
     p.add_argument("--cold", action="store_true", help="delete warm archived files from the tree (git history keeps them)")
-    p.add_argument("--force", action="store_true", help="with --cold: before [cold] warm_days have passed")
+    p.add_argument("--force", action="store_true", help="with --cold: before [cold] warm_days have passed; archiving: "
+                   "although a routed host's start-doc roots cannot be read")
     p.add_argument("--reason", default="", help="why, recorded in the manifest")
     p.add_argument("--by", default="", help="who, recorded in the manifest (default $SHOAL_SLUG, else user)")
     p.add_argument("--dry-run", action="store_true")
