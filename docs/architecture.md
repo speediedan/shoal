@@ -1114,7 +1114,8 @@ launch --list --json [--summary]` gives the host list the app's home screen read
 types into a pane or writes the ledger; herdr 0.9.3 is untouched.
 
 `shoal/ui/ui_actions.py` (`ui act-plan`, `ui act-apply`) is the palette without a terminal, for the app's
-actions dialog. A write verb's plan builds the palette's argv, runs its `--dry-run`, names the wake cost, and
+actions dialog. Its `sessions` view and `add-session` verb add a standalone seat from the app: every machine's
+candidates, saved by `ui pick --save` on the session's own machine, then opened with `ui app-open --show`. A write verb's plan builds the palette's argv, runs its `--dry-run`, names the wake cost, and
 stores the argv under a one-time token (0600, runtime dir, ten minutes); apply runs only a stored argv, once,
 and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own.
 Read-only views (`next`, `status`, `conditions`, `asks`, `upgrade`, `roles`) store nothing.

@@ -515,6 +515,58 @@ check '"resume", "01a14091-3870-7923-b66b-d3bfd335dd4e"' env SHOAL_MUSE_BIN=/x/m
 check '--disable-sandbox || exec' env SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session infra-aux --dry-run
 check '"resume", "01a14091-3870-7923-b66b-d3bfd335dd4e"' env SHOAL_CODEX_BIN=/x/codex $H view --harness codex --session 01a14091-3870-7923-b66b-d3bfd335dd4e --dry-run
 check 'resume \\"$1\\" || exec' env SHOAL_CODEX_BIN=/x/codex $H view --harness codex --session infra-laptop --dry-run
+# pick saves a seat without a 0.9.3 terminal and says how to open it; a dry run saves nothing; the job rides along
+python3 - "$SHOALD" "$S" <<'PY2' || fail "pick saves without a 0.9.3 terminal"
+import contextlib, io, os, sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+os.environ["XDG_CONFIG_HOME"] = os.path.join(sys.argv[2], "xdg-pick")
+os.environ.pop("HERDR_SOCKET_PATH", None)
+import ui_herdr
+ns = lambda **k: types.SimpleNamespace(**{"harness": "claude", "session_id": "abcd1234-0000", "label": "notes", "cwd": "/srv/x",
+                                          "job": "abcd1234", "save": True, "session": "", "dry_run": False, "no_open": False, **k})
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_herdr.cmd_pick(ns(dry_run=True)) == 0
+assert "[dry-run] would save" in buf.getvalue() and not ui_herdr.load_standalone(raw=True), buf.getvalue()
+ui_herdr.Herdr = lambda *a: (_ for _ in ()).throw(AssertionError("no 0.9.3 here: nothing may open a card"))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert ui_herdr.cmd_pick(ns()) == 0
+e = next(x for x in ui_herdr.load_standalone(raw=True) if x["label"] == "notes")
+assert e["job"] == "abcd1234" and e["cwd"] == "/srv/x" and "shoal ui app-open" in buf.getvalue(), (e, buf.getvalue())
+PY2
+# the app's Add session: a host's candidates as a view, and a plan that saves one there (a `ui pick`, which apply allows)
+XDG_CONFIG_HOME="$S/xdg-addsess" python3 - "$SHOALD" <<'PY2' || fail "add-session plan"
+import sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_actions, ui_herdr
+ui_herdr.role_sessions = lambda: {"role-id"}
+ui_herdr.candidates_standalone = lambda ex: (print("muse sessions unavailable: boom") or
+                                             [{"harness": "claude", "session": "s1", "label": "notes", "state": "alive", "cwd": "/x", "job": "j1", "pid": 9}])
+v = ui_actions.view("sessions", types.SimpleNamespace(shoal="", role=""))
+assert v["sessions"] == [{"harness": "claude", "session": "s1", "label": "notes", "state": "alive", "cwd": "/x", "job": "j1", "model": "", "effort": ""}], v
+assert v["notes"] == ["muse sessions unavailable: boom"], "a harness's complaint stays out of the JSON"
+a = types.SimpleNamespace(harness="claude", session_id="s1", label="notes", cwd="/x", job="j1", model="", effort="", shoal="", role="")
+args, cost, confirm = ui_actions.build("add-session", a)
+assert args == ["ui", "pick", "--harness=claude", "--id=s1", "--label=notes", "--save", "--no-open", "--cwd=/x", "--job=j1"] and confirm, args
+for bad in ({"harness": "nope"}, {"session_id": " "}, {"label": ""}):
+    try:
+        ui_actions.build("add-session", types.SimpleNamespace(**{**vars(a), **bad}))
+        raise SystemExit(f"accepted {bad}")
+    except ui_actions.ActError:
+        pass
+assert "add-session" in ui_actions.WRITE_VERBS and "sessions" in ui_actions.VIEW_VERBS
+# a name another session's seat holds is refused (pick --save would replace that seat); the same session again is fine
+ui_herdr.load_standalone = lambda raw=False: [{"harness": "codex", "session": "other-9", "label": "notes"},
+                                             {"harness": "claude", "session": "far-1", "label": "notes", "host": "lane-b"}]
+try:
+    ui_actions.build("add-session", a)
+    raise SystemExit("a held name was accepted")
+except ui_actions.ActError as exc:
+    assert "already holds the codex session other-9" in str(exc), exc
+ui_herdr.load_standalone = lambda raw=False: [{"harness": "claude", "session": "s1", "label": "notes"}]
+assert ui_actions.build("add-session", a)[0][:2] == ["ui", "pick"], "re-adding the same session keeps its seat"
+PY2
 # a standalone seat's saved model and effort (ui pick --model/--effort, from muse-new --pick) ride every resume
 mkdir -p "$S/xdg-view/shoal"
 python3 - "$S" <<'PY2'
@@ -1134,7 +1186,7 @@ with patch.object(backends.ClaudeBackend, '_agents', return_value=[]), \
     with contextlib.redirect_stdout(buf): available = ui_herdr.candidates_standalone({'role-id'})
     assert available[0]['harness'] == 'codex' and 'muse sessions unavailable' in buf.getvalue()
 
-ns = types.SimpleNamespace(harness='', session_id='', label='', save=True, session='', pause=True)
+ns = types.SimpleNamespace(harness='', session_id='', label='', save=True, session='', pause=True, open=True)
 opened = []
 with patch.object(ui_herdr, 'candidates_standalone', return_value=cands), \
      patch.object(ui_herdr, '_choose', return_value=0), \
@@ -1197,7 +1249,7 @@ with contextlib.ExitStack() as st:
 assert [(c['session'], c['state']) for c in cands] == [('cx-unlisted', 'registered'), ('cl-dismissed-1111', 'dismissed')], cands
 
 def pick(cand):
-    ns = types.SimpleNamespace(harness='', session_id='', label='', save=True, session='', pause=False)
+    ns = types.SimpleNamespace(harness='', session_id='', label='', save=True, session='', pause=False, open=True)
     opened = []
     with patch.object(ui_herdr, 'candidates_standalone', return_value=[cand]), \
          patch.object(ui_herdr, 'role_sessions', return_value=set()), \

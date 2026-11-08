@@ -1185,11 +1185,15 @@ def cmd_pick(a) -> int:
 
 
 def _pick(a) -> int:
-    """Pick a non-shoal session and open its card without attaching the harness."""
+    """Pick a non-shoal session, save it as a standalone seat, and open its 0.9.3 card when run from a 0.9.3 pane (or
+    with --open); elsewhere it saves and names `ui app-open`, which opens the seat's space in the Herdr app."""
+    dry = getattr(a, "dry_run", False)
     if a.harness and a.session_id:
         e = {"harness": a.harness, "session": a.session_id, "label": a.label or a.session_id[:12]}
         if getattr(a, "cwd", ""):
             e["cwd"] = os.path.abspath(os.path.expanduser(a.cwd))
+        if getattr(a, "job", ""):  # a Claude background job: its card follows the job's /bg successors
+            e["job"] = a.job
     else:
         cands = candidates_standalone(role_sessions())
         if not cands:
@@ -1231,8 +1235,19 @@ def _pick(a) -> int:
         e.setdefault("saved_utc", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         entries = [x for x in load_standalone(raw=True) if x["session"] != e["session"]
                    and (x.get("label") or x["session"][:12]) != label] + [e]
+        if dry:
+            print(f"[dry-run] would save the {e['harness']} session {e['session'][:12]} as the standalone seat {label} "
+                  f"in {standalone_path()}")
+            return 0
         save_standalone(entries)
-        print(f"saved to {standalone_path()}")
+        print(f"saved the {e['harness']} session {e['session'][:12]} as the standalone seat {label} in {standalone_path()}")
+    # a 0.9.3 card only where there is a 0.9.3 to show it: its pane or popup (the socket it injects), a named
+    # session, or --open; the Herdr app opens the seat's space with `ui app-open`
+    there = getattr(a, "open", False) or bool(a.session) or bool(os.environ.get("HERDR_SOCKET_PATH"))
+    if getattr(a, "no_open", False) or not there:
+        print("open it in the Herdr app with `shoal ui app-open` (Herdr 0.9.3: `shoal ui open`)" if save
+              else "nothing saved: add --save to keep it as a seat")
+        return 0
     h = Herdr(a.session)
     print(open_standalone(h, e, focus=True))
     return 0

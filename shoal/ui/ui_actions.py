@@ -37,9 +37,11 @@ for _p in (PKG, HERE):
 
 V = 1
 PLAN_TTL_S = 600
-WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session", "dismiss")
+WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session", "dismiss",
+               "add-session")
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
-VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade")
+VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions")
+SESSION_KEYS = ("harness", "session", "label", "state", "cwd", "job", "model", "effort")
 
 
 class ActError(ValueError):
@@ -106,6 +108,28 @@ def _role(spec, slug: str, allow_all: bool = False) -> str:
 
 def build(verb: str, a) -> tuple[list[str], str, bool]:
     """(shoal argv, cost note, confirm) for one write verb, as `ui_herdr.act` builds it."""
+    if verb == "add-session":
+        # saved on the host the dialog ran this on, the session's own: its card, /bg following, model and effort live there
+        import backends
+        if a.harness not in backends.ecosystems():
+            raise ActError(f"add-session needs --harness ({'|'.join(backends.ecosystems())})")
+        if not (a.session_id or "").strip():
+            raise ActError("add-session needs --id (the session)")
+        if not (a.label or "").strip():
+            raise ActError("add-session needs --label (the seat's name)")
+        # one name, one card: `ui pick --save` would replace the seat that holds it, so a different session's is refused
+        import ui_herdr
+        held = next((x for x in ui_herdr.load_standalone(raw=True) if not x.get("host")
+                     and (x.get("label") or x["session"][:12]) == a.label.strip() and x["session"] != a.session_id.strip()), None)
+        if held:
+            raise ActError(f"the seat {a.label.strip()} already holds the {held['harness']} session {held['session'][:12]} here: "
+                           "pick another name (one name, one card)")
+        args = ["ui", "pick", f"--harness={a.harness}", f"--id={a.session_id.strip()}", f"--label={a.label.strip()}",
+                "--save", "--no-open"]
+        for k in ("cwd", "job", "model", "effort"):
+            if (getattr(a, k, "") or "").strip():
+                args.append(f"--{k}={getattr(a, k).strip()}")
+        return args, "", True
     if verb == "remove-session":
         if not a.session:
             raise ActError("remove-session needs --session")
@@ -297,7 +321,7 @@ def apply(token: str) -> dict:
     if time.time() - float(p.get("created", 0)) > PLAN_TTL_S:
         raise ActError("the plan expired: plan it again")
     argvs = [[str(x) for x in argv] for argv in (p.get("argvs") or [p["argv"]])]
-    if not all(args and args[0] in WRITE_VERBS for args in argvs):
+    if not all(args and (args[0] in WRITE_VERBS or args[:2] == ["ui", "pick"]) for args in argvs):
         raise ActError("a stored plan names no write verb")
     rc, outs = 0, []
     fd = os.open(_progress_path(token), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -329,6 +353,19 @@ def view(verb: str, a) -> dict:
                 {"slug": r["slug"], "host": r.get("host") or "", "needs_you": bool(r.get("needs_you")),
                  "posture": ui_status.posture_label(r)} for r in s.get("roles", []) if r.get("session_id")]})
         return {"v": V, "kind": "shoal-act-roles", "shoals": shoals}
+    if verb == "sessions":
+        # this host's sessions a seat could be made of: the 0.9.3 picker's own list (roles, old incarnations and
+        # internal runs left out; saved seats stay, so one closed can be added back)
+        import contextlib
+        import io
+        import config
+        import ui_herdr
+        with contextlib.redirect_stdout(io.StringIO()) as said:  # a harness that cannot list says so on stdout
+            cands = ui_herdr.candidates_standalone(ui_herdr.role_sessions())
+        rows = [{k: str(c.get(k) or "") for k in SESSION_KEYS} for c in cands]
+        return dict(base, host=config.server() or "", sessions=rows, notes=[x for x in said.getvalue().splitlines() if x.strip()],
+                    text="\n".join(f"{r['harness']:<8} {r['label']:<40} {r['state'] or '?':<10} {r['cwd']}" for r in rows)
+                    or "no standalone sessions here")
     spec = _spec(a.shoal)
     if verb == "next":
         role = _role(spec, a.role)
@@ -419,6 +456,11 @@ def add_parsers(u) -> None:
     q.add_argument("--until", default="", help="offline on: expected return")
     q.add_argument("--no-wake", action="store_true", help="freeze: record it without waking every role")
     q.add_argument("--session", default="", help="remove-session: a saved standalone session's label")
+    q.add_argument("--harness", default="", help="add-session: the session's harness")
+    q.add_argument("--id", dest="session_id", default="", help="add-session: the session's id")
+    q.add_argument("--label", default="", help="add-session: the seat's name")
+    q.add_argument("--cwd", default="", help="add-session: the session's folder")
+    q.add_argument("--job", default="", help="add-session: a Claude background job id")
     q.add_argument("--scope", default="", help="offline, freeze: across shoals, `all` or `host:<name>`, in place of --shoal")
     q.add_argument("--model", default="", help="handoff: the new session's model")
     q.add_argument("--effort", default="", help="handoff: the new session's effort")
