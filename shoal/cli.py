@@ -73,6 +73,7 @@ import muse as _muse  # noqa: E402
 import codex_harness as _codex  # noqa: E402
 import digest as _digest  # noqa: E402
 import jobs as _jobs  # noqa: E402
+import maintenance as _maintenance  # noqa: E402
 import worker as _worker  # noqa: E402
 import health as _health  # noqa: E402
 import kill_audit as _kill_audit  # noqa: E402
@@ -1254,6 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
     _codex.add_parsers(sub)
     _digest.add_parsers(sub)
     _jobs.add_parsers(sub)
+    _maintenance.add_parser(sub)
     _worker.add_parsers(sub)
     _health.add_parsers(sub)
     _kill_audit.add_parser(sub)

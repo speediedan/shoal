@@ -435,6 +435,24 @@ PY
   [ "$(systemctl --user show shoal-pooltest-pl-t1.service -p ActiveState --value)" != active ] || fail "home unit still waiting"
   touch "$PL/home.mode.release"
 fi
+# a maintenance window (maintenance.py): a marker on the host itself, which its reboots cannot end, makes it refuse a
+# reservation, read as ineligible to the probe and placement, and refuse a job started there; a remote window is set
+# through the host's route
+rm -f "$PL"/rc/pool-probe-*
+check "maintenance on homehost until" $PENV $H maintenance on --until +1h --note "selftest window" --no-sync
+check "homehost under maintenance until .*: selftest window" $PENV $H maintenance status
+check "RESERVE-FAILED: homehost under maintenance" $PENV $H pool reserve --resources gpus:1 --for pooltest/pl --until job:m0
+check "JOB-REFUSED: homehost under maintenance" $PJ --name m1 --dry-run -- true
+check "homehost (home): INELIGIBLE (homehost under maintenance" $PENV $H pool status
+check "maintenance off on homehost" $PENV $H maintenance off --no-sync
+rm -f "$PL"/rc/pool-probe-*
+check "maintenance on farhost until" $PENV $H maintenance on --server farhost --until +30m --note "far test" --no-sync
+check "farhost under maintenance until .*: far test" $PENV $H maintenance status --server farhost
+check "farhost .*ineligible: farhost under maintenance" $PJ --name m2 --place auto --needs gpu:1:nvidia --repo "$PL/poolrepo" --dry-run -- true
+check "maintenance off on farhost" $PENV $H maintenance off --server farhost --no-sync
+check "farhost: no maintenance window" $PENV $H maintenance status --server farhost
+check "ERROR: --until .* is already past" $PENV $H maintenance on --until 2001-01-01T00:00:00Z --note x --no-sync
+check "ERROR: maintenance on needs --note" $PENV $H maintenance on --until +1h --no-sync
 pool_clean
 echo "pool placement ok"
 
@@ -2094,6 +2112,47 @@ with patch("state.wait_status", return_value=("stale",proof)), \
     with patch("state.wait_status", return_value=("stale",dict(proof,target="job:another"))):
         assert not jobs.yield_for_rescan(args, unit)
 print("operational request acknowledgment ok")
+PY2
+
+echo "== 36a maintenance windows in the ledger (next, job run --on, health) and HOST-REBOOTED by boot id"
+python3 - "$SHOALD" <<'PY2' || fail "maintenance windows / HOST-REBOOTED"
+import contextlib, io, os, sys, time, types
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import health, jobs, maintenance
+now = time.time()
+until = maintenance.utc(now + 3600)
+ev = {"type": "system", "by": "user", "mode": "maintenance:farhost", "server": "farhost", "state": "on", "until": until,
+      "note": "watchdog test", "ts": maintenance.utc(now - 60)}
+view = types.SimpleNamespace(modes={"maintenance:farhost": ev, "freeze": {"state": "off"}})
+assert maintenance.parse_until("+90m", now) == maintenance.utc(now + 5400)
+assert maintenance.active(ev, now) and not maintenance.active(ev, now + 7200), "the window ends at --until"
+assert not maintenance.active(dict(ev, state="off"), now)
+b = maintenance.banner(view, now)
+assert b.startswith("HOST MAINTENANCE: farhost under maintenance until") and "watchdog test" in b, b
+with patch.object(maintenance, "server_of", side_effect=lambda t: "farhost" if t else "homehost"), \
+     patch.object(maintenance, "read_local", return_value=None):
+    assert "farhost under maintenance" in maintenance.refusal(view, "tester@farhost", now)
+    assert maintenance.refusal(view, "", now) == "", "another host's window binds only that host"
+# health holds the silence page of a host in a window; a window by anyone but the maintainer counts for nothing
+led = types.SimpleNamespace(events=lambda: [ev])
+assert health.maintenance_window(led, "farhost") is not None and health.maintenance_window(led, "homehost") is None
+assert maintenance.from_events([dict(ev, by="somerole")], "farhost", now) is None
+# job wait: a gone unit on a host whose boot id changed is HOST-REBOOTED; on the same boot it is the old verdict
+args = types.SimpleNamespace(sid="h4selftest", slug="tl", name="q", unit="", timeout_min=0, poll=0, tail=0)
+meta = {"host": "farhost", "log": "x.log", "boot_id": "aaaaaaaa-0000"}
+gone = {"ActiveState": "inactive", "LoadState": "not-found", "rc": "", "granted": "", "rc_mtime": "", "boot_id": "bbbbbbbb-1111"}
+r = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+for st, want in ((gone, "HOST-REBOOTED (boot aaaaaaaa -> bbbbbbbb; booted 2026-01-01 00:00:00"),
+                 (dict(gone, boot_id="aaaaaaaa-0000"), "UNIT-GONE-NO-STATUS (same boot")):
+    with patch.object(jobs, "remote_state", return_value=st), patch.object(jobs, "_ssh", return_value=r), \
+         patch.object(jobs, "reboot_detail", return_value="booted 2026-01-01 00:00:00 (host time)"), \
+         patch.object(jobs, "_placed_gone", return_value=""), patch.object(jobs, "_placed_verdict"), \
+         patch.object(jobs, "_emit"), patch.object(jobs, "yield_for_rescan", return_value=False), \
+         contextlib.redirect_stdout(io.StringIO()) as out:
+        assert jobs._wait_remote(args, "u", meta) == 1
+    assert want in out.getvalue(), out.getvalue()
+print("maintenance windows and HOST-REBOOTED ok")
 PY2
 
 echo "== 36b remove a role or a saved session for good: the order that lets the prune see its incarnations, and the refusals"

@@ -315,6 +315,10 @@ def host_capacity(probe: dict, now: float, max_age_s: float = DEFAULTS["max_age_
     elif p.get("error"):
         err = " ".join(str(p["error"]).split())  # one line, whatever the probe printed
         reasons.append(f"probe failed: {err[:160]}")
+    if isinstance(p.get("maintenance"), dict):  # a planned reboot, reset or hang test: placement must not land there
+        import maintenance
+        if maintenance.active(p["maintenance"]):
+            reasons.append(maintenance.describe(p["maintenance"]))
     ts = p.get("ts")
     seen = p.get("fetched_ts", ts)
     if not reasons and (not isinstance(ts, (int, float)) or not isinstance(seen, (int, float))

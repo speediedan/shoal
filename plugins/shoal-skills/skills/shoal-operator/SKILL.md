@@ -54,6 +54,14 @@ is woken to checkpoint and sleep, and `job run` refuses new units. Wait for slee
 running job units. Afterwards: `shoal freeze off --shoal <id>`, which wakes every role to resume.
 Never announce a freeze by message alone: a message has no end, and lanes honor it indefinitely.
 
+## A deliberate reboot, reset or hang test on one host
+
+Open a window first: `shoal maintenance on --server <host> --until +90m --note "<why>" --wake`. Jobs,
+reservations and placement then refuse the host, and every role's `next` names it. A lease or pool
+hold is not enough on its own: each one dies at the host's first reboot. Still hold the host's
+`gpu` and `cpu-heavy` leases for the CI agent, and take them again after every boot in the window.
+End it with `shoal maintenance off --server <host>`, then wake any role that did not come back.
+
 ## Inbox
 
 Health pages are ledger messages to `user`, and, when the spec sets

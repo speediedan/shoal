@@ -1031,13 +1031,22 @@ def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list
     for h in sorted({host_of(r, spec) for r in spec.roles if r.session} - {"", me}):
         ts = beats.get(h)
         a = age_min(ts) if ts else None
-        if a is not None and a >= silent_min:
+        if a is not None and a >= silent_min and maintenance_window(led, h) is None:
             roles_there = ", ".join(r.slug for r in spec.roles if r.session and host_of(r, spec) == h)
             out.append({"slug": f"host:{h}", "condition": "host-silent", "key": f"beat:{ts}", "since": ts,
                         "detail": f"host {h} has not beaten since {ts} ({a:.0f} min): its roles ({roles_there}) have "
                                   f"no health quorum and nothing on {me} can wake them. Asleep or offline is fine; "
                                   f"otherwise check its timers (`ssh {h} systemctl --user list-timers 'shoal-*'`)"})
     return out
+
+
+def maintenance_window(led, server: str) -> dict | None:
+    """The active maintenance window for `server` (maintenance.py): a planned reboot or test there is not a silence."""
+    try:
+        import maintenance
+        return maintenance.from_events(led.events(), server)
+    except Exception:  # noqa: BLE001 - never stops the quorum; no window read means the page stands
+        return None
 
 
 def host_instance() -> str:
