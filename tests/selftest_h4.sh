@@ -2155,6 +2155,29 @@ for st, want in ((gone, "HOST-REBOOTED (boot aaaaaaaa -> bbbbbbbb; booted 2026-0
 print("maintenance windows and HOST-REBOOTED ok")
 PY2
 
+echo "== 36a2 the maintainer's return wakes a role holding asks on its own host (asks-on-return)"
+python3 - "$SHOALD" <<'PY2' || fail "asks-on-return"
+import sys, time, types
+sys.path.insert(0, sys.argv[1])
+import health, maintenance
+now = time.time()
+back = maintenance.utc(now - 600)
+view = types.SimpleNamespace(modes={"user-offline": {"state": "off", "by": "user", "ts": back}}, last_by={"r": maintenance.utc(now - 7200)})
+c = health.return_condition(view, "r", {"asks": ["merge?"]})
+assert c and c["condition"] == "asks-on-return" and c["key"] == f"return:{back}" and "USER-ONLINE" in c["detail"], c
+assert health.return_condition(view, "r", {"asks": []}) is None, "no asks, nothing to raise"
+assert health.return_condition(types.SimpleNamespace(modes=view.modes, last_by={"r": maintenance.utc(now - 60)}), "r", {"asks": ["x"]}) is None, \
+    "a role that wrote after the return has seen it"
+fresh = types.SimpleNamespace(modes={"user-offline": {"state": "off", "by": "user", "ts": maintenance.utc(now - 30)}}, last_by={})
+assert health.return_condition(fresh, "r", {"asks": ["x"]}) is None, "offline off's own wake goes first"
+old = types.SimpleNamespace(modes={"user-offline": {"state": "off", "by": "user", "ts": maintenance.utc(now - 50000)}}, last_by={})
+assert health.return_condition(old, "r", {"asks": ["x"]}) is None, "an old return is not news"
+on = types.SimpleNamespace(modes={"user-offline": {"state": "on", "by": "user", "ts": back}}, last_by={})
+assert health.return_condition(on, "r", {"asks": ["x"]}) is None, "offline: nothing to raise"
+assert health.LADDERS["asks-on-return"] == [(0, "wake")]
+print("asks-on-return ok")
+PY2
+
 echo "== 36b remove a role or a saved session for good: the order that lets the prune see its incarnations, and the refusals"
 cat > "$S/remove_tool.py" <<'PY_REMOVE'
 import os, sys, types
