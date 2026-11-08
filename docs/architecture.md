@@ -422,6 +422,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:` or `lease:` blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
+| `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
@@ -1123,7 +1124,8 @@ route for another host, which it first adds as a herdr-core machine named after 
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground
 is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
-feeder push; a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
+feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
+actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
 `done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A local standalone
 Claude card reports its session too (`standalone_report` over `claude agents`; `done` when a turn it saw has ended),

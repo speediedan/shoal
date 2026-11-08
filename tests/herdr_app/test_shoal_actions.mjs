@@ -46,7 +46,7 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
 test("verbs: the fifteen buttons in order, each with a kind and a role rule", () => {
   assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "New role", "Add session", "Status", "Conditions", "Upgrade preview"]);
   assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session", "add-role", "add-session"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["handoff", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
+  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["asks", "opt"], ["handoff", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
     else assert.ok(fx.views[v.verb], `a view fixture for ${v.verb}`);
@@ -149,9 +149,12 @@ test("validation and argv for every verb", () => {
   assert.deepEqual(M.planArgv("freeze", t, f("freeze", { state: "off", noWake: false, note: "resume" })),
     ["ui", "act-plan", "freeze", "--shoal", A, "--state", "off", "--note=resume", "--json"]);
   assert.deepEqual(M.planArgv("next", t), ["ui", "act-plan", "next", "--shoal", A, "--role=lane-a", "--json"]);
-  for (const v of ["status", "conditions", "asks", "upgrade"]) {
+  for (const v of ["status", "conditions", "upgrade"]) {
     assert.deepEqual(M.planArgv(v, t), ["ui", "act-plan", v, "--shoal", A, "--json"], `${v} is shoal-wide`);
   }
+  assert.deepEqual(M.planArgv("asks", t), ["ui", "act-plan", "asks", "--shoal", A, "--role=lane-a", "--json"], "asks: the picked role's");
+  assert.deepEqual(M.planArgv("asks", { ...t, role: null }), ["ui", "act-plan", "asks", "--shoal", A, "--json"], "no role: every role's");
+  assert.deepEqual(M.planArgv("asks", { ...t, role: "*" }), ["ui", "act-plan", "asks", "--shoal", A, "--json"]);
   assert.deepEqual(M.rolesArgv(), ["ui", "act-plan", "roles", "--json"]);
   assert.deepEqual(M.rolesArgv(A), ["ui", "act-plan", "roles", "--json", "--shoal", A]);
   assert.deepEqual(M.applyArgv("abc"), ["ui", "act-apply", "--token", "abc", "--json"]);
@@ -211,7 +214,10 @@ test("replies: plan, result, view, asks", () => {
   assert.deepEqual(asks.asks.map((a) => [a.role, a.host, a.asks.length, a.question, a.saysWaiting]),
     [["lane-a", "host-a", 1, true, false], ["lane-b", "host-b", 2, false, true]]);
   assert.deepEqual(M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["", "a", 3] }, { asks: ["y"] }, null] }), "view").asks,
-    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false }]);
+    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false, links: [] }]);
+  const linked = M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["see #945"],
+    links: [[{ text: "repo#945", url: "https://github.com/acme/repo/issues/945" }, { text: "bad", url: "file:///etc/x" }]] }] }), "view").asks[0];
+  assert.deepEqual(linked.links, [[{ text: "repo#945", url: "https://github.com/acme/repo/issues/945" }]], "web links only");
   // a plan call may get a view (a read-only verb); a roles call may not
   assert.equal(M.parseReply(ok(fx.views.status), "plan").kind, "view");
   assert.match(M.parseReply(ok(fx.views.status), "roles").error, /unexpected reply \(view, wanted roles\)/);
@@ -516,4 +522,12 @@ test("Add session's button: one seat on one machine, whatever scope the dialog w
   assert.equal(M.runLabel({ scope: "all" }, "offline"), "Run on every shoal", "a verb that spans shoals still says so");
   assert.ok(!M.planArgv("add-session", { scope: "all" }, M.setValue(M.setValue(f, "label", "x"), "pick", { harness: "claude", session: "s1" })).includes("--scope"),
     "and its plan carries no scope: it runs once");
+});
+
+test("Reply to one ask: the message names it, wake on", () => {
+  const a = M.answerTarget({ shoal: A, role: null }, { role: "lane-b" }, new Date(), 2);
+  assert.equal(a.target.role, "lane-b");
+  assert.equal(a.form.values.text, "re ask 2: ");
+  assert.equal(a.form.values.wake, true);
+  assert.equal(M.answerTarget({ shoal: A }, { role: "lane-b" }).form.values.text, "", "the role's Answer: no ask named");
 });

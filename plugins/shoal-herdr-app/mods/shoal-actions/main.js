@@ -22,7 +22,7 @@
 //     screen renders without the CLI; a field value containing "fail" gets the error reply).
 
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { h_flex, v_flex, InputState, Input, Link } from "gpui-base";
 import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, machines, closeOverlay, nextCommand } from "herdr";
 import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
@@ -457,11 +457,11 @@ export default class Actions extends View {
     if (isView(this.verb)) this.runView(cx);
   }
 
-  answer(ask, cx) {
-    const a = answerTarget(this.sel, ask);
+  answer(ask, cx, n = null) {
+    const a = answerTarget(this.sel, ask, new Date(), n);
     this.sel = { shoal: a.target.shoal, role: a.target.role };
     this.verb = null;
-    this.pick("msg", cx, { wake: true });
+    this.pick("msg", cx, { wake: true, ...(Number.isInteger(n) ? { text: `re ask ${n}: ` } : {}) });
   }
 
   // ---- render
@@ -744,7 +744,18 @@ export default class Actions extends View {
               .text_size(11.5).font_medium().hover((s) => s.opacity(0.88)).tooltip(`Message ${a.role}, wake on`)
               .on_click((_e, cx) => { this.answer(a, cx); cx.notify(); }).child("Answer")));
         if (why) card.child(div().text_size(11).text_color(c.dim).child(why));
-        a.asks.forEach((t, j) => card.child(div().id(`ask-${i}-${j}`).text_size(12).text_color(c.ink).child(`ask ${j + 1}: ${t}`)));
+        a.asks.forEach((t, j) => {
+          // each ask: its text in full, a reply naming it, and the issues or PRs it names
+          const row = h_flex().id(`ask-${i}-${j}`).gap(8).items_start()
+            .child(div().flex_1().min_w(0).text_size(12).text_color(c.ink).child(`ask ${j + 1}: ${t}`))
+            .child(h_flex().id(`reply-${i}-${j}`).flex_none().h(22).px(8).items_center().rounded(5).cursor_pointer().border_1().border_color(c.input)
+              .text_size(11).text_color(c.ink).hover((s) => s.bg(c.hover)).tooltip(`Message ${a.role} "re ask ${j + 1}:", wake on`)
+              .on_click((_e, cx) => { this.answer(a, cx, j + 1); cx.notify(); }).child("Reply"));
+          for (const [k, l] of (a.links?.[j] ?? []).entries()) {
+            row.child(Link.new(`open-${i}-${j}-${k}`).href(l.url).flex_none().text_size(11).text_color(c.accent).child(`${l.text} ↗`));
+          }
+          card.child(row);
+        });
         col.child(card);
       });
       if (v.text && v.text.trim()) col.child(this.mono("view-text", v.text, c));

@@ -46,7 +46,7 @@ export const VERBS = [
   { verb: "offer", label: "Offer", kind: "write", role: "one", fields: ["item", "note"], about: "offer an item to a role" },
   { verb: "withdraw", label: "Withdraw", kind: "write", role: "none", fields: ["item"], about: "withdraw an open offer" },
   { verb: "next", label: "Next", kind: "view", role: "one", about: "a role's queue, offers and mail (marks nothing read)" },
-  { verb: "asks", label: "Asks", kind: "view", role: "none", about: "open asks and roles waiting on a question" },
+  { verb: "asks", label: "Asks", kind: "view", role: "opt", about: "open asks and roles waiting on a question (one role's, when one is picked)" },
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
   { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
@@ -200,6 +200,7 @@ export function setValue(form, key, value) {
 export function roleFor(verb, role) {
   const info = verbInfo(verb);
   if (!info || info.role === "none") return null;
+  if (info.role === "opt") return role === "*" ? null : strOrNull(role); // a role narrows it; none is all of them
   if (role === "*" && info.role !== "any") return null;
   return strOrNull(role);
 }
@@ -215,7 +216,7 @@ export function validate(verb, target, form = null) {
   } else if (strOrNull(target?.scope)) {
     if (!info.scoped) return `${info.label} works on one shoal: pick one`;
   } else if (!strOrNull(target?.shoal)) return "pick a shoal first";
-  if (info.role !== "none" && !roleFor(verb, target?.role)) {
+  if (info.role !== "none" && info.role !== "opt" && !roleFor(verb, target?.role)) {
     return info.role === "any" ? "pick a role (or * for everyone)" : "pick a role first (not *)";
   }
   if (info.kind !== "write") return null;
@@ -418,6 +419,9 @@ function normAsks(list) {
     asks: arr(a.asks).map(str).filter((x) => x.trim()),
     question: a.question === true,
     saysWaiting: a.says_waiting === true,
+    // per ask: the issues and PRs it names, http(s) only
+    links: arr(a.links).map((l) => arr(l).map(obj).filter((x) => x && strOrNull(x.text) && /^https?:\/\//i.test(str(x.url)))
+      .map((x) => ({ text: str(x.text), url: str(x.url) }))),
   }));
 }
 
@@ -646,10 +650,11 @@ export function keyAction(keystroke, screen, opts = {}) {
 }
 
 /** What the asks view's Answer does: Message to that role, wake on, the text box empty. */
-export function answerTarget(target, ask, now = new Date()) {
+export function answerTarget(target, ask, now = new Date(), n = null) {
+  // a reply to one ask names it, so the role knows which it answers
   return {
     target: { ...target, role: ask.role },
-    form: newForm("msg", now, { wake: true }),
+    form: newForm("msg", now, { wake: true, ...(Number.isInteger(n) ? { text: `re ask ${n}: ` } : {}) }),
   };
 }
 
