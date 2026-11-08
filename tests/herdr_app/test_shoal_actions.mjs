@@ -43,10 +43,10 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
   assert.equal(modJson.overlay.height, M.SIZE.height);
 });
 
-test("verbs: the sixteen buttons in order, each with a kind and a role rule", () => {
-  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Fill", "Dismiss", "Remove", "New role", "Add session", "Status", "Conditions", "Upgrade preview"]);
+test("verbs: the seventeen buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Queue", "Asks", "Offline", "Freeze", "Hand off", "Fill", "Dismiss", "Remove", "New role", "Add session", "Status", "Conditions", "Upgrade preview"]);
   assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "fill", "dismiss", "remove-role", "remove-session", "add-role", "add-session"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["asks", "opt"], ["handoff", "one"], ["fill", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
+  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["queue", "one"], ["asks", "opt"], ["handoff", "one"], ["fill", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
     else assert.ok(fx.views[v.verb], `a view fixture for ${v.verb}`);
@@ -538,4 +538,86 @@ test("Fill: a role's work from the board or from offers, previewed with set-fill
   f = M.setValue(f, "fill", "self");
   assert.deepEqual(M.planArgv("fill", { shoal: A, role: "core" }, f), ["ui", "act-plan", "fill", "--shoal", A, "--role=core", "--no-preview", "--fill=self", "--json"]);
   assert.match(M.validate("fill", { shoal: A, role: null }, f), /pick a role/);
+});
+
+test("Queue: the role's queue and candidates, a draft laid out by pick and slot, planned as one batch", () => {
+  const t = { shoal: A, role: "core" };
+  assert.ok(M.isQueue("queue") && !M.isWrite("queue") && !M.isView("queue"));
+  assert.deepEqual(M.planArgv("queue", t), ["ui", "act-plan", "queue", "--shoal", A, "--role=core", "--json"]);
+  assert.match(M.validate("queue", { shoal: A, role: null }), /pick a role/);
+  const v = M.parseReply(M.fixtureReply(fx, M.planArgv("queue", t)), "view");
+  assert.equal(v.kind, "view");
+  const q = v.queue;
+  assert.equal(q.fill, "self");
+  assert.equal(q.nextMax, 3);
+  assert.deepEqual(q.queue.map((r) => [r.item, r.src, r.active]), [["example/repo#11:fix", "held", true], ["example/repo#12:fix", "offer", false], ["example/repo#13:review", "board", false]]);
+  assert.equal(q.queue[2].blocked, "lane-a:example/repo#20");
+  assert.deepEqual(q.verbs, { transfer: true, queueOrder: true });
+  // a draft starts as the queue reads, the active item pinned outside it
+  let d = M.newDraft(q);
+  assert.deepEqual(d.rows.map((r) => r.item), ["example/repo#12:fix", "example/repo#13:review"]);
+  assert.equal(M.draftChanged(d, q), false);
+  assert.equal(M.draftProblem(d, q), "no change to the queue yet");
+  // candidates by source, another role's last, filtered by text
+  assert.deepEqual(M.draftCandidates(d, q).map((r) => r.src), ["offer", "board", "released", "other"]);
+  assert.deepEqual(M.draftCandidates(d, q, "lane-a").map((r) => r.item), ["example/repo#20:fix"]);
+  assert.deepEqual(M.draftCandidates(d, q, "released").map((r) => r.item), ["example/repo#16:fix"]);
+  // pick a candidate, then a slot: it goes there and leaves the candidates
+  d = M.draftPick(d, "example/repo#15");
+  assert.equal(d.picked, "example/repo#15");
+  assert.equal(M.draftPick(d, "example/repo#15").picked, null, "picking again unpicks");
+  d = M.draftPlace(d, q, d.picked, 0);
+  assert.equal(d.picked, null);
+  assert.deepEqual(d.rows.map((r) => r.key), ["example/repo#15", "example/repo#12", "example/repo#13"]);
+  assert.ok(!M.draftCandidates(d, q).some((r) => r.key === "example/repo#15"));
+  // up and down; a move past the ends changes nothing
+  d = M.draftMove(d, "example/repo#13", -1);
+  assert.deepEqual(d.rows.map((r) => r.key), ["example/repo#15", "example/repo#13", "example/repo#12"]);
+  assert.equal(M.draftMove(d, "example/repo#15", -1), d);
+  // a row it had is dropped (Undo puts it back); a placed candidate is removed to the candidates
+  d = M.draftRemove(d, q, "example/repo#12");
+  assert.deepEqual(d.dropped.map((r) => r.item), ["example/repo#12:fix"]);
+  const back = M.draftPlace(d, q, "example/repo#12", 9);
+  assert.deepEqual(back.rows.map((r) => r.key).at(-1), "example/repo#12");
+  assert.deepEqual(back.dropped, []);
+  assert.deepEqual(M.draftRemove(d, q, "example/repo#15").dropped.map((r) => r.item), ["example/repo#12:fix"], "a candidate is not dropped");
+  // another role's item: placed like any, counted apart from next_max, sent in the order (the CLI makes it a transfer)
+  d = M.draftPlace(d, q, "example/repo#20", 1);
+  d = M.draftPlace(d, q, "example/repo#14", 3);
+  d = M.draftPlace(d, q, "example/repo#16", 4);
+  assert.match(M.draftProblem(d, q), /at most 3 next items/);
+  d = M.draftRemove(d, q, "example/repo#16");
+  assert.equal(M.draftProblem(d, q), null);
+  // mark blocked, and clear it
+  d = M.draftBlock(d, "example/repo#13:review", "  waits on lane-a's cache change ");
+  assert.equal(d.blocked["example/repo#13:review"], "waits on lane-a's cache change");
+  assert.deepEqual(M.draftBlock(d, "example/repo#13:review", "").blocked, {});
+  assert.deepEqual(M.queueSetArgv(t, d), ["ui", "act-plan", "queue-set", "--shoal", A, "--role=core",
+    "--order=example/repo#15:fix,example/repo#20:fix,example/repo#13:review,example/repo#14:fix", "--drop=example/repo#12:fix",
+    "--blocked=example/repo#13:review=waits on lane-a's cache change", "--json"]);
+  // the plan: several verbs under one token, with what each does
+  const p = M.parseReply(M.fixtureReply(fx, M.queueSetArgv(t, d)), "plan");
+  assert.equal(p.kind, "plan");
+  assert.equal(p.summary.length, 2);
+  assert.match(p.summary[0], /from lane-a/);
+  assert.match(p.cost, /wakes core once/);
+  // refusals come back by item and mark the rows
+  const bad = { ...d, rows: [{ ...d.rows[0], item: "fail#1:fix" }] };
+  const e = M.parseReply(M.fixtureReply(fx, M.queueSetArgv(t, bad)), "plan");
+  assert.equal(e.kind, "error");
+  assert.deepEqual(e.refused, { "example/repo#15:fix": "not in core's scope" });
+  assert.equal(M.draftRefused(d, e.refused).refused["example/repo#15"], "not in core's scope");
+  // pending transfers, by key; a CLI without the verbs holds the plan back with a reason
+  assert.equal(M.pendingTransfers(q).get("example/repo#21").from, "docs");
+  const old = { ...q, verbs: { transfer: false, queueOrder: false } };
+  assert.match(M.draftProblem(d, old), /no queue-order yet/);
+  assert.match(M.draftProblem(d, { ...q, verbs: { transfer: false, queueOrder: true } }), /no transfer yet/);
+  assert.equal(M.normQueue({ verbs: {} }).verbs.transfer, true, "a CLI that says nothing is not held back");
+  // screens: back from the queue's plan, error and result goes to the queue
+  for (const s of ["plan", "error", "result", "busy"]) assert.equal(M.backStep(s, "queue"), "queue");
+  assert.equal(M.backStep("queue", "queue"), "menu");
+  // the colors: another role's items stand apart
+  const c = M.palette({});
+  assert.equal(M.srcColor("other", c), c.violet);
+  assert.notEqual(M.srcColor("other", c), M.srcColor("offer", c));
 });

@@ -17,7 +17,10 @@
 //     machine (`ui pick --save`), then opens its space here (`ui app-open --show`).
 //     Without them the dialog starts on the focused card (its `shoal.pane` label and its space's
 //     machine), else on the first shoal with a role that needs you.
-//   verb: open straight on one verb ("msg", "next", "asks", ...); text, wake: prefill Message.
+//   verb: open straight on one verb ("msg", "next", "asks", "queue", ...); text, wake: prefill Message.
+//   Queue (a role): its queue and candidates (`act-plan queue`), laid out in a draft (pick a row or candidate, then
+//     click a slot; up/down; drop; mark blocked), planned as one batch (`act-plan queue-set`) and confirmed like any plan.
+//   pick (fixture only): a Queue item key picked at open, so the slots show without a click.
 //   fixture: true answers from the bundled fixtures/act.json instead of running shoal (every
 //     screen renders without the CLI; a field value containing "fail" gets the error reply).
 
@@ -29,7 +32,8 @@ import {
   validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
-  providerOptions,
+  providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -79,6 +83,9 @@ export default class Actions extends View {
     this.sessionsNote = null;
     this.sessionsSeq = 0;
     this.prefill = { text: typeof p.text === "string" ? p.text : undefined, wake: p.wake === true ? true : undefined };
+    this.queue = null; // Queue: the role's queue as read
+    this.draft = null; // and the layout proposed for it
+    this.blocking = null; // the item whose blocker is being typed
 
     this.inputs = {};
     for (const key of TEXT_KEYS) {
@@ -97,6 +104,10 @@ export default class Actions extends View {
       st.on("blur", (_e, cx) => { if (this.focusKey === key) this.focusKey = null; cx.notify(); });
       this.inputs[key] = st;
     }
+    this.qFilter = InputState.new({ placeholder: "filter: item, title, role or source" });
+    this.qFilter.on("change", (_e, cx) => cx.notify());
+    this.qReason = InputState.new({ placeholder: "what it waits on (Enter sets it)" });
+    this.qReason.on("submit", (_e, cx) => { this.setBlocked(cx); cx.notify(); });
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.timer.after(400, () => { if (!this.focusKey) this.handle.focus(); });
@@ -221,6 +232,9 @@ export default class Actions extends View {
       this.screen = "form";
       this.focusFirst(cx);
       if (verb === "add-session") this.loadSessions(cx);
+    } else if (info.kind === "queue") {
+      this.form = null;
+      this.loadQueue(cx);
     } else {
       this.form = null;
       this.runView(cx);
@@ -373,6 +387,16 @@ export default class Actions extends View {
     this.seq++;
     this.hint = null;
     if (to === "close") return this.close();
+    if (to === "queue") {
+      const applied = Boolean(this.result);
+      this.dropPlan();
+      this.result = null;
+      this.error = null;
+      if (applied || !this.queue) return this.loadQueue(cx); // what was applied shows as the role's queue now
+      this.screen = "queue";
+      this.handle.focus();
+      return;
+    }
     if (to === "form" && this.form) {
       this.dropPlan();
       this.result = null;
@@ -445,6 +469,12 @@ export default class Actions extends View {
   retarget(cx) {
     this.seq++;
     this.hint = null;
+    if (isQueue(this.verb)) {
+      this.dropPlan();
+      this.result = null;
+      this.error = null;
+      return this.loadQueue(cx);
+    }
     if (this.plan || this.screen === "plan" || this.screen === "result" || (this.screen === "busy" && isWrite(this.verb))) {
       this.dropPlan();
       this.result = null;
@@ -462,6 +492,215 @@ export default class Actions extends View {
     this.sel = { shoal: a.target.shoal, role: a.target.role };
     this.verb = null;
     this.pick("msg", cx, { wake: true, ...(Number.isInteger(n) ? { text: `re ask ${n}: ` } : {}) });
+  }
+
+  // ---- the queue manager
+
+  loadQueue(cx) {
+    const why = validate("queue", this.sel);
+    if (why) {
+      this.error = why;
+      this.screen = "error";
+      return;
+    }
+    const machine = this.machine();
+    this.blocking = null;
+    this.request("reading the queue", planArgv("queue", this.sel), machine, "view", (r) => {
+      if (r.kind === "view" && r.queue) {
+        this.queue = r.queue;
+        this.draft = newDraft(r.queue);
+        // fixture only: open with an item picked, to look at the slots
+        if (this.fixture && typeof props()?.pick === "string") this.draft = draftPick(this.draft, props().pick);
+        this.screen = "queue";
+        this.handle.focus();
+      } else {
+        this.error = r.kind === "error" ? r.error : "the CLI answered without a queue";
+        this.screen = "error";
+      }
+    }, cx);
+  }
+
+  edit(f) {
+    this.draft = f(this.draft);
+    this.hint = null;
+    if (this.draft.refused && Object.keys(this.draft.refused).length) this.draft = { ...this.draft, refused: {} };
+  }
+
+  /** A slot was clicked: the picked row or candidate goes there. */
+  place(pos) {
+    if (this.draft?.picked) this.edit((d) => draftPlace(d, this.queue, d.picked, pos));
+  }
+
+  startBlocked(item) {
+    this.blocking = this.blocking === item ? null : item;
+    this.qReason.set_value(this.draft.blocked[item] ?? "");
+    if (this.blocking) this.qReason.focus();
+  }
+
+  setBlocked(_cx) {
+    if (!this.blocking || !this.draft) return;
+    const item = this.blocking;
+    this.edit((d) => draftBlock(d, item, this.qReason.value()));
+    this.blocking = null;
+    this.handle.focus();
+  }
+
+  previewQueue(cx) {
+    if (!this.draft || this.applying || this.screen === "busy") return;
+    const why = draftProblem(this.draft, this.queue);
+    if (why) {
+      this.hint = why;
+      return;
+    }
+    const machine = this.machine();
+    this.dropPlan();
+    this.request("planning the queue (dry run)", queueSetArgv(this.sel, this.draft), machine, "plan", (r) => {
+      if (r.kind === "plan") {
+        const { token, ...shown } = r;
+        this.token = token;
+        this.plan = { ...shown, machine, plannedAt: Date.now() };
+        this.screen = "plan";
+      } else if (r.kind === "error" && r.refused) {
+        // a dry run refused some items: they are marked on their rows, and the layout stays to fix
+        this.draft = draftRefused(this.draft, r.refused);
+        this.hint = r.error;
+        this.screen = "queue";
+      } else {
+        this.error = r.kind === "error" ? r.error : "the CLI answered with a view, not a plan";
+        this.screen = "error";
+      }
+      this.handle.focus();
+    }, cx);
+  }
+
+  tiny(id, label, onClick, c, { tip = null, color = null, on = false } = {}) {
+    return h_flex().id(id).h(20).px(6).items_center().rounded(4).flex_none().cursor_pointer()
+      .border_1().border_color(on ? c.accent : c.input).bg(on ? withAlpha(c.accent, 0.2) : c.raised)
+      .text_size(10.5).text_color(color ?? c.ink).hover((s) => s.bg(c.hover))
+      .when(Boolean(tip), (el) => el.tooltip(tip)).on_click(onClick).child(label);
+  }
+
+  itemCell(id, r, c, color) {
+    const cell = h_flex().gap(6).items_center().min_w(0).flex_1()
+      .child(div().w(7).h(7).rounded(4).flex_none().bg(color));
+    cell.child(r.url ? Link.new(`${id}-link`).href(r.url).flex_none().text_size(11.5).font_family(MONO).text_color(c.ink).child(r.item)
+      : div().flex_none().text_size(11.5).font_family(MONO).text_color(c.ink).child(r.item));
+    if (r.title) cell.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(c.dim).child(r.title));
+    return cell;
+  }
+
+  slot(pos, c) {
+    return h_flex().id(`slot-${pos}`).h(18).mx(4).px(8).items_center().rounded(4).cursor_pointer()
+      .border_1().border_color(withAlpha(c.accent, 0.6)).bg(withAlpha(c.accent, 0.08))
+      .text_size(10.5).text_color(c.accent).hover((s) => s.bg(withAlpha(c.accent, 0.2)))
+      .on_click((_e, cx) => { this.place(pos); cx.notify(); }).child(`place here (${pos + 1})`);
+  }
+
+  queueBody(c) {
+    const q = this.queue;
+    const d = this.draft;
+    const go = (f) => (_e, cx) => { f(cx); cx.notify(); };
+    const col = v_flex().gap(8);
+    col.child(h_flex().gap(8).items_center()
+      .child(div().text_size(13.5).font_semibold().child("Queue"))
+      .child(div().text_size(11.5).text_color(c.muted).child(this.target(c)))
+      .child(div().text_size(11).text_color(c.dim).child(`fill=${q.fill} · at most ${q.nextMax} next`))
+      .child(div().flex_1())
+      .child(this.tiny("q-again", "read again", go((cx) => this.loadQueue(cx)), c, { tip: "read the queue again (drops this layout)" })));
+    if (!q.verbs.queueOrder || !q.verbs.transfer) {
+      col.child(div().text_size(11).text_color(c.amber).child("This host's shoal does not have the queue verbs yet (queue-order, transfer): "
+        + "you can lay a queue out, and Preview says what is missing."));
+    }
+    if (q.order?.status === "pending") {
+      col.child(div().text_size(11).text_color(c.amber).child(`An order is pending (not acked yet): ${q.order.order.join(", ") || "(none)"}. A new one replaces it.`));
+    }
+    const pending = pendingTransfers(q);
+    for (const t of pending.values()) {
+      col.child(div().text_size(11).text_color(c.violet).child(`transfer pending: ${t.item} ${t.from ?? "?"} → ${t.to ?? "?"} (waits for the holder's hand-off)`));
+    }
+
+    // its queue: the active item pinned, then the next items with slots while something is picked
+    col.child(this.label(d.picked ? "its queue: click a slot to place the picked item" : "its queue", c));
+    const list = v_flex().id("q-list").gap(3);
+    const active = q.queue.find((r) => r.active);
+    if (active) {
+      list.child(h_flex().id("q-active").gap(8).px(8).py(4).rounded(6).bg(c.panel).items_center()
+        .child(div().w(42).flex_none().text_size(10.5).font_medium().text_color(c.working).child("active"))
+        .child(this.itemCell("q-active", active, c, srcColor(active.src, c)))
+        .child(div().text_size(10.5).text_color(c.dim).child("pinned")));
+    }
+    if (!d.rows.length && !d.picked) list.child(div().px(8).text_size(11.5).text_color(c.dim).child("no next items: pick a candidate below, then a slot"));
+    d.rows.forEach((r, i) => {
+      if (d.picked && d.picked !== r.key) list.child(this.slot(i, c));
+      const color = srcColor(r.src, c);
+      const refused = d.refused?.[r.key];
+      const blocked = d.blocked[r.item] ?? null;
+      const moving = r.src === "other";
+      const row = v_flex().id(`q-${i}`).gap(2).px(8).py(4).rounded(6)
+        .bg(d.picked === r.key ? withAlpha(c.accent, 0.18) : moving ? withAlpha(c.violet, 0.1) : c.panel)
+        .border_1().border_color(refused ? withAlpha(c.red, 0.7) : moving ? withAlpha(c.violet, 0.55) : c.border);
+      const line = h_flex().gap(6).items_center()
+        .child(div().w(18).flex_none().text_size(10.5).text_color(c.dim).child(String(i + 1)))
+        .child(this.itemCell(`q-${i}`, r, c, color))
+        .child(this.tiny(`q-up-${i}`, "↑", go(() => this.edit((x) => draftMove(x, r.key, -1))), c, { tip: "up one" }))
+        .child(this.tiny(`q-dn-${i}`, "↓", go(() => this.edit((x) => draftMove(x, r.key, 1))), c, { tip: "down one" }))
+        .child(this.tiny(`q-mv-${i}`, "Move", go(() => this.edit((x) => draftPick(x, r.key))), c, { tip: "pick it, then click a slot", on: d.picked === r.key }))
+        .when(!moving, (el) => el.child(this.tiny(`q-bl-${i}`, blocked ? "Blocked ✓" : "Blocked", go(() => this.startBlocked(r.item)), c,
+          { tip: "tell the role what it waits on", color: blocked ? c.amber : null })))
+        .child(this.tiny(`q-rm-${i}`, q.queue.some((x) => x.key === r.key) ? "Drop" : "Remove", go(() => this.edit((x) => draftRemove(x, q, r.key))), c,
+          { tip: q.queue.some((x) => x.key === r.key) ? "take it out of the queue" : "back to the candidates" }));
+      row.child(line);
+      const notes = [];
+      if (moving) notes.push([c.violet, `moves from ${r.owner ?? "another role"} (${r.how ?? "held"}): a transfer; it joins once handed off`]);
+      else if (!q.queue.some((x) => x.key === r.key)) notes.push([c.muted, r.src === "board" && q.fill !== "self" || r.src === "released" ? "new: offered to it first" : "new"]);
+      if (r.blocked) notes.push([c.dim, `recorded blocker: ${r.blocked}`]);
+      if (blocked) notes.push([c.amber, `marked blocked: ${blocked}`]);
+      if (refused) notes.push([c.red, `refused: ${refused}`]);
+      notes.forEach(([col2, t], j) => row.child(div().id(`q-${i}-n${j}`).pl(24).text_size(10.5).text_color(col2).child(t)));
+      if (this.blocking === r.item) {
+        row.child(h_flex().gap(6).pl(24).items_center()
+          .child(Input.new(this.qReason).h(24).flex_1().px(8).rounded(5).border_1().border_color(c.accent).bg(c.code).text_size(11.5))
+          .child(this.tiny(`q-bl-set-${i}`, "Set", go((cx) => this.setBlocked(cx)), c))
+          .child(this.tiny(`q-bl-clr-${i}`, "Clear", go(() => { this.edit((x) => draftBlock(x, r.item, "")); this.blocking = null; }), c)));
+      }
+      list.child(row);
+    });
+    if (d.picked) list.child(this.slot(d.rows.filter((r) => r.key !== d.picked).length, c));
+    col.child(list);
+    if (d.dropped.length) {
+      const dr = h_flex().gap(6).flex_wrap().items_center().child(div().text_size(11).text_color(c.dim).child("dropped:"));
+      d.dropped.forEach((r, i) => dr.child(this.tiny(`q-undo-${i}`, `${r.item} ↺`, go(() => this.edit((x) => draftPlace(x, q, r.key, x.rows.length))), c, { tip: "undo the drop" })));
+      col.child(dr);
+    }
+    if (this.hint) col.child(div().text_size(11.5).text_color(c.red).child(this.hint));
+
+    // candidates: by source, another role's in violet
+    const cands = draftCandidates(d, q, this.qFilter.value());
+    col.child(h_flex().gap(8).items_center().pt(4)
+      .child(this.label(`candidates (${cands.length})`, c))
+      .child(div().flex_1())
+      .children(QUEUE_SRCS.map((s) => h_flex().gap(4).items_center().flex_none()
+        .child(div().w(7).h(7).rounded(4).bg(srcColor(s, c)))
+        .child(div().text_size(10.5).text_color(c.dim).child(SRC_LABEL[s])))));
+    col.child(Input.new(this.qFilter).h(28).px(8).rounded(6).border_1().border_color(c.input).bg(c.code).text_size(12));
+    const cl = v_flex().id("q-cands").gap(3);
+    if (!cands.length) cl.child(div().px(8).text_size(11.5).text_color(c.dim).child(q.candidates.length ? "none match the filter" : "no candidates: no open offers, board items, releases or other roles' items"));
+    cands.forEach((r, i) => {
+      const moving = r.src === "other";
+      const who = moving ? `${r.owner ?? "?"} · ${r.how ?? ""}` : r.src === "released" ? `released by ${r.by ?? "?"}${r.kind ? ` (${r.kind})` : ""}`
+        : r.src === "offer" ? `offered${r.by ? ` by ${r.by}` : ""}${r.prio != null ? ` · prio ${r.prio}` : ""}` : SRC_LABEL[r.src];
+      cl.child(h_flex().id(`c-${i}`).gap(6).px(8).py(4).rounded(6).items_center()
+        .bg(d.picked === r.key ? withAlpha(c.accent, 0.18) : moving ? withAlpha(c.violet, 0.1) : c.panel)
+        .border_1().border_color(moving ? withAlpha(c.violet, 0.55) : c.border)
+        .child(this.itemCell(`c-${i}`, r, c, srcColor(r.src, c)))
+        .child(div().flex_none().max_w(150).truncate().text_size(10.5).text_color(moving ? c.violet : c.dim).child(who))
+        .child(this.tiny(`c-pick-${i}`, d.picked === r.key ? "Picked" : "Pick", go(() => this.edit((x) => draftPick(x, r.key))), c,
+          { tip: "pick it, then click a slot in its queue", on: d.picked === r.key }))
+        .child(this.tiny(`c-end-${i}`, "+ end", go(() => this.edit((x) => draftPlace(x, q, r.key, x.rows.length))), c,
+          { tip: moving ? `move it from ${r.owner}: a transfer` : "add it after the last next item" })));
+    });
+    col.child(cl);
+    return col;
   }
 
   // ---- render
@@ -590,6 +829,7 @@ export default class Actions extends View {
       case "plan": return this.planBody(c);
       case "result": return this.resultBody(c);
       case "view": return this.viewBody(c);
+      case "queue": return this.queueBody(c);
       case "error": return this.errorBody(c);
       default: return this.menuBody(c);
     }
@@ -688,6 +928,12 @@ export default class Actions extends View {
     col.child(h_flex().gap(8).items_center()
       .child(div().text_size(13.5).font_semibold().child(`${verbInfo(this.verb).label}: preview`))
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
+    if (p.summary?.length) {
+      col.child(this.label("what it does", c));
+      const list = v_flex().gap(2);
+      p.summary.forEach((x, i) => list.child(div().id(`sum-${i}`).text_size(12).text_color(c.ink).child(`• ${x}`)));
+      col.child(list);
+    }
     col.child(this.label("command", c));
     col.child(this.mono("cmd", p.command, c));
     if (p.cost) {
@@ -785,7 +1031,7 @@ export default class Actions extends View {
 
   footer(c) {
     const row = h_flex().flex_none().px(16).py(10).gap(8).items_center().border_t_1().border_color(c.border);
-    const keys = { menu: "click an action · Esc closes", form: `${runsAcross(this.sel, this.form) ? "" : `Enter: ${this.form?.values?.dryRun ? "preview" : "run"} · `}Tab: next field · Esc: back`, plan: "Enter: confirm · Esc: cancel", busy: "Esc: back", result: "Esc: back to the form", view: "Esc: back", error: "Esc: back" };
+    const keys = { queue: "pick a row or candidate, then a slot · Esc: back", menu: "click an action · Esc closes", form: `${runsAcross(this.sel, this.form) ? "" : `Enter: ${this.form?.values?.dryRun ? "preview" : "run"} · `}Tab: next field · Esc: back`, plan: "Enter: confirm · Esc: cancel", busy: "Esc: back", result: "Esc: back to the form", view: "Esc: back", error: "Esc: back" };
     row.child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(c.dim).child(keys[this.screen] ?? ""));
     const go = (f) => (_e, cx) => { f(cx); cx.notify(); };
     switch (this.screen) {
@@ -805,6 +1051,13 @@ export default class Actions extends View {
       case "busy":
         if (!this.applying) row.child(this.button("b-back", "Back", "plain", go((cx) => this.back(cx)), c));
         break;
+      case "queue": {
+        const changed = this.draft && this.queue && draftChanged(this.draft, this.queue);
+        row.child(this.button("b-back", "Back", "plain", go((cx) => this.back(cx)), c));
+        if (changed) row.child(this.button("b-reset", "Reset", "plain", go(() => { this.draft = newDraft(this.queue); this.hint = null; }), c, "back to the queue as read"));
+        row.child(this.button("b-preview", "Preview", "primary", go((cx) => this.previewQueue(cx)), c, "plan the whole change as one batch: each verb's --dry-run, nothing written"));
+        break;
+      }
       default:
         if (this.screen !== "menu") row.child(this.button("b-back", "Back", "plain", go((cx) => this.back(cx)), c));
         row.child(this.button("b-close", "Close", "primary", () => this.close(), c));

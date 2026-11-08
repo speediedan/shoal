@@ -189,6 +189,21 @@
       "confirm": true,
       "token": "dddddddddddddddddddddddddddddddd",
       "expires_s": 600
+    },
+    "queue-set": {
+      "v": 1,
+      "kind": "shoal-act-plan",
+      "verb": "queue-set",
+      "command": "",
+      "preview": "[dry-run] OK example/repo#15:fix: would set the order",
+      "cost": "wakes core once to apply it (a turn); the order is a request it acks",
+      "confirm": true,
+      "token": "0123456789abcdef0123456789abcdef",
+      "expires_s": 600,
+      "summary": [
+        "move example/repo#20:fix from lane-a (claimed) to core: it joins the queue once handed off",
+        "set core's next items to example/repo#15:fix, example/repo#12:fix"
+      ]
     }
   },
   "result": {
@@ -295,11 +310,103 @@
         }
       ],
       "text": ""
+    },
+    "queue": {
+      "v": 1,
+      "kind": "shoal-act-view",
+      "verb": "queue",
+      "text": "core (fill=self, next at most 3)",
+      "role": "core",
+      "fill": "self",
+      "next_max": 3,
+      "queue": [
+        {
+          "item": "example/repo#11:fix",
+          "key": "example/repo#11",
+          "src": "held",
+          "title": "Fix the flaky retry",
+          "url": "https://github.com/example/repo/issues/11",
+          "active": true
+        },
+        {
+          "item": "example/repo#12:fix",
+          "key": "example/repo#12",
+          "src": "offer",
+          "title": "Tidy the CLI help",
+          "url": "https://github.com/example/repo/issues/12",
+          "prio": 50
+        },
+        {
+          "item": "example/repo#13:review",
+          "key": "example/repo#13",
+          "src": "board",
+          "title": "Review the cache PR",
+          "url": "https://github.com/example/repo/issues/13",
+          "blocked": "lane-a:example/repo#20"
+        }
+      ],
+      "candidates": [
+        {
+          "item": "example/repo#14:fix",
+          "key": "example/repo#14",
+          "src": "offer",
+          "title": "Docs for the queue",
+          "url": "https://github.com/example/repo/issues/14",
+          "by": "user",
+          "prio": 40
+        },
+        {
+          "item": "example/repo#15:fix",
+          "key": "example/repo#15",
+          "src": "board",
+          "title": "Speed up the digest",
+          "url": "https://github.com/example/repo/issues/15"
+        },
+        {
+          "item": "example/repo#16:fix",
+          "key": "example/repo#16",
+          "src": "released",
+          "title": "GPU smoke test",
+          "url": "https://github.com/example/repo/issues/16",
+          "by": "docs",
+          "kind": "blocked"
+        },
+        {
+          "item": "example/repo#20:fix",
+          "key": "example/repo#20",
+          "src": "other",
+          "title": "The cache key change",
+          "url": "https://github.com/example/repo/issues/20",
+          "owner": "lane-a",
+          "how": "claimed"
+        }
+      ],
+      "transfers": [
+        {
+          "item": "example/repo#21:fix",
+          "from": "docs",
+          "to": "core",
+          "status": "pending"
+        }
+      ],
+      "order": null,
+      "verbs": {
+        "transfer": true,
+        "queue-order": true
+      }
     }
   },
   "error": {
     "v": 1,
     "kind": "shoal-act-error",
     "error": "no open offer of repo-one#999 in alpha-20261101-000000"
+  },
+  "refusedQueue": {
+    "v": 1,
+    "kind": "shoal-act-error",
+    "error": "refused: example/repo#15:fix: not in core's scope",
+    "refused": {
+      "example/repo#15:fix": "not in core's scope"
+    }
   }
 }

@@ -605,7 +605,36 @@ shoal ui app-sync                                  # roles tabs follow the roles
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
 shoal ui act-apply --token T [--json]              # run a planned action once
+shoal ui queue --shoal ID --role R [--json]        # one role's queue and its candidates (read-only)
 ```
+
+- **The queue manager.** `Queue`, on a role in the actions dialog (right-click a role in the lattice, or Actions in the
+  top bar), lays out that role's queue before anything is written:
+  - **Its queue:** the active item stays pinned, with the next items below it. Each row has ↑ and ↓, Move, Blocked
+    (what it waits on, sent to the role) and Drop.
+  - **Candidates:** open offers it has not queued, claims it holds outside its queue, board items in its scope (the
+    digest's, else the board's for a fill=self role), items another role released lately (blocked, lost-race or
+    declined, in the last 14 days), and items another role holds or was offered. That last group is drawn in violet,
+    with its owner, so a move between roles is plain. A filter narrows the list.
+  - **Placing:** click Pick on a candidate (or Move on a row), then one of the `place here` slots that open between
+    the rows. `+ end` adds a candidate at the end. Element drag and drop is not in the app's mod kit (its only drop
+    takes files from outside the app), so a pick and a slot stand in for it.
+  - **Preview** plans the whole layout as one batch (`ui act-plan queue-set --order=a,b --drop=c --blocked=item=why`).
+    Each step runs its own `--dry-run` under one token, and Confirm runs them in order, stopping at the first
+    failure:
+    - `withdraw`, for an open offer you drop;
+    - `offer`, for a board item a fill=assigned role cannot take itself, or a released item, with its position as
+      the prio;
+    - `transfer`, for another role's item: the holder is asked to hand it off, and it joins this queue once that
+      lands, so it is left out of this order;
+    - one `msg --kind request`, to release a dropped claim and to record blockers;
+    - `queue-order`, last, which the role applies at once and acks.
+  - **Refusals:** a dry run's `REFUSED <item>: <reason>` lines come back by item and mark their rows. No token is
+    handed out, and the layout stays to fix. `queue-order` refusing an item this same plan offers first is expected,
+    and not counted.
+  - **Pending state:** a pending transfer and an order not acked yet show above the queue.
+  - **On an older shoal:** `transfer` and `queue-order` are their own shoal verbs. A host whose shoal lacks them says
+    so and plans nothing, and `ui queue` reports `verbs`.
 
 - **Dismissing a needs-you.** Right-click a role's row in the agents list, or use `Dismiss` in the actions dialog (`shoal dismiss --shoal ID
   --role R [--undo]`). The row leaves "needs you" until something new is raised: a change to its reasons, its asks, what its session says, or its
@@ -749,7 +778,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   shoal ui act-apply --token T [--json]
   ```
 
-  For a write verb (`msg`, `offer`, `withdraw`, `offline`, `freeze`, `handoff`, `remove-role`, `remove-session`), `act-plan`
+  For a write verb (`msg`, `offer`, `withdraw`, `offline`, `freeze`, `handoff`, `remove-role`, `remove-session`, `fill`,
+  and `queue-set`, the queue manager's batch), `act-plan`
   builds the argv the palette builds, runs its `--dry-run`, names the wake cost, and keeps the argv under a one-time token (mode
   0600 in the runtime dir, ten minutes): `{"kind": "shoal-act-plan", "command", "preview", "cost", "confirm", "token",
   "progress", "expires_s"}`. `--no-preview` skips the dry run (`preview` is empty), so a verb that would refuse reports it from the
@@ -760,7 +790,7 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   toggle: on, it shows the plan and waits for a confirm; off, the click was the go, and across shoals only the button
   (`Run on every shoal`) runs it, not Enter. The toggle starts on for `freeze`, `handoff`, `remove-role` and `remove-session`.
   `confirm` remains for other callers (false for `offline` on one shoal). Views store nothing:
-  `next`, `status`, `conditions`, `asks` (also as data) and `upgrade` (a preview) return
+  `next`, `status`, `conditions`, `asks` (also as data), `queue` (as data, as `ui queue --json`) and `upgrade` (a preview) return
   `{"kind": "shoal-act-view", "text"}`, and `roles` lists the shoals and their roles with a session. An
   error is `{"kind": "shoal-act-error", "error"}` with exit 2, and so is a write whose own `--dry-run` refuses
   it (no token is handed out). A preview syncs the ledger clone the way the
