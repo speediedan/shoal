@@ -11,7 +11,7 @@ const DEG = Math.PI / 180;
 // a prompt, a design call, an empty queue; a stalled session), then what it is doing (a turn, its own job, a hand-over,
 // waiting on others, idle with work queued, idle), then how fresh its last ledger write is. Rank 0 is the point that faces
 // you; the rest follow a spiral back from it, so the sphere is evenly used and what needs you is nearest.
-const ACTIVITY = { working: 0, "local-ci": 1, "remote-ci": 1, handover: 2, refill: 2, lease: 3, upstream: 3, peer: 3, hold: 3, other: 3,
+const ACTIVITY = { working: 0, "local-ci": 1, "remote-ci": 1, "research-proto": 1, handover: 2, refill: 2, lease: 3, upstream: 3, peer: 3, hold: 3, other: 3,
   queued: 4, starved: 5, held: 5, dismissed: 5, excluded: 6 };
 const SPHERE_R = 0.92; // of the shoal's disc radius
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
