@@ -602,37 +602,8 @@ def ensure_shoal(h: Herdr, spec, dry_run: bool = False, reapply: bool = False) -
 
 # ---- standalone sessions ---------------------------------------------------------------
 
-def standalone_path() -> str:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "shoal", "ui-standalone.json")
-
-
-def unique_by_label(entries: list[dict]) -> tuple[list[dict], list[dict]]:
-    """(kept, dropped): two saved sessions with one label share a pane label, so their feeder reports
-    collided (equal sequence numbers: the first, an old idle seat, won and a working seat read idle,
-    2026-10-19). The later entry wins, as the newer registration is the live one."""
-    last = {}
-    for i, e in enumerate(entries):
-        last[e.get("label") or e["session"][:12]] = i
-    kept = [e for i, e in enumerate(entries) if last[e.get("label") or e["session"][:12]] == i]
-    return kept, [e for e in entries if e not in kept]
-
-
-def load_standalone(raw: bool = False) -> list[dict]:
-    try:
-        entries = list(json.load(open(standalone_path())).get("sessions", []))
-    except (OSError, ValueError):
-        return []
-    return entries if raw else unique_by_label(entries)[0]
-
-
-def save_standalone(entries: list[dict]) -> None:
-    p = standalone_path()
-    os.makedirs(os.path.dirname(p), exist_ok=True)
-    tmp = p + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump({"v": 1, "sessions": entries}, fh, indent=1)
-    os.replace(tmp, p)
+# the registry lives in core (standalone.py) so core modules need no UI import; these names stay importable here
+from standalone import load_standalone, save_standalone, standalone_path, unique_by_label  # noqa: E402,F401
 
 
 BGFOLLOW_BACKUP = ".bak-bgfollow-"

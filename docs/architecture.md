@@ -68,6 +68,8 @@ to match against), so a group can work from other trackers or a plain file.
 | spec | `shoals/<id>/shoal.json` in the ledger repository (`shoal/roles.py`, `shoal/layout.py`) | always | roles, sources, repos, `features`, generation history |
 | ledger | `shoals/<id>/ledger/<writer>.jsonl` (`shoal/ledger.py`, `shoal/ledger_cli.py`) | always | all traffic between roles; one writer per file |
 | role start doc | each role's `plan_state.md` | always | mission, current state, next steps, `grants-needed`, a `Last updated` stamp (the contract: [`start-doc.md`](start-doc.md); `shoal doc-check`) |
+| references | `shoal/refs.py` (`refs`) | always | read-only: the start-doc roots live specs and standalone sessions name, and what names each file of a role directory (classes, archive candidates, untracked and dangling) ([`refs.md`](refs.md)) |
+| standalone registry | `shoal/standalone.py` | always | the per-host list of saved standalone sessions (`ui-standalone.json`); the viewer re-exports it |
 | briefs | `shoal/briefs.py` | always | the first prompt of every session, identical in shape for every role |
 | work loop | `shoal/worker.py` (`next`, `queue`, `asks`, `offline`, `freeze`) | `workwake` | one read and one write per boundary |
 | session watcher | `shoal/ledger_watch.py` (`ledger-watch`) | always (work-only waking with `workwake`) | wakes its own session |

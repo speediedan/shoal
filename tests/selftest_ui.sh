@@ -2731,7 +2731,8 @@ json.dump({"sessions": [{"label": name, "session": "s1-aaaaaaaaaaaaaaaa", "harne
                         {"label": "quiet-seat", "session": "s2", "harness": "claude"},
                         {"label": "elsewhere", "session": "s3", "host": "other"},
                         {"label": "dismissed-seat", "session": "s4", "harness": "claude", "dismissed": True}]}, open(p, "w"))
-ui_herdr.standalone_path = lambda: p
+import standalone  # the registry's path lives in core; ui_herdr re-exports it
+standalone.standalone_path = lambda: p
 d = ui_graph.GraphBuilder(root=sys.argv[2]).build()
 got = {n["label"]: n for n in d["nodes"] if n["kind"] == "external"}
 # saved here shows whether or not it ever wrote to a ledger; saved on another host does not, and a plain writer stays unsaved
