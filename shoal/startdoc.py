@@ -83,8 +83,38 @@ def last_updated(text: str) -> datetime.datetime | None:
     return max(stamps) if stamps else None
 
 
+FENCE = re.compile(r"^\s*(```|~~~)")
+SECTION = re.compile(r"^##\s")
+
+
+def header(text: str) -> str:
+    """The doc's header: everything above its first `## ` section (lines inside fenced blocks are not headings). A peer
+    reads only this to learn a role's state (`shoal doc-head`), so it is kept short and current."""
+    lines = text.splitlines(keepends=True)
+    fenced = False
+    for i, line in enumerate(lines):
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and SECTION.match(line):
+            return "".join(lines[:i])
+    return text
+
+
+def header_stats(path: str, text: str) -> dict:
+    """{lines, bytes, max_lines, max_bytes, over, summary}: the header's size against the cap its repository sets
+    (`.shoal/lifecycle.toml` `[tiers]`), and whether it says anything beyond the title and stamp."""
+    import lifecycle
+    tiers = lifecycle.load(path)["values"]["tiers"]
+    h = header(text)
+    n, b = len(h.rstrip("\n").splitlines()), len(h.encode())
+    summary = [x for x in h.splitlines() if x.strip() and not x.startswith("# ") and not STAMP.match(x)]
+    return {"lines": n, "bytes": b, "max_lines": tiers["header_max_lines"], "max_bytes": tiers["header_max_bytes"],
+            "over": n > tiers["header_max_lines"] or b > tiers["header_max_bytes"], "summary": bool(summary)}
+
+
 def check(path: str, since: datetime.datetime | None = None, now: datetime.datetime | None = None) -> dict:
-    """{ok, problems, warnings, last_updated, path}. `since`: the stamp must be at or after it (the refresh proof)."""
+    """{ok, problems, warnings, last_updated, path, header}. `since`: the stamp must be at or after it (the refresh
+    proof). The header cap is advisory: it warns, never fails, until a measured period shows few docs over it."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     out = {"path": path, "ok": False, "problems": [], "warnings": [], "last_updated": None}
     try:
@@ -110,6 +140,13 @@ def check(path: str, since: datetime.datetime | None = None, now: datetime.datet
         if since is not None and lu < since:
             out["problems"].append(f"`Last updated` {out['last_updated']} is older than {since.strftime('%Y-%m-%dT%H:%M:%SZ')}: "
                                    f"refresh the doc (current state, decisions, next steps) and its stamp")
+    hs = out["header"] = header_stats(path, text)
+    if hs["over"]:
+        out["warnings"].append(f"the header (above the first `##` section) is {hs['lines']} lines, {hs['bytes']} bytes: over "
+                               f"the {hs['max_lines']} line, {hs['max_bytes']} byte cap (advisory); move detail into the sections")
+    if not hs["summary"]:
+        out["warnings"].append("the header holds only the title and stamp (advisory): a few lines of current state there "
+                               "are what `shoal doc-head` shows a peer")
     out["ok"] = not out["problems"]
     return out
 
@@ -147,6 +184,59 @@ def cmd_doc_check(a) -> int:
         for w in r["warnings"]:
             print(f"  note:    {w}")
     return 0 if r["ok"] else 1
+
+
+def cmd_doc_head(a) -> int:
+    """Print a start doc's header, or (--all) report every root start doc's header against its cap."""
+    if a.all:
+        return _head_report(a.json)
+    path = a.path
+    if a.slug:
+        from roles import ShoalSpec, find_spec
+        role = ShoalSpec.load(find_spec(a.sid, a.spec)).role(a.slug)
+        if role is None or not role.doc:
+            print(f"doc-head: no start doc for role {a.slug!r}")
+            return 2
+        path = role.doc
+    if not path:
+        print("doc-head: name a start doc, a role (--shoal/--slug), or --all")
+        return 2
+    try:
+        with open(os.path.expanduser(path), errors="replace") as fh:
+            text = fh.read()
+    except OSError as exc:
+        print(f"doc-head: cannot read {path}: {exc}")
+        return 1
+    if a.json:
+        print(json.dumps({"path": path, "header": header(text), **header_stats(path, text)}))
+    else:
+        print(header(text), end="")
+    return 0
+
+
+def _head_report(as_json: bool) -> int:
+    """The one-time migration report: every start doc `refs --roots` names, its header size against its cap."""
+    import refs
+    rows = []
+    for path, whos in sorted(refs.roots()["roots"].items()):
+        try:
+            with open(path, errors="replace") as fh:
+                rows.append({"path": path, "who": [refs.who_text(w) for w in whos], **header_stats(path, fh.read())})
+        except OSError:
+            rows.append({"path": path, "who": [refs.who_text(w) for w in whos], "missing": True})
+    if as_json:
+        print(json.dumps({"v": 1, "docs": rows}, indent=1))
+        return 0
+    have = [r for r in rows if not r.get("missing")]
+    print(f"{len(rows)} start docs: {sum(r['over'] for r in have)} over their header cap, "
+          f"{sum(not r['summary'] for r in have)} with no summary in the header, {len(rows) - len(have)} missing")
+    for r in sorted(have, key=lambda r: -r["bytes"]):
+        flag = "OVER" if r["over"] else "ok  "
+        print(f"  {flag} {r['lines']:>4} lines {r['bytes']:>6} B{'' if r['summary'] else '  (no summary)'}  {r['path']}")
+    for r in rows:
+        if r.get("missing"):
+            print(f"  MISSING  {r['path']}  ({'; '.join(r['who'])})")
+    return 0
 
 
 def _items(text: str) -> list[str]:
@@ -222,6 +312,14 @@ def add_parser(sub) -> None:
     p.add_argument("--slug", default="")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doc_check)
+    p = sub.add_parser("doc-head", help="print a start doc's header (above its first section): a role's state, cheaply")
+    p.add_argument("path", nargs="?", default="")
+    p.add_argument("--shoal", dest="sid", default="", help="with --slug: the role's start doc")
+    p.add_argument("--spec", default="")
+    p.add_argument("--slug", default="")
+    p.add_argument("--all", action="store_true", help="report every root start doc's header against its cap")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_doc_head)
     p = sub.add_parser("doc-init", help="write a new role's starter start doc (plan_state.md) from guidance; never overwrites")
     p.add_argument("path")
     p.add_argument("--role", required=True, help="the role's slug")

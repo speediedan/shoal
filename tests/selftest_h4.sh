@@ -2315,5 +2315,9 @@ echo "== 38 refs: start-doc roots (parked roles, standalone docs, never a retire
 python3 "$TESTD/test_refs.py" || fail "refs (tests/test_refs.py)"
 check "name a directory" $H refs
 
+echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head"
+python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
+check "name a start doc" $H doc-head
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

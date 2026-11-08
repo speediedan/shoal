@@ -26,6 +26,13 @@ shoal states what it must hold and checks it: `shoal doc-check <path>`.
 narratives, negative results with their measurements, superseded state. Moving history there keeps the start doc short, which
 is what makes a handover cheap. Shoal does not read the log.
 
+**The header** is everything above the first `##` section: the title, the `Last updated` stamp and a few lines of current
+state (posture, the active item and its blocker, open asks). A peer that needs only a role's state reads just this, with
+`shoal doc-head <path>` or `shoal doc-head --shoal <id> --slug <role>`, so it is kept short: at most 40 lines and 3 KB unless
+the repository's [`lifecycle.md`](lifecycle.md) settings say otherwise. `doc-check` warns on a header over its cap, or one
+holding only the title and stamp; it does not fail on either. `shoal doc-head --all` reports every root start doc's header
+against its cap.
+
 Sections are found by keyword in the headings, case-insensitive. `Mission and deliverables`, `Current state (2026-10-22)` and
 `Grants-needed` all qualify.
 
@@ -52,6 +59,8 @@ shoal doc-init <path> --role <slug> --mission "<guidance>"   # a starter doc; --
 shoal doc-check <path>                          # ok, or each missing section
 shoal doc-check <path> --since 2026-10-22T19:00Z   # also: stamped at or after this time
 shoal doc-check <path> --json
+shoal doc-head <path>                           # the header only (a role's state, cheaply)
+shoal doc-head --all                            # every root start doc's header against its cap
 ```
 
 The whole handover, including opt-in handover for standalone sessions and the reset per harness: [`handover.md`](handover.md).
