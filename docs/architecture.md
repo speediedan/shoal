@@ -1019,8 +1019,8 @@ and the contract are in [`ui.md`](ui.md).
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
   off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
   packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click.
-  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent plane stacked in depth
-  under a tilted camera (tilt, iso; `,` and `.` turn it), the operator and outside seats on a plane above; the layout
+  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent slab stacked in depth
+  under a tilted camera seen in perspective (tilt, iso; `,` and `.` turn it), over a floor grid with stems and shadows, the operator and outside seats on a plane above; the layout
   is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
   stays flat. The rail warns when the feed's ledger
   clone is over an hour old, because the feed never pulls.

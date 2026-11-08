@@ -85,6 +85,22 @@ export function buildScene(vm, lay, opts) {
     items.push({ t: "path", id: `bloom-${i}`, fill: true, cmds: circleCmds(bloomAt.x, bloomAt.y, bloomR * f), bg: solid(withAlpha("#2a2148", 0.05 + i * 0.012)) });
   });
 
+  // 1b. depth mode: the floor grid, and stems from each plane and lifted node down to it, with their shadows
+  if (lay.grid) {
+    const lines = [], rim = [];
+    for (const g of lay.grid) {
+      const a = S({ x: g.x0, y: g.y0 }), b = S({ x: g.x1, y: g.y1 });
+      (g.edge ? rim : lines).push(["M", a.x, a.y], ["L", b.x, b.y]);
+    }
+    if (lines.length) items.push({ t: "path", id: "floor-grid", fill: false, width: 1, cmds: lines, bg: solid(withAlpha(P.steel2, 0.11)) });
+    if (rim.length) items.push({ t: "path", id: "floor-rim", fill: false, width: 1.2, cmds: rim, bg: solid(withAlpha(P.steel2, 0.2)) });
+  }
+  for (const st of lay.stems ?? []) {
+    const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 });
+    items.push({ t: "path", id: `shadow-${st.id}`, fill: true, cmds: ellipseCmds(b.x, b.y, st.r * k, st.ry * k), bg: solid(withAlpha("#000000", 0.32)) });
+    items.push({ t: "path", id: `stem-${st.id}`, fill: false, width: 1, dash: [3, 4], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(P.steel2, 0.32)) });
+  }
+
   // 2. regions: cluster discs (global) or host bands (per shoal); their titles block node labels
   const discs = [];
   const labelObstacles = [];
@@ -95,10 +111,19 @@ export function buildScene(vm, lay, opts) {
       const ry = r * (c.ry ?? 1); // a tilted plane (depth mode): the disc is an ellipse, its slab edge drawn under it
       const ring = (dy = 0) => ellipseCmds(p.x, p.y + dy, r, ry);
       discs.push({ id: c.id, x: p.x, y: p.y, r, hole: r * 0.5 });
-      if (c.ry !== undefined) items.push({ t: "path", id: `disc-slab-${c.id}`, fill: true, cmds: ring(7 * k), bg: solid(withAlpha(c.tint, 0.06)) });
-      items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: ring(), bg: solid(withAlpha(c.tint, hover ? 0.025 : c.ry !== undefined ? 0.07 : 0.045)) });
+      const fog = c.fog ?? 1;
+      if (c.ry !== undefined) {
+        // the slab's thickness: its near edge as a band between the top ellipse's lower half and the same one dropped
+        const t = 11 * k * (c.s ?? 1);
+        const edge = [["M", p.x - r, p.y], ["A", r, ry, 0, false, false, p.x + r, p.y], ["L", p.x + r, p.y + t],
+          ["A", r, ry, 0, false, true, p.x - r, p.y + t], ["Z"]];
+        items.push({ t: "path", id: `disc-slab-${c.id}`, fill: true, cmds: edge, bg: solid(withAlpha(c.tint, 0.2 * fog)) });
+        items.push({ t: "path", id: `disc-slab-rim-${c.id}`, fill: false, width: 1, cmds: [["M", p.x - r, p.y + t], ["A", r, ry, 0, false, false, p.x + r, p.y + t]],
+          bg: solid(withAlpha(c.tint, 0.35 * fog)) });
+      }
+      items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: ring(), bg: solid(withAlpha(c.tint, hover ? 0.025 : c.ry !== undefined ? 0.11 * fog : 0.045)) });
       items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: ring(), bg: solid(withAlpha(c.tint, 0.05)) });
-      items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: 1, cmds: ring(), bg: solid(withAlpha(c.tint, 0.22)) });
+      items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: c.ry !== undefined ? 1.4 : 1, cmds: ring(), bg: solid(withAlpha(c.tint, c.ry !== undefined ? 0.5 * fog : 0.22)) });
       const label = `${c.label.toUpperCase()}${vm.shoals?.find((s) => s.id === c.id)?.boards?.items?.length ? " ↗" : ""}`;
       items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - ry - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
       grow(p.x - r - 3, p.y - ry - 3, p.x + r + 3, p.y + ry + 3 + (c.ry !== undefined ? 7 * k : 0));
@@ -116,22 +141,30 @@ export function buildScene(vm, lay, opts) {
       // depth mode: each host's band is on its own plane, with its own center and squash
       const o = b.cx !== undefined ? S({ x: b.cx, y: b.cy }) : o0;
       const ry = b.ry ?? 1;
+      const bs = b.s ?? 1; // perspective: a far host's ring is smaller
+      const fogB = b.fog ?? 1;
+      const R0 = b.r0 * bs, R1 = b.r1 * bs;
       const tint = b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
-      if (b.ry !== undefined) items.push({ t: "path", id: `band-slab-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y + 6 * k, b.r0 * k, b.r1 * k, b.a0, b.a1, ry), bg: solid(withAlpha(tint, 0.05)) });
-      items.push({ t: "path", id: `band-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1, ry), bg: solid(withAlpha(tint, b.ry !== undefined ? 0.08 : 0.055)) });
+      if (b.ry !== undefined) {
+        for (let i = 3; i >= 1; i--) {  // the band's thickness: copies stepping down, the lowest darkest
+          items.push({ t: "path", id: `band-slab-${b.host}-${i}`, fill: true, cmds: annularSectorCmds(o.x, o.y + i * 4 * k * bs, R0 * k, R1 * k, b.a0, b.a1, ry),
+            bg: solid(withAlpha(tint, (0.05 + 0.03 * (3 - i)) * fogB)) });
+        }
+      }
+      items.push({ t: "path", id: `band-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y, R0 * k, R1 * k, b.a0, b.a1, ry), bg: solid(withAlpha(tint, b.ry !== undefined ? 0.13 * fogB : 0.055)) });
       // a band that closes the whole ring has no ends to draw: its sector outline would leave a radial seam
       const closed = b.a1 - b.a0 >= Math.PI * 2 - 0.3;
-      const rim = closed ? [...ellipseCmds(o.x, o.y, b.r0 * k, b.r0 * k * ry), ...ellipseCmds(o.x, o.y, b.r1 * k, b.r1 * k * ry)]
-        : annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1, ry);
-      items.push({ t: "path", id: `band-rim-${b.host}`, fill: false, width: 1, cmds: rim, bg: solid(withAlpha(tint, 0.16)) });
+      const rim = closed ? [...ellipseCmds(o.x, o.y, R0 * k, R0 * k * ry), ...ellipseCmds(o.x, o.y, R1 * k, R1 * k * ry)]
+        : annularSectorCmds(o.x, o.y, R0 * k, R1 * k, b.a0, b.a1, ry);
+      items.push({ t: "path", id: `band-rim-${b.host}`, fill: false, width: b.ry !== undefined ? 1.3 : 1, cmds: rim, bg: solid(withAlpha(tint, b.ry !== undefined ? 0.42 * fogB : 0.16)) });
       const am = (b.a0 + b.a1) / 2;
-      const lp = { x: o.x + (b.r1 * k + 14) * Math.cos(am), y: o.y + (b.r1 * k + 14) * ry * Math.sin(am) };
+      const lp = { x: o.x + (R1 * k + 14) * Math.cos(am), y: o.y + (R1 * k + 14) * ry * Math.sin(am) };
       const bandText = `${b.home ? "\u2302 " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`;
       items.push({ t: "text", id: `band-label-${b.host}`, x: lp.x - 70, y: lp.y - 7, w: 140, h: 14, text: bandText, size: 10, color: withAlpha(tint, 0.9), align: "center", weight: "semibold" });
       growCentered(lp.x, lp.y - 7, bandText, 10, 14);
       for (let i = 0; i <= 16; i++) {
         const a = b.a0 + ((b.a1 - b.a0) * i) / 16;
-        const q = { x: o.x + b.r1 * k * Math.cos(a), y: o.y + b.r1 * k * ry * Math.sin(a) };
+        const q = { x: o.x + R1 * k * Math.cos(a), y: o.y + R1 * k * ry * Math.sin(a) };
         grow(q.x, q.y, q.x, q.y);
       }
     }
@@ -274,7 +307,7 @@ export function buildScene(vm, lay, opts) {
     const v = n.visual;
     const p = S(p0);
     const r = nodeR.get(n.id);
-    const dim = dimOf(n.id);
+    const dim = dimOf(n.id) * (lay.fogOf?.get(n.id) ?? 1); // depth mode: what is far fades
     const op = v.opacity * dim;
     hits.push({ id: n.id, x: p.x, y: p.y, r: Math.max(r, 7) });
     nodeScreen.set(n.id, { x: p.x, y: p.y, r });
@@ -467,6 +500,13 @@ function worldBounds(lay) {
   const pts = [...lay.pos.values()].map((p) => ({ x: p.x, y: p.y, r: 0 }));
   for (const s of lay.sats ?? []) pts.push({ x: s.x, y: s.y, r: 0 });
   for (const c of lay.clusters ?? []) pts.push({ x: c.x, y: c.y, r: c.r });
+  // depth mode: each host's band is on its own raised plane, and the stems reach the floor; the grid may run off
+  for (const b of lay.bands ?? []) {
+    if (b.cx === undefined) continue;
+    const R = b.r1 * (b.s ?? 1);
+    pts.push({ x: b.cx - R, y: b.cy, r: 0 }, { x: b.cx + R, y: b.cy, r: 0 }, { x: b.cx, y: b.cy - R * (b.ry ?? 1), r: 0 }, { x: b.cx, y: b.cy + R * (b.ry ?? 1), r: 0 });
+  }
+  for (const st of lay.stems ?? []) pts.push({ x: st.x1, y: st.y1, r: 0 });
   return boundsOf(pts);
 }
 

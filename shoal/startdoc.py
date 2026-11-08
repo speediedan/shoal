@@ -188,6 +188,13 @@ def cmd_doc_init(a) -> int:
     if not (a.mission or "").strip():
         print("doc-init: --mission is the guidance the doc is written from")
         return 2
+    # a start doc's name, in a folder that is there or one new one under an existing folder: a typo makes no tree
+    if not path.endswith(".md"):
+        print(f"doc-init: {path}: a start doc is a .md file (plan_state.md)")
+        return 2
+    if not os.path.isdir(os.path.dirname(os.path.dirname(path))):
+        print(f"doc-init: {os.path.dirname(path)}: neither it nor its parent folder exists: refused (check the path)")
+        return 2
     if os.path.exists(path) and not a.force:
         print(f"doc-init: {path} exists: refused (it may be a role's live plan); use that doc, or another path")
         return 1
@@ -201,8 +208,8 @@ def cmd_doc_init(a) -> int:
         fh.write(text)
     os.replace(path + ".tmp", path)
     r = check(path)
-    print(f"wrote {path}: {'meets the start-doc contract' if r['ok'] else 'PROBLEMS: ' + '; '.join(r['problems'])} "
-          "(not committed: commit it where its folder is tracked)")
+    print(f"wrote {path}: {'meets the start-doc contract' if r['ok'] else 'PROBLEMS: ' + '; '.join(r['problems'])}")
+    print("NOTE: it is not committed and only this host has it: commit it where its folder is tracked, or it is easy to lose")
     return 0 if r["ok"] else 1
 
 
