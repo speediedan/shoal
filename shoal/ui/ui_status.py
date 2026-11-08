@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
@@ -141,6 +142,50 @@ def claude_rows() -> list[dict]:
         return json.loads(r.stdout or "[]") if r.returncode == 0 else []
     except (OSError, ValueError, subprocess.SubprocessError):
         return []
+
+
+ROWS_MAX_AGE_S = 25  # a standalone card refreshes every 30 s: one listing serves every card on the host
+
+
+def claude_rows_cached(max_age_s: float = ROWS_MAX_AGE_S) -> tuple[float, list[dict]]:
+    """(when it was listed, rows): one `claude agents` listing (about 0.4 s of CPU) shared by every standalone card on
+    this host through a file beside the status cache, refreshed under a lock by whichever card finds it stale, so the
+    others wait for it instead of listing too. A failed listing (no rows) is not kept, so the next reader tries again."""
+    import fcntl
+    from backends import fake_sessions
+    if fake_sessions() is not None:
+        return time.time(), claude_rows()
+    p = os.path.join(os.path.dirname(cache_path()), "claude-rows.json")
+
+    def fresh() -> tuple[float, list[dict]] | None:
+        try:
+            d = json.load(open(p))
+            if isinstance(d.get("rows"), list) and 0 <= time.time() - float(d["t"]) <= max_age_s:
+                return float(d["t"]), d["rows"]
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+        return None
+
+    got = fresh()
+    if got is not None:
+        return got
+    try:
+        os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+        with open(p + ".lock", "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            got = fresh()  # another card listed while this one waited
+            if got is not None:
+                return got
+            t, rows = time.time(), claude_rows()
+            if rows:
+                tmp = p + f".{os.getpid()}.tmp"
+                # every Claude session's id, name and folder: private wherever the runtime dir falls back to
+                with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+                    json.dump({"t": t, "rows": rows}, fh, default=str)
+                os.replace(tmp, p)
+            return t, rows
+    except OSError:
+        return time.time(), claude_rows()
 
 
 def claude_session(rows: list[dict], session: str, job: str = "") -> dict | None:

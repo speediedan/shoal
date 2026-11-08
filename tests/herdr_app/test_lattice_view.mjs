@@ -11,6 +11,7 @@ const M = await import(join(MOD, "model.js"));
 const L = await import(join(MOD, "layout.js"));
 const G = await import(join(MOD, "geom.js"));
 const R = await import(join(MOD, "replay.js"));
+const D = await import(join(MOD, "depth.js"));
 const S = await import(join(MOD, "scene.js"));
 const doc = JSON.parse(readFileSync(join(MOD, "fixtures", "graph-v1.json"), "utf8"));
 
@@ -1023,6 +1024,38 @@ test("replay: the day's events in order, binned by quarter hour, stepped and sou
   assert.equal(st.events.length, R.REPLAY_BURST, "a busy quarter hour is counted, not flooded");
   const own = R.replayOfDoc(doc);
   assert.ok(own && own.to === doc.ts && Array.isArray(own.events), "the fixture replays its own events");
+});
+
+test("depth: planes stacked under a tilted camera; flat is the layout as is", () => {
+  assert.equal(D.camera("flat"), null);
+  const lay = L.layoutGraph(global);
+  assert.equal(D.projectLayout(global, lay, null), lay, "flat: untouched");
+  const cam = D.camera("tilt");
+  const q = D.project(cam, { x: 10, y: 20 }, 0), up = D.project(cam, { x: 10, y: 20 }, 100);
+  assert.ok(Math.abs(q.y - 20 * Math.cos(cam.pitch)) < 1e-9 && up.y < q.y && up.depth > q.depth, "a higher plane is drawn higher and nearer");
+  const { zOf, planes } = D.planesOf(global, lay);
+  assert.equal(planes.at(-1).kind, "operator");
+  assert.ok(zOf.get("user") > Math.max(...planes.filter((p) => p.kind === "shoal").map((p) => p.z)), "the operator above the shoals");
+  const pl = D.projectLayout(global, lay, cam);
+  assert.equal(pl.pos.size, lay.pos.size);
+  assert.ok(finiteDeep([...pl.pos.values()]) && finiteDeep(pl.sats) && pl.clusters.every((c) => c.ry === cam.c));
+  assert.equal(pl.order.length, global.nodes.length);
+  for (let i = 1; i < pl.clusters.length; i++) assert.ok(pl.clusters[i - 1].depth <= pl.clusters[i].depth, "far to near");
+  assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.8 - 1e-9 && s <= 1.15 + 1e-9));
+  // per shoal: each host's band on its own plane
+  const la = L.layoutGraph(alpha);
+  const pa = D.projectLayout(alpha, la, D.camera("iso"));
+  assert.ok(pa.bands.every((b) => Number.isFinite(b.cx) && b.ry < 1) && new Set(pa.bands.map((b) => b.cy)).size === pa.bands.length);
+  // the scene draws either, with no NaN, and slab edges only in depth
+  for (const [vm, l] of [[global, pl], [alpha, pa]]) {
+    const sc = S.buildScene(vm, l, { width: 1000, height: 700, tf: G.identity() });
+    assert.ok(finiteDeep(sc.items), "no NaN in the depth scene");
+    assert.ok(sc.items.some((it) => it.id.startsWith("disc-slab-") || it.id.startsWith("band-slab-")));
+  }
+  assert.ok(!S.buildScene(global, lay, { width: 1000, height: 700, tf: G.identity() }).items.some((it) => it.id.startsWith("disc-slab-")));
+  assert.equal(D.depthFor("tilt", "off", "cpu"), "flat", "a CPU renderer at off stays flat");
+  assert.equal(D.depthFor("tilt", "full", "gpu"), "tilt");
+  assert.equal(D.nextDepth("iso"), "flat");
 });
 
 test("a change on a board redraws the rail", () => {

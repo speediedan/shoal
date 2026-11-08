@@ -52,6 +52,11 @@ you, per-shoal throughput and per-host load.
   subtle dash. Width and brightness also step with the rate (under 1/h, under 4/h, above). A role
   whose CI job runs on another host has a dotted tether to that host's band (per shoal) or a chip
   at the node (global), labeled `remote-ci -> host-b`.
+- **Depth:** `d` cycles the camera: flat, tilt (38 degrees) and iso (an isometric turn). Each shoal (global view) or
+  host (per shoal) is a translucent plane with a slab edge, stacked in depth, the operator and outside seats on a plane
+  above, so traffic between planes visibly crosses them; nearer nodes are a little bigger and drawn last. `,` and `.`
+  turn the camera 15 degrees. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
+  a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
 - **Replay:** `r` plays the last 24 h back on the live picture, a quarter hour a second: each event a packet
   along its edge, a done a flash, at most a dozen a tick. A bar along the foot shows a quarter hour a column, its
   height that slot's events; a click plays from there, space pauses, `r` or Esc goes back to live. It asks the

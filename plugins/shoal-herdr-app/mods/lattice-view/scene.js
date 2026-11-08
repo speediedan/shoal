@@ -13,7 +13,7 @@
 import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal } from "./model.js";
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
-  edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, annularSectorCmds,
+  edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, annularSectorCmds,
   samplesBySpacing, pointAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp,
 } from "./geom.js";
 
@@ -92,43 +92,51 @@ export function buildScene(vm, lay, opts) {
     for (const c of lay.clusters) {
       const p = S(c);
       const r = c.r * k;
+      const ry = r * (c.ry ?? 1); // a tilted plane (depth mode): the disc is an ellipse, its slab edge drawn under it
+      const ring = (dy = 0) => ellipseCmds(p.x, p.y + dy, r, ry);
       discs.push({ id: c.id, x: p.x, y: p.y, r, hole: r * 0.5 });
-      items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, hover ? 0.025 : 0.045)) });
-      items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.05)) });
-      items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: 1, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.22)) });
+      if (c.ry !== undefined) items.push({ t: "path", id: `disc-slab-${c.id}`, fill: true, cmds: ring(7 * k), bg: solid(withAlpha(c.tint, 0.06)) });
+      items.push({ t: "path", id: `disc-${c.id}`, fill: true, cmds: ring(), bg: solid(withAlpha(c.tint, hover ? 0.025 : c.ry !== undefined ? 0.07 : 0.045)) });
+      items.push({ t: "path", id: `disc-glow-${c.id}`, fill: false, width: 5, cmds: ring(), bg: solid(withAlpha(c.tint, 0.05)) });
+      items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: 1, cmds: ring(), bg: solid(withAlpha(c.tint, 0.22)) });
       const label = `${c.label.toUpperCase()}${vm.shoals?.find((s) => s.id === c.id)?.boards?.items?.length ? " ↗" : ""}`;
-      items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - r - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
-      grow(p.x - r - 3, p.y - r - 3, p.x + r + 3, p.y + r + 3);
-      growCentered(p.x, p.y - r - 22, label, 11, 16);
-      labelObstacles.push({ x: p.x - textW(label, 11) / 2, y: p.y - r - 22, w: textW(label, 11), h: c.needsYou > 0 ? 29 : 16 });
+      items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - ry - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
+      grow(p.x - r - 3, p.y - ry - 3, p.x + r + 3, p.y + ry + 3 + (c.ry !== undefined ? 7 * k : 0));
+      growCentered(p.x, p.y - ry - 22, label, 11, 16);
+      labelObstacles.push({ x: p.x - textW(label, 11) / 2, y: p.y - ry - 22, w: textW(label, 11), h: c.needsYou > 0 ? 29 : 16 });
       discs.at(-1).title = labelObstacles.at(-1);
       if (c.needsYou > 0) {
-        items.push({ t: "text", id: `disc-needs-${c.id}`, x: p.x - 120, y: p.y - r - 8, w: 240, h: 13, text: `${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`, size: 9.5, color: P.magenta, align: "center" });
+        items.push({ t: "text", id: `disc-needs-${c.id}`, x: p.x - 120, y: p.y - ry - 8, w: 240, h: 13, text: `${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`, size: 9.5, color: P.magenta, align: "center" });
       }
     }
   } else {
     const c = lay.clusters[0];
-    const o = S({ x: 0, y: 0 });
+    const o0 = S({ x: 0, y: 0 });
     for (const b of lay.bands) {
+      // depth mode: each host's band is on its own plane, with its own center and squash
+      const o = b.cx !== undefined ? S({ x: b.cx, y: b.cy }) : o0;
+      const ry = b.ry ?? 1;
       const tint = b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
-      items.push({ t: "path", id: `band-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1), bg: solid(withAlpha(tint, 0.055)) });
+      if (b.ry !== undefined) items.push({ t: "path", id: `band-slab-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y + 6 * k, b.r0 * k, b.r1 * k, b.a0, b.a1, ry), bg: solid(withAlpha(tint, 0.05)) });
+      items.push({ t: "path", id: `band-${b.host}`, fill: true, cmds: annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1, ry), bg: solid(withAlpha(tint, b.ry !== undefined ? 0.08 : 0.055)) });
       // a band that closes the whole ring has no ends to draw: its sector outline would leave a radial seam
       const closed = b.a1 - b.a0 >= Math.PI * 2 - 0.3;
-      const rim = closed ? [...circleCmds(o.x, o.y, b.r0 * k), ...circleCmds(o.x, o.y, b.r1 * k)] : annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1);
+      const rim = closed ? [...ellipseCmds(o.x, o.y, b.r0 * k, b.r0 * k * ry), ...ellipseCmds(o.x, o.y, b.r1 * k, b.r1 * k * ry)]
+        : annularSectorCmds(o.x, o.y, b.r0 * k, b.r1 * k, b.a0, b.a1, ry);
       items.push({ t: "path", id: `band-rim-${b.host}`, fill: false, width: 1, cmds: rim, bg: solid(withAlpha(tint, 0.16)) });
       const am = (b.a0 + b.a1) / 2;
-      const lp = { x: o.x + (b.r1 * k + 14) * Math.cos(am), y: o.y + (b.r1 * k + 14) * Math.sin(am) };
+      const lp = { x: o.x + (b.r1 * k + 14) * Math.cos(am), y: o.y + (b.r1 * k + 14) * ry * Math.sin(am) };
       const bandText = `${b.home ? "\u2302 " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`;
       items.push({ t: "text", id: `band-label-${b.host}`, x: lp.x - 70, y: lp.y - 7, w: 140, h: 14, text: bandText, size: 10, color: withAlpha(tint, 0.9), align: "center", weight: "semibold" });
       growCentered(lp.x, lp.y - 7, bandText, 10, 14);
       for (let i = 0; i <= 16; i++) {
         const a = b.a0 + ((b.a1 - b.a0) * i) / 16;
-        const q = { x: o.x + b.r1 * k * Math.cos(a), y: o.y + b.r1 * k * Math.sin(a) };
+        const q = { x: o.x + b.r1 * k * Math.cos(a), y: o.y + b.r1 * k * ry * Math.sin(a) };
         grow(q.x, q.y, q.x, q.y);
       }
     }
     // the donut hole: inside the innermost host band
-    if (c) discs.push({ id: c.id, x: o.x, y: o.y, r: c.r * k, hole: lay.bands.length ? Math.min(...lay.bands.map((b) => b.r0)) * k : c.r * k * 0.5 });
+    if (c) discs.push({ id: c.id, x: o0.x, y: o0.y, r: c.r * k, hole: lay.bands.length ? Math.min(...lay.bands.map((b) => b.r0)) * k : c.r * k * 0.5 });
   }
 
   // 2b. a role whose CI job runs on another host: a tether to that host's band (per shoal), or a
@@ -166,7 +174,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   // 3. edges, batched per color x tier bucket: a glow pass under a core pass, then arrowheads
-  const nodeR = new Map(vm.nodes.map((n) => [n.id, screenR(n.visual.r, k)]));
+  const nodeR = new Map(vm.nodes.map((n) => [n.id, screenR(n.visual.r, k) * (lay.scaleOf?.get(n.id) ?? 1)]));
   const curves = new Map();
   for (const e of vm.edges) {
     const a = posOf(e.src), b = posOf(e.dst);
@@ -260,7 +268,7 @@ export function buildScene(vm, lay, opts) {
     want.sort((a, b) => (a.visual.urgency ?? 9) - (b.visual.urgency ?? 9) || (a.id < b.id ? -1 : 1));
     for (const n of want.slice(0, policy.maxPulses)) pulsing.add(n.id);
   }
-  for (const n of vm.nodes) {
+  for (const n of lay.order ?? vm.nodes) { // depth mode: far to near
     const p0 = posOf(n.id);
     if (!p0) continue;
     const v = n.visual;

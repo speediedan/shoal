@@ -1018,7 +1018,11 @@ and the contract are in [`ui.md`](ui.md).
   feed's writer node is not drawn). A right-click on a role opens `shoal-actions` on it; on a shoal's circle or
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
   off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
-  packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click. The rail warns when the feed's ledger
+  packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click.
+  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent plane stacked in depth
+  under a tilted camera (tilt, iso; `,` and `.` turn it), the operator and outside seats on a plane above; the layout
+  is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
+  stays flat. The rail warns when the feed's ledger
   clone is over an hour old, because the feed never pulls.
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
@@ -1099,7 +1103,8 @@ own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toa
 feeder push; a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
 `done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A local standalone
-Claude card reports its session too (`standalone_report` over `claude agents`; `done` when a turn it saw has ended). `ui app-start` starts the app as a user
+Claude card reports its session too (`standalone_report` over `claude agents`; `done` when a turn it saw has ended),
+and every such card on a host shares one listing (`ui_status.claude_rows_cached`, a locked file beside the status cache). `ui app-start` starts the app as a user
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
 its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit, installs the mods
 into the app's home, and sets the 0.9.3 paste keys, the actions key and the `shoal-ocean` theme where the

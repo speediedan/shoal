@@ -2264,6 +2264,25 @@ try:
 finally:
     ui_graph.REPLAY_MAX = old
 PY2
+# standalone cards share one cached `claude agents` listing: a fresh one is read, a stale one is listed once, an empty one not kept
+env -u SHOAL_FAKE_SESSIONS XDG_RUNTIME_DIR="$S/rows-run" python3 - "$SHOALD" <<'PY2' || fail "the shared session listing"
+import os, sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_status
+calls = []
+def listing():
+    calls.append(1)
+    return [{"sessionId": "s1", "pid": 7}] if len(calls) != 2 else []
+ui_status.claude_rows = listing
+t, rows = ui_status.claude_rows_cached()
+assert rows == [{"sessionId": "s1", "pid": 7}] and len(calls) == 1
+assert ui_status.claude_rows_cached() == (t, rows) and len(calls) == 1, "fresh: read, not listed"
+t2, rows2 = ui_status.claude_rows_cached(max_age_s=-1)
+assert len(calls) == 2 and rows2 == [], "stale: listed again"
+p = os.path.join(os.path.dirname(ui_status.cache_path()), "claude-rows.json")
+assert abs(__import__("json").load(open(p))["t"] - t) < 1e-6, "a failed listing does not replace the last good one"
+assert os.stat(p).st_mode & 0o077 == 0, "the listing is private to its user"
+PY2
 # a local standalone Claude card reports its session: working, a question, idle, stopped; done once when a turn ends
 python3 - "$SHOALD" <<'PY2' || fail "standalone card reports"
 import sys
@@ -2281,7 +2300,7 @@ try:
     assert ui_app.standalone_report([], "abcd1234-0000", "", "seat") is None, "a failed listing says nothing"
     # the card: a turn it saw end is the `done`, once; an attach clears it
     seq = iter(["working", "idle", "idle", "working", "idle"])
-    ui_status.claude_rows = lambda: rows(next(seq))
+    ui_status.claude_rows_cached = lambda: (0.0, rows(next(seq)))  # never the host's real cache file
     seat = ui_view._SeatReport(ui_app, "seat")
     got = [seat.text("abcd1234-0000", "abcd1234") for _ in range(3)]
     assert "state=working" in got[0] and "state=done" in got[1] and got[2] == "", got

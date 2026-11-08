@@ -20,6 +20,7 @@
 //   view: a shoal id to open drilled into once (Escape then goes to the home view)
 //   pin: a node id whose card opens pinned
 //   replay: true starts the 24 h replay once the first doc is in (as `r` does)
+//   depth: "flat" (default), "tilt" or "iso": the depth camera (`d` cycles it, `,` and `.` turn it)
 //   motion: "auto" (default) | "full" | "balanced" | "low" | "off" (motion.js; `m` cycles)
 //   budget: {max_dots, max_pulses, frame_ms, packets} overrides for the tier
 //   renderer: "cpu" | "gpu" (a launcher hint for auto; else read from the app process)
@@ -41,6 +42,7 @@ import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CY
 import { buildScene, fitScene, fitText, headerText } from "./scene.js";
 import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS } from "./replay.js";
+import { camera, projectLayout, nextDepth, depthFor, YAW_STEP } from "./depth.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -181,6 +183,8 @@ export default class Lattice extends View {
     try { this.focusSeen = focusKeyOf(shared(FOCUS_KEY)); } catch (_e) { this.focusSeen = null; }
     this.pinned = typeof p.pin === "string" ? p.pin : null;
     this.replayAtStart = p.replay === true;
+    this.depth = ["tilt", "iso"].includes(p.depth) ? p.depth : "flat";
+    this.yawTurn = 0;
     this.handle = cx.focus_handle();
     if (!this.renderer) this.probeRenderer(cx);
     this.load(cx);
@@ -412,8 +416,23 @@ export default class Lattice extends View {
     // refit); a changed node set glides its new and retargeted nodes into place at 10 Hz
     if (!cold && lay.iters > 0 && cx && this.policy.any) this.cool(cx);
     else lay.run();
-    this.lay = lay.result();
+    this.lay = this.seen(lay.result());
     if (!this.tf || this.needFit || (this.autoFit && lay.moved)) this.fit();
+  }
+
+  /** The layout as the depth camera sees it (flat: as it is). Low and off motion on a CPU renderer stay flat. */
+  seen(lay) {
+    this.depthNow = depthFor(this.depth, this.tier?.tier, this.renderer);
+    return projectLayout(this.vm, lay, camera(this.depthNow, this.yawTurn));
+  }
+
+  setDepth(name, cx) {
+    this.depth = name;
+    if (name === "flat") this.yawTurn = 0;
+    const lay = this.layouts.get(this.view);
+    if (lay) this.lay = this.seen(lay.result());
+    this.autoFit = true;
+    this.fit();
   }
 
   /** `f`: a fresh full layout of this view, fitted to the canvas. */
@@ -425,7 +444,7 @@ export default class Lattice extends View {
       this.cooling = null;
       lay.update(this.vm, { relayout: true });
       lay.run();
-      this.lay = lay.result();
+      this.lay = this.seen(lay.result());
     }
     this.fit();
   }
@@ -436,7 +455,7 @@ export default class Lattice extends View {
       const lay = this.layouts.get(this.view);
       if (lay) {
         lay.step(10);
-        this.lay = lay.result();
+        this.lay = this.seen(lay.result());
         if (this.autoFit) this.fit(!lay.settled);
       }
       if (!lay || lay.settled) {
@@ -528,6 +547,8 @@ export default class Lattice extends View {
     else if (k === "f" || k === "0") this.relayout(cx);
     else if (k === "i") { this.items = !this.items; this.needFit = this.autoFit; this.rebuild(cx); }
     else if (k === "r") this.startReplay(cx);
+    else if (k === "d") this.setDepth(nextDepth(this.depth), cx);
+    else if ((k === "," || k === ".") && this.depth !== "flat") { this.yawTurn += k === "," ? -YAW_STEP : YAW_STEP; this.setDepth(this.depth, cx); }
     else if (k === "space" && this.replay?.rm) this.playReplay(cx, !this.replay.playing);
     else if (k === "=" || k === "+" || k === "shift-=") { this.tf = zoomAt(this.tf, center, 1.2); this.autoFit = false; }
     else if (k === "-") { this.tf = zoomAt(this.tf, center, 1 / 1.2); this.autoFit = false; }
@@ -795,7 +816,7 @@ export default class Lattice extends View {
           .child(`${board.title} ↗`)))
         .when(chip !== null, (el) => el.child(chip))
         .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
-      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
+      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · d: depth ${this.depthNow !== this.depth ? `flat (${this.depth} off: CPU, low motion)` : this.depthNow ?? "flat"} · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
   }
 
   renderCard(id, at, size, pinned) {
@@ -907,6 +928,7 @@ export default class Lattice extends View {
       .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
       // the one exception to the tier: a replay asked for with `r` draws its packets at any tier, `off` included
       .child(div().text_color(P.dim).child("r: replay 24 h (its packets move at any motion tier)"))
+      .child(div().text_color(P.dim).child(`d: depth (flat, tilt, iso; now ${this.depthNow ?? "flat"}) \u00b7 , and .: turn it`))
       .child(h_flex().gap(14).items_start().child(col).child(right));
   }
 
