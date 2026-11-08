@@ -16,6 +16,7 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   condition          evidence                                   ladder (minutes since evidence)
   unacked-work       open offer to an idle role (or --now) newer than its queue version   wake@10 wake@30 page@60
   wait-resolved      a machine-checkable wait target is no longer pending                  wake@15 page@60
+  asks-on-return     the maintainer came back; a role holding asks has not written since    wake@3 (once a return)
   blocker-resolved   a next item's role or provider blocker cleared                         wake@0
   wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V page@3V
                      (not a target its provider confirms pending, under wait discipline)
@@ -78,6 +79,9 @@ LADDERS = {
     # bounded context (context.py): a role past its limit that marked a quiet boundary `--restart-ready` is
     # handed to a fresh session; `auto` mode does it from here, `page` (the default) asks the operator
     "context-restart": [(0, "page")],
+    # the maintainer's return (user-offline off): a role holding asks raises them. `offline off` wakes only the roles of
+    # the host it ran on, so each host's quorum wakes its own, once per return, after RETURN_GRACE_MIN
+    "asks-on-return": [(0, "wake")],
 }
 CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 # wake economy (architecture doc §7, "When roles wake"): held while the maintainer is away, re-woken for
@@ -89,6 +93,8 @@ REWAKE_MIN = 720
 ONLINE_SETTLE_MIN = 20
 WAKE_GAP_MIN = 30
 REARM_RETRY_MIN = 15
+RETURN_GRACE_MIN = 3     # `offline off`'s own wake goes first on its host
+RETURN_WINDOW_MIN = 720  # a return older than this is not news to a role that has not written since
 HOST_BEAT_MIN = 15
 HOST_SILENT_MIN = 60
 CI_WAITS = ("remote-ci", "local-ci")
@@ -625,6 +631,22 @@ def validity_applies(sub: str, target: str, pending, disciplined: bool) -> bool:
     return sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds()
 
 
+def return_condition(view, slug: str, q: dict) -> dict | None:
+    """`asks-on-return` for a role holding asks that has not written since the maintainer came back. `offline off`
+    wakes only the roles on the host it ran on, so a role on another host was never woken and raised nothing
+    (measured 2026-11-08); its own host's quorum wakes it here, once per return."""
+    um = (getattr(view, "modes", None) or {}).get("user-offline") or {}
+    back = str(um.get("ts") or "")
+    if um.get("state") != "off" or um.get("by") != "user" or not back or not q.get("asks"):
+        return None
+    age = age_min(back)
+    if age is None or not RETURN_GRACE_MIN <= age < RETURN_WINDOW_MIN or view.last_by.get(slug, "") >= back:
+        return None
+    from worker import RETURN_PROTOCOL
+    return {"slug": slug, "condition": "asks-on-return", "key": f"return:{back}", "since": back,
+            "detail": f"USER-ONLINE since {back}: " + RETURN_PROTOCOL}
+
+
 def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     """[{slug, condition, key, since, detail}] for every live condition instance."""
     from state import read_wait, wait_discipline
@@ -764,6 +786,9 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                   f"A hold this old is a question: record it as an ask (`queue --ask`) or name "
                                   f"a checkable blocker (`<role>:<repo#n>`, `upstream:<target>`); a hold still "
                                   f"standing 4 h after this wake pages the maintainer"})
+        rc = return_condition(view, slug, q)
+        if rc is not None:
+            out.append(rc)
         # bounded context: the role marked a quiet boundary after its context passed the limit
         if q.get("restart_ready") and posture in ("idle", "waiting") and between:
             import context as _ctx
@@ -1213,7 +1238,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     # the maintainer is away: a role re-woken about a parked queue or a long hold finds the
                     # same blocker and goes back to sleep (2026-10-20: three cold wakes overnight)
                     hold = "maintainer offline"
-                elif settling:
+                elif settling and c["condition"] != "asks-on-return":  # the return's own wake is not held by it
                     hold = f"settling {settle_min:g} min after the maintainer's return"
                 elif c["slug"] not in merged and (age_min(last_wake.get(c["slug"], "")) or 1e9) < gap_min:
                     hold = f"woken {age_min(last_wake[c['slug']]):.0f} min ago (gap {gap_min:g})"

@@ -492,6 +492,35 @@ evidence. Only a ground-truth read separates work that landed from work a role b
 **Rejected alternatives.**
 - **Trusting `done` events:** measures what roles said, not what landed.
 
+## Job waiters stay under the harness's control
+
+**Decision (2026-11-08).** A Claude role keeps following its job with `shoal job wait` as a harness background command.
+Shoal does not move job waiters out of the session to make every wake deliverable. A wake that arrives while background
+work is in flight is deferred until that work ends; the return to online reaches roles on every host through each host's
+own quorum (`asks-on-return`); and a role's recorded asks are shown on its row, so the maintainer can answer them without
+waiting for the role to raise them.
+
+**Why.**
+- **Measured cost of the deferral:** on one host, 9 deferral episodes across 3 roles from 2026-11-05 to 11-08, 6 of
+  them over 30 minutes, the longest about 90 minutes. Real, but bounded by the waiter's own end.
+- **Tokens: expected roughly neutral, not measured.** Each job end costs one turn either way, a task notification or a
+  watcher wake through resume. A long job's prompt cache has expired either way. Short jobs would pay a little more:
+  up to about 4 minutes of watcher latency, then a stop and resume.
+- **Reliability:** the harness's own notification is the most reliable wake path there is. Moving waiters out trades it
+  for the watcher, direct wakes and their failure modes (orphaned waiters, a failed resume, usage-limit holds), and slows
+  a job-end wake from seconds to minutes.
+- **Ecosystem neutrality, the deciding point:** each harness waits differently (Claude background commands, Codex, Muse,
+  opencode). Shoal owning the waiters would mean altering each harness's wait procedure, a per-ecosystem adapter that
+  would be fragile and would pull the protocol away from neutral.
+
+**Rejected alternatives.**
+- **Detached waiters for every role:** the costs above, with the watcher also needing to follow remote jobs over ssh.
+- **Stopping and resuming a session with work in flight after a deferral cap:** shoal cannot see what a background task
+  is, so it could cut off a real build rather than a waiter.
+
+**Revisit when** minute-level urgency for a maintainer message or offer to a busy role starts to matter, or the measured
+deferrals grow. Trial detached waiters on one role for a day first, and measure turns and tokens per job end.
+
 ## Blockers are verified, and idle is checked against the board
 
 **Decision.** With `blockers`, a next-item blocker is checked by kind every time it is read: a peer
