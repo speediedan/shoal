@@ -4,7 +4,9 @@
 - without `.shoal/lifecycle.toml` the defaults apply; with one, valid values win key by key, and an unknown table or
   key, a value of the wrong type or outside its choices is reported and the default kept;
 - `[hooks]` is honoured only for a repository in this host's `[lifecycle] trusted_repos`, and reported otherwise;
-- the header is everything above the first `##` section, a `##` inside a fenced block is not one; `doc-check` warns
+- a `[layout]` template that is absolute or climbs out of the repository, and a number below its floor, are refused;
+- the header is everything above the first `##` section, a `##` inside a fenced block is not one (a fence closes only
+  on its own marker, at least as long); `doc-check` warns
   (never fails) on a header over the repository's cap or one holding only the title and stamp; `doc-head` prints it,
   for a path or a role, and `--all` reports every root start doc's header;
 - `refs` takes its tiers and age floor from the repository's file, and reports dangling references from live
@@ -77,16 +79,30 @@ on_retire = "scripts/retire.sh"
 x = 1
 [cold]
 warm_dayz = 3
+after_checkpoints = -1
+[deep_pass]
+every_days = 0
+every_restarts = 2.5
+[layout]
+archive = "../../elsewhere/{path}"
+manifest = "/abs/{dir}/MANIFEST.jsonl"
+role_dir = "~/roles"
 """)
 r = js("lifecycle", "show", LANE)
 v, notes = r["values"], " | ".join(r["notes"])
 assert r["found"] and os.path.realpath(r["repo"]) == os.path.realpath(REPO), r
 assert v["tiers"]["history"] == ["*_log.md", "*_prompts.md"] and v["tiers"]["header_max_lines"] == 5, v
 assert v["checkpoint"] == {"archive": "propose", "min_age_days": 7, "cross_owner": "keep"}, v["checkpoint"]
-for want in ("checkpoint.archive = 'sometimes' is not one of", "checkpoint.min_age_days = 'seven' is not a int",
-             "unknown table [bogus]", "unknown key cold.warm_dayz", "hooks.on_retire ignored"):
+for want in ("checkpoint.archive = 'sometimes' is not one of", "checkpoint.min_age_days = 'seven' is not a number",
+             "unknown table [bogus]", "unknown key cold.warm_dayz", "hooks.on_retire ignored",
+             "cold.after_checkpoints = -1 is below its least value 1", "deep_pass.every_days = 0 is below",
+             "deep_pass.every_restarts = 2.5 is not a whole number", "layout.archive = '../../elsewhere/{path}' is absolute or climbs",
+             "layout.manifest = '/abs/{dir}/MANIFEST.jsonl' is absolute", "layout.role_dir = '~/roles' is absolute"):
     assert want in notes, (want, notes)
 assert v["hooks"]["on_retire"] == "", "an untrusted repository's hook is not taken"
+assert v["layout"] == {"role_dir": "", "archive": "archive/{path}", "manifest": "archive/{dir}/MANIFEST.jsonl"}, \
+    "a layout that leaves the repository is refused, even from a file whose other values are read: %r" % v["layout"]
+assert v["deep_pass"] == {"every_days": 3, "every_restarts": 3} and v["cold"]["after_checkpoints"] == 2, v
 open(HOST, "w").write(f'[lifecycle]\ntrusted_repos = ["{REPO}"]\n')
 r = js("lifecycle", "show", REPO)
 assert r["trusted"] and r["values"]["hooks"]["on_retire"] == "scripts/retire.sh", r
@@ -99,6 +115,9 @@ sys.path.insert(0, SHOALD)
 import startdoc  # noqa: E402
 assert startdoc.header("# t\n\nstate\n```\n## not a section\n```\n\n## Mission\nm\n") == "# t\n\nstate\n```\n## not a section\n```\n\n"
 assert startdoc.header("# only a title\nno sections\n") == "# only a title\nno sections\n"
+# a fence closes only on its own marker, at least as long: a ~~~ inside ``` and a ``` inside ```` are content
+assert startdoc.header("# t\n```\n~~~\n## in\n~~~\n```\n## Mission\n") == "# t\n```\n~~~\n## in\n~~~\n```\n"
+assert startdoc.header("# t\n````md\n```\n## in\n```\n````\n## M\n") == "# t\n````md\n```\n## in\n```\n````\n"
 body = "\n## Mission\n\nm\n\n## Current state\n\nc\n\n## Next\n\n- n\n\n## grants-needed\n\n- None pending\n"
 write(f"{D}/lane_start.md", "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nPosture: active on lane#1.\n" + body)
 write(f"{D}/bare_start.md", "# bare\n\nLast updated: 2026-11-08T10:00Z\n" + body)

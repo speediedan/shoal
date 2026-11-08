@@ -83,7 +83,7 @@ def last_updated(text: str) -> datetime.datetime | None:
     return max(stamps) if stamps else None
 
 
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 SECTION = re.compile(r"^##\s")
 
 
@@ -91,11 +91,16 @@ def header(text: str) -> str:
     """The doc's header: everything above its first `## ` section (lines inside fenced blocks are not headings). A peer
     reads only this to learn a role's state (`shoal doc-head`), so it is kept short and current."""
     lines = text.splitlines(keepends=True)
-    fenced = False
+    opener = ""  # the open fence's marker run, "" outside a fence
     for i, line in enumerate(lines):
-        if FENCE.match(line):
-            fenced = not fenced
-        elif not fenced and SECTION.match(line):
+        m = FENCE.match(line.rstrip("\n"))
+        if m and not opener:
+            opener = m.group(1)
+        elif m and m.group(1)[0] == opener[0] and len(m.group(1)) >= len(opener) and not m.group(2).strip():
+            # a fence closes only on its own marker, at least as long, with nothing after it (CommonMark): a ~~~ inside
+            # a ``` block, or a ``` inside a ```` block, is content
+            opener = ""
+        elif not opener and SECTION.match(line):
             return "".join(lines[:i])
     return text
 

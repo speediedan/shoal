@@ -52,7 +52,9 @@ on_retire = ""                         # run when a role or standalone session r
 ```
 
 A key that is unknown, of the wrong type, or outside its choices is reported by `shoal lifecycle show` and the default
-is kept; a bad file never stops a command.
+is kept; a bad file never stops a command. The same holds for a cap or cadence below 1 (or a negative `min_age_days`),
+and for a `[layout]` template that is absolute, starts with `~`, or has a `..` segment: layout is read from any
+repository, and files are moved by it, so where files go never leaves the repository.
 
 Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age_days`, unless flags name them) and by
 `doc-check` and `doc-head` (the header cap). The archive, checkpoint, deep-pass, cold and hook settings are read by the
@@ -72,3 +74,6 @@ trusted_repos = ["/path/to/repository"]
 
 For any other repository the hooks are ignored, with a note, and the defaults apply. The other settings run nothing and
 are read from any repository.
+
+A repository is its git top level, so a worktree is its own repository here: list each worktree path that should run
+hooks. A hook trusted for a main checkout is not trusted in that checkout's worktrees, which is the safer default.
