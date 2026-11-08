@@ -68,7 +68,8 @@ other roles in the directory read as unreferenced. `--no-known-roots` skips the 
 
 The history and excluded globs and the age floor come from the repository's `.shoal/lifecycle.toml`
 ([`lifecycle.md`](lifecycle.md)) unless `--history`, `--exclude` or `--min-age-days` name them; the JSON says which were used.
-A dangling reference is reported only from a live document: a history document that a live one links still records old
+A root's companion log (`<stem>_log.md` beside `<stem>_start*.md` or `<stem>_plan_state.md`, or the only `*_log.md` beside a
+bare `plan_state.md`) is live by contract, linked or not. A dangling reference is reported only from a live document: a history document that a live one links still records old
 paths as they were.
 
 ## What counts as a reference

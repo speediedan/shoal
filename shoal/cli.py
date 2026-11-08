@@ -85,6 +85,7 @@ import grants as _grants  # noqa: E402
 import startdoc as _startdoc  # noqa: E402
 import refs as _refs  # noqa: E402
 import lifecycle as _lifecycle  # noqa: E402
+import archive as _archive  # noqa: E402
 import resource_usage as _resource_usage  # noqa: E402
 import pool_cli as _pool_cli  # noqa: E402
 import role_time as _role_time  # noqa: E402
@@ -1269,6 +1270,7 @@ def main(argv: list[str] | None = None) -> int:
     _startdoc.add_parser(sub)
     _refs.add_parser(sub)
     _lifecycle.add_parser(sub)
+    _archive.add_parser(sub)
     _resource_usage.add_parser(sub)
     _pool_cli.add_parsers(sub)
     _role_time.add_parser(sub)

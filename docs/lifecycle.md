@@ -56,8 +56,9 @@ is kept; a bad file never stops a command. The same holds for a cap or cadence b
 and for a `[layout]` template that is absolute, starts with `~`, or has a `..` segment: layout is read from any
 repository, and files are moved by it, so where files go never leaves the repository.
 
-Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age_days`, unless flags name them) and by
-`doc-check` and `doc-head` (the header cap). The archive, checkpoint, deep-pass, cold and hook settings are read by the
+Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age_days`, unless flags name them), by
+`doc-check` and `doc-head` (the header cap), and by `shoal archive` ([`archive.md`](archive.md): `[layout] archive` and
+`manifest`, `[cold] warm_days`, `[hooks] commit`). The checkpoint, deep-pass and `on_retire` settings are read by the
 commands that follow them.
 
 ## Hooks run only for a trusted repository
