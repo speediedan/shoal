@@ -440,7 +440,10 @@ gone if the slug ever returns, removes it from the spec, writes
 `role-removed`; the ledger keeps its history), and `shoal remove-session`
 does the same for a saved standalone session. `shoal handoff` hands a live role to a fresh session
 in place, optionally on another model or provider (the quorum's `context_restart` run by hand, under its gate: see
-[`handover.md`](handover.md)). A `parked.until` wait target is checked
+[`handover.md`](handover.md)). `shoal set-fill --only <role> --fill self|assigned|none` changes how a role gets its work
+without a restart: it saves the spec, records a `role-fill` event, and wakes the role with what the new fill means, since
+its brief keeps the old fill until its next restart. A running watcher reloads the spec when the file changes, so a
+self-filling role's board wakes follow at its next tick. The aux lane always fills itself. A `parked.until` wait target is checked
 by the quorum each run, outside a freeze: once its provider reads it resolved (unknown never counts), the role
 is restarted, at most once per 30 minutes.
 
