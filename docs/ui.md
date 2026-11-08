@@ -628,7 +628,8 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
   lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
-  closed. `shoal ui app-lattice` (the bar's Lattice button, Ctrl+Alt+L) brings a closed lattice tab back, and
+  closed. The bar's Lattice button (Ctrl+Alt+L) switches straight to the space's open lattice tab; when it has none,
+  `shoal ui app-lattice` brings a closed one back (or the global one), and
   `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current.
   Ctrl+Alt+N (or a click on the bar's `need you` count) focuses the next agent that needs you, in the lattice pulse's order:
   a sign-in first, then a question, then a grant, the longest unchanged first; a zoomed view stays zoomed, on it. Each
@@ -654,7 +655,9 @@ shoal ui act-apply --token T [--json]              # run a planned action once
   would not brief is refused before the plan. The new session asks for its grants as any new role does. With **Write a
   starter doc**, the form also asks for guidance (its mission), first steps and the grants it needs, and the plan first
   runs `shoal doc-init <path>`, which writes a `plan_state.md` meeting the start-doc contract from them (never over an
-  existing file; not committed), then `add-role`; both are previewed, and a failed doc stops the plan before the role.
+  existing file; not committed), then `add-role`; both are previewed, and a failed doc stops the plan before the role. A
+  starter doc is for a role on the home host only: a role on another host reads its doc from that host's checkout, so
+  write and commit it first (its cost note says so for an existing doc too).
 - **Adding a standalone seat in the app.** The actions dialog's **Add session** (any target, also on a machine's
   right-click in Spaces) lists the sessions a seat could be made of on every machine; the seat name, typed first, filters
   that list as it is typed (label, folder, harness or machine) (`ui act-plan sessions`, the 0.9.3

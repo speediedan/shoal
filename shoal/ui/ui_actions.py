@@ -200,6 +200,13 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         starter = bool(getattr(a, "starter", False))
         if starter and not (getattr(a, "guidance", "") or "").strip():
             raise ActError("a starter doc needs --guidance (what the role is for and delivers)")
+        host = (getattr(a, "host", "") or "").strip()
+        import config
+        remote = bool(host) and host != (getattr(spec, "home", "") or config.server() or "")
+        if starter and remote:
+            # the doc is written here, uncommitted, and a session on another host reads its own checkout
+            raise ActError(f"a starter doc is written on this host, and a role on {host} reads its doc from {host}'s checkout: "
+                           "write and commit the doc first, then add the role (or leave Host empty)")
         if starter and os.path.exists(doc):
             raise ActError(f"{doc} exists: turn off the starter doc to use it, or give another path (it is never overwritten)")
         extra = [(k, (getattr(a, k, "") or "").strip()) for k in ("model", "effort", "host", "fill")]
@@ -216,7 +223,10 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         tokens = [f"{'server' if k == 'host' else k}={v}" for k, v in extra if v]
         args = ["add-role", "--spec", roles.find_spec(sid), "--role=" + ",".join([slug, a.ecosystem, title, doc] + tokens)]
         where = dict(extra)["host"] or "the shoal's home host"
-        return args, f"starts a new {a.ecosystem} session for {slug} on {where}: its first turn (tokens)", True
+        cost = f"starts a new {a.ecosystem} session for {slug} on {where}: its first turn (tokens)"
+        if remote:
+            cost += f"; it reads {doc} from {host}'s checkout, which must have it (committed and pulled there)"
+        return args, cost, True
     if verb == "handoff":
         import roles
         role = _role(spec, a.role)

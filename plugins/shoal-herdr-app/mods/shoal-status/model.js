@@ -74,3 +74,21 @@ export function nextNeedsYou(list, kindOf, current) {
   const i = order.findIndex((a) => a.address === current);
   return order[(i + 1) % order.length];
 }
+
+/**
+ * Where the Lattice button goes without a process: the shown space's own `lattice` tab, else null (the CLI then reopens
+ * one, or goes to the global one in the home space). {space, tab} ids.
+ */
+export function latticeTab(spaces) {
+  const cur = arr(spaces).find((s) => s?.active);
+  const t = arr(cur?.tabs).find((x) => x?.name === "lattice");
+  return cur && t ? { space: cur.id, tab: t.id } : null;
+}
+
+/** Where the Home button goes without a process: this computer's home space and its `home` tab (else its first). */
+export function homeTab(spaces, name = "SHOAL-home") {
+  const sp = arr(spaces).find((s) => s?.name === name && !s?.machine);
+  if (!sp) return null;
+  const t = arr(sp.tabs).find((x) => x?.name === "home") ?? arr(sp.tabs)[0];
+  return t ? { space: sp.id, tab: t.id } : null;
+}

@@ -570,7 +570,8 @@ r = lambda **k: types.SimpleNamespace(**{"shoal": "sh-1", "role": "", "slug": "l
 args, cost, confirm = ui_actions.build("add-role", r())
 assert args == ["add-role", "--spec", "/specs/sh-1/shoal.json", f"--role=lifecycle,claude,role lifecycle,{good},effort=high"] and confirm, args
 assert "first turn" in cost
-assert ui_actions.build("add-role", r(host="lane-b", fill="assigned"))[0][-1].endswith(",effort=high,server=lane-b,fill=assigned")
+ra = ui_actions.build("add-role", r(host="lane-b", fill="assigned"))
+assert ra[0][-1].endswith(",effort=high,server=lane-b,fill=assigned") and "lane-b's checkout" in ra[1], ra
 for bad, why in (({"slug": "Core!"}, "slug"), ({"slug": "core"}, "already a role"), ({"ecosystem": ""}, "provider"),
                  ({"title": "a, b"}, "comma"), ({"doc": os.path.join(d, "nope.md")}, "MISSING"), ({"fill": "x"}, "fill")):
     try:
@@ -601,6 +602,9 @@ na = lambda **k: types.SimpleNamespace(**{"path": sd, "role": "lifecycle", "miss
 with contextlib.redirect_stdout(io.StringIO()) as out:
     assert startdoc.cmd_doc_init(na()) == 1, "an existing file is refused"
 assert open(sd).read() == text and "refused" in out.getvalue()
+with contextlib.redirect_stdout(io.StringIO()):
+    assert startdoc.cmd_doc_init(na(path=os.path.join(d, "x.txt"))) == 2, "a start doc is a .md file"
+    assert startdoc.cmd_doc_init(na(path=os.path.join(d, "no", "such", "plan_state.md"))) == 2, "a typo makes no tree"
 fresh = os.path.join(d, "fresh", "plan_state.md")
 with contextlib.redirect_stdout(io.StringIO()):
     assert startdoc.cmd_doc_init(na(path=fresh, dry_run=True)) == 0 and not os.path.exists(fresh), "a dry run writes nothing"
@@ -611,7 +615,7 @@ assert ui_actions.build("add-role", starter)[0][0] == "add-role", "a starter ski
 pre = ui_actions.pre_steps("add-role", starter)
 assert pre and pre[0][:2] == ["doc-init", os.path.join(d, "later", "plan_state.md")] and "--mission=own the lifecycle verbs" in pre[0], pre
 assert ui_actions.pre_steps("add-role", r()) == [], "no starter: nothing before"
-for bad, why in (({"guidance": ""}, "guidance"), ({"doc": sd}, "exists")):
+for bad, why in (({"guidance": ""}, "guidance"), ({"doc": sd}, "exists"), ({"host": "lane-b"}, "write and commit the doc first")):
     try:
         ui_actions.build("add-role", r(**{"starter": True, "guidance": "g", **bad}))
         raise SystemExit(f"accepted {bad}")

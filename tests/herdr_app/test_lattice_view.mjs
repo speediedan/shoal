@@ -1033,15 +1033,21 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
   const cam = D.camera("tilt");
   const q = D.project(cam, { x: 10, y: 20 }, 0), up = D.project(cam, { x: 10, y: 20 }, 100);
   assert.ok(Math.abs(q.y - 20 * Math.cos(cam.pitch)) < 1e-9 && up.y < q.y && up.depth > q.depth, "a higher plane is drawn higher and nearer");
+  const far = D.project({ ...cam, d: 500 }, { x: 100, y: -200 }, 0), near = D.project({ ...cam, d: 500 }, { x: 100, y: 200 }, 0);
+  assert.ok(far.f < 1 && near.f > 1, "in perspective, the far side is smaller and the near side larger");
   const { zOf, planes } = D.planesOf(global, lay);
   assert.equal(planes.at(-1).kind, "operator");
   assert.ok(zOf.get("user") > Math.max(...planes.filter((p) => p.kind === "shoal").map((p) => p.z)), "the operator above the shoals");
   const pl = D.projectLayout(global, lay, cam);
   assert.equal(pl.pos.size, lay.pos.size);
   assert.ok(finiteDeep([...pl.pos.values()]) && finiteDeep(pl.sats) && pl.clusters.every((c) => c.ry === cam.c));
+  assert.ok(pl.grid.length === 22 && finiteDeep(pl.grid), "a floor grid, ten lines each way plus the edges");
+  assert.ok(pl.stems.some((s) => s.id === "n-user") && pl.stems.every((s) => s.y1 >= s.y0 - 1e-9), "stems drop to the floor, the operator's too");
+  assert.ok([...pl.fogOf.values()].every((f) => f >= 0.55 - 1e-9 && f <= 1 + 1e-9));
   assert.equal(pl.order.length, global.nodes.length);
   for (let i = 1; i < pl.clusters.length; i++) assert.ok(pl.clusters[i - 1].depth <= pl.clusters[i].depth, "far to near");
-  assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.8 - 1e-9 && s <= 1.15 + 1e-9));
+  assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.62 - 1e-9 && s <= 1.45 + 1e-9));
+  assert.ok(Math.max(...pl.scaleOf.values()) / Math.min(...pl.scaleOf.values()) > 1.15, "perspective: sizes differ visibly with depth");
   // per shoal: each host's band on its own plane
   const la = L.layoutGraph(alpha);
   const pa = D.projectLayout(alpha, la, D.camera("iso"));
@@ -1051,6 +1057,7 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
     const sc = S.buildScene(vm, l, { width: 1000, height: 700, tf: G.identity() });
     assert.ok(finiteDeep(sc.items), "no NaN in the depth scene");
     assert.ok(sc.items.some((it) => it.id.startsWith("disc-slab-") || it.id.startsWith("band-slab-")));
+    assert.ok(sc.items.some((it) => it.id === "floor-grid") && sc.items.some((it) => it.id.startsWith("stem-")), "the floor and the stems");
   }
   assert.ok(!S.buildScene(global, lay, { width: 1000, height: 700, tf: G.identity() }).items.some((it) => it.id.startsWith("disc-slab-")));
   assert.equal(D.depthFor("tilt", "off", "cpu"), "flat", "a CPU renderer at off stays flat");
