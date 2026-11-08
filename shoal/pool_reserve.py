@@ -147,6 +147,10 @@ def reserve(resources: str, owner: str, until: str, note: str = "", timeout_min:
     now = time.time() if now is None else now
     if not config.pool_member():
         raise ValueError("this host is not in the pool (pool = false): it takes no reservations")
+    import maintenance
+    m = maintenance.read_local(now)
+    if m is not None:
+        raise ValueError(f"{maintenance.describe(m)}: it takes no reservations until the window ends")
     if not re.fullmatch(r"[^/\s]+/[^/\s]+", owner or ""):
         raise ValueError("--for must be <shoal>/<role>")
     items = parse_resources(resources)

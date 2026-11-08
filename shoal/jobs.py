@@ -20,7 +20,7 @@ wait/status/stop follow it over ssh). The remote cwd and everything the command 
 The command runs inside a wrapper that writes its exit code to a status file, because a
 collected transient unit forgets its result. `wait` prints exactly one verdict line on
 every designed exit: JOB-VERDICT <unit> result=success|failed exit=<rc> | UNIT-GONE-NO-STATUS
-| TIMEOUT | NOT-FOUND, followed by the log tail.
+| HOST-REBOOTED (another host's boot id changed under the job) | TIMEOUT | NOT-FOUND, followed by the log tail.
 """
 from __future__ import annotations
 
@@ -119,20 +119,38 @@ def remote_state(host: str, unit: str) -> dict[str, str]:
     rp = remote_paths(unit)
     script = (f"systemctl --user show {shlex.quote(unit)}.service "
               f"-p LoadState,ActiveState 2>/dev/null; echo ---; cat {rp['rc']} 2>/dev/null || true; "
-              f"echo ---; cat {rp['granted']} 2>/dev/null || true; echo ---; stat -c %Y {rp['rc']} 2>/dev/null || true")
+              f"echo ---; cat {rp['granted']} 2>/dev/null || true; echo ---; stat -c %Y {rp['rc']} 2>/dev/null || true; "
+              f"echo ---; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true")
     try:
         r = _ssh(host, script, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return {}
     if r.returncode != 0:
         return {}
-    parts = (r.stdout.split("---\n") + ["", "", "", ""])[:4]
+    parts = (r.stdout.split("---\n") + ["", "", "", "", ""])[:5]
     d = {}
     for line in parts[0].splitlines():
         k, _, v = line.partition("=")
         d[k] = v
     d["rc"], d["granted"], d["rc_mtime"] = parts[1].strip(), parts[2].strip(), parts[3].strip()
+    d["boot_id"] = parts[4].strip()
     return d
+
+
+def reboot_detail(host: str) -> str:
+    """When the remote host booted, the last line of its previous boot and the kernel's reset reason, as far as
+    its journal lets this account read them; "" when unreachable."""
+    script = ("uptime -s 2>/dev/null; echo ---; journalctl -b -1 -n 1 -o short-iso --no-pager 2>/dev/null | tail -1; "
+              "echo ---; journalctl -b 0 -k -o cat --no-pager 2>/dev/null | grep -m1 -i 'reset reason' || true")
+    try:
+        r = _ssh(host, script, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    up, last, why = ((r.stdout.split("---\n") if r.returncode == 0 else []) + ["", "", ""])[:3]
+    bits = [f"booted {up.strip()} (host time)" if up.strip() else "",
+            f"previous boot's last line: {' '.join(last.split())[:120]}" if last.strip() else "",
+            f"reset reason: {' '.join(why.split())[:160]}" if why.strip() else ""]
+    return "; ".join(b for b in bits if b)
 
 
 def unit_state(unit: str) -> dict[str, str]:
@@ -208,6 +226,7 @@ def _run_remote(a, cmd: list[str], unit: str, p: dict) -> int:
     if st.get("ActiveState") in ("active", "activating", "reloading"):
         print(f"JOB-ALREADY-RUNNING {unit} on {host} (follow it with `shoal job wait --shoal {a.sid} --slug {a.slug} --name {a.name}`)")
         return 4
+    boot_id = st.get("boot_id", "")  # the wait tells a reboot from a local loss by comparing it
     inner = f'"$@"; rc=$?; echo "$rc" > {rp["rc"]}; exit "$rc"'
     rargv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
              "-p", f"WorkingDirectory={cwd}",
@@ -237,7 +256,8 @@ def _run_remote(a, cmd: list[str], unit: str, p: dict) -> int:
     os.makedirs(p["sdir"], exist_ok=True)
     meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
             "started_utc": now_iso(), "host": host, "log": rp["log"], "rc_file": rp["rc"],
-            "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci")}
+            "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci"),
+            "boot_id": boot_id}
     with open(p["meta"], "w") as fh:
         json.dump(meta, fh, indent=1)
     _emit(a.sid, a.slug, "job-start", f"{unit} on {host} {' '.join(cmd)[:100]}")
@@ -252,16 +272,23 @@ def cmd_run(a) -> int:
     if not cmd:
         print("ERROR: job run needs a command after --")
         return 1
+    _view = None
     try:  # a freeze (before a restart or maintenance window) starts no new jobs
         from ledger import Ledger, View
         from roles import ShoalSpec, find_spec
         _spec = ShoalSpec.load(find_spec(a.sid, getattr(a, "spec", "") or ""))
-        _fz = View(Ledger(a.sid, root=_spec.ledger_dir, sync=False), _spec).freeze()
+        _view = View(Ledger(a.sid, root=_spec.ledger_dir, sync=False), _spec)
+        _fz = _view.freeze()
     except Exception:  # noqa: BLE001 - no spec/ledger reachable (tests, ad-hoc use): not frozen
         _fz = None
     if _fz is not None:
         print(f"JOB-REFUSED: freeze active since {_fz['ts']} ({_fz.get('note') or 'no note'}); "
               f"the maintainer lifts it with `shoal freeze off`")
+        return 5
+    import maintenance  # a host under a maintenance window (a planned reboot, reset or hang test) takes no new job
+    why = maintenance.refusal(_view, getattr(a, "on", "") or getattr(a, "place", "") or "")
+    if why:
+        print(f"JOB-REFUSED: {why}. A lease or pool hold would not survive the host's reboots, so this is the guard")
         return 5
     unit = unit_name(a.sid, a.slug, a.name)
     p = paths(a.sid, unit)
@@ -421,8 +448,15 @@ def _wait_remote(a, unit: str, meta: dict) -> int:
                     verdict = f"JOB-VERDICT {unit} result={'success' if rc == 0 else 'failed'} exit={rc}"
                 elif st.get("LoadState") == "not-found" and not meta:
                     verdict = f"JOB-VERDICT {unit} NOT-FOUND (never started there)"
+                elif meta.get("boot_id") and st.get("boot_id") and st["boot_id"] != meta["boot_id"]:
+                    # the host rebooted under the job: say so, rather than a gone unit that reads like an OOM kill
+                    detail = reboot_detail(host)
+                    verdict = (f"JOB-VERDICT {unit} HOST-REBOOTED (boot {meta['boot_id'][:8]} -> {st['boot_id'][:8]}"
+                               + (f"; {detail}" if detail else "") + "; the job did not finish: re-run it)")
                 else:
-                    verdict = f"JOB-VERDICT {unit} UNIT-GONE-NO-STATUS (see {host} journal for {unit}.service)"
+                    gone = "same boot, so the cause was on the host: the user manager or an OOM kill" if meta.get("boot_id") else ""
+                    verdict = (f"JOB-VERDICT {unit} UNIT-GONE-NO-STATUS ({gone + '; ' if gone else ''}"
+                               f"see {host} journal for {unit}.service)")
                 print(verdict)
                 try:
                     r = _ssh(host, f"tail -n {int(a.tail)} {rp['log']} 2>/dev/null", timeout=30)

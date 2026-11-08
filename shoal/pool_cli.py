@@ -193,7 +193,13 @@ def probe(now: float | None = None) -> dict:
             "memory": memory, "gpus": gpus, "gpu_source": src,
             "lease": {k: lease.get(k) for k in ("ok", "error", "leases", "queue") if k in lease},
             "lease_cmd": config.lease_cmd(), "ci_envs": config.ci_envs(), "worktree_root": config.worktree_root(),
-            "holder_history": holder_history(host, now), "reservations": reservations}
+            "holder_history": holder_history(host, now), "reservations": reservations,
+            "maintenance": _maintenance_now(now)}
+
+
+def _maintenance_now(now: float) -> dict | None:
+    import maintenance
+    return maintenance.read_local(now)
 
 
 # ---- the pool's probes ------------------------------------------------------------------------------

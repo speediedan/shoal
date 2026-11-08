@@ -204,6 +204,24 @@ suppressed. For 24 hours after `off`, `next` prints `FREEZE LIFTED`. Both edges 
 freeze is a mode rather than mail because a freeze message has no end: measured 2026-09-27, two
 lanes kept honoring one for a day after the window closed, idle on full queues.
 
+**Host maintenance windows** (`shoal/maintenance.py`). A freeze stops a whole shoal; a planned reboot, reset or hang
+test touches one host, and it cannot be guarded by a lease or a pool reservation, because each one is a held lock that
+dies with the boot it protects. Measured 2026-11-07: a watchdog test's GPU hold ended at its first reboot, every lane
+pre-check then passed (lease, pool, CI agent, gates, freeze), and a two-card job started 13 s before the planned reset.
+`shoal maintenance on --server S --until <ISO|+90m> --note <why> [--wake]` writes two records:
+
+- **a marker on the host itself** (`<data root>/_pool/maintenance.json`), which its reboots do not end. There, `pool
+  reserve` refuses, the pool probe carries it so `pool status` and placement read the host as ineligible, and `job run`
+  started on that host refuses;
+- **a `maintenance:<server>` mode event, by `user`, in every shoal ledger of the clone it runs from.** `next` prints
+  `HOST MAINTENANCE` on every host, `job run --on/--place` naming the host refuses, and health holds that host's
+  `host-silent` page.
+
+A window ends at `maintenance off` or at `--until`, whichever comes first, so a forgotten `off` does not hold a host for
+good. A remote host's marker is set through its route, and the command refuses when that host cannot be reached. What a
+window does not stop: work already running, and anything that does not go through shoal (the CI agent's own jobs, a raw
+lease): a test still holds the host's leases, and takes them again after each reboot.
+
 **Wait discipline** (`waitdiscipline`), enforced by `queue --wait` and `transition`:
 
 - a `user-auth`, `user-design` or `user-feedback` wait is refused unless the queue records the ask;
@@ -272,7 +290,7 @@ work only offers to them or to `*`; `fill=none` roles never claim.
 | --- | --- | --- | --- |
 | `ledger-watch` | setsid-detached (Claude: `--wake direct`; opencode: `--wake send:<own id>`; muse/codex: `--wake exec:<own id>`), or an in-session background command (Claude under `direct_wake: dead`: `--wake exit`) | its own session, for work only | sidecar pid; health `watcher-dead` |
 | wait waiter (CI, lease, job) | an in-session background command, head-pinned, with verdict lines | its own session | a missing verdict; health `wait-resolved`, `wait-validity` |
-| job unit and `job wait` | a `systemd-run --user` transient unit with a `MemoryHigh` cap | its own session, through the waiter | `JOB-VERDICT` line; unit state |
+| job unit and `job wait` | a `systemd-run --user` transient unit with a `MemoryHigh` cap | its own session, through the waiter | `JOB-VERDICT` line; unit state; on another host, `HOST-REBOOTED` when its boot id changed under the job |
 | `health-a`, `health-b` | systemd user timers | roles (through adapters), the maintainer | each checks the other's tick |
 | lanes, pipeline, digest, reconcile, weekly report | systemd user timers | the health adapters (sensor fires) | `/tmp/<id>/tick-<job>` older than three intervals |
 

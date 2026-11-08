@@ -353,7 +353,8 @@ def cmd_next(a) -> int:
     out = [f"# next for {me.label} in shoal {spec.sid} (incarnation {spec.incarnation}) at {now_iso()}",
            f"IDENTITY: your Lane row label is `{me.label}` (base name, then your session tag; never the "
            f"incarnation number)"]
-    for banner in (freeze_banner(view), offline_banner(view)):
+    import maintenance
+    for banner in (freeze_banner(view), offline_banner(view), maintenance.banner(view)):
         if banner:
             out.append(banner)
     try:

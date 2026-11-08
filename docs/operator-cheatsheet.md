@@ -234,6 +234,9 @@ shoal job run --shoal $S --slug <role> --name <job> --place auto --needs gpu:1:n
 shoal upgrade --spec $SPEC --enable placement    # queue transfers of placed jobs (after a manual trial)
 shoal pool reserve --host <host> --resources gpu@<uuid> --for $S/<role> --until job:<job>   # one GPU for research
 shoal pool release <id> --host <host>            # (also released at --until, or when its holder dies)
+shoal maintenance on --server <host> --until +90m --note "<why>" --wake   # before a deliberate reboot, reset or hang test
+shoal maintenance status --server <host>         # jobs, reservations and placement refuse the host while it is on
+shoal maintenance off --server <host>            # (also ends at --until); a test still holds the host's leases itself
 shoal job run --shoal $S --slug <role> --name <job> --class research --place auto -- <cmd>   # runs inside it
 ```
 
