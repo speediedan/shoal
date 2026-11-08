@@ -602,6 +602,51 @@ def remove_session(key: str, force: bool = False, dry_run: bool = False) -> int:
     return 0
 
 
+def set_fill(spec, spec_path: str, slug: str, fill: str, note: str = "", wake: bool = True, dry_run: bool = False) -> int:
+    """Change how a role gets its work (`fill`: self, assigned or none) without restarting it: persist the spec, record a
+    `role-fill` event, and tell the role by a woken message, since its brief keeps the old fill until its next restart.
+    Its watcher reloads the changed spec at its next tick, so a self-filling role's board wakes follow."""
+    import briefs
+    from cli import persist_spec
+    from ledger import SYSTEM_WRITER, Ledger
+    from roles import FILL_MODES
+    role = spec.role(slug)
+    if role is None:
+        print(f"set-fill: unknown role {slug!r} (spec has {[r.slug for r in spec.roles]})")
+        return 1
+    if fill not in FILL_MODES:
+        print(f"set-fill: fill is one of {', '.join(FILL_MODES)}")
+        return 1
+    if getattr(role, "aux", False) and fill != "self":
+        print(f"set-fill: REFUSED: {slug} is the residual lane (aux), which fills itself by design")
+        return 1
+    was = role.fill
+    if was == fill:
+        print(f"{slug}: fill is already {fill}; nothing to do")
+        return 0
+    why = f": {note}" if note else ""
+    text = (f"FILL CHANGED for {slug}: {was} -> {fill} (the maintainer{why}). {briefs.FILL_SENTENCE[fill]} Your brief still "
+            f"says fill={was} until your next restart; this message wins over it. Run `next` and take work this way from now.")
+    tell = wake and bool(role.session)
+    if dry_run:
+        print(f"[dry-run] {slug}: fill {was} -> {fill}; save the spec, record role-fill"
+              + (f", wake it with: {text}" if tell else " (no session: nothing to wake)" if wake else " (no wake)"))
+        return 0
+    role.fill = fill
+    persist_spec(spec, spec_path, note=f"set-fill {slug} {was}->{fill}")
+    led = Ledger(spec.sid, root=spec.ledger_dir)
+    led.append(SYSTEM_WRITER, "system", event="role-fill", role=slug, fill=fill, was=was, note=note or None)
+    if tell:
+        led.append("user", "msg", to=slug, kind="info", wake=True, text=text)
+    print(f"{slug}: fill {was} -> {fill}" + (" (woken to take work this way)" if tell else ""))
+    return 0
+
+
+def cmd_set_fill(a) -> int:
+    from roles import ShoalSpec
+    return set_fill(ShoalSpec.load(a.spec), a.spec, a.only, a.fill, a.note, not a.no_wake, a.dry_run)
+
+
 def cmd_remove_role(a) -> int:
     from roles import ShoalSpec
     return remove_role(ShoalSpec.load(a.spec), a.spec, a.only, a.force, a.dry_run)
@@ -624,6 +669,15 @@ def add_parser(sub) -> None:
     p.add_argument("--force", action="store_true", help="even with an active item")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_remove_role)
+    p = sub.add_parser("set-fill", help="change how a role gets its work (self, assigned or none) without a restart; "
+                                        "it is told by a woken message")
+    p.add_argument("--spec", required=True)
+    p.add_argument("--only", required=True, help="one slug")
+    p.add_argument("--fill", required=True, choices=["self", "assigned", "none"])
+    p.add_argument("--note", default="", help="why, for the role and the ledger")
+    p.add_argument("--no-wake", action="store_true", help="record it without waking the role")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_set_fill)
     p = sub.add_parser("remove-session", help="take a saved standalone session out for good: stop it, remove it from its harness, forget it")
     p.add_argument("--session", required=True, help="its label, session id or job")
     p.add_argument("--force", action="store_true", help="even when it is live or a worktree hangs off it")

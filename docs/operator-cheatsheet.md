@@ -158,6 +158,7 @@ export S=<id> SPEC=<path to the group's spec>
     shoal handoff --spec <spec> --only <role> [--ecosystem E] [--model M] [--effort X] [--force] [--dry-run]
                                                   # a fresh session from its start doc, on its own host
     shoal remove-role --spec <spec> --only <role> [--force] [--dry-run]    # out for good; the ledger keeps its history
+    shoal set-fill --spec <spec> --only <role> --fill self|assigned|none [--note N] [--no-wake] [--dry-run]   # no restart
     shoal remove-session --session <label> [--force] [--dry-run]           # a saved standalone session, out for good
     ```
 

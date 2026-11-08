@@ -2302,6 +2302,33 @@ check "no role nope" $H remove-role --spec "$SPEC" --only nope --dry-run
 check "no saved standalone session" $H remove-session --session no-such-seat --dry-run
 echo "remove ok"
 
+echo "== 36c set-fill: a role's fill changes without a restart, recorded, and the role told"
+check "unknown role 'nope'" $H set-fill --spec "$SPEC" --only nope --fill self --dry-run
+check "fill is already self; nothing to do" $H set-fill --spec "$SPEC" --only up --fill self
+check "\[dry-run\] up: fill self -> assigned; save the spec, record role-fill, wake it with: FILL CHANGED" \
+  $H set-fill --spec "$SPEC" --only up --fill assigned --dry-run
+check "up: fill self -> assigned (woken to take work this way)" $H set-fill --spec "$SPEC" --only up --fill assigned --note "selftest"
+python3 - "$SPEC" "$S" <<'PY2' || fail "set-fill did not persist, record or tell"
+import glob, json, sys
+spec = json.load(open(sys.argv[1]))
+assert next(r for r in spec["roles"] if r["slug"] == "up")["fill"] == "assigned", spec
+evs = [json.loads(l) for f in glob.glob(sys.argv[2] + "/**/shoals/h4selftest/ledger/*.jsonl", recursive=True) for l in open(f) if l.strip()]
+assert any(e.get("event") == "role-fill" and e.get("role") == "up" and e.get("fill") == "assigned" and e.get("was") == "self"
+           for e in evs), "no role-fill event"
+assert any(e.get("type") == "msg" and e.get("to") == "up" and e.get("wake") and "FILL CHANGED for up: self -> assigned" in e.get("text", "")
+           and "You work only offers" in e.get("text", "") for e in evs), "the role was not told"
+PY2
+check "up: fill assigned -> self" $H set-fill --spec "$SPEC" --only up --fill self --no-wake
+python3 - "$SHOALD" <<'PY2' || fail "watcher spec mtime"
+import os, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+import ledger_watch
+assert ledger_watch._mtime("") == 0.0 and ledger_watch._mtime("/no/such/spec.json") == 0.0
+f = tempfile.NamedTemporaryFile(delete=False); f.close()
+assert ledger_watch._mtime(f.name) > 0
+PY2
+echo "set-fill ok"
+
 echo "== 37 prune-incarnations: every guard keeps its session, tombstone before claude rm, re-stop, per-harness archive, N-1 rule"
 python3 "$TESTD/test_prune.py" || fail "prune-incarnations (tests/test_prune.py)"
 check "name what to prune" $H prune-incarnations --dry-run
