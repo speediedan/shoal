@@ -86,9 +86,30 @@ export function latticeTab(spaces) {
 }
 
 /** Where the Home button goes without a process: this computer's home space and its `home` tab (else its first). */
-export function homeTab(spaces, name = "SHOAL-home") {
+export function homeTab(spaces, name = "SHOAL-home", tab = "home") {
   const sp = arr(spaces).find((s) => s?.name === name && !s?.machine);
   if (!sp) return null;
-  const t = arr(sp.tabs).find((x) => x?.name === "home") ?? arr(sp.tabs)[0];
+  const t = arr(sp.tabs).find((x) => x?.name === tab) ?? (tab === "home" ? arr(sp.tabs)[0] : null);
   return t ? { space: sp.id, tab: t.id } : null;
+}
+
+/**
+ * The shoal of the space in view: a card terminal in it labelled `<shoal id>/<role>` (`shoal.pane`, the space from its
+ * `herdr.space` label, prefixed with the machine for a remote one). Null for a space with no shoal card.
+ */
+export function shoalInView(spaces, terminals) {
+  const cur = arr(spaces).find((s) => s?.active);
+  if (!cur) return null;
+  for (const t of arr(terminals)) {
+    const labels = t?.labels ?? {};
+    const local = labels["herdr.space"];
+    const addr = String(t?.address ?? "");
+    const at = addr.lastIndexOf("/");
+    const id = at > 0 && local ? `${addr.slice(0, at)}/${local}` : local;
+    if (id !== cur.id && local !== cur.id) continue;
+    const pane = String(labels["shoal.pane"] ?? "");
+    const cut = pane.lastIndexOf("/");
+    if (cut > 0 && !pane.startsWith("standalone/")) return pane.slice(0, cut);
+  }
+  return null;
 }

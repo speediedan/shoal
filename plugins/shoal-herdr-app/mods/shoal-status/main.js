@@ -6,8 +6,8 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand, props } from "herdr";
-import { parseUsage, usageMachines, nextNeedsYou, latticeTab, homeTab } from "./model.js";
+import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand, props, setShared } from "herdr";
+import { parseUsage, usageMachines, nextNeedsYou, latticeTab, homeTab, shoalInView } from "./model.js";
 
 const USAGE_MS = 60000;
 const SYNC_MS = 120000;
@@ -70,7 +70,15 @@ export default class ShoalStatus extends View {
 
   lattice(cx) {
     // an open lattice tab is a switch away: no process (`ui app-lattice` took a second or more, and more over ssh)
-    if (this.go(latticeTab(safe(spaces, [])))) return;
+    const sps = safe(spaces, []);
+    if (this.go(latticeTab(sps))) return;
+    // the global lattice, in the home space, drilled into the shoal in view (the lattice honors lattice.focus)
+    const sid = shoalInView(sps, safe(terminals, []));
+    const home = homeTab(sps, "SHOAL-home", "lattice");
+    if (home) {
+      if (sid) try { setShared("lattice.focus", { shoal: sid, t: Date.now() }); } catch (_e) { /* the lattice opens on its home view */ }
+      if (this.go(home)) return;
+    }
     this.show(cx, "lattice", "app-lattice");
   }
 
@@ -160,7 +168,7 @@ export default class ShoalStatus extends View {
       .when(!topBar, (el) => el
         .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.home(cx); cx.notify(); }, t))
         .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t)))
-      .child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))
+      .when(!topBar, (el) => el.child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t)))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
       .child(div().flex_1());
     for (const u of this.rows) bar.child(this.meter(u, t));

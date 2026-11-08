@@ -2321,8 +2321,7 @@ dg = {"items": {"repo-one#7": {"title": "Make it fast", "source": "s"}, "repo-on
 assert ui_graph.item_titles(dg) == {"repo-one#7": "Make it fast"}, ui_graph.item_titles(dg)
 assert ui_graph.item_titles(None) == {}
 sp = ui_app.standalone_space({"label": "seat", "session": "abcd1234", "harness": "claude"})
-assert [t["name"] for t in sp["tabs"]] == ["session", "lattice"] and sp["tabs"][1]["mod"] == "lattice-view", sp["tabs"]
-assert "source" in sp["tabs"][1]["props"], sp["tabs"][1]
+assert [t["name"] for t in sp["tabs"]] == ["session"], "no lattice tab per space: the top bar's Lattice opens the global one"
 PY2
 # a question badge from ledger asks says what they ask, asks first, inside the report's 200 characters
 python3 - "$SHOALD" <<'PY2' || fail "asks in the card's message"
@@ -2411,6 +2410,7 @@ tname, (tclone, tpatches) = "tabs", ui_app.CLONES["tabs"]
 tout = ui_app.patch_clone("x" + tpatches[0][0] + 'svg("mods/tabs/win-min.svg")', tname, tpatches)
 assert 'run("shoal-status.home")' in tout and 'run("shoal-status.lattice")' in tout and "mods/shoal-tabs/win-min.svg" in tout, tout
 assert tout.index("shoal-lattice") < tout.index('panelButton("files"') and ui_app.LAYOUT_BLOCKS["tabs"] == "shoal-tabs"
+assert 'run("mod.open", { name: "shoal-actions" })' in tout and tout.index("shoal-actions") < tout.index('panelButton("files"'), "Actions in the top bar too"
 PY2
 # an idle subscription keeps its weekly reset (its last known schedule, rolled forward); ecosystems set aside drop out
 XDG_CONFIG_HOME="$S/xdg-eco" python3 - "$SHOALD" <<'PY2' || fail "usage resets and ecosystems"
@@ -2553,6 +2553,38 @@ try:
     assert "state=idle" in ui_app.report_text(row("b"), "t", None, first), "a card with no latch reports as before"
 finally:
     ui_app.card_report = orig
+PY2
+# Fill: `shoal set-fill` on one role, refused when it is already so; a renamed seat's session is that seat in the feed
+python3 - "$SHOALD" <<'PY2' || fail "fill and the renamed seat"
+import sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_actions, roles
+role = types.SimpleNamespace(slug="core", fill="assigned", session="s")
+spec = types.SimpleNamespace(sid="sh-1", roles=[role], role=lambda s: role if s == "core" else None)
+ui_actions._spec = lambda sid: spec
+roles.find_spec = lambda sid, explicit="": "/specs/sh-1/shoal.json"
+a = lambda **k: types.SimpleNamespace(**{"shoal": "sh-1", "role": "core", "fill": "self", "note": "", **k})
+args, cost, confirm = ui_actions.build("fill", a())
+assert args == ["set-fill", "--spec", "/specs/sh-1/shoal.json", "--only", "core", "--fill", "self"] and confirm and "from the board" in cost, args
+for bad, why in (({"fill": "assigned"}, "already"), ({"fill": "none"}, "self or assigned")):
+    try:
+        ui_actions.build("fill", a(**bad))
+        raise SystemExit(f"accepted {bad}")
+    except ui_actions.ActError as exc:
+        assert why in str(exc), exc
+import ui_graph, ui_status, ui_herdr
+ui_herdr.load_standalone = lambda raw=False: [{"harness": "claude", "session": "1136-aa", "job": "1136", "label": "shoal"},
+                                             {"harness": "claude", "session": "2222-bb", "label": "other"}]
+ui_status.claude_session = lambda rows, s, j="": {"1136-aa": {"name": "shoal-role-lifecycle"}, "2222-bb": {"name": "other"}}.get(s)
+b = ui_graph.GraphBuilder()
+b._harness_rows = lambda now: []
+b._alias_seats(0)
+assert ui_graph.EXT_ALIAS == {"shoal-role-lifecycle": "shoal"}, ui_graph.EXT_ALIAS
+assert ui_graph.node_id("sh-1", "ext-shoal-role-lifecycle", set()) == "ext:shoal", "its writes land on the seat"
+assert ui_graph.node_id("sh-1", "ext-unrelated", set()) == "ext:unrelated"
+ui_status.claude_session = lambda rows, s, j="": {"1136-aa": {"name": "other"}}.get(s)
+b._alias_seats(0)
+assert ui_graph.EXT_ALIAS == {}, "a name another seat holds is left alone"
 PY2
 # the shoal icon goes into the user's icon theme under the launchers' name, once, keeping what was there
 XDG_DATA_HOME="$S/icons-home" python3 - "$SHOALD" <<'PY2' || fail "the shoal icon"
@@ -3030,6 +3062,9 @@ elif me == "herdr-app" and args[:1] == ["do"]:
         s, tb = find_tab(a["pane"])
         t = term(a.get("argv"), s, tb)
         out = {"pane": "p" + t, "terminal": t}
+    elif cmd == "tab.close":
+        for x in st["spaces"]:
+            x["tabs"] = [tb for tb in x["tabs"] if tb["id"] != a["id"]]
     elif cmd == "pane.close":
         s, tb = find_tab(a["pane"])
         tb["terminals"] = [x for x in tb["terminals"] if x["pane"] != a["pane"]]
@@ -3055,18 +3090,16 @@ STUB
 chmod +x "$S/app-stub"; mkdir -p "$S/appbin"; ln -sf "$S/app-stub" "$S/appbin/herdr-app"; ln -sf "$S/app-stub" "$S/appbin/hc"
 mkdir -p "$S/apphome/mods/lattice-view"
 AENV="SHOAL_HERDR_APP_BIN=$S/appbin/herdr-app SHOAL_HC_BIN=$S/appbin/hc HERDR_APP_HOME=$S/apphome STUB_APP_STATE=$S/app.json STUB_APP_LOG=$S/app.log XDG_STATE_HOME=$S/state-app"
-# the plan: a space per shoal (overview, roles, lattice) and the cards' argv; read-only
+# the plan: a space per shoal (overview, roles; the top bar's Lattice replaced its lattice tab) and the cards' argv; read-only
 OUT=$(env $AENV $H ui app-plan --json --no-standalone --ledger-root "$ROOT") || fail "app-plan :: $OUT"
 python3 - "$OUT" "$SID" <<'PY3' || fail "app plan shape"
 import json, sys
 d = json.loads(sys.argv[1]); sid = sys.argv[2]
 assert d["kind"] == "shoal-app-plan" and d["v"] == 1, d
 s = next(x for x in d["spaces"] if x.get("shoal") == sid)
-assert s["name"] == sid and [t["name"] for t in s["tabs"]] == ["overview", "roles", "lattice"], s
+assert s["name"] == sid and [t["name"] for t in s["tabs"]] == ["overview", "roles"], s
 cards = [p for p in s["tabs"][1]["panes"]]
 assert any(p["label"] == f"{sid}/cl" and p["argv"][-4:] == ["view", sid, "cl", "--stub"] for p in cards), cards
-lat = s["tabs"][2]
-assert lat["mod"] == "lattice-view" and lat["props"]["shoal"] == sid and lat["props"]["source"]["kind"] in ("file", "exec"), lat
 print("app plan ok")
 PY3
 # no app running: app-open says so and changes nothing
@@ -3075,7 +3108,7 @@ OUT=$(env $AENV STUB_APP_UP=0 $H ui app-open --no-standalone --ledger-root "$ROO
 # a dry run lists what it would add; nothing structural is called
 : > "$S/app.log"
 OUT=$(env $AENV $H ui app-open --dry-run --no-standalone --ledger-root "$ROOT") || fail "app-open dry-run :: $OUT"
-grep -q "\[dry-run\] space $SID" <<<"$OUT" && grep -q "\[dry-run\] tab lattice (lattice-view)" <<<"$OUT" || fail "dry-run plan :: $OUT"
+grep -q "\[dry-run\] space $SID" <<<"$OUT" && ! grep -q "\[dry-run\] tab lattice" <<<"$OUT" || fail "dry-run plan :: $OUT"
 ! grep -q '"do"' "$S/app.log" || fail "a dry run called herdr-app do :: $(cat "$S/app.log")"
 # a real open: the space, its tabs, a split per further pane, every terminal labelled; then focus
 OUT=$(env $AENV $H ui app-open --no-standalone --ledger-root "$ROOT") || fail "app-open :: $OUT"
@@ -3083,8 +3116,8 @@ python3 - "$S/app.json" "$S/app.log" "$SID" <<'PY4' || fail "app-open reconcile"
 import json, sys
 st = json.load(open(sys.argv[1])); log = [json.loads(l) for l in open(sys.argv[2])]; sid = sys.argv[3]
 s = next(x for x in st["spaces"] if x["name"] == sid)
-assert [t["name"] for t in s["tabs"]] == ["overview", "roles", "lattice"], s["tabs"]
-assert len(s["tabs"][0]["terminals"]) == 1 and s["tabs"][2].get("mod") == "lattice-view", s["tabs"]
+assert [t["name"] for t in s["tabs"]] == ["overview", "roles"], s["tabs"]
+assert len(s["tabs"][0]["terminals"]) == 1, s["tabs"]
 labels = sorted(t["labels"].get("shoal.pane", "") for t in st["terms"].values())
 assert f"{sid}/overview" in labels and f"{sid}/ledger" not in labels and f"{sid}/cl" in labels, labels
 cmds = [l[2] for l in log if l[:2] == ["herdr-app", "do"]]
@@ -3092,6 +3125,40 @@ assert cmds.count("space.new") == 1 and "space.select" in cmds and "tab.select" 
 assert not any(c in ("pane.close", "space.close", "tab.close", "terminal.kill") for c in cmds), cmds
 print("app open ok")
 PY4
+# a lattice tab shoal made in a shoal's space before the top bar's Lattice: closed once; one shoal did not make, left
+for made in 1 0; do
+python3 - "$S/app.json" "$S/state-app/shoal/app-open.json" "$SID" "$made" <<'PY4b' || fail "old lattice tab setup"
+import json, sys
+st = json.load(open(sys.argv[1])); sid = sys.argv[3]
+s = next(x for x in st["spaces"] if x["name"] == sid)
+s["tabs"] = [t for t in s["tabs"] if t["name"] != "lattice"] + [{"id": "tb-old-lattice", "name": "lattice", "terminals": [], "mod": "lattice-view"}]
+json.dump(st, open(sys.argv[1], "w"))
+o = json.load(open(sys.argv[2]))
+built = o["opened"].setdefault("_built", {})
+for k in [k for k in built if k.endswith(f"/{sid}/lattice")]:
+    del built[k]
+if sys.argv[4] == "1":
+    built[f"local/{sid}/lattice"] = 1
+json.dump(o, open(sys.argv[2], "w"))
+PY4b
+: > "$S/app.log"
+OUT=$(env $AENV $H ui app-open --no-standalone --no-focus --ledger-root "$ROOT") || fail "app-open over an old lattice tab :: $OUT"
+python3 - "$S/app.json" "$S/app.log" "$S/state-app/shoal/app-open.json" "$SID" "$made" <<'PY4c' || fail "old lattice tab (made=$made) :: $OUT"
+import json, sys
+st = json.load(open(sys.argv[1])); log = [json.loads(l) for l in open(sys.argv[2])]; sid = sys.argv[4]; made = sys.argv[5] == "1"
+s = next(x for x in st["spaces"] if x["name"] == sid)
+closed = [json.loads(l[3]) for l in log if l[:3] == ["herdr-app", "do", "tab.close"]]
+if made:
+    assert closed == [{"id": "tb-old-lattice", "confirmed": True}] and "lattice" not in [t["name"] for t in s["tabs"]], (closed, s["tabs"])
+    built = json.load(open(sys.argv[3]))["opened"].get("_built", {})
+    assert f"local/{sid}/lattice" not in built, built
+else:
+    assert not closed and "lattice" in [t["name"] for t in s["tabs"]], (closed, s["tabs"])
+PY4c
+done
+# put the stub back as the open left it
+python3 -c 'import json,sys;p=sys.argv[1];st=json.load(open(p));[x.update(tabs=[t for t in x["tabs"] if t["name"]!="lattice"]) for x in st["spaces"] if x["name"]==sys.argv[2]];json.dump(st,open(p,"w"))' "$S/app.json" "$SID"
+echo "old lattice tab closed once ok"
 # idempotent: a second open adds nothing
 : > "$S/app.log"
 OUT=$(env $AENV $H ui app-open --no-standalone --no-focus --ledger-root "$ROOT") || fail "app-open again :: $OUT"

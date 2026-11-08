@@ -38,7 +38,7 @@ for _p in (PKG, HERE):
 V = 1
 PLAN_TTL_S = 600
 WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session", "dismiss",
-               "add-session", "add-role")
+               "add-session", "add-role", "fill")
 SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions")
@@ -228,6 +228,17 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         if remote:
             cost += f"; it reads {doc} from {host}'s checkout, which must have it (committed and pulled there)"
         return args, cost, True
+    if verb == "fill":
+        # where its work comes from: the board (self) or offers (assigned); `shoal set-fill` tells the role, woken
+        import roles
+        role = _role(spec, a.role)
+        if a.fill not in ("self", "assigned"):
+            raise ActError("fill is self or assigned")
+        was = spec.role(role).fill
+        if was == a.fill:
+            raise ActError(f"{role} already takes its work {'from the board' if was == 'self' else 'from offers'} (fill={was})")
+        args = ["set-fill", "--spec", roles.find_spec(sid), "--only", role, "--fill", a.fill] + ([f"--note={a.note}"] if a.note else [])
+        return args, f"wakes {role} once to tell it (a turn); it takes work {'from the board' if a.fill == 'self' else 'only from offers'} from now", True
     if verb == "handoff":
         import roles
         role = _role(spec, a.role)
@@ -573,7 +584,7 @@ def add_parsers(u) -> None:
     q.add_argument("--title", default="", help="add-role: what the role is for")
     q.add_argument("--doc", default="", help="add-role: its start doc (plan_state.md) on the shoal's home host")
     q.add_argument("--host", default="", help="add-role: the host it runs on (a [hosts.*] route; empty: the home)")
-    q.add_argument("--fill", default="", help="add-role: self (default), assigned or none")
+    q.add_argument("--fill", default="", help="add-role: self (default), assigned or none; fill: self or assigned")
     q.add_argument("--starter", action="store_true", help="add-role: write its start doc first, from --guidance (doc-init)")
     q.add_argument("--guidance", default="", help="add-role --starter: what the role is for and delivers")
     q.add_argument("--next", dest="next_steps", default="", help="add-role --starter: first steps, separated by ;")

@@ -43,10 +43,10 @@ test("mod.json: a focusable dialog overlay that docks nowhere", () => {
   assert.equal(modJson.overlay.height, M.SIZE.height);
 });
 
-test("verbs: the fifteen buttons in order, each with a kind and a role rule", () => {
-  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Dismiss", "Remove", "New role", "Add session", "Status", "Conditions", "Upgrade preview"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "dismiss", "remove-role", "remove-session", "add-role", "add-session"]);
-  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["asks", "opt"], ["handoff", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
+test("verbs: the sixteen buttons in order, each with a kind and a role rule", () => {
+  assert.deepEqual(M.verbsFor({ shoal: A }).map((v) => v.label), ["Message", "Offer", "Withdraw", "Next", "Asks", "Offline", "Freeze", "Hand off", "Fill", "Dismiss", "Remove", "New role", "Add session", "Status", "Conditions", "Upgrade preview"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.kind === "write").map((v) => v.verb), ["msg", "offer", "withdraw", "offline", "freeze", "handoff", "fill", "dismiss", "remove-role", "remove-session", "add-role", "add-session"]);
+  assert.deepEqual(M.VERBS.filter((v) => v.role !== "none").map((v) => [v.verb, v.role]), [["msg", "any"], ["offer", "one"], ["next", "one"], ["asks", "opt"], ["handoff", "one"], ["fill", "one"], ["dismiss", "one"], ["remove-role", "one"]]);
   for (const v of M.VERBS) {
     if (v.kind === "write") assert.ok(v.fields.length && v.fields.every((k) => M.FIELDS[k]), v.verb);
     else assert.ok(fx.views[v.verb], `a view fixture for ${v.verb}`);
@@ -530,4 +530,12 @@ test("Reply to one ask: the message names it, wake on", () => {
   assert.equal(a.form.values.text, "re ask 2: ");
   assert.equal(a.form.values.wake, true);
   assert.equal(M.answerTarget({ shoal: A }, { role: "lane-b" }).form.values.text, "", "the role's Answer: no ask named");
+});
+
+test("Fill: a role's work from the board or from offers, previewed with set-fill", () => {
+  let f = M.newForm("fill");
+  assert.equal(M.validate("fill", { shoal: A, role: "core" }, f), "pick self or assigned");
+  f = M.setValue(f, "fill", "self");
+  assert.deepEqual(M.planArgv("fill", { shoal: A, role: "core" }, f), ["ui", "act-plan", "fill", "--shoal", A, "--role=core", "--no-preview", "--fill=self", "--json"]);
+  assert.match(M.validate("fill", { shoal: A, role: null }, f), /pick a role/);
 });

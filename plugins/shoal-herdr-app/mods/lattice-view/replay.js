@@ -2,7 +2,9 @@
 // holds the day's events by `ts`; the view plays them back as packets on the live picture, a day in REPLAY_DAY_S.
 
 export const REPLAY_BINS = 96; // a quarter hour each over a day
-export const REPLAY_DAY_S = 96; // seconds of playback for a whole day: a quarter hour a second
+export const REPLAY_DAY_S = 32; // seconds of playback for a whole day (three quarter hours a second)
+// the speeds a replay can run at, as seconds for the whole day: the default is the second
+export const REPLAY_SPEEDS = [{ label: "\u2153\u00d7", day_s: 96 }, { label: "1\u00d7", day_s: 32 }, { label: "3\u00d7", day_s: 11 }, { label: "10\u00d7", day_s: 3.2 }];
 export const REPLAY_TICK_MS = 500; // each tick redraws the picture: twice a second is enough for a day in REPLAY_DAY_S
 export const REPLAY_BURST = 12; // packets one tick may start; a busier quarter hour shows its count, not a flood
 
@@ -36,9 +38,9 @@ export function replayStep(rm, t0, t1) {
   return { events: all.slice(-REPLAY_BURST), n: all.length };
 }
 
-/** Replay seconds one tick advances: a whole day in REPLAY_DAY_S. */
-export function replayAdvance(rm) {
-  return (rm.span / REPLAY_DAY_S) * (REPLAY_TICK_MS / 1000);
+/** Replay seconds one tick advances: a whole day in `dayS` (REPLAY_DAY_S unless a speed was picked). */
+export function replayAdvance(rm, dayS = REPLAY_DAY_S) {
+  return (rm.span / Math.max(0.5, dayS)) * (REPLAY_TICK_MS / 1000);
 }
 
 /** The time a slot starts at, and the slot a time falls in. */

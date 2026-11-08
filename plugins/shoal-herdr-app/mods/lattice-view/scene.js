@@ -98,6 +98,7 @@ export function buildScene(vm, lay, opts) {
   for (const st of lay.stems ?? []) {
     const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 });
     items.push({ t: "path", id: `shadow-${st.id}`, fill: true, cmds: ellipseCmds(b.x, b.y, st.r * k, st.ry * k), bg: solid(withAlpha("#000000", 0.32)) });
+    items.push({ t: "path", id: `shadow-core-${st.id}`, fill: true, cmds: ellipseCmds(b.x, b.y, st.r * k * 0.6, st.ry * k * 0.6), bg: solid(withAlpha("#000000", 0.25)) });
     items.push({ t: "path", id: `stem-${st.id}`, fill: false, width: 1, dash: [3, 4], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(P.steel2, 0.32)) });
   }
 
@@ -114,14 +115,19 @@ export function buildScene(vm, lay, opts) {
       const fog = c.fog ?? 1;
       if (c.sphere) {
         // a sphere: a dark core, a lit cap toward the upper left, an equator and a rim; no slab
-        items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.09 * fog)) });
-        [[0.78, 0.05], [0.56, 0.06], [0.34, 0.08]].forEach(([f, a], i) => {
-          items.push({ t: "path", id: `sphere-lit-${c.id}-${i}`, fill: true, cmds: circleCmds(p.x - r * (1 - f) * 0.55, p.y - r * (1 - f) * 0.62, r * f),
-            bg: solid(withAlpha(mix(c.tint, "#ffffff", 0.35), a * fog)) });
+        items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(mix(c.tint, "#000000", 0.35), 0.5 * fog)) });
+        // lit toward the upper left in stacked caps, each brighter and smaller: a shaded ball, not a disc
+        [[0.86, 0.09], [0.68, 0.11], [0.5, 0.13], [0.32, 0.16]].forEach(([f, a], i) => {
+          items.push({ t: "path", id: `sphere-lit-${c.id}-${i}`, fill: true, cmds: circleCmds(p.x - r * (1 - f) * 0.6, p.y - r * (1 - f) * 0.68, r * f),
+            bg: solid(withAlpha(mix(c.tint, "#ffffff", 0.2 + 0.12 * i), a * fog)) });
         });
+        // the limb darkens toward the edge, and a small hot spot sits in the lit cap
+        items.push({ t: "path", id: `sphere-limb-${c.id}`, fill: false, width: Math.max(2, r * 0.12), cmds: circleCmds(p.x, p.y, r * 0.94),
+          bg: solid(withAlpha("#000000", 0.3 * fog)) });
+        items.push({ t: "path", id: `sphere-spec-${c.id}`, fill: true, cmds: circleCmds(p.x - r * 0.4, p.y - r * 0.46, r * 0.09), bg: solid(withAlpha("#ffffff", 0.45 * fog)) });
         const eq = ellipseCmds(p.x, p.y, r, r * Math.cos(lay.cam?.pitch ?? 0.9));
-        items.push({ t: "path", id: `sphere-equator-${c.id}`, fill: false, width: 1, dash: [3, 5], cmds: eq, bg: solid(withAlpha(c.tint, 0.28 * fog)) });
-        items.push({ t: "path", id: `sphere-rim-${c.id}`, fill: false, width: 1.5, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.55 * fog)) });
+        items.push({ t: "path", id: `sphere-equator-${c.id}`, fill: false, width: 1, dash: [3, 5], cmds: eq, bg: solid(withAlpha(c.tint, 0.4 * fog)) });
+        items.push({ t: "path", id: `sphere-rim-${c.id}`, fill: false, width: 2, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(mix(c.tint, "#ffffff", 0.25), 0.75 * fog)) });
       } else if (c.ry !== undefined) {
         // the slab's thickness: its near edge as a band between the top ellipse's lower half and the same one dropped
         const t = 11 * k * (c.s ?? 1);

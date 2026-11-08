@@ -13,9 +13,9 @@ const DEG = Math.PI / 180;
 // you; the rest follow a spiral back from it, so the sphere is evenly used and what needs you is nearest.
 const ACTIVITY = { working: 0, "local-ci": 1, "remote-ci": 1, handover: 2, refill: 2, lease: 3, upstream: 3, peer: 3, hold: 3, other: 3,
   queued: 4, starved: 5, held: 5, dismissed: 5, excluded: 6 };
-const SPHERE_R = 0.78; // of the shoal's disc radius
+const SPHERE_R = 0.92; // of the shoal's disc radius
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
-const CAP = 0.88; // how far back the spiral reaches: 1 is the far pole
+const CAP = 0.95; // how far back the spiral reaches: 1 is the far pole
 
 /** [need, activity, staleness] for sorting: lower is nearer you. */
 export function sphereRank(n) {
@@ -56,7 +56,7 @@ export const DEPTH_CYCLE = ["flat", "tilt", "iso"];
 export const PLANE_GAP = 190; // world units between planes, before the tilt
 export const YAW_STEP = 15 * DEG;
 const DIST = 2.6; // the camera's distance, in layout radii: smaller is stronger perspective
-const SCALE_MIN = 0.62, SCALE_MAX = 1.45; // what perspective may do to a size
+const SCALE_MIN = 0.55, SCALE_MAX = 1.6; // what perspective may do to a size
 const FLOOR_BELOW = 0.55; // the floor, below the lowest plane, in plane gaps
 const GRID = 10; // floor grid lines each way
 
@@ -144,13 +144,14 @@ export function projectLayout(vm, lay, cam0) {
     const q = w ? P(w, w.z) : P(p, z(id));
     pos.set(id, { x: q.x, y: q.y });
     depth.set(id, q.depth);
-    scaleOf.set(id, q.f);
+    // on a sphere, the front grows and the back shrinks, beyond what perspective alone does
+    scaleOf.set(id, q.f * (behind.has(id) ? 1.28 - 0.62 * behind.get(id) : 1));
   }
   const ds = [...depth.values()];
   const d0 = Math.min(...ds), d1 = Math.max(...ds);
   // far fades; a role round the back of its sphere fades more, as seen through it
   const fogOf = new Map([...depth].map(([id, d]) => [id, (d1 > d0 ? 0.55 + 0.45 * ((d - d0) / (d1 - d0)) : 1)
-    * (behind.has(id) ? 1 - 0.45 * Math.max(0, behind.get(id) - 0.5) / 0.5 : 1)]));
+    * (behind.has(id) ? 1 - 0.7 * Math.max(0, behind.get(id) - 0.35) / 0.65 : 1)]));
   const sats = (lay.sats ?? []).map((s) => {
     const w = placed.get(s.owner), p0 = lay.pos.get(s.owner);
     const at = (x, y) => (w && p0 ? P({ x: w.x + x - p0.x, y: w.y + y - p0.y }, w.z) : P({ x, y }, z(s.owner)));
@@ -202,7 +203,7 @@ export function projectLayout(vm, lay, cam0) {
     const a = P(p, zz), b = P(p, floorZ);
     stems.push({ id, x0: a.x, y0: a.y, x1: b.x, y1: b.y, r: r * b.f, ry: r * b.f * cam.c });
   };
-  if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * SPHERE_R * 0.7);
+  if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * SPHERE_R * 1.05);
   else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
   for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));

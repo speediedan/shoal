@@ -1112,13 +1112,13 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with five blocks swapped: `shoal-agents`,
-`shoal-spaces`, `shoal-chrome` (the window's mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home and
-Lattice in the top bar, beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
+`shoal-spaces`, `shoal-chrome` (the window's mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home,
+Lattice and Actions in the top bar, beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
-and prints the spaces it wants (one per shoal: `overview`, the `roles` tabs of cards, a `lattice` tab; one per
-saved standalone session, with its `session` tab and a global `lattice` tab). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
+and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone
+session, with its `session` tab; the top bar's Lattice opens the global lattice, drilled into the shoal in view). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
 route for another host, which it first adds as a herdr-core machine named after the route), compares it with
 `herdr-app ls`, and adds only what is missing with `herdr-app do`, labelling each terminal it starts
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground

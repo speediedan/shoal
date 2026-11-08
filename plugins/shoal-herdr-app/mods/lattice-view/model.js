@@ -218,6 +218,9 @@ export const roleTint = (id) => PASTELS[hash32(id) % PASTELS.length];
 export const grantsOf = (node) => arr(obj(node?.work).grants_pending).filter((g) => g && typeof g === "object");
 
 /** Everything the renderer needs to draw one node. */
+/** Keys the lattice draws as asking for you that the status row may not count (an empty queue): its needs_you decides. */
+const ROW_DECIDES = new Set(["assign", "sources"]);
+
 export function nodeVisual(node) {
   const kind = str(node?.kind) || "role";
   const key = stateKey(node);
@@ -238,7 +241,10 @@ export function nodeVisual(node) {
   const st = STATE_STYLE[key] ?? STATE_STYLE.unknown;
   const done = num(metrics.done_24h);
   // a role held by the operator being offline asks nothing of them until they are back
-  const needsYou = key !== "held" && key !== "starved" && Boolean(st.needsYou || obj(node?.state).needs_you === true);
+  // one rule with the status and the agents list: for an empty queue, the row's needs_you decides (2026-11-08: the
+  // lattice counted a wait:assignment role as needing you while the agents list, rightly by the row, did not)
+  const rowSays = obj(node?.state).needs_you === true;
+  const needsYou = key !== "held" && key !== "starved" && (ROW_DECIDES.has(key) ? rowSays : Boolean(st.needsYou || rowSays));
   return {
     kind: "role",
     key,
@@ -362,7 +368,7 @@ export function jobHostOf(node) {
 /** One row per host for the rail: roles working and waiting there, and msgs/h through them. */
 export function hostSummaries(vm) {
   const rows = new Map();
-  for (const [name, color] of vm.hostColor) rows.set(name, { name, color, home: false, roles: 0, working: 0, waiting: 0, needsYou: 0, msgsPerH: 0, jobsIn: 0 });
+  for (const [name, color] of vm.hostColor) rows.set(name, { name, color, home: false, roles: 0, working: 0, waiting: 0, needsYou: 0, msgsPerH: 0, msgs24: 0, jobsIn: 0 });
   for (const h of vm.hosts) if (rows.has(h?.name)) rows.get(h.name).home = h.home === true;
   const fed = new Map(vm.hosts.filter((h) => h && typeof h.roles === "number").map((h) => [h.name, h]));
   for (const n of vm.nodes) {
@@ -374,6 +380,7 @@ export function hostSummaries(vm) {
       else if (str(n.state.class) === "wait") r.waiting += 1;
       if (n.visual.needsYou) r.needsYou += 1;
       r.msgsPerH += num(n.metrics.msgs_out_1h) + num(n.metrics.msgs_in_1h);
+      r.msgs24 += num(n.metrics.msgs_out_24h) + num(n.metrics.msgs_in_24h);
     }
     const jh = jobHostOf(n);
     if (jh && rows.has(jh)) rows.get(jh).jobsIn += 1;
@@ -387,6 +394,7 @@ export function hostSummaries(vm) {
     r.waiting = num(h.waiting, r.waiting);
     r.needsYou = num(h.needs_you, r.needsYou);
     r.msgsPerH = num(h.msgs_1h, r.msgsPerH);
+    r.msgs24 = num(h.msgs_24h, r.msgs24);
   }
   return [...rows.values()].filter((r) => r.roles > 0 || r.jobsIn > 0);
 }
@@ -590,6 +598,7 @@ export function buildModel(doc, view = "global", opts = {}) {
       grants: grantsOf(n),
       alias_of: n.alias_of ?? null,
       saved: n.saved === true,
+      seat: typeof n.seat === "string" && n.seat ? n.seat : null, // a renamed seat: its saved label (Remove uses it)
       standalone: obj(n.standalone).id ? obj(n.standalone) : null,
       state: obj(n.state),
       work: obj(n.work),
@@ -806,7 +815,7 @@ export function removeOverlay(vm, id, source = null) {
   const n = vm?.byId?.get(id);
   if (n?.kind === "role" && n.shoal) return dialogSpec({ shoal: n.shoal, role: n.slug ?? n.label ?? null, verb: "remove-role" }, source);
   // a writer with no saved session has nothing to remove: its card offers to hide it
-  if (n?.kind === "external" && !n.alias_of && n.saved) return dialogSpec({ shoal: null, role: null, session: n.label, verb: "remove-session" }, source);
+  if (n?.kind === "external" && !n.alias_of && n.saved) return dialogSpec({ shoal: null, role: null, session: n.seat ?? n.label, verb: "remove-session" }, source);
   return null;
 }
 
@@ -834,7 +843,7 @@ export function pulseModel(doc, opts = {}) {
     return { id: r.id, label: r.label, shoal: r.shoal, short: shortShoal(r.shoal), color: r.color, badge: r.badge ?? "!", event: ev, host: typeof n?.host === "string" ? n.host : null, since_s: r.since_s };
   });
   return {
-    shoals: shoals.map((s) => ({ id: s.id, short: s.short, tint: s.tint, urgent: s.urgent, urgentColor: s.urgentColor, needsYou: s.needsYou, msgsPerH: s.msgsPerH })),
+    shoals: shoals.map((s) => ({ id: s.id, short: s.short, tint: s.tint, urgent: s.urgent, urgentColor: s.urgentColor, needsYou: s.needsYou, msgsPerH: s.msgsPerH, msgs24: s.msgs24 })),
     needs,
     more: Math.max(0, ranked.length - needs.length),
   };
@@ -843,7 +852,7 @@ export function pulseModel(doc, opts = {}) {
 /** A hash of what the pulse draws: a poll that hashes the same needs no redraw. */
 export function pulseSignature(pm) {
   const parts = [];
-  for (const s of pm.shoals) parts.push(s.id, s.urgent, s.needsYou, s.msgsPerH);
+  for (const s of pm.shoals) parts.push(s.id, s.urgent, s.needsYou, s.msgsPerH, s.msgs24);
   for (const r of pm.needs) parts.push(r.id, r.event, r.host ?? "");
   parts.push(pm.more);
   return hash32(parts.join("\u0001"));
@@ -854,7 +863,7 @@ export function edgeCardLines(vm, id) {
   const e = vm.edges.find((x) => x.id === id);
   if (!e) return null;
   const a = vm.byId.get(e.src), b = vm.byId.get(e.dst);
-  const rows = [[`${fmtAge(num(vm.windows.rate_s, 300))} / 1h / 24h`, `${e.n_rate} / ${e.n_1h} / ${e.n_24h}`], ["rate", `${e.rate}/h`]];
+  const rows = [["1h / 24h", `${e.n_1h} / ${e.n_24h}`]];
   if (e.last_age_s !== null) rows.push(["last", fmtAge(e.last_age_s)]);
   if (e.open !== null) rows.push(["open", String(e.open)]);
   if (e.stale) rows.push(["blocker", "stale"]);
@@ -881,7 +890,7 @@ export function shoalCardLines(vm, sid) {
   if (!s) return null;
   const mode = [s.offline ? "offline" : "", s.freeze ? "freeze" : ""].filter(Boolean).join(", ") || "on";
   const rows = [["mode", mode], ["roles", `${s.roles}: ${s.working} working, ${s.waiting} waiting`], ["needs you", String(s.needsYou)], ...(s.starved ? [["no work assigned", String(s.starved)]] : []),
-    ["asks / grants", `${s.asks} / ${s.grants}`], ["pages 24h", String(s.pages24)], ["done 24h / 7d", `${s.done24} / ${s.done7}`], ["msgs per hour", String(s.msgsPerH)]];
+    ["asks / grants", `${s.asks} / ${s.grants}`], ["pages 24h", String(s.pages24)], ["done 24h / 7d", `${s.done24} / ${s.done7}`], ["msgs 1h / 24h", `${s.msgsPerH} / ${s.msgs24}`]];
   if (s.home) rows.push(["home", s.home]);
   if (ledgerStale(s)) rows.push(["ledger clone", `${fmtAge(s.ledgerAge)} old on ${vm.host ?? "this host"}`]);
   return { title: s.short, subtitle: "shoal", color: s.urgentColor, rows, list: [], links: [], command: null, boards: s.boards.items.filter((b) => b.counts) };
@@ -996,7 +1005,7 @@ export function visualSignature(vm, cardId = null) {
     parts.push(fmtAge(B.age), B.stale ? 1 : 0, B.offBoard.inFlight, B.offBoard.assigned);
     for (const b of B.items) parts.push(b.id, b.title, b.url, ...(b.counts ? Object.values(b.counts) : []));
   }
-  for (const h of hostSummaries(vm)) parts.push(h.name, h.roles, h.working, h.waiting, h.msgsPerH, h.jobsIn);
+  for (const h of hostSummaries(vm)) parts.push(h.name, h.roles, h.working, h.waiting, h.msgsPerH, h.msgs24, h.jobsIn);
   return hash32(parts.join("\u0001"));
 }
 
