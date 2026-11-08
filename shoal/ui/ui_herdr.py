@@ -398,6 +398,11 @@ def cmd_set(a) -> int:
             return 1
         if ecos:
             d[key] = list(dict.fromkeys(ecos))
+            # a role still running on one set aside keeps spending it: say so, and its meter stays (usage_providers)
+            held = ui_status.roles_on(set(backends.ecosystems()) - set(ecos))
+            if held:
+                print(f"set aside, but still used by {len(held)} role(s): {', '.join(held)}; their usage stays shown until "
+                      "they are handed off to an ecosystem in use")
         else:
             d.pop(key, None)
     elif key == "usage_providers":

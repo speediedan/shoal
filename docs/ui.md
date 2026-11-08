@@ -290,8 +290,9 @@ list; an empty `usage_providers` setting disables background collection. A subsc
 its first use in a window (Muse, `idle`) keeps showing its next weekly reset: the last one a reading reported, rolled
 forward by whole weeks, shown at 0% and "unused since its last reset" (until it has been used once, there is none to
 show). `shoal ui set ecosystems claude,codex,opencode` names the agent ecosystems in use on a host (default all four):
-one set aside drops out of usage (overview and status bar), of Add session's discovery and of New role's and Hand off's
-providers; its existing roles keep running until they are handed off.
+one set aside drops out of Add session's discovery and New role's and Hand off's providers at once, and out of usage
+(overview and status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
+and `ui set` names those roles, until they are handed off to an ecosystem in use.
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without

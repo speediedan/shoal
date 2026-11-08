@@ -2416,7 +2416,10 @@ assert "unused since its last reset" in line and "week 0%" in line, line
 # ecosystems: the default is every one; one set aside drops its usage provider and is refused as a provider
 assert ui_status.active_ecosystems() == ["opencode", "claude", "codex", "muse"] or set(ui_status.active_ecosystems()) == {"opencode", "claude", "codex", "muse"}
 ui_status.save_ui_config({"usage_providers": ["codex", "claude", "muse", "opencode-go"], "ecosystems": ["claude", "codex", "opencode"]})
+ui_status.roles_on = lambda ecos: []
 assert "muse" not in ui_status.active_ecosystems() and ui_status.usage_providers() == ["codex", "claude", "opencode-go"]
+ui_status.roles_on = lambda ecos: ["sh-1/old-muse-role"] if "muse" in ecos else []
+assert ui_status.usage_providers() == ["codex", "claude", "muse", "opencode-go"], "a live role still on it keeps its meter"
 import types, ui_actions
 spec = types.SimpleNamespace(sid="sh-1", home="", role=lambda s: None)
 ui_actions._spec = lambda sid: spec

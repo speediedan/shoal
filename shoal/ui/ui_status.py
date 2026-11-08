@@ -106,10 +106,28 @@ def active_ecosystems() -> list[str]:
     return [e for e in known if e in want] if isinstance(want, list) and want else known
 
 
+def roles_on(ecosystems: set[str]) -> list[str]:
+    """`<shoal id>/<role>` for every role with a session on one of `ecosystems`, in the shoals this host sees (specs
+    only: no session probes)."""
+    from roles import ShoalSpec
+    out = []
+    for p in discover_all():
+        try:
+            spec = ShoalSpec.load(p)
+        except (OSError, ValueError):
+            continue
+        out += [f"{spec.sid}/{r.slug}" for r in spec.roles if r.session and r.ecosystem in ecosystems]
+    return out
+
+
 def usage_providers() -> list[str]:
-    """The subscription providers to read: the `usage_providers` setting, less those of an ecosystem set aside."""
+    """The subscription providers to read: the `usage_providers` setting, less those of an ecosystem set aside, unless a
+    live role still runs on it: its subscription is still being spent, so its meter stays until the role is handed off."""
     on = set(active_ecosystems())
-    return [p for p in ui_config().get("usage_providers", []) if USAGE_ECOSYSTEM.get(p, p) in on]
+    want = ui_config().get("usage_providers", [])
+    aside = {USAGE_ECOSYSTEM.get(p, p) for p in want} - on
+    still = {e for e in aside if roles_on({e})} if aside else set()
+    return [p for p in want if USAGE_ECOSYSTEM.get(p, p) in on | still]
 
 
 def save_ui_config(d: dict) -> None:
