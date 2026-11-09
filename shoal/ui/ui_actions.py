@@ -139,6 +139,23 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError("remove-session needs --session")
         return (["remove-session", f"--session={a.session}"] + (["--force"] if a.force else []),
                 "permanent: stops this session if it runs and removes it from its harness's list", True)
+    if verb == "handoff" and getattr(a, "session", ""):
+        import handoff_flow
+        try:
+            entry = handoff_flow.standalone_entry(a.session)
+        except handoff_flow.HandoffError as exc:
+            raise ActError(str(exc)) from exc
+        args = ["handoff", f"--session={a.session}", "--prepare", f"--expected-session={entry['session']}"]
+        for key in ("doc", "model", "effort", "ecosystem"):
+            if getattr(a, key, ""):
+                args.append(f"--{key}={getattr(a, key)}")
+        if a.force:
+            raise ActError("standalone handoff always verifies a checkpoint; turn off Force")
+        if a.ecosystem:
+            import ui_status
+            if a.ecosystem not in ui_status.active_ecosystems():
+                raise ActError(f"{a.ecosystem} is set aside on this host: choose a provider in use")
+        return args, "requests a checkpoint turn, then starts a fresh session from its start doc; continues in the background", True
     spec = _spec(a.shoal)
     sid = spec.sid
     if verb == "msg":
@@ -245,7 +262,9 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
     if verb == "handoff":
         import roles
         role = _role(spec, a.role)
-        args = ["handoff", "--spec", roles.find_spec(sid), "--only", role]
+        args = ["handoff", "--spec", roles.find_spec(sid), "--only", role, f"--expected-session={spec.role(role).session}"]
+        if not getattr(a, "no_prepare", False):
+            args.append("--prepare")
         if a.model:
             args.append(f"--model={a.model}")
         if a.effort:
@@ -256,8 +275,12 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
                 raise ActError(f"{a.ecosystem} is set aside on this host (`shoal ui set ecosystems`): hand off to one in use")
             args.append(f"--ecosystem={a.ecosystem}")
         if a.force:
+            if not getattr(a, "no_prepare", False):
+                raise ActError("turn off checkpoint-first before choosing Force")
             args.append("--force")
-        return args, "stops this session and starts a new one from its start doc: a new incarnation, one cold turn", True
+        cost = ("requests a restart-ready checkpoint if needed, then starts a fresh session from its start doc"
+                if "--prepare" in args else "stops this session and starts a fresh one from its start doc")
+        return args, cost + "; continues in the background", True
     raise ActError(f"unknown write verb {verb}")
 
 
@@ -444,14 +467,13 @@ def plan(verb: str, a) -> dict:
     _sweep()
     # with steps before it, the plan stops at the first failure: a role is not added without the doc it starts from
     token = _store({"verb": verb, "shoal": a.shoal, "role": a.role or "", "argvs": pre + [args], "stop_on_fail": bool(pre)}
-                   if pre else {"verb": verb, "shoal": a.shoal, "role": a.role or "", "argv": args})
+                   if pre else {"verb": verb, "shoal": a.shoal, "role": a.role or "", "session": getattr(a, "session", ""), "argv": args})
     return {"v": V, "kind": "shoal-act-plan", "verb": verb, "shoal": a.shoal, "role": a.role or "",
             "command": "\n".join("shoal " + shlex.join(x) for x in pre + [args]), "preview": preview,
             "preview_rc": preview_rc, "cost": cost, "confirm": confirm, "token": token, "progress": _progress_path(token), "expires_s": PLAN_TTL_S}
 
 
-def apply(token: str) -> dict:
-    import ui_herdr
+def take_plan(token: str) -> dict:
     path = _plan_path(token)
     try:
         with open(path) as fh:
@@ -461,19 +483,24 @@ def apply(token: str) -> dict:
         raise ActError("no such plan (already applied, or expired): plan it again") from exc
     if time.time() - float(p.get("created", 0)) > PLAN_TTL_S:
         raise ActError("the plan expired: plan it again")
+    return p
+
+
+def execute(p: dict, progress: str) -> dict:
+    import ui_herdr
     argvs = [[str(x) for x in argv] for argv in (p.get("argvs") or [p["argv"]])]
     import ui_queue
     if not all(args and (args[0] in WRITE_VERBS + ui_queue.BATCH_VERBS or args[0] == "doc-init" or args[:2] == ["ui", "pick"])
                for args in argvs):
         raise ActError("a stored plan names no write verb")
     rc, outs = 0, []
-    fd = os.open(_progress_path(token), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    fd = os.open(progress, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "w") as log:
         for args in argvs:  # each shoal's verb runs even when another's failed: the output says which
             if len(argvs) > 1:
                 log.write(f"== {args[args.index('--shoal') + 1] if p.get('scope') and '--shoal' in args else args[0]}\n")
                 log.flush()
-            code, out = _stream(args, log)
+            code, out = _stream(args, log, timeout=4800) if args[0] == "handoff" else _stream(args, log)
             ui_herdr.log_action(args, code)
             rc = rc or code
             outs.append(out.strip())
@@ -482,6 +509,10 @@ def apply(token: str) -> dict:
                 break
     return {"v": V, "kind": "shoal-act-result", "verb": p.get("verb"), "shoal": p.get("shoal"), "role": p.get("role"),
             "rc": rc, "command": "\n".join("shoal " + shlex.join(x) for x in argvs), "output": "\n\n".join(outs)}
+
+
+def apply(token: str) -> dict:
+    return execute(take_plan(token), _progress_path(token))
 
 
 ITEM_RE = r"(?<![\w/#])((?:[A-Za-z0-9][\w.-]*/)?[A-Za-z0-9][\w.-]*)?#(\d+)\b"
@@ -621,7 +652,11 @@ def cmd_act_plan(a) -> int:
 
 def cmd_act_apply(a) -> int:
     try:
-        doc = apply(a.token)
+        if getattr(a, "background", False):
+            import ui_runs
+            doc = ui_runs.start(a.token)
+        else:
+            doc = apply(a.token)
         _emit(doc, a.json)
         return 0 if doc["rc"] == 0 else 1
     except (ActError, subprocess.TimeoutExpired) as exc:
@@ -662,6 +697,7 @@ def add_parsers(u) -> None:
     q.add_argument("--effort", default="", help="handoff: the new session's effort")
     q.add_argument("--ecosystem", default="", help="handoff, add-role: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
+    q.add_argument("--no-prepare", action="store_true", help="handoff: skip requesting a checkpoint first")
     q.add_argument("--undo", action="store_true", help="dismiss: show the role as needing you again")
     q.add_argument("--order", default="", help=f"{QUEUE_SET}: the proposed next items, in order, comma-separated")
     q.add_argument("--drop", default="", help=f"{QUEUE_SET}: items to take out of the role's queue, comma-separated")
@@ -671,5 +707,8 @@ def add_parsers(u) -> None:
     q.set_defaults(func=cmd_act_plan)
     q = u.add_parser("act-apply", help="run a planned write verb once, by its token (from act-plan)")
     q.add_argument("--token", required=True)
+    q.add_argument("--background", action="store_true", help="detach a handoff and follow it with act-status")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_act_apply)
+    import ui_runs
+    ui_runs.add_parsers(u)

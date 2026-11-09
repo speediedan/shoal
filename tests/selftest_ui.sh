@@ -3664,4 +3664,6 @@ else
   echo "herdr-app lattice-view, shoal-home, shoal-actions: skipped (node not on PATH)"
 fi
 
+python3 "$TESTD/test_handoff_flow.py" || fail "checkpoint-first and background handoff"
+
 echo "SELFTEST PASS ($S)"

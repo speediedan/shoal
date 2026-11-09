@@ -50,7 +50,7 @@ export const VERBS = [
   { verb: "asks", label: "Asks", kind: "view", role: "opt", about: "open asks and roles waiting on a question (one role's, when one is picked)" },
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
-  { verb: "handoff", label: "Hand off", kind: "write", role: "one", fields: ["ecosystem", "model", "effort", "force"], about: "restart this role in place from its start doc, optionally on another provider or model" },
+  { verb: "handoff", label: "Handoff", kind: "write", role: "one", sessionAlso: true, fields: ["ecosystem", "model", "effort", "handoffDoc", "prepare", "force"], about: "request a restart-ready checkpoint, then hand off from its start doc; progress continues if this dialog closes" },
   { verb: "fill", label: "Fill", kind: "write", role: "one", fields: ["fillTo", "note"], about: "where this role's work comes from: the board (self) or your offers (assigned)" },
   { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", fields: ["undo"], about: "clear this role's needs-you until something new is raised; it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
@@ -69,7 +69,7 @@ export const isQueue = (verb) => verbInfo(verb)?.kind === "queue";
 
 /** The verbs a target can use: a scope across shoals (`all`, `host:<name>`) takes only those that span shoals. */
 export function verbsFor(target) {
-  if (strOrNull(target?.session)) return VERBS.filter((v) => v.sessionOnly);
+  if (strOrNull(target?.session)) return VERBS.filter((v) => v.sessionOnly || v.sessionAlso);
   return VERBS.filter((v) => !v.sessionOnly && (v.hostLevel || !strOrNull(target?.scope) || v.scoped));
 }
 
@@ -94,6 +94,8 @@ export const FIELDS = {
   undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
+  prepare: { key: "prepare", kind: "toggle", label: "Request a restart-ready checkpoint first", hint: "waits for its checkpoint turn to finish, then hands off automatically" },
+  handoffDoc: { key: "doc", kind: "text", label: "Start doc", placeholder: "empty: the standalone seat's saved start doc" },
   slug: { key: "slug", kind: "text", label: "Role name", placeholder: "its slug: a-z, 0-9 and -", required: true },
   title: { key: "title", kind: "text", label: "Title", placeholder: "what the role is for", required: true },
   doc: { key: "doc", kind: "text", label: "Start doc", placeholder: "its plan_state.md on the shoal's home host (## Mission, ## Current state, grants-needed)", required: true },
@@ -157,6 +159,10 @@ export function newForm(verb, now = new Date(), prefill = {}) {
   if (!info || info.kind !== "write") return null;
   const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "" };
   values.dryRun = PREVIEW_FIRST.has(verb);
+  if (verb === "handoff") {
+    values.prepare = true;
+    values.standalone = false;
+  }
   values.undo = false;
   if (verb === "offline") values.until = nextMorning(now);
   for (const [k, v] of Object.entries(obj(prefill) ?? {})) if (k in values) values[k] = v;
@@ -169,7 +175,9 @@ export function visibleFields(form) {
   if (!form) return [];
   const info = verbInfo(form.verb);
   const starterOnly = new Set(["guidance", "nextSteps", "grants"]);
-  return [...arr(info?.fields).filter((k) => (k !== "until" || form.values.state === "on") && (!starterOnly.has(k) || form.values.starter)), "dryRun"]
+  return [...arr(info?.fields).filter((k) => (k !== "until" || form.values.state === "on") && (!starterOnly.has(k) || form.values.starter)
+    && (k !== "handoffDoc" || form.values.standalone) && (k !== "prepare" || !form.values.standalone)
+    && (k !== "force" || (!form.values.prepare && !form.values.standalone))), "dryRun"]
     .map((k) => FIELDS[k]);
 }
 
@@ -213,14 +221,14 @@ export function roleFor(verb, role) {
 export function validate(verb, target, form = null) {
   const info = verbInfo(verb);
   if (!info) return `unknown action ${verb}`;
-  if (info.sessionOnly) {
+  if (info.sessionOnly || (info.sessionAlso && strOrNull(target?.session))) {
     if (!strOrNull(target?.session)) return "no session named";
   } else if (info.hostLevel) {
     // a seat is a host's, not a shoal's: nothing to pick above the form
   } else if (strOrNull(target?.scope)) {
     if (!info.scoped) return `${info.label} works on one shoal: pick one`;
   } else if (!strOrNull(target?.shoal)) return "pick a shoal first";
-  if (info.role !== "none" && info.role !== "opt" && !roleFor(verb, target?.role)) {
+  if (!strOrNull(target?.session) && info.role !== "none" && info.role !== "opt" && !roleFor(verb, target?.role)) {
     return info.role === "any" ? "pick a role (or * for everyone)" : "pick a role first (not *)";
   }
   if (info.kind !== "write") return null;
@@ -276,7 +284,9 @@ export function planArgv(verb, target, form = null) {
       if (strOrNull(v.ecosystem)) argv.push(`--ecosystem=${v.ecosystem}`);
       if (text("model")) argv.push(`--model=${text("model")}`);
       if (text("effort")) argv.push(`--effort=${text("effort")}`);
-      if (v.force) argv.push("--force");
+      if (target.session && text("doc")) argv.push(`--doc=${text("doc")}`);
+      if (!target.session && !v.prepare) argv.push("--no-prepare");
+      if (!target.session && !v.prepare && v.force) argv.push("--force");
     } else if (verb === "dismiss" && v.undo) {
       argv.push("--undo");
     } else if ((verb === "remove-role" || verb === "remove-session") && v.force) {
@@ -345,9 +355,14 @@ export function mergeSessions(replies) {
 }
 
 /** argv to apply a plan. The token stays in memory: it is never shown or logged. */
-export function applyArgv(token) {
+export function applyArgv(token, background = false) {
   if (!strOrNull(token)) throw new Error("no plan token");
-  return ["ui", "act-apply", "--token", token, "--json"];
+  return ["ui", "act-apply", "--token", token, "--json", ...(background ? ["--background"] : [])];
+}
+
+export function statusArgv(target, run = null) {
+  return ["ui", "act-status", ...(run ? ["--run", run] : target.session ? [`--session=${target.session}`]
+    : ["--shoal", target.shoal, `--role=${target.role}`]), "--json"];
 }
 
 /** Has a plan's token run out? `plannedAt` in ms; the CLI checks again on apply. */
@@ -465,12 +480,14 @@ export function parseReply(r, expect = null) {
       cost: plainText(str(d.cost)).trim(),
       confirm: d.confirm !== false,
       token: strOrNull(d.token),
+      progress: strOrNull(d.progress),
       expiresS: typeof d.expires_s === "number" && d.expires_s > 0 ? d.expires_s : null,
       summary: arr(d.summary).map(str).filter((x) => x.trim()),
     };
   } else if (d.kind === KINDS.result) {
     const rc = typeof d.rc === "number" ? d.rc : r.code;
-    out = { kind: "result", rc, ok: rc === 0, command: str(d.command), output: str(d.output) };
+    out = { kind: "result", rc, ok: rc === 0, command: str(d.command), output: str(d.output),
+      running: d.running === true, run: strOrNull(d.run), progress: strOrNull(d.progress) };
   } else if (d.kind === KINDS.view) {
     out = { kind: "view", verb: strOrNull(d.verb), shoal: strOrNull(d.shoal), role: strOrNull(d.role), text: str(d.text) };
     if (Array.isArray(d.asks)) out.asks = normAsks(d.asks);
@@ -559,7 +576,12 @@ export function focusContext(focused, terminals, spaces, panes = []) {
   const addr = strOrNull(f.terminal) ?? strOrNull(f.shown) ?? strOrNull(paneTerm) ?? strOrNull(f.agent);
   if (!addr) return null;
   const t = arr(terminals).find((x) => x && x.address === addr);
-  const p = parsePaneLabel(labelsOf(t)[PANE_LABEL]);
+  const label = str(labelsOf(t)[PANE_LABEL]);
+  const p = parsePaneLabel(label);
+  if (!p && label.startsWith("standalone/") && label.length > 11) {
+    const sp = arr(spaces).find((s) => s && s.id === f.space) ?? terminalSpace(t, spaces);
+    return { shoal: null, role: null, session: label.slice(11), machine: machineOfSpace(sp) ?? null, from: "focus" };
+  }
   if (!p) return null;
   const sp = arr(spaces).find((s) => s && s.id === f.space) ?? terminalSpace(t, spaces);
   return { shoal: p.shoal, role: p.role, machine: machineOfSpace(sp) ?? null, from: "focus" };

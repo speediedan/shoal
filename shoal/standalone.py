@@ -29,7 +29,8 @@ def unique_by_label(entries: list[dict]) -> tuple[list[dict], list[dict]]:
 
 def load_standalone(raw: bool = False) -> list[dict]:
     try:
-        entries = list(json.load(open(standalone_path())).get("sessions", []))
+        with open(standalone_path()) as fh:
+            entries = list(json.load(fh).get("sessions", []))
     except (OSError, ValueError):
         return []
     return entries if raw else unique_by_label(entries)[0]

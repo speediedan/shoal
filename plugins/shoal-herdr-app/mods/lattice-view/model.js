@@ -792,6 +792,8 @@ export const focusKeyOf = (value) => readFocus(value, undefined, 0, Infinity)?.k
  */
 export function actionsOverlay(vm, id, source = null) {
   const n = vm?.byId?.get(id);
+  if (n?.kind === "external" && n.saved && !n.alias_of)
+    return dialogSpec({ shoal: null, role: null, session: n.seat ?? n.label }, source);
   if (!n || n.kind !== "role" || typeof n.shoal !== "string" || !n.shoal) return null;
   return dialogSpec({ shoal: n.shoal, role: n.slug ?? n.label ?? null }, source);
 }

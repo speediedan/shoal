@@ -29,7 +29,7 @@ import { h_flex, v_flex, InputState, Input, Link } from "gpui-base";
 import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, machines, closeOverlay, nextCommand } from "herdr";
 import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
-  validate, rolesArgv, planArgv, applyArgv, planExpired, parseReply, textLines, preselect, settleSelection,
+  validate, rolesArgv, planArgv, applyArgv, statusArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
@@ -181,6 +181,7 @@ export default class Actions extends View {
   /** While an apply runs: its output so far. `exec` returns only at the end, so the CLI writes a file and this reads its tail. */
   followProgress(cx) {
     if (!this.applying || !this.liveFrom || this.liveBusy) return;
+    if (this.liveFrom.run) return this.followHandoff(cx);
     const { path, machine } = this.liveFrom;
     this.liveBusy = true;
     cx.spawn(async (cx) => {
@@ -194,6 +195,48 @@ export default class Actions extends View {
         // the next tick tries again; the result still comes whole
       }
       this.liveBusy = false;
+    });
+  }
+
+  followHandoff(cx) {
+    const from = this.liveFrom;
+    if (!from?.run || this.liveBusy) return;
+    this.liveBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = parseReply(await this.call(statusArgv(this.sel, from.run), from.machine), "result");
+        if (this.liveFrom !== from) return;
+        if (r.kind === "result") {
+          this.live = r.output;
+          if (!r.running) {
+            this.applying = false;
+            this.liveFrom = null;
+            this.result = { ...r, plan: this.plan };
+            this.screen = "result";
+          }
+          cx.notify();
+        }
+      } finally { this.liveBusy = false; }
+    });
+  }
+
+  resumeHandoff(cx) {
+    if (this.fixture) return;
+    const seq = this.seq, machine = this.machine();
+    cx.spawn(async (cx) => {
+      const r = parseReply(await this.call(statusArgv(this.sel), machine), "result");
+      if (this.verb !== "handoff" || seq !== this.seq || r.kind !== "result" || !r.run) return;
+      this.live = r.output;
+      if (r.running) {
+        this.applying = true;
+        this.liveFrom = { run: r.run, machine };
+        this.busyWhat = "waiting for checkpoint and handoff";
+        this.screen = "busy";
+      } else {
+        this.result = r;
+        this.screen = "result";
+      }
+      cx.notify();
     });
   }
 
@@ -226,12 +269,13 @@ export default class Actions extends View {
       if (!same || prefill) {
         const pre = {};
         for (const [k, v] of Object.entries(prefill ?? {})) if (v !== undefined) pre[k] = v;
-        this.form = newForm(verb, new Date(), pre);
+        this.form = newForm(verb, new Date(), { ...pre, standalone: Boolean(this.sel.session) });
         this.syncInputs();
       }
       this.screen = "form";
       this.focusFirst(cx);
       if (verb === "add-session") this.loadSessions(cx);
+      if (verb === "handoff") this.resumeHandoff(cx);
     } else if (info.kind === "queue") {
       this.form = null;
       this.loadQueue(cx);
@@ -361,7 +405,13 @@ export default class Actions extends View {
     this.applying = true;
     this.live = "";
     this.liveFrom = plan.progress ? { path: plan.progress, machine: plan.machine } : null;
-    this.request("applying", applyArgv(token), plan.machine, "result", (r) => {
+    this.request("applying", applyArgv(token, this.verb === "handoff"), plan.machine, "result", (r) => {
+      if (r.kind === "result" && r.running && r.run) {
+        this.liveFrom = { run: r.run, machine: plan.machine };
+        this.live = r.output;
+        this.busyWhat = "waiting for checkpoint and handoff";
+        return;
+      }
       this.applying = false;
       this.liveFrom = null;
       if (r.kind === "result") {
@@ -919,6 +969,9 @@ export default class Actions extends View {
       .child(div().w(14).text_color(c.accent).frames(["◐", "◓", "◑", "◒"], 160))
       .child(div().text_color(c.muted).child(`${this.busyWhat}…`));
     if (!this.applying || !this.live) return head;
+    if (this.verb === "handoff") return v_flex().gap(6).child(head)
+      .child(this.label("You can close this dialog. Handoff continues; reopen Handoff to follow its log.", c))
+      .child(this.mono("live", lastLines(this.live), c));
     return v_flex().gap(6).child(head).child(this.mono("live", lastLines(this.live), c));
   }
 
@@ -1050,6 +1103,7 @@ export default class Actions extends View {
         break;
       case "busy":
         if (!this.applying) row.child(this.button("b-back", "Back", "plain", go((cx) => this.back(cx)), c));
+        else if (this.verb === "handoff" && this.liveFrom?.run) row.child(this.button("b-background", "Continue in background", "plain", () => this.close(), c));
         break;
       case "queue": {
         const changed = this.draft && this.queue && draftChanged(this.draft, this.queue);
