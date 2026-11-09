@@ -182,10 +182,10 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
 snapshot built by `role_time_adapters.build_snapshots`: the ledger part from the View, the native part
 only from the role-time cache files (`role-time-native.json` in the shoal's state directory, plus the
 `role-time-native-<host>.json` copies `role-time observe` keeps there). `event` is the raw role-time
-event (`turn`, `local-ci`, `remote-ci`, `lease`, `user-auth`, `user-ask`, `user-prompt`,
+event (`turn`, `local-ci`, `remote-ci`, `research-proto`, `lease`, `user-auth`, `user-ask`, `user-prompt`,
 `user-design`, `assignment`, `sources`, `upstream`, `session-blocked`, `self`, `hold`, `handover`,
 `refill` and the rest of the vocabulary), passed through as it is, so a renderer can key encodings
-off it; `group` is `WAIT_GROUP` for waits, else empty; `quality` is the classifier's quality flags.
+off it; `group` is `WAIT_GROUP` for waits (`research` for `research-proto`, apart from the CI waits' `system`), else empty; `quality` is the classifier's quality flags.
 `state.source` is `role-time` for that reading. A role with no native observation (no cache, or a
 background role) gets a best-effort reading of its status row in the same vocabulary, marked
 `source: posture`. As in role-time accounting, a source is believed only within its budget (the
@@ -194,7 +194,7 @@ ledger half only while the clone's last fetch is fresh). Where accounting would 
 instead, marks it `source: posture`, and adds `role-time:<event>` to `quality`, so a host whose clone
 stopped fetching still shows what its roles last declared.
 
-For `wait:local-ci`, `wait:remote-ci` and `wait:lease`, `state.job` describes the job a `job:<name>`
+For `wait:local-ci`, `wait:remote-ci`, `wait:research-proto` and `wait:lease`, `state.job` describes the job a `job:<name>`
 wait target names, from the job meta the role-time adapter already reads (`<state dir>/jobs/<unit>.json`):
 `unit`, `host` (where the job runs: a placement's host, else a remote `--on` host, else this host;
 it may differ from the role's host), `placed`, `granted` and `started_age_s`. `state.job_host` mirrors

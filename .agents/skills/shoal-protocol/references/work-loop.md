@@ -48,16 +48,23 @@
 
 Sleep only on a real wait or an empty queue:
 - **Waiting:** arm the waiter first, then `queue --wait <sub> --holder <who> --target <kind:ref>`.
-  The substates are `local-ci`, `remote-ci`, `session-blocked`, `upstream`, `user-auth`,
-  `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
+  The substates are `local-ci`, `remote-ci`, `research-proto`, `session-blocked`, `upstream`,
+  `user-auth`, `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
   (`job:<name>`, `lease:<key>`, `gh-run:<owner/repo>:<id>`, `gh-pr:<owner/repo>#<n>`,
   `gh-issue:<owner/repo>#<n>`, `az-build:<id>`). A malformed target is refused, and so is one that
   is already resolved (a merged PR, a finished run): there is nothing left to wait on.
+- **CI or research:** `local-ci` and `remote-ci` are for CI only: a suite, a build or a check that
+  validates a change. A run that answers a research question or tries out a prototype (an experiment,
+  a sweep, a recovery or ablation run, a benchmark for a design, a PR or issue prototype) is
+  `research-proto`, wherever it runs and whatever it waits on (a job, a lease, a reservation, a hosted
+  run). Start such runs with `job run --class research` inside a reservation, never as a `ci` job. A
+  CI wait on a `--class research` job is refused. Research counted as CI hides where CI time and GPU
+  queues actually go.
 - **Which substate:** `session-blocked` is for another role in this shoal (`--blocked-on
   <role>:<item>`, never yourself). Your item waiting on something outside the shoal, such as an
   upstream issue or release, is `upstream` with a `gh-issue:` or `gh-pr:` target.
 - **A wait covers the active item only.** If a next item is workable, work it rather than parking
-  it behind the wait. A wait other than `local-ci` with a next item that has no recorded blocker is
+  it behind the wait. A wait other than `local-ci` (a `research-proto` wait included) with a next item that has no recorded blocker is
   refused at the write, exactly like idle (`features.waitgate`): pop the item, or record its blocker.
 - **Idle:** `queue --idle`, only when nothing is actionable: an empty queue, or every next item
   with a recorded blocker (`--blocked`). Otherwise the write is refused. A blocker that later goes

@@ -51,7 +51,7 @@ import config  # noqa: E402
 
 LOCAL = config.tzinfo()
 
-SUBS = ["local-ci", "remote-ci", "user-auth", "user-design", "session-blocked", "upstream", "queue-empty"]
+SUBS = ["local-ci", "remote-ci", "research-proto", "user-auth", "user-design", "session-blocked", "upstream", "queue-empty"]
 TOOL_PATH = config.tool_path()
 ENV = config.tool_env()
 

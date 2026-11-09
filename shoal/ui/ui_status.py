@@ -687,7 +687,7 @@ def limit_until(sid: str) -> str:
     return _h.limit_until_sid(sid)
 
 
-CI_SUBS = ("local-ci", "remote-ci")
+CI_SUBS = ("local-ci", "remote-ci", "research-proto")  # waits on a run (CI, or a research or prototyping run)
 
 
 def working_wait(r: dict) -> bool:

@@ -628,7 +628,7 @@ def validity_applies(sub: str, target: str, pending, disciplined: bool) -> bool:
     at 90 minutes)."""
     if sub == "upstream" or (pending is True and disciplined):
         return False
-    return sub in CI_WAITS or target.split(":", 1)[0] in providers.kinds()
+    return sub in CI_WAITS + ("research-proto",) or target.split(":", 1)[0] in providers.kinds()
 
 
 def return_condition(view, slug: str, q: dict) -> dict | None:

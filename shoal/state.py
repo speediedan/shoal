@@ -105,7 +105,7 @@ def clear_wait(sid: str, slug: str) -> bool:
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
 RESCAN_CAP_MIN = {"user-auth": 240, "user-design": 240, "user-feedback": 240,
                   "session-blocked": 240, "queue-empty": 360, "local-ci": 180, "remote-ci": 180,
-                  "upstream": 720}
+                  "research-proto": 240, "upstream": 720}
 
 
 def wait_discipline(spec) -> dict | None:
@@ -148,6 +148,9 @@ def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
 
 
 CI_SUBS = ("local-ci", "remote-ci")
+# waits on a run that a target resolves: CI, and research or prototyping runs (research-proto), which are counted
+# apart so research does not read as CI time or CI demand
+RUN_SUBS = CI_SUBS + ("research-proto",)
 
 
 def wait_targets(spec) -> bool:
@@ -167,7 +170,7 @@ def check_target(sub: str, target: str, slug: str, sid: str = "",
         if sub == "upstream":
             return "", [], ("an upstream wait needs a checkable target: --target gh-issue:<owner/repo>#<n> "
                             "(or gh-pr:, gh-run:) so the quorum wakes you when it resolves")
-        if require_ci and sub in CI_SUBS:
+        if require_ci and sub in RUN_SUBS:
             return "", [], (f"a {sub} wait needs a checkable target: --target job:<name> (a `job run` unit), "
                             f"lease:<key>, az-build:<id>, gh-run:<owner/repo>:<id> or gh-pr:<owner/repo>#<n>, "
                             f"so the role is woken when it ends")
@@ -175,11 +178,25 @@ def check_target(sub: str, target: str, slug: str, sid: str = "",
     canon, err = providers.normalize(target)
     if err:
         return target, [], f"wait target refused: {err}"
+    kind, _, name = canon.partition(":")
+    if kind == "job" and sid and sub in RUN_SUBS:
+        import jobs
+        jc = str(jobs.job_meta(sid, name, slug).get("class") or "")
+        if jc == "research" and sub in CI_SUBS:
+            return canon, [], (f"job {name} is a research run (--class research): wait on it as research-proto, "
+                               f"not {sub}, so research time is not counted as CI")
+        research_note = (f"job {name} runs as class ci: start research or prototyping runs with `job run --class "
+                         f"research` (inside a reservation when long), so they take no CI budget or CI queue slot"
+                         if jc == "ci" and sub == "research-proto" else "")
+    else:
+        research_note = ""
     pending, why = providers.resolve(canon, slug, sid, upstream=(sub == "upstream"))
     if pending is False:
         return canon, [], (f"wait target {canon} is already resolved ({why}): nothing is left to wait on. "
                            f"Take the next item (`queue --active <item>`) or name a target that is pending")
     notes = [f"target normalized to {canon}"] if canon != target else []
+    if research_note:
+        notes.append(research_note)
     if pending is None:
         notes.append(f"target {canon} cannot be checked now ({why}); the quorum will keep asking you to "
                      f"re-verify this wait")
@@ -206,7 +223,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
     sub, raw = a.sub or "", ""
     if a.to == "waiting":
         if not sub:
-            print("ERROR: waiting needs --sub <local-ci|remote-ci|user-auth|user-design|"
+            print("ERROR: waiting needs --sub <local-ci|remote-ci|research-proto|user-auth|user-design|"
                   "session-blocked|queue-empty>")
             return 1
         if sub not in VALID_SUB:

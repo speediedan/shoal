@@ -252,7 +252,7 @@ lease): a test still holds the host's leases, and takes them again after each re
   is already resolved. `next` flags a target that has since resolved or cannot be checked, and
   notes when next items are parked behind a wait that covers only the active item;
 - a `transition` that re-declares the current wait without `--target` keeps its target;
-- with `waittargets`, a `local-ci` or `remote-ci` wait needs a checkable target, and the role's
+- with `waittargets`, a `local-ci`, `remote-ci` or `research-proto` wait needs a checkable target, and the role's
   `ledger-watch` wakes it when a `job:` or `lease:` target resolves. The wake comes on the second
   tick that sees the target resolved, so a session's own waiter acts first. Measured 2026-10-01: a
   detached job waiter reached no session, and the role slept for an hour past its job's end;
@@ -386,6 +386,13 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   owning role and the user page path (`health.page_user`). It never kills the job. The planner uses the
   budget as a soft ceiling on a CI job's predicted end (within the budget the prediction ends by the
   budget plus the tail floor; past it the ordinary overrun tail applies). A `research` job has no budget.
+- **Research waits.** A role waiting on a research or prototyping run declares `research-proto`, not
+  `local-ci` or `remote-ci`. It is followed like a CI wait (a checkable target, the watcher's wake when a
+  `job:` or `lease:` target ends, validity wakes, a 240-minute rescan cap), but role time counts it as
+  `wait:research-proto` in its own `research` group, whatever it waits on (a lease included), so CI time
+  and CI efficiency leave it out. A CI wait on a `--class research` job is refused; a `research-proto`
+  wait on a `ci` job gets a note to run research as `--class research`. Like `remote-ci`, it does not
+  excuse parked next items.
 - **Research reservations** (`shoal/pool_reserve.py`). `shoal pool reserve [--host H] --resources
   gpu@<uuid>,...|gpus:N|cpu-heavy --for <shoal>/<role> --until <ISO|job:NAME> [--note]` takes the
   leases on H with the helper's background-holder mode (`--hold --pidfile`): one hold per device (a

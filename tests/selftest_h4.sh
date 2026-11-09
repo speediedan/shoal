@@ -2350,5 +2350,38 @@ echo "== 40 archive: reference-aware warm archive, restore and cold, one commit 
 python3 "$TESTD/test_archive.py" || fail "archive (tests/test_archive.py)"
 check "name the files to archive" $H archive
 
+echo "== 41 research-proto: research and prototyping waits are counted apart from CI"
+python3 - "$SHOALD" <<'PY2' || fail "research-proto"
+import json, os, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, os.path.join(sys.argv[1], "telemetry")); sys.path.insert(0, os.path.join(sys.argv[1], "ui"))
+import jobs, providers, role_time as rt, state, shoal_telemetry as tel, ui_status
+assert "research-proto" in tel.VALID_SUB and tel.ALIASES["research_proto"] == "research-proto"
+assert "research-proto" in state.RUN_SUBS and "research-proto" not in state.CI_SUBS
+assert rt.WAIT_GROUP["research-proto"] == "research" and "research-proto" in rt.POSTURE_WAITS
+assert "research-proto" in ui_status.CI_SUBS, "a research run is a working wait in the UI"
+# a research wait is research whatever it waits on, a lease included (a lease alone reads as a system wait)
+snap = {"t": 1000.0, "native": {"state": "between", "observed_at": 999.0, "budget_s": 60},
+        "ledger": {"observed_at": 999.0, "budget_s": 180, "state": "waiting", "sub": "research-proto",
+                   "target": "lease:gpu"}}
+assert rt.classify(snap, 1000.0)[:2] == ("wait", "research-proto"), rt.classify(snap, 1000.0)
+snap["ledger"]["sub"] = "local-ci"
+assert rt.classify(snap, 1000.0)[:2] == ("wait", "lease")
+# the job's class decides: a CI wait on a research job is refused; a research wait on a ci job gets a note
+sid = "h4selftest"
+sdir = jobs.paths(sid, "x")["sdir"]; os.makedirs(sdir, exist_ok=True)
+for name, cls in (("rp-sweep", "research"), ("rp-ci", "ci")):
+    json.dump({"name": name, "slug": "tl", "class": cls}, open(os.path.join(sdir, f"shoal-{sid}-tl-{name}.json"), "w"))
+providers.resolve = lambda *a, **k: (True, "running")
+_, _, refusal = state.check_target("local-ci", "job:rp-sweep", "tl", sid)
+assert "research run" in refusal and "research-proto" in refusal, refusal
+_, notes, refusal = state.check_target("research-proto", "job:rp-sweep", "tl", sid)
+assert not refusal and not notes, (refusal, notes)
+_, notes, refusal = state.check_target("research-proto", "job:rp-ci", "tl", sid)
+assert not refusal and any("--class research" in n for n in notes), notes
+_, _, refusal = state.check_target("research-proto", "", "tl", sid, require_ci=True)
+assert "needs a checkable target" in refusal, refusal
+print("research-proto ok")
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
