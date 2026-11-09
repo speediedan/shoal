@@ -99,6 +99,10 @@ def run(a) -> int:
     session_key = getattr(a, "session", "")
     expected = getattr(a, "expected_session", "")
     prepare = bool(getattr(a, "prepare", False))
+    if session_key:
+        prepare = not getattr(a, "no_prepare", False)
+        if a.force:
+            raise HandoffError("--force is for roles; a standalone handoff requires an idle session")
     if a.force and prepare:
         raise HandoffError("checkpoint-first handoff and --force cannot be combined")
     if not 1 <= a.wait_seconds <= 86400:
@@ -109,8 +113,6 @@ def run(a) -> int:
         doc = getattr(a, "doc", "") or entry.get("doc", "")
         eco = a.ecosystem or entry["harness"]
         label = entry.get("label") or old[:12]
-        if not prepare:
-            raise HandoffError("standalone handoff requires --prepare so its checkpoint is verified first")
     else:
         if not a.spec or not a.only:
             raise HandoffError("a role handoff needs --spec and --only")
@@ -123,8 +125,12 @@ def run(a) -> int:
         raise HandoffError("this seat has changed sessions since the preview: plan the handoff again")
     doc = os.path.abspath(os.path.expanduser(doc)) if doc else ""
     preflight(doc, eco)
+    if session_key and not prepare:
+        if not between(entry) or not startdoc.check(doc)["ok"] or startdoc.split_job_folders(doc)[0]:
+            raise HandoffError("using an existing checkpoint requires a valid start doc, no live job-folder references, and an idle source")
     if a.dry_run:
-        note(f"{label}: would request a restart-ready checkpoint if needed, wait up to {a.wait_seconds}s, "
+        step = f"request a restart-ready checkpoint if needed, wait up to {a.wait_seconds}s" if prepare else "validate its existing checkpoint and idle session"
+        note(f"{label}: would {step}, "
              f"then hand off to {eco} from {doc}. Closing the dialog does not cancel it")
         return 0
     # One workflow per seat, including callers outside the dialog.
@@ -139,7 +145,7 @@ def run(a) -> int:
             raise HandoffError("a handoff for this seat is already running; reopen its progress log") from exc
         deadline = time.monotonic() + a.wait_seconds
         if session_key:
-            return standalone_handoff(a, entry, doc, eco, deadline)
+            return standalone_handoff(a, entry, doc, eco, deadline, prepare=prepare)
         previous_queue, requested_at = "", None
         def ready():
             fresh = ShoalSpec.load(a.spec)
@@ -189,7 +195,7 @@ def run(a) -> int:
         return 0
 
 
-def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float) -> int:
+def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prepare: bool = True) -> int:
     import backends
     import park
     import startdoc
@@ -204,28 +210,33 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float) -> i
             raise HandoffError("the standalone seat changed sessions while waiting; no handoff performed")
         return current
     unchanged()
-    stamp = handover.now_iso()
-    before = fingerprint(doc)
-    note(f"1/3 Waiting for {label}'s current turn to finish before requesting its checkpoint")
-    wait_for(lambda: bool(unchanged()) and between(entry), "Waiting for the session or attached client", deadline)
-    text = (f"Operator-requested handoff: refresh your start doc {doc} and its companion log so a new session can "
-            "continue from them alone. Include current work, decisions, grants-needed and monitors. Update its "
-            "job-folder references: move required artifacts to durable paths and remove obsolete references. Set its "
-            f"`Last updated: <UTC>` stamp using seconds, at or after {stamp}, record that you are restart-ready, and finish this turn with nothing "
-            "mid-flight. The operator will perform the handoff; do not restart yourself.")
-    backend = backends.get(entry["harness"])
-    note(f"1/3 Asking {label} to write a fresh restart-ready checkpoint")
-    if entry["harness"] == "claude":
-        spec, role = handover._pseudo(entry)
-        channel = backend.deliver(spec, role, old, text)
-        if channel.startswith(("deferred", "FAILED", "no-adapter", "unsupported")):
-            raise HandoffError(f"checkpoint request was not delivered: {channel}")
+    if prepare:
+        stamp = handover.now_iso()
+        before = fingerprint(doc)
+        note(f"1/3 Waiting for {label}'s current turn to finish before requesting its checkpoint")
+        wait_for(lambda: bool(unchanged()) and between(entry), "Waiting for the session or attached client", deadline)
+        text = (f"Operator-requested handoff: refresh your start doc {doc} and its companion log so a new session can "
+                "continue from them alone. Include current work, decisions, grants-needed and monitors. Update its "
+                "job-folder references: move required artifacts to durable paths and remove obsolete references. Set its "
+                f"`Last updated: <UTC>` stamp using seconds, at or after {stamp}, record that you are restart-ready, and finish this turn with nothing "
+                "mid-flight. The operator will perform the handoff; do not restart yourself.")
+        backend = backends.get(entry["harness"])
+        note(f"1/3 Asking {label} to write a fresh restart-ready checkpoint")
+        if entry["harness"] == "claude":
+            spec, role = handover._pseudo(entry)
+            channel = backend.deliver(spec, role, old, text)
+            if channel.startswith(("deferred", "FAILED", "no-adapter", "unsupported")):
+                raise HandoffError(f"checkpoint request was not delivered: {channel}")
+        else:
+            backend.send(old, entry.get("cwd") or os.getcwd(), text, model=entry.get("model", ""))
+        def ready():
+            unchanged()
+            return startdoc.check(doc, startdoc.parse_ts(stamp))["ok"] and fingerprint(doc) != before and between(entry)
+        wait_for(ready, f"Waiting for {label}'s refreshed doc and completed checkpoint turn", deadline)
     else:
-        backend.send(old, entry.get("cwd") or os.getcwd(), text, model=entry.get("model", ""))
-    def ready():
-        unchanged()
-        return startdoc.check(doc, startdoc.parse_ts(stamp))["ok"] and fingerprint(doc) != before and between(entry)
-    wait_for(ready, f"Waiting for {label}'s refreshed doc and completed checkpoint turn", deadline)
+        if not between(entry) or not startdoc.check(doc)["ok"]:
+            raise HandoffError("using an existing checkpoint requires a valid start doc and an already idle session")
+        note(f"1/3 Using {label}'s existing validated checkpoint; the source session is idle")
     if startdoc.split_job_folders(doc)[0]:
         raise HandoffError("the checkpoint still depends on a live job folder; move those artifacts and retry")
     # Re-read just before retirement; retain the old registry entry on any launch failure.

@@ -145,7 +145,8 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             entry = handoff_flow.standalone_entry(a.session)
         except handoff_flow.HandoffError as exc:
             raise ActError(str(exc)) from exc
-        args = ["handoff", f"--session={a.session}", "--prepare", f"--expected-session={entry['session']}"]
+        prepare = not getattr(a, "no_prepare", False)
+        args = ["handoff", f"--session={a.session}", "--prepare" if prepare else "--no-prepare", f"--expected-session={entry['session']}"]
         for key in ("doc", "model", "effort", "ecosystem"):
             if getattr(a, key, ""):
                 args.append(f"--{key}={getattr(a, key)}")
@@ -155,7 +156,8 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             import ui_status
             if a.ecosystem not in ui_status.active_ecosystems():
                 raise ActError(f"{a.ecosystem} is set aside on this host: choose a provider in use")
-        return args, "requests a checkpoint turn, then starts a fresh session from its start doc; continues in the background", True
+        cost = "requests a checkpoint turn" if prepare else "uses the existing checkpoint, only if the source is already idle"
+        return args, cost + ", then starts a fresh session from its start doc; continues in the background", True
     spec = _spec(a.shoal)
     sid = spec.sid
     if verb == "msg":

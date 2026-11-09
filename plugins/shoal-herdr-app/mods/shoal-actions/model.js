@@ -94,7 +94,7 @@ export const FIELDS = {
   undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
-  prepare: { key: "prepare", kind: "toggle", label: "Request a restart-ready checkpoint first", hint: "waits for its checkpoint turn to finish, then hands off automatically" },
+  prepare: { key: "prepare", kind: "toggle", label: "Request a restart-ready checkpoint first", hint: "off: use an existing valid checkpoint; a standalone source must already be idle" },
   handoffDoc: { key: "doc", kind: "text", label: "Start doc", placeholder: "empty: the standalone seat's saved start doc" },
   slug: { key: "slug", kind: "text", label: "Role name", placeholder: "its slug: a-z, 0-9 and -", required: true },
   title: { key: "title", kind: "text", label: "Title", placeholder: "what the role is for", required: true },
@@ -176,7 +176,7 @@ export function visibleFields(form) {
   const info = verbInfo(form.verb);
   const starterOnly = new Set(["guidance", "nextSteps", "grants"]);
   return [...arr(info?.fields).filter((k) => (k !== "until" || form.values.state === "on") && (!starterOnly.has(k) || form.values.starter)
-    && (k !== "handoffDoc" || form.values.standalone) && (k !== "prepare" || !form.values.standalone)
+    && (k !== "handoffDoc" || form.values.standalone)
     && (k !== "force" || (!form.values.prepare && !form.values.standalone))), "dryRun"]
     .map((k) => FIELDS[k]);
 }
@@ -285,7 +285,7 @@ export function planArgv(verb, target, form = null) {
       if (text("model")) argv.push(`--model=${text("model")}`);
       if (text("effort")) argv.push(`--effort=${text("effort")}`);
       if (target.session && text("doc")) argv.push(`--doc=${text("doc")}`);
-      if (!target.session && !v.prepare) argv.push("--no-prepare");
+      if (!v.prepare) argv.push("--no-prepare");
       if (!target.session && !v.prepare && v.force) argv.push("--force");
     } else if (verb === "dismiss" && v.undo) {
       argv.push("--undo");

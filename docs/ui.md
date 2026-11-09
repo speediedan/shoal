@@ -773,6 +773,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   toggle defaults on. It waits up to one hour for the role's own new queue checkpoint and completed turn, then
   uses the ordinary unforced handoff gate. A saved standalone seat has Handoff too: its current session refreshes
   the start doc and finishes its turn before replacement. Supply its start-doc path when none is saved.
+  Turn off the checkpoint toggle to use an existing standalone checkpoint: its doc must validate, have no live
+  job-folder references, and the source must already be idle.
   With the same provider, recorded model and effort stay the same; changing provider uses that provider's defaults unless
   explicit values are entered. A stale preview cannot hand off a different session that took the seat meanwhile.
   The dialog streams progress; **Continue in background** closes it without cancelling the operation. Reopen

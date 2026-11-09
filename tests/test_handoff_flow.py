@@ -117,6 +117,10 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("--session=example-seat", argv)
         self.assertIn("--expected-session=old-session", argv)
         self.assertIn("--doc=" + str(self.doc), argv)
+        args.no_prepare = True
+        argv, _, _ = ui_actions.build("handoff", args)
+        self.assertIn("--no-prepare", argv)
+        self.assertNotIn("--prepare", argv)
 
     def test_failure_to_retire_prevents_replacement(self):
         source = types.SimpleNamespace(send=lambda *a, **k: self.write_doc("restart-ready"), create=unittest.mock.Mock())
@@ -124,6 +128,54 @@ class HandoffTests(unittest.TestCase):
              patch.object(park, "stop_session", return_value="STILL LIVE: old"), self.assertRaisesRegex(flow.HandoffError, "did not stop"):
             flow.standalone_handoff(self.args, self.entry, str(self.doc), "muse", time.monotonic() + 1)
         source.create.assert_not_called()
+
+    def test_existing_standalone_checkpoint_can_be_used_without_another_turn(self):
+        backend = types.SimpleNamespace(send=unittest.mock.Mock(), create=unittest.mock.Mock(return_value="new-session"))
+        with patch.object(flow, "between", return_value=True), patch.object(backends, "get", return_value=backend), \
+             patch.object(park, "stop_session", return_value="stopped"):
+            self.assertEqual(flow.standalone_handoff(self.args, self.entry, str(self.doc), "muse", time.monotonic() + 1, prepare=False), 0)
+        backend.send.assert_not_called()
+        backend.create.assert_called_once()
+
+    def test_existing_checkpoint_refuses_a_busy_source_without_requesting_or_stopping(self):
+        with patch.object(flow, "between", return_value=False), patch.object(backends, "get") as backend, \
+             patch.object(park, "stop_session") as stop, self.assertRaisesRegex(flow.HandoffError, "already idle"):
+            flow.standalone_handoff(self.args, self.entry, str(self.doc), "muse", time.monotonic() + 1, prepare=False)
+        stop.assert_not_called()
+        backend.assert_not_called()
+
+    def test_existing_checkpoint_preview_refuses_busy_invalid_or_job_dependent_state(self):
+        self.args.prepare, self.args.no_prepare, self.args.dry_run = False, True, True
+        for scenario in ("busy", "invalid", "job-folder"):
+            with self.subTest(scenario=scenario):
+                self.write_doc("existing checkpoint")
+                if scenario == "invalid":
+                    self.doc.write_text("# Missing checkpoint sections\n")
+                jobs = (["00112233"], []) if scenario == "job-folder" else ([], [])
+                with patch.object(flow, "preflight"), patch.object(flow, "between", return_value=scenario != "busy"), \
+                     patch("startdoc.split_job_folders", return_value=jobs), patch.object(backends, "get") as backend, \
+                     self.assertRaisesRegex(flow.HandoffError, "existing checkpoint requires"):
+                    flow.run(self.args)
+                backend.assert_not_called()
+
+    def test_opencode_creation_delivers_the_resume_brief_model_and_variant(self):
+        backend = backends.OpenChamberBackend()
+        created = subprocess.CompletedProcess([], 0, "created ses_new123", "")
+        sent = subprocess.CompletedProcess([], 0, "sent", "")
+        with patch.object(backends, "_run", return_value=created), patch.object(subprocess, "run", return_value=sent) as send:
+            self.assertEqual(backend.create("example-seat", str(self.root), brief="Resume from the start doc", model="example/model", effort="high"), "ses_new123")
+        argv = send.call_args.args[0]
+        self.assertEqual(argv[:3], ["openchamber", "session", "send"])
+        self.assertEqual(argv[argv.index("--prompt") + 1], "Resume from the start doc")
+        self.assertEqual(argv[argv.index("--model") + 1], "example/model")
+        self.assertEqual(argv[argv.index("--variant") + 1], "high")
+
+    def test_opencode_role_creation_without_a_brief_does_not_double_send(self):
+        backend = backends.OpenChamberBackend()
+        created = subprocess.CompletedProcess([], 0, "created ses_new123", "")
+        with patch.object(backends, "_run", return_value=created), patch.object(backend, "send") as send:
+            self.assertEqual(backend.create("core", str(self.root)), "ses_new123")
+        send.assert_not_called()
 
     def test_role_ready_requires_a_new_queue_and_finished_turn(self):
         role = types.SimpleNamespace(ecosystem="muse")

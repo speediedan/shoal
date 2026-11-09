@@ -446,7 +446,9 @@ test("standalone Handoff: checkpoint by default, a saved start doc, and a resuma
   const f = M.newForm("handoff", NOW, { standalone: true, doc: "/example/plan.md" });
   assert.equal(M.validate("handoff", target, f), null);
   assert.deepEqual(M.planArgv("handoff", target, f), ["ui", "act-plan", "handoff", "--session=example-seat", "--doc=/example/plan.md", "--json"]);
-  assert.ok(!M.visibleFields(f).some((x) => x.key === "force" || x.key === "prepare"));
+  assert.ok(!M.visibleFields(f).some((x) => x.key === "force"));
+  assert.ok(M.visibleFields(f).some((x) => x.key === "prepare"));
+  assert.ok(M.planArgv("handoff", target, M.setValue(f, "prepare", false)).includes("--no-prepare"));
   assert.deepEqual(M.applyArgv("token", true), ["ui", "act-apply", "--token", "token", "--json", "--background"]);
   assert.deepEqual(M.statusArgv(target), ["ui", "act-status", "--session=example-seat", "--json"]);
   assert.deepEqual(M.statusArgv(target, "run"), ["ui", "act-status", "--run", "run", "--json"]);

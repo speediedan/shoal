@@ -326,8 +326,8 @@ class OpenChamberBackend(Backend):
     def create(self, title: str, repo_dir: str, dry_run: bool = False,
                brief: str = "", name: str = "", model: str = "",
                effort: str = "") -> str:
-        # opencode create takes no model/effort flags (model rides on send);
-        # effort stays briefed per the agent-neutral design.
+        # The session is created empty; prompt, model and effort travel on send.
+        # Role startup sends separately, while a caller supplying a brief starts its first turn here.
         if dry_run:
             return "ses_DRYRUN_" + re.sub(r"\W+", "_", title)
         r = _run("openchamber", "session", "create", "--dir", repo_dir,
@@ -336,16 +336,21 @@ class OpenChamberBackend(Backend):
         if not m:
             raise RuntimeError(f"session create failed for {title!r}: "
                                f"{(r.stdout + r.stderr).strip()[-500:]}")
-        return m.group(0)
+        sid = m.group(0)
+        if brief:
+            self.send(sid, repo_dir, brief, model=model, effort=effort)
+        return sid
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
-             dry_run: bool = False, model: str = "") -> None:
+             dry_run: bool = False, model: str = "", effort: str = "") -> None:
         if dry_run:
             return
         argv = ["openchamber", "session", "send", "--session", session_id,
                 "--dir", repo_dir, "--prompt", prompt]
         if model:
             argv += ["--model", model]
+        if effort:
+            argv += ["--variant", effort]
         r = subprocess.run(argv, capture_output=True, text=True, timeout=60,
                            env=_ENV)
         if r.returncode != 0:

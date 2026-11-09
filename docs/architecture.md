@@ -1181,6 +1181,9 @@ session is recorded. Saved standalone seats use `handoff --session`: the current
 start doc and finishes its turn before retirement and creation of its replacement. The saved seat label,
 doc, viewer settings and space remain; provider-specific model defaults are not copied across providers.
 Preview binds the current session id, and a changed seat is refused. A missing checkpoint times out.
+A standalone seat can explicitly use `--no-prepare` when its checkpoint validates, has no live job-folder
+references and the source is already idle. `OpenChamberBackend.create` sends a supplied resume brief with
+the requested model and effort (`--variant`); role startup creates an empty session and sends separately.
 
 `ui_runs.py` owns confirmed background handoffs. `act-apply --background` consumes the one-use token and
 starts a detached worker; `act-status` returns the retained log and running or completed state. A worker
