@@ -12,6 +12,7 @@
 
 import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal } from "./model.js";
 import { motionPolicy, flowEdges } from "./motion.js";
+import { sphereShade, LIGHT } from "./sphere.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, annularSectorCmds,
   samplesBySpacing, pointAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp,
@@ -76,8 +77,8 @@ export function buildScene(vm, lay, opts) {
 
   // 1. canvas: near-black violet to navy, a cool wash, and a soft bloom behind the hub
   const rect = [["M", 0, 0], ["L", width, 0], ["L", width, height], ["L", 0, height], ["Z"]];
-  items.push({ t: "path", id: "bg", fill: true, cmds: rect, bg: { kind: "linear", angle: 165, from: P.bgTop, to: P.bgBottom } });
-  items.push({ t: "path", id: "bg-wash", fill: true, cmds: rect, bg: { kind: "linear", angle: 35, from: withAlpha(P.navy, 0.7), to: withAlpha(P.navy, 0) } });
+  items.push({ t: "path", id: "bg", fill: true, cmds: rect, bg: { kind: "linear", angle: 165, from: lay.cam ? "#29364b" : P.bgTop, to: lay.cam ? "#142333" : P.bgBottom } });
+  items.push({ t: "path", id: "bg-wash", fill: true, cmds: rect, bg: { kind: "linear", angle: 35, from: withAlpha(P.navy, lay.cam ? 0.18 : 0.7), to: withAlpha(P.navy, 0) } });
   const hub = vm.nodes.find((n) => n.kind === "user");
   const bloomAt = hub ? S(posOf(hub.id)) : { x: width / 2, y: height / 2 };
   const bloomR = Math.max(width, height) * 0.42;
@@ -114,20 +115,20 @@ export function buildScene(vm, lay, opts) {
       discs.push({ id: c.id, x: p.x, y: p.y, r, hole: r * 0.5 });
       const fog = c.fog ?? 1;
       if (c.sphere) {
-        // a sphere: a dark core, a lit cap toward the upper left, an equator and a rim; no slab
-        items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(mix(c.tint, "#000000", 0.35), 0.5 * fog)) });
-        // lit toward the upper left in stacked caps, each brighter and smaller: a shaded ball, not a disc
-        [[0.86, 0.09], [0.68, 0.11], [0.5, 0.13], [0.32, 0.16]].forEach(([f, a], i) => {
-          items.push({ t: "path", id: `sphere-lit-${c.id}-${i}`, fill: true, cmds: circleCmds(p.x - r * (1 - f) * 0.6, p.y - r * (1 - f) * 0.68, r * f),
-            bg: solid(withAlpha(mix(c.tint, "#ffffff", 0.2 + 0.12 * i), a * fog)) });
-        });
-        // the limb darkens toward the edge, and a small hot spot sits in the lit cap
-        items.push({ t: "path", id: `sphere-limb-${c.id}`, fill: false, width: Math.max(2, r * 0.12), cmds: circleCmds(p.x, p.y, r * 0.94),
-          bg: solid(withAlpha("#000000", 0.3 * fog)) });
-        items.push({ t: "path", id: `sphere-spec-${c.id}`, fill: true, cmds: circleCmds(p.x - r * 0.4, p.y - r * 0.46, r * 0.09), bg: solid(withAlpha("#ffffff", 0.45 * fog)) });
-        const eq = ellipseCmds(p.x, p.y, r, r * Math.cos(lay.cam?.pitch ?? 0.9));
-        items.push({ t: "path", id: `sphere-equator-${c.id}`, fill: false, width: 1, dash: [3, 5], cmds: eq, bg: solid(withAlpha(c.tint, 0.4 * fog)) });
-        items.push({ t: "path", id: `sphere-rim-${c.id}`, fill: false, width: 2, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(mix(c.tint, "#ffffff", 0.25), 0.75 * fog)) });
+        const shade = sphereShade(c.id, p.x, p.y, r, c.tint, 0.72 + 0.28 * fog);
+        items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(shade.dark) });
+        items.push(...shade.paths);
+        // Soft glancing reflection, rather than a single sharp white dot.
+        for (let i = 0; i < 12; i++) {
+          const sr = r * (0.17 - 0.012 * i);
+          items.push({ t: "path", id: `sphere-spec-${c.id}-${i}`, fill: true, cmds: ellipseCmds(p.x + r * LIGHT.x, p.y + r * LIGHT.y, sr, sr * 0.7), bg: solid(withAlpha("#ffffff", 0.035 * fog)) });
+        }
+        for (const front of [false, true]) {
+          const cmds = (c.globeGrid ?? []).filter((g) => g.front === front).flatMap((g) => g.points.map((q, i) => { const v = S(q); return [i ? "L" : "M", v.x, v.y]; }));
+          items.push({ t: "path", id: `sphere-grid-${c.id}-${front}`, fill: false, width: front ? 0.9 : 0.6, dash: front ? null : [2, 5], cmds, bg: solid(withAlpha(front ? "#e4edf4" : c.tint, (front ? 0.19 : 0.06) * fog)) });
+        }
+        items.push({ t: "path", id: `sphere-limb-${c.id}`, fill: false, width: 1.5, cmds: circleCmds(p.x, p.y, r * 0.993), bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.35 * fog), to: "#020814c0" } });
+        items.push({ t: "path", id: `sphere-rim-${c.id}`, fill: false, width: 0.7, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, 0.3 * fog)) });
       } else if (c.ry !== undefined) {
         // the slab's thickness: its near edge as a band between the top ellipse's lower half and the same one dropped
         const t = 11 * k * (c.s ?? 1);
@@ -360,13 +361,22 @@ export function buildScene(vm, lay, opts) {
       animated++;
     }
     const bodyColor = v.fill > 0 ? withAlpha(v.color, v.fill * op) : withAlpha(P.void, 0.6 * op);
+    const surface = lay.surfaceOf?.get(n.id);
+    if (surface?.facing > 0.18) {
+      for (let i = 3; i >= 1; i--) items.push({ t: "path", id: `contact-${n.id}-${i}`, fill: true,
+        cmds: ellipseCmds(p.x + r * 0.45, p.y + r * 0.65, r * (1 + i * 0.15), r * (0.7 + i * 0.1)),
+        bg: solid(withAlpha("#01040a", 0.13 * dim)) });
+    }
     if (v.shape === "circle") {
       const solidBorder = v.border === "solid" || (v.kind === "user");
+      if (surface && v.fill > 0) items.push({ t: "path", id: `role-shade-${n.id}`, fill: true,
+        cmds: circleCmds(p.x, p.y, r), bg: { kind: "linear", angle: 135,
+          from: withAlpha(mix(v.color, "#ffffff", 0.42), op), to: withAlpha(mix(v.color, "#030916", 0.68), op) } });
       items.push({
         t: "box", id: `body-${n.id}`, x: p.x - r, y: p.y - r, w: r * 2, h: r * 2, radius: r,
-        bg: bodyColor, border: solidBorder ? { w: v.borderWidth || 1.5, color: withAlpha(v.color, op) } : null, opacity: 1,
+        bg: surface && v.fill > 0 ? withAlpha(bodyColor, 0.15 * op) : bodyColor, border: solidBorder ? { w: v.borderWidth || 1.5, color: withAlpha(v.color, op) } : null, opacity: 1,
       });
-      if (v.fill >= 0.5 && n.kind === "role") {
+      if (v.fill >= 0.5 && n.kind === "role" && !surface) {
         const cr = r * 0.42;
         items.push({ t: "box", id: `core-${n.id}`, x: p.x - cr, y: p.y - cr - r * 0.12, w: cr * 2, h: cr * 2, radius: cr, bg: withAlpha(mix(v.color, "#ffffff", 0.55), 0.55 * op), opacity: 1 });
       }

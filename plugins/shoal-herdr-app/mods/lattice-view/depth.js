@@ -125,16 +125,23 @@ export function projectLayout(vm, lay, cam0) {
   const P = (p, zz) => project(cam, p, zz - mid);
   // global view: each shoal's roles on its sphere, by rank; a role keeps its satellites' offsets
   const placed = new Map(); // role id -> {x, y, z} in the world
-  const behind = new Map(); // role id -> how far round the back of its sphere it is (0 front, 1 far pole)
+  const behind = new Map(); // recomputed from the turned camera, not from the role's rank
+  const surfaceOf = new Map();
   if (vm.global) {
     const planeZ0 = new Map(planes.map((p) => [p.id, p.z]));
     for (const c of lay.clusters ?? []) {
       const roles = vm.nodes.filter((n) => n.kind === "role" && n.shoal === c.id && lay.pos.has(n.id)).sort(byRank);
       const R = c.r * SPHERE_R;
+      const center = P(c, planeZ0.get(c.id) ?? 0);
       roles.forEach((n, i) => {
-        const u = spherePoint(cam, i, roles.length);
-        placed.set(n.id, { x: c.x + R * u.x, y: c.y + R * u.y, z: (planeZ0.get(c.id) ?? 0) + R * u.z });
-        behind.set(n.id, (2 * CAP * i) / Math.max(1, roles.length) / 2);
+        // Anchor coordinates to the preset, so turning the camera actually reveals the globe's other side.
+        const u = spherePoint(camera(cam.name), i, roles.length);
+        placed.set(n.id, { x: c.x + R * u.x, y: c.y + R * u.y, z: (planeZ0.get(c.id) ?? 0) + R * u.z,
+          screen: { x: center.x + R * center.f * (u.x * cam.cyaw - u.y * cam.syaw),
+            y: center.y + R * center.f * ((u.x * cam.syaw + u.y * cam.cyaw) * cam.c - u.z * cam.s) } });
+        const facing = (u.x * cam.syaw + u.y * cam.cyaw) * cam.s + u.z * cam.c;
+        behind.set(n.id, (1 - facing) / 2);
+        surfaceOf.set(n.id, { shoal: c.id, facing });
       });
     }
   }
@@ -142,7 +149,7 @@ export function projectLayout(vm, lay, cam0) {
   for (const [id, p] of lay.pos) {
     const w = placed.get(id);
     const q = w ? P(w, w.z) : P(p, z(id));
-    pos.set(id, { x: q.x, y: q.y });
+    pos.set(id, w?.screen ?? { x: q.x, y: q.y });
     depth.set(id, q.depth);
     // on a sphere, the front grows and the back shrinks, beyond what perspective alone does
     scaleOf.set(id, q.f * (behind.has(id) ? 1.28 - 0.62 * behind.get(id) : 1));
@@ -154,7 +161,11 @@ export function projectLayout(vm, lay, cam0) {
     * (behind.has(id) ? 1 - 0.7 * Math.max(0, behind.get(id) - 0.35) / 0.65 : 1)]));
   const sats = (lay.sats ?? []).map((s) => {
     const w = placed.get(s.owner), p0 = lay.pos.get(s.owner);
-    const at = (x, y) => (w && p0 ? P({ x: w.x + x - p0.x, y: w.y + y - p0.y }, w.z) : P({ x, y }, z(s.owner)));
+    const at = (x, y) => {
+      if (!w || !p0) return P({ x, y }, z(s.owner));
+      const anchor = P(w, w.z), q = P({ x: w.x + x - p0.x, y: w.y + y - p0.y }, w.z);
+      return { x: w.screen.x + q.x - anchor.x, y: w.screen.y + q.y - anchor.y };
+    };
     const a = at(s.x, s.y), b = at(s.ax, s.ay);
     return { ...s, x: a.x, y: a.y, ax: b.x, ay: b.y };
   });
@@ -163,7 +174,31 @@ export function projectLayout(vm, lay, cam0) {
     const zc = vm.global ? planeZ.get(c.id) ?? 0 : 0;
     const q = P(c, zc);
     // global: a sphere (its outline a circle at any tilt); per shoal the cluster is only the hit area
-    return { ...c, x: q.x, y: q.y, r: c.r * (vm.global ? SPHERE_R : 1) * q.f, ry: vm.global ? 1 : cam.c, sphere: vm.global, s: q.f, depth: q.depth, zw: zc };
+    const globeGrid = [];
+    if (vm.global) {
+      const R = c.r * SPHERE_R;
+      const line = (at) => {
+        let points = [], front = null;
+        for (let j = 0; j <= 96; j++) {
+          const u = at(2 * Math.PI * j / 96);
+          const near = (u.x * cam.syaw + u.y * cam.cyaw) * cam.s + u.z * cam.c >= 0;
+          const v = { x: q.x + R * q.f * (u.x * cam.cyaw - u.y * cam.syaw),
+            y: q.y + R * q.f * ((u.x * cam.syaw + u.y * cam.cyaw) * cam.c - u.z * cam.s) };
+          if (front !== null && near !== front) {
+            globeGrid.push({ front, points: [...points, v] });
+            points = [v];
+          }
+          points.push(v); front = near;
+        }
+        if (points.length > 1) globeGrid.push({ front, points });
+      };
+      for (const lat of [-Math.PI / 6, 0, Math.PI / 6]) line((a) => ({ x: Math.cos(lat) * Math.cos(a), y: Math.cos(lat) * Math.sin(a), z: Math.sin(lat) }));
+      for (let i = 0; i < 3; i++) {
+        const a = i * Math.PI / 3;
+        line((b) => ({ x: Math.cos(b) * Math.cos(a), y: Math.cos(b) * Math.sin(a), z: Math.sin(b) }));
+      }
+    }
+    return { ...c, x: q.x, y: q.y, r: c.r * (vm.global ? SPHERE_R : 1) * q.f, ry: vm.global ? 1 : cam.c, sphere: vm.global, globeGrid, s: q.f, depth: q.depth, zw: zc };
   }).sort((a, b) => a.depth - b.depth);
   const regionFog = (xs) => {
     const lo = Math.min(...xs.map((x) => x.depth)), hi = Math.max(...xs.map((x) => x.depth));
@@ -207,7 +242,7 @@ export function projectLayout(vm, lay, cam0) {
   else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
   for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, order, planes, grid, stems };
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems };
 }
 
 /** The next preset in the cycle. */

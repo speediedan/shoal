@@ -58,7 +58,8 @@ you, per-shoal throughput and per-host load.
   operator and outside seats on a plane above, so traffic between planes visibly crosses them. A floor grid lies below,
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor, with a
   shadow there; far things are smaller and fade, near ones larger and drawn last. In the global view each shoal is a
-  sphere, and where a role sits on it says how much it matters now: the point facing you holds what needs you most
+  sphere with 128 directional light contours, a soft highlight and curved surface grid lines against a brighter
+  background. Front roles cast contact shadows. Where a role sits on it says how much it matters now: the initial point facing you holds what needs you most
   (auth, then a question, a prompt, a design call, an empty queue, a stalled session), then the roles spiral back by what
   they are doing (a turn, their own job, a hand-over, waiting on others, idle with work queued, idle), then by how fresh
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
