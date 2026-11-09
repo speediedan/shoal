@@ -658,8 +658,23 @@ def cmd_remove_session(a) -> int:
 
 
 def cmd_handoff(a) -> int:
+    if getattr(a, "prepare", False) or getattr(a, "session", ""):
+        import handoff_flow
+        try:
+            return handoff_flow.run(a)
+        except (handoff_flow.HandoffError, OSError, RuntimeError) as exc:
+            print(f"REFUSED: {exc}", flush=True)
+            return 1
     from roles import ShoalSpec
-    return handoff(ShoalSpec.load(a.spec), a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort)
+    if not a.spec or not a.only:
+        print("handoff: a role needs --spec and --only (a standalone seat takes --session and --prepare)")
+        return 2
+    spec = ShoalSpec.load(a.spec)
+    expected = getattr(a, "expected_session", "")
+    if expected and (spec.role(a.only) is None or spec.role(a.only).session != expected):
+        print("REFUSED: this role changed sessions since the preview: plan the handoff again")
+        return 1
+    return handoff(spec, a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort)
 
 
 def add_parser(sub) -> None:
@@ -683,9 +698,17 @@ def add_parser(sub) -> None:
     p.add_argument("--force", action="store_true", help="even when it is live or a worktree hangs off it")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_remove_session)
-    p = sub.add_parser("handoff", help="hand a role to a fresh session from its start doc, optionally on another model or provider")
-    p.add_argument("--spec", required=True)
-    p.add_argument("--only", required=True, help="one slug")
+    p = sub.add_parser("handoff", help="hand a role or saved standalone seat to a fresh session from its start doc")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--spec")
+    target.add_argument("--session", default="", help="a saved standalone seat on this host (checkpoint first by default)")
+    p.add_argument("--only", default="", help="one role slug, with --spec")
+    checkpoint = p.add_mutually_exclusive_group()
+    checkpoint.add_argument("--prepare", action="store_true", help="request a checkpoint if needed, wait until restart-ready, then hand off")
+    checkpoint.add_argument("--no-prepare", action="store_true", help="standalone: use its existing valid checkpoint, only while idle")
+    p.add_argument("--wait-seconds", type=int, default=3600, help="checkpoint deadline with --prepare (default 3600)")
+    p.add_argument("--expected-session", default="", help="refuse if the seat changed sessions since the preview")
+    p.add_argument("--doc", default="", help="standalone: its start doc (default: the saved one)")
     p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
     p.add_argument("--effort", default="", help="the new session's effort (default: the recorded one; on another provider, its default)")
     p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one)")

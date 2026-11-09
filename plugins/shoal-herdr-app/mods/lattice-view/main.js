@@ -858,9 +858,10 @@ export default class Lattice extends View {
     const LINE = 20, EXTRA = 28;
     const hideBtn = pinned && c.hideable === true;
     const removeSpec = hideBtn ? removeOverlay(this.vm, id, this.source) : null;
+    const handoffSpec = pinned && this.vm.byId.get(id)?.kind === "external" ? actionsOverlay(this.vm, id, this.source) : null;
     const boards = c.boards ?? [];
     const longTitle = fitText(c.title, textW - 96, 12) !== c.title; // it wraps onto a second line
-    const fixed = 1 + (longTitle ? 1 : 0) + boards.length * 3 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0) + (removeSpec ? 1 : 0);
+    const fixed = 1 + (longTitle ? 1 : 0) + boards.length * 3 + c.rows.length + c.list.length + (c.command ? 1 : 0) + (hideBtn ? 1 : 0) + (removeSpec ? 1 : 0) + (handoffSpec ? 1 : 0);
     const room = Math.floor((size.height - 16 - EXTRA) / LINE) - fixed;
     const links = c.links.length > room ? c.links.slice(0, Math.max(0, room - 1)) : c.links;
     const more = c.links.length - links.length;
@@ -904,6 +905,12 @@ export default class Lattice extends View {
       card.child(div().id("card-cmd").mt(2).px(6).py(2).rounded(4).bg(withAlpha(P.steel1, 0.35)).text_color(P.steel2)
         .when(pinned, (el) => el.cursor_pointer().on_click((_e, cx) => cx.write_to_clipboard(c.command)).tooltip(short === cmd ? "copy" : `copy: ${c.command}`))
         .child(short));
+    }
+    if (handoffSpec) {
+      card.child(div().id("card-handoff").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.teal, 0.18)).text_color(P.ink)
+        .tooltip("checkpoint and hand off this saved standalone seat")
+        .on_click(() => openOverlay({ ...handoffSpec, props: { ...handoffSpec.props, verb: "handoff" } }))
+        .child("Handoff..."));
     }
     if (removeSpec) {
       card.child(div().id("card-remove").mt(2).px(6).py(2).rounded(4).cursor_pointer().bg(withAlpha(P.red, 0.18)).text_color(P.ink)

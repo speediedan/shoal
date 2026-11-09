@@ -9,7 +9,7 @@ the CLI's dry-run preview and wake cost, and confirm. It replaces herdr 0.9.3's 
   or `on this computer`), a refresh glyph and `Esc`. Below, a row of shoal chips (tag, needs-you
   count) and a row of role chips; a role or shoal that needs you carries a dot in the theme's
   `blocked` color. `* everyone` shows for Message only; for shoal-wide verbs the role chips dim.
-- **Verb buttons:** Message, Offer, Withdraw, Next, Queue, Asks, Offline, Freeze, Hand off, Fill,
+- **Verb buttons:** Message, Offer, Withdraw, Next, Queue, Asks, Offline, Freeze, Handoff, Fill,
   Dismiss, Remove, New role, Add session, Status, Conditions, Upgrade preview (wrapping; the chosen
   one in the accent color).
 - **Queue** (a role): its active item pinned, then its next items, each with ↑ ↓, Move, Blocked and
@@ -50,6 +50,10 @@ the CLI's dry-run preview and wake cost, and confirm. It replaces herdr 0.9.3's 
   every kind.
 
 ## Watch out
+
+- Handoff requests a restart-ready checkpoint by default and runs in a detached worker after confirmation.
+  Its streamed log can be reopened on the same target after closing the dialog. Saved standalone seats expose
+  Handoff too; their start doc must be refreshed and their checkpoint turn finished before replacement.
 
 - Free text goes as `--opt=value`, so a message starting with a dash stays a value.
 - The token is never rendered or logged and is used once.

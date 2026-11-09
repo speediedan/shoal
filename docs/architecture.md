@@ -1180,6 +1180,23 @@ stores the argv under a one-time token (0600, runtime dir, ten minutes); apply r
 and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own.
 Read-only views (`next`, `status`, `conditions`, `asks`, `queue`, `upgrade`, `roles`) store nothing.
 
+The Actions dialog's **Handoff** defaults to `handoff --prepare`. `handoff_flow.py` requests a role's own
+restart-ready queue checkpoint through a woken ledger message, waits for a new checkpoint and a quiet
+session, then calls the ordinary unforced handoff gate. It follows the restart log until a replacement
+session is recorded. Saved standalone seats use `handoff --session`: the current session refreshes its
+start doc and finishes its turn before retirement and creation of its replacement. The saved seat label,
+doc, viewer settings and space remain; provider-specific model defaults are not copied across providers.
+Preview binds the current session id, and a changed seat is refused. A missing checkpoint times out.
+A standalone seat can explicitly use `--no-prepare` when its checkpoint validates, has no live job-folder
+references and the source is already idle. `OpenChamberBackend.create` sends a supplied resume brief with
+the requested model and effort (`--variant`); role startup creates an empty session and sends separately.
+
+`ui_runs.py` owns confirmed background handoffs. `act-apply --background` consumes the one-use token and
+starts a detached worker; `act-status` returns the retained log and running or completed state. A worker
+that disappears is reported as failed. Reopening Handoff on the same target reconnects to its latest run;
+closing the dialog does not cancel it. The reply parser preserves progress paths for both background
+handoffs and ordinary streamed actions. All lifecycle changes remain CLI verbs behind preview and confirm.
+
 `shoal/ui/ui_queue.py` (`ui queue`, and `act-plan queue` and `queue-set`) is the queue manager's read side and batch. The read
 is one role's queue from its latest queue version (active, next, recorded blockers) and its candidates, each with a source:
 `offer`, `held` (a claim its queue omits), `board`, `released` (another role gave it up lately) or `other` (another role holds

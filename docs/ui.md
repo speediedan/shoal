@@ -290,7 +290,7 @@ list; an empty `usage_providers` setting disables background collection. A subsc
 its first use in a window (Muse, `idle`) keeps showing its next weekly reset: the last one a reading reported, rolled
 forward by whole weeks, shown at 0% and "unused since its last reset" (until it has been used once, there is none to
 show). `shoal ui set ecosystems claude,codex,opencode` names the agent ecosystems in use on a host (default all four):
-one set aside drops out of Add session's discovery and New role's and Hand off's providers at once, and out of usage
+one set aside drops out of Add session's discovery and New role's and Handoff's providers at once, and out of usage
 (overview and status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
 and `ui set` names those roles, until they are handed off to an ecosystem in use.
 
@@ -605,6 +605,8 @@ shoal ui app-sync                                  # roles tabs follow the roles
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
 shoal ui act-apply --token T [--json]              # run a planned action once
+shoal ui act-apply --token T --background --json   # detach a confirmed Handoff
+shoal ui act-status --run RUN --json              # follow its retained progress log
 shoal ui queue --shoal ID --role R [--json]        # one role's queue and its candidates (read-only)
 ```
 
@@ -766,11 +768,24 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   the cards wrap at its size.
 - **Actions.** Ctrl+Alt+S (set by `app-install` when free) opens the `shoal-actions` dialog, as does a
   right-click in the lattice: on a role, on a shoal's circle (that shoal), or anywhere else (every shoal), or on a machine
-  in Spaces (its shoals). Hand off restarts a role in place from its start doc (`shoal handoff`), optionally on another
-  provider or model, on the role's own host, and refuses a role that has not said it is restart-ready unless forced.
+  in Spaces (its shoals). **Handoff** first requests a restart-ready checkpoint if needed, then hands the role
+  to a fresh session from its start doc, optionally on another provider or model, on its own host. The checkpoint
+  toggle defaults on. It waits up to one hour for the role's own new queue checkpoint and completed turn, then
+  uses the ordinary unforced handoff gate. A saved standalone seat has Handoff too: its current session refreshes
+  the start doc and finishes its turn before replacement. Supply its start-doc path when none is saved.
+  Turn off the checkpoint toggle to use an existing standalone checkpoint: its doc must validate, have no live
+  job-folder references, and the source must already be idle.
+  With the same provider, recorded model and effort stay the same; changing provider uses that provider's defaults unless
+  explicit values are entered. A stale preview cannot hand off a different session that took the seat meanwhile.
+  The dialog streams progress; **Continue in background** closes it without cancelling the operation. Reopen
+  Handoff on the same target to reconnect, including after completion. A failed checkpoint or disappeared worker
+  is reported in the retained log. Role handoffs follow the restart log until the new session is recorded.
+  Detach a held native client before Handoff so the checkpoint can run and the source session can be retired.
   Remove takes a role out for good (`shoal remove-role`): it stops the session and watchers, removes the role from the shoal and its
   incarnations from the harness's list, and keeps its ledger history. A pinned card on a parked role or an outside writer offers
-  Remove (for a writer, `shoal remove-session` on the saved standalone session of that name) and Hide, which only takes it off the picture. It does what the 0.9.3 palette did, with buttons, through two verbs:
+  Handoff for a saved standalone seat, Remove (for a writer, `shoal remove-session` on the saved standalone session
+  of that name) and Hide, which only takes it off the picture. Handoff opens its checkpoint-first Actions flow.
+  It does what the 0.9.3 palette did, with buttons, through two verbs:
 
   ```bash
   shoal ui act-plan VERB --shoal ID [--role SLUG] [--text T] [--item I] [--note N] [--wake]

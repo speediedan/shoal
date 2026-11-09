@@ -647,7 +647,7 @@ test("shared focus: a node id or {node, shoal, t}; persisted and stale requests 
   assert.equal(M.FOCUS_KEY, "lattice.focus");
 });
 
-test("right-click opens shoal-actions on a role (machine from source.on) or a shoal, nothing else", () => {
+test("actions open on roles, shoals and saved standalone seats, on the feed's machine", () => {
   const exec = { kind: "exec", argv: ["shoal", "ui", "graph", "--json"], on: "lane-a" };
   const o = M.actionsOverlay(alpha, `${A}:core`, exec);
   assert.deepEqual(o, { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: A, role: "core", machine: "lane-a" } });
@@ -664,7 +664,13 @@ test("right-click opens shoal-actions on a role (machine from source.on) or a sh
   assert.equal(M.scopeOverlay(null, A, exec), null);
   // the hub, an external writer, a missing id or no model: no role to act on
   assert.equal(M.actionsOverlay(global, "user", exec), null);
-  for (const nd of global.nodes.filter((x) => x.kind !== "role")) assert.equal(M.actionsOverlay(global, nd.id, exec), null, nd.id);
+  for (const nd of global.nodes.filter((x) => x.kind !== "role")) {
+    const overlay = M.actionsOverlay(global, nd.id, exec);
+    if (nd.kind === "external" && nd.saved && !nd.alias_of) {
+      assert.equal(overlay.props.session, nd.seat ?? nd.label);
+      assert.equal(overlay.props.machine, "lane-a");
+    } else assert.equal(overlay, null, nd.id);
+  }
   assert.equal(M.actionsOverlay(alpha, null, exec), null);
   assert.equal(M.actionsOverlay(alpha, "nope", exec), null);
   assert.equal(M.actionsOverlay(null, `${A}:core`, exec), null);
@@ -1171,4 +1177,5 @@ test("2026-11-08: a renamed standalone seat's Remove uses its saved label", () =
   d.nodes.push({ id: "ext:old-label", kind: "external", label: "new-name", seat: "old-label", saved: true, alias_of: null, state: { class: "unknown" } });
   const vm = M.buildModel(d, "global");
   assert.equal(M.removeOverlay(vm, "ext:old-label").props.session, "old-label");
+  assert.equal(M.actionsOverlay(vm, "ext:old-label").props.session, "old-label", "Handoff uses the same saved seat identity");
 });
