@@ -13,6 +13,7 @@ const G = await import(join(MOD, "geom.js"));
 const R = await import(join(MOD, "replay.js"));
 const D = await import(join(MOD, "depth.js"));
 const S = await import(join(MOD, "scene.js"));
+const SP = await import(join(MOD, "sphere.js"));
 const doc = JSON.parse(readFileSync(join(MOD, "fixtures", "graph-v1.json"), "utf8"));
 
 const A = "alpha-20261101-000000";
@@ -1128,6 +1129,41 @@ test("2026-11-08: spheres that pop (a limb, a hot spot), front larger than back"
   const ranked = global.nodes.filter((n) => n.kind === "role" && n.shoal === A)
     .sort((a, b) => { const x = D.sphereRank(a), y = D.sphereRank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || (a.id < b.id ? -1 : 1); });
   assert.ok(pl.scaleOf.get(ranked[0].id) > pl.scaleOf.get(ranked.at(-1).id) * 1.2, "the front of a sphere is clearly larger than its back");
+});
+
+test("globe lighting follows surface normals and stays inside the silhouette", () => {
+  assert.ok(Math.abs(SP.lightAt(SP.LIGHT.x, SP.LIGHT.y) - 1) < 1e-9);
+  assert.ok(SP.lightAt(0.7, 0.7) < 0, "the lower right is in shadow");
+  const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
+  assert.ok(shade.paths.length >= 40 && shade.paths.length <= 128, "smooth shading with a bounded path budget");
+  for (let i = 0; i < shade.paths.length; i++) {
+    for (const cmd of shade.paths[i].cmds) {
+      if (cmd.length < 3) continue;
+      const [, x, y] = cmd, radius = Math.hypot(x, y);
+      assert.ok(radius <= 1 + 1e-8, "light never spills beyond the globe");
+      assert.ok(SP.lightAt(x, y) >= i / shade.paths.length - 1e-5, "contours respect the light level");
+    }
+  }
+});
+
+test("turning a globe reveals other roles without detaching them or their grid", () => {
+  const base = L.layoutGraph(global);
+  const a = D.projectLayout(global, base, D.camera("iso"));
+  const b = D.projectLayout(global, base, D.camera("iso", Math.PI / 3));
+  const first = [...a.surfaceOf.keys()][0];
+  assert.ok(Math.hypot(a.pos.get(first).x - b.pos.get(first).x, a.pos.get(first).y - b.pos.get(first).y) > 1);
+  assert.notEqual(a.surfaceOf.get(first).facing, b.surfaceOf.get(first).facing, "the facing changes with the camera");
+  for (const lay of [a, b]) for (const c of lay.clusters) {
+    for (const [id, surface] of lay.surfaceOf) if (surface.shoal === c.id) {
+      const p = lay.pos.get(id);
+      assert.ok(Math.hypot(p.x - c.x, p.y - c.y) <= c.r + 1e-8, "roles remain on the globe");
+    }
+    for (const g of c.globeGrid) for (const p of g.points)
+      assert.ok(Math.hypot(p.x - c.x, p.y - c.y) <= c.r + 1e-8, "the grid shares the silhouette");
+  }
+  const sc = S.buildScene(global, a, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  assert.ok(sc.items.some((x) => x.id.startsWith("contact-")), "front roles cast contact shadows");
+  assert.equal(sc.animated, 0, "depth cues do not introduce animation at off");
 });
 
 test("2026-11-08: a renamed standalone seat's Remove uses its saved label", () => {

@@ -878,6 +878,12 @@ component off.
 
 ## 12. Operator UI
 
+In the lattice's global depth view, `sphere.js` caches directional light contours on a unit hemisphere.
+The scene draws 128 contour levels, a soft reflection, curved surface grid lines and role contact shadows
+against a brighter depth-only background. Role coordinates stay anchored to their globe when yaw changes;
+their size and fading follow the camera-facing normal. The local globe projection keeps the surface grid
+and role centers within the same circular silhouette. The SVG preview accepts `--depth` and `--yaw`.
+
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
 freshness, and warning thresholds. The UI status contract adds `usage`; overview

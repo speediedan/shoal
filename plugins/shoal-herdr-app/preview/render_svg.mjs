@@ -3,7 +3,8 @@
 // fixture by default), so colors, layers and shapes match the mod; motion shows as one frame.
 //
 //   node plugins/shoal-herdr-app/preview/render_svg.mjs [--doc graph.json] [--view global|<shoal>]
-//        [--pin <node id>] [--legend] [--motion full|balanced|low|off] [--width 1400] [--height 860] [--out lattice.svg]
+//        [--pin <node id>] [--legend] [--depth flat|tilt|iso] [--yaw degrees]
+//        [--motion full|balanced|low|off] [--width 1400] [--height 860] [--out lattice.svg]
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,6 +17,7 @@ const M = await import(join(MOD, "model.js"));
 const L = await import(join(MOD, "layout.js"));
 const G = await import(join(MOD, "geom.js"));
 const S = await import(join(MOD, "scene.js"));
+const D = await import(join(MOD, "depth.js"));
 
 const args = process.argv.slice(2);
 const opt = (name, d) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : d; };
@@ -25,7 +27,7 @@ const H = Number(opt("height", 860));
 const RAIL = 272;
 const doc = JSON.parse(readFileSync(opt("doc", join(MOD, "fixtures", "graph-v1.json")), "utf8"));
 const vm = M.buildModel(doc, opt("view", "global"));
-const lay = L.layoutGraph(vm);
+const lay = D.projectLayout(vm, L.layoutGraph(vm), D.camera(opt("depth", "flat"), Number(opt("yaw", 0)) * Math.PI / 180));
 const CW = W - RAIL;
 // the same fit as the mod's `f`: every node, label and ring inside the canvas
 const tf = S.fitScene(vm, lay, { width: CW, height: H }, { pad: 24, top: 48, kMax: 1.6 });
@@ -144,9 +146,9 @@ line("SHOALS", 9.5, P.steel2, "semibold");
 for (const s of vm.shoalsInView) {
   rail.push(`<rect x="${CW + 12}" y="${ry - 4}" width="${RAIL - 24}" height="70" rx="6" fill="${G.withAlpha(s.tint, 0.06)}" stroke="${G.withAlpha(s.tint, 0.22)}"/>`);
   rail.push(`<circle cx="${CW + 26}" cy="${ry + 8}" r="4" fill="${s.urgentColor}"/>`);
-  rail.push(text(CW + 36, ry + 1, 120, 14, `${s.short}  ${s.gen}`, 10.5, s.tint, "left", "semibold"));
+  rail.push(text(CW + 36, ry + 1, 120, 14, s.short, 10.5, s.tint, "left", "semibold"));
   if (s.needsYou) rail.push(`<rect x="${CW + RAIL - 40}" y="${ry + 1}" width="16" height="14" rx="7" fill="${P.magenta}"/>` + text(CW + RAIL - 40, ry + 1, 16, 14, s.needsYou, 9.5, "#0b0b10", "center", "bold"));
-  rail.push(text(CW + 22, ry + 20, 230, 13, `done ${s.done24}/24h ${s.done7}/7d   ${s.msgsPerH} msg/h`, 10, P.dim));
+  rail.push(text(CW + 22, ry + 20, 230, 13, `done ${s.done24}/24h ${s.done7}/7d   ${s.msgs24} msg/24h`, 10, P.dim));
   rail.push(`<rect x="${CW + 22}" y="${ry + 42}" width="80" height="4" rx="2" fill="${G.withAlpha(P.steel1, 0.6)}"/><rect x="${CW + 22}" y="${ry + 42}" width="${Math.round(80 * (s.workShare ?? 0))}" height="4" rx="2" fill="${P.teal}"/>`);
   rail.push(text(CW + 110, ry + 37, 120, 13, s.workShare == null ? "work share n/a" : `work ${Math.round(s.workShare * 100)}%`, 10, P.dim));
   ry += 80;
