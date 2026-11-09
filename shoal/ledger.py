@@ -510,6 +510,12 @@ class Perms:
 
 # ---- projection --------------------------------------------------------------
 
+def _settle(t: dict, release: dict) -> None:
+    """A pending transfer answered by its holder's release: done when it handed the item to the target, else failed."""
+    ok = release.get("kind") == "handoff" and release.get("to") == t["to"]
+    t.update(status="done" if ok else "failed", release=release)
+
+
 class View:
     """Fold the ledger into queue posture. Invalid events (permission
     violations) are collected in `violations` and otherwise ignored."""
@@ -533,6 +539,7 @@ class View:
         self.violations: list[tuple[dict, str]] = []
         self.contested: dict[str, list[dict]] = {}
         self.dismissals: dict[str, dict] = {}     # slug -> latest needs-dismissed or needs-restored event
+        self._transfers: list[dict] = []          # `shoal transfer` records, each with its status (transfers())
         self._fold()
 
     def _viol(self, e: dict, why: str) -> None:
@@ -561,11 +568,11 @@ class View:
                 self.by_item.setdefault(key, []).append(e)
             elif typ == "withdraw":
                 key = item_key(e.get("item", ""))
-                targets = [o for o in self.by_item.get(key, []) if o["status"] == "open"
+                targets = [o for o in self.by_item.get(key, []) if o["status"] in ("open", "claimed")
                            and (not e.get("to") or o["to"] == e.get("to"))
                            and (not e.get("re") or o["id"] == e.get("re"))]
                 if not targets:
-                    self._viol(e, "withdraw with no open offer")
+                    self._viol(e, "withdraw with no open or claimed offer")
                     continue
                 for o in targets:
                     if not self.perms.may_withdraw(by, o):
@@ -607,6 +614,9 @@ class View:
                     c["_live"] = False
                     c["released"] = e
                 self.releases.append(e)
+                for t in self._transfers:  # the holder's answer to a `shoal transfer` of this item
+                    if t["status"] == "pending" and t["item"] == key and t["from"] == by:
+                        _settle(t, e)
                 if e.get("kind") == "handoff" and e.get("to") and mine:
                     # the holder hands ITS OWN claim to a named role: an implicit offer, so the
                     # recipient can claim it (and is woken if idle); no peer write to a queue
@@ -625,6 +635,9 @@ class View:
             elif typ == "done":
                 key = item_key(e.get("item", ""))
                 self.done[key] = e
+                for t in self._transfers:
+                    if t["status"] == "pending" and t["item"] == key:
+                        t.update(status="superseded", by_event=e["id"])
                 for c in self.claims.get(key, []):
                     if c.get("_live"):
                         c["_live"] = False
@@ -651,6 +664,25 @@ class View:
                     self._viol(e, f"{by} may not dismiss a role's needs-you")
                     continue
                 self.dismissals[str(e.get("role") or "")] = e
+            elif typ == "system" and e.get("event") == "transfer":
+                if by not in OFFER_WRITERS:
+                    self._viol(e, f"{by} may not transfer an item")
+                    continue
+                key = item_key(e.get("item", ""))
+                for t in self._transfers:  # a later transfer of the same item replaces a pending one
+                    if t["status"] == "pending" and t["item"] == key:
+                        t.update(status="superseded", by_event=e["id"])
+                t = {"id": e["id"], "ts": e["ts"], "item": key, "from": e.get("from") or "", "to": e.get("to") or "",
+                     "prio": e.get("prio"), "req": e.get("req"), "note": e.get("note") or "",
+                     "status": "pending" if e.get("req") else "done"}
+                self._transfers.append(t)
+                # events of one second fold by writer, so a holder's release in the transfer's own second folds
+                # first (measured 2026-11-08: a fast run left a landed handoff's transfer pending); the transfer
+                # verb checks the holder before it writes, so such a release answers it
+                for r in self.releases:
+                    if t["status"] == "pending" and r["ts"] == t["ts"] and r["by"] == t["from"] \
+                            and item_key(r.get("item", "")) == key:
+                        _settle(t, r)
             elif typ == "system" and e.get("mode"):
                 if by not in OFFER_WRITERS:
                     self._viol(e, f"{by} may not set mode {e.get('mode')}")
@@ -727,8 +759,30 @@ class View:
                         (request.get("to") == "*" and m.get("by") != request["by"])) for m in self.msgs)
 
     def unacked_to(self, slug: str) -> list[dict]:
+        # a replaced queue order, and a transfer's request once its handoff landed (or it failed or was replaced), are
+        # no longer work to chase
+        closed = ({o["id"] for o in self.queue_orders(slug) if o["status"] == "superseded"}
+                  | {t["req"] for t in self._transfers if t["req"] and t["status"] != "pending"})
         return [m for m in self.msgs if m.get("to") == slug and m.get("kind") == "request"
-                and m.get("ack") and not self.acknowledged(m)]
+                and m.get("ack") and not self.acknowledged(m) and m["id"] not in closed]
+
+    def transfers(self, slug: str | None = None) -> list[dict]:
+        """`shoal transfer` records, oldest first, each with a status: pending (the holder has not released it),
+        done (its handoff to the target landed, or nothing was held), failed (the holder released it another way;
+        `release` attached) or superseded (a later transfer of the item, or its done). With slug: those from or to it."""
+        return [dict(t) for t in self._transfers if slug is None or slug in (t["from"], t["to"])]
+
+    def queue_orders(self, slug: str) -> list[dict]:
+        """The maintainer's `shoal queue-order`s to slug, oldest first, each with a status: applied (the role acked
+        it), superseded (a later order replaced it) or pending."""
+        orders = [m for m in self.msgs if m.get("to") == slug and m.get("kind") == "request"
+                  and isinstance(m.get("order"), list)]
+        out = []
+        for i, m in enumerate(orders):
+            status = ("applied" if self.acknowledged(m) else "superseded" if i < len(orders) - 1 else "pending")
+            out.append({"id": m["id"], "ts": m["ts"], "to": slug, "order": list(m["order"]),
+                        "note": m.get("note") or "", "status": status})
+        return out
 
     def role_state(self, slug: str) -> dict | None:
         return self.states.get(slug)

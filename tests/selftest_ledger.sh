@@ -663,6 +663,110 @@ PY3
 [ "$(grep -c '"method": "DELETE", "path": "/api/session/ses_stub1"' "$S/ocapi.log")" = 2 ] \
   || fail "matcher sessions not deleted after each run :: $(cat "$S/ocapi.log" 2>/dev/null)"
 
+echo "== queue-order and transfer: the maintainer reorders a role's next items and moves items between roles"
+VIEWPY='import sys; sys.path.insert(0, sys.argv[1])
+from roles import ShoalSpec
+from ledger import Ledger, View
+spec = ShoalSpec.load(sys.argv[2]); v = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)'
+# a withdraw reaches a claimed offer (it read as claimed, and the fold booked it as a violation); the claim stays
+expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#9703:fix >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9703:fix >/dev/null
+expect 0 $H withdraw --shoal t1shoal --item interpretune#9703 --to alpha --reason "changed plan" >/dev/null
+python3 - "$SHOALD" "$SPEC" <<PY2 || fail "withdraw of a claimed offer"
+$VIEWPY
+o = [o for o in v.by_item["interpretune#9703"]][-1]
+assert o["status"] == "withdrawn", o
+assert any(c["item"].startswith("interpretune#9703") for c in v.active("alpha")), "a withdraw never ends a claim"
+assert not [w for e, w in v.violations if "9703" in str(e.get("item"))], v.violations
+PY2
+# transfer: refusals print one line per item, and nothing is written
+check "REFUSED interpretune#9709: nobody holds it or is offered it; offer it instead" \
+  $H transfer --shoal t1shoal --item interpretune#9709 --to beta --dry-run
+check "REFUSED interpretune#9703: observer has fill=none and never claims" \
+  $H transfer --shoal t1shoal --item interpretune#9703 --to observer
+check "REFUSED interpretune#9703: already held by alpha" $H transfer --shoal t1shoal --item interpretune#9703 --to alpha
+expect 1 $H transfer --shoal t1shoal --item interpretune#9709 --to beta >/dev/null
+# an item only offered moves at once: withdrawn from alpha, offered to beta, recorded done
+expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#9702:review >/dev/null
+check "OK interpretune#9702:review: withdrawn from alpha, offered to beta (prio 30)" \
+  $H transfer --shoal t1shoal --item interpretune#9702:review --to beta --prio 30 --dry-run
+expect 0 $H transfer --shoal t1shoal --item interpretune#9702:review --to beta --prio 30 >/dev/null
+# a held item moves through its holder: a request to alpha, pending until its handoff lands
+expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9701:fix >/dev/null
+check "pending the holder's handoff" $H transfer --shoal t1shoal --item interpretune#9701 --to beta --prio 15 --note "beta owns this area"
+check "TRANSFER interpretune#9701 to beta" $H next --shoal t1shoal --slug alpha --peek
+expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9704:fix >/dev/null
+expect 0 $H transfer --shoal t1shoal --item interpretune#9704 --to beta >/dev/null
+python3 - "$SHOALD" "$SPEC" <<PY2 || fail "transfer records"
+$VIEWPY
+t = {x["item"]: x for x in v.transfers()}
+assert t["interpretune#9702"]["status"] == "done" and t["interpretune#9702"]["from"] == "alpha", t
+assert t["interpretune#9701"]["status"] == "pending" and t["interpretune#9701"]["req"], t
+assert [o["item"] for o in v.queue("alpha") if "9702" in o["item"]] == [], "withdrawn from alpha"
+assert [o["prio"] for o in v.queue("beta") if "9702" in o["item"]] == [30], v.queue("beta")
+assert any(m["id"] == t["interpretune#9701"]["req"] for m in v.unacked_to("alpha")), "the holder's request is chased"
+assert {x["item"] for x in v.transfers("gamma")} == set()
+PY2
+expect 0 $H release --shoal t1shoal --slug alpha --item interpretune#9701 --kind handoff --to beta --prio 15 >/dev/null
+expect 0 $H release --shoal t1shoal --slug alpha --item interpretune#9704 --kind blocked --reason "needs a design call" >/dev/null
+python3 - "$SHOALD" "$SPEC" <<PY2 || fail "transfer outcomes"
+$VIEWPY
+t = {x["item"]: x for x in v.transfers("beta")}
+assert t["interpretune#9701"]["status"] == "done", t
+assert t["interpretune#9704"]["status"] == "failed" and t["interpretune#9704"]["release"]["kind"] == "blocked", t
+assert [o["prio"] for o in v.queue("beta") if "9701" in o["item"]] == [15], "the handoff carries the transfer's prio"
+assert not {t[k]["req"] for k in t} & {m["id"] for m in v.unacked_to("alpha")}, "a settled transfer is not chased"
+PY2
+# queue-order: each item checked, one line per refusal, nothing written when any is refused
+expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9705:fix >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9706:fix >/dev/null
+expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#9707:fix >/dev/null
+expect 0 $H claim --shoal t1shoal --slug beta --item interpretune#9708:fix >/dev/null
+OUT=$($H queue-order --shoal t1shoal --to alpha --next "interpretune#9706:fix,interpretune#9708:fix,interpretune#9702,interpretune#9706" --dry-run 2>&1 || true)
+grep -q "^OK interpretune#9706:fix: held by alpha, position 1" <<<"$OUT" || fail "queue-order OK row :: $OUT"
+grep -q "^REFUSED interpretune#9708:fix: held by beta; transfer it first" <<<"$OUT" || fail "queue-order held row :: $OUT"
+grep -q "^REFUSED interpretune#9702: offered to beta; transfer it first" <<<"$OUT" || fail "queue-order offered row :: $OUT"
+grep -q "^REFUSED interpretune#9706: listed twice" <<<"$OUT" || fail "queue-order duplicate row :: $OUT"
+expect 1 $H queue-order --shoal t1shoal --to alpha --next "interpretune#9708" >/dev/null
+check "next=(none)" $H queue-order --shoal t1shoal --to alpha --next= --dry-run
+check "queue-order to alpha: next=interpretune#9706:fix,interpretune#9705:fix" \
+  $H queue-order --shoal t1shoal --to alpha --next "interpretune#9706:fix,interpretune#9705:fix" --note "first try"
+check "queue-order to alpha" $H queue-order --shoal t1shoal --to alpha --next "interpretune#9707:fix,interpretune#9706:fix"
+NOUT=$($H next --shoal t1shoal --slug alpha --peek 2>&1)
+grep -q "^QUEUE-ORDER .* next=interpretune#9707:fix,interpretune#9706:fix" <<<"$NOUT" || fail "next shows the pending order :: $NOUT"
+[ "$(grep -c '^QUEUE-ORDER' <<<"$NOUT")" = 1 ] || fail "a replaced order still shows :: $NOUT"
+OID=$(python3 - "$SHOALD" "$SPEC" <<PY2
+$VIEWPY
+o = v.queue_orders("alpha")
+assert [x["status"] for x in o] == ["superseded", "pending"], o
+assert o[0]["id"] not in {m["id"] for m in v.unacked_to("alpha")}, "a replaced order leaves the unacked-work ladder"
+print(o[-1]["id"])
+PY2
+) || fail "queue orders"
+expect 0 $H msg --shoal t1shoal --by alpha --to user --kind ack --re "$OID" --text applied >/dev/null
+python3 - "$SHOALD" "$SPEC" <<PY2 || fail "an acked order is applied"
+$VIEWPY
+assert v.queue_orders("alpha")[-1]["status"] == "applied", v.queue_orders("alpha")
+PY2
+$H next --shoal t1shoal --slug alpha --peek 2>&1 | grep -q "^QUEUE-ORDER" && fail "an applied order still shows in next"
+# one second's events fold by writer, so a holder's release in the transfer's own second folds first
+python3 - "$SHOALD" "$S/sametick" <<'PY2' || fail "a release in the transfer's own second settles it"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import ledger
+from ledger import Ledger, View
+ledger.iso = lambda dt=None: "2026-11-08T00:00:00Z"
+led = Ledger("sametick", root=sys.argv[2], sync=False)
+os.makedirs(led.ldir, exist_ok=True)
+led.append("alpha", "claim", item="interpretune#9790", _commit=False)
+led.append("user", "system", event="transfer", item="interpretune#9790", to="beta", prio=20, req="rq1",
+           _commit=False, **{"from": "alpha"})
+led.append("alpha", "release", item="interpretune#9790", kind="handoff", to="beta", _commit=False)
+t = View(led, None).transfers()
+assert [x["status"] for x in t] == ["done"], t
+PY2
+echo "queue-order and transfer ok"
+
 echo "== signed grants: sign, verify at read, forged excluded, revoke and expiry"
 if command -v ssh-keygen >/dev/null; then
   ssh-keygen -q -t ed25519 -N "" -f "$S/grantkey"

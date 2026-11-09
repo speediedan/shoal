@@ -13,7 +13,7 @@ file, and only through `shoal` verbs (one verb, one commit, one push).
 | type | written by | meaning |
 | --- | --- | --- |
 | `offer` | the maintainer (`user`) | puts an item on a role's queue (`--to <role>` or `*` for the pool); `--prio` orders open offers (lower first), `--now` interrupts a busy role |
-| `withdraw` | the maintainer | takes an offer back |
+| `withdraw` | the maintainer | takes an offer back (a claimed one too; the claim stays until its holder releases it) |
 | `claim` | a role | owns an item: first landed wins |
 | `release` | a role | gives an item up: `decline`, `blocked`, `handoff --to <role>`, `lost-race` |
 | `done` | a role | completion, with evidence (`--url`); verified against GitHub, never trusted as written |
@@ -89,3 +89,9 @@ At the next safe boundary, acknowledge with `msg --kind ack --to <sender> --re <
 acknowledged as such, then the receiving session asks first-person for its own grant. Merely reading
 mail or writing a queue is not a reply. Use `queue --ask` for the maintainer and offers/handoffs for
 project work; a request is addressed to one live peer, not a broadcast or a parked role.
+
+Two requests come from the maintainer's tools, and each says what to run:
+- **`QUEUE-ORDER`** (first in `next`, from `shoal queue-order`): set your next items to the listed order
+  with `queue --next`, keeping your active item, then ack it. A later order replaces one you have not applied.
+- **`TRANSFER`** (from `shoal transfer`): hand the named item you hold to the named role with
+  `release --kind handoff --to <role> --prio <n>`, drop it from your queue, then ack it.
