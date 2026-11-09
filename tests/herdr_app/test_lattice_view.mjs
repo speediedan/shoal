@@ -59,12 +59,24 @@ test("node visual classes per state", () => {
 });
 
 test("every salient wait is distinguishable", () => {
-  const keys = ["auth", "ask", "prompt", "design", "assign", "sources", "local-ci", "remote-ci", "lease", "upstream", "peer", "handover", "refill", "hold", "other"];
+  const keys = ["auth", "ask", "prompt", "design", "assign", "sources", "local-ci", "remote-ci", "research-proto", "lease", "upstream", "peer", "handover", "refill", "hold", "other"];
   const sig = (k) => { const s = M.STATE_STYLE[k]; return [s.color, s.badge ?? "", s.hatch ?? 0, s.border ?? "", s.fill].join("|"); };
   assert.equal(new Set(keys.map(sig)).size, keys.length, "each wait has its own encoding");
   const l = M.STATE_STYLE["local-ci"], r = M.STATE_STYLE["remote-ci"];
   assert.notEqual(l.badge, r.badge);
   assert.notEqual(l.hatch, r.hatch);
+  // a research or prototyping run reads apart from both CI waits: its own badge, hatch and a dashed outline
+  const rp = M.STATE_STYLE["research-proto"];
+  for (const ci of [l, r]) {
+    assert.notEqual(rp.badge, ci.badge);
+    assert.notEqual(rp.hatch, ci.hatch);
+    assert.notEqual(rp.border, ci.border);
+  }
+  assert.equal(rp.spinner, true, "a run, so it spins like CI");
+  assert.equal(M.stateKey({ state: { class: "wait", event: "research-proto", group: "research" } }), "research-proto");
+  assert.equal(M.stateKey({ state: { class: "wait", event: "", group: "research" } }), "research-proto");
+  assert.ok(M.LEGEND_GROUPS.find((g) => g.id === "waiting").keys.includes("research-proto"));
+  assert.ok(M.STATE_RANK.includes("research-proto"));
 });
 
 test("unknown event and class are tolerated", () => {

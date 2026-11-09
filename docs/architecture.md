@@ -69,6 +69,7 @@ to match against), so a group can work from other trackers or a plain file.
 | ledger | `shoals/<id>/ledger/<writer>.jsonl` (`shoal/ledger.py`, `shoal/ledger_cli.py`) | always | all traffic between roles; one writer per file |
 | role start doc | each role's `plan_state.md` | always | mission, current state, next steps, `grants-needed`, a `Last updated` stamp, a short header (the contract: [`start-doc.md`](start-doc.md); `shoal doc-check`, `shoal doc-head`) |
 | lifecycle settings | `shoal/lifecycle.py` (`lifecycle show`), `<repository>/.shoal/lifecycle.toml` | always | a repository's role-document layout, tiers, header cap, cadences and hooks; hooks only for repositories in the host's `[lifecycle] trusted_repos` ([`lifecycle.md`](lifecycle.md)) |
+| archive | `shoal/archive.py` (`archive`, `--restore`, `--cold`) | always | reference-aware warm archival of role documents: refuses roots and live-referenced files, one commit of exactly its paths, an append-only manifest per directory, undone when the commit does not land ([`archive.md`](archive.md)) |
 | references | `shoal/refs.py` (`refs`) | always | read-only: the start-doc roots live specs and standalone sessions name, and what names each file of a role directory (classes, archive candidates, untracked and dangling) ([`refs.md`](refs.md)) |
 | standalone registry | `shoal/standalone.py` | always | the per-host list of saved standalone sessions (`ui-standalone.json`); the viewer re-exports it |
 | briefs | `shoal/briefs.py` | always | the first prompt of every session, identical in shape for every role |
@@ -130,15 +131,29 @@ generation holds it.
   `release --kind lost-race`.
 - **Declines are data.** `release --kind decline --reason .. --retry <condition>`; the item never
   re-surfaces to that role.
-- **Handoffs.** `release --kind handoff --to <role>` turns the holder's claim into an implicit
-  offer to that role. It is the only way a role gives another role work.
+- **Handoffs.** `release --kind handoff --to <role> [--prio N]` turns the holder's claim into an
+  implicit offer to that role. It is the only way a role gives another role work.
+- **Withdrawals never end a claim.** `withdraw` takes back an open or claimed offer; a claim on it
+  stays live until its holder releases it, and the holder's watcher wakes it with `WITHDRAWN`.
+- **Transfers.** `shoal transfer --item X --to <role>` moves an item between roles. An item that is
+  only offered moves at once (its offers withdrawn, a new offer to the target). A held item moves
+  through its holder: a woken `request` asks it to hand the item off, and a `system` event
+  `transfer` (`item from to prio req note`) records it. `View.transfers()` reads each one as
+  `pending`, `done` (the handoff to the target landed), `failed` (released another way) or
+  `superseded` (a later transfer, or `done`).
 - **Completion is verified against GitHub** by reconcile, never taken from `done` events.
 
 ## 4. The work loop and wakes
 
 **The queue stream.** A role's latest `queue` event (`active`, `next` of up to `next_max`, `asks`,
 `reason`, `posture`) is its queue and its posture. The maintainer influences it with `offer`
-(`--prio`, and `--now` to interrupt a busy role) and `withdraw`.
+(`--prio`, and `--now` to interrupt a busy role) and `withdraw`. shoal never writes a role's
+queue: `shoal queue-order --to <role> --next a,b,c` checks each item (held, offered, or a board item
+for a self-filler; never another role's, done, or the active item) and sends a woken `request`
+carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applies it with its own
+`queue --next` and acks; `View.queue_orders()` reads each order as `pending`, `applied` or
+`superseded`, and a replaced order leaves the `unacked-work` ladder. Both verbs print one
+`REFUSED <item>: <reason>` line per refused item and write nothing when any is refused.
 
 **Two verbs per boundary.**
 
@@ -1040,7 +1055,9 @@ and the contract are in [`ui.md`](ui.md).
   operator is offline, a session that ended, or idle with work queued), and accounting keeps the event. So does
   `wait:assignment`, which after two hours with no open question stops asking for attention (no halo, out of needs-you, a
   count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
-  which event, and the legend lists what is on screen, with the full key a click away. Each role's active, next and
+  which event, and the legend lists what is on screen, with the full key a click away. A research or prototyping run
+  (`wait:research-proto`, role-time group `research`) spins like a CI wait but reads apart from both: a dashed outline, a
+  wide hatch and `⚗`. Each role's active, next and
   recently done items are satellites on short spokes: a next item with a recorded blocker is a ring, a stale
   blocker red, and a hover shows the item's card (its title, what it waits on, how many are queued past those
   drawn) while a click opens its issue (an `http` or `https` link only, since a role writes it). A ring is the

@@ -8,6 +8,8 @@ the maintainer use. Each is one command, one event, one commit, one push.
   release   --shoal H --slug S --item repo#n --kind decline|blocked|handoff|lost-race [--reason .. --retry ..]
   done      --shoal H --slug S --item repo#n:verb [--kind merge|fix|.. --url .. --sha ..]
   msg       --shoal H --by S --to SLUG|*|user --text .. [--kind .. --re ID --ack]
+  queue-order --shoal H --to SLUG --next a,b,c [--note ..]          the maintainer reorders a role's next items
+  transfer  --shoal H --item repo#n[:verb] --to SLUG [--prio N --note ..]   move an item to another role
   show      --shoal H [--slug S] [--board] [--json]                the status table / one role's view
   fill      --shoal H --slug S [--limit N] [--claim-top]           board candidates for a self-filler
   sync      --shoal H                                              pull + push pending ledger commits
@@ -257,7 +259,8 @@ def cmd_release(a) -> int:
     if a.dry_run:
         print(f"[dry-run] release {key} kind={a.kind} by {by}" + (f" -> offered to {to}" if to else ""))
         return 0
-    ev = led.append(by, "release", item=key, kind=a.kind, reason=a.reason, retry=a.retry, to=to or None)
+    ev = led.append(by, "release", item=key, kind=a.kind, reason=a.reason, retry=a.retry, to=to or None,
+                    prio=(int(a.prio) if to and getattr(a, "prio", 0) else None))
     if to:
         print(f"handed {key} to {to} (an implicit offer; {to} claims it at its next boundary, woken if idle)")
     print(f"released {key} ({a.kind}) by {by} [{ev['id']}]")
@@ -324,16 +327,7 @@ def cmd_msg(a) -> int:
                 print(f"wake via {request_wake(spec, r.slug, 'user message ' + ev['id'] + ': ' + a.text, 'user-msg')} "
                       f"({r.slug}'s ledger-watch is not running)")
     if target is not None and getattr(a, "wake", False) and by == "user" and target.session:
-        # the role's ledger-watch delivers a --wake msg; with that watcher dead nothing would, so the
-        # wake goes through the same adapter the health quorum uses (measured 2026-10-08: an operator
-        # wake to a role whose watcher had died a day earlier reached no one)
-        from health import request_wake, watcher_alive
-        from roles import host_of, is_local
-        if not is_local(target, spec):
-            print(f"{a.to} runs on {host_of(target, spec)}: its own watcher delivers this --wake at its next tick")
-        elif not watcher_alive(spec.sid, a.to)[0]:
-            print(f"wake via {request_wake(spec, a.to, 'user message ' + ev['id'] + ': ' + a.text, 'user-msg')} "
-                  f"({a.to}'s ledger-watch is not running)")
+        _wake_fallback(spec, target, ev)
     if target is not None and by not in ("user",) + SYSTEM_WRITERS and re.search(r"#\d+", a.text or ""):
         # FM-4 (measured 2026-10-08): a lane delegated seven items to an assigned reviewer by mail
         print(f"note: this is mail. {a.to} reads it at its next `next`; it is not woken by it"
@@ -341,6 +335,156 @@ def cmd_msg(a) -> int:
               + (f", and as fill={target.fill} it can take only items offered or handed to it" if target.fill != "self" else "")
               + f". To pass an item you hold: `release --item <repo#n> --kind handoff --to {a.to}` (wakes it, and it "
               f"may claim). An item you do not hold needs a user offer: record an ask.")
+    return 0
+
+
+def _wake_fallback(spec: ShoalSpec, target, ev: dict) -> None:
+    """The role's ledger-watch delivers a user --wake msg; with that watcher dead nothing would, so the wake goes
+    through the same adapter the health quorum uses (measured 2026-10-08: an operator wake to a role whose watcher had
+    died a day earlier reached no one)."""
+    from health import request_wake, watcher_alive
+    from roles import host_of, is_local
+    if not is_local(target, spec):
+        print(f"{target.slug} runs on {host_of(target, spec)}: its own watcher delivers this --wake at its next tick")
+    elif not watcher_alive(spec.sid, target.slug)[0]:
+        print(f"wake via {request_wake(spec, target.slug, 'user message ' + ev['id'] + ': ' + ev.get('text', ''), 'user-msg')} "
+              f"({target.slug}'s ledger-watch is not running)")
+
+
+def _refusals(rows: list[tuple[str, str, str]], dry_run: bool) -> bool:
+    """Print one `REFUSED <item>: <reason>` line per refused item (and, in a dry run, `OK <item>: <plan>` for the
+    rest), so a caller can mark each row. True when anything was refused: then nothing is written."""
+    for verdict, item, why in rows:
+        if verdict == "REFUSED" or dry_run:
+            print(f"{verdict} {item}: {why}")
+    return any(r[0] == "REFUSED" for r in rows)
+
+
+@_guard
+def cmd_queue_order(a) -> int:
+    """The maintainer reorders a role's next items. shoal never writes a role's queue: this is a woken request the
+    role applies with its own `queue --next` and acks, chased like any request (`unacked-work`). Each item is checked
+    here, so the role is never handed an order it cannot follow; a later order replaces a pending one."""
+    from ledger import queue_next_max
+    spec = _spec(a)
+    led = _ledger(a, spec)
+    led.pull()
+    view = View(led, spec)
+    role = spec.role(a.to) if spec is not None else None
+    if role is None:
+        print(f"ERROR: unknown role {a.to!r}" + (f" (roles: {[r.slug for r in spec.roles]})" if spec else ""))
+        return 1
+    if not role.session:
+        print(f"ERROR: {a.to} has no live session to apply an order")
+        return 1
+    items = [x.strip() for x in (a.next or "").split(",") if x.strip()]
+    q = view.current_queue(a.to) or {}
+    active = item_key(q["active"]) if q.get("active") else ""
+    held = {item_key(c["item"]) for c in view.active(a.to)}
+    offered = {item_key(o["item"]) for o in view.queue(a.to)}
+    listed = {item_key(x) for x in (q.get("next") or [])}
+    others = {k: ", ".join(sorted({o["to"] for o in os_ if o["status"] == "open" and o["to"] not in (a.to, "*")}))
+              for k, os_ in view.by_item.items()}
+    cap = queue_next_max(spec)
+    rows, seen = [], set()
+    for n, it in enumerate(items, 1):
+        key = item_key(it)
+        w = view.winner(key)
+        if key in seen:
+            rows.append(("REFUSED", it, "listed twice"))
+        elif n > cap:
+            rows.append(("REFUSED", it, f"past the group's next_max ({cap})"))
+        elif key == active:
+            rows.append(("REFUSED", it, "it is the active item; next lists what follows it"))
+        elif key in view.done:
+            rows.append(("REFUSED", it, f"done by {view.done[key]['by']}"))
+        elif w is not None and w["by"] != a.to:
+            rows.append(("REFUSED", it, f"held by {w['by']}; transfer it first"))
+        elif key not in offered and others.get(key):
+            rows.append(("REFUSED", it, f"offered to {others[key]}; transfer it first"))
+        elif key in held:
+            rows.append(("OK", it, f"held by {a.to}, position {n}"))
+        elif key in offered:
+            rows.append(("OK", it, f"offered to {a.to}, position {n}; claimed when reached"))
+        elif key in listed or role.fill == "self":
+            rows.append(("OK", it, f"{'in its queue' if key in listed else 'a board item it may claim'}, position {n}"))
+        else:
+            rows.append(("REFUSED", it, f"not held by or offered to {a.to} (fill={role.fill}); offer it first"))
+        seen.add(key)
+    if _refusals(rows, a.dry_run):
+        return 1
+    csv = ",".join(items)
+    if a.dry_run:
+        print(f"[dry-run] queue-order to {a.to}: next={csv or '(none)'}; a woken request it applies and acks")
+        return 0
+    why = f": {a.note}" if a.note else ""
+    text = (f"QUEUE ORDER from the maintainer{why}: set your next items to {csv or '(none)'}, in that order, and keep "
+            f"your active item. Write it now with `queue --shoal {spec.sid} --slug {a.to} --next '{csv}'`, then ack "
+            f"with `msg --kind ack --to user --re <this request's id>`. An item you do not hold yet you claim when you reach it.")
+    ev = led.append("user", "msg", to=a.to, kind="request", ack=True, wake=True, order=items, note=a.note or None,
+                    text=text)
+    print(f"queue-order to {a.to}: next={csv or '(none)'} [{ev['id']}] (woken to apply and ack it)")
+    _wake_fallback(spec, role, ev)
+    return 0
+
+
+@_guard
+def cmd_transfer(a) -> int:
+    """Move an item to another role. A withdraw never ends a claim, so an item a role holds moves only when its holder
+    releases it: the holder gets a woken request to hand it off (`release --kind handoff --to`, the implicit offer to
+    the target), and a `transfer` record tracks it until that release lands (View.transfers). An item that is only
+    offered moves at once: its offers are withdrawn and it is offered to the target."""
+    spec = _spec(a)
+    led = _ledger(a, spec)
+    led.pull()
+    view = View(led, spec)
+    target = spec.role(a.to) if spec is not None else None
+    if target is None:
+        print(f"ERROR: unknown role {a.to!r}" + (f" (roles: {[r.slug for r in spec.roles]})" if spec else ""))
+        return 1
+    key, verb = split_item(a.item)
+    key = item_key(key)
+    w = view.winner(key)
+    holder = spec.role(w["by"]) if w is not None else None
+    offers = [o for o in view.by_item.get(key, []) if o["status"] in ("open", "claimed") and o["to"] != a.to]
+    prio = int(a.prio)
+    if key in view.done:
+        why = f"done by {view.done[key]['by']}"
+    elif target.fill == "none":
+        why = f"{a.to} has fill=none and never claims"
+    elif w is not None and w["by"] == a.to:
+        why = f"already held by {a.to}"
+    elif w is not None and (holder is None or not holder.session):
+        why = f"held by {w['by']}, which has no live session to hand it over"
+    elif w is None and not offers:
+        why = "nobody holds it or is offered it; offer it instead"
+    else:
+        why = ""
+    plan = (f"{w['by']} is asked to hand it to {a.to} (prio {prio})" if w is not None
+            else f"withdrawn from {', '.join(sorted({o['to'] for o in offers}))}, offered to {a.to} (prio {prio})")
+    if _refusals([("REFUSED", a.item, why) if why else ("OK", a.item, plan)], a.dry_run):
+        return 1
+    if a.dry_run:
+        print(f"[dry-run] transfer {key} to {a.to}: {plan}")
+        return 0
+    note = f": {a.note}" if a.note else ""
+    for to in sorted({o["to"] for o in offers}):
+        led.append("user", "withdraw", item=key, to=to, reason=f"transfer to {a.to}{note}")
+    req = None
+    if w is not None:
+        text = (f"TRANSFER {key} to {a.to} (the maintainer{note}): hand it over with `release --shoal {spec.sid} --slug "
+                f"{w['by']} --item {key} --kind handoff --to {a.to} --prio {prio}` (checkpoint first if it is your "
+                f"active item), drop it from your queue, then ack with `msg --kind ack --to user --re <this request's id>`.")
+        rq = led.append("user", "msg", to=w["by"], kind="request", ack=True, wake=True, text=text)
+        req = rq["id"]
+        _wake_fallback(spec, holder, rq)
+    elif not any(o["status"] == "open" and o["to"] == a.to for o in view.by_item.get(key, [])):
+        led.append("user", "offer", to=a.to, item=f"{key}:{verb}" if verb else key, prio=prio,
+                   note=f"transfer{note}", src="user")
+    src = w["by"] if w is not None else ",".join(sorted({o["to"] for o in offers}))
+    ev = led.append("user", "system", event="transfer", item=key, to=a.to, prio=prio, req=req, note=a.note or None,
+                    **{"from": src})
+    print(f"transfer {key} to {a.to}: {plan} [{ev['id']}]" + (" (pending the holder's handoff)" if req else ""))
     return 0
 
 
@@ -547,6 +691,7 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--item", required=True)
     p.add_argument("--kind", required=True, choices=("decline", "blocked", "handoff", "lost-race"))
     p.add_argument("--to", default="", help="handoff only: the role that should take your claim (an implicit offer)")
+    p.add_argument("--prio", type=int, default=0, help="handoff only: the implicit offer's priority (default 20)")
     p.add_argument("--reason", default="")
     p.add_argument("--retry", default="", help="condition under which to retry")
     p.set_defaults(func=cmd_release)
@@ -570,6 +715,23 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--re", default="", help="event id this answers (acks)")
     p.add_argument("--ack", action="store_true", help="ask the target to ack")
     p.set_defaults(func=cmd_msg)
+
+    p = sub.add_parser("queue-order", help="the maintainer reorders a role's next items: a woken request it applies "
+                                           "and acks")
+    common(p)
+    p.add_argument("--to", required=True, help="the role")
+    p.add_argument("--next", required=True, help="comma list, in order (empty: no next items)")
+    p.add_argument("--note", default="", help="why, for the role")
+    p.set_defaults(func=cmd_queue_order)
+
+    p = sub.add_parser("transfer", help="move an item to another role: an offer moves at once, a held item through "
+                                        "its holder's handoff")
+    common(p)
+    p.add_argument("--item", required=True, help="repo#n[:verb]")
+    p.add_argument("--to", required=True, help="the role that should get it")
+    p.add_argument("--prio", type=int, default=DEFAULT_PRIO, help="lower runs sooner (default 50)")
+    p.add_argument("--note", default="", help="why, for the roles")
+    p.set_defaults(func=cmd_transfer)
 
     p = sub.add_parser("show", help="status table (all roles) or one role's view")
     common(p)

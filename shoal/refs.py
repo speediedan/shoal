@@ -232,6 +232,69 @@ def candidates(token: str, here: str, repo: Repo) -> set[str]:
     return {c.rstrip("/") for c in out if not c.startswith("..") and c != "."}
 
 
+def edges_to(repo: "Repo", targets: list[str], referrers: list[str], tier) -> dict[str, list[dict]]:
+    """{target: [{file, line, tier}]}: where each target path is named, by the extraction contract (module docstring),
+    among the `referrers` (text files) and every tracked symlink that is not excluded. `tier(path)` classes a referrer."""
+    # every way of naming a target contains its basename, so one search skips the files, lines and tokens that cannot
+    # hold a reference before any path is resolved (substring tests, not one regex alternation: Python's re tries every
+    # alternative at every position, which cost 10 s on a 55-file directory against a 28 MB repository; `in` takes 1)
+    names = sorted({posixpath.basename(p) for p in targets})
+    tails: dict[str, int] = {}
+    for q in repo.mode:
+        parts = q.split("/")
+        for k in range(2, len(parts) + 1):  # the whole path too, so a root-level `a/b.md` makes `x/a/b.md` ambiguous
+            t = "/".join(parts[-k:])
+            tails[t] = tails.get(t, 0) + 1
+    suffixes = {"/".join(p.split("/")[-k:]): p for p in targets for k in range(2, len(p.split("/")))
+                if tails.get("/".join(p.split("/")[-k:])) == 1}
+    edges: dict[str, list[dict]] = {p: [] for p in targets}
+    wanted = set(targets)
+    for src in referrers:
+        text = repo.read(src)
+        present = [x for x in names if x in text]
+        if not present:
+            continue
+        here = posixpath.dirname(src)
+        for n, line in enumerate(text.splitlines(), 1):
+            if not any(x in line for x in present):
+                continue
+            for m in TOKEN.finditer(line):
+                if line[m.end():m.end() + 1] in ("<", "{", "*", "$"):
+                    continue  # a placeholder or glob continues the token
+                tok = m.group(0)
+                if not any(x in tok for x in present):
+                    continue
+                named = candidates(tok, here, repo) & wanted
+                if not named and tok.rstrip("/.,:;") in suffixes:
+                    named = {suffixes[tok.rstrip("/.,:;")]}
+                for t in named - {src}:
+                    edges[t].append({"file": src, "line": n, "tier": tier(src)})
+    for p, mode in repo.mode.items():
+        if mode == "120000" and tier(p) != "excluded":
+            t = posixpath.normpath(posixpath.join(posixpath.dirname(p), os.readlink(os.path.join(repo.root, p))))
+            if t in edges and t != p:
+                edges[t].append({"file": p, "line": 0, "tier": "symlink"})
+    return edges
+
+
+COMPANION = re.compile(r"^(?P<stem>.+?)_(?:start(?:_[^/]*)?|plan_state)\.md$")
+
+
+def companion_log(root: str, tracked) -> str | None:
+    """The companion log the start-doc contract recommends beside a start doc: `<stem>_log.md` for `<stem>_start*.md` or
+    `<stem>_plan_state.md`, and for a bare `plan_state.md` the directory's only `*_log.md`. Live by contract, linked or
+    not: a role's own log is not an archive candidate while its start doc is a root."""
+    d, b = posixpath.dirname(root), posixpath.basename(root)
+    m = COMPANION.match(b)
+    if m:
+        c = posixpath.join(d, m.group("stem") + "_log.md")
+        return c if c in tracked else None
+    if b == "plan_state.md":
+        logs = [p for p in tracked if posixpath.dirname(p) == d and p.endswith("_log.md")]
+        return logs[0] if len(logs) == 1 else None
+    return None
+
+
 def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] | None = None, scope: str = "repo",
          min_age_days: float | None = None, history: list[str] | None = None, exclude: list[str] | None = None,
          known_roots: dict | None = None, now: float | None = None) -> dict:
@@ -275,53 +338,16 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             t = posixpath.normpath(posixpath.join(posixpath.dirname(r), os.readlink(os.path.join(repo.root, r))))
             root_paths.setdefault(t, []).append(f"target of {r}")
 
-    # every way of naming a file in the directory contains its basename, so one search skips the files, lines and
-    # tokens that cannot hold a reference before any path is resolved
-    # (substring tests, not one regex alternation: Python's re tries every alternative at every position, which cost
-    # 10 s on a 55-file directory against a 28 MB repository; `in` takes 1)
-    names = sorted({posixpath.basename(p) for p in files})
-    tails: dict[str, int] = {}
-    for q in repo.mode:
-        parts = q.split("/")
-        for k in range(2, len(parts) + 1):  # the whole path too, so a root-level `a/b.md` makes `x/a/b.md` ambiguous
-            t = "/".join(parts[-k:])
-            tails[t] = tails.get(t, 0) + 1
-    suffixes = {"/".join(p.split("/")[-k:]): p for p in files for k in range(2, len(p.split("/")))
-                if tails.get("/".join(p.split("/")[-k:])) == 1}
     referrers = sorted(p for p in repo.mode if (scope == "repo" or inside(p)) and repo.mode[p] != "120000"
                        and posixpath.splitext(p)[1] in TEXT_EXT and tier(p) != "excluded")
-    edges: dict[str, list[dict]] = {p: [] for p in files}
+    edges = edges_to(repo, files, referrers, tier)
     dangling: list[dict] = []
     in_dir = set(files)
-    for src in referrers:
-        text = repo.read(src)
-        present = [x for x in names if x in text]
-        if not present:
-            continue
-        here = posixpath.dirname(src)
-        for n, line in enumerate(text.splitlines(), 1):
-            if not any(x in line for x in present):
-                continue
-            for m in TOKEN.finditer(line):
-                if line[m.end():m.end() + 1] in ("<", "{", "*", "$"):
-                    continue  # a placeholder or glob continues the token
-                tok = m.group(0)
-                if not any(x in tok for x in present):
-                    continue
-                named = candidates(tok, here, repo) & in_dir
-                if not named and tok.rstrip("/.,:;") in suffixes:
-                    named = {suffixes[tok.rstrip("/.,:;")]}
-                for t in named - {src}:
-                    edges[t].append({"file": src, "line": n, "tier": tier(src)})
-    for p, mode in repo.mode.items():
-        if mode == "120000" and tier(p) != "excluded":
-            t = posixpath.normpath(posixpath.join(posixpath.dirname(p), os.readlink(os.path.join(repo.root, p))))
-            if t in edges and t != p:
-                edges[t].append({"file": p, "line": 0, "tier": "symlink"})
 
     # live: reachable from a root through live documents inside the directory, or named by a live document (or a
     # symlink) outside it
     live = {r for r in root_paths if r in in_dir}
+    live |= {c for c in (companion_log(r, repo.mode) for r in root_paths) if c and c in in_dir}
     for t, es in edges.items():
         if any(not inside(e["file"]) and e["tier"] in ("live", "symlink") for e in es):
             live.add(t)

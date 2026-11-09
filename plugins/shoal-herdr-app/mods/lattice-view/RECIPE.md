@@ -36,6 +36,7 @@ you, per-shoal throughput and per-host load.
   | assignment / sources | softer magenta `#d985b6`, slow halo, `∅` / `↧` |
   | local-ci | blue `#4e8cff`, hatched at 4px, spinner arc, `▣` |
   | remote-ci | sky `#5cc8ff`, hatched at 7px, spinner arc, `☁` |
+  | research-proto (a research or prototyping run; role-time group `research`) | the waiting blue, a wide 11px hatch, spinner arc, a dashed outline (the CI waits are solid), `⚗`; its job host reads "research run on" |
   | lease | periwinkle `#7c8cff`, dense hatch, `⧖` |
   | upstream | violet `#a58bff`, hatched, `↑` |
   | session-blocked (peer) | amber `#ffb547` dashed outline, `⊘`, a red dashed `blocked-on` edge to the blocker |

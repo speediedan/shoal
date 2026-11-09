@@ -53,6 +53,7 @@ const EVENT_KEY = {
   sources: "sources",
   "local-ci": "local-ci",
   "remote-ci": "remote-ci",
+  "research-proto": "research-proto",
   lease: "lease",
   upstream: "upstream",
   "session-blocked": "peer",
@@ -60,7 +61,7 @@ const EVENT_KEY = {
   refill: "refill",
   hold: "hold",
 };
-const GROUP_KEY = { human: "ask", system: "system", upstream: "upstream", peer: "peer" };
+const GROUP_KEY = { human: "ask", system: "system", upstream: "upstream", peer: "peer", research: "research-proto" };
 
 const SOFT_MAGENTA = "#d985b6";
 // Five colors, by what you would do: needs you (magenta, hot for auth; red when something broke), working (teal), waiting on
@@ -81,6 +82,8 @@ export const STATE_STYLE = {
   working: { label: "working", color: P.teal, fill: 0.9, halo: { period: 2800, from: 0.1, to: 0.42, scale: 2.4 }, urgency: null },
   "local-ci": { label: "local CI", color: WAITING, fill: 0.3, hatch: 4, spinner: true, border: "solid", badge: "▣", urgency: null },
   "remote-ci": { label: "remote CI", color: WAITING, fill: 0.22, hatch: 7, spinner: true, border: "solid", badge: "☁", urgency: null },
+  // a research or prototyping run: a run like CI (the spinner), but not CI, so its outline is dashed and its hatch wide
+  "research-proto": { label: "research run", color: WAITING, fill: 0.2, hatch: 11, spinner: true, border: "dashed", badge: "⚗", urgency: null },
   lease: { label: "waits for a lease", color: WAITING, fill: 0.3, hatch: 2.6, border: "solid", badge: "⧖", urgency: null },
   system: { label: "waits on system", color: WAITING, fill: 0.28, hatch: 4, border: "solid", urgency: null },
   upstream: { label: "waits upstream", color: WAITING, fill: 0.26, hatch: 5, border: "solid", badge: "↑", urgency: null },
@@ -100,13 +103,13 @@ export const STATE_STYLE = {
 };
 
 /** Loudness for picking a shoal's most urgent state (pulse dot, cluster tint). */
-export const STATE_RANK = ["auth", "ask", "prompt", "design", "assign", "sources", "unknown", "peer", "local-ci", "remote-ci", "lease", "system", "upstream", "handover", "refill", "hold", "other", "dead", "working", "held", "queued", "starved", "idle", "excluded"];
+export const STATE_RANK = ["auth", "ask", "prompt", "design", "assign", "sources", "unknown", "peer", "local-ci", "remote-ci", "research-proto", "lease", "system", "upstream", "handover", "refill", "hold", "other", "dead", "working", "held", "queued", "starved", "idle", "excluded"];
 
 /** The legend's groups, loudest first: what you would do about a node. */
 export const LEGEND_GROUPS = [
   { id: "you", label: "NEEDS YOU", keys: ["auth", "ask", "prompt", "design", "assign", "sources", "dead", "unknown"] },
   { id: "working", label: "WORKING", keys: ["working"] },
-  { id: "waiting", label: "WAITING ON A SYSTEM", keys: ["local-ci", "remote-ci", "lease", "system", "upstream", "peer", "handover", "refill", "hold", "other"] },
+  { id: "waiting", label: "WAITING ON A SYSTEM", keys: ["local-ci", "remote-ci", "research-proto", "lease", "system", "upstream", "peer", "handover", "refill", "hold", "other"] },
   { id: "idle", label: "IDLE", keys: ["idle", "queued", "starved", "dismissed"] },
   { id: "off", label: "OFF", keys: ["held", "excluded"] },
 ];
@@ -295,7 +298,7 @@ export function legendEntries(vm = null, all = false) {
   const hosts = vm ? [...vm.hostColor.entries()].map(([name, color]) => ({ name, color })) : [];
   const extra = [];
   if (!nodes || nodes.some((n) => n.grants?.length)) extra.push(["grant pending", P.olive, "⚑"]);
-  if (!nodes || nodes.some((n) => n.jobHost)) extra.push(["CI job on another host", "#9ad1ff", "→"]);
+  if (!nodes || nodes.some((n) => n.jobHost)) extra.push(["CI or research run on another host", "#9ad1ff", "→"]);
   return { groups, states, hiddenStates, shapes, edges, hosts: hosts.length > 1 ? hosts : [], extra };
 }
 
@@ -946,7 +949,7 @@ export function cardLines(vm, id) {
     if (arr(s.quality).length) rows.push(["quality", arr(s.quality).map(str).join(", ")]);
     rows.push(["agent", [n.ecosystem, n.model].filter(Boolean).join(" · ") || "?"]);
     rows.push(["host", n.host ?? "?"]);
-    if (n.jobHost) rows.push(["CI job on", `${n.jobHost} (${str(s.event) || "ci"})`]);
+    if (n.jobHost) rows.push([str(s.event) === "research-proto" ? "research run on" : "CI job on", `${n.jobHost} (${str(s.event) || "ci"})`]);
     const job = obj(s.job);
     if (job.unit) rows.push(["job", `${str(job.unit)}${job.granted ? " granted" : job.placed ? " placed" : ""}${typeof job.started_age_s === "number" ? ` ${fmtAge(job.started_age_s)}` : ""}`]);
     if (n.grants.length) rows.push(["grants", n.grants.map((g) => `${str(g.kind) || "grant"} ${str(g.item)}`.trim()).join(", ")]);
