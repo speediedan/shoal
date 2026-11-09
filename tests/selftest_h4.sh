@@ -2346,5 +2346,9 @@ echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only)
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
 check "name a start doc" $H doc-head
 
+echo "== 40 archive: reference-aware warm archive, restore and cold, one commit of exactly its paths, undone on a refused hook"
+python3 "$TESTD/test_archive.py" || fail "archive (tests/test_archive.py)"
+check "name the files to archive" $H archive
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
