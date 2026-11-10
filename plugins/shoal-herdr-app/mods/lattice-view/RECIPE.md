@@ -173,6 +173,11 @@ you, per-shoal throughput and per-host load.
 - `PathBuilder.cubic_bezier_to` takes the end point first, then both controls.
 - One Background per path: batch by color, or the element count explodes. Paths are drawn in
   screen space, so pan and zoom re-render (cheap at this size).
+- Globe lighting retains 128 levels but uses at most six cubic arcs per contour. Expanding each
+  contour into 80 line calls exceeds the native script render deadline. A native check on the
+  async loading screen misses this: accept the fixture synchronously when checking depth renders.
+  `node plugins/shoal-herdr-app/preview/check_depth.mjs --runs 12` checks the loaded scene;
+  `--depth tilt`, `--yaw 60` and `--doc graph.json` cover other cameras and read-only snapshots.
 - Any `loop` makes the window redraw at about 30 fps; `frames` and `spin` redraw at their own
   interval. The cost is per window frame, not per element: on lavapipe (two threads) a frame of
   this window cost about a core-second whatever the mod drew, so one 700 ms blink cost over a
