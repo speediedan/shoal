@@ -123,6 +123,40 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("--no-prepare", argv)
         self.assertNotIn("--prepare", argv)
 
+    def test_dialog_restart_note_and_through_question(self):
+        args = types.SimpleNamespace(session="example-seat", doc="", model="", effort="", ecosystem="", force=False,
+                                     note="look at the open review first", through_question=True)
+        argv, _, _ = ui_actions.build("handoff", args)
+        self.assertIn("--note=look at the open review first", argv)
+        self.assertIn("--through-question", argv)
+        args.no_prepare = True
+        with self.assertRaisesRegex(ui_actions.ActError, "keep checkpoint-first on"):
+            ui_actions.build("handoff", args)
+        role = types.SimpleNamespace(slug="core", session="old-session")
+        spec = types.SimpleNamespace(sid="example", roles=[role], role=lambda _: role)
+        rargs = types.SimpleNamespace(shoal="example", role="core", session="", model="", effort="", ecosystem="", force=False,
+                                      note=" read the new issue ", through_question=False)
+        with patch.object(ui_actions, "_spec", return_value=spec), patch("roles.find_spec", return_value="/example/spec.json"):
+            self.assertIn("--note=read the new issue", ui_actions.build("handoff", rargs)[0])
+            rargs.through_question = True
+            with self.assertRaisesRegex(ui_actions.ActError, "for standalone seats"):
+                ui_actions.build("handoff", rargs)
+
+    def test_restart_note_follows_the_resume_brief(self):
+        self.assertTrue(flow.resume_brief("/example/plan.md").startswith("Resume from your start doc /example/plan.md"))
+        self.assertNotIn("note from the operator", flow.resume_brief("/example/plan.md", "  "))
+        self.assertTrue(flow.resume_brief("/example/plan.md", "check CI").endswith(
+            "A note from the operator for this handoff: check CI"))
+        briefs = []
+        backend = types.SimpleNamespace(create=lambda *a, **k: briefs.append(k["brief"]) or "new-session")
+        self.args.note = "check CI"
+        with patch.object(flow, "between", return_value=True), patch.object(backends, "get", return_value=backend), \
+             patch.object(park, "stop_session", return_value="stopped"):
+            self.assertEqual(flow.standalone_handoff(self.args, self.entry, str(self.doc), "muse", time.monotonic() + 2,
+                                                     prepare=False), 0)
+        self.assertEqual(len(briefs), 1)
+        self.assertTrue(briefs[0].endswith("A note from the operator for this handoff: check CI"), briefs)
+
     def test_failure_to_retire_prevents_replacement(self):
         source = types.SimpleNamespace(send=lambda *a, **k: self.write_doc("restart-ready"), create=unittest.mock.Mock())
         with patch.object(flow, "between", return_value=True), patch.object(backends, "get", return_value=source), \

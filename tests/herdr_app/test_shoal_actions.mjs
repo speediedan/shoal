@@ -168,7 +168,7 @@ test("replies: roles", () => {
   const r = M.parseReply(ok(fx.roles), "roles");
   assert.equal(r.kind, "roles");
   assert.deepEqual(r.shoals.map((s) => [s.id, s.tag, s.needsYou]), [[A, "alpha", 1], [B, "beta", 1]]);
-  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, posture: "blocked:user-ask" });
+  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, posture: "blocked:user-ask", doc: null });
   // unknown fields ignored; bad rows, repeats and a `*` slug dropped; a missing tag from the id
   const doc = JSON.parse(JSON.stringify(fx.roles));
   doc.future = 1;
@@ -434,7 +434,13 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   assert.deepEqual(M.planArgv("handoff", t, f), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--json"]);
   const g = M.setValue(M.setValue(M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "effort", "high"), "force", true), "prepare", false);
   assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--effort=high", "--no-prepare", "--force", "--json"]);
-  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "prepare", "dryRun"]);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "note", "prepare", "dryRun"]);
+  // a restart note rides on the plan; a role's form says which start doc it resumes from
+  assert.ok(M.planArgv("handoff", t, M.setValue(f, "note", " look at #12 first ")).includes("--note=look at #12 first"));
+  assert.equal(M.handoffDocNote(f, "/example/core_plan_state.md"), "Resumes from its start doc: /example/core_plan_state.md");
+  assert.match(M.handoffDocNote(f), /its saved start doc \(its plan_state\.md\)/);
+  assert.equal(M.handoffDocNote(M.newForm("offer", NOW)), null);
+  assert.ok(!M.visibleFields(f).some((x) => x.key === "throughQuestion"), "a role answers its question first");
   assert.equal(M.handoffMachine({ host: "lane-b" }, ["lane-a", "lane-b"], "lane-a"), "lane-b", "restart refuses another host's role");
   assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);
   assert.equal(M.handoffMachine({ host: "elsewhere" }, ["lane-a"], "lane-a"), "lane-a", "the CLI's refusal then says where to run it");
@@ -449,6 +455,14 @@ test("standalone Handoff: checkpoint by default, a saved start doc, and a resuma
   assert.ok(!M.visibleFields(f).some((x) => x.key === "force"));
   assert.ok(M.visibleFields(f).some((x) => x.key === "prepare"));
   assert.ok(M.planArgv("handoff", target, M.setValue(f, "prepare", false)).includes("--no-prepare"));
+  // through an open question: offered only with checkpoint-first, and sent only when chosen
+  assert.ok(M.visibleFields(f).some((x) => x.key === "throughQuestion"));
+  assert.ok(!M.visibleFields(M.setValue(f, "prepare", false)).some((x) => x.key === "throughQuestion"));
+  assert.ok(!M.planArgv("handoff", target, f).includes("--through-question"));
+  assert.ok(M.planArgv("handoff", target, M.setValue(f, "throughQuestion", true)).includes("--through-question"));
+  assert.ok(!M.planArgv("handoff", target, M.setValue(M.setValue(f, "throughQuestion", true), "prepare", false)).includes("--through-question"));
+  assert.match(M.handoffDocNote(f), /^Resumes from \/example\/plan\.md\.$/);
+  assert.match(M.handoffDocNote(M.setValue(f, "doc", "")), /seat's saved start doc/);
   assert.deepEqual(M.applyArgv("token", true), ["ui", "act-apply", "--token", "token", "--json", "--background"]);
   assert.deepEqual(M.statusArgv(target), ["ui", "act-status", "--session=example-seat", "--json"]);
   assert.deepEqual(M.statusArgv(target, "run"), ["ui", "act-status", "--run", "run", "--json"]);
@@ -640,4 +654,35 @@ test("Queue: the role's queue and candidates, a draft laid out by pick and slot,
   const c = M.palette({});
   assert.equal(M.srcColor("other", c), c.violet);
   assert.notEqual(M.srcColor("other", c), M.srcColor("offer", c));
+});
+
+test("the verbs in labeled groups: each in exactly one, in the group's order, only what the target offers", () => {
+  const all = M.GROUPS.flatMap((g) => g.verbs);
+  assert.deepEqual([...all].sort(), M.VERBS.map((v) => v.verb).sort(), "every verb in a group");
+  assert.equal(new Set(all).size, all.length, "and in one only");
+  const roleGroups = M.verbGroups({ shoal: A, role: "core" });
+  assert.deepEqual(roleGroups.map((g) => g.label), ["Talk", "Work", "Seat", "Shoal", "Inspect"]);
+  assert.deepEqual(roleGroups.find((g) => g.key === "work").verbs.map((v) => v.verb), ["next", "queue", "offer", "withdraw", "fill"]);
+  assert.deepEqual(roleGroups.flatMap((g) => g.verbs).map((v) => v.verb).sort(), M.verbsFor({ shoal: A, role: "core" }).map((v) => v.verb).sort());
+  // a standalone seat: only its own verbs, and the groups it has none in are left out
+  const seat = M.verbGroups({ session: "example-seat" });
+  assert.deepEqual(seat.map((g) => g.key), ["seat"]);
+  assert.deepEqual(seat[0].verbs.map((v) => v.verb), ["handoff", "remove-session"]);
+});
+
+test("a long command breaks at its arguments, never inside a word or a quoted span", () => {
+  const cmd = "shoal handoff --spec /example/ledgers/shoals/alpha-20261101-000000/shoal.json --only core "
+    + "--expected-session=aaaa0001-1111-4111-8111-111111111111";
+  const lines = M.commandLines(cmd, 60).split("\n");
+  assert.ok(lines.length > 1);
+  for (const l of lines.slice(0, -1)) assert.ok(l.endsWith(" \\"), l);
+  // the words come back whole, in order, with their spaces
+  assert.equal(lines.map((l) => l.replace(/ \\$/, "").trim()).join(" "), cmd);
+  assert.ok(lines.some((l) => l.trim().startsWith("--only core")), lines.join("\n"));
+  // a single-quoted message keeps its spaces and stays on one line
+  const msg = "shoal msg --to core --text 'a short note with  two spaces' --kind info";
+  assert.ok(M.commandLines(msg, 30).split("\n").some((l) => l.includes("'a short note with  two spaces'")));
+  // short commands and multi-command plans keep their lines
+  assert.equal(M.commandLines("shoal next --shoal x"), "shoal next --shoal x");
+  assert.equal(M.commandLines("shoal a\nshoal b"), "shoal a\nshoal b");
 });

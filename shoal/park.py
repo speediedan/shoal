@@ -403,7 +403,7 @@ def claude_live(role) -> bool:
 
 
 def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "", force: bool = False,
-            dry_run: bool = False, effort: str = "") -> int:
+            dry_run: bool = False, effort: str = "", note: str = "") -> int:
     """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
     or provider: the quorum's `context_restart` run by hand, under the quorum's gate. Everything that can be proved is
     proved before the old session stops: the role is at a boundary (restart-ready, posture idle or waiting, between
@@ -433,6 +433,13 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     if session_held(role, spec.dir):
         print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing "
               f"here can stop it; --force does not change that. Detach it or let the turn end, then try again")
+        return 1
+    client = _claude_client(role) if role.ecosystem == "claude" else ""
+    if client:
+        # an attached `claude attach` keeps the worker alive, so the stop reports it still live and nothing restarts
+        # (measured 2026-11-10: it-tune's card was attached 8 s before the quorum's restart, which failed STILL LIVE)
+        print(f"REFUSED: a person may be in {slug}'s session: {client}. Detach from its card (Ctrl+\\ or quit the "
+              "client), then try again; --force does not change that")
         return 1
     tool = ECOSYSTEM_TOOLS.get(new_eco or role.ecosystem, "")
     if tool and not tool_which(tool):
@@ -469,6 +476,8 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         extra.append(f"--set-model={slug}:{model}")
     if effort:
         extra.append(f"--set-effort={slug}:{effort}")
+    if note.strip():  # the operator's restart note, in the new session's first prompt
+        extra.append(f"--note={slug}:{note.strip()}")
     to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model), effort) if x)
     print(f"{slug}: {role.ecosystem} session {role.session[:8]} hands off to a new {to} session from "
           f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else " (not restart-ready: forced)"))
@@ -675,7 +684,7 @@ def cmd_handoff(a) -> int:
     if expected and (spec.role(a.only) is None or spec.role(a.only).session != expected):
         print("REFUSED: this role changed sessions since the preview: plan the handoff again")
         return 1
-    return handoff(spec, a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort)
+    return handoff(spec, a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort, getattr(a, "note", ""))
 
 
 def add_parser(sub) -> None:
@@ -713,6 +722,7 @@ def add_parser(sub) -> None:
                    help="standalone Claude: a seat stopped at an open question is stopped and resumed with the checkpoint request (the question is dropped)")
     p.add_argument("--await-idle", action="store_true", help=argparse.SUPPRESS)  # the detached self-handover finisher
     p.add_argument("--doc", default="", help="standalone: its start doc (default: the saved one)")
+    p.add_argument("--note", default="", help="a note for the new session, added to its first prompt after the start doc")
     p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
     p.add_argument("--effort", default="", help="the new session's effort (default: the recorded one; on another provider, its default)")
     p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one)")

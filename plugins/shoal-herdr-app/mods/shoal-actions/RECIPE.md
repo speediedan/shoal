@@ -1,6 +1,6 @@
 # Shoal actions
 
-A compact dialog (640 by 540) for operating a shoal: pick a shoal and a role, pick an action, read
+A compact dialog (640 by 600) for operating a shoal: pick a shoal and a role, pick an action, read
 the CLI's dry-run preview and wake cost, and confirm. It replaces herdr 0.9.3's popup palette.
 
 ## What you see
@@ -43,7 +43,7 @@ the CLI's dry-run preview and wake cost, and confirm. It replaces herdr 0.9.3's 
 
 ## Built from
 
-- `mod.json` `{"place":"none","focusable":true,"overlay":{"kind":"dialog","width":640,"height":540}}`.
+- `mod.json` `{"place":"none","focusable":true,"overlay":{"kind":"dialog","width":640,"height":600}}`.
 - `main.js` (View): `exec`, `terminals`, `focused`, `spaces`, `panes`, `theme`, `closeOverlay`,
   `nextCommand`, `InputState` + `Input`. `model.js` (pure, Node-tested): verbs, forms, argv,
   reply parsing, preselection, keys, fixture answers, palette. `fixtures/act.json`: one reply of

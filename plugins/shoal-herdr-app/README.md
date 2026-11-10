@@ -12,6 +12,7 @@ and applies on Confirm with the plan's token (`shoal ui act-apply`).
 | `mods/shoal-actions` | The operator actions dialog (in place of herdr 0.9.3's popup palette): shoal and role pickers, then Message, Offer, Withdraw, Next, Asks, Offline, Freeze, Status, Conditions and Upgrade preview. Writes are planned (`shoal ui act-plan <verb> --json`), previewed and confirmed (`shoal ui act-apply --token`). See its `RECIPE.md`. |
 | `mods/shoal-status` | The status bar of the `shoal` layout: the Lattice and Actions buttons, and each provider's usage from the cached `shoal ui usage --json`. |
 | `mods/lattice-view` | The shoal graph doc v1 (`shoal ui graph --json`) as an animated, hoverable network: a global view of every shoal around the operator hub, a per-shoal view with host regions, a metrics and needs-you rail, and a compact `pulse` mode for an edge drawer. See its `RECIPE.md`. |
+| `mods/shoal-usage` | The usage dashboard, the home space's `usage` tab (the top bar's Usage): a card per provider with each window's meter, reset and pace, the tightest meter as the headline, and panels by shoal, role and standalone seat for when per-session usage is recorded. Reads `shoal ui usage --json`; Refresh adds `--refresh`. |
 | `mods/shoal-home` | The splash and host chooser, natively: the nautical SHOAL logo, the five splash creatures in a kelp network and one card per host (`shoal ui launch --list --json --summary`); a click runs `shoal ui app-open --machine <name>`. See its `RECIPE.md`. |
 
 ![lattice-view](mods/lattice-view/preview.png)
@@ -176,7 +177,7 @@ text only.
 
 ## shoal-actions
 
-A dialog overlay (`mod.json` `{"place":"none","focusable":true,"overlay":{"kind":"dialog","width":640,"height":540}}`).
+A dialog overlay (`mod.json` `{"place":"none","focusable":true,"overlay":{"kind":"dialog","width":640,"height":600}}`).
 It runs `shoal` on the machine of the role's card (`exec` `on`: the space machine of the terminal
 labelled `shoal.pane=<shoal id>/<role>`, else of any card of that shoal, else where the dialog was
 opened), and only these subcommands:

@@ -650,7 +650,7 @@ test("shared focus: a node id or {node, shoal, t}; persisted and stale requests 
 test("actions open on roles, shoals and saved standalone seats, on the feed's machine", () => {
   const exec = { kind: "exec", argv: ["shoal", "ui", "graph", "--json"], on: "lane-a" };
   const o = M.actionsOverlay(alpha, `${A}:core`, exec);
-  assert.deepEqual(o, { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: A, role: "core", machine: "lane-a" } });
+  assert.deepEqual(o, { mod: "shoal-actions", kind: "dialog", width: 640, height: 600, props: { shoal: A, role: "core", machine: "lane-a" } });
   assert.equal(M.actionsOverlay(alpha, `${A}:core`, { kind: "exec", on: null }).props.machine, null, "null is this computer");
   assert.equal(M.actionsOverlay(alpha, `${A}:core`, { kind: "file", path: "<feed>", on: "lane-b" }).props.machine, "lane-b");
   assert.equal(M.actionsOverlay(global, `${A}:core`, null).props.machine, null);

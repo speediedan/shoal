@@ -33,7 +33,7 @@ import {
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
-  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, verbGroups,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -835,19 +835,26 @@ export default class Actions extends View {
   }
 
   verbRow(c) {
-    const row = h_flex().px(16).pb(12).gap(6).flex_wrap().flex_none();
-    for (const v of verbsFor(this.sel)) {
-      const on = v.verb === this.verb;
-      row.child(h_flex().id(`v-${v.verb}`).h(28).px(11).items_center().rounded(7).flex_none().cursor_pointer()
-        .border_1().border_color(on ? c.accent : c.input)
-        .bg(on ? c.accent : v.kind === "write" ? c.raised : c.panel)
-        .text_size(12).font_medium().text_color(on ? c.accentFg : c.ink)
-        .hover((s) => s.opacity(0.88))
-        .tooltip(v.about)
-        .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })
-        .child(v.label));
+    // one labeled row per group (Talk, Work, Seat, Shoal, Inspect): every verb one click away, in an order that says what it is for
+    const col = v_flex().px(16).pb(12).gap(5).flex_none();
+    for (const g of verbGroups(this.sel)) {
+      const row = h_flex().id(`g-${g.key}`).gap(6).items_start();
+      row.child(div().w(54).flex_none().pt(6).text_size(10.5).text_color(c.dim).child(g.label));
+      const chips = h_flex().flex_1().min_w(0).gap(6).flex_wrap();
+      for (const v of g.verbs) {
+        const on = v.verb === this.verb;
+        chips.child(h_flex().id(`v-${v.verb}`).h(26).px(10).items_center().rounded(7).flex_none().cursor_pointer()
+          .border_1().border_color(on ? c.accent : c.input)
+          .bg(on ? c.accent : v.kind === "write" ? c.raised : c.panel)
+          .text_size(12).font_medium().text_color(on ? c.accentFg : c.ink)
+          .hover((s) => s.opacity(0.88))
+          .tooltip(v.about)
+          .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })
+          .child(v.label));
+      }
+      col.child(row.child(chips));
     }
-    return row;
+    return col;
   }
 
   label(text, c) {
@@ -888,7 +895,7 @@ export default class Actions extends View {
   menuBody(c) {
     const col = v_flex().gap(2);
     col.child(div().pb(6).text_size(11.5).text_color(c.muted).child("Pick an action. Permanent or wide ones preview first; on the rest, tick Preview first to see a dry run."));
-    for (const v of verbsFor(this.sel)) {
+    for (const v of verbGroups(this.sel).flatMap((g) => g.verbs)) {
       col.child(h_flex().id(`m-${v.verb}`).gap(10).px(8).py(5).rounded(6).cursor_pointer().items_center()
         .hover((s) => s.bg(c.hover))
         .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })
@@ -905,6 +912,9 @@ export default class Actions extends View {
     col.child(h_flex().gap(8).items_center()
       .child(div().text_size(13.5).font_semibold().child(info.label))
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
+    const roleDoc = this.roles?.shoals?.find((s) => s.id === this.sel.shoal)?.roles?.find((r) => r.slug === this.sel.role)?.doc ?? null;
+    const docNote = handoffDocNote(this.form, roleDoc);
+    if (docNote) col.child(div().text_size(11.5).text_color(c.muted).child(docNote));
     for (const f of visibleFields(this.form)) {
       const v = this.form.values[f.key];
       if (f.kind === "text") {
@@ -912,7 +922,8 @@ export default class Actions extends View {
         col.child(v_flex().gap(5)
           .child(this.label(f.label + (f.required ? "" : " (optional)"), c))
           .child(Input.new(this.inputs[f.key]).h(32).px(10).rounded(7).border_1()
-            .border_color(focusedNow ? c.accent : c.input).bg(c.code).text_size(12.5).text_color(c.ink)));
+            .border_color(focusedNow ? c.accent : c.input).bg(c.code).text_size(12.5).text_color(c.ink))
+          .when(Boolean(f.hint), (el) => el.child(div().text_size(11).text_color(c.dim).child(f.hint))));
       } else if (f.kind === "toggle") {
         col.child(h_flex().id(`f-${f.key}`).gap(10).items_center().cursor_pointer().py(2)
           .on_click((_e, cx) => { this.form = setValue(this.form, f.key, !v); cx.notify(); })
@@ -988,7 +999,7 @@ export default class Actions extends View {
       col.child(list);
     }
     col.child(this.label("command", c));
-    col.child(this.mono("cmd", p.command, c));
+    col.child(this.mono("cmd", commandLines(p.command), c));
     if (p.cost) {
       col.child(h_flex().gap(8).items_start().px(10).py(7).rounded(7).bg(withAlpha(c.amber, 0.12)).border_1().border_color(withAlpha(c.amber, 0.5))
         .child(div().text_color(c.amber).child("⚠"))
@@ -1009,7 +1020,7 @@ export default class Actions extends View {
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
     if (r.open) col.child(div().text_size(12).text_color(r.open === "its space is open" ? c.green : c.muted).child(r.open));
     col.child(this.label("command", c));
-    col.child(this.mono("res-cmd", r.command || r.plan?.command || "", c));
+    col.child(this.mono("res-cmd", commandLines(r.command || r.plan?.command || ""), c));
     if (r.plan?.cost) col.child(div().text_size(11.5).text_color(c.amber).child(`⚠ ${r.plan.cost}`));
     col.child(this.label("output", c));
     col.child(this.mono("res-out", r.output, c, { color: r.ok ? c.ink : c.red }));

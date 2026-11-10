@@ -1290,10 +1290,11 @@ def cmd_dash(a) -> int:
         cols, rows = ui_term.screen_size()
         try:
             doc = ui_status.cached_status(a.ids or None)
-            body = ui_status.render_text(doc, width=cols)
+            # the meters live in the app's Usage tab (and the status bar): the overview stays about the shoal
+            body = ui_status.render_text(doc, width=cols, usage=False)
         except Exception as exc:  # noqa: BLE001
             body = f"status unavailable: {exc}"
-        # Fit the pane: a taller frame scrolls the usage table into the scrollback on every tick.
+        # Fit the pane: a taller frame scrolls into the scrollback on every tick.
         sys.stdout.write(ui_term.fit_frame(body, f"\x1b[2m{datetime.datetime.now():%H:%M:%S}  [r] refresh  "
                                            "[l] ledger  [m] menu  [q] shell   (read-only; conditions cached 5 min)\x1b[0m",
                                            cols, rows))

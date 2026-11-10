@@ -84,6 +84,19 @@ LADDERS = {
     "asks-on-return": [(0, "wake")],
 }
 CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
+ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after this
+
+
+def restart_client(role) -> str:
+    """Why a person may be in a Claude role's session ('' when nothing says so, or for another harness): the quorum's
+    automatic restart waits for them to detach."""
+    if role is None or role.ecosystem != "claude" or not role.session:
+        return ""
+    try:
+        import park
+        return park._claude_client(role)
+    except Exception:  # noqa: BLE001 - an unreadable listing never blocks the restart that would report it
+        return ""
 # wake economy (architecture doc §7, "When roles wake"): held while the maintainer is away, re-woken for
 # the same evidence at most once per REWAKE_MIN, quiet for a while after the maintainer returns (the
 # return wakes roles with asks itself), and at least WAKE_GAP_MIN between two health wakes of one role
@@ -1223,6 +1236,23 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
                                  f"held (usage limit until {until})"))
                 break
+            client = restart_client(role_) if action == "restart" else ""
+            if client:
+                # a person attached to the session keeps its worker alive, so a stop fails STILL LIVE and the ladder moved
+                # on to its page with no retry (2026-11-10, it-tune): hold the restart until they detach, paging once
+                held = lad.setdefault("attached", iso())
+                if lad.get("attached_said") != client:
+                    lad["attached_said"] = client
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
+                                 f"held ({client}; it restarts once the client detaches)"))
+                if (age_min(held) or 0.0) >= ATTACHED_PAGE_MIN and not lad.get("attached_paged"):
+                    lad["attached_paged"] = iso()
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:page", page_user(
+                        spec, f"{c['slug']}: restart-ready, but its automatic restart is held: {client}. Detach its "
+                        "card to let it restart", state, dry_run)))
+                break
+            for k in ("attached", "attached_said", "attached_paged"):
+                lad.pop(k, None)
             if action == "wake" and c["condition"] == "watcher-dead":
                 # the quorum re-arms a dead DETACHED watcher itself (no model turn); only an in-session
                 # (exit) watcher still needs its role woken to re-arm (architecture doc §7)

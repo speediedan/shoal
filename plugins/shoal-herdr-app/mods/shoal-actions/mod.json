@@ -1,1 +1,1 @@
-{ "place": "none", "title": "Shoal actions", "focusable": true, "overlay": { "kind": "dialog", "width": 640, "height": 540 } }
+{ "place": "none", "title": "Shoal actions", "focusable": true, "overlay": { "kind": "dialog", "width": 640, "height": 600 } }

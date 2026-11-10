@@ -109,7 +109,8 @@ def detach_self(a, entry: dict, doc: str) -> int:
     log = os.path.join(root, unit + ".log")
     cmd = [sys.executable, os.path.join(HERE, "cli.py"), "handoff", "--session", label, "--no-prepare", "--await-idle",
            "--expected-session", entry["session"], "--wait-seconds", str(a.wait_seconds), "--doc", doc]
-    for flag, val in (("--ecosystem", a.ecosystem), ("--model", a.model), ("--effort", a.effort)):
+    for flag, val in (("--ecosystem", a.ecosystem), ("--model", a.model), ("--effort", a.effort),
+                      ("--note", getattr(a, "note", ""))):
         if val:
             cmd += [flag, val]
     argv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
@@ -129,6 +130,14 @@ def detach_self(a, entry: dict, doc: str) -> int:
     note(f"{label} is this session: handoff detached as {unit}, log {log}. End this turn now; the finisher hands "
          f"off once the seat is idle on two checks, within {a.wait_seconds}s")
     return 0
+
+
+def resume_brief(doc: str, note: str = "") -> str:
+    """A standalone seat's first prompt: resume from its start doc, then the operator's note for this handoff, if any."""
+    sys.path.insert(0, os.path.join(HERE, "ui"))
+    import handover
+    text = handover.RESUME.format(doc=doc)
+    return text + (f"\n\nA note from the operator for this handoff: {note.strip()}" if note.strip() else "")
 
 
 def preflight(doc: str, ecosystem: str) -> None:
@@ -269,7 +278,8 @@ def run(a) -> int:
         from roles import state_dir
         restart_log = os.path.join(state_dir(spec.sid), f"context-restart-{label}.log")
         offset = os.path.getsize(restart_log) if os.path.exists(restart_log) else 0
-        rc = park.handoff(ShoalSpec.load(a.spec), a.spec, label, a.model, a.ecosystem, False, False, a.effort)
+        rc = park.handoff(ShoalSpec.load(a.spec), a.spec, label, a.model, a.ecosystem, False, False, a.effort,
+                          getattr(a, "note", ""))
         if rc:
             return rc
         note("3/3 Restart launched; following its log until the replacement is recorded")
@@ -354,7 +364,7 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prep
     effort = a.effort or (entry.get("effort", "") if eco == entry["harness"] else "")
     note(f"3/3 Starting the new {eco} session from {doc}")
     new = backends.get(eco).create(label, entry.get("cwd") or os.getcwd(),
-                                   brief=handover.RESUME.format(doc=doc), name=label, model=model, effort=effort)
+                                   brief=resume_brief(doc, getattr(a, "note", "")), name=label, model=model, effort=effort)
     at = handover.now_iso()
     # the sessions this seat has had, newest last: which one a stale card, job or name-addressed message belongs to
     lineage = (list(original.get("lineage") or []) + [{"harness": original["harness"], "session": old,

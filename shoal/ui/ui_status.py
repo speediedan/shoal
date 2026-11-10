@@ -817,12 +817,13 @@ def ascii_table(headers: list[str], rows: list[list[str]], width: int, flex: tup
     return "\n".join([rule, line(headers), rule] + [line(r, r) for r in rows] + [rule])
 
 
-def render_text(doc: dict, width: int = 0) -> str:
-    """Per shoal: a summary line, one table row per role, then open health conditions as a table."""
+def render_text(doc: dict, width: int = 0, usage: bool = True) -> str:
+    """Per shoal: a summary line, one table row per role, then open health conditions as a table. `usage`: the
+    subscription meters first (a shoal's overview leaves them to the app's Usage tab, which keeps it about the shoal)."""
     width = width or term_width()
     import subscription_usage
-    usage = subscription_usage.render(doc.get("usage") or {}, color=use_color(), width=width)
-    out = [usage, ""] if usage else []
+    meters = subscription_usage.render(doc.get("usage") or {}, color=use_color(), width=width) if usage else ""
+    out = [meters, ""] if meters else []
     for s in doc["shoals"]:
         if s.get("error"):
             out.append(f"{s['id']}: ERROR {s['error']}")

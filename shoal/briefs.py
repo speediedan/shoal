@@ -324,7 +324,14 @@ def h4_disciplines(role: Role, spec: ShoalSpec) -> str:
 
 def brief_for(role: Role, spec: ShoalSpec) -> str:
     body = ledger_brief(role, spec)
-    return body + launch_config(role) + state_block(role, spec) + grants_block(role, spec)
+    return body + launch_config(role) + state_block(role, spec) + grants_block(role, spec) + note_block(role)
+
+
+def note_block(role: Role) -> str:
+    """An operator's note for this one restart (`restart --note`, the Handoff dialog's restart note): set on the role for
+    the run only, never saved with the spec."""
+    note = str(getattr(role, "restart_note", "") or "").strip()
+    return f"\n\n## A note from the operator for this restart\n\n{note}\n" if note else ""
 
 
 if __name__ == "__main__":

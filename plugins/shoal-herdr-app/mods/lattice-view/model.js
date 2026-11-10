@@ -809,7 +809,7 @@ function dialogSpec(target, source) {
   const machine = src.kind === "exec" || src.kind === "file" ? (typeof src.on === "string" && src.on ? src.on : null) : null;
   const props = { ...target, machine };
   if (src.kind === "fixture") props.fixture = true;
-  return { mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props };
+  return { mod: "shoal-actions", kind: "dialog", width: 640, height: 600, props };
 }
 
 /**
