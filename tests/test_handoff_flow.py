@@ -322,7 +322,7 @@ class HandoffTests(unittest.TestCase):
 
     def test_self_handoff_detaches_a_finisher_with_the_callers_tool_path(self):
         entry = self.claude_seat()
-        self.args.prepare = True
+        self.args.no_prepare = True
         with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001", PATH="/example/bin:/usr/bin"), \
              patch.object(flow, "preflight"), patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
              patch.object(park, "stop_session") as stop:
@@ -341,8 +341,22 @@ class HandoffTests(unittest.TestCase):
         with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/eeee0003"):
             self.assertFalse(flow.is_self(entry), "handing off another seat stays in the foreground")
 
+    def test_self_handoff_must_opt_out_of_prepare(self):
+        self.claude_seat()
+        with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001"), patch.object(flow, "preflight"), \
+             patch.object(subprocess, "run") as run, self.assertRaisesRegex(flow.HandoffError, "refresh your start doc, then pass --no-prepare"):
+            flow.run(self.args)
+        run.assert_not_called()
+
+    def test_through_question_is_refused_for_a_role(self):
+        args = types.SimpleNamespace(session="", prepare=True, force=False, spec="/example/spec.json", only="core",
+                                     through_question=True, wait_seconds=2, dry_run=False)
+        with self.assertRaisesRegex(flow.HandoffError, "for standalone seats"):
+            flow.run(args)
+
     def test_self_handoff_needs_its_checkpoint_first(self):
         entry = self.claude_seat()
+        self.args.no_prepare = True
         self.doc.write_text("# Example\nno stamp\n")
         with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001"), patch.object(flow, "preflight"), \
              patch.object(subprocess, "run", wraps=subprocess.run) as run, self.assertRaisesRegex(flow.HandoffError, "must first write a valid start doc"):

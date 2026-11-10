@@ -986,7 +986,7 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
                          + f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n" + osc)
         sys.stdout.flush()
         # a card that reports refreshes far more often: its 5 minutes was too slow for a live state
-        k = _getkey(SEAT_REFRESH_S if seat is not None else 300)
+        k = _getkey(SEAT_REFRESH_S if seat is not None and harness == "claude" else 300)
         if k in ("q", "Q"):
             return 0
         if k in ("\r", "\n"):

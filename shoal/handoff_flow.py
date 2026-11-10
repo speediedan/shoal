@@ -182,6 +182,8 @@ def run(a) -> int:
         prepare = not getattr(a, "no_prepare", False)
         if a.force:
             raise HandoffError("--force is for roles; a standalone handoff requires an idle session")
+    if getattr(a, "through_question", False) and not session_key:
+        raise HandoffError("--through-question is for standalone seats; a role's open question is answered first")
     if a.force and prepare:
         raise HandoffError("checkpoint-first handoff and --force cannot be combined")
     if not 1 <= a.wait_seconds <= 86400:
@@ -205,6 +207,9 @@ def run(a) -> int:
     doc = os.path.abspath(os.path.expanduser(doc)) if doc else ""
     preflight(doc, eco)
     if session_key and is_self(entry):
+        # a self-handover has no later turn to take a checkpoint in: it must be written first, then opted into
+        if prepare:
+            raise HandoffError(f"{label} is this session: refresh your start doc, then pass --no-prepare")
         return detach_self(a, entry, doc)
     await_idle = bool(getattr(a, "await_idle", False))
     if session_key and not prepare:

@@ -1198,8 +1198,9 @@ Three cases the 2026-11-09 seat moves hit by hand are now part of the flow:
   then delivered with `ClaudeBackend.deliver(..., through_question=True)`, which stops the turn at the question and
   resumes the same conversation with the request (the question is dropped).
 - **A seat handing itself off.** Stopping its own session would end the turn running the command. `is_self` matches
-  the caller's Claude job folder or conversation (or `SHOAL_SELF_SESSION` for another harness); `detach_self` then
-  checks that the seat's start doc already validates, and relaunches the handoff as a transient user unit
+  the caller's Claude job folder or conversation (or `SHOAL_SELF_SESSION` for another harness). The seat writes its
+  checkpoint first and opts in with `--no-prepare` (a self `--prepare` is refused); `detach_self` then checks that
+  the start doc validates, and relaunches the handoff as a transient user unit
   (`systemd-run --user`, log in the handoff runtime dir) with `--no-prepare --await-idle` and the caller's `PATH`,
   config and `SHOAL_*` environment, since a transient unit starts from the manager's environment without the tool
   path. The unit waits until the seat is idle on two checks `POLL_S` apart, then hands off as usual.
