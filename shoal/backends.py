@@ -525,11 +525,20 @@ def detached(argv: list[str]) -> list[str]:
     demand inside the unit's cgroup, and KillMode=control-group kills it when the oneshot ends, with
     every session it spawned (measured 2026-10-12 after a reboot: a session relaunched by the quorum died
     4 s later). `systemd-run --user --scope` gives the call its own scope, which keeps the caller's
-    environment, cwd and pipes."""
+    environment, cwd and pipes.
+    Under the Herdr app's `exec` (HC_SCOPE set), herdr-core ends every process whose environment carries the exec's
+    HC_SCOPE once that exec returns, whatever its session or cgroup (measured 2026-11-10: the Actions dialog's background
+    handoff worker, and a child in its own scope, got SIGHUP then SIGTERM; the same child without HC_SCOPE lived), so
+    the call drops it first."""
     sr = shutil.which("systemd-run")
     if os.environ.get("INVOCATION_ID") and sr:
-        return [sr, "--user", "--scope", "--collect", "--quiet", *argv]
+        argv = [sr, "--user", "--scope", "--collect", "--quiet", *argv]
+    if os.environ.get(EXEC_SCOPE_VAR):
+        argv = [shutil.which("env") or "/usr/bin/env", "-u", EXEC_SCOPE_VAR, *argv]
     return argv
+
+
+EXEC_SCOPE_VAR = "HC_SCOPE"  # herdr-core's tag on what an `exec` started
 
 
 def spawn_detached(argv: list[str], **kw) -> subprocess.Popen:
@@ -540,7 +549,7 @@ def spawn_detached(argv: list[str], **kw) -> subprocess.Popen:
     import time as _time
     wrapped = detached(argv)
     p = subprocess.Popen(wrapped, start_new_session=True, **kw)
-    if wrapped is argv:
+    if not (os.environ.get("INVOCATION_ID") and shutil.which("systemd-run")):  # no scope to wait for
         return p
     try:
         mine = open("/proc/self/cgroup").read().strip()

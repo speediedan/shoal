@@ -386,6 +386,40 @@ export function textLines(s, cap = 1500) {
   return [...lines.slice(0, cap), `... ${lines.length - cap} more lines`];
 }
 
+/**
+ * A command shown in the dialog, broken at argument boundaries with shell continuations, so each line fits `width`.
+ * Left to the text renderer, a long command wrapped inside and lost the spaces at its breaks
+ * (`shoal handoff--spec ...shoal.json--only it-tune`, 2026-11-10). One argument longer than `width` keeps its own line.
+ */
+export function commandLines(s, width = 72) {
+  const out = [];
+  // the words of one `shlex.join` line: a single-quoted span (spaces and all) stays inside its word
+  const words = (line) => {
+    const ws = [];
+    let w = "", quoted = false;
+    for (const ch of line) {
+      if (ch === "'") quoted = !quoted;
+      if (ch === " " && !quoted) {
+        if (w) ws.push(w);
+        w = "";
+      } else w += ch;
+    }
+    if (w) ws.push(w);
+    return ws;
+  };
+  for (const line of str(s).split("\n")) {
+    let cur = "";
+    for (const word of words(line)) {
+      if (cur && cur.length + 1 + word.length + 2 > width) {
+        out.push(`${cur} \\`);
+        cur = `  ${word}`;
+      } else cur = cur ? `${cur} ${word}` : word;
+    }
+    out.push(cur);
+  }
+  return out.join("\n");
+}
+
 const lastLine = (s) => str(s).split(/\r?\n/).map((l) => plainText(l).trim()).filter(Boolean).pop() ?? "";
 const clip = (s, n = 400) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 

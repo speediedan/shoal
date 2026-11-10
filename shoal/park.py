@@ -434,6 +434,13 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing "
               f"here can stop it; --force does not change that. Detach it or let the turn end, then try again")
         return 1
+    client = _claude_client(role) if role.ecosystem == "claude" else ""
+    if client:
+        # an attached `claude attach` keeps the worker alive, so the stop reports it still live and nothing restarts
+        # (measured 2026-11-10: it-tune's card was attached 8 s before the quorum's restart, which failed STILL LIVE)
+        print(f"REFUSED: a person may be in {slug}'s session: {client}. Detach from its card (Ctrl+\\ or quit the "
+              "client), then try again; --force does not change that")
+        return 1
     tool = ECOSYSTEM_TOOLS.get(new_eco or role.ecosystem, "")
     if tool and not tool_which(tool):
         print(f"REFUSED: {tool} is not on this host's tool path, so a new {new_eco or role.ecosystem} session cannot start")

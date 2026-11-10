@@ -641,3 +641,20 @@ test("Queue: the role's queue and candidates, a draft laid out by pick and slot,
   assert.equal(M.srcColor("other", c), c.violet);
   assert.notEqual(M.srcColor("other", c), M.srcColor("offer", c));
 });
+
+test("a long command breaks at its arguments, never inside a word or a quoted span", () => {
+  const cmd = "shoal handoff --spec /example/ledgers/shoals/alpha-20261101-000000/shoal.json --only core "
+    + "--expected-session=aaaa0001-1111-4111-8111-111111111111";
+  const lines = M.commandLines(cmd, 60).split("\n");
+  assert.ok(lines.length > 1);
+  for (const l of lines.slice(0, -1)) assert.ok(l.endsWith(" \\"), l);
+  // the words come back whole, in order, with their spaces
+  assert.equal(lines.map((l) => l.replace(/ \\$/, "").trim()).join(" "), cmd);
+  assert.ok(lines.some((l) => l.trim().startsWith("--only core")), lines.join("\n"));
+  // a single-quoted message keeps its spaces and stays on one line
+  const msg = "shoal msg --to core --text 'a short note with  two spaces' --kind info";
+  assert.ok(M.commandLines(msg, 30).split("\n").some((l) => l.includes("'a short note with  two spaces'")));
+  // short commands and multi-command plans keep their lines
+  assert.equal(M.commandLines("shoal next --shoal x"), "shoal next --shoal x");
+  assert.equal(M.commandLines("shoal a\nshoal b"), "shoal a\nshoal b");
+});

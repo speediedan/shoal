@@ -33,7 +33,7 @@ import {
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
-  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -988,7 +988,7 @@ export default class Actions extends View {
       col.child(list);
     }
     col.child(this.label("command", c));
-    col.child(this.mono("cmd", p.command, c));
+    col.child(this.mono("cmd", commandLines(p.command), c));
     if (p.cost) {
       col.child(h_flex().gap(8).items_start().px(10).py(7).rounded(7).bg(withAlpha(c.amber, 0.12)).border_1().border_color(withAlpha(c.amber, 0.5))
         .child(div().text_color(c.amber).child("⚠"))
@@ -1009,7 +1009,7 @@ export default class Actions extends View {
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
     if (r.open) col.child(div().text_size(12).text_color(r.open === "its space is open" ? c.green : c.muted).child(r.open));
     col.child(this.label("command", c));
-    col.child(this.mono("res-cmd", r.command || r.plan?.command || "", c));
+    col.child(this.mono("res-cmd", commandLines(r.command || r.plan?.command || ""), c));
     if (r.plan?.cost) col.child(div().text_size(11.5).text_color(c.amber).child(`⚠ ${r.plan.cost}`));
     col.child(this.label("output", c));
     col.child(this.mono("res-out", r.output, c, { color: r.ok ? c.ink : c.red }));

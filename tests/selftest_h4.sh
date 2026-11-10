@@ -1256,11 +1256,23 @@ echo "== 24 a claude call from a systemd unit runs in its own scope; a watcher b
 python3 - "$SHOALD" <<'PY2' || fail "detached() argv"
 import os, shutil, sys; sys.path.insert(0, sys.argv[1]); import backends
 os.environ.pop("INVOCATION_ID", None)
+os.environ.pop("HC_SCOPE", None)
 assert backends.detached(["claude", "x"]) == ["claude", "x"]
 os.environ["INVOCATION_ID"] = "t"
 got = backends.detached(["claude", "x"])
 assert got == (["claude", "x"] if not shutil.which("systemd-run") else
                [shutil.which("systemd-run"), "--user", "--scope", "--collect", "--quiet", "claude", "x"]), got
+# under the Herdr app's exec: the detached process must not carry the exec's tag, or herdr-core ends it with the exec
+os.environ.pop("INVOCATION_ID")
+os.environ["HC_SCOPE"] = "1-example"
+envb = shutil.which("env") or "/usr/bin/env"
+assert backends.detached(["claude", "x"]) == [envb, "-u", "HC_SCOPE", "claude", "x"], backends.detached(["claude", "x"])
+r, w = os.pipe()
+p = backends.spawn_detached([sys.executable, "-c", "import os; print(os.environ.get('HC_SCOPE', 'unset'))"], stdout=w,
+                            env=dict(os.environ))
+os.close(w); p.wait(10)
+assert os.read(r, 100).decode().strip() == "unset"
+os.environ.pop("HC_SCOPE")
 PY2
 OUT=$(env CLAUDE_CODE_SESSION_ID=cccc9999-real timeout 5 $H ledger-watch --shoal $SID --spec "$SPEC" --slug tl --wake print \
   --session bridge-id-not-mine --interval 60 --sidecar "$S/sc-bind.state" --no-sync 2>&1 || true)
@@ -1742,6 +1754,15 @@ PY2
 rm -f /tmp/$SID/health.json
 check "tl context-restart step1:restart -> would restart (dry-run): .*--only tl" env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl \
   $H health --spec "$SPEC" --instance a --dry-run
+# a person attached to the session (a card's `claude attach`): the restart is held, not failed, until they detach
+TLJOB=$(python3 -c 'import json,sys; print([r for r in json.load(open(sys.argv[1]))["roles"] if r["slug"] == "tl"][0]["session"][:8])' "$SPEC")
+mkdir -p "$S/fakeattach"; printf '#!/bin/sh\nsleep 60\n' > "$S/fakeattach/claude"; chmod +x "$S/fakeattach/claude"
+"$S/fakeattach/claude" attach "$TLJOB" & P_ATT=$!
+sleep 0.3
+rm -f /tmp/$SID/health.json
+check "tl context-restart step1:restart -> held (a client (pid $P_ATT) is attached; it restarts once the client detaches)" \
+  env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run
+kill $P_ATT 2>/dev/null; wait $P_ATT 2>/dev/null || true
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("context_restart",None); json.dump(d,open(p,"w"),indent=1)
 PY2
@@ -1785,6 +1806,11 @@ rc, t = run(force=True)
 assert rc == 1 and "held by a running turn" in t, (rc, t)
 ledger_watch.muse_session_busy = lambda s, e="muse": False
 role.ecosystem = "claude"
+# a person attached to the Claude session (a card's `claude attach`): the stop would fail STILL LIVE, so refuse first
+park._claude_client = lambda r: "a client (pid 4242) is attached"
+rc, t = run(force=True)
+assert rc == 1 and "a person may be in up's session: a client (pid 4242) is attached. Detach from its card" in t, (rc, t)
+park._claude_client = lambda r: ""
 # the new provider's tool, before anything stops
 backends.tool_which = lambda name: None
 rc, t = run(force=True, ecosystem="muse")
