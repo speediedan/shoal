@@ -114,7 +114,7 @@ def main():
     since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=a.since_hours)
     # Date-filter at the source: `gh ... list --limit N` returns the newest N
     # by creation, so an old issue closed today fell outside it (measured
-    # 2026-09-22: interpretune#421 and #338 closed in window, never reconciled).
+    # 2026-09-22: two old issues closed in window, never reconciled).
     since_day = since.strftime("%Y-%m-%d")
     have = seen(a.dir, a.sid)
     repos = repos_for(a)

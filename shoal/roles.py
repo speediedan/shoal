@@ -162,7 +162,7 @@ class Role:
     @property
     def label(self) -> str:
         """The row label everywhere a role is shown (show, posted blocks, reports):
-        BASE name first, session tag in parentheses, e.g. `jlens-expert (jlens-expert-r2)`.
+        BASE name first, session tag in parentheses, e.g. `core (core-r2)`.
         The base name is the stable identity; the tag says which generation holds it.
         A tag alone drifts: a lane once labelled itself with the incarnation number."""
         return f"{self.slug} ({self.tag})"

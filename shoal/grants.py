@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Signed standing grants: maintainer authorizations that travel with a role (design:
-signed_grants_design_2026-10-26.md in distributed-insight).
+docs/decisions.md).
 
     shoal grant  --shoal H [--role R] --scope TEXT [--kind TAG] [--until ISO] [--dry-run]
     shoal revoke --shoal H --id GRANT_ID [--dry-run]

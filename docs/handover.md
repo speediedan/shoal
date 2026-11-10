@@ -147,7 +147,7 @@ model calls. Per session it reports:
   would have fired, the turns and hours between them, and the turns a fresh session takes to reach the limit at that growth.
 
 The turn count is what a limit means to the session: how often it would be asked to refresh its start doc. Measured
-2026-10-24 over three days on speediedl: the busiest standalone seat grew about 19k per turn, so a 500k limit would have
+2026-10-24 over three days on one host: the busiest standalone seat grew about 19k per turn, so a 500k limit would have
 handed it over every 16 to 27 turns (11 to 13 h); most roles grew 12k to 20k per turn (a fresh role reaches 500k in 21 to
 34 turns, one role at 35k per turn in 12); the wake relay (since retired) grew under 3k per turn and would not reach it
 for 150 turns.

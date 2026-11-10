@@ -32,26 +32,26 @@ git clone -q "$S/remote/ledgers.git" "$A" 2>/dev/null
 ( cd "$A" && git commit -q --allow-empty -m init && git push -q origin HEAD 2>/dev/null )
 git clone -q "$S/remote/ledgers.git" "$B" 2>/dev/null
 mkdir -p "$ROOT/shoals/t1shoal"
-# synthetic board, board order = priority: open interpretune items, one out of alpha's scope,
+# synthetic board, board order = priority: open app items, one out of alpha's scope,
 # one closed, one in a skipped status
 shoal_board_fixture "$S/board.json" <<'JSON'
-[{"repo":"speediedan/interpretune","number":600,"title":"fixture: offered then done"},
- {"repo":"speediedan/interpretune","number":372,"title":"fixture: offered then done"},
- {"repo":"speediedan/interpretune","number":501,"title":"fixture: pool item, contested"},
- {"repo":"speediedan/interpretune","number":9001,"title":"fixture: free candidate one"},
+[{"repo":"acme/app","number":600,"title":"fixture: offered then done"},
+ {"repo":"acme/app","number":372,"title":"fixture: offered then done"},
+ {"repo":"acme/app","number":501,"title":"fixture: pool item, contested"},
+ {"repo":"acme/app","number":9001,"title":"fixture: free candidate one"},
  {"repo":"example/other","number":39,"title":"fixture: outside alpha's scope"},
- {"repo":"speediedan/interpretune","number":9002,"title":"fixture: closed","state":"CLOSED"},
- {"repo":"speediedan/interpretune","number":9003,"title":"fixture: done status","status":"Done"},
- {"repo":"speediedan/interpretune","number":9004,"title":"fixture: free candidate two","kind":"pr"},
- {"repo":"speediedan/interpretune","number":9005,"title":"fixture: free candidate three"}]
+ {"repo":"acme/app","number":9002,"title":"fixture: closed","state":"CLOSED"},
+ {"repo":"acme/app","number":9003,"title":"fixture: done status","status":"Done"},
+ {"repo":"acme/app","number":9004,"title":"fixture: free candidate two","kind":"pr"},
+ {"repo":"acme/app","number":9005,"title":"fixture: free candidate three"}]
 JSON
 DOC_A=$(shoal_doc alpha); DOC_B=$(shoal_doc beta); DOC_O=$(shoal_doc observer)
 cat > "$SPEC" <<JSON
-{"shoal":"t1shoal","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
+{"shoal":"t1shoal","dir":"$WORK","incarnation":0,"repos":["acme/app"],
  "ledger":{"repo":"$S/remote/ledgers.git","dir":"$A"},
  "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
-  {"slug":"alpha","ecosystem":"claude","title":"alpha","doc":"$DOC_A","fill":"self","session":"aaaa1111","scope":{"repos":["speediedan/interpretune"]}},
+  {"slug":"alpha","ecosystem":"claude","title":"alpha","doc":"$DOC_A","fill":"self","session":"aaaa1111","scope":{"repos":["acme/app"]}},
   {"slug":"beta","ecosystem":"opencode","title":"beta","doc":"$DOC_B","fill":"self","session":"ses_bbbb"},
   {"slug":"observer","ecosystem":"opencode","title":"observer","doc":"$DOC_O","fill":"none","can_fill_others":true,"coordinator":false,"queue":"","session":"ses_ffff"}
  ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-20T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
@@ -71,8 +71,8 @@ check "added .shoal-lock, \*.tmp" $H ledger-init --spec "$SPEC"
 expect 0 $H ledger-init --spec "$SPEC" >/dev/null
 [ "$(cat "$A/.gitignore")" = "$(printf '.old-lock\n.shoal-lock\n*.tmp')" ] || fail "gitignore not extended idempotently :: $(cat "$A/.gitignore")"
 [ -z "$(git -C "$A" status --porcelain)" ] || fail "ledger clone not clean after re-init :: $(git -C "$A" status --porcelain)"
-expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#372:fix --base interpretune@3ac6fdf9 --note "phase 1 only" >/dev/null
-check "interpretune#372:fix" $H show --shoal t1shoal --slug alpha
+expect 0 $H offer --shoal t1shoal --to alpha --item app#372:fix --base app@3ac6fdf9 --note "phase 1 only" >/dev/null
+check "app#372:fix" $H show --shoal t1shoal --slug alpha
 # a pull that lands on another writer's uncommitted line (a multi-line write between its appends and
 # its one commit) rebases around it and keeps it; a plain rebase refused and killed the watcher (FM-17)
 git -C "$B" pull -q 2>/dev/null; echo remote > "$B/fm17-remote"; git -C "$B" add fm17-remote
@@ -101,71 +101,71 @@ print("fm17 hung fetch ok")
 PY
 git -C "$A" checkout -q -- shoals/t1shoal/ledger/user.jsonl
 echo "== 2 offers + permissions"
-expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#600:fix --base interpretune@3ac6fdf9 --prio 10 >/dev/null
-expect 1 $H offer --shoal t1shoal --to alpha --item interpretune#427:fix --by beta >/dev/null      # a role never offers
-expect 1 $H offer --shoal t1shoal --to beta --item interpretune#427:fix --by beta >/dev/null       # not even to itself
-expect 1 $H offer --shoal t1shoal --to alpha --item interpretune#427:fix --by observer >/dev/null  # legacy can_fill_others is ignored
-check "only user offers work" $H offer --shoal t1shoal --to alpha --item interpretune#427:fix --by observer
-expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#427:fix --base interpretune@3ac6fdf9 >/dev/null
-expect 0 $H offer --shoal t1shoal --to '*' --item interpretune#501:scope --base interpretune@3ac6fdf9 >/dev/null
-check "already offered" $H offer --shoal t1shoal --to alpha --item interpretune#600:fix
-check "pool offers (to=\*): interpretune#501:scope" $H show --shoal t1shoal
+expect 0 $H offer --shoal t1shoal --to alpha --item app#600:fix --base app@3ac6fdf9 --prio 10 >/dev/null
+expect 1 $H offer --shoal t1shoal --to alpha --item app#427:fix --by beta >/dev/null      # a role never offers
+expect 1 $H offer --shoal t1shoal --to beta --item app#427:fix --by beta >/dev/null       # not even to itself
+expect 1 $H offer --shoal t1shoal --to alpha --item app#427:fix --by observer >/dev/null  # legacy can_fill_others is ignored
+check "only user offers work" $H offer --shoal t1shoal --to alpha --item app#427:fix --by observer
+expect 0 $H offer --shoal t1shoal --to alpha --item app#427:fix --base app@3ac6fdf9 >/dev/null
+expect 0 $H offer --shoal t1shoal --to '*' --item app#501:scope --base app@3ac6fdf9 >/dev/null
+check "already offered" $H offer --shoal t1shoal --to alpha --item app#600:fix
+check "pool offers (to=\*): app#501:scope" $H show --shoal t1shoal
 echo "== 3 claim race across clones on the pool item #501 (B stale, A lands first)"
-expect 4 $H claim --shoal t1shoal --slug beta --item interpretune#600:fix --ledger-dir "$B" >/dev/null   # offered to alpha only: refused
+expect 4 $H claim --shoal t1shoal --slug beta --item app#600:fix --ledger-dir "$B" >/dev/null   # offered to alpha only: refused
 expect 0 $H sync --shoal t1shoal --ledger-dir "$B" >/dev/null      # B fetches once, then goes stale
-expect 0 $H claim --shoal t1shoal --slug beta --item interpretune#501:scope --ledger-dir "$B" --no-sync >/dev/null
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#501:scope --base interpretune@3ac6fdf9 >/dev/null
+expect 0 $H claim --shoal t1shoal --slug beta --item app#501:scope --ledger-dir "$B" --no-sync >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#501:scope --base app@3ac6fdf9 >/dev/null
 expect 0 $H sync --shoal t1shoal --ledger-dir "$B" >/dev/null
 expect 1 $H ledger-lint --shoal t1shoal >/dev/null            # E2 contested
-check "E2 contested claim on interpretune#501" $H ledger-lint --shoal t1shoal
-check "CLAIM-LOST interpretune#501: alpha landed first" timeout 20 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 60 --ledger-dir "$B" --no-board
-expect 0 $H release --shoal t1shoal --slug beta --item interpretune#501 --kind lost-race --reason "alpha landed first" --ledger-dir "$B" >/dev/null
+check "E2 contested claim on app#501" $H ledger-lint --shoal t1shoal
+check "CLAIM-LOST app#501: alpha landed first" timeout 20 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 60 --ledger-dir "$B" --no-board
+expect 0 $H release --shoal t1shoal --slug beta --item app#501 --kind lost-race --reason "alpha landed first" --ledger-dir "$B" >/dev/null
 expect 0 $H ledger-lint --shoal t1shoal >/dev/null
-expect 4 $H claim --shoal t1shoal --slug beta --item interpretune#501:scope --ledger-dir "$B" >/dev/null   # held by alpha
+expect 4 $H claim --shoal t1shoal --slug beta --item app#501:scope --ledger-dir "$B" >/dev/null   # held by alpha
 echo "== 4 done, withdraw, decline, msg + ack, ask"
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#600:fix >/dev/null
-expect 0 $H done --shoal t1shoal --slug alpha --item interpretune#600:fix --kind merge --url https://github.com/speediedan/interpretune/pull/601 >/dev/null
-expect 0 $H done --shoal t1shoal --slug alpha --item interpretune#501:scope >/dev/null
-expect 4 $H claim --shoal t1shoal --slug beta --item interpretune#501:scope --ledger-dir "$B" >/dev/null   # done
-expect 1 $H withdraw --shoal t1shoal --item interpretune#427 --to alpha --reason reassign --by beta >/dev/null   # roles never withdraw
-expect 0 $H withdraw --shoal t1shoal --item interpretune#427 --to alpha --reason reassign >/dev/null
-expect 0 $H offer --shoal t1shoal --to '*' --item interpretune#554:scope --base interpretune@3ac6fdf9 >/dev/null
-expect 0 $H claim --shoal t1shoal --slug beta --item interpretune#554:scope --ledger-dir "$B" >/dev/null
-expect 0 $H release --shoal t1shoal --slug beta --item interpretune#554 --kind decline --reason "out of lane" --retry "after #600" --ledger-dir "$B" >/dev/null
-check "interpretune#554:scope" $H show --shoal t1shoal --slug alpha     # re-opened for others
-check "declined: interpretune#554" $H show --shoal t1shoal --slug beta  # never re-offered to beta
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#600:fix >/dev/null
+expect 0 $H done --shoal t1shoal --slug alpha --item app#600:fix --kind merge --url https://github.com/acme/app/pull/601 >/dev/null
+expect 0 $H done --shoal t1shoal --slug alpha --item app#501:scope >/dev/null
+expect 4 $H claim --shoal t1shoal --slug beta --item app#501:scope --ledger-dir "$B" >/dev/null   # done
+expect 1 $H withdraw --shoal t1shoal --item app#427 --to alpha --reason reassign --by beta >/dev/null   # roles never withdraw
+expect 0 $H withdraw --shoal t1shoal --item app#427 --to alpha --reason reassign >/dev/null
+expect 0 $H offer --shoal t1shoal --to '*' --item app#554:scope --base app@3ac6fdf9 >/dev/null
+expect 0 $H claim --shoal t1shoal --slug beta --item app#554:scope --ledger-dir "$B" >/dev/null
+expect 0 $H release --shoal t1shoal --slug beta --item app#554 --kind decline --reason "out of lane" --retry "after #600" --ledger-dir "$B" >/dev/null
+check "app#554:scope" $H show --shoal t1shoal --slug alpha     # re-opened for others
+check "declined: app#554" $H show --shoal t1shoal --slug beta  # never re-offered to beta
 expect 0 $H msg --shoal t1shoal --by user --to alpha --text "review adapter#39 next" --kind instruct --ack >/dev/null
 MID=$(python3 -c "import json;[print(json.loads(l)['id']) for l in open('$A/shoals/t1shoal/ledger/user.jsonl') if '\"msg\"' in l]" | tail -1)
 expect 0 $H msg --shoal t1shoal --by alpha --to user --text ack --kind ack --re "$MID" >/dev/null
 expect 0 $H msg --shoal t1shoal --by beta --to user --text "need merge grant #602" --kind ask --ledger-dir "$B" >/dev/null
 check "msgs to user" $H show --shoal t1shoal
 # an outside seat (a standalone session) may send plain mail to one role: nothing else
-expect 0 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "fsdp2 handoff: see the doc" >/dev/null
-expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to '*' --text "x" >/dev/null
-expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "x" --wake >/dev/null
-expect 1 $H msg --shoal t1shoal --by ext:infra-expansion --to alpha --text "x" --kind instruct >/dev/null
+expect 0 $H msg --shoal t1shoal --by ext:outside-seat --to alpha --text "fsdp2 handoff: see the doc" >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:outside-seat --to '*' --text "x" >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:outside-seat --to alpha --text "x" --wake >/dev/null
+expect 1 $H msg --shoal t1shoal --by ext:outside-seat --to alpha --text "x" --kind instruct >/dev/null
 expect 1 $H msg --shoal t1shoal --by ext:Bad_Name --to alpha --text "x" >/dev/null
-expect 1 $H offer --shoal t1shoal --by ext:infra-expansion --to alpha --item interpretune#555:fix --base interpretune@3ac6fdf9 >/dev/null
-check "ext:infra-expansion" $H show --shoal t1shoal --slug alpha
+expect 1 $H offer --shoal t1shoal --by ext:outside-seat --to alpha --item app#555:fix --base app@3ac6fdf9 >/dev/null
+check "ext:outside-seat" $H show --shoal t1shoal --slug alpha
 # the reply path: a role mails the outside seat, which reads it with show --slug ext:<name>
-expect 0 $H msg --shoal t1shoal --by alpha --to ext:infra-expansion --text "reply: defaults are fine" >/dev/null
-check "reply: defaults are fine" $H show --shoal t1shoal --slug ext:infra-expansion
-expect 1 $H msg --shoal t1shoal --by alpha --to ext:infra-expansion --text "x" --kind instruct >/dev/null
-expect 1 $H msg --shoal t1shoal --by user --to ext:infra-expansion --text "x" --wake >/dev/null
+expect 0 $H msg --shoal t1shoal --by alpha --to ext:outside-seat --text "reply: defaults are fine" >/dev/null
+check "reply: defaults are fine" $H show --shoal t1shoal --slug ext:outside-seat
+expect 1 $H msg --shoal t1shoal --by alpha --to ext:outside-seat --text "x" --kind instruct >/dev/null
+expect 1 $H msg --shoal t1shoal --by user --to ext:outside-seat --text "x" --wake >/dev/null
 echo "== 5 board fill (synthetic board fixture, no GitHub read)"
 check "still has" $H fill --shoal t1shoal --slug alpha            # #372 offered + #554 pool open
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#372:fix >/dev/null
-expect 0 $H done --shoal t1shoal --slug alpha --item interpretune#372:fix >/dev/null
-expect 0 $H withdraw --shoal t1shoal --item interpretune#554 >/dev/null
-check "interpretune#9001" $H fill --shoal t1shoal --slug alpha --limit 3
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#372:fix >/dev/null
+expect 0 $H done --shoal t1shoal --slug alpha --item app#372:fix >/dev/null
+expect 0 $H withdraw --shoal t1shoal --item app#554 >/dev/null
+check "app#9001" $H fill --shoal t1shoal --slug alpha --limit 3
 FILL=$($H fill --shoal t1shoal --slug alpha --limit 5)
-if grep -q "interpretune#600\|interpretune#372\|interpretune#501" <<<"$FILL"; then fail "taken/withdrawn items surfaced as candidates"; fi
-if grep -q "other#39\|interpretune#9002\|interpretune#9003" <<<"$FILL"; then fail "out-of-scope, closed or Done items surfaced :: $FILL"; fi
-grep -q "interpretune#9004" <<<"$FILL" && grep -q "interpretune#9005" <<<"$FILL" || fail "board order candidates missing :: $FILL"
+if grep -q "app#600\|app#372\|app#501" <<<"$FILL"; then fail "taken/withdrawn items surfaced as candidates"; fi
+if grep -q "other#39\|app#9002\|app#9003" <<<"$FILL"; then fail "out-of-scope, closed or Done items surfaced :: $FILL"; fi
+grep -q "app#9004" <<<"$FILL" && grep -q "app#9005" <<<"$FILL" || fail "board order candidates missing :: $FILL"
 echo "== 6 exit-wake watcher: arms, wakes on a new offer, exits 0, sidecar bound"
 ( set +e; timeout 60 $H ledger-watch --shoal t1shoal --slug beta --wake exit --interval 2 --ledger-dir "$B" --no-board --session ses_bbbb > "$S/watch.out" 2>&1; echo "rc=$?" >> "$S/watch.out" ) &
 sleep 4
-expect 0 $H offer --shoal t1shoal --to beta --item interpretune#450:fix --base interpretune@3ac6fdf9 >/dev/null
+expect 0 $H offer --shoal t1shoal --to beta --item app#450:fix --base app@3ac6fdf9 >/dev/null
 wait
 grep -q "LEDGER-WAKE beta@t1shoal" "$S/watch.out" || fail "watcher did not wake: $(cat "$S/watch.out")"
 grep -q "rc=0" "$S/watch.out" || fail "watcher exit code: $(tail -1 "$S/watch.out")"
@@ -196,10 +196,10 @@ check "prove the pid with TWO separate commands: first .cat /tmp/t1shoal/ledger-
 if $H brief --spec "$SPEC" --slug alpha | grep -qE 'ps -p \$\(|ps -p plus sidecar'; then fail "brief combines the pid proof"; fi
 echo "== 8 flattened only: a role-written offer is a projection violation; removed transports are gone"
 expect 0 $H ledger-lint --shoal t1shoal >/dev/null
-python3 -c "import sys; sys.path.insert(0, '$SHOALD'); from ledger import Ledger; Ledger('t1shoal', root='$A').append('beta', 'offer', to='alpha', item='interpretune#777:fix', base='interpretune@3ac6fdf9', prio=1)" >/dev/null
+python3 -c "import sys; sys.path.insert(0, '$SHOALD'); from ledger import Ledger; Ledger('t1shoal', root='$A').append('beta', 'offer', to='alpha', item='app#777:fix', base='app@3ac6fdf9', prio=1)" >/dev/null
 expect 1 $H ledger-lint --shoal t1shoal >/dev/null
-check "E1 .* beta offer interpretune#777: beta may not offer to alpha" $H ledger-lint --shoal t1shoal
-if $H show --shoal t1shoal --slug alpha | grep -q "interpretune#777"; then fail "role-written offer honoured by the projection"; fi
+check "E1 .* beta offer app#777: beta may not offer to alpha" $H ledger-lint --shoal t1shoal
+if $H show --shoal t1shoal --slug alpha | grep -q "app#777"; then fail "role-written offer honoured by the projection"; fi
 check "permission violations ignored: 1" $H show --shoal t1shoal
 expect 1 $H watch --shoal t1shoal pipeline ses_ffff /tmp >/dev/null   # session-addressed fires removed
 expect 2 $H queue-watch --sidecar /dev/null --interval 1 2>/dev/null
@@ -240,10 +240,10 @@ from ledger import Ledger, View, SYSTEM_WRITER
 from roles import ShoalSpec
 assert SYSTEM_WRITER == "shoal", SYSTEM_WRITER
 led = Ledger("t1shoal", root=sys.argv[3])
-led.append(SYSTEM_WRITER, "offer", to="alpha", item="interpretune#779:fix", base="interpretune@3ac6fdf9", prio=1)
+led.append(SYSTEM_WRITER, "offer", to="alpha", item="app#779:fix", base="app@3ac6fdf9", prio=1)
 v = View(Ledger("t1shoal", root=sys.argv[3]), ShoalSpec.load(sys.argv[2]))
 items = {o["item"].split(":")[0] for o in v.offers.values() if o["status"] == "open"}
-assert "interpretune#779" in items, items
+assert "app#779" in items, items
 bad = [x for x in v.violations if "#779" in str(x)]
 assert not bad, bad
 PY2
@@ -321,8 +321,8 @@ SHOAL_DEFAULT_OWNER=acme python3 - "$SHOALD" <<'PY3' || fail "wait target normal
 import sys
 sys.path.insert(0, sys.argv[1])
 from providers import normalize
-assert normalize("gh-pr:interpretune:637") == ("gh-pr:acme/interpretune#637", ""), normalize("gh-pr:interpretune:637")
-assert normalize("gh-pr:acme/interpretune#637")[0] == "gh-pr:acme/interpretune#637"
+assert normalize("gh-pr:app:637") == ("gh-pr:acme/app#637", ""), normalize("gh-pr:app:637")
+assert normalize("gh-pr:acme/app#637")[0] == "gh-pr:acme/app#637"
 assert normalize("gh-issue:decoderesearch/interp-engine#28")[0] == "gh-issue:decoderesearch/interp-engine#28"
 assert normalize("gh-pr:no-number-here")[1], "unparseable gh-pr accepted"
 assert normalize("gh-run:acme/x:12345") == ("gh-run:acme/x:12345", "")
@@ -669,71 +669,71 @@ from roles import ShoalSpec
 from ledger import Ledger, View
 spec = ShoalSpec.load(sys.argv[2]); v = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)'
 # a withdraw reaches a claimed offer (it read as claimed, and the fold booked it as a violation); the claim stays
-expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#9703:fix >/dev/null
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9703:fix >/dev/null
-expect 0 $H withdraw --shoal t1shoal --item interpretune#9703 --to alpha --reason "changed plan" >/dev/null
+expect 0 $H offer --shoal t1shoal --to alpha --item app#9703:fix >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#9703:fix >/dev/null
+expect 0 $H withdraw --shoal t1shoal --item app#9703 --to alpha --reason "changed plan" >/dev/null
 python3 - "$SHOALD" "$SPEC" <<PY2 || fail "withdraw of a claimed offer"
 $VIEWPY
-o = [o for o in v.by_item["interpretune#9703"]][-1]
+o = [o for o in v.by_item["app#9703"]][-1]
 assert o["status"] == "withdrawn", o
-assert any(c["item"].startswith("interpretune#9703") for c in v.active("alpha")), "a withdraw never ends a claim"
+assert any(c["item"].startswith("app#9703") for c in v.active("alpha")), "a withdraw never ends a claim"
 assert not [w for e, w in v.violations if "9703" in str(e.get("item"))], v.violations
 PY2
 # transfer: refusals print one line per item, and nothing is written
-check "REFUSED interpretune#9709: nobody holds it or is offered it; offer it instead" \
-  $H transfer --shoal t1shoal --item interpretune#9709 --to beta --dry-run
-check "REFUSED interpretune#9703: observer has fill=none and never claims" \
-  $H transfer --shoal t1shoal --item interpretune#9703 --to observer
-check "REFUSED interpretune#9703: already held by alpha" $H transfer --shoal t1shoal --item interpretune#9703 --to alpha
-expect 1 $H transfer --shoal t1shoal --item interpretune#9709 --to beta >/dev/null
+check "REFUSED app#9709: nobody holds it or is offered it; offer it instead" \
+  $H transfer --shoal t1shoal --item app#9709 --to beta --dry-run
+check "REFUSED app#9703: observer has fill=none and never claims" \
+  $H transfer --shoal t1shoal --item app#9703 --to observer
+check "REFUSED app#9703: already held by alpha" $H transfer --shoal t1shoal --item app#9703 --to alpha
+expect 1 $H transfer --shoal t1shoal --item app#9709 --to beta >/dev/null
 # an item only offered moves at once: withdrawn from alpha, offered to beta, recorded done
-expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#9702:review >/dev/null
-check "OK interpretune#9702:review: withdrawn from alpha, offered to beta (prio 30)" \
-  $H transfer --shoal t1shoal --item interpretune#9702:review --to beta --prio 30 --dry-run
-expect 0 $H transfer --shoal t1shoal --item interpretune#9702:review --to beta --prio 30 >/dev/null
+expect 0 $H offer --shoal t1shoal --to alpha --item app#9702:review >/dev/null
+check "OK app#9702:review: withdrawn from alpha, offered to beta (prio 30)" \
+  $H transfer --shoal t1shoal --item app#9702:review --to beta --prio 30 --dry-run
+expect 0 $H transfer --shoal t1shoal --item app#9702:review --to beta --prio 30 >/dev/null
 # a held item moves through its holder: a request to alpha, pending until its handoff lands
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9701:fix >/dev/null
-check "pending the holder's handoff" $H transfer --shoal t1shoal --item interpretune#9701 --to beta --prio 15 --note "beta owns this area"
-check "TRANSFER interpretune#9701 to beta" $H next --shoal t1shoal --slug alpha --peek
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9704:fix >/dev/null
-expect 0 $H transfer --shoal t1shoal --item interpretune#9704 --to beta >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#9701:fix >/dev/null
+check "pending the holder's handoff" $H transfer --shoal t1shoal --item app#9701 --to beta --prio 15 --note "beta owns this area"
+check "TRANSFER app#9701 to beta" $H next --shoal t1shoal --slug alpha --peek
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#9704:fix >/dev/null
+expect 0 $H transfer --shoal t1shoal --item app#9704 --to beta >/dev/null
 python3 - "$SHOALD" "$SPEC" <<PY2 || fail "transfer records"
 $VIEWPY
 t = {x["item"]: x for x in v.transfers()}
-assert t["interpretune#9702"]["status"] == "done" and t["interpretune#9702"]["from"] == "alpha", t
-assert t["interpretune#9701"]["status"] == "pending" and t["interpretune#9701"]["req"], t
+assert t["app#9702"]["status"] == "done" and t["app#9702"]["from"] == "alpha", t
+assert t["app#9701"]["status"] == "pending" and t["app#9701"]["req"], t
 assert [o["item"] for o in v.queue("alpha") if "9702" in o["item"]] == [], "withdrawn from alpha"
 assert [o["prio"] for o in v.queue("beta") if "9702" in o["item"]] == [30], v.queue("beta")
-assert any(m["id"] == t["interpretune#9701"]["req"] for m in v.unacked_to("alpha")), "the holder's request is chased"
+assert any(m["id"] == t["app#9701"]["req"] for m in v.unacked_to("alpha")), "the holder's request is chased"
 assert {x["item"] for x in v.transfers("gamma")} == set()
 PY2
-expect 0 $H release --shoal t1shoal --slug alpha --item interpretune#9701 --kind handoff --to beta --prio 15 >/dev/null
-expect 0 $H release --shoal t1shoal --slug alpha --item interpretune#9704 --kind blocked --reason "needs a design call" >/dev/null
+expect 0 $H release --shoal t1shoal --slug alpha --item app#9701 --kind handoff --to beta --prio 15 >/dev/null
+expect 0 $H release --shoal t1shoal --slug alpha --item app#9704 --kind blocked --reason "needs a design call" >/dev/null
 python3 - "$SHOALD" "$SPEC" <<PY2 || fail "transfer outcomes"
 $VIEWPY
 t = {x["item"]: x for x in v.transfers("beta")}
-assert t["interpretune#9701"]["status"] == "done", t
-assert t["interpretune#9704"]["status"] == "failed" and t["interpretune#9704"]["release"]["kind"] == "blocked", t
+assert t["app#9701"]["status"] == "done", t
+assert t["app#9704"]["status"] == "failed" and t["app#9704"]["release"]["kind"] == "blocked", t
 assert [o["prio"] for o in v.queue("beta") if "9701" in o["item"]] == [15], "the handoff carries the transfer's prio"
 assert not {t[k]["req"] for k in t} & {m["id"] for m in v.unacked_to("alpha")}, "a settled transfer is not chased"
 PY2
 # queue-order: each item checked, one line per refusal, nothing written when any is refused
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9705:fix >/dev/null
-expect 0 $H claim --shoal t1shoal --slug alpha --item interpretune#9706:fix >/dev/null
-expect 0 $H offer --shoal t1shoal --to alpha --item interpretune#9707:fix >/dev/null
-expect 0 $H claim --shoal t1shoal --slug beta --item interpretune#9708:fix >/dev/null
-OUT=$($H queue-order --shoal t1shoal --to alpha --next "interpretune#9706:fix,interpretune#9708:fix,interpretune#9702,interpretune#9706" --dry-run 2>&1 || true)
-grep -q "^OK interpretune#9706:fix: held by alpha, position 1" <<<"$OUT" || fail "queue-order OK row :: $OUT"
-grep -q "^REFUSED interpretune#9708:fix: held by beta; transfer it first" <<<"$OUT" || fail "queue-order held row :: $OUT"
-grep -q "^REFUSED interpretune#9702: offered to beta; transfer it first" <<<"$OUT" || fail "queue-order offered row :: $OUT"
-grep -q "^REFUSED interpretune#9706: listed twice" <<<"$OUT" || fail "queue-order duplicate row :: $OUT"
-expect 1 $H queue-order --shoal t1shoal --to alpha --next "interpretune#9708" >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#9705:fix >/dev/null
+expect 0 $H claim --shoal t1shoal --slug alpha --item app#9706:fix >/dev/null
+expect 0 $H offer --shoal t1shoal --to alpha --item app#9707:fix >/dev/null
+expect 0 $H claim --shoal t1shoal --slug beta --item app#9708:fix >/dev/null
+OUT=$($H queue-order --shoal t1shoal --to alpha --next "app#9706:fix,app#9708:fix,app#9702,app#9706" --dry-run 2>&1 || true)
+grep -q "^OK app#9706:fix: held by alpha, position 1" <<<"$OUT" || fail "queue-order OK row :: $OUT"
+grep -q "^REFUSED app#9708:fix: held by beta; transfer it first" <<<"$OUT" || fail "queue-order held row :: $OUT"
+grep -q "^REFUSED app#9702: offered to beta; transfer it first" <<<"$OUT" || fail "queue-order offered row :: $OUT"
+grep -q "^REFUSED app#9706: listed twice" <<<"$OUT" || fail "queue-order duplicate row :: $OUT"
+expect 1 $H queue-order --shoal t1shoal --to alpha --next "app#9708" >/dev/null
 check "next=(none)" $H queue-order --shoal t1shoal --to alpha --next= --dry-run
-check "queue-order to alpha: next=interpretune#9706:fix,interpretune#9705:fix" \
-  $H queue-order --shoal t1shoal --to alpha --next "interpretune#9706:fix,interpretune#9705:fix" --note "first try"
-check "queue-order to alpha" $H queue-order --shoal t1shoal --to alpha --next "interpretune#9707:fix,interpretune#9706:fix"
+check "queue-order to alpha: next=app#9706:fix,app#9705:fix" \
+  $H queue-order --shoal t1shoal --to alpha --next "app#9706:fix,app#9705:fix" --note "first try"
+check "queue-order to alpha" $H queue-order --shoal t1shoal --to alpha --next "app#9707:fix,app#9706:fix"
 NOUT=$($H next --shoal t1shoal --slug alpha --peek 2>&1)
-grep -q "^QUEUE-ORDER .* next=interpretune#9707:fix,interpretune#9706:fix" <<<"$NOUT" || fail "next shows the pending order :: $NOUT"
+grep -q "^QUEUE-ORDER .* next=app#9707:fix,app#9706:fix" <<<"$NOUT" || fail "next shows the pending order :: $NOUT"
 [ "$(grep -c '^QUEUE-ORDER' <<<"$NOUT")" = 1 ] || fail "a replaced order still shows :: $NOUT"
 OID=$(python3 - "$SHOALD" "$SPEC" <<PY2
 $VIEWPY
@@ -758,10 +758,10 @@ from ledger import Ledger, View
 ledger.iso = lambda dt=None: "2026-11-08T00:00:00Z"
 led = Ledger("sametick", root=sys.argv[2], sync=False)
 os.makedirs(led.ldir, exist_ok=True)
-led.append("alpha", "claim", item="interpretune#9790", _commit=False)
-led.append("user", "system", event="transfer", item="interpretune#9790", to="beta", prio=20, req="rq1",
+led.append("alpha", "claim", item="app#9790", _commit=False)
+led.append("user", "system", event="transfer", item="app#9790", to="beta", prio=20, req="rq1",
            _commit=False, **{"from": "alpha"})
-led.append("alpha", "release", item="interpretune#9790", kind="handoff", to="beta", _commit=False)
+led.append("alpha", "release", item="app#9790", kind="handoff", to="beta", _commit=False)
 t = View(led, None).transfers()
 assert [x["status"] for x in t] == ["done"], t
 PY2

@@ -36,18 +36,18 @@ mkdir -p "$ROOT/shoals/$SID"
 # synthetic board: TL4 migration items (tl's label), upstream items (up's keywords), one item
 # `up` must never see, general work
 shoal_board_fixture "$S/board.json" <<'JSON'
-[{"repo":"speediedan/interpretune","number":8001,"title":"Remove the TL3 bridge shims","labels":["tl-4-migration"]},
- {"repo":"speediedan/interpretune","number":8002,"title":"Port HookedTransformer hooks to TL4","labels":["tl-4-migration"],"excerpt":"HookedTransformer hook names changed"},
- {"repo":"speediedan/interpretune","number":8003,"title":"TL4 config migration","labels":["tl-4-migration"]},
- {"repo":"speediedan/interpretune","number":8004,"title":"TL4 docs refresh","labels":["tl-4-migration"]},
- {"repo":"speediedan/interpretune","number":8005,"title":"File the upstream SAELens report","excerpt":"upstream SAELens issue draft"},
- {"repo":"speediedan/interpretune","number":8006,"title":"Maintainer release checklist","labels":["maintainer-only"]},
- {"repo":"speediedan/interpretune","number":8007,"title":"General cleanup"},
- {"repo":"speediedan/interpretune","number":8008,"title":"Upstream TransformerLens padding report","excerpt":"upstream TransformerLens"}]
+[{"repo":"acme/app","number":8001,"title":"Remove the TL3 bridge shims","labels":["tl-4-migration"]},
+ {"repo":"acme/app","number":8002,"title":"Port HookedTransformer hooks to TL4","labels":["tl-4-migration"],"excerpt":"HookedTransformer hook names changed"},
+ {"repo":"acme/app","number":8003,"title":"TL4 config migration","labels":["tl-4-migration"]},
+ {"repo":"acme/app","number":8004,"title":"TL4 docs refresh","labels":["tl-4-migration"]},
+ {"repo":"acme/app","number":8005,"title":"File the upstream SAELens report","excerpt":"upstream SAELens issue draft"},
+ {"repo":"acme/app","number":8006,"title":"Maintainer release checklist","labels":["maintainer-only"]},
+ {"repo":"acme/app","number":8007,"title":"General cleanup"},
+ {"repo":"acme/app","number":8008,"title":"Upstream TransformerLens padding report","excerpt":"upstream TransformerLens"}]
 JSON
 DOC_TL=$(shoal_doc tl); DOC_UP=$(shoal_doc up)
 cat > "$SPEC" <<JSON
-{"shoal":"$SID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
+{"shoal":"$SID","dir":"$WORK","incarnation":0,"repos":["acme/app"],
  "ledger":{"repo":"$S/remote/q.git","dir":"$A"}, "features":{"digest":true,"waitgate":false},
  "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
@@ -73,7 +73,7 @@ assert r["tl"]["scope"]=={} and r["tl"]["context"]["affinity"]["labels"]["tl-4-m
 PY
 cat > "$S/up_ctx.json" <<'JSON'
 {"brief":"Drafts upstream issue and PR bodies for repos we do not own; never edits in-tree code.",
- "affinity":{"repos":{"speediedan/interpretune":-1.0},"keywords":{"upstream":2.0,"TransformerLens":1.0,"SAELens":1.5}},
+ "affinity":{"repos":{"acme/app":-1.0},"keywords":{"upstream":2.0,"TransformerLens":1.0,"SAELens":1.5}},
  "never":{"labels":["maintainer-only"]}}
 JSON
 $H context set --shoal $SID --spec "$SPEC" --slug up --file "$S/up_ctx.json" >/dev/null
@@ -487,7 +487,7 @@ for v in relay-init relay-launch relay-watch; do
 done
 git -C "$A" add -A >/dev/null 2>&1; git -C "$A" commit -qm spec >/dev/null 2>&1 || true
 check "QUEUE v0" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync
-I1=interpretune#9101; I2=interpretune#9102; I3=interpretune#9103; I4=interpretune#9104
+I1=app#9101; I2=app#9102; I3=app#9103; I4=app#9104
 check "\[dry-run\] up queue v1" $H queue --shoal $SID --spec "$SPEC" --slug up --active $I1:fix --next $I2,$I3 --dry-run --no-sync
 N0=$(git -C "$A" rev-list --count HEAD)
 check "up queue v1: active=$I1:fix" $H queue --shoal $SID --spec "$SPEC" --slug up --active $I1:fix --next $I2,$I3 --reason "two known" --no-sync
@@ -523,7 +523,7 @@ check "WAIT TARGET RESOLVED" $H next --shoal $SID --spec "$SPEC" --slug up --pee
 
 echo "== 8 wakes are work-only: busy roles are not woken by offers or peer mail"
 $H queue --shoal $SID --spec "$SPEC" --slug tl --active $I4:fix --next "" --no-sync >/dev/null
-$H offer --shoal $SID --spec "$SPEC" --to tl --item interpretune#9201:fix --no-sync >/dev/null
+$H offer --shoal $SID --spec "$SPEC" --to tl --item app#9201:fix --no-sync >/dev/null
 $H msg --shoal $SID --spec "$SPEC" --by up --to tl --text "peer chatter" --no-sync >/dev/null
 python3 - "$SHOALD" "$SPEC" "$A" <<'PY' || fail "busy-role gating wrong"
 import sys; sys.path.insert(0,sys.argv[1])
@@ -532,7 +532,7 @@ s=ShoalSpec.load(sys.argv[2]); v=View(Ledger(s.sid,root=sys.argv[3],sync=False),
 acts=[d for _,d in actionable(v,"tl",s.role("tl"),s,board=True)]
 assert not any(d.startswith(("OFFER","MSG","BOARD")) for d in acts), acts
 PY
-$H offer --shoal $SID --spec "$SPEC" --to tl --item interpretune#9202:fix --now --no-sync >/dev/null
+$H offer --shoal $SID --spec "$SPEC" --to tl --item app#9202:fix --now --no-sync >/dev/null
 $H msg --shoal $SID --spec "$SPEC" --by user --to tl --text "maintainer ping" --wake --no-sync >/dev/null
 python3 - "$SHOALD" "$SPEC" "$A" <<'PY' || fail "--now offer / user --wake msg did not wake the busy role"
 import sys; sys.path.insert(0,sys.argv[1])
@@ -554,7 +554,7 @@ check "MAIL" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync
 
 echo "== 9 health quorum: leeway, ladder, adapters, peer check, validity, resolved waits"
 check "health-a: ok" env SHOAL_HEALTH_SHIFT_MIN=0 $H health --spec "$SPEC" --instance a --dry-run
-$H offer --shoal $SID --spec "$SPEC" --to tl --item interpretune#9203:fix --no-sync >/dev/null   # arrives after tl's last queue version
+$H offer --shoal $SID --spec "$SPEC" --to tl --item app#9203:fix --no-sync >/dev/null   # arrives after tl's last queue version
 setsid $H ledger-watch --shoal $SID --spec "$SPEC" --slug tl --wake print --interval 2 --no-sync --no-board >"$S/tl-watch.log" 2>&1 &
 TLW=$!
 for i in $(seq 1 30); do grep -q "^pid=$TLW$" /tmp/$SID/ledger-watch-tl.state 2>/dev/null && break; sleep 0.5; done
@@ -563,7 +563,7 @@ check "tl unacked-work step1:wake -> wake-file" env SHOAL_HEALTH_SHIFT_MIN=11 $H
 [ -f /tmp/$SID/wake-tl ] || fail "wake request file not written"
 sleep 5; grep -q "HEALTH unacked-work" "$S/tl-watch.log" || fail "live ledger-watch did not deliver the wake request :: $(tail -3 $S/tl-watch.log)"
 check "tl unacked-work step2:wake" env SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run
-$H queue --shoal $SID --spec "$SPEC" --slug tl --active interpretune#9201:fix --next "" --no-sync >/dev/null
+$H queue --shoal $SID --spec "$SPEC" --slug tl --active app#9201:fix --next "" --no-sync >/dev/null
 [ ! -f /tmp/$SID/wake-tl ] || fail "queue write did not acknowledge the wake request"
 kill $TLW 2>/dev/null || true
 check "up wait-resolved step1:wake" env SHOAL_HEALTH_SHIFT_MIN=27 $H health --spec "$SPEC" --instance a
@@ -585,8 +585,8 @@ PY
 [ ! -e /tmp/$SID/relay-queue ] || fail "a wake was queued for a relay"
 
 echo "== 11 user-offline mode: banner, asks, deferred pages, back-online summary"
-$H queue --shoal $SID --spec "$SPEC" --slug tl --ask "merge interpretune#9201 (PR green)" --ask "ruling on #9202 scope" --no-sync >/dev/null
-export SHOAL_FAKE_REF_STATE='{"speediedan/interpretune#9201": "MERGED", "speediedan/interpretune#9202": "OPEN"}'
+$H queue --shoal $SID --spec "$SPEC" --slug tl --ask "merge app#9201 (PR green)" --ask "ruling on #9202 scope" --no-sync >/dev/null
+export SHOAL_FAKE_REF_STATE='{"acme/app#9201": "MERGED", "acme/app#9202": "OPEN"}'
 check "exactly one of --shoal ID or --all" $H offline on --all --shoal $SID --no-sync
 check "1 shoal(s) in view" env SHOAL_UI_LEDGER_ROOTS="$ROOT" $H offline on --all --dry-run --no-sync
 mkdir -p "$S/xdg-off/shoal"
@@ -612,7 +612,7 @@ assert t.startswith('USER OFFLINE since') and 'raise NO prompted question' in t,
 DEF=""; for i in 1 2 3 4; do DEF+=$(env SHOAL_HEALTH_SHIFT_MIN=200 $H health --spec "$SPEC" --instance a 2>&1); done
 grep -q "deferred (user offline)" <<<"$DEF" || fail "no page was deferred while offline :: $(tail -c 400 <<<"$DEF")"
 OUT=$($H offline off --shoal $SID --spec "$SPEC" --no-sync 2>&1)
-grep -q "ASK tl \[1\]: merge interpretune#9201 (PR green) (LIKELY STALE: interpretune#9201 merged)" <<<"$OUT" \
+grep -q "ASK tl \[1\]: merge app#9201 (PR green) (LIKELY STALE: app#9201 merged)" <<<"$OUT" \
   || fail "return summary lacks the stale hint :: $OUT"
 grep -q "ASK tl \[2\]: ruling on #9202 scope$" <<<"$OUT" || fail "open ask mislabelled :: $OUT"
 grep -q "2 recorded ask(s), 1 likely stale" <<<"$OUT" || fail "no return count :: $OUT"
@@ -623,12 +623,12 @@ grep -q "ASKS TO RAISE: the maintainer is online" <<<"$OUT" && grep -q "at most 
 check "asks=1" $H queue --shoal $SID --spec "$SPEC" --slug tl --drop-ask 1 --drop-reason "merged upstream" --no-sync
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --peek --no-sync 2>&1)
 grep -q "ASKS (open): \[1\] ruling on #9202 scope$" <<<"$OUT" || fail "drop-ask kept the wrong ask :: $OUT"
-grep -q "DROPPED ASKS (not answered.*merge interpretune#9201 (PR green) \[dropped .*: merged upstream\]" <<<"$OUT" \
+grep -q "DROPPED ASKS (not answered.*merge app#9201 (PR green) \[dropped .*: merged upstream\]" <<<"$OUT" \
   || fail "an unanswered drop is not disclosed :: $OUT"
 [ "$(rc_of $H queue --shoal $SID --spec "$SPEC" --slug tl --drop-ask 7 --drop-reason x --no-sync)" = 1 ] || fail "bad --drop-ask accepted"
 # six asks -> two question sets (4 + 2), labelled from live PR data
 $H queue --shoal $SID --spec "$SPEC" --slug tl --ask "merge #9203 now" --ask "q4" --ask "q5" --ask "q6" --ask "q7" --no-sync >/dev/null
-export SHOAL_FAKE_PR='{"speediedan/interpretune#9203": {"title": "Live title 9203", "state": "OPEN", "headRefOid": "abcdef123456", "mergeable": "MERGEABLE", "checks": {"pass": 3}}}'
+export SHOAL_FAKE_PR='{"acme/app#9203": {"title": "Live title 9203", "state": "OPEN", "headRefOid": "abcdef123456", "mergeable": "MERGEABLE", "checks": {"pass": 3}}}'
 QJ=$($H asks --shoal $SID --spec "$SPEC" --slug tl --question-json --no-sync)
 python3 -c '
 import json, sys
@@ -644,7 +644,7 @@ unset SHOAL_FAKE_PR
 check "asks=4" $H queue --shoal $SID --spec "$SPEC" --slug tl --answered 1 --answered 2 --no-sync
 check "asks=0" $H queue --shoal $SID --spec "$SPEC" --slug tl --asks-clear --drop-reason "selftest cleanup" --no-sync
 # later sections still read ref states (asks naming #9301): answer them offline, never from GitHub
-export SHOAL_FAKE_REF_STATE='{"speediedan/interpretune#9301": "OPEN"}'
+export SHOAL_FAKE_REF_STATE='{"acme/app#9301": "OPEN"}'
 check "user deferred pages -> page" $H health --spec "$SPEC" --instance a --dry-run
 
 echo "== 12 wait discipline: asks, blockers, rescan caps, expiry and blocking wakes, labels, peek"
@@ -668,9 +668,9 @@ PY
 [ "$(rc_of $H queue --shoal $SID --spec "$SPEC" --slug tl --wait upstream --holder "engine release" --no-sync)" = 3 ] \
   || fail "an upstream wait without a target was accepted"
 check "posture=waiting/session-blocked" $H queue --shoal $SID --spec "$SPEC" --slug tl --wait session-blocked --holder "up #9301" \
-   --blocked-on up:interpretune#9301 --no-sync
-check "BLOCKING tl since .* on interpretune#9301 -- NOT in your queue" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
-check "BLOCKING tl on interpretune#9301" $H show --shoal $SID --spec "$SPEC" --slug up --no-sync
+   --blocked-on up:app#9301 --no-sync
+check "BLOCKING tl since .* on app#9301 -- NOT in your queue" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
+check "BLOCKING tl on app#9301" $H show --shoal $SID --spec "$SPEC" --slug up --no-sync
 check "up blocking-unscheduled step1:wake" env SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run
 check "wait-expired step1:wake" env SHOAL_HEALTH_SHIFT_MIN=245 $H health --spec "$SPEC" --instance b --dry-run
 M0=$(cat /tmp/$SID/mail-read-up 2>/dev/null || echo none)
@@ -690,24 +690,24 @@ def raised():
     return [c for c in health.evaluate(spec, v, {}) if c["slug"] == "up" and c["condition"] == "blocking-unscheduled"]
 assert raised(), "the unscheduled case stopped raising"
 real = v.current_queue
-for field, value in (("active", "someowner/interpretune#9301:fix"), ("next", ["someowner/interpretune#9301:fix"])):
+for field, value in (("active", "someowner/app#9301:fix"), ("next", ["someowner/app#9301:fix"])):
     v.current_queue = lambda s, real=real, field=field, value=value: dict(real(s) or {}, **{field: value}) if s == "up" else real(s)
     assert not raised(), (field, raised())
 PY2
-$H claim --shoal $SID --spec "$SPEC" --slug up --item interpretune#9401:fix --no-sync >/dev/null
-check "HELD-UNSCHEDULED interpretune#9401" $H queue --shoal $SID --spec "$SPEC" --slug up --active interpretune#9301:fix --next "" --reason test --no-sync
+$H claim --shoal $SID --spec "$SPEC" --slug up --item app#9401:fix --no-sync >/dev/null
+check "HELD-UNSCHEDULED app#9401" $H queue --shoal $SID --spec "$SPEC" --slug up --active app#9301:fix --next "" --reason test --no-sync
 # a holder hands its claim to a named role: an implicit offer the recipient can claim
-[ "$(rc_of $H release --shoal $SID --spec "$SPEC" --slug up --item interpretune#9401 --kind decline --to tl --no-sync)" = 1 ] || fail "--to accepted on a decline"
-check "handed interpretune#9401 to tl" $H release --shoal $SID --spec "$SPEC" --slug up --item interpretune#9401 --kind handoff --to tl \
+[ "$(rc_of $H release --shoal $SID --spec "$SPEC" --slug up --item app#9401 --kind decline --to tl --no-sync)" = 1 ] || fail "--to accepted on a decline"
+check "handed app#9401 to tl" $H release --shoal $SID --spec "$SPEC" --slug up --item app#9401 --kind handoff --to tl \
    --reason "maintainer ruling: tl owns it" --no-sync
-check "OFFER interpretune#9401.* by=up" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
-check "claimed interpretune#9401" $H claim --shoal $SID --spec "$SPEC" --slug tl --item interpretune#9401:fix --no-sync
+check "OFFER app#9401.* by=up" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
+check "claimed app#9401" $H claim --shoal $SID --spec "$SPEC" --slug tl --item app#9401:fix --no-sync
 
 echo "== 13 continuation: a turn that ends while active is woken to continue (not after 90 min)"
 python3 - "$SPEC" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["continuation"]={"after_min":5}; json.dump(d,open(p,"w"),indent=1)
 PY
-check "note: posture ACTIVE means you keep working in this turn" $H queue --shoal $SID --spec "$SPEC" --slug tl --active interpretune#9501:fix --next "" --reason test --no-sync
+check "note: posture ACTIVE means you keep working in this turn" $H queue --shoal $SID --spec "$SPEC" --slug tl --active app#9501:fix --next "" --reason test --no-sync
 check "END EVERY TURN IN A SLEEP POSTURE" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
 rm -f /tmp/$SID/health.json
 env SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
@@ -722,38 +722,38 @@ OUT=$(env SHOAL_HEALTH_BETWEEN=tl SHOAL_HEALTH_SHIFT_MIN=12 $H health --spec "$S
 
 echo "== 14 parked work: idle needs every next item blocked; blockers carry forward; freeze mode"
 Q="$H queue --shoal $SID --spec $SPEC --no-sync"
-check "posture=active" $Q --slug tl --active interpretune#9601:fix --next interpretune#9602,interpretune#9603 --reason test
+check "posture=active" $Q --slug tl --active app#9601:fix --next app#9602,app#9603 --reason test
 [ "$(rc_of $Q --slug tl --idle)" = 3 ] || fail "idle accepted with unblocked next items"
-check "idle with unblocked next items (interpretune#9602, interpretune#9603)" $Q --slug tl --idle
-check "BLOCKER must be another role" $Q --slug tl --idle --blocked interpretune#9602=tl:interpretune#1
-check "ITEM=BLOCKER" $Q --slug tl --idle --blocked interpretune#9602
-check "idle with unblocked next items (interpretune#9603)" $Q --slug tl --idle --blocked interpretune#9602=up:interpretune#9301
-check "posture=idle" $Q --slug tl --idle --blocked interpretune#9602=up:interpretune#9301 --blocked "interpretune#9603=hold:design pending"
-check "BLOCKING tl .* on interpretune#9301" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
-check "NEXT BLOCKED interpretune#9603 <- hold:design pending" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
+check "idle with unblocked next items (app#9602, app#9603)" $Q --slug tl --idle
+check "BLOCKER must be another role" $Q --slug tl --idle --blocked app#9602=tl:app#1
+check "ITEM=BLOCKER" $Q --slug tl --idle --blocked app#9602
+check "idle with unblocked next items (app#9603)" $Q --slug tl --idle --blocked app#9602=up:app#9301
+check "posture=idle" $Q --slug tl --idle --blocked app#9602=up:app#9301 --blocked "app#9603=hold:design pending"
+check "BLOCKING tl .* on app#9301" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
+check "NEXT BLOCKED app#9603 <- hold:design pending" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
 # blockers carry forward to the next write; clearing one re-opens the gate
 check "posture=idle" $Q --slug tl --idle
-[ "$(rc_of $Q --slug tl --idle --blocked interpretune#9603=)" = 3 ] || fail "idle accepted after clearing a blocker"
+[ "$(rc_of $Q --slug tl --idle --blocked app#9603=)" = 3 ] || fail "idle accepted after clearing a blocker"
 # a wait that leaves a next item unblocked is refused at the write (waitgate: on by default, off in this suite's
 # base spec so the sections that predate it keep their writes) ...
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("waitgate",None); json.dump(d,open(p,"w"),indent=1)
 PY2
-check "waiting (remote-ci) with unblocked next items (interpretune#9603)" env LEASE_STUB=held $Q --slug tl \
-   --active interpretune#9601:fix --blocked interpretune#9603= --wait remote-ci --holder "gate" --target lease:gpu
-check "posture=waiting/local-ci" env LEASE_STUB=held $Q --slug tl --active interpretune#9601:fix --blocked interpretune#9603= \
+check "waiting (remote-ci) with unblocked next items (app#9603)" env LEASE_STUB=held $Q --slug tl \
+   --active app#9601:fix --blocked app#9603= --wait remote-ci --holder "gate" --target lease:gpu
+check "posture=waiting/local-ci" env LEASE_STUB=held $Q --slug tl --active app#9601:fix --blocked app#9603= \
    --wait local-ci --holder "gate" --target lease:gpu
 # ... and, with the gate off, is parked work for the quorum (idle is always gated at the write)
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["waitgate"]=False; json.dump(d,open(p,"w"),indent=1)
 PY2
-check "posture=waiting/remote-ci" env LEASE_STUB=held $Q --slug tl --active interpretune#9601:fix --blocked interpretune#9603= \
+check "posture=waiting/remote-ci" env LEASE_STUB=held $Q --slug tl --active app#9601:fix --blocked app#9603= \
    --wait remote-ci --holder "gate" --target lease:gpu
 rm -f /tmp/$SID/health.json
 env LEASE_STUB=held $H health --spec "$SPEC" --instance a >/dev/null 2>&1   # first sighting recorded
 check "tl parked-work step1:wake" env LEASE_STUB=held SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run
 OUT=$(env LEASE_STUB=held SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
-! grep -q "parked-work.*interpretune#9602" <<<"$OUT" || fail "a blocked next item counted as parked :: $OUT"
+! grep -q "parked-work.*app#9602" <<<"$OUT" || fail "a blocked next item counted as parked :: $OUT"
 # freeze: banner, idle allowed, parked-work suppressed, job run refused; lifted banner after
 check "freeze on (every role woken)" $H freeze on --shoal $SID --spec "$SPEC" --note "restart window" --no-sync
 check "freeze already on" $H freeze on --shoal $SID --spec "$SPEC" --no-sync
@@ -761,7 +761,7 @@ check "FREEZE ACTIVE since .* (restart window)" $H next --shoal $SID --spec "$SP
 OUT=$(env LEASE_STUB=held SHOAL_HEALTH_SHIFT_MIN=31 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "tl parked-work" <<<"$OUT" || fail "parked-work raised during a freeze :: $OUT"
 [ "$(rc_of $H job run --shoal $SID --spec "$SPEC" --slug tl --name frozen --dry-run -- true)" = 5 ] || fail "job run allowed during a freeze"
-check "posture=idle" $Q --slug tl --idle --blocked interpretune#9603=
+check "posture=idle" $Q --slug tl --idle --blocked app#9603=
 check "freeze off (every role woken)" $H freeze off --shoal $SID --spec "$SPEC" --no-sync
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
 grep -q "FREEZE LIFTED at" <<<"$OUT" || fail "no lifted banner after freeze off :: $OUT"
@@ -998,7 +998,7 @@ echo "== 18 liveness from turn state; candidates shown to a role idle behind blo
 # Claude: `status` reads busy while any background task (the role's own ledge-watch) runs, so only
 # `state` says whether a turn is in progress (done = between turns)
 Q="$H queue --shoal $SID --spec $SPEC --no-sync"
-check "posture=active" $Q --slug tl --active interpretune#9801:fix --next "" --reason test
+check "posture=active" $Q --slug tl --active app#9801:fix --next "" --reason test
 rm -f /tmp/$SID/health.json
 FS_DONE='{"claude":[{"sessionId":"aaaa1111-0000","status":"busy","state":"done"}],"opencode":{}}'
 FS_WORK='{"claude":[{"sessionId":"aaaa1111-0000","status":"busy","state":"working"}],"opencode":{}}'
@@ -1022,15 +1022,15 @@ assert L({"status": "busy", "state": "working", "tempo": "blocked"}) == "blocked
 assert L({"status": "busy", "state": "working", "tempo": "mystery"}) == "busy"   # unknown tempo: state decides
 PY2
 # hidden candidates: two blocked next items and no active item used to leave no slot for a candidate
-check "posture=idle" $Q --slug tl --idle --next interpretune#9802,interpretune#9803 \
-  --blocked "interpretune#9802=hold:x" --blocked "interpretune#9803=up:interpretune#9301"
+check "posture=idle" $Q --slug tl --idle --next app#9802,app#9803 \
+  --blocked "app#9802=hold:x" --blocked "app#9803=up:app#9301"
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
-grep -q "^BOARD interpretune#80" <<<"$OUT" || fail "no candidates for a role idle behind blocked next items :: $OUT"
+grep -q "^BOARD app#80" <<<"$OUT" || fail "no candidates for a role idle behind blocked next items :: $OUT"
 grep -q "short queue: [1-9][0-9]* eligible candidate" <<<"$(tail -1 $A/shoals/$SID/ledger/tl.jsonl)" \
   || fail "default reason claims no eligible items beside candidates :: $(tail -1 $A/shoals/$SID/ledger/tl.jsonl)"
 # three unblocked next items and an active one: the queue is full, no candidates
-check "posture=active" $Q --slug tl --active interpretune#9801:fix \
-  --next interpretune#9802,interpretune#9803,interpretune#9804 --blocked "interpretune#9802=" --blocked "interpretune#9803="
+check "posture=active" $Q --slug tl --active app#9801:fix \
+  --next app#9802,app#9803,app#9804 --blocked "app#9802=" --blocked "app#9803="
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
 ! grep -q "^BOARD " <<<"$OUT" || fail "candidates shown for a full queue :: $OUT"
 # --peek never claims to have marked mail read
@@ -1043,10 +1043,10 @@ Q="$H queue --shoal $SID --spec $SPEC --no-sync"
 NX="$H next --shoal $SID --spec $SPEC --no-sync --peek"
 export LEASE_STUB=free
 # before the feature: up idles behind a hold with board candidates, and the watcher stays silent
-check "posture=idle" $Q --slug up --idle --next interpretune#9901 --blocked "interpretune#9901=hold:before"
-check "posture=active" $Q --slug up --active interpretune#9301:fix --next ""
-check "done=\['interpretune#9301:fix'\]" $Q --slug up --done interpretune#9301:fix --url https://example.invalid/pr/2 \
-  --idle --next interpretune#9901 --blocked "interpretune#9901=hold:before"
+check "posture=idle" $Q --slug up --idle --next app#9901 --blocked "app#9901=hold:before"
+check "posture=active" $Q --slug up --active app#9301:fix --next ""
+check "done=\['app#9301:fix'\]" $Q --slug up --done app#9301:fix --url https://example.invalid/pr/2 \
+  --idle --next app#9901 --blocked "app#9901=hold:before"
 WATCH_BOARD='import sys; sys.path.insert(0, sys.argv[1]); from roles import ShoalSpec; from ledger import Ledger, View
 from ledger_watch import actionable
 spec = ShoalSpec.load(sys.argv[2]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
@@ -1058,33 +1058,33 @@ d["features"]["blockers"]={"hold_ttl_min":60,"peer_ttl_min":120,"hold_page_min":
 PY2
 [ "$(python3 -c "$WATCH_BOARD" "$SHOALD" "$SPEC")" -gt 0 ] || fail "no board wake for an idle role whose next items are all blocked"
 # idle is refused while strong candidates exist, until each is passed with a reason
-OUT=$($Q --slug tl --idle --next interpretune#9902,interpretune#9903 --blocked "interpretune#9902=hold:design" \
-  --blocked "interpretune#9903=up:interpretune#9301" 2>&1 || true)
-grep -q "already cleared (interpretune#9301 done by up" <<<"$OUT" || fail "a peer blocker on a done item was accepted :: $OUT"
-check "a maintainer blocker needs its ask recorded" $Q --slug tl --idle --next interpretune#9902 --blocked "interpretune#9902=ask:scope"
-OUT=$($Q --slug tl --idle --next interpretune#9902 --blocked "interpretune#9902=hold:design" 2>&1 || true)
+OUT=$($Q --slug tl --idle --next app#9902,app#9903 --blocked "app#9902=hold:design" \
+  --blocked "app#9903=up:app#9301" 2>&1 || true)
+grep -q "already cleared (app#9301 done by up" <<<"$OUT" || fail "a peer blocker on a done item was accepted :: $OUT"
+check "a maintainer blocker needs its ask recorded" $Q --slug tl --idle --next app#9902 --blocked "app#9902=ask:scope"
+OUT=$($Q --slug tl --idle --next app#9902 --blocked "app#9902=hold:design" 2>&1 || true)
 grep -q "idle while the board offers eligible items" <<<"$OUT" || fail "idle accepted beside strong candidates :: $OUT"
 for i in 1 2 3 4; do
   C=$(grep -o "eligible items ([^)]*)" <<<"$OUT" | sed 's/eligible items (//; s/)//; s/, / /g')
   [ -n "$C" ] || break
   P=""; for c in $C; do P="$P --pass ${c%%:*}:out-of-lane:note=selftest"; done
-  OUT=$($Q --slug tl --idle --next interpretune#9902 --blocked "interpretune#9902=hold:design" $P 2>&1 || true)
+  OUT=$($Q --slug tl --idle --next app#9902 --blocked "app#9902=hold:design" $P 2>&1 || true)
 done
 grep -q "posture=idle" <<<"$OUT" || fail "idle still refused after passing every candidate :: $OUT"
 # a hold expires after hold_ttl_min: next names it, idle is refused, parked-work wakes
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $NX --slug tl 2>&1)
-grep -q "BLOCKER STALE interpretune#9902 <- hold:design (expired" <<<"$OUT" || fail "expired hold not named :: $OUT"
+grep -q "BLOCKER STALE app#9902 <- hold:design (expired" <<<"$OUT" || fail "expired hold not named :: $OUT"
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle 2>&1 || true)
-grep -q "interpretune#9902 <- hold:design is stale (expired" <<<"$OUT" || fail "idle accepted behind an expired hold :: $OUT"
+grep -q "app#9902 <- hold:design is stale (expired" <<<"$OUT" || fail "idle accepted behind an expired hold :: $OUT"
 rm -f /tmp/$SID/health.json
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=61 $H health --spec "$SPEC" --instance a 2>&1)   # first sighting recorded
 ! grep -q "blocker-resolved" <<<"$OUT" || fail "an expired hold woke as if it had cleared :: $OUT"
 check "tl parked-work step1:wake" env SHOAL_HEALTH_SHIFT_MIN=92 $H health --spec "$SPEC" --instance a --dry-run
 # re-recording is the re-verification; a hold kept past hold_page_min pages the maintainer once
-check "posture=idle" env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle --blocked "interpretune#9902=hold:design still"
+check "posture=idle" env SHOAL_HEALTH_SHIFT_MIN=61 $Q --slug tl --idle --blocked "app#9902=hold:design still"
 python3 - "$A/shoals/$SID/ledger/tl.jsonl" <<'PY2' || fail "blocker metadata not carried"
 import json,sys; q=[json.loads(l) for l in open(sys.argv[1]) if '"type":"queue"' in l][-1]
-m=q["next_blocked_meta"]["interpretune#9902"]; assert m["n"] == 1 and m["first"] <= m["since"], m
+m=q["next_blocked_meta"]["app#9902"]; assert m["n"] == 1 and m["first"] <= m["since"], m
 PY2
 OUT=$(env SHOAL_HEALTH_SHIFT_MIN=62 $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "tl hold-long" <<<"$OUT" || fail "hold-long paged before hold_page_min :: $OUT"
@@ -1096,10 +1096,10 @@ OUT=$(env SHOAL_HEALTH_SHIFT_MIN=300 $H health --spec "$SPEC" --instance a --dry
 check "tl hold-long step2:page" env SHOAL_HEALTH_SHIFT_MIN=422 $H health --spec "$SPEC" --instance a --dry-run
 rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl
 # checkable blockers: a free lease has cleared (refused when recorded); a held one parks the item
-check "already cleared (lease gpu free" $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
-check "posture=idle" env LEASE_STUB=held $Q --slug tl --idle --blocked "interpretune#9902=lease:gpu"
+check "already cleared (lease gpu free" $Q --slug tl --idle --blocked "app#9902=lease:gpu"
+check "posture=idle" env LEASE_STUB=held $Q --slug tl --idle --blocked "app#9902=lease:gpu"
 OUT=$($NX --slug tl 2>&1)
-grep -q "BLOCKER STALE interpretune#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT" || fail "cleared lease blocker not named :: $OUT"
+grep -q "BLOCKER STALE app#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT" || fail "cleared lease blocker not named :: $OUT"
 # a blocker that really cleared wakes its role at once, by itself; the blocker still held does not
 check "tl blocker-resolved step1:wake" $H health --spec "$SPEC" --instance a --dry-run
 OUT=$(env LEASE_STUB=held $H health --spec "$SPEC" --instance a --dry-run 2>&1)
@@ -1121,7 +1121,7 @@ check "posture=idle" $Q --slug up --idle --next ""
 echo "== 20 waits keep their targets; CI waits need one (waittargets); finished items leave next"
 Q="$H queue --shoal $SID --spec $SPEC --no-sync"
 export LEASE_STUB=held
-check "posture=waiting/local-ci" $Q --slug tl --active interpretune#9951:fix --next "" --wait local-ci \
+check "posture=waiting/local-ci" $Q --slug tl --active app#9951:fix --next "" --wait local-ci \
   --holder "job j1" --target lease:gpu
 # a transition re-declaring the same wait without --target keeps it (it used to blank it)
 check "target lease:gpu carried forward" $H transition --shoal $SID --spec "$SPEC" --slug tl --to waiting \
@@ -1147,7 +1147,7 @@ grep -q "^2 0" <<<"$OUT" || fail "watcher woke on a pending wait target :: $OUT"
 OUT=$(LEASE_STUB=free python3 -c "$WATCH_WAIT" "$SHOALD" "$SPEC")
 grep -q "^1 0" <<<"$OUT" && grep -q "^2 1 WAIT RESOLVED lease:gpu" <<<"$OUT" || fail "no grace-then-wake on a resolved wait :: $OUT"
 # a finished item cannot sit in next (the role recorded it done, or a peer did)
-check "lists finished items: interpretune#9301" $Q --slug tl --active interpretune#9951:fix --next interpretune#9301
+check "lists finished items: app#9301" $Q --slug tl --active app#9951:fix --next app#9301
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("waittargets",None); json.dump(d,open(p,"w"),indent=1)
 PY2
@@ -1225,25 +1225,25 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["blockers"]=
 PY2
 # measured shape: work delegated to an assigned role by mail, then blocked on it with no offer
 check "note: this is mail. up reads it" $H msg --shoal $SID --spec "$SPEC" --by tl --to up --no-sync \
-  --text "please review and merge interpretune#9971"
-check "up is fill=assigned: it works only items offered or handed to it" $Q --slug tl --active interpretune#9970:fix \
-  --next interpretune#9971 --blocked "interpretune#9971=up:interpretune#9971"
+  --text "please review and merge app#9971"
+check "up is fill=assigned: it works only items offered or handed to it" $Q --slug tl --active app#9970:fix \
+  --next app#9971 --blocked "app#9971=up:app#9971"
 OUT=$($H msg --shoal $SID --spec "$SPEC" --by tl --to up --no-sync --text "no item named here" 2>&1)
 ! grep -q "note: this is mail" <<<"$OUT" || fail "mail note printed for a msg naming no item :: $OUT"
 # once the maintainer offers it, the same blocker is accepted
-check "offered interpretune#9971:review to up" $H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9971:review --no-sync
-check "posture=active" $Q --slug tl --active interpretune#9970:fix --next interpretune#9971 --blocked "interpretune#9971=up:interpretune#9971"
+check "offered app#9971:review to up" $H offer --shoal $SID --spec "$SPEC" --to up --item app#9971:review --no-sync
+check "posture=active" $Q --slug tl --active app#9970:fix --next app#9971 --blocked "app#9971=up:app#9971"
 # carried forward after the offer is withdrawn, the same blocker is stale: it parks nothing, and the
 # named role is not woken about it (the waiter is)
-check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --to up --item interpretune#9971 --reason selftest --no-sync
-check "BLOCKER STALE interpretune#9971 <- up:interpretune#9971 (expired: untakeable: up is fill=assigned" \
+check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --to up --item app#9971 --reason selftest --no-sync
+check "BLOCKER STALE app#9971 <- up:app#9971 (expired: untakeable: up is fill=assigned" \
   $H next --shoal $SID --spec "$SPEC" --slug tl --peek --no-sync
 # a fill=self peer can claim board items itself: not checked
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); [r.update(fill="self") for r in d["roles"] if r["slug"]=="up"]
 json.dump(d,open(p,"w"),indent=1)
 PY2
-check "posture=active" $Q --slug tl --active interpretune#9970:fix --next interpretune#9972 --blocked "interpretune#9972=up:interpretune#9972"
+check "posture=active" $Q --slug tl --active app#9970:fix --next app#9972 --blocked "app#9972=up:app#9972"
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)
 PY2
@@ -1391,23 +1391,23 @@ assert not [c for c in health.evaluate(spec, view, {"aaaa1111-0000": "idle"}) if
 PY2
 
 echo "== 30 a user offer reopens a done item for a new round (the key drops the verb)"
-$H offer --shoal $SID --spec "$SPEC" --to tl --item interpretune#9990:fix --no-sync >/dev/null
-check "claimed interpretune#9990" $H claim --shoal $SID --spec "$SPEC" --slug tl --item interpretune#9990:fix --no-sync
+$H offer --shoal $SID --spec "$SPEC" --to tl --item app#9990:fix --no-sync >/dev/null
+check "claimed app#9990" $H claim --shoal $SID --spec "$SPEC" --slug tl --item app#9990:fix --no-sync
 sleep 1.1
-check "done" $H done --shoal $SID --spec "$SPEC" --slug tl --item interpretune#9990:fix --no-sync
+check "done" $H done --shoal $SID --spec "$SPEC" --slug tl --item app#9990:fix --no-sync
 # ledger timestamps have one-second resolution and same-second events order by writer, so space the
 # steps as real lanes are spaced
 sleep 1.1
-check "reopens interpretune#9990: done" $H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9990:review --no-sync
+check "reopens app#9990: done" $H offer --shoal $SID --spec "$SPEC" --to up --item app#9990:review --no-sync
 sleep 1.1
-check "claimed interpretune#9990" $H claim --shoal $SID --spec "$SPEC" --slug up --item interpretune#9990:review --no-sync
+check "claimed app#9990" $H claim --shoal $SID --spec "$SPEC" --slug up --item app#9990:review --no-sync
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "reopened item"
 import sys; sys.path.insert(0, sys.argv[1])
 from roles import ShoalSpec
 from ledger import Ledger, View
 spec = ShoalSpec.load(sys.argv[2])
 v = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
-assert "interpretune#9990" not in v.done and v.reopened["interpretune#9990"][0]["by"] == "tl", v.reopened
+assert "app#9990" not in v.done and v.reopened["app#9990"][0]["by"] == "tl", v.reopened
 assert not [x for x in v.violations if "9990" in str(x)], v.violations
 PY2
 
@@ -1503,7 +1503,7 @@ import json, sys; p = sys.argv[1]; d = json.load(open(p))
 PY2
 check "would start the first muse exec turn" $H restart --spec "$SPEC" --only up --dry-run
 # a persistent exec: watcher starts a turn on a new offer, keeps running, and is a no-op to arm twice
-$H offer --shoal $SID --spec "$SPEC" --to up --item interpretune#9331:fix --no-sync >/dev/null
+$H offer --shoal $SID --spec "$SPEC" --to up --item app#9331:fix --no-sync >/dev/null
 $H ledger-watch --shoal $SID --spec "$SPEC" --slug up --wake exec:$MU --session $MU --interval 1 --no-sync \
   --sidecar "$S/sc-mu.state" > "$S/mu-watch.log" 2>&1 &
 P_MU=$!
@@ -1683,7 +1683,7 @@ spec = ShoalSpec.load(sys.argv[2])
 assert "CONTEXT 900k" in health.wake_text(spec, "tl", "x"), "wakes carry the advisory"
 print("context limits ok")
 PY2
-check "never with an active item" $Q --slug tl --active interpretune#9601:fix --restart-ready
+check "never with an active item" $Q --slug tl --active app#9601:fix --restart-ready
 # the proof of refresh (docs/start-doc.md): no `Last updated` stamp, or one older than the advisory, is refused
 TLDOC=$(python3 -c "import json,sys;print([r for r in json.load(open(sys.argv[1]))['roles'] if r['slug']=='tl'][0]['doc'])" "$SPEC")
 cp "$TLDOC" "$S/tl-doc.bak"
@@ -1861,17 +1861,17 @@ check "set-ecosystem=up:claude --set-model=up:m2" env SHOAL_FAKE_SESSIONS="$FS0"
 python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" guards || fail "handoff guards"
 check "unknown provider" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --force --dry-run --ecosystem nope
 check "no role nope" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only nope --force --dry-run
-check "posture=active" $Q --slug up --active interpretune#9701:fix --next interpretune#9702
+check "posture=active" $Q --slug up --active app#9701:fix --next app#9702
 check "REFUSED: up holds active item" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up
 [ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up)" = 1 ] || fail "park took a role mid-item"
-check "posture=idle" $Q --slug up --idle --next interpretune#9702 --blocked interpretune#9702=hold:research
+check "posture=idle" $Q --slug up --idle --next app#9702 --blocked app#9702=hold:research
 mkdir -p "$S/fakewatch"; printf 'import time\ntime.sleep(300)\n' > "$S/fakewatch/cli.py"
 # a stand-in ledger-watch for up, bound to its session: the same argv shape, so the /proc scan finds it
 setsid python3 "$S/fakewatch/cli.py" ledger-watch --shoal $SID --slug up --session bbbb2222 &
 LWP=$!
 check "would stop bbbb2222" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up --dry-run
 check "parked up" env SHOAL_FAKE_SESSIONS="$FS0" $H park --spec "$SPEC" --only up --note "research hold" \
-  --until "gh-pr:speediedan/interpretune#9703"
+  --until "gh-pr:acme/app#9703"
 sleep 0.5; ! kill -0 $LWP 2>/dev/null || fail "park left up's ledger-watch running"
 python3 - "$SPEC" "$SHOALD" <<'PY2' || fail "park record"
 import json, sys
@@ -1880,15 +1880,15 @@ from ledger import Ledger
 from roles import ShoalSpec
 r = [x for x in json.load(open(sys.argv[1]))["roles"] if x["slug"] == "up"][0]
 assert r["session"] == "" and r["parked"]["note"] == "research hold" and r["parked"]["session"] == "bbbb2222", r
-assert r["parked"]["until"] == "gh-pr:speediedan/interpretune#9703", r
+assert r["parked"]["until"] == "gh-pr:acme/app#9703", r
 spec = ShoalSpec.load(sys.argv[1])
 evs = Ledger(spec.sid, root=spec.ledger_dir, sync=False).events(reload=True)
 assert any(e.get("event") == "role-parked" and e.get("role") == "up" for e in evs), "no role-parked event"
 print("park record ok")
 PY2
-check "parked (no session) since .*: research hold; until gh-pr:speediedan/interpretune#9703" \
+check "parked (no session) since .*: research hold; until gh-pr:acme/app#9703" \
   $H show --shoal $SID --spec "$SPEC" --no-sync
-check "QUEUE .*interpretune#9702" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
+check "QUEUE .*app#9702" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
 check "parked role(s) up stay parked" env SHOAL_FAKE_SESSIONS="$FS0" $H restart --spec "$SPEC" --dry-run --stages restart
 check "unpark: .*restart --spec .* --only up" env SHOAL_FAKE_SESSIONS="$FS0" $H unpark --spec "$SPEC" --only up --dry-run
 [ "$(rc_of $H unpark --spec "$SPEC" --only tl --dry-run)" = 1 ] || fail "unpark accepted a role with a session"
@@ -2035,7 +2035,7 @@ assert providers.resolve("offer:nobody", "nobody", sid)[0] is True, providers.re
 print("auto park ok")
 PY2
 # an offer to everyone is no reason to restart a parked role; one naming it is (the fixture's up already holds one)
-check "interpretune#9711" $H offer --shoal $SID --spec "$SPEC" --to '*' --item interpretune#9711:fix --no-sync
+check "app#9711" $H offer --shoal $SID --spec "$SPEC" --to '*' --item app#9711:fix --no-sync
 python3 - "$SHOALD" "$SPEC" "$SID" <<'PY2' || fail "auto park offer"
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -2050,7 +2050,7 @@ r.session, r.parked = "", {"until": "offer:up", "at": "x"}
 assert [x[0].slug for x in park.due(spec)] == ["up"], "the offer did not make it due"
 print("auto park offer ok")
 PY2
-check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --item interpretune#9711 --to '*' --no-sync
+check "withdrew" $H withdraw --shoal $SID --spec "$SPEC" --item app#9711 --to '*' --no-sync
 
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "operational request acknowledgment"
 import sys

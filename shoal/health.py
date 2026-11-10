@@ -336,7 +336,7 @@ def agents_in_flight(st: dict) -> int:
 def claude_liveness(row: dict) -> str:
     """'busy'|'blocked'|'idle' from the job's tempo, else `state`, else the raw `status`. A session
     whose turn ended while its own subagents run is still working: their reports re-enter it
-    (jlens-research, 2026-10-13: three research agents writing proposals read as an idle session)."""
+    (measured 2026-10-13: three research agents writing proposals read as an idle session)."""
     st = claude_job_state(row)
     tempo = CLAUDE_TEMPO.get(str(st.get("tempo") or ""))
     if tempo == "idle" and agents_in_flight(st):
@@ -548,7 +548,7 @@ def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | 
             # `blocked` means the turn ended: on an open prompt (a question; never between turns), or on a last
             # message that only reads like a question to the user (status idle, no prompt), which IS between
             # turns. Treating both as a question stranded a restart-ready role at 534k for 14 min with no
-            # context-restart condition (measured 2026-10-26, jlens-research-r4). Same rule as the watcher's
+            # context-restart condition (measured 2026-10-26 on a research role). Same rule as the watcher's
             # claude_session_busy.
             from backends import claude_find
             return not claude_prompt_open(claude_find(_CLAUDE_ROWS, role.session) or {}, role.session)
@@ -742,7 +742,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                           f"does not schedule it: schedule it (active/next) or pass it with a reason"})
         # parked work: asleep (idle or waiting) while a next item has no recorded blocker. Idle is
         # never woken by anything else, so without this a role can sit on a full queue forever
-        # (measured 2026-09-27: jlens-expert idle with three next items for two hours; ie-integration
+        # (measured 2026-09-27: one role idle with three next items for two hours; another
         # waiting upstream for #44 while #372 and #457 sat behind it unrecorded). Keyed by the items,
         # so re-declaring the same parked state keeps escalating.
         # a local-ci wait is exempt: the role's own machine-bound job (under a lease) usually holds the

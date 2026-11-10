@@ -337,7 +337,7 @@ def gpu_share(w0, w1, org="", proj=""):
 # ---- ledger analyses --------------------------------------------------------
 
 def _repo_num(repo, num):
-    """('interpretune', '594') from ('speediedan/interpretune', 594)."""
+    """('app', '594') from ('acme/app', 594)."""
     return ((repo or "").rsplit("/", 1)[-1].lower(), str(num or ""))
 
 

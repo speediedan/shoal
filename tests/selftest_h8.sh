@@ -37,7 +37,7 @@ open(sys.argv[1], "a").write("call\n")
 out = []
 for m in re.finditer(r"^(\S+#\d+) \| pos \d+ \| ([^|]*)\|", p, re.M):
     t = m.group(2)
-    out.append({"item": m.group(1), "fits": {"tl": 3 if "TL4" in t else 0, "jl": 3 if "jlens" in t else 0,
+    out.append({"item": m.group(1), "fits": {"tl": 3 if "TL4" in t else 0, "jl": 3 if "probe" in t else 0,
                                              "up": 3 if "upstream" in t else 0},
                 "class": "blocked" if "BLOCKED" in t else "workable", "blocker": "", "why": "fake"})
 print("here you go: " + json.dumps({"items": out}))
@@ -46,7 +46,7 @@ printf 'import sys\nsys.stderr.write("Upstream request failed: Model is unavaila
 GOOD="python3 $S/good.py $S/calls"; BAD="python3 $S/bad.py"
 
 cat > "$SPEC" <<JSON
-{"shoal":"$SID","dir":"$WORK","incarnation":0,"repos":["speediedan/interpretune"],
+{"shoal":"$SID","dir":"$WORK","incarnation":0,"repos":["acme/app"],
  "ledger":{"repo":"$S/remote/q.git","dir":"$A"},
  "features":{"digest":true,"workwake":true,
    "matcher":{"backend":"command","model":"$BAD","fallbacks":[{"backend":"command","model":"$GOOD"}],
@@ -54,7 +54,7 @@ cat > "$SPEC" <<JSON
  "sources":[{"kind":"github-project","owner":"example","number":2}],
  "roles":[
   {"slug":"tl","ecosystem":"claude","title":"tl","doc":"$DOC","fill":"self","session":"aaaa1111",
-   "context":{"brief":"Upgrades interpretune to TL4.","affinity":{"keywords":{"hygiene":3.0}},"never":{}}},
+   "context":{"brief":"Upgrades app to TL4.","affinity":{"keywords":{"hygiene":3.0}},"never":{}}},
   {"slug":"jl","ecosystem":"opencode","title":"jl","doc":"$DOC","fill":"self","session":"ses_jl",
    "context":{"brief":"J-lens support.","never":{}}},
   {"slug":"up","ecosystem":"claude","title":"up","doc":"$DOC","fill":"self","session":"",
@@ -63,17 +63,17 @@ cat > "$SPEC" <<JSON
  ],"generations":[{"gen":"r1","incarnation":0,"started_utc":"2026-09-22T00:00:00Z","ended_utc":"","sessions":{},"run":{}}]}
 JSON
 $H ledger-init --spec "$SPEC" >/dev/null
-$H queue --shoal $SID --spec "$SPEC" --slug tl --active interpretune#1:fix --no-sync >/dev/null \
+$H queue --shoal $SID --spec "$SPEC" --slug tl --active app#1:fix --no-sync >/dev/null \
   || fail "tl queue write failed"
 
 cat > "$S/items.py" <<'PY'
 def items():
     def it(n, title, **kw):
-        d = {"pos": n, "item": f"interpretune#{n}", "repo": "speediedan/interpretune", "number": n, "kind": "issue",
+        d = {"pos": n, "item": f"app#{n}", "repo": "acme/app", "number": n, "kind": "issue",
              "title": title, "state": "OPEN", "status": "", "labels": [], "excerpt": title, "blocked_by": []}
         d.update(kw)
         return d
-    return [it(1, "TL4 bridge removal", blocked_by=["interpretune#5"]), it(2, "jlens readout"),
+    return [it(1, "TL4 bridge removal", blocked_by=["app#5"]), it(2, "probe readout"),
             it(3, "comment hygiene sweep"), it(4, "docs wide tables"), it(5, "small fix the migration lane waits on"),
             it(6, "upstream filing for a parked lane"), it(7, "BLOCKED on a release")]
 PY
@@ -97,17 +97,17 @@ assert any("skip command" in n and "unavailable" in n.lower() for n in m["notes"
 assert "good.py" in (m["model"] or ""), m["model"]
 sem = doc["shadow"]
 # effective priority: #5 blocks tl's active #1 -> lifted; #7 blocked -> sunk
-assert sem["items"]["interpretune#5"]["eff_pos"] == 0.5 and sem["items"]["interpretune#7"]["eff_pos"] == 14.0
+assert sem["items"]["app#5"]["eff_pos"] == 0.5 and sem["items"]["app#7"]["eff_pos"] == 14.0
 # lanes rank by fit: jl sees #2 only; tl's own item is taken, and its keyword 'hygiene' weight is ignored
-assert [r["item"] for r in sem["roles"]["jl"]] == ["interpretune#2"], sem["roles"]["jl"]
+assert [r["item"] for r in sem["roles"]["jl"]] == ["app#2"], sem["roles"]["jl"]
 assert sem["roles"]["tl"] == [], sem["roles"]["tl"]
 # aux: unblocker first, then minmax over ACTIVE lanes (up is parked, so #6 is aux work); #7 blocked, #2 jl's
 aux = [r["item"] for r in sem["roles"]["shoal-aux"]]
-assert aux[0] == "interpretune#5" and "unblocks" in sem["roles"]["shoal-aux"][0]["why"], aux
-assert set(aux) == {"interpretune#5", "interpretune#3", "interpretune#4", "interpretune#6"}, aux
+assert aux[0] == "app#5" and "unblocks" in sem["roles"]["shoal-aux"][0]["why"], aux
+assert set(aux) == {"app#5", "app#3", "app#4", "app#6"}, aux
 # in shadow the live doc still carries the keyword ranking for lanes, the semantic one for aux
 assert doc["roles"]["shoal-aux"] == sem["roles"]["shoal-aux"]
-assert any(r["item"] == "interpretune#3" for r in doc["roles"]["tl"]), doc["roles"]["tl"]
+assert any(r["item"] == "app#3" for r in doc["roles"]["tl"]), doc["roles"]["tl"]
 digest.write(spec, doc)
 assert os.path.exists(digest.semantic_path(spec.sid))
 PY
@@ -150,17 +150,17 @@ assert doc["ranking"] == "semantic" and "shadow" not in doc and doc["roles"]["tl
 off = copy.deepcopy(spec); off.features.pop("matcher")
 doc = digest.build(off, view, items=items())
 assert doc["ranking"] == "keyword" and "matcher" not in doc and "shadow" not in doc
-assert "eff_pos" not in doc["items"]["interpretune#5"], "effective priority leaked into a matcher-less shoal"
+assert "eff_pos" not in doc["items"]["app#5"], "effective priority leaked into a matcher-less shoal"
 PY
 
 echo "== 4 candidates, next AUX header, compare"
-check "BOARD interpretune#5:fix" $H digest --shoal $SID --spec "$SPEC" --slug shoal-aux --no-sync
+check "BOARD app#5:fix" $H digest --shoal $SID --spec "$SPEC" --slug shoal-aux --no-sync
 check "aux:max-fit=0" $H digest --shoal $SID --spec "$SPEC" --slug shoal-aux --semantic --no-sync
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug shoal-aux --peek --no-sync 2>&1)
-grep -q "AUX: you are the residual lane. Stay out of: tl (Upgrades interpretune to TL4); jl (J-lens support)" <<<"$OUT" \
+grep -q "AUX: you are the residual lane. Stay out of: tl (Upgrades app to TL4); jl (J-lens support)" <<<"$OUT" \
   || fail "AUX header :: $OUT"
 grep -q "Parked lanes whose work is yours meanwhile: up" <<<"$OUT" || fail "parked lane not named :: $OUT"
-grep -q "BOARD interpretune#5:fix" <<<"$OUT" || fail "aux next lacks the unblocker :: $OUT"
+grep -q "BOARD app#5:fix" <<<"$OUT" || fail "aux next lacks the unblocker :: $OUT"
 check "SWITCH BAR:" $H digest --shoal $SID --spec "$SPEC" --compare --no-sync
 
 echo "== 5 aux-init / role token / validation"

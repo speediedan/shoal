@@ -80,7 +80,7 @@ def turn_env() -> dict:
     if not config.env("MUSE_ALLOW_API_KEY"):
         env.pop("META_API_KEY", None)  # it outranks the subscription login and bills per token
     # a Muse process is not the Claude session that happened to start it: an inherited id would make the
-    # role's watcher bind itself to the operator's session (measured 2026-10-15, fts-core)
+    # role's watcher bind itself to the operator's session (measured 2026-10-15 on a live role)
     for k in [k for k in env if k.startswith("CLAUDE_CODE_") or k == "CLAUDECODE"]:
         env.pop(k)
     return env
@@ -89,7 +89,7 @@ def turn_env() -> dict:
 def attached_client(session: str) -> int:
     """Pid of an interactive Muse client (`muse resume <session>`) holding the session, else 0. Muse
     refuses a second owner ("session ... is already in use"), so an exec turn started under an attached
-    client fails and its wake is lost (measured 2026-10-15, fts-core): the watcher must hold the wake."""
+    client fails and its wake is lost (measured 2026-10-15 on a live role): the watcher must hold the wake."""
     # New clients can resume by name or through a wrapper without the UUID in argv.
     # The native lock identifies their session; never trust a stale pid file alone.
     native = native_session_dir(session)

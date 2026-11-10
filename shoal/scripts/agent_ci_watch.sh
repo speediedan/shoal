@@ -77,7 +77,7 @@ while true; do
   # MATRIX-GREEN (measured 2026-09-18: the hosted matrix can go fully green while the Azure
   # gate still pends approval, a state TERMINAL above can never observe — the watch would loop
   # silently forever on a decided wait). Fire once, keep watching for the gate verdict.
-  if [ -z "$matrix_green_fired" ] && printf '%s' "$snapshot" | grep -qiE 'cpu \(.*\) :: pass' && ! printf '%s' "$snapshot" | grep -viE 'speediedan\.interpretune|skipping' | grep -qiE ':: (pending|queued|waiting|in_progress|expected|fail|cancel|timed_out|action_required)'; then
+  if [ -z "$matrix_green_fired" ] && printf '%s' "$snapshot" | grep -qiE 'cpu \(.*\) :: pass' && ! printf '%s' "$snapshot" | grep -viE '${SHOAL_CI_GATE_PATTERN:-az-pipeline}|skipping' | grep -qiE ':: (pending|queued|waiting|in_progress|expected|fail|cancel|timed_out|action_required)'; then
     echo "$(date -u +%FT%TZ) MATRIX-GREEN: hosted fully green, only Azure pending." >> "$LOG"
     fire "MATRIX-GREEN" "hosted green on $HEAD_WANTED, gate pending approval — release or hold-with-condition now"
     matrix_green_fired=1
