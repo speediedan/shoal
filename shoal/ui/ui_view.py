@@ -633,7 +633,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
             _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: "",
-                            ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: ""})
+                            ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: ""})
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -666,7 +666,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
                        *ui_app.role_agent(rows[0]))
                 if now != need:
                     _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1], ui_app.ASKS_BADGE_LABEL: now[2],
-                                    ui_app.GROUP_LABEL: now[3], ui_app.STATE_LABEL: now[4]})
+                                    ui_app.GROUP_LABEL: now[3], ui_app.STATE_LABEL: now[4], ui_app.DETAIL_LABEL: now[5]})
                     need = now
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
@@ -881,7 +881,7 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "", job:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
-            _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: ""})
+            _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: ""})
 
 
 def _seat_dismissed(label: str) -> bool:
@@ -913,7 +913,8 @@ class _SeatReport:
         self.prev = rep["state"]
         agent = self.ui_app.standalone_agent(rep, _seat_dismissed(self.label))
         if agent != self.marked:
-            _marks(self.ui_app, {self.ui_app.GROUP_LABEL: agent[0], self.ui_app.STATE_LABEL: agent[1]})
+            _marks(self.ui_app, {self.ui_app.GROUP_LABEL: agent[0], self.ui_app.STATE_LABEL: agent[1],
+                                 self.ui_app.DETAIL_LABEL: agent[2]})
             self.marked = agent
         osc = self.ui_app.standalone_text(rep, self.label, self.latch, self.ended, self.sent)
         self.sent = osc or self.sent
@@ -942,7 +943,7 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
                 pick = 0
                 if seat is not None:  # the last report was the old session's; a fresh latch for the new one
                     sys.stdout.write(ui_app.OSC_CLEAR)
-                    _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: ""})
+                    _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: ""})
                     seat = _SeatReport(ui_app, label)
         if not host and harness == "claude":
             try:

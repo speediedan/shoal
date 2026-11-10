@@ -106,33 +106,38 @@ QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 # Herdr's own sections, by its reported status (a status without the derived state, or a harness that reports nothing)
 GROUP_LABEL = "shoal.group"
 STATE_LABEL = "shoal.state"
+DETAIL_LABEL = "shoal.detail"  # the row's tooltip: the ask's first line, the blocker or target
+DETAIL_MAX = 200
 AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
 
 
-def role_agent(r: dict) -> tuple[str, str]:
-    """(group, state) of a role's row in the agents list: its derived `agent` (`ui_status.role_row`), in the Dismissed
-    group once you dismissed it (its group's state still shown). ("", "") while the status carries no derived state."""
+def role_agent(r: dict) -> tuple[str, str, str]:
+    """(group, state, detail) of a role's row in the agents list: its derived `agent` (`ui_status.role_row`), in the
+    Dismissed group once you dismissed it (its group's state still shown). All "" while the status carries no derived
+    state."""
     agent = r.get("agent") if isinstance(r.get("agent"), dict) else {}
     group, state = str(agent.get("group") or ""), str(agent.get("state") or "")
     if group not in AGENT_GROUPS:
-        return "", ""
-    return ("dismissed" if r.get("dismissed") else group), state
+        return "", "", ""
+    detail = " ".join(str(agent.get("detail") or "").split())[:DETAIL_MAX]
+    return ("dismissed" if r.get("dismissed") else group), state, detail
 
 
-def standalone_agent(rep: dict | None, dismissed: bool = False) -> tuple[str, str]:
+def standalone_agent(rep: dict | None, dismissed: bool = False) -> tuple[str, str, str]:
     """(group, state) of a standalone seat's row, from its card's report (`standalone_report`). It needs you only at an
     open question: a seat is a conversation with you, so every reply ends waiting for you, and read as needs-you that
     buried the seats that do ask (2026-11-08). Between turns it is held (`your-turn` after a reply, `idle`, or `stopped`
-    with no worker); a finished turn you have not looked at keeps its done badge. `dismissed`: closed in the viewer."""
+    with no worker); a finished turn you have not looked at keeps its done badge. `dismissed`: closed in the viewer. The
+    detail is the report's message."""
     if rep is None:
-        return "", ""
+        return "", "", ""
     if rep["state"] == "working":
         group, state = "working", "working"
     elif rep.get("kind") == "question":
         group, state = "needs-you", "question"
     else:
         group, state = "held", {"blocked": "your-turn", "idle": "idle"}.get(rep.get("turn", ""), "stopped")
-    return ("dismissed" if dismissed else group), state
+    return ("dismissed" if dismissed else group), state, str(rep.get("msg") or "")[:DETAIL_MAX]
 
 
 def starved(r: dict) -> bool:
@@ -1409,7 +1414,7 @@ CLONES = {
         ('.items_center().justify_center().child("!");',
          '.items_center().justify_center().id(`shoal-badge-${a.address}`).cursor_pointer().on_click((_e, cx) => shoalAsks(a, cx)).child(shoalBadge(a));'),
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
-        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(pic)'),
+        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(shoalLabel(a, "shoal.detail")), (el) => el.tooltip(shoalLabel(a, "shoal.detail")))\n        .when(Boolean(pic)'),
     ]),
     # the top bar: Home and Lattice beside Files and Changes, where they are always in reach (the status bar's own
     # commands, so one path does the switching: an open tab at once, else the CLI)

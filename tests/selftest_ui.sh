@@ -2358,18 +2358,23 @@ assert 'labels?.["shoal.asks-badge"] === "1"' in helper, "the badge opens them o
 badge = next(n for o, n in ui_app.CLONES["agents"][1] if o == '.items_center().justify_center().child("!");')
 assert "on_click((_e, cx) => shoalAsks(a, cx))" in badge and ".id(`shoal-badge-" in badge, badge
 # the agents list's groups: a role's derived agent state, Dismissed once dismissed; nothing until the status carries it
-row = {"agent": {"group": "waiting", "state": "remote-ci", "detail": None}, "dismissed": False}
-assert ui_app.role_agent(row) == ("waiting", "remote-ci")
-assert ui_app.role_agent(dict(row, dismissed=True)) == ("dismissed", "remote-ci")
-assert ui_app.role_agent({}) == ("", "") and ui_app.role_agent({"agent": {"group": "odd"}}) == ("", "")
+row = {"agent": {"group": "waiting", "state": "remote-ci", "detail": "on  acme/app#12\nCI"}, "dismissed": False}
+assert ui_app.role_agent(row) == ("waiting", "remote-ci", "on acme/app#12 CI"), "the detail is one line, for a tooltip"
+assert ui_app.role_agent(dict(row, dismissed=True)) == ("dismissed", "remote-ci", "on acme/app#12 CI")
+assert ui_app.role_agent({}) == ("", "", "") and ui_app.role_agent({"agent": {"group": "odd"}}) == ("", "", "")
+assert len(ui_app.role_agent({"agent": {"group": "held", "state": "held", "detail": "x" * 500}})[2]) == ui_app.DETAIL_MAX
 # a standalone seat needs you only at an open question; between turns it is held, whatever the listing calls it
-seat = lambda **k: dict({"state": "idle", "kind": "", "turn": "idle"}, **k)
-assert ui_app.standalone_agent(seat(state="working", turn="working")) == ("working", "working")
-assert ui_app.standalone_agent(seat(state="blocked", kind="question", turn="blocked")) == ("needs-you", "question")
-assert ui_app.standalone_agent(seat(turn="blocked")) == ("held", "your-turn")
-assert ui_app.standalone_agent(seat()) == ("held", "idle") and ui_app.standalone_agent(seat(turn="dead")) == ("held", "stopped")
-assert ui_app.standalone_agent(seat(turn="blocked"), dismissed=True) == ("dismissed", "your-turn")
-assert ui_app.standalone_agent(None) == ("", "")
+seat = lambda **k: dict({"state": "idle", "kind": "", "turn": "idle", "msg": "alive, between turns"}, **k)
+agent2 = lambda *a, **k: ui_app.standalone_agent(*a, **k)[:2]
+assert agent2(seat(state="working", turn="working")) == ("working", "working")
+assert agent2(seat(state="blocked", kind="question", turn="blocked")) == ("needs-you", "question")
+assert agent2(seat(turn="blocked")) == ("held", "your-turn")
+assert agent2(seat()) == ("held", "idle") and agent2(seat(turn="dead")) == ("held", "stopped")
+assert agent2(seat(turn="blocked"), dismissed=True) == ("dismissed", "your-turn")
+assert ui_app.standalone_agent(seat())[2] == "alive, between turns", "the report's message is the tooltip"
+assert ui_app.standalone_agent(None) == ("", "", "")
+tip = next(n for o, n in ui_app.CLONES["agents"][1] if o.startswith('\n        .on_click(() => run("pane.focus"'))
+assert 'el.tooltip(shoalLabel(a, "shoal.detail"))' in tip, tip
 # the clone's sections, run under Node on stand-in terminals: the group decides, Herdr's status where there is none
 import os, shutil, subprocess, tempfile
 if shutil.which("node"):
