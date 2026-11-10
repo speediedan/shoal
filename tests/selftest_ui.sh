@@ -1783,8 +1783,16 @@ del cb.stop, cb._agents
 # a standalone card shows its registry entry's ids, not the ones on its command line
 import ui_view
 ui_herdr.save_standalone([{"harness": "claude", "session": "fe5e7000-0000", "job": "fe5e7000", "label": "seat"}])
-assert ui_view.registry_follow("claude", "seat0001-aaaa", "seat", "seat0001") == ("fe5e7000-0000", "fe5e7000")
-assert ui_view.registry_follow("claude", "zzz", "nobody", "z") == ("zzz", "z")
+assert ui_view.registry_follow("claude", "seat0001-aaaa", "seat", "seat0001") == ("claude", "fe5e7000-0000", "fe5e7000")
+assert ui_view.registry_follow("claude", "zzz", "nobody", "z") == ("claude", "zzz", "z")
+# a handover to another harness: the card follows the label onto it
+ui_herdr.save_standalone([{"harness": "opencode", "session": "ses_new0001", "job": "", "label": "seat"}])
+assert ui_view.registry_follow("claude", "fe5e7000-0000", "seat", "fe5e7000") == ("opencode", "ses_new0001", "")
+# two entries on one label: the card's own harness wins
+ui_herdr.save_standalone([{"harness": "opencode", "session": "ses_new0001", "label": "seat"},
+                          {"harness": "claude", "session": "fe5e7000-0000", "job": "fe5e7000", "label": "seat"}])
+assert ui_view.registry_follow("claude", "x", "seat", "") == ("claude", "fe5e7000-0000", "fe5e7000")
+ui_herdr.save_standalone([{"harness": "claude", "session": "fe5e7000-0000", "job": "fe5e7000", "label": "seat"}])
 print("handover ok")
 PY2
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "stale upkeep"
@@ -2952,7 +2960,7 @@ e = saved()
 assert (e["session"], e["job"], e["bg_followed_from"]) == ("aaaa0001-2222-4222-8222-222222222222", "aaaa0001", ORIG), e
 assert len(backups()) == 1 and not os.path.exists(ui_herdr.standalone_path() + ".tmp"), backups()
 assert ORIG in open(backups()[0]).read(), "the backup holds the registry from before the follow"
-assert ui_view.registry_follow("claude", ORIG, "seat", "") == ("aaaa0001-2222-4222-8222-222222222222", "aaaa0001")
+assert ui_view.registry_follow("claude", ORIG, "seat", "") == ("claude", "aaaa0001-2222-4222-8222-222222222222", "aaaa0001")
 assert ui_view.standalone_tick("claude", e["session"], "seat", "aaaa0001")["action"] == "attach"
 # a second follow writes no second backup
 reset(); d = tick()

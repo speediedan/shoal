@@ -661,7 +661,7 @@ class ClaudeBackend(Backend):
             return "wake-file" + (" (dry-run)" if dry_run else "")
         return self.deliver(spec, role, role.session, text, dry_run)
 
-    def deliver(self, spec, role, session: str, text: str, dry_run: bool = False) -> str:
+    def deliver(self, spec, role, session: str, text: str, dry_run: bool = False, through_question: bool = False) -> str:
         """Deliver one wake to a Claude session with no turn but the target's own, where it allows that
         (features.health.direct_wake; architecture doc §7). Returns the channel:
         - `resume`: the session has no worker (retired idle at its prompt, reaped, stopped), so
@@ -671,6 +671,8 @@ class ClaudeBackend(Backend):
           stopped and resumed the same way;
         - `deferred (...)`: busy, at a question, work in flight, or a live worker under mode `dead`; the
           caller retries later (a session with work in flight wakes itself when that work ends);
+          `through_question` (an operator's explicit handoff choice) stops and resumes a session at a question
+          instead, which drops the question;
         - `FAILED ...`: the resume did not take; the caller retries."""
         import time as _time
         from health import claude_job_state, claude_liveness, claude_prompt_open
@@ -688,11 +690,11 @@ class ClaudeBackend(Backend):
             busy_fl = isinstance(fl, dict) and (int(fl.get("tasks") or 0) or int(fl.get("queued") or 0) or fl.get("kinds"))
             if live == "busy":
                 why = "mid-turn"
-            elif claude_prompt_open(row, full):
+            elif claude_prompt_open(row, full) and not through_question:
                 why = "at a question"
             elif busy_fl:
                 why = "background work in flight"
-            elif mode != "idle":
+            elif mode != "idle" and not through_question:
                 why = "live worker (direct_wake dead)"
             else:
                 if dry_run or fake_sessions() is not None:

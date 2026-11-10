@@ -792,19 +792,22 @@ def _view_cmd(sid: str, slug: str, spec_path: str, harness: str = "", session: s
     return argv + [sid, slug] + (["--spec", spec_path] if spec_path else [])
 
 
-def registry_follow(harness: str, session: str, label: str, job: str = "") -> tuple[str, str]:
-    """(session, job) this card should show now: its saved registry entry's, matched by label. A card's command line
-    carries the ids it was opened with, and a handover moves the entry to a new job, so a card that never re-read the
-    registry kept showing the retired session (measured 2026-10-24: shoal-architecture-evolution's card on 4decf3de,
-    four days after it opened, while the registry held the new job)."""
+def registry_follow(harness: str, session: str, label: str, job: str = "") -> tuple[str, str, str]:
+    """(harness, session, job) this card should show now: its saved registry entry's, matched by label. A card's
+    command line carries the ids it was opened with, and a handover moves the entry to a new job, so a card that never
+    re-read the registry kept showing the retired session (measured 2026-10-24: shoal-architecture-evolution's card on
+    4decf3de, four days after it opened, while the registry held the new job). A handover can also change the harness
+    (Claude to OpenCode and back, 2026-11-09), so the label alone decides; an entry on the card's own harness wins
+    only if two share the label."""
     try:
         import ui_herdr
-        for e in ui_herdr.local_standalone():
-            if e.get("harness") == harness and (e.get("label") or e["session"][:12]) == label:
-                return e["session"], e.get("job", "") or ""
+        rows = [e for e in ui_herdr.local_standalone() if (e.get("label") or e["session"][:12]) == label]
+        rows = [e for e in rows if e.get("harness") == harness] or rows
+        if len(rows) == 1 and rows[0].get("harness"):
+            return rows[0]["harness"], rows[0]["session"], rows[0].get("job", "") or ""
     except Exception:  # noqa: BLE001 - the registry is a convenience: keep the ids the card was opened with
         pass
-    return session, job
+    return harness, session, job
 
 
 def registry_view_args(harness: str, session: str, label: str) -> tuple[str, str]:
@@ -861,7 +864,8 @@ def standalone_tick(harness: str, session: str, label: str, job: str = "", pick:
 def standalone_stub(harness: str, session: str, label: str, host: str = "", job: str = "") -> int:
     try:
         import ui_app
-        report = ui_app.in_core_terminal() and harness == "claude" and not host  # only a local Claude session can be read
+        # only a local Claude session can be read; the card checks the harness each tick, as a handover can change it
+        report = ui_app.in_core_terminal() and not host
     except Exception:  # noqa: BLE001 - the app adapter can never take a card down
         ui_app, report = None, False
     try:
@@ -913,7 +917,14 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
         d = {"action": "none", "message": ""}
         listed = None
         if not host:
-            session, job = registry_follow(harness, session, label, job)
+            was = harness
+            harness, session, job = registry_follow(harness, session, label, job)
+            if harness != was:
+                notice = f"this seat moved from {was} to {harness} session {session}: the card follows it"
+                pick = 0
+                if seat is not None:  # the last report was the old session's; a fresh latch for the new one
+                    sys.stdout.write(ui_app.OSC_CLEAR)
+                    seat = _SeatReport(ui_app, label)
         if not host and harness == "claude":
             try:
                 import ui_status
@@ -964,7 +975,7 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
                 f"this card hosts the {harness.capitalize()} client itself: quit {harness} to come back here; the "
                 "session is saved on disk and [enter] resumes it (a name that does not exist yet starts a new session)")
         osc = ""
-        if seat is not None:
+        if seat is not None and harness == "claude":
             try:
                 osc = seat.text(session, job, listed[1] if listed else None)
             except Exception:  # noqa: BLE001 - a report never breaks the card
@@ -982,7 +993,7 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
             flush_input()
             # the attach's reporter is a thread of its own with its own state: nothing it touches is the loop's, and a
             # fresh latch says no `done` while you are in the session
-            s, j, att = session, job, _SeatReport(ui_app, label) if seat is not None else None
+            s, j, att = session, job, _SeatReport(ui_app, label) if seat is not None and harness == "claude" else None
             with _report_during("", "", ui_app, make=lambda: att.text(s, j)) if att is not None else contextlib.nullcontext():
                 run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
                                + (["--job", job] if job else []))
@@ -1007,8 +1018,11 @@ def cmd_view(a) -> int:
                 return (standalone_stub(a.harness, a.session, label, a.host, job) if a.stub else
                         remote_attach(a.host, "", "", standalone=(a.harness, a.session, label.rsplit("@", 1)[0], job)))
             job = getattr(a, "job", "") or ""
-            return (standalone_stub(a.harness, a.session, label, job=job) if a.stub
-                    else run_viewer(a.harness, a.session, label, job))
+            if a.stub:
+                return standalone_stub(a.harness, a.session, label, job=job)
+            # a routed card on another host was opened with this seat's ids then: attach to the session it holds now
+            harness, session, job = registry_follow(a.harness, a.session, label, job) if a.label else (a.harness, a.session, job)
+            return run_viewer(harness, session, label, job)
         if not (a.target_shoal and a.role):
             print("usage: shoal view <shoal> <role> | shoal view --harness H --session ID")
             return 2
