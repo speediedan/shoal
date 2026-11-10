@@ -124,7 +124,7 @@ def role_agent(r: dict) -> tuple[str, str, str]:
 
 
 def standalone_agent(rep: dict | None, dismissed: bool = False) -> tuple[str, str, str]:
-    """(group, state) of a standalone seat's row, from its card's report (`standalone_report`). It needs you only at an
+    """(group, state, detail) of a standalone seat's row, from its card's report (`standalone_report`). It needs you only at an
     open question: a seat is a conversation with you, so every reply ends waiting for you, and read as needs-you that
     buried the seats that do ask (2026-11-08). Between turns it is held (`your-turn` after a reply, `idle`, or `stopped`
     with no worker); a finished turn you have not looked at keeps its done badge. `dismissed`: closed in the viewer. The

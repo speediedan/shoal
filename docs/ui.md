@@ -653,7 +653,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   its card writes; a role's from its status row's `agent`, a dismissed one in Dismissed with its state still shown).
   A role row reads `space · state`, and its tooltip is the state's detail (`shoal.detail`). A row with no derived state
   (a status from before it, another agent in the app) keeps Herdr's own sections by its reported status, so Done
-  (finished, not looked at) and Idle appear only for those; a card's done is its status dot.
+  (finished, not looked at) and Idle appear only for those; a card's done is its status dot. Only a local Claude seat's
+  card reports, so a seat on Codex, Muse or OpenCode, or one on another host, stays in Herdr's own sections.
 - **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
   an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
