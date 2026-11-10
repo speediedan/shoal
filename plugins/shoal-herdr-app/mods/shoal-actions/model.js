@@ -16,7 +16,7 @@
 // Every write is the CLI's apply; this module only builds argv and reads replies.
 
 export const MOD = "shoal-actions";
-export const SIZE = { width: 640, height: 540 };
+export const SIZE = { width: 640, height: 600 };
 
 export const KINDS = {
   roles: "shoal-act-roles",
@@ -68,6 +68,25 @@ export const isView = (verb) => verbInfo(verb)?.kind === "view";
 export const isQueue = (verb) => verbInfo(verb)?.kind === "queue";
 
 /** The verbs a target can use: a scope across shoals (`all`, `host:<name>`) takes only those that span shoals. */
+/**
+ * The verbs by what they are for, one labeled row each in the dialog: a flat wall of eighteen buttons read as one
+ * undifferentiated list (2026-11-10). Each verb is in exactly one group; a test keeps the two lists in step.
+ */
+export const GROUPS = [
+  { key: "talk", label: "Talk", verbs: ["msg", "asks"] },
+  { key: "work", label: "Work", verbs: ["next", "queue", "offer", "withdraw", "fill"] },
+  { key: "seat", label: "Seat", verbs: ["handoff", "dismiss", "add-role", "add-session", "remove-role", "remove-session"] },
+  { key: "shoal", label: "Shoal", verbs: ["offline", "freeze"] },
+  { key: "inspect", label: "Inspect", verbs: ["status", "conditions", "upgrade"] },
+];
+
+/** The verbs on offer for a target, by group, in each group's order: [{key, label, verbs: [VERB]}], empty groups left out. */
+export function verbGroups(target) {
+  const offered = new Map(verbsFor(target).map((v) => [v.verb, v]));
+  return GROUPS.map((g) => ({ key: g.key, label: g.label, verbs: g.verbs.map((k) => offered.get(k)).filter(Boolean) }))
+    .filter((g) => g.verbs.length);
+}
+
 export function verbsFor(target) {
   if (strOrNull(target?.session)) return VERBS.filter((v) => v.sessionOnly || v.sessionAlso);
   return VERBS.filter((v) => !v.sessionOnly && (v.hostLevel || !strOrNull(target?.scope) || v.scoped));

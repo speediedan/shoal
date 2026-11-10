@@ -1324,7 +1324,7 @@ function shoalDialog(a, cx, verb) {
   if (cut < 0 || label.startsWith("standalone/")) return;
   cx.stop_propagation();
   const at = a.address.indexOf("/");
-  openOverlay({ mod: "shoal-actions", kind: "dialog", width: 640, height: 540, props: { shoal: label.slice(0, cut), role: label.slice(cut + 1), verb, machine: at > 0 ? a.address.slice(0, at) : null } });
+  openOverlay({ mod: "shoal-actions", kind: "dialog", width: 640, height: 600, props: { shoal: label.slice(0, cut), role: label.slice(cut + 1), verb, machine: at > 0 ? a.address.slice(0, at) : null } });
 }
 
 // A blocked role's badge says what it wants: its report's kind, or the card's shoal.need label where no kind fits
@@ -1380,7 +1380,7 @@ CLONES = {
         ('const head = h_flex().id(`machine-${m ?? "local"}`).h(26)',
          'const head = h_flex().id(`machine-${m ?? "local"}`)'
          '.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "shoal-actions", kind: "dialog", '
-         'width: 640, height: 540, props: { scope: m ? `host:${m}` : "all", machine: m } }); }).h(26)'),
+         'width: 640, height: 600, props: { scope: m ? `host:${m}` : "all", machine: m } }); }).h(26)'),
         # the home space is reached by the top bar's Home, Lattice and Usage, not listed under This computer
         ("    return out.filter(r => this.shown.has(r.w.id));",
          f'    return out.filter(r => this.shown.has(r.w.id) && !(r.w.machine == null && r.w.name === "{HOME_SPACE}"));'),

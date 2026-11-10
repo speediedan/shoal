@@ -33,7 +33,7 @@ import {
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
-  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, verbGroups,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -835,19 +835,26 @@ export default class Actions extends View {
   }
 
   verbRow(c) {
-    const row = h_flex().px(16).pb(12).gap(6).flex_wrap().flex_none();
-    for (const v of verbsFor(this.sel)) {
-      const on = v.verb === this.verb;
-      row.child(h_flex().id(`v-${v.verb}`).h(28).px(11).items_center().rounded(7).flex_none().cursor_pointer()
-        .border_1().border_color(on ? c.accent : c.input)
-        .bg(on ? c.accent : v.kind === "write" ? c.raised : c.panel)
-        .text_size(12).font_medium().text_color(on ? c.accentFg : c.ink)
-        .hover((s) => s.opacity(0.88))
-        .tooltip(v.about)
-        .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })
-        .child(v.label));
+    // one labeled row per group (Talk, Work, Seat, Shoal, Inspect): every verb one click away, in an order that says what it is for
+    const col = v_flex().px(16).pb(12).gap(5).flex_none();
+    for (const g of verbGroups(this.sel)) {
+      const row = h_flex().id(`g-${g.key}`).gap(6).items_start();
+      row.child(div().w(54).flex_none().pt(6).text_size(10.5).text_color(c.dim).child(g.label));
+      const chips = h_flex().flex_1().min_w(0).gap(6).flex_wrap();
+      for (const v of g.verbs) {
+        const on = v.verb === this.verb;
+        chips.child(h_flex().id(`v-${v.verb}`).h(26).px(10).items_center().rounded(7).flex_none().cursor_pointer()
+          .border_1().border_color(on ? c.accent : c.input)
+          .bg(on ? c.accent : v.kind === "write" ? c.raised : c.panel)
+          .text_size(12).font_medium().text_color(on ? c.accentFg : c.ink)
+          .hover((s) => s.opacity(0.88))
+          .tooltip(v.about)
+          .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })
+          .child(v.label));
+      }
+      col.child(row.child(chips));
     }
-    return row;
+    return col;
   }
 
   label(text, c) {
@@ -888,7 +895,7 @@ export default class Actions extends View {
   menuBody(c) {
     const col = v_flex().gap(2);
     col.child(div().pb(6).text_size(11.5).text_color(c.muted).child("Pick an action. Permanent or wide ones preview first; on the rest, tick Preview first to see a dry run."));
-    for (const v of verbsFor(this.sel)) {
+    for (const v of verbGroups(this.sel).flatMap((g) => g.verbs)) {
       col.child(h_flex().id(`m-${v.verb}`).gap(10).px(8).py(5).rounded(6).cursor_pointer().items_center()
         .hover((s) => s.bg(c.hover))
         .on_click((_e, cx) => { this.pick(v.verb, cx); cx.notify(); })

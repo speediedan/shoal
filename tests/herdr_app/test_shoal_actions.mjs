@@ -656,6 +656,20 @@ test("Queue: the role's queue and candidates, a draft laid out by pick and slot,
   assert.notEqual(M.srcColor("other", c), M.srcColor("offer", c));
 });
 
+test("the verbs in labeled groups: each in exactly one, in the group's order, only what the target offers", () => {
+  const all = M.GROUPS.flatMap((g) => g.verbs);
+  assert.deepEqual([...all].sort(), M.VERBS.map((v) => v.verb).sort(), "every verb in a group");
+  assert.equal(new Set(all).size, all.length, "and in one only");
+  const roleGroups = M.verbGroups({ shoal: A, role: "core" });
+  assert.deepEqual(roleGroups.map((g) => g.label), ["Talk", "Work", "Seat", "Shoal", "Inspect"]);
+  assert.deepEqual(roleGroups.find((g) => g.key === "work").verbs.map((v) => v.verb), ["next", "queue", "offer", "withdraw", "fill"]);
+  assert.deepEqual(roleGroups.flatMap((g) => g.verbs).map((v) => v.verb).sort(), M.verbsFor({ shoal: A, role: "core" }).map((v) => v.verb).sort());
+  // a standalone seat: only its own verbs, and the groups it has none in are left out
+  const seat = M.verbGroups({ session: "example-seat" });
+  assert.deepEqual(seat.map((g) => g.key), ["seat"]);
+  assert.deepEqual(seat[0].verbs.map((v) => v.verb), ["handoff", "remove-session"]);
+});
+
 test("a long command breaks at its arguments, never inside a word or a quoted span", () => {
   const cmd = "shoal handoff --spec /example/ledgers/shoals/alpha-20261101-000000/shoal.json --only core "
     + "--expected-session=aaaa0001-1111-4111-8111-111111111111";
