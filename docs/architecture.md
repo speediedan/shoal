@@ -1196,6 +1196,28 @@ A standalone seat can explicitly use `--no-prepare` when its checkpoint validate
 references and the source is already idle. `OpenChamberBackend.create` sends a supplied resume brief with
 the requested model and effort (`--variant`); role startup creates an empty session and sends separately.
 
+Three cases the 2026-11-09 seat moves hit by hand are now part of the flow:
+- **An open question.** A Claude session stopped at a question prompt is never between turns, so a checkpoint
+  request would wait to its deadline. `handoff_flow.question_open` refuses that at once, for a role and for a
+  standalone seat. For a standalone Claude seat the operator may pass `--through-question`: the checkpoint request is
+  then delivered with `ClaudeBackend.deliver(..., through_question=True)`, which stops the turn at the question and
+  resumes the same conversation with the request (the question is dropped).
+- **A seat handing itself off.** Stopping its own session would end the turn running the command. `is_self` matches
+  the caller's Claude job folder or conversation (or `SHOAL_SELF_SESSION` for another harness). The seat writes its
+  checkpoint first and opts in with `--no-prepare` (a self `--prepare` is refused); `detach_self` then checks that
+  the start doc validates, and relaunches the handoff as a transient user unit
+  (`systemd-run --user`, log in the handoff runtime dir) with `--no-prepare --await-idle` and the caller's `PATH`,
+  config and `SHOAL_*` environment, since a transient unit starts from the manager's environment without the tool
+  path. The unit waits until the seat is idle on two checks `POLL_S` apart, then hands off as usual.
+- **Registry lineage.** Each standalone handoff appends the retired harness, session and job to the entry's
+  `lineage` (the last ten), so a stale card, job or name-addressed message can be traced to the seat it belonged to.
+  A leftover entry is removed with `shoal remove-session`.
+
+A standalone card follows its registry entry by label each tick (`ui_view.registry_follow`), harness included: a
+seat moved from Claude to OpenCode or back switches its card in place, clears the app report of the old session, and
+reports only while the seat is on Claude. A routed card's attach re-reads the registry on the seat's own host, so it
+reaches the session the seat holds now rather than the one the card was opened with.
+
 `ui_runs.py` owns confirmed background handoffs. `act-apply --background` consumes the one-use token and
 starts a detached worker; `act-status` returns the retained log and running or completed state. A worker
 that disappears is reported as failed. Reopening Handoff on the same target reconnects to its latest run;

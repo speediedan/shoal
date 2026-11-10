@@ -3,6 +3,7 @@
 import contextlib
 import datetime
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -271,6 +272,105 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(state["rc"], 1)
         self.assertIn("before reporting completion", state["output"])
 
+
+    def claude_seat(self):
+        entry = dict(self.entry, harness="claude", session="cccc0001-1111-4111-8111-111111111111", job="cccc0001")
+        save_standalone([entry])
+        self.args.expected_session = entry["session"]
+        return entry
+
+    def test_open_question_is_refused_at_once_without_waiting_or_delivering(self):
+        self.claude_seat()
+        with patch.object(flow, "preflight"), patch.object(flow, "question_open", return_value=True), \
+             patch.object(flow, "is_self", return_value=False), patch.object(backends, "get") as backend, \
+             self.assertRaisesRegex(flow.HandoffError, "open question.*--through-question"):
+            flow.run(self.args)
+        backend.assert_not_called()
+
+    def test_through_question_delivers_without_waiting_for_a_turn_end(self):
+        entry = self.claude_seat()
+        calls = []
+        def deliver(spec, role, session, text, through_question=False):
+            calls.append(through_question)
+            self.write_doc("restart-ready")
+            return "stop+resume"
+        source = types.SimpleNamespace(deliver=deliver)
+        target = types.SimpleNamespace(create=lambda *a, **k: "dddd0002-2222-4222-8222-222222222222")
+        between = iter([True, True, True, True])  # only after the request: the first wait is skipped
+        self.args.through_question = True
+        with patch.object(flow, "question_open", return_value=True), patch.object(flow, "between", side_effect=lambda e: next(between)), \
+             patch.object(park, "stop_session", return_value="stopped"), \
+             patch.object(backends, "get", side_effect=lambda eco: source if not calls else target):
+            self.assertEqual(flow.standalone_handoff(self.args, entry, str(self.doc), "claude", time.monotonic() + 2), 0)
+        self.assertEqual(calls, [True])
+        row = load_standalone()[0]
+        self.assertEqual((row["session"], row["job"]), ("dddd0002-2222-4222-8222-222222222222", "dddd0002"))
+        self.assertEqual(row["lineage"], [{"harness": "claude", "session": entry["session"], "job": "cccc0001",
+                                           "until": row["handover_state"]["at"]}])
+
+    def test_a_question_does_not_stop_the_role_wait_silently(self):
+        role = types.SimpleNamespace(slug="core", session="old-session", ecosystem="claude", doc=str(self.doc))
+        spec = types.SimpleNamespace(sid="example", ledger_dir="", dir=str(self.root), role=lambda _: role)
+        args = types.SimpleNamespace(session="", prepare=True, force=False, spec="/example/spec.json", only="core",
+                                     expected_session="", wait_seconds=2, doc="", ecosystem="", model="", effort="", dry_run=False)
+        with patch("roles.ShoalSpec.load", return_value=spec), patch("roles.is_local", return_value=True), \
+             patch.object(flow, "preflight"), patch.object(flow, "role_ready", return_value=False), \
+             patch.object(flow, "question_open", return_value=True), patch.object(subprocess, "call") as call, \
+             self.assertRaisesRegex(flow.HandoffError, "open question"):
+            flow.run(args)
+        call.assert_not_called()
+
+    def test_self_handoff_detaches_a_finisher_with_the_callers_tool_path(self):
+        entry = self.claude_seat()
+        self.args.no_prepare = True
+        with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001", PATH="/example/bin:/usr/bin"), \
+             patch.object(flow, "preflight"), patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run, \
+             patch.object(park, "stop_session") as stop:
+            self.assertTrue(flow.is_self(entry))
+            self.assertEqual(flow.run(self.args), 0)
+        stop.assert_not_called()
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:2], ["systemd-run", "--user"])
+        self.assertIn("-EPATH=/example/bin:/usr/bin", argv)
+        self.assertIn("SHOAL_HANDOFF_DETACHED=1", argv)
+        for flag in ("--no-prepare", "--await-idle"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("--expected-session") + 1], entry["session"])
+        with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001", SHOAL_HANDOFF_DETACHED="1"):
+            self.assertFalse(flow.is_self(entry), "the finisher itself is not the seat")
+        with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/eeee0003"):
+            self.assertFalse(flow.is_self(entry), "handing off another seat stays in the foreground")
+
+    def test_self_handoff_must_opt_out_of_prepare(self):
+        self.claude_seat()
+        with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001"), patch.object(flow, "preflight"), \
+             patch.object(subprocess, "run") as run, self.assertRaisesRegex(flow.HandoffError, "refresh your start doc, then pass --no-prepare"):
+            flow.run(self.args)
+        run.assert_not_called()
+
+    def test_through_question_is_refused_for_a_role(self):
+        args = types.SimpleNamespace(session="", prepare=True, force=False, spec="/example/spec.json", only="core",
+                                     through_question=True, wait_seconds=2, dry_run=False)
+        with self.assertRaisesRegex(flow.HandoffError, "for standalone seats"):
+            flow.run(args)
+
+    def test_self_handoff_needs_its_checkpoint_first(self):
+        entry = self.claude_seat()
+        self.args.no_prepare = True
+        self.doc.write_text("# Example\nno stamp\n")
+        with patch.dict(os.environ, CLAUDE_JOB_DIR="/jobs/cccc0001"), patch.object(flow, "preflight"), \
+             patch.object(subprocess, "run", wraps=subprocess.run) as run, self.assertRaisesRegex(flow.HandoffError, "must first write a valid start doc"):
+            flow.run(self.args)
+        self.assertFalse([c for c in run.call_args_list if c.args and c.args[0][0] == "systemd-run"])
+
+    def test_finisher_waits_for_two_idle_checks_before_retiring(self):
+        seen = itertools.chain([False, True, False], itertools.repeat(True))
+        backend = types.SimpleNamespace(create=unittest.mock.Mock(return_value="new-session"))
+        self.args.await_idle = True
+        with patch.object(flow, "between", side_effect=lambda e: next(seen)), patch.object(flow, "POLL_S", 0.001), \
+             patch.object(backends, "get", return_value=backend), patch.object(park, "stop_session", return_value="stopped") as stop:
+            self.assertEqual(flow.standalone_handoff(self.args, self.entry, str(self.doc), "muse", time.monotonic() + 2, prepare=False), 0)
+        stop.assert_called_once()
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,7 @@ waiting on a `hold:` instead would have been paged as stale after `hold_ttl_min`
 """
 from __future__ import annotations
 
+import argparse
 import datetime
 import os
 import shlex
@@ -708,6 +709,9 @@ def add_parser(sub) -> None:
     checkpoint.add_argument("--no-prepare", action="store_true", help="standalone: use its existing valid checkpoint, only while idle")
     p.add_argument("--wait-seconds", type=int, default=3600, help="checkpoint deadline with --prepare (default 3600)")
     p.add_argument("--expected-session", default="", help="refuse if the seat changed sessions since the preview")
+    p.add_argument("--through-question", action="store_true",
+                   help="standalone Claude: a seat stopped at an open question is stopped and resumed with the checkpoint request (the question is dropped)")
+    p.add_argument("--await-idle", action="store_true", help=argparse.SUPPRESS)  # the detached self-handover finisher
     p.add_argument("--doc", default="", help="standalone: its start doc (default: the saved one)")
     p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
     p.add_argument("--effort", default="", help="the new session's effort (default: the recorded one; on another provider, its default)")
