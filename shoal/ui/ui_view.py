@@ -661,12 +661,9 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
                 import ui_herdr
                 osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid), latch, sent)
                 sent = osc or sent
-                rep = ui_app.card_report(rows[0], "")
-                now = (rep.get("need", ""), str(rep.get("asks") or ""), "1" if rep.get("asks_badge") else "",
-                       *ui_app.role_agent(rows[0]))
+                now = _card_labels(ui_app, rows[0])
                 if now != need:
-                    _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1], ui_app.ASKS_BADGE_LABEL: now[2],
-                                    ui_app.GROUP_LABEL: now[3], ui_app.STATE_LABEL: now[4], ui_app.DETAIL_LABEL: now[5]})
+                    _marks(ui_app, now)
                     need = now
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
@@ -708,6 +705,16 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             time.sleep(3)
 
 
+def _card_labels(ui_app, row: dict) -> dict:
+    """The labels a role card keeps on its terminal for the agents list: its badge's cause and asks, and its derived
+    group, state and detail."""
+    rep = ui_app.card_report(row, "")
+    group, state, detail = ui_app.role_agent(row)
+    return {ui_app.NEED_LABEL: rep.get("need", ""), ui_app.ASKS_LABEL: str(rep.get("asks") or ""),
+            ui_app.ASKS_BADGE_LABEL: "1" if rep.get("asks_badge") else "", ui_app.GROUP_LABEL: group,
+            ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail}
+
+
 def _mark_attached(ui_app, value: str) -> None:
     """Say on this terminal whether a client is attached under the card ("" removes it), so a rebuild of the roles tabs leaves it open."""
     try:
@@ -739,18 +746,30 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     three of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
     does; only a changed report is written, because the attached client is drawing on the same terminal. Claude only: its
     client reports nothing, while Codex's writes `app=codex` itself, so two reporters would take turns on one row (Muse's is
-    not known), and those keep the frozen report as before."""
+    not known), and those keep the frozen report as before. The agents list's labels are another matter: they go through
+    the core, not the terminal, so a role card keeps them current through an attach whatever its harness (measured
+    2026-11-10: three attached cards had no group, so their rows sat in the old sections until a detach)."""
     if ui_app is None:
         yield
         return
     import ui_herdr
     stop = threading.Event()
     _mark_attached(ui_app, "1")
+    marked: list = [None]  # the labels last written by this attach
 
     def role_osc() -> str | None:
         rows: list = []
         card(sid, slug, False, rows)
-        return ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows and rows[0].get("ecosystem") == "claude" else None
+        if not rows:
+            return None
+        try:
+            labels = _card_labels(ui_app, rows[0])
+            if labels != marked[0]:
+                _marks(ui_app, labels)
+                marked[0] = labels
+        except Exception:  # noqa: BLE001 - the labels never hold up the report
+            pass
+        return ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows[0].get("ecosystem") == "claude" else None
 
     def report() -> None:
         last = None

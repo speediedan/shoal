@@ -1252,8 +1252,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 if (age_min(held) or 0.0) >= ATTACHED_PAGE_MIN and not lad.get("attached_paged"):
                     lad["attached_paged"] = iso()
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:page", page_user(
-                        spec, f"{c['slug']}: restart-ready, but its automatic restart is held: {client}. Detach its "
-                        "card to let it restart", state, dry_run)))
+                        spec, f"{c['slug']}: restart-ready, but its automatic restart is held: {client}. Detach the "
+                        "client (its card or terminal) to let it restart", state, dry_run)))
                 break
             for k in ("attached", "attached_said", "attached_paged"):
                 lad.pop(k, None)

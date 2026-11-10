@@ -2711,6 +2711,31 @@ finally:
     sys.stdout = real
 assert out.getvalue() == "", out.getvalue()  # outside the app nothing; a failed read breaks nothing
 PY2
+# the agents list's labels stay current through an attach, whatever the harness: they go through the core, not the terminal
+HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "labels during attach"
+import io, sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_herdr, ui_view
+ui_view.CARD_REFRESH_S = 0.05
+ui_herdr.shoal_tag = lambda sid: "tag"
+row = {"slug": "r", "ecosystem": "muse", "agent": {"group": "waiting", "state": "remote-ci", "detail": "acme/app#3"}}
+ui_view.card = lambda sid, slug, force=False, rows=None: rows.append(dict(row)) or ""
+ui_app.card_report = lambda r, tag: {"need": "", "asks": 0, "asks_badge": False}
+marks = []
+ui_app.hc_label = lambda t, labels: marks.append(dict(labels))
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", ui_app):
+        time.sleep(0.2)
+        row["agent"] = {"group": "needs-you", "state": "asked", "detail": "may I merge?"}
+        time.sleep(0.2)
+finally:
+    sys.stdout = real
+groups = [m.get(ui_app.GROUP_LABEL) for m in marks if ui_app.GROUP_LABEL in m]
+assert groups == ["waiting", "needs-you"], marks  # written while attached, once per change
+assert out.getvalue() == "", "a Muse client draws its own: no report on its terminal"
+PY2
 # an attach marks the terminal, and a roles tab with a marked card is not rebuilt, though the core names the card as foreground
 HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "attached label"
 import sys, types
