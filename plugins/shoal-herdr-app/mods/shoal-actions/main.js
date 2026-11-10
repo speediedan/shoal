@@ -17,10 +17,12 @@
 //     machine (`ui pick --save`), then opens its space here (`ui app-open --show`).
 //     Without them the dialog starts on the focused card (its `shoal.pane` label and its space's
 //     machine), else on the first shoal with a role that needs you.
-//   verb: open straight on one verb ("msg", "next", "asks", "queue", ...); text, wake: prefill Message.
+//   verb: open straight on one verb ("msg", "next", "asks", "queue", ...); text, wake: prefill Message; item: prefill
+//     Offer (the Board tab's "Offer to").
 //   Queue (a role): its queue and candidates (`act-plan queue`), laid out in a draft (pick a row or candidate, then
 //     click a slot; up/down; drop; mark blocked), planned as one batch (`act-plan queue-set`) and confirmed like any plan.
-//   pick (fixture only): a Queue item key picked at open, so the slots show without a click.
+//   pick: a Queue item key picked at open, so its slots show without a click (the Board tab's "Move to"); a key
+//     the queue does not offer picks nothing.
 //   fixture: true answers from the bundled fixtures/act.json instead of running shoal (every
 //     screen renders without the CLI; a field value containing "fail" gets the error reply).
 
@@ -33,7 +35,7 @@ import {
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
-  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, verbGroups,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, verbGroups, pickKey,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -82,7 +84,8 @@ export default class Actions extends View {
     this.sessions = null; // Add session: every machine's candidates, merged
     this.sessionsNote = null;
     this.sessionsSeq = 0;
-    this.prefill = { text: typeof p.text === "string" ? p.text : undefined, wake: p.wake === true ? true : undefined };
+    this.prefill = { text: typeof p.text === "string" ? p.text : undefined, wake: p.wake === true ? true : undefined,
+                     item: typeof p.item === "string" ? p.item : undefined };
     this.queue = null; // Queue: the role's queue as read
     this.draft = null; // and the layout proposed for it
     this.blocking = null; // the item whose blocker is being typed
@@ -559,8 +562,9 @@ export default class Actions extends View {
       if (r.kind === "view" && r.queue) {
         this.queue = r.queue;
         this.draft = newDraft(r.queue);
-        // fixture only: open with an item picked, to look at the slots
-        if (this.fixture && typeof props()?.pick === "string") this.draft = draftPick(this.draft, props().pick);
+        // opened with an item picked (the Board tab's "Move to", or a fixture): its slots show at once
+        const pick = pickKey(this.queue, props()?.pick);
+        if (pick) this.draft = draftPick(this.draft, pick);
         this.screen = "queue";
         this.handle.focus();
       } else {

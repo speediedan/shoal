@@ -1,6 +1,9 @@
 // Check the loaded depth scene, not the asynchronous loading screen. Requires a display and
 // herdr-app on PATH. Run on an isolated software display when sharing a development host.
 // node plugins/shoal-herdr-app/preview/check_depth.mjs [--runs 12] [--depth iso|tilt] [--yaw degrees] [--doc graph.json]
+//      [--shoal <id>] [--hover <id>]
+// --shoal opens drilled into that shoal (the cutout sphere); --hover renders with that hover id (a node, an edge, or
+// globe:<shoal> for the pointer on a globe), so the more opaque focused globe is checked too.
 import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,10 +14,12 @@ const mod = join(dirname(fileURLToPath(import.meta.url)), "..", "mods", "lattice
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i < 0 ? fallback : args[i + 1]; };
 const runs = Number(opt("runs", 12)), depth = opt("depth", "iso"), yaw = Number(opt("yaw", 0));
+const shoal = opt("shoal", null), hover = opt("hover", null);
 if (!Number.isInteger(runs) || runs < 1 || runs > 100 || !["iso", "tilt"].includes(depth) || !Number.isFinite(yaw)) {
   throw new Error("use --runs 1..100, --depth iso|tilt and a finite --yaw in degrees");
 }
 const doc = JSON.parse(readFileSync(opt("doc", join(mod, "fixtures", "graph-v1.json")), "utf8"));
+if (shoal && !(doc.shoals ?? []).some((s) => s.id === shoal)) throw new Error(`--shoal ${shoal} is not in the doc`);
 const scratch = mkdtempSync(join(tmpdir(), "shoal-depth-check-"));
 try {
   cpSync(mod, scratch, { recursive: true });
@@ -25,23 +30,34 @@ const fixture = ${JSON.stringify(doc)};
 export default class extends Lattice {
   init(p, cx) {
     super.init(p, cx);
+    ${shoal ? `this.homeShoal = this.view = ${JSON.stringify(shoal)}; // init reads props(), so set the home here` : ""}
     this.depth = ${JSON.stringify(depth)};
     this.yawTurn = ${yaw * Math.PI / 180};
     this.accept(fixture, cx);
+    this.hover = ${JSON.stringify(hover)};
   }
   load(_cx) {}
   probeRenderer(_cx) { this.renderer = "cpu"; }
+  render(cx) {
+    const out = super.render(cx);
+    // a check that fell back to another view or to flat would pass without drawing what it names
+    if (!this.lay?.cam || this.view !== ${JSON.stringify(shoal ?? "global")} || (${!!shoal} && !this.lay.bowl)) {
+      throw new Error("check_depth: rendered " + this.view + " " + (this.depthNow ?? "flat") + ", not the scene asked for");
+    }
+    return out;
+  }
 }
 `);
+  const scene = `${depth}${shoal ? ` ${shoal}` : ""}${hover ? ` hover ${hover}` : ""}`;
   for (let i = 0; i < runs; i++) {
     const result = spawnSync("herdr-app", ["check", scratch], { encoding: "utf8", timeout: 30000 });
     if (result.error || result.status !== 0) {
       process.stderr.write(result.stdout ?? "");
       process.stderr.write(result.stderr ?? "");
-      throw result.error ?? new Error(`loaded ${depth} render failed on run ${i + 1}`);
+      throw result.error ?? new Error(`loaded ${scene} render failed on run ${i + 1}`);
     }
   }
-  console.log(`Loaded ${depth} scene: ${runs}/${runs} native checks passed (yaw ${yaw})`);
+  console.log(`Loaded ${scene} scene: ${runs}/${runs} native checks passed (yaw ${yaw})`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

@@ -20,7 +20,7 @@ you, per-shoal throughput and per-host load.
   outside, an aliased one beside its home role with no label of its own (the alias tether says
   it). Hosts show as the dot before each label and in the rail; a role whose CI job runs on
   another host gets a small chip (`remote-ci -> host-b`) in that host's color.
-- **Per-shoal view:** the shoal's roles on one ring split into host sectors: translucent annular
+- **Per-shoal view** (flat; in depth it is the cutout sphere, below): the shoal's roles on one ring split into host sectors: translucent annular
   bands in the host color, labeled with the host name (`⌂` marks the shoal's home). The hub in the
   middle, the shoal's status on a hover anywhere in the hole of the ring, externals outside.
 - **Nodes:** circles (the agent's type is in the hover card), size by work done
@@ -53,18 +53,35 @@ you, per-shoal throughput and per-host load.
   subtle dash. Width and brightness also step with the rate (under 1/h, under 4/h, above). A role
   whose CI job runs on another host has a dotted tether to that host's band (per shoal) or a chip
   at the node (global), labeled `remote-ci -> host-b`.
-- **Depth:** `d` cycles the camera: flat, tilt (52 degrees) and iso (an isometric turn), seen in perspective. Each shoal
-  (global view) or host (per shoal) is a translucent slab with a lit rim along its near edge, stacked in depth, the
-  operator and outside seats on a plane above, so traffic between planes visibly crosses them. A floor grid lies below,
+- **Depth:** `d` cycles the camera: flat, tilt (52 degrees) and iso (an isometric turn), seen in perspective. In the
+  global view each shoal is on its own plane, stacked in depth, the operator and outside seats on a plane above, so
+  traffic between planes visibly crosses them. A floor grid lies below,
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor, with a
   shadow there; far things are smaller and fade, near ones larger and drawn last. In the global view each shoal is a
-  sphere with 128 directional light contours, a soft highlight and curved surface grid lines against a brighter
-  background. Front roles cast contact shadows. Where a role sits on it says how much it matters now: the initial point facing you holds what needs you most
+  glass sphere: 48 directional light contours, each adding a little alpha, so the shadow side is nearly clear (7
+  percent) and the lit side a tinted veil (34 percent), the floor and the far side's grid showing through; with the
+  pointer on it (anywhere on the globe, its name, a role, an item or an edge of it) it goes a little more opaque (16
+  and 56 percent). A soft highlight and curved surface grid lines finish it. Front roles cast contact shadows. A label
+  on a globe takes white or near-black ink, whichever reads better (WCAG contrast) against the glass under it as
+  drawn; a needs-you label keeps its hue. In depth, every edge has a dark casing under its core and a little more core
+  alpha, so it reads over a pale surface. Where a role sits on its globe says how much it matters now: the initial point facing you holds what needs you most
   (auth, then a question, a prompt, a design call, an empty queue, a stalled session), then the roles spiral back by what
   they are doing (a turn, their own job, a hand-over, waiting on others, idle with work queued, idle), then by how fresh
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
   turn the camera 15 degrees. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
+- **Depth, per shoal: the cutout sphere.** `you` sits at the middle of a sphere whose near cap is cut away by a plane
+  through its middle, facing the camera and tipped toward the top of the screen (the camera's pitch less 32 degrees:
+  20 in tilt, 26 in iso), so you look into a bowl: the cut edge is a lit ellipse, the near wall's outside a shaded
+  crescent below it, and everything inside the rim is the inner surface of the far wall, lit opposite to a ball (the
+  light pools lower right). Each host is a lune of that inner surface, pole to rim, over the same azimuths as its
+  sector in the flat view, washed and outlined in the host color (the home host first, from the top), its name just
+  outside the outline. A host's roles sit on its lune, spread across its azimuths in label order (two rows from four
+  roles), each kept inside the part seen through the rim; they shrink and fade a little toward the pole, and you are
+  drawn nearest. Outside seats ring the rim, in its plane, outside the sphere; a CI tether ends in the middle of its
+  host's lune. Edges and arrows are drawn over the bowl, with the depth casing. Labels in the bowl get the same
+  readable ink against its inside. `,` and `.` turn the bowl about its axis. Flat per shoal is unchanged (the ring of
+  host sectors).
 - **Replay:** `r` plays the last 24 h back on the live picture, a day in 32 s by default (the bar's speeds: a day in
   96, 32, 11 or 3.2 s; `[` and `]` step them): each event a packet
   along its edge, a done a flash, at most a dozen a tick. A bar along the foot shows a quarter hour a column, its
@@ -173,11 +190,23 @@ you, per-shoal throughput and per-host load.
 - `PathBuilder.cubic_bezier_to` takes the end point first, then both controls.
 - One Background per path: batch by color, or the element count explodes. Paths are drawn in
   screen space, so pan and zoom re-render (cheap at this size).
-- Globe lighting retains 128 levels but uses at most six cubic arcs per contour. Expanding each
+- Globe lighting uses at most six cubic arcs per contour. Expanding each
   contour into 80 line calls exceeds the native script render deadline. A native check on the
   async loading screen misses this: accept the fixture synchronously when checking depth renders.
   `node plugins/shoal-herdr-app/preview/check_depth.mjs --runs 12` checks the loaded scene;
-  `--depth tilt`, `--yaw 60` and `--doc graph.json` cover other cameras and read-only snapshots.
+  `--depth tilt`, `--yaw 60` and `--doc graph.json` cover other cameras and read-only snapshots,
+  `--shoal <id>` the per-shoal cutout sphere and `--hover globe:<id>` a globe in focus. It fails
+  if the copy drew another view or fell back to flat (the mod's `init` reads `props()`, so a
+  wrapper sets the home shoal itself).
+- Transparency on nested fills stacks: every contour covers the ones inside it, so a constant
+  alpha on all of them turns the lit cap opaque. Each glass contour's alpha is solved from the
+  total opacity wanted at its level, and alpha is 8-bit, so fewer, slightly stronger layers (48,
+  1 to 6 of 255 each) beat 128 layers rounded to 0 or 1. Transparency comes only from alpha on
+  these fills, never from more layers. The fixture's two globes now take about 1,970 path
+  commands, down from about 3,030; the bowl about 140.
+- The bowl's lunes and circles are circles on a sphere seen orthographically, so each projects
+  to an ellipse arc and one cubic per quarter turn is exact. The visible inside is exactly the
+  inside of the rim ellipse; the near wall's crescent, drawn after the lunes, covers the rest.
 - Any `loop` makes the window redraw at about 30 fps; `frames` and `spin` redraw at their own
   interval. The cost is per window frame, not per element: on lavapipe (two threads) a frame of
   this window cost about a core-second whatever the mod drew, so one 700 ms blink cost over a

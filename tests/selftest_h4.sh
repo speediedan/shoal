@@ -1809,7 +1809,7 @@ role.ecosystem = "claude"
 # a person attached to the Claude session (a card's `claude attach`): the stop would fail STILL LIVE, so refuse first
 park._claude_client = lambda r: "a client (pid 4242) is attached"
 rc, t = run(force=True)
-assert rc == 1 and "a person may be in up's session: a client (pid 4242) is attached. Detach from its card" in t, (rc, t)
+assert rc == 1 and "a person may be in up's session: a client (pid 4242) is attached. Detach the client (its card or terminal" in t, (rc, t)
 park._claude_client = lambda r: ""
 # the new provider's tool, before anything stops
 backends.tool_which = lambda name: None

@@ -2464,6 +2464,8 @@ assert 'run("shoal-status.home")' in tout and 'run("shoal-status.lattice")' in t
 assert tout.index("shoal-lattice") < tout.index('panelButton("files"') and ui_app.LAYOUT_BLOCKS["tabs"] == "shoal-tabs"
 assert 'run("mod.open", { name: "shoal-actions" })' in tout and tout.index("shoal-actions") < tout.index('panelButton("files"'), "Actions in the top bar too"
 assert 'run("shoal-status.usage")' in tout and tout.index("shoal-actions") < tout.index("shoal-usage") < tout.index('panelButton("files"'), "Usage between Actions and Files"
+assert 'run("shoal-status.board")' in tout and tout.index("shoal-lattice") < tout.index("shoal-board") < tout.index("shoal-actions"), "Board between Lattice and Actions"
+assert ui_app.HOME_TABS == ("home", "lattice", "board", "usage") and "shoal-board" in ui_app.MODS
 # the sidebar leaves out the home space on this computer (the top bar reaches it), and only that one
 sname, (sclone, spatches) = "spaces", ui_app.CLONES["spaces"]
 sout = ui_app.patch_clone("\n".join(o for o, _ in spatches), sname, spatches)
@@ -2711,6 +2713,31 @@ finally:
     sys.stdout = real
 assert out.getvalue() == "", out.getvalue()  # outside the app nothing; a failed read breaks nothing
 PY2
+# the agents list's labels stay current through an attach, whatever the harness: they go through the core, not the terminal
+HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "labels during attach"
+import io, sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_herdr, ui_view
+ui_view.CARD_REFRESH_S = 0.05
+ui_herdr.shoal_tag = lambda sid: "tag"
+row = {"slug": "r", "ecosystem": "muse", "agent": {"group": "waiting", "state": "remote-ci", "detail": "acme/app#3"}}
+ui_view.card = lambda sid, slug, force=False, rows=None: rows.append(dict(row)) or ""
+ui_app.card_report = lambda r, tag: {"need": "", "asks": 0, "asks_badge": False}
+marks = []
+ui_app.hc_label = lambda t, labels: marks.append(dict(labels))
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", ui_app):
+        time.sleep(0.2)
+        row["agent"] = {"group": "needs-you", "state": "asked", "detail": "may I merge?"}
+        time.sleep(0.2)
+finally:
+    sys.stdout = real
+groups = [m.get(ui_app.GROUP_LABEL) for m in marks if ui_app.GROUP_LABEL in m]
+assert groups == ["waiting", "needs-you"], marks  # written while attached, once per change
+assert out.getvalue() == "", "a Muse client draws its own: no report on its terminal"
+PY2
 # an attach marks the terminal, and a roles tab with a marked card is not rebuilt, though the core names the card as foreground
 HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "attached label"
 import sys, types
@@ -2775,7 +2802,7 @@ import importlib, sys
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import ui_app
 space = {"id": "s1", "name": ui_app.HOME_SPACE, "tabs": [{"id": "t1", "name": "home"}, {"id": "t2", "name": "lattice"},
-                                                       {"id": "t3", "name": "usage"}]}
+                                                       {"id": "t3", "name": "usage"}, {"id": "t4", "name": "board"}]}
 ui_app.app_ls = lambda: {"spaces": [space]}
 did = []
 ui_app.app_do = lambda verb, args=None: did.append((verb, (args or {}).get("id")))
@@ -2784,7 +2811,7 @@ class Asked(Exception):
 def asked():
     raise Asked()
 ui_app.global_lattice_props = asked
-current = {f"local/{ui_app.HOME_SPACE}/{n}": ui_app.TABS_V for n in ("home", "lattice", "usage")}
+current = {f"local/{ui_app.HOME_SPACE}/{n}": ui_app.TABS_V for n in ("home", "lattice", "board", "usage")}
 ui_app.load_opened = lambda: {"_built": current}
 assert ui_app.home_space() == [f"{ui_app.HOME_SPACE}: home"]
 assert did == [("space.select", "s1"), ("tab.select", "t1")], did
@@ -3714,6 +3741,10 @@ OUT=$(env $AE $H ui act-plan queue-set --shoal $SID --role cl --order=example/re
 env $AE $H withdraw --shoal $SID --to cl --item example/repo#31:fix >/dev/null 2>&1 || fail "withdraw after the queue test"
 echo "queue manager ok"
 
+# the Board tab's read model and the digest's board history, on synthetic digests
+python3 "$TESTD/test_board.py" >"$S/test-board.out" 2>&1 || fail "board graph: $(tail -c 800 "$S/test-board.out")"
+echo "board graph ok"
+
 # every routed card probes on its own: concurrent writes of one route cache entry never take a card down
 python3 "$TESTD/route_cache_stress.py" "$SHOALD" "$S/route-stress" || fail "concurrent route cache writes"
 echo "route cache writes ok"
@@ -3730,6 +3761,8 @@ if command -v node >/dev/null 2>&1; then
   echo "herdr-app shoal-status ok"
   node "$TESTD/herdr_app/test_shoal_usage.mjs" >"$S/shoal-usage.out" 2>&1 || fail "herdr-app shoal-usage: $(tail -c 800 "$S/shoal-usage.out")"
   echo "herdr-app shoal-usage ok"
+  node "$TESTD/herdr_app/test_shoal_board.mjs" >"$S/shoal-board.out" 2>&1 || fail "herdr-app shoal-board: $(tail -c 800 "$S/shoal-board.out")"
+  echo "herdr-app shoal-board ok"
 else
   echo "herdr-app lattice-view, shoal-home, shoal-actions: skipped (node not on PATH)"
 fi

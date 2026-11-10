@@ -3,7 +3,7 @@
 // fixture by default), so colors, layers and shapes match the mod; motion shows as one frame.
 //
 //   node plugins/shoal-herdr-app/preview/render_svg.mjs [--doc graph.json] [--view global|<shoal>]
-//        [--pin <node id>] [--legend] [--depth flat|tilt|iso] [--yaw degrees]
+//        [--pin <node id>] [--hover <id>] [--legend] [--depth flat|tilt|iso] [--yaw degrees]
 //        [--motion full|balanced|low|off] [--width 1400] [--height 860] [--out lattice.svg]
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -32,7 +32,7 @@ const CW = W - RAIL;
 // the same fit as the mod's `f`: every node, label and ring inside the canvas
 const tf = S.fitScene(vm, lay, { width: CW, height: H }, { pad: 24, top: 48, kMax: 1.6 });
 const pin = opt("pin", null);
-const sc = S.buildScene(vm, lay, { width: CW, height: H, tf, selected: pin, motion: opt("motion", "full") });
+const sc = S.buildScene(vm, lay, { width: CW, height: H, tf, selected: pin, hover: opt("hover", null), motion: opt("motion", "full") });
 const P = M.PALETTE;
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

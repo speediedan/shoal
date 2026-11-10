@@ -428,7 +428,50 @@ def write(spec: ShoalSpec, doc: dict) -> str:
         _write_json(semantic_path(spec.sid), shadow)
     path = digest_path(spec.sid)
     _write_json(path, doc)
+    try:
+        note_history(spec.sid, doc)
+    except OSError:  # the trend is a convenience: a digest is never lost to it
+        pass
     return path
+
+
+HISTORY_EVERY_S = 1800  # one reading per board per half hour is enough for a day's trend
+HISTORY_KEEP_S = 90 * 86400
+
+
+def history_path(sid: str) -> str:
+    return os.path.join(data_dir(sid), "board_history.jsonl")
+
+
+def note_history(sid: str, doc: dict, now: float | None = None) -> None:
+    """Append each board's open and done counts (the Board tab's trends: open over time, closes a day), at most every
+    HISTORY_EVERY_S per board, keeping HISTORY_KEEP_S of it. The digest itself holds only the open items."""
+    now = time.time() if now is None else now
+    path = history_path(sid)
+    try:
+        with open(path) as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+    except (OSError, ValueError):
+        rows = []
+    last = {}
+    for r in rows:
+        last[r.get("source")] = r.get("ts") or 0
+    items = doc.get("items") or {}
+    new = []
+    for b in doc.get("boards") or []:
+        src = b.get("source") or ""
+        if now - float(last.get(src) or 0) < HISTORY_EVERY_S:
+            continue
+        new.append({"ts": int(now), "source": src, "open": sum(1 for it in items.values() if it.get("source") == src),
+                    "done": int(b.get("done") or 0)})
+    if not new:
+        return
+    keep = [r for r in rows if now - float(r.get("ts") or 0) <= HISTORY_KEEP_S] + new
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.writelines(json.dumps(r) + "\n" for r in keep)
+    os.replace(tmp, path)
 
 
 def load(sid: str, max_age_min: float = DIGEST_MAX_AGE_MIN) -> dict | None:

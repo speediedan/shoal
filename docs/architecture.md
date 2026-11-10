@@ -896,7 +896,8 @@ component off.
 
 In the lattice's global depth view, `sphere.js` caches directional light contours on a unit hemisphere.
 Each contour uses at most six cubic arcs plus its move and close commands, rather than 80 polygon edges:
-the script/native path bridge has a render deadline. The scene retains 128 contour levels, a soft reflection,
+the script/native path bridge has a render deadline. The scene keeps its contour levels (48 since the globes became
+glass, below), a soft reflection,
 curved surface grid lines and role contact shadows
 against a brighter depth-only background. Role coordinates stay anchored to their globe when yaw changes;
 their size and fading follow the camera-facing normal. The local globe projection keeps the surface grid
@@ -904,6 +905,33 @@ and role centers within the same circular silhouette. The SVG preview accepts `-
 Native render checks must load the fixture before the first render: an asynchronous loading screen does
 not exercise the depth scene or its path budget. `preview/check_depth.mjs` creates a temporary synchronous
 fixture wrapper for repeated native checks, with depth, yaw and read-only graph snapshot options.
+
+Depth mode draws each shoal's globe as glass. The globe's 48 nested light contours (`sphere.js`) each carry a small
+alpha, solved from the total opacity wanted at that light level, so the shadow side is nearly clear (7 percent) and
+the lit side a tinted veil (34 percent), with the floor grid and the globe's far-side grid lines showing through.
+With the pointer anywhere on a globe, on its name or middle, or on one of its roles, items or edges, the globe goes a
+little more opaque (16 and 56 percent): `main.js` reports the pointer on a globe as a `globe:<shoal>` hover id and
+`scene.js` `focusedShoals` maps any hover or pin id to the shoals in focus. Transparency comes only from alpha on these
+fills; the layer count went down, not up (the fixture's two globes take about 1,970 path commands, down from about
+3,030), so the native render budget from PR #149 still holds. A role label that sits on a globe takes white or
+near-black ink, whichever has the higher WCAG contrast against the glass under it as drawn (`sphere.js`
+`glassColorAt`, `geom.js` `readableInk`); a needs-you label keeps its state hue. In depth mode every edge gets a dark
+casing under its core and a little more core alpha (`scene.js` `edgeCasing`), so arrows read over a pale surface.
+
+Per shoal, depth mode is a cutout sphere (`depth.js` `projectBowl`, geometry in `sphere.js`). The operator hub sits at
+the middle of a sphere whose near cap is cut away by a plane through its middle, facing the camera and tipped toward
+the top of the screen by the camera's pitch less 32 degrees (20 in tilt, 26 in iso). You look into a bowl: the cut
+edge is a lit ellipse, the near wall's outside a shaded crescent below it, and everything inside the rim is the inner
+surface of the far wall, lit as a hollow (the light pools lower right). Each host is a lune of that inner surface, pole
+to rim, over the same azimuth range as its sector in the flat per-shoal view, washed and outlined in the host color,
+its name just outside the outline. A host's roles sit on its own lune, spread across its azimuths in label order (two
+rows from four roles), each held inside the part of the lune seen through the rim, so none is hidden behind the near
+wall. Outside seats ring the rim in its plane, outside the sphere; a CI tether ends in the middle of its host's lune.
+Edges and arrows are drawn over the bowl with the depth casing; `,` and `.` turn the bowl about its axis. Projected,
+every circle on the bowl is an ellipse arc, so each lune is a few exact cubic arcs: the bowl is about 140 path
+commands. Flat views are unchanged. `plugins/shoal-herdr-app/preview/check_depth.mjs` gained `--shoal <id>` (the
+cutout sphere) and `--hover <id>` (a globe in focus), and now fails if the checked copy drew another view or fell back
+to flat.
 
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
@@ -1095,7 +1123,7 @@ and the contract are in [`ui.md`](ui.md).
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
   off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
   packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click.
-  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent slab stacked in depth
+  `d` is the depth mode (`depth.js`, P3b; per shoal, the cutout sphere described in section 12): each shoal (global) a translucent slab stacked in depth
   under a tilted camera seen in perspective (tilt, iso; `,` and `.` turn it), over a floor grid with stems and shadows,
   each shoal a sphere in the global view with its roles placed on it by need, then activity, then recency (the side facing
   you holds what needs you), the operator and outside seats on a plane above; the layout
@@ -1139,6 +1167,18 @@ and the contract are in [`ui.md`](ui.md).
   meter heading past 100% before its reset says when it runs out). The tightest meter is the headline. Panels by shoal,
   by role and by standalone seat read an optional `breakdown` in the same document and say so until shoal records
   each session's usage. A shoal's overview (`ui dash`) no longer prints the meters; `ui status` still does.
+- **Herdr app board graph** (`plugins/shoal-herdr-app/mods/shoal-board/`, read model `shoal/ui/ui_board.py`): the home
+  space's `board` tab, opened by the top bar's Board (`shoal-status.board`, which sets shared `board.focus` to the shoal
+  in view, else `ui app-board`). It reads `shoal ui board --json` from the first machine with a board digest: per shoal
+  and board, the digest's open items as nodes and `parent` (issue to sub-issue) and `blocks` (open blocker to the item)
+  edges, a parent or blocker not open on the board kept as an `off_board` node. Each node's `work` comes from the status
+  rows: `active` (a role's active item), `queued` at its `pos`, `queued-blocked` (a recorded blocker) or `unqueued`.
+  The board is the root; the model lays each item a layer below its parent and blockers, wraps a wide layer into rows,
+  and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details; a click
+  selects it for Open on GitHub, Offer to a role (the actions dialog, its `item` prefilled) or Move to a role (that
+  role's Queue, with `pick` set, so the plan transfers it). The metrics panel shows the rail card's counts, closes in
+  seven days, the days to none open at that pace, and 14-day trends of open items and closes a day, from
+  `board_history.jsonl`, which `digest.write` appends at most every half hour per board and keeps for 90 days.
 - **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
   this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
   or the exec line when that `shoal` is a shell wrapper), else `python3`.
@@ -1178,7 +1218,7 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with five blocks swapped: `shoal-agents`,
 `shoal-spaces` (which also leaves the home space out of the sidebar: the top bar reaches it), `shoal-chrome` (the window's
-mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home, Lattice, Actions and Usage in the top bar,
+mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home, Lattice, Board, Actions and Usage in the top bar,
 beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-agents` also orders its Priority view by the derived agent state each card writes on its terminal

@@ -1069,15 +1069,15 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
   for (let i = 1; i < pl.clusters.length; i++) assert.ok(pl.clusters[i - 1].depth <= pl.clusters[i].depth, "far to near");
   assert.ok([...pl.scaleOf.values()].every((s) => s >= 0.55 * 0.66 - 1e-9 && s <= 1.6 * 1.28 + 1e-9));
   assert.ok(Math.max(...pl.scaleOf.values()) / Math.min(...pl.scaleOf.values()) > 1.15, "perspective: sizes differ visibly with depth");
-  // per shoal: each host's band on its own plane
+  // per shoal: the cutout sphere, each host a lune of its inner surface
   const la = L.layoutGraph(alpha);
   const pa = D.projectLayout(alpha, la, D.camera("iso"));
-  assert.ok(pa.bands.every((b) => Number.isFinite(b.cx) && b.ry < 1) && new Set(pa.bands.map((b) => b.cy)).size === pa.bands.length);
+  assert.ok(pa.bowl && pa.bands.every((b) => b.bowl && b.a1 > b.a0), "per shoal: a bowl, its hosts as lunes");
   // the scene draws either, with no NaN, and slab edges only in depth
   for (const [vm, l] of [[global, pl], [alpha, pa]]) {
     const sc = S.buildScene(vm, l, { width: 1000, height: 700, tf: G.identity() });
     assert.ok(finiteDeep(sc.items), "no NaN in the depth scene");
-    assert.ok(sc.items.some((it) => it.id.startsWith("sphere-body-") || it.id.startsWith("band-slab-")), "a sphere (global) or a host slab (per shoal)");
+    assert.ok(sc.items.some((it) => it.id.startsWith("sphere-body-") || it.id.startsWith("bowl-host-")), "a sphere (global) or a host lune (per shoal)");
     assert.ok(sc.items.some((it) => it.id === "floor-grid") && sc.items.some((it) => it.id.startsWith("stem-")), "the floor and the stems");
   }
   assert.ok(!S.buildScene(global, lay, { width: 1000, height: 700, tf: G.identity() }).items.some((it) => it.id.startsWith("disc-slab-")));
@@ -1141,7 +1141,7 @@ test("globe lighting follows surface normals and stays inside the silhouette", (
   assert.ok(Math.abs(SP.lightAt(SP.LIGHT.x, SP.LIGHT.y) - 1) < 1e-9);
   assert.ok(SP.lightAt(0.7, 0.7) < 0, "the lower right is in shadow");
   const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
-  assert.equal(shade.paths.length, 128, "keep smooth lighting rather than reducing the color levels");
+  assert.equal(shade.paths.length, SP.STEPS, "one contour per glass layer");
   for (let i = 0; i < shade.paths.length; i++) {
     assert.ok(shade.paths[i].cmds.length <= 8, "the native render budget needs short curved contours");
     let p0;
@@ -1161,7 +1161,8 @@ test("globe lighting follows surface normals and stays inside the silhouette", (
 
 test("curved light contours enclose the lit cap, including the clipped limb", () => {
   const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
-  for (const level of [0, 16, 64, 90, 92, 112, 127]) {
+  const N = shade.paths.length;
+  for (const level of [0, 5, 13, 20, 28, 29, 35, N - 1]) {
     const points = [];
     let p0;
     for (const c of shade.paths[level].cmds) {
@@ -1172,13 +1173,13 @@ test("curved light contours enclose the lit cap, including the clipped limb", ()
       p0 = curve.p3;
     }
     for (let x = -0.95; x < 1; x += 0.1) for (let y = -0.95; y < 1; y += 0.1) {
-      if (Math.hypot(x, y) >= 0.995 || Math.abs(SP.lightAt(x, y) - level / 128) < 0.015) continue;
+      if (Math.hypot(x, y) >= 0.995 || Math.abs(SP.lightAt(x, y) - level / N) < 0.015) continue;
       let inside = false;
       for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
         const a = points[i], b = points[j];
         if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
       }
-      assert.equal(inside, SP.lightAt(x, y) > level / 128, `light cap ${level} at ${x}, ${y}`);
+      assert.equal(inside, SP.lightAt(x, y) > level / N, `light cap ${level} at ${x}, ${y}`);
     }
   }
   const moved = SP.sphereShade("test", 73, -29, 190, "#50d090");
@@ -1215,4 +1216,148 @@ test("2026-11-08: a renamed standalone seat's Remove uses its saved label", () =
   const vm = M.buildModel(d, "global");
   assert.equal(M.removeOverlay(vm, "ext:old-label").props.session, "old-label");
   assert.equal(M.actionsOverlay(vm, "ext:old-label").props.session, "old-label", "Handoff uses the same saved seat identity");
+});
+
+const alphaOf = (hex) => parseInt(String(hex).slice(7, 9) || "ff", 16) / 255;
+const cmdCount = (paths) => paths.reduce((t, p) => t + p.cmds.length, 0);
+// what a stack of layers leaves of the background: 1 minus the opacity the layers add up to
+const opacityOf = (colors) => 1 - colors.reduce((w, c) => w * (1 - alphaOf(c)), 1);
+
+test("2026-11-10: glass globes, much clearer idle and a little more opaque in focus, in smooth steps", () => {
+  assert.ok(SP.GLASS.idle.lit <= 0.4 && SP.GLASS.idle.body <= 0.1, "idle: mostly clear");
+  assert.ok(SP.GLASS.focus.lit > SP.GLASS.idle.lit && SP.GLASS.focus.lit - SP.GLASS.idle.lit <= 0.3, "focus: a little more opaque");
+  for (const focused of [false, true]) {
+    const g = SP.glassOf(focused), shade = SP.sphereShade("t", 0, 0, 1, "#50d090", 1, focused);
+    const layers = shade.paths.map((p) => p.bg.color);
+    assert.ok(Math.abs(alphaOf(shade.body) - g.body) < 0.01, "the shadow side is the body alone");
+    assert.ok(Math.abs(opacityOf([shade.body, ...layers]) - g.lit) < 0.04, "the lit pole adds up to the lit opacity");
+    assert.ok(layers.every((c) => alphaOf(c) <= 7 / 255), "each step adds under 3 percent: no visible bands");
+    assert.ok(cmdCount(shade.paths) <= 848 / 2, "half the command budget PR #149 left a globe");
+  }
+  // the color the eye sees: more tint in focus, the background alone off the globe
+  const idle = SP.glassColorAt("#50d090", -0.4, -0.45), focus = SP.glassColorAt("#50d090", -0.4, -0.45, { focused: true });
+  assert.ok(G.contrast(focus, "#1d2a3c") > G.contrast(idle, "#1d2a3c") && G.contrast(idle, "#1d2a3c") > 1.2);
+  assert.equal(SP.glassColorAt("#50d090", 1.2, 0), "#1d2a3c");
+});
+
+test("2026-11-10: a globe in focus: the pointer on it, its middle or name, its roles, their items, an edge's ends", () => {
+  const role = global.nodes.find((n) => n.kind === "role" && n.shoal === A);
+  const cross = global.edges.find((e) => global.byId.get(e.src)?.shoal && global.byId.get(e.dst)?.shoal && global.byId.get(e.src).shoal !== global.byId.get(e.dst).shoal);
+  assert.deepEqual([...S.focusedShoals(global, S.GLOBE + A)], [A]);
+  assert.deepEqual([...S.focusedShoals(global, M.SHOAL_CARD + B)], [B]);
+  assert.deepEqual([...S.focusedShoals(global, M.BOARD_CARD + A)], [A]);
+  assert.deepEqual([...S.focusedShoals(global, role.id)], [A]);
+  assert.deepEqual([...S.focusedShoals(global, `${role.id}#0`)], [A], "a satellite's owner");
+  if (cross) assert.equal(S.focusedShoals(global, cross.id).size, 2, "an edge across shoals lifts both");
+  assert.equal(S.focusedShoals(global, null).size, 0);
+  assert.equal(S.focusedShoals(global, "nothing").size, 0);
+  // the hovered globe draws more opaque; the other is untouched
+  const pl = D.projectLayout(global, L.layoutGraph(global), D.camera("iso"));
+  const layerAlpha = (sc, sid) => sc.items.filter((it) => it.id.startsWith(`sphere-lit-${sid}-`)).reduce((t, it) => t + alphaOf(it.bg.color), 0);
+  const base = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  const hov = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off", hover: S.GLOBE + A });
+  assert.ok(layerAlpha(hov, A) > layerAlpha(base, A) && layerAlpha(hov, B) === layerAlpha(base, B));
+  assert.ok(base.discs.every((d) => d.sphere), "each globe is a disc the pointer can hover");
+  // the pointer where two globes overlap: the nearer (later) one
+  assert.equal(G.hitGlobe([{ id: "far", x: 0, y: 0, r: 10, sphere: true }, { id: "near", x: 5, y: 0, r: 10, sphere: true }, { id: "flat", x: 0, y: 0, r: 50 }], { x: 3, y: 0 }), "near");
+  assert.equal(G.hitGlobe([{ id: "flat", x: 0, y: 0, r: 50 }], { x: 0, y: 0 }), null, "a flat disc is not a globe");
+});
+
+test("2026-11-10: a label on a globe or in the bowl gets the ink that reads there, idle or in focus", () => {
+  assert.equal(G.readableInk("#ffffff"), G.INK_DARK);
+  assert.equal(G.readableInk("#0a0f18"), G.INK_LIGHT);
+  assert.ok(G.contrast(G.readableInk("#7a8a70"), "#7a8a70") >= 4.5, "a mid surface still gets 4.5:1");
+  const accent = G.readableInk("#d0d0d0", "#ff4f9a");
+  assert.ok(G.contrast(accent, "#d0d0d0") >= 3 && accent !== G.INK_DARK, "a needs-you label keeps its hue");
+  const cases = [
+    [global, D.projectLayout(global, L.layoutGraph(global), D.camera("iso")), null],
+    [global, D.projectLayout(global, L.layoutGraph(global), D.camera("iso")), S.GLOBE + A],
+    [alpha, D.projectLayout(alpha, L.layoutGraph(alpha), D.camera("tilt")), null],
+  ];
+  for (const [vm, lay, hover] of cases) {
+    const tf = S.fitScene(vm, lay, { width: 1100, height: 800 });
+    const sc = S.buildScene(vm, lay, { width: 1100, height: 800, tf, hover, motion: "off" });
+    const surf = [];
+    for (const c of lay.clusters) {
+      const p = G.toScreen(tf, c), r = c.r * tf.k;
+      if (c.sphere) surf.push({ kind: "globe", x: p.x, y: p.y, r, tint: c.tint, fog: 0.72 + 0.28 * (c.fog ?? 1), focused: S.focusedShoals(vm, hover).has(c.id) });
+      if (c.bowl) surf.push({ kind: "bowl", x: p.x, y: p.y, r, frame: lay.bowl.frame, bands: lay.bands });
+    }
+    let on = 0;
+    for (const it of sc.items.filter((x) => x.id.startsWith("label-") && vm.byId.get(x.id.slice(6))?.kind === "role")) {
+      const under = S.surfaceUnder(surf, it.x + it.w / 2 - 5, it.y + it.h / 2);
+      if (!under) continue;
+      on++;
+      if (vm.byId.get(it.id.slice(6)).visual.needsYou) continue;
+      assert.ok(G.contrast(it.color.slice(0, 7), under) >= 4.5, `${it.text} reads on its surface`);
+    }
+    assert.ok(on >= 3, "labels sit on the surfaces");
+  }
+});
+
+test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lune per host, its roles on it", () => {
+  const la = L.layoutGraph(alpha);
+  assert.ok(D.bowlTilt(D.camera("iso")) > D.bowlTilt(D.camera("tilt")), "a steeper camera tips the opening up more");
+  for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3), D.camera("tilt", -Math.PI / 4)]) {
+    const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame, Rs = pa.bowl.R;
+    assert.ok(Math.abs(fr.alpha - D.bowlTilt(cam)) < 1e-12 && pa.clusters[0].bowl && pa.clusters[0].r === Rs);
+    const user = alpha.nodes.find((n) => n.kind === "user");
+    assert.deepEqual(pa.pos.get(user.id), { x: 0, y: 0 }, "you at the middle of the sphere");
+    const hosts = [...new Set(alpha.nodes.filter((n) => n.kind === "role").map((n) => n.host ?? "?"))].sort();
+    assert.deepEqual(pa.bands.map((b) => b.host).sort(), hosts, "one lune per host");
+    const TAU = 2 * Math.PI;
+    const lunes = [...pa.bands].sort((a, b) => a.a0 - b.a0);
+    for (let i = 1; i < lunes.length; i++) assert.ok(lunes[i].a0 >= lunes[i - 1].a1 - 1e-9, "lunes do not overlap");
+    assert.ok(lunes.at(-1).a1 - lunes[0].a0 <= TAU + 1e-9);
+    for (const n of alpha.nodes.filter((x) => x.kind === "role")) {
+      const s = pa.surfaceOf.get(n.id), p = pa.pos.get(n.id), b = pa.bands.find((x) => x.host === n.host);
+      assert.equal(s.host, n.host, `${n.label} on its own host's lune`);
+      assert.ok(s.phi >= b.a0 - 1e-9 && s.phi <= b.a1 + 1e-9, `${n.label} inside its lune's azimuths`);
+      const u = SP.bowlPoint(fr, s.theta, s.phi);
+      assert.ok(Math.hypot(p.x - Rs * u.x, p.y - Rs * u.y) < 1e-9 && s.theta < Math.PI / 2, "on the inner surface");
+      assert.ok(SP.rimNorm(fr, u) <= 0.86 + 1e-6 && u.z < 0, "on the far wall, seen through the rim");
+      assert.equal(S.bowlHostAt(fr, pa.bands, p.x / Rs, p.y / Rs)?.host, n.host, "the lune drawn under it is its host's");
+      assert.ok(pa.order.indexOf(n) < pa.order.indexOf(user), "you are drawn nearer than every role");
+    }
+    for (const n of alpha.nodes.filter((x) => x.kind === "external" || x.kind === "writer")) assert.ok(Math.hypot(pa.pos.get(n.id).x, pa.pos.get(n.id).y) > Rs, "outside seats outside the sphere");
+    for (const t of pa.tethers.filter((x) => x.to)) assert.equal(S.bowlHostAt(fr, pa.bands, t.to.x / Rs, t.to.y / Rs)?.host, t.host, "a CI tether ends on its host's lune");
+    // the scene: a lune per host in its own color, the near wall, the cut edge; no stacked host slabs
+    const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    assert.ok(finiteDeep(sc.items));
+    const washes = sc.items.filter((it) => it.id.startsWith("bowl-host-") && it.fill);
+    assert.equal(washes.length, hosts.length);
+    assert.equal(new Set(washes.map((it) => it.bg.color)).size, hosts.length, "each host its own color");
+    assert.ok(["bowl-in", "bowl-shell", "bowl-lip", "bowl-grid"].every((id) => sc.items.some((it) => it.id === id)));
+    assert.ok(!sc.items.some((it) => it.id.startsWith("band-slab-") || it.id.startsWith("band-rim-")));
+    // the outline: every lune stays inside the sphere's silhouette, and the whole bowl is a small part of the budget
+    for (const b of pa.bands) {
+      let p0;
+      for (const c of SP.luneCmds(fr, 0, 0, 1, b.a0, b.a1)) {
+        if (c[0] === "M") p0 = { x: c[1], y: c[2] };
+        if (c[0] !== "C") continue;
+        const curve = { p0, c1: { x: c[1], y: c[2] }, c2: { x: c[3], y: c[4] }, p3: { x: c[5], y: c[6] } };
+        for (let j = 0; j <= 16; j++) { const q = G.pointAt(curve, j / 16); assert.ok(Math.hypot(q.x, q.y) <= 1.0005, "inside the silhouette"); }
+        p0 = curve.p3;
+      }
+    }
+    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 200, "the bowl costs a fraction of one globe");
+  }
+  // a lune's outline is exact: the rim projects to the rim ellipse
+  const fr = SP.bowlFrame(0.4);
+  for (const phi of [0, 1, 2.5, 4]) assert.ok(Math.abs(SP.rimNorm(fr, SP.bowlPoint(fr, Math.PI / 2, phi)) - 1) < 1e-12);
+  assert.ok(SP.bowlReach(fr, Math.PI / 2) < SP.bowlReach(fr, -Math.PI / 2), "less is seen low down, behind the near wall");
+  assert.ok(D.bowlTheta(fr, 0, 0, 5) !== D.bowlTheta(fr, 0, 1, 5) && D.bowlTheta(fr, 0, 0, 2) === D.bowlTheta(fr, 0, 1, 2), "two rows from four roles");
+});
+
+test("2026-11-10: depth edges get a dark casing and a little more core; flat edges are as they were", () => {
+  const cold = { tier: "cold", core: 0.9, coreAlpha: 0.32 }, fade = { tier: "fade", core: 0.8, coreAlpha: 0.1 };
+  assert.ok(S.edgeCasing(cold).coreAlpha > cold.coreAlpha && S.edgeCasing(cold).width > cold.core && S.edgeCasing(cold).alpha > 0);
+  assert.equal(S.edgeCasing(fade).coreAlpha, fade.coreAlpha, "a faded edge stays faded");
+  assert.ok(S.edgeCasing(fade).alpha < S.edgeCasing(cold).alpha);
+  const flat = S.buildScene(global, L.layoutGraph(global), { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  assert.ok(!flat.items.some((it) => it.id.startsWith("ek-") || it.id.startsWith("eak-")));
+  const deep = S.buildScene(global, D.projectLayout(global, L.layoutGraph(global), D.camera("tilt")), { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  const cores = deep.items.filter((it) => it.id.startsWith("ec-")), casings = deep.items.filter((it) => it.id.startsWith("ek-"));
+  assert.equal(casings.length, cores.length, "one casing per core");
+  assert.ok(deep.items.findIndex((it) => it.id.startsWith("ek-")) < deep.items.findIndex((it) => it.id.startsWith("ec-")), "under the core");
 });

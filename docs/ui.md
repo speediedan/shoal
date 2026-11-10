@@ -644,6 +644,8 @@ shoal ui app-sync                                  # roles tabs follow the roles
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
 shoal ui app-usage                                 # show the usage dashboard (SHOAL-home's usage tab)
+shoal ui app-board                                 # show the board graphs (SHOAL-home's board tab)
+shoal ui board [--shoal ID] [--json]               # each shoal's boards as dependency graphs, with metrics (read-only)
 shoal ui act-apply --token T [--json]              # run a planned action once
 shoal ui act-apply --token T --background --json   # detach a confirmed Handoff
 shoal ui act-status --run RUN --json              # follow its retained progress log
@@ -692,12 +694,34 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   A role row reads `space · state`, and its tooltip is the state's detail (`shoal.detail`). A row with no derived state
   (a status from before it, another agent in the app) keeps Herdr's own sections by its reported status, so Done
   (finished, not looked at) and Idle appear only for those; a card's done is its status dot. Only a local Claude seat's
-  card reports, so a seat on Codex, Muse or OpenCode, or one on another host, stays in Herdr's own sections.
+  card reports, so a seat on Codex, Muse or OpenCode, or one on another host, stays in Herdr's own sections. A role
+  card keeps its labels current through an attach, whatever its harness, since they go through the core and not the
+  terminal.
 - **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
   an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
 - **Leaving an attach.** A card restores the terminal's modes after every attach, since a client that dies with its link cannot, and a Ctrl-C
   returns to the card: `q` is what leaves one.
+- **The lattice in depth (`d`).** The shoal globes are see-through glass that firm up a little when you point at
+  one, and their role names switch between light and dark ink to stay readable on the globe. Drilled into one
+  shoal, depth mode shows a cutout sphere with you at its middle: each host is a colored region of the inside of the
+  sphere, its roles sit on that region, and the arrows between them are drawn over it.
+- **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
+  as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
+  - **The graph:** the board at the top; every open item a layer below its parent issue and its open blockers. A gray
+    curve joins an issue to its sub-issue, a dashed orange arrow a blocker to what it blocks. A parent or blocker not
+    open on the board is drawn dashed, `off board`. Items with no parent, sub-issue or blocker on the board are in a
+    grid below the graph, in progress and queued first. The root reads `closed` once nothing on the board is open.
+  - **Where each item stands:** in progress (amber, `▶ role`), queued (blue, `role #n`: its place in that role's
+    queue), queued but blocked (blue with a dashed red border, `⛔ role #n`), not queued (gray).
+  - **Hover** an item for its status, role and place, blocker, parent, sub-issues, assignees, labels, PRs, last update
+    and a body excerpt. **Click** it to select it: the side panel has **Open on GitHub**, and for each other role
+    **Offer to** it (an item no role holds: the actions dialog's Offer, filled in) or **Move to** it (an item another
+    role holds: that role's Queue opens with it picked; place it and the plan transfers it). Both preview and confirm.
+  - **Metrics** above the graph: open (and its change over 14 days), done (percent and count), in progress, queued
+    (and blocked), not queued (and how many wait on a blocker), closed in 7 days, the days until none are open at that
+    pace, and 14-day trends of open items and closes a day. The trends come from `board_history.jsonl`, written with
+    each digest, so they fill in from the first digest after an upgrade.
 - **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a
   question, `\u26b7` auth, `\u2691` a grant). herdr-core drops a report whose `kind` it does not know, so a cause with no
   kind goes in the card's `shoal.need` label instead: `\u2715` its session is dead, `\u25cc` its watcher is dead and it has
@@ -716,7 +740,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   top bar's **Lattice** (Ctrl+Alt+L) opens the global lattice in `SHOAL-home`, drilled into the shoal of the space in view,
   and `shoal ui app-lattice` does the same from a terminal, and
   `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current,
-  and `shoal ui app-usage` (the bar's Usage) to its usage dashboard.
+  `shoal ui app-usage` (the bar's Usage) to its usage dashboard, and `shoal ui app-board` (the bar's Board) to its
+  board graphs.
   Ctrl+Alt+N (or a click on the bar's `need you` count) focuses the next agent that needs you, in the lattice pulse's order:
   a sign-in first, then a question, then a grant, the longest unchanged first; a zoomed view stays zoomed, on it. Each
   saved standalone session gets a space as well, with its `session` tab. A standalone space closed in the app stays closed
@@ -789,7 +814,7 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   launcher with `Icon=shoal` shows it; a different icon already there is kept once as `.bak-shoal`.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
-  Spaces acts on that host's shoals, the top bar has **Home**, **Lattice**, **Actions** and **Usage** beside Files and Changes
+  Spaces acts on that host's shoals, the top bar has **Home**, **Lattice**, **Board**, **Actions** and **Usage** beside Files and Changes
   (`shoal-tabs`, a patched copy of Herdr's `tabs`; the status bar shows them instead only when that copy is not in the
   layout), the status bar shows each provider's usage, and the window's mark (top left) is
   SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
@@ -797,8 +822,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal
   chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home, and the
   `usage` tab (the `shoal-usage` dashboard: a card per provider with each window's meter, reset and pace, the tightest
-  meter first, and panels by shoal, role and standalone seat that fill in once per-session usage is recorded). The
-  sidebar does not list it: the top bar's Home, Lattice and Usage reach it. The terminal a new space must start with
+  meter first, and panels by shoal, role and standalone seat that fill in once per-session usage is recorded), and the
+  `board` tab (below). The sidebar does not list it: the top bar's Home, Lattice, Board and Usage reach it. The terminal a new space must start with
   (`launch`) is closed once Home stands in for it. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);

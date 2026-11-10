@@ -1,9 +1,12 @@
 // depth.js: the lattice's depth mode (P3b), pure (no Herdr imports, so it tests under Node). GPUI has no 3D, but every
-// position is the mod's own: each node gets a plane (its shoal in the global view, its host per shoal; the operator and
-// outside seats on a plane above), and the layout is projected before the scene draws it. A camera turns the planes
-// (yaw), tilts them back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon
-// and near ones grow. The scene adds what makes it read as space: slab rims, a floor grid, stems from each plane and from
-// the operator down to the floor with their shadows, and fog on what is far.
+// position is the mod's own: in the global view each node gets a plane (its shoal's; the operator and outside seats on
+// a plane above), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
+// back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon and near ones grow.
+// Per shoal, the view is a cutout sphere instead (projectBowl): you at its middle, each host a lune of its inner surface.
+// The scene adds what makes it read as space: a floor grid, stems down to the floor with their shadows, and fog on what
+// is far.
+
+import { bowlFrame, bowlPoint, bowlReach } from "./sphere.js";
 
 const DEG = Math.PI / 180;
 
@@ -110,9 +113,12 @@ export function planesOf(vm, lay) {
  * bands with their projected centers, their perspective scale `s` and vertical squash `ry`, drawn far to near; and for
  * the scene `scaleOf` (a node's size), `fogOf` (how much of it shows: far fades), `order` (vm.nodes far to near),
  * `grid` (floor lines), `stems` (plane centers and lifted nodes down to the floor, with a shadow). Flat: the layout as is.
+ * Per shoal: the cutout sphere, with the same fields plus `bowl` {frame, R} and `surfaceOf` giving each role's host and
+ * place on it.
  */
 export function projectLayout(vm, lay, cam0) {
   if (!cam0 || !lay) return lay;
+  if (!vm.global) return projectBowl(vm, lay, cam0);
   const { zOf, planes } = planesOf(vm, lay);
   const z = (id) => zOf.get(id) ?? 0;
   const pts = [...lay.pos.values()];
@@ -223,15 +229,7 @@ export function projectLayout(vm, lay, cam0) {
   }));
   // the floor: a grid below the lowest plane, its lines converging with distance
   const floorZ = -FLOOR_BELOW * PLANE_GAP;
-  const R = radius * 1.15;
-  const grid = [];
-  for (let i = 0; i <= GRID; i++) {
-    const t = -R + (2 * R * i) / GRID;
-    for (const [a, b] of [[{ x: o.x + t, y: o.y - R }, { x: o.x + t, y: o.y + R }], [{ x: o.x - R, y: o.y + t }, { x: o.x + R, y: o.y + t }]]) {
-      const p = P(a, floorZ), q = P(b, floorZ);
-      grid.push({ x0: p.x, y0: p.y, x1: q.x, y1: q.y, edge: i === 0 || i === GRID });
-    }
-  }
+  const grid = floorGrid(P, o, radius * 1.15, floorZ);
   // stems: each plane's middle (per shoal: the band ring's), and every lifted node, down to the floor, with a shadow there
   const stems = [];
   const stem = (id, p, zz, r) => {
@@ -243,6 +241,107 @@ export function projectLayout(vm, lay, cam0) {
   for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
   return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems };
+}
+
+/** A floor grid at height z, R either side of o, seen through P: GRID + 1 lines each way, the outermost marked. */
+function floorGrid(P, o, R, z) {
+  const grid = [];
+  for (let i = 0; i <= GRID; i++) {
+    const t = -R + (2 * R * i) / GRID;
+    for (const [a, b] of [[{ x: o.x + t, y: o.y - R }, { x: o.x + t, y: o.y + R }], [{ x: o.x - R, y: o.y + t }, { x: o.x + R, y: o.y + t }]]) {
+      const p = P(a, z), q = P(b, z);
+      grid.push({ x0: p.x, y0: p.y, x1: q.x, y1: q.y, edge: i === 0 || i === GRID });
+    }
+  }
+  return grid;
+}
+
+// Per shoal, depth mode: the cutout sphere. The operator sits at the middle of a sphere whose near cap is cut away
+// (sphere.js has its frame), so you look into a bowl. Each host is a lune of the inner surface, pole to rim, over the
+// same azimuth range as its sector in the flat view (turned with the camera), and its roles sit on that lune: spread
+// across it by label order, in two rows when there are four or more, each kept inside the part seen through the rim.
+// Outside seats and anything else ring the rim, in its plane. Turning the camera turns the bowl about its axis.
+export const BOWL_TILT = 32 * DEG; // the bowl's tilt from facing you is the camera's pitch less this
+const BOWL_EXT = 1.32; // where outside seats ring the rim, in sphere radii
+
+/** The bowl's tilt for a camera: how far its opening turns up from facing you. */
+export const bowlTilt = (cam) => Math.min(34 * DEG, Math.max(12 * DEG, cam.pitch - BOWL_TILT));
+
+/** The polar angle (from the bowl's pole) of the j-th of m roles at azimuth phi: a fraction of what is seen there. */
+export function bowlTheta(fr, phi, j, m) {
+  return bowlReach(fr, phi) * (m >= 4 ? (j % 2 ? 0.6 : 0.9) : 0.8);
+}
+
+function projectBowl(vm, lay, cam0) {
+  const c0 = lay.clusters?.[0];
+  const Rs = (c0?.r ?? 230) * SPHERE_R;
+  const fr = bowlFrame(bowlTilt(cam0));
+  const pts = [...lay.pos.values()];
+  const radius = Math.max(200, Rs * BOWL_EXT, ...pts.map((p) => Math.hypot(p.x, p.y)));
+  const cam = { ...cam0, o: { x: 0, y: 0 }, d: DIST * radius };
+  const P = (p, zz) => project(cam, p, zz);
+  const bands = (lay.bands ?? []).map((b) => ({ ...b, a0: b.a0 + cam.yaw, a1: b.a1 + cam.yaw, bowl: true, depth: -Rs, fog: 1 }));
+  const bandOf = new Map(bands.map((b) => [b.host, b]));
+  const pos = new Map(), depth = new Map(), scaleOf = new Map(), fogOf = new Map(), surfaceOf = new Map();
+  const put = (id, u, rho = 1) => {
+    pos.set(id, { x: Rs * rho * u.x, y: Rs * rho * u.y });
+    depth.set(id, Rs * rho * u.z);
+  };
+  // roles: on their host's lune, spread across its azimuths in the flat view's order
+  const TAU = 2 * Math.PI;
+  const flatAngle = (id) => { const p = lay.pos.get(id); return p && Math.hypot(p.x, p.y) > 1e-6 ? Math.atan2(p.y, p.x) : -Math.PI / 2; };
+  const roles = vm.nodes.filter((n) => n.kind === "role" && lay.pos.has(n.id));
+  for (const b of bands) {
+    const rel = (id) => ((flatAngle(id) + cam.yaw - b.a0) % TAU + TAU) % TAU;
+    const mine = roles.filter((n) => (n.host ?? "?") === b.host).sort((x, y) => rel(x.id) - rel(y.id) || (x.id < y.id ? -1 : 1));
+    mine.forEach((n, j) => {
+      const phi = b.a0 + ((b.a1 - b.a0) * (j + 0.5)) / mine.length;
+      const theta = bowlTheta(fr, phi, j, mine.length);
+      const u = bowlPoint(fr, theta, phi);
+      put(n.id, u);
+      scaleOf.set(n.id, 1 + 0.32 * u.z);
+      fogOf.set(n.id, 0.82 + 0.18 * (1 + u.z));
+      surfaceOf.set(n.id, { shoal: vm.view, host: b.host, facing: -u.z, theta, phi });
+    });
+  }
+  // the operator at the sphere's middle; everything else on a ring round the rim, in its plane
+  for (const n of vm.nodes) {
+    if (pos.has(n.id) || !lay.pos.has(n.id)) continue;
+    if (n.kind === "user") put(n.id, { x: 0, y: 0, z: 0 });
+    else {
+      const phi = flatAngle(n.id) + cam.yaw;
+      put(n.id, { x: Math.cos(phi), y: Math.sin(phi) * fr.e2.y, z: Math.sin(phi) * fr.e2.z }, BOWL_EXT);
+    }
+    scaleOf.set(n.id, 1);
+    fogOf.set(n.id, 1);
+  }
+  // satellites keep their spokes, turned with their role's place round the middle
+  const sats = (lay.sats ?? []).map((s) => {
+    const w = pos.get(s.owner), p0 = lay.pos.get(s.owner);
+    if (!w || !p0) return s;
+    const turn = Math.hypot(w.x, w.y) > 1e-6 && Math.hypot(p0.x, p0.y) > 1e-6 ? Math.atan2(w.y, w.x) - Math.atan2(p0.y, p0.x) : cam.yaw;
+    const k = scaleOf.get(s.owner) ?? 1, cs = Math.cos(turn), sn = Math.sin(turn);
+    const at = (x, y) => ({ x: w.x + k * ((x - p0.x) * cs - (y - p0.y) * sn), y: w.y + k * ((x - p0.x) * sn + (y - p0.y) * cs) });
+    const a = at(s.x, s.y), b = at(s.ax, s.ay);
+    return { ...s, x: a.x, y: a.y, ax: b.x, ay: b.y };
+  });
+  // a CI tether ends in the middle of its host's lune
+  const anchors = new Map();
+  for (const b of bands) {
+    const phi = (b.a0 + b.a1) / 2, u = bowlPoint(fr, bowlReach(fr, phi) * 0.5, phi);
+    anchors.set(b.host, { x: Rs * u.x, y: Rs * u.y, band: true });
+  }
+  const tethers = (lay.tethers ?? []).map((t) => ({ ...t, from: pos.get(t.id) ?? t.from, to: t.to && anchors.has(t.host) ? { ...anchors.get(t.host) } : null }));
+  const clusters = c0 ? [{ ...c0, x: 0, y: 0, r: Rs, ry: 1, sphere: false, bowl: { alpha: fr.alpha }, globeGrid: [], s: 1, depth: -Rs, fog: 1, zw: 0 }] : [];
+  const floorZ = -Rs * 1.2 - 0.3 * PLANE_GAP;
+  const grid = floorGrid(P, cam.o, radius * 1.15, floorZ);
+  const stems = [];
+  if (c0) {
+    const a = P({ x: 0, y: 0 }, 0), b = P({ x: 0, y: 0 }, floorZ);
+    stems.push({ id: `c-${c0.id}`, x0: a.x, y0: a.y, x1: b.x, y1: b.y, r: Rs * 0.9 * b.f, ry: Rs * 0.9 * b.f * cam.c });
+  }
+  const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes: [], grid, stems, bowl: { frame: fr, R: Rs } };
 }
 
 /** The next preset in the cycle. */

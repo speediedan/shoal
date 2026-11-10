@@ -670,6 +670,17 @@ test("the verbs in labeled groups: each in exactly one, in the group's order, on
   assert.deepEqual(seat[0].verbs.map((v) => v.verb), ["handoff", "remove-session"]);
 });
 
+test("a pick from the Board tab finds its row or candidate, owner, case and verb aside", () => {
+  const q = { queue: [{ key: "example/app#3", item: "example/app#3:fix" }],
+              candidates: [{ key: "example/app#9", item: "Example/App#9:review" }] };
+  assert.equal(M.pickKey(q, "app#3"), "example/app#3");
+  assert.equal(M.pickKey(q, "app#9"), "example/app#9");
+  assert.equal(M.pickKey(q, "example/app#9:fix"), "example/app#9");
+  assert.equal(M.pickKey(q, "app#4"), null, "not in this queue: nothing picked");
+  assert.equal(M.pickKey(q, ""), null);
+  assert.equal(M.pickKey(null, "app#3"), null);
+});
+
 test("a long command breaks at its arguments, never inside a word or a quoted span", () => {
   const cmd = "shoal handoff --spec /example/ledgers/shoals/alpha-20261101-000000/shoal.json --only core "
     + "--expected-session=aaaa0001-1111-4111-8111-111111111111";

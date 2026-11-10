@@ -33,6 +33,7 @@ export default class ShoalStatus extends View {
         if (c === "lattice") this.lattice(cx);
         else if (c === "home") this.home(cx);
         else if (c === "usage") this.usage(cx);
+        else if (c === "board") this.board(cx);
         else if (c === "next") this.nextNeedsYou();
         cx.notify();
       }
@@ -86,6 +87,15 @@ export default class ShoalStatus extends View {
   home(cx) {
     if (this.go(homeTab(safe(spaces, [])))) return;
     this.show(cx, "home", "app-home");
+  }
+
+  board(cx) {
+    // the board graphs, on the shoal of the space in view (the board honors board.focus), a tab of the home space
+    const sps = safe(spaces, []);
+    const sid = shoalInView(sps, safe(terminals, []));
+    if (sid) try { setShared("board.focus", { shoal: sid, t: Date.now() }); run("shoal-board.focus"); } catch (_e) { /* it opens on its own pick */ }
+    if (this.go(homeTab(sps, "SHOAL-home", "board"))) return;
+    this.show(cx, "board", "app-board");
   }
 
   usage(cx) {
@@ -176,6 +186,7 @@ export default class ShoalStatus extends View {
         .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.home(cx); cx.notify(); }, t))
         .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t)))
       .when(!topBar, (el) => el.child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))
+        .child(this.button("to-board", "Board", "the board's dependency graph", (_e, cx) => { this.board(cx); cx.notify(); }, t))
         .child(this.button("to-usage", "Usage", "the usage dashboard", (_e, cx) => { this.usage(cx); cx.notify(); }, t)))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
       .child(div().flex_1());
