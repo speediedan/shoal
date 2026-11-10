@@ -1139,6 +1139,18 @@ and the contract are in [`ui.md`](ui.md).
   meter heading past 100% before its reset says when it runs out). The tightest meter is the headline. Panels by shoal,
   by role and by standalone seat read an optional `breakdown` in the same document and say so until shoal records
   each session's usage. A shoal's overview (`ui dash`) no longer prints the meters; `ui status` still does.
+- **Herdr app board graph** (`plugins/shoal-herdr-app/mods/shoal-board/`, read model `shoal/ui/ui_board.py`): the home
+  space's `board` tab, opened by the top bar's Board (`shoal-status.board`, which sets shared `board.focus` to the shoal
+  in view, else `ui app-board`). It reads `shoal ui board --json` from the first machine with a board digest: per shoal
+  and board, the digest's open items as nodes and `parent` (issue to sub-issue) and `blocks` (open blocker to the item)
+  edges, a parent or blocker not open on the board kept as an `off_board` node. Each node's `work` comes from the status
+  rows: `active` (a role's active item), `queued` at its `pos`, `queued-blocked` (a recorded blocker) or `unqueued`.
+  The board is the root; the model lays each item a layer below its parent and blockers, wraps a wide layer into rows,
+  and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details; a click
+  selects it for Open on GitHub, Offer to a role (the actions dialog, its `item` prefilled) or Move to a role (that
+  role's Queue, with `pick` set, so the plan transfers it). The metrics panel shows the rail card's counts, closes in
+  seven days, the days to none open at that pace, and 14-day trends of open items and closes a day, from
+  `board_history.jsonl`, which `digest.write` appends at most every half hour per board and keeps for 90 days.
 - **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
   this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
   or the exec line when that `shoal` is a shell wrapper), else `python3`.
@@ -1178,7 +1190,7 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with five blocks swapped: `shoal-agents`,
 `shoal-spaces` (which also leaves the home space out of the sidebar: the top bar reaches it), `shoal-chrome` (the window's
-mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home, Lattice, Actions and Usage in the top bar,
+mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home, Lattice, Board, Actions and Usage in the top bar,
 beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-agents` also orders its Priority view by the derived agent state each card writes on its terminal
