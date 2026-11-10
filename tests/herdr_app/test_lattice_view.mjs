@@ -1141,14 +1141,51 @@ test("globe lighting follows surface normals and stays inside the silhouette", (
   assert.ok(Math.abs(SP.lightAt(SP.LIGHT.x, SP.LIGHT.y) - 1) < 1e-9);
   assert.ok(SP.lightAt(0.7, 0.7) < 0, "the lower right is in shadow");
   const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
-  assert.ok(shade.paths.length >= 40 && shade.paths.length <= 128, "smooth shading with a bounded path budget");
+  assert.equal(shade.paths.length, 128, "keep smooth lighting rather than reducing the color levels");
   for (let i = 0; i < shade.paths.length; i++) {
+    assert.ok(shade.paths[i].cmds.length <= 8, "the native render budget needs short curved contours");
+    let p0;
     for (const cmd of shade.paths[i].cmds) {
-      if (cmd.length < 3) continue;
-      const [, x, y] = cmd, radius = Math.hypot(x, y);
-      assert.ok(radius <= 1 + 1e-8, "light never spills beyond the globe");
-      assert.ok(SP.lightAt(x, y) >= i / shade.paths.length - 1e-5, "contours respect the light level");
+      if (cmd[0] === "M") p0 = { x: cmd[1], y: cmd[2] };
+      if (cmd[0] !== "C") continue;
+      const curve = { p0, c1: { x: cmd[1], y: cmd[2] }, c2: { x: cmd[3], y: cmd[4] }, p3: { x: cmd[5], y: cmd[6] } };
+      for (let j = 0; j <= 20; j++) {
+        const { x, y } = G.pointAt(curve, j / 20);
+        assert.ok(Math.hypot(x, y) <= 1.0003, "cubic approximation stays within a subpixel of the limb");
+        assert.ok(SP.lightAt(x, y) >= i / shade.paths.length - 0.015, "contours respect the light level");
+      }
+      p0 = curve.p3;
     }
+  }
+});
+
+test("curved light contours enclose the lit cap, including the clipped limb", () => {
+  const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
+  for (const level of [0, 16, 64, 90, 92, 112, 127]) {
+    const points = [];
+    let p0;
+    for (const c of shade.paths[level].cmds) {
+      if (c[0] === "M") { p0 = { x: c[1], y: c[2] }; points.push(p0); }
+      if (c[0] !== "C") continue;
+      const curve = { p0, c1: { x: c[1], y: c[2] }, c2: { x: c[3], y: c[4] }, p3: { x: c[5], y: c[6] } };
+      for (let j = 1; j <= 24; j++) points.push(G.pointAt(curve, j / 24));
+      p0 = curve.p3;
+    }
+    for (let x = -0.95; x < 1; x += 0.1) for (let y = -0.95; y < 1; y += 0.1) {
+      if (Math.hypot(x, y) >= 0.995 || Math.abs(SP.lightAt(x, y) - level / 128) < 0.015) continue;
+      let inside = false;
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const a = points[i], b = points[j];
+        if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      assert.equal(inside, SP.lightAt(x, y) > level / 128, `light cap ${level} at ${x}, ${y}`);
+    }
+  }
+  const moved = SP.sphereShade("test", 73, -29, 190, "#50d090");
+  for (let i = 0; i < shade.paths.length; i++) for (let j = 0; j < shade.paths[i].cmds.length; j++) {
+    const a = shade.paths[i].cmds[j], b = moved.paths[i].cmds[j];
+    assert.equal(a[0], b[0]);
+    for (let k = 1; k < a.length; k++) assert.ok(Math.abs(b[k] - ((k % 2 ? 73 : -29) + 190 * a[k])) < 1e-10);
   }
 });
 
