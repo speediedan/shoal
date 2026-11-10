@@ -153,7 +153,7 @@ def ref_state(ref: str) -> str:
 
 def ask_hint(spec: ShoalSpec, view: View, ask: str) -> str:
     """` (LIKELY STALE: ...)` when an item the ask names is merged, closed or done; else ``."""
-    default = (spec.effective_repos or ["speediedan/interpretune"])[0]
+    default = (spec.effective_repos or [""])[0]
     why = []
     for ref in ask_refs(ask, default, known_repos(spec)):
         if item_key(ref) in view.done:
@@ -208,7 +208,7 @@ def question_sets(spec: ShoalSpec, view: View, slug: str) -> dict:
     2026-09-24: a hand-written merge question described another PR, and the grant merged the wrong
     description onto main)."""
     q = view.current_queue(slug) or {}
-    default = (spec.effective_repos or ["speediedan/interpretune"])[0]
+    default = (spec.effective_repos or [""])[0]
     known = known_repos(spec)
     questions = []
     for i, ask in enumerate(q.get("asks") or [], 1):

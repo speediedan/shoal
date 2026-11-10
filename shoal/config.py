@@ -284,7 +284,7 @@ def azure_project() -> str:
 def azure_projects() -> list[str]:
     """The projects a bare `az-build:<id>` is looked up in, in order: `azure_projects`, else `azure_project`. A build id
     is unique in its organization, but `az pipelines build show` needs the project, and an id from another project reads
-    "not found" (measured 2026-10-24: every finetuning-scheduler gate under the interpretune default)."""
+    "not found" (measured 2026-10-24: every second-project gate under a single-project default)."""
     v = file_values().get("azure_projects") or []
     out = [str(x) for x in v] if isinstance(v, list) else []
     return out or ([azure_project()] if azure_project() else [])
@@ -292,7 +292,7 @@ def azure_projects() -> list[str]:
 
 def login_shell_tools() -> list[str]:
     """Tools whose calls run under `bash -lc`, for a credential exported only from a login profile: a systemd unit gets no
-    profile, and `az` without its token hangs to the timeout rather than failing (measured 2026-10-24 on speediedl, where
+    profile, and `az` without its token hangs to the timeout rather than failing (measured 2026-10-24 on a host where
     AZURE_DEVOPS_EXT_PAT comes from ~/.bashrc). The variable never enters a unit or a file."""
     v = file_values().get("login_shell_tools") or []
     return [str(x) for x in v] if isinstance(v, list) else []

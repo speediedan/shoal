@@ -61,7 +61,7 @@ def _repo_num(ref: str) -> tuple[str, str] | None:
 def normalize(target: str) -> tuple[str, str]:
     """(canonical target, error). Loose GitHub refs become `<kind>:<owner/repo>#<n>`; an unknown
     kind or an unparseable ref is an error, because a wait nobody can check never resolves and
-    never escalates (measured 2026-09-26: `gh-pr:interpretune:637`, a PR merged the evening
+    never escalates (measured 2026-09-26: `gh-pr:app:637`, a PR merged the evening
     before, held a lane in `remote-ci` for a day while every check read "unknown")."""
     if not target:
         return "", ""

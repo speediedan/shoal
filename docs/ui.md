@@ -405,7 +405,7 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 **Layout** (`shoal ui open`, idempotent):
 
 - **One workspace per shoal**, named with the shoal's short tag: the id without its
-  `-YYYYMMDD-HHMMSS` mint stamp (`it-mvp`), or the full id when two live (non-retired) shoals share a
+  `-YYYYMMDD-HHMMSS` mint stamp (`alpha`), or the full id when two live (non-retired) shoals share a
   stem. A
   workspace still under the old `shoal:<id>` label (or a full id) is renamed in place. A retired
   shoal's workspace is released so its successor (same stem, same tag) never inherits it: `ui open`

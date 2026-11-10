@@ -99,7 +99,7 @@ def parse_ts(s: str) -> datetime.datetime:
 
 
 def split_item(item: str) -> tuple[str, str]:
-    """'interpretune#600:fix' -> ('interpretune#600', 'fix'); no verb -> ''."""
+    """'app#600:fix' -> ('app#600', 'fix'); no verb -> ''."""
     item = (item or "").strip()
     m = VERB_RE.search(item)
     if m:

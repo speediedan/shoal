@@ -3,7 +3,7 @@
 
 A source is where a self-filling role looks when its queue is empty. The
 only kind today is a GitHub Projects (v2) board, read in board order —
-item order IS the priority (interpretune instructions: "the sessions pop
+item order IS the priority (board convention: "the sessions pop
 from the top"). Reading uses `gh api graphql` so the item's open/closed
 state and repository come back in one call (`gh project item-list` omits
 state, and a closed issue left on the board is the measured hygiene gap).

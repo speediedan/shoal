@@ -281,7 +281,7 @@ _TAGS: dict[str, str] = {}
 
 def shoal_tag(sid: str) -> str:
     """The short name a shoal shows as (workspace label, the `$shoal` token): the id without its
-    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `it-mvp`, unless another LIVE shoal on this host shares
+    `-YYYYMMDD-HHMMSS` mint stamp, e.g. `alpha`, unless another LIVE shoal on this host shares
     that stem, in which case the full id. Retired shoals do not count: a group's next incarnation
     retires the previous one with the same stem, and a retired shoal gets no workspace."""
     import re

@@ -27,7 +27,7 @@ someone assigning it work, and that wait has no end by itself; parked time is ex
 episode costs at most the grace. `parkable` lists everything that keeps a role out, and each reason errs towards leaving
 it alone: a wrongly parked role costs one restart, but a role parked with something open loses its next wake.
 
-Why a verb: measured 2026-10-24, fts-core had to be parked by hand (a spec edit, `claude stop`, then a `kill -9` of a
+Why a verb: measured 2026-10-24, a role had to be parked by hand (a spec edit, `claude stop`, then a `kill -9` of a
 watcher still bound to the stopped session, which an incoming offer would have used to resume it), and a role left
 waiting on a `hold:` instead would have been paged as stale after `hold_ttl_min`.
 """

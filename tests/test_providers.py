@@ -86,7 +86,7 @@ class AzBuild(HostConfig):
     def test_malformed_ref_is_refused(self):
         for bad in ("az-build:", "az-build:abc", "az-build:p/q/7", "az-build:7;rm"):
             self.assertTrue(providers.normalize(bad)[1], bad)
-        self.assertEqual(providers.normalize("az-build:finetuning-scheduler/1660"), ("az-build:finetuning-scheduler/1660", ""))
+        self.assertEqual(providers.normalize("az-build:other-proj/1660"), ("az-build:other-proj/1660", ""))
 
 
 class AzProjectDefault(HostConfig):

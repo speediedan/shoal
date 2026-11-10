@@ -718,7 +718,7 @@ def posture_label(r: dict) -> str:
         return "DORMANT"
     if working_wait(r):
         # waiting on its own job or CI: the work runs on, so the wait is the posture and an open
-        # question shows as attention (measured 2026-10-13: jlens-research on a running job read QUESTION)
+        # question shows as attention (measured 2026-10-13: a role on a running job read QUESTION)
         return f"wait:{r['sub']}"
     if "blocked-on-question" in reasons:
         return "QUESTION"

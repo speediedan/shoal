@@ -1151,8 +1151,8 @@ assert ui_herdr.internal_session("shoal-matcher-20261008T1200", slugs)
 assert ui_herdr.internal_session("tb-opencode-r1", slugs) and ui_herdr.internal_session("cl-r12", slugs)
 assert not ui_herdr.internal_session("Agent-ecosystem-neutrality Phase C", slugs)
 assert not ui_herdr.internal_session("shoal-ui-explore", slugs)
-ui_herdr._TAGS.clear(); ui_herdr._TAGS.update({"it-mvp-20260921-170946": "it-mvp"})
-assert ui_herdr.shoal_tag("it-mvp-20260921-170946") == "it-mvp"
+ui_herdr._TAGS.clear(); ui_herdr._TAGS.update({"alpha-20260921-170946": "alpha"})
+assert ui_herdr.shoal_tag("alpha-20260921-170946") == "alpha"
 assert ui_herdr.shoal_tag("other-20261008-161310") == "other"
 # a retired shoal with the same stem does not force the full id (the next incarnation retires it)
 import json, os, tempfile, ui_status

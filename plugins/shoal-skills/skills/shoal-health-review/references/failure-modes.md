@@ -157,7 +157,7 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 - **Detection:** a Bash background command's default timeout is 30 minutes (2 h at most with an
   explicit `timeout`). The briefs never set one, and the relay doc said a background command "has
   no timeout". Measured on the test shoal: armed 23:14:45Z, killed 23:44:40Z, re-armed by a full
-  turn. jlens-expert stopped re-arming on 10-07 after three kills and declared itself blocked.
+  turn. One role stopped re-arming on 10-07 after three kills and declared itself blocked.
 - **Fix:** the briefs, the relay doc and the protocol reference pass `timeout=7200000`. That cuts
   the cost to one turn per 2 h per idle Claude role (12 a day); the cap itself is the harness's.
   Lanes pick it up at their next restart or brief reload.
@@ -174,7 +174,7 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   any background session left idle at its prompt for 8 h, typically an assigned-only lane with no offers.
 - **Fix:** 7e42172. A Claude watcher counts as dead when its session has no worker, so the
   watcher-dead ladder wakes the role and revive respawns it on the same session. The detached watcher
-  stays bound to it, so no re-arm is needed. Verified on it-arch-reviewer: respawned, woken by the relay
+  stays bound to it, so no re-arm is needed. Verified on a reviewer role: respawned, woken by the relay
   and writing queue v51 within about 90 s, watcher untouched.
 - **Metric:** `FM14:respawns` counts the repairs; idle retirements appear in the daemon log.
 - **Status:** fixed, then **retired 2026-11**. With the relay gone, a detached `--wake direct` watcher
@@ -184,7 +184,7 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 
 ## FM-17: a pull during another writer's queue write kills the watcher (2026-10-13)
 - **Signature:** NOWATCH on a role whose watcher log ends in `LedgerError: rebase onto origin/main
-  failed ... cannot rebase: You have unstaged changes`. Seen on ie-integration, it-arch-reviewer and both
+  failed ... cannot rebase: You have unstaged changes`. Seen on two roles and both
   testbed roles; the clone was clean again by the time anyone looked.
 - **Cause:** a `queue` write appends claim, state and queue lines, releasing the clone lock between
   appends, then commits them as one. A watcher pulling in that gap met an uncommitted line, `git rebase`
@@ -197,11 +197,11 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 ## FM-18: the account usage limit takes the relay down for the night (2026-10-14)
 - **Signature:** relayed wakes end in a turn whose transcript entry is `"error": "rate_limit"` (with
   `quotaLimits.resetsAt`), or a session stops on the `[Usage limit reached; ...]` grace note. Afterwards the relay
-  reads DEAD and `relay-queue` grows past its cursor (178 wakes overnight, it-mvp).
+  reads DEAD and `relay-queue` grows past its cursor (178 wakes overnight on one shoal).
 - **Cause:** every wake and relaunch spent inside the limit was lost. The relay stopped on the grace note without
   sending the wake relay-watch had printed, which was lost because the cursor moved at print time. The single
   revive relaunch landed inside the limit; its first turn errored, it never armed relay-watch, and the ladder did
-  not try again. A shoal whose relay survived (fts-it-refactor) recovered only because its ladders re-fired after
+  not try again. A shoal whose relay survived (on another shoal) recovered only because its ladders re-fired after
   the reset.
 - **Fix:**
   - Health reads the limit and its reset from the transcripts and holds Claude wakes and relay relaunches until

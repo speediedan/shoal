@@ -54,7 +54,7 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   coordination and anything that must be durable or reach a Claude or exec seat goes through the shoal ledger: an interactive seat reaches a role with
   `shoal msg --shoal <id> --by ext:<seat> --to <role> --text ...` (plain mail, no wake, no authority).
 - **An attached client holds a role's session.** Muse allows one owner per session: an exec turn started while
-  `muse resume <id>` is open fails with "session ... is already in use" (measured 2026-10-15, fts-core, and the
+  `muse resume <id>` is open fails with "session ... is already in use" (measured 2026-10-15 on a live role, and the
   wake was lost). So an attached client counts as busy: the watcher holds the wake (it goes out at the first idle
   tick after you detach), `start_run` refuses and the runner exits 75, and the status line reads
   `status:busy attached`. Ordinary role observation no longer opens this exclusive client.
