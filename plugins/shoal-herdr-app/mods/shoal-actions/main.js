@@ -33,7 +33,7 @@ import {
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
-  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -905,6 +905,9 @@ export default class Actions extends View {
     col.child(h_flex().gap(8).items_center()
       .child(div().text_size(13.5).font_semibold().child(info.label))
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
+    const roleDoc = this.roles?.shoals?.find((s) => s.id === this.sel.shoal)?.roles?.find((r) => r.slug === this.sel.role)?.doc ?? null;
+    const docNote = handoffDocNote(this.form, roleDoc);
+    if (docNote) col.child(div().text_size(11.5).text_color(c.muted).child(docNote));
     for (const f of visibleFields(this.form)) {
       const v = this.form.values[f.key];
       if (f.kind === "text") {
@@ -912,7 +915,8 @@ export default class Actions extends View {
         col.child(v_flex().gap(5)
           .child(this.label(f.label + (f.required ? "" : " (optional)"), c))
           .child(Input.new(this.inputs[f.key]).h(32).px(10).rounded(7).border_1()
-            .border_color(focusedNow ? c.accent : c.input).bg(c.code).text_size(12.5).text_color(c.ink)));
+            .border_color(focusedNow ? c.accent : c.input).bg(c.code).text_size(12.5).text_color(c.ink))
+          .when(Boolean(f.hint), (el) => el.child(div().text_size(11).text_color(c.dim).child(f.hint))));
       } else if (f.kind === "toggle") {
         col.child(h_flex().id(`f-${f.key}`).gap(10).items_center().cursor_pointer().py(2)
           .on_click((_e, cx) => { this.form = setValue(this.form, f.key, !v); cx.notify(); })

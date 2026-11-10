@@ -168,7 +168,7 @@ test("replies: roles", () => {
   const r = M.parseReply(ok(fx.roles), "roles");
   assert.equal(r.kind, "roles");
   assert.deepEqual(r.shoals.map((s) => [s.id, s.tag, s.needsYou]), [[A, "alpha", 1], [B, "beta", 1]]);
-  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, posture: "blocked:user-ask" });
+  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, posture: "blocked:user-ask", doc: null });
   // unknown fields ignored; bad rows, repeats and a `*` slug dropped; a missing tag from the id
   const doc = JSON.parse(JSON.stringify(fx.roles));
   doc.future = 1;
@@ -434,7 +434,13 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   assert.deepEqual(M.planArgv("handoff", t, f), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--json"]);
   const g = M.setValue(M.setValue(M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "effort", "high"), "force", true), "prepare", false);
   assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--effort=high", "--no-prepare", "--force", "--json"]);
-  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "prepare", "dryRun"]);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "note", "prepare", "dryRun"]);
+  // a restart note rides on the plan; a role's form says which start doc it resumes from
+  assert.ok(M.planArgv("handoff", t, M.setValue(f, "note", " look at #12 first ")).includes("--note=look at #12 first"));
+  assert.equal(M.handoffDocNote(f, "/example/core_plan_state.md"), "Resumes from its start doc: /example/core_plan_state.md");
+  assert.match(M.handoffDocNote(f), /its saved start doc \(its plan_state\.md\)/);
+  assert.equal(M.handoffDocNote(M.newForm("offer", NOW)), null);
+  assert.ok(!M.visibleFields(f).some((x) => x.key === "throughQuestion"), "a role answers its question first");
   assert.equal(M.handoffMachine({ host: "lane-b" }, ["lane-a", "lane-b"], "lane-a"), "lane-b", "restart refuses another host's role");
   assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);
   assert.equal(M.handoffMachine({ host: "elsewhere" }, ["lane-a"], "lane-a"), "lane-a", "the CLI's refusal then says where to run it");
@@ -449,6 +455,14 @@ test("standalone Handoff: checkpoint by default, a saved start doc, and a resuma
   assert.ok(!M.visibleFields(f).some((x) => x.key === "force"));
   assert.ok(M.visibleFields(f).some((x) => x.key === "prepare"));
   assert.ok(M.planArgv("handoff", target, M.setValue(f, "prepare", false)).includes("--no-prepare"));
+  // through an open question: offered only with checkpoint-first, and sent only when chosen
+  assert.ok(M.visibleFields(f).some((x) => x.key === "throughQuestion"));
+  assert.ok(!M.visibleFields(M.setValue(f, "prepare", false)).some((x) => x.key === "throughQuestion"));
+  assert.ok(!M.planArgv("handoff", target, f).includes("--through-question"));
+  assert.ok(M.planArgv("handoff", target, M.setValue(f, "throughQuestion", true)).includes("--through-question"));
+  assert.ok(!M.planArgv("handoff", target, M.setValue(M.setValue(f, "throughQuestion", true), "prepare", false)).includes("--through-question"));
+  assert.match(M.handoffDocNote(f), /^Resumes from \/example\/plan\.md\.$/);
+  assert.match(M.handoffDocNote(M.setValue(f, "doc", "")), /seat's saved start doc/);
   assert.deepEqual(M.applyArgv("token", true), ["ui", "act-apply", "--token", "token", "--json", "--background"]);
   assert.deepEqual(M.statusArgv(target), ["ui", "act-status", "--session=example-seat", "--json"]);
   assert.deepEqual(M.statusArgv(target, "run"), ["ui", "act-status", "--run", "run", "--json"]);

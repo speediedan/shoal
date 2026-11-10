@@ -50,7 +50,7 @@ export const VERBS = [
   { verb: "asks", label: "Asks", kind: "view", role: "opt", about: "open asks and roles waiting on a question (one role's, when one is picked)" },
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
-  { verb: "handoff", label: "Handoff", kind: "write", role: "one", sessionAlso: true, fields: ["ecosystem", "model", "effort", "handoffDoc", "prepare", "force"], about: "request a restart-ready checkpoint, then hand off from its start doc; progress continues if this dialog closes" },
+  { verb: "handoff", label: "Handoff", kind: "write", role: "one", sessionAlso: true, fields: ["ecosystem", "model", "effort", "handoffDoc", "handoffNote", "prepare", "throughQuestion", "force"], about: "request a restart-ready checkpoint, then hand off from its start doc; progress continues if this dialog closes" },
   { verb: "fill", label: "Fill", kind: "write", role: "one", fields: ["fillTo", "note"], about: "where this role's work comes from: the board (self) or your offers (assigned)" },
   { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", fields: ["undo"], about: "clear this role's needs-you until something new is raised; it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
@@ -95,7 +95,12 @@ export const FIELDS = {
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
   prepare: { key: "prepare", kind: "toggle", label: "Request a restart-ready checkpoint first", hint: "off: use an existing valid checkpoint; a standalone source must already be idle" },
-  handoffDoc: { key: "doc", kind: "text", label: "Start doc", placeholder: "empty: the standalone seat's saved start doc" },
+  handoffDoc: { key: "doc", kind: "text", label: "Start doc", placeholder: "empty: the seat's saved start doc",
+    hint: "empty: its saved start doc (plan_state.md) is used" },
+  handoffNote: { key: "note", kind: "text", label: "Restart note", placeholder: "anything the new session should know first",
+    hint: "added to the new session's first prompt, after its start doc; this handoff only" },
+  throughQuestion: { key: "throughQuestion", kind: "toggle", label: "Through an open question",
+    hint: "a seat stopped at a question: stop that turn and resume it with the checkpoint request (the question is dropped)" },
   slug: { key: "slug", kind: "text", label: "Role name", placeholder: "its slug: a-z, 0-9 and -", required: true },
   title: { key: "title", kind: "text", label: "Title", placeholder: "what the role is for", required: true },
   doc: { key: "doc", kind: "text", label: "Start doc", placeholder: "its plan_state.md on the shoal's home host (## Mission, ## Current state, grants-needed)", required: true },
@@ -162,12 +167,22 @@ export function newForm(verb, now = new Date(), prefill = {}) {
   if (verb === "handoff") {
     values.prepare = true;
     values.standalone = false;
+    values.throughQuestion = false;
   }
   values.undo = false;
   if (verb === "offline") values.until = nextMorning(now);
   for (const [k, v] of Object.entries(obj(prefill) ?? {})) if (k in values) values[k] = v;
   if (verb === "offline" && values.state === "on" && !str(values.note).trim()) values.note = backNote(values.until);
   return { verb, values };
+}
+
+/** What the Handoff form says about the start doc: the role's saved one by path when known, else the seat's saved one. */
+export function handoffDocNote(form, roleDoc = null) {
+  if (form?.verb !== "handoff") return null;
+  if (form.values.standalone) {
+    return str(form.values.doc).trim() ? `Resumes from ${str(form.values.doc).trim()}.` : "Resumes from the seat's saved start doc (its plan_state.md) unless you name another below.";
+  }
+  return roleDoc ? `Resumes from its start doc: ${roleDoc}` : "Resumes from its saved start doc (its plan_state.md).";
 }
 
 /** The fields a form shows now: `until` only while offline is being turned on. */
@@ -177,6 +192,7 @@ export function visibleFields(form) {
   const starterOnly = new Set(["guidance", "nextSteps", "grants"]);
   return [...arr(info?.fields).filter((k) => (k !== "until" || form.values.state === "on") && (!starterOnly.has(k) || form.values.starter)
     && (k !== "handoffDoc" || form.values.standalone)
+    && (k !== "throughQuestion" || (form.values.standalone && form.values.prepare))
     && (k !== "force" || (!form.values.prepare && !form.values.standalone))), "dryRun"]
     .map((k) => FIELDS[k]);
 }
@@ -285,7 +301,9 @@ export function planArgv(verb, target, form = null) {
       if (text("model")) argv.push(`--model=${text("model")}`);
       if (text("effort")) argv.push(`--effort=${text("effort")}`);
       if (target.session && text("doc")) argv.push(`--doc=${text("doc")}`);
+      if (text("note")) argv.push(`--note=${text("note")}`);
       if (!v.prepare) argv.push("--no-prepare");
+      if (target.session && v.prepare && v.throughQuestion) argv.push("--through-question");
       if (!target.session && !v.prepare && v.force) argv.push("--force");
     } else if (verb === "dismiss" && v.undo) {
       argv.push("--undo");
@@ -454,7 +472,7 @@ function normRoles(d) {
       const slug = strOrNull(o?.slug);
       if (!slug || slugs.has(slug) || slug === "*") continue;
       slugs.add(slug);
-      roles.push({ slug, host: strOrNull(o.host), needsYou: o.needs_you === true, posture: strOrNull(o.posture) });
+      roles.push({ slug, host: strOrNull(o.host), needsYou: o.needs_you === true, posture: strOrNull(o.posture), doc: strOrNull(o.doc) });
     }
     shoals.push({ id, tag: strOrNull(s.tag) ?? shortShoal(id), roles, needsYou: roles.filter((r) => r.needsYou).length });
   }

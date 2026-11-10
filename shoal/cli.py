@@ -873,6 +873,16 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
             print(f"REFUSED: --set-effort {slug} needs --only {slug}")
             return 1
         r.effort = effort
+    for kv in (getattr(args, "note", None) or []):
+        slug, _, text = kv.partition(":")
+        r = spec.role(slug)
+        if r is None:
+            print(f"unknown --note slug: {slug}")
+            return 1
+        if slug not in (only or []):
+            print(f"REFUSED: --note {slug} needs --only {slug}")
+            return 1
+        r.restart_note = text.strip()  # for this run's brief only: not a Role field, so never saved with the spec
     for slug, sid in launched.items():
         r = spec.role(slug)
         if r is None:
@@ -1210,6 +1220,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--set-ecosystem", action="append", default=[],
                    help="SLUG:ECOSYSTEM to relaunch a role on another provider (repeatable; `handoff` stops the old session)")
     p.add_argument("--set-effort", action="append", default=[], help="SLUG:EFFORT for a relaunched role (repeatable)")
+    p.add_argument("--note", action="append", default=[],
+                   help="SLUG:TEXT an operator's note added to that relaunched role's first prompt, this time only (repeatable)")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
     p.add_argument("--old-session", action="append", default=[])
     p.add_argument("--consumer-launched", action="append", default=[],

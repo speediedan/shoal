@@ -1878,6 +1878,16 @@ assert rc == 1 and "STILL LIVE" in t and "nothing restarted" in t and len(spawne
 health.context_restart = lambda *a, **k: "FAILED (no room)"
 rc, t = run(dry_run=False)
 assert rc == 1 and "FAILED" in t, (rc, t)
+# the operator's restart note rides on the restart as --note, and goes in that role's new brief only
+got = []
+health.context_restart = lambda spec_, path, role_, dry_run=False, extra=(): got.append(extra) or "would restart (dry-run)"
+assert park.handoff(spec, spec_path, "up", "", "", True, True, "", " check CI first ") == 0
+assert got and "--note=up:check CI first" in got[-1], got
+import briefs
+role.restart_note = "check CI first"
+assert briefs.note_block(role).rstrip().endswith("check CI first") and "note from the operator" in briefs.note_block(role)
+role.restart_note = ""
+assert briefs.note_block(role) == ""
 PY_HANDOFF
 FS0='{"claude": [], "opencode": {}}'
 # handoff: refused until the role says it is restart-ready; forced, it names the old session and the new provider

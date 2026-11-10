@@ -147,9 +147,13 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError(str(exc)) from exc
         prepare = not getattr(a, "no_prepare", False)
         args = ["handoff", f"--session={a.session}", "--prepare" if prepare else "--no-prepare", f"--expected-session={entry['session']}"]
-        for key in ("doc", "model", "effort", "ecosystem"):
+        for key in ("doc", "model", "effort", "ecosystem", "note"):
             if getattr(a, key, ""):
                 args.append(f"--{key}={getattr(a, key)}")
+        if getattr(a, "through_question", False):
+            if not prepare:
+                raise ActError("--through-question delivers a checkpoint request: keep checkpoint-first on")
+            args.append("--through-question")
         if a.force:
             raise ActError("standalone handoff always verifies a checkpoint; turn off Force")
         if a.ecosystem:
@@ -271,6 +275,10 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             args.append(f"--model={a.model}")
         if a.effort:
             args.append(f"--effort={a.effort}")
+        if (getattr(a, "note", "") or "").strip():
+            args.append(f"--note={a.note.strip()}")
+        if getattr(a, "through_question", False):
+            raise ActError("--through-question is for standalone seats; a role's open question is answered first")
         if a.ecosystem:
             import ui_status
             if a.ecosystem not in ui_status.active_ecosystems():
@@ -545,6 +553,15 @@ def ask_links(text: str, active: str, repos: dict) -> list[dict]:
     return out
 
 
+def _role_docs(s: dict) -> dict:
+    """slug -> start doc of a status shoal's roles, from its spec (what a handoff resumes from); {} when unreadable."""
+    try:
+        from roles import ShoalSpec
+        return {r.slug: r.doc or "" for r in ShoalSpec.load(s["spec"]).roles}
+    except Exception:  # noqa: BLE001 - the dialog then says "its saved start doc"
+        return {}
+
+
 def view(verb: str, a) -> dict:
     import ui_status
     base = {"v": V, "kind": "shoal-act-view", "verb": verb, "shoal": a.shoal or "", "role": a.role or ""}
@@ -556,9 +573,11 @@ def view(verb: str, a) -> dict:
         for s in doc.get("shoals", []):
             if s.get("error") or s.get("retired") or s["id"] in hidden:
                 continue
+            docs = _role_docs(s)
             shoals.append({"id": s["id"], "tag": ui_herdr.shoal_tag(s["id"]), "roles": [
                 {"slug": r["slug"], "host": r.get("host") or "", "needs_you": bool(r.get("needs_you")),
-                 "posture": ui_status.posture_label(r)} for r in s.get("roles", []) if r.get("session_id")]})
+                 "posture": ui_status.posture_label(r), "doc": docs.get(r["slug"], "")}
+                for r in s.get("roles", []) if r.get("session_id")]})
         return {"v": V, "kind": "shoal-act-roles", "shoals": shoals, "ecosystems": ui_status.active_ecosystems()}
     if verb == "sessions":
         # this host's sessions a seat could be made of: the 0.9.3 picker's own list (roles, old incarnations and
@@ -700,6 +719,8 @@ def add_parsers(u) -> None:
     q.add_argument("--ecosystem", default="", help="handoff, add-role: the new session's provider")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--no-prepare", action="store_true", help="handoff: skip requesting a checkpoint first")
+    q.add_argument("--through-question", action="store_true",
+                   help="standalone Claude handoff: a seat at an open question is stopped and resumed with the request")
     q.add_argument("--undo", action="store_true", help="dismiss: show the role as needing you again")
     q.add_argument("--order", default="", help=f"{QUEUE_SET}: the proposed next items, in order, comma-separated")
     q.add_argument("--drop", default="", help=f"{QUEUE_SET}: items to take out of the role's queue, comma-separated")
