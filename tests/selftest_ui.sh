@@ -2357,6 +2357,45 @@ assert 'shoalDialog(a, cx, shoalHasAsks(a) ? "asks" : "dismiss")' in helper and 
 assert 'labels?.["shoal.asks-badge"] === "1"' in helper, "the badge opens them only when they are its question"
 badge = next(n for o, n in ui_app.CLONES["agents"][1] if o == '.items_center().justify_center().child("!");')
 assert "on_click((_e, cx) => shoalAsks(a, cx))" in badge and ".id(`shoal-badge-" in badge, badge
+# the agents list's groups: a role's derived agent state, Dismissed once dismissed; nothing until the status carries it
+row = {"agent": {"group": "waiting", "state": "remote-ci", "detail": None}, "dismissed": False}
+assert ui_app.role_agent(row) == ("waiting", "remote-ci")
+assert ui_app.role_agent(dict(row, dismissed=True)) == ("dismissed", "remote-ci")
+assert ui_app.role_agent({}) == ("", "") and ui_app.role_agent({"agent": {"group": "odd"}}) == ("", "")
+# a standalone seat needs you only at an open question; between turns it is held, whatever the listing calls it
+seat = lambda **k: dict({"state": "idle", "kind": "", "turn": "idle"}, **k)
+assert ui_app.standalone_agent(seat(state="working", turn="working")) == ("working", "working")
+assert ui_app.standalone_agent(seat(state="blocked", kind="question", turn="blocked")) == ("needs-you", "question")
+assert ui_app.standalone_agent(seat(turn="blocked")) == ("held", "your-turn")
+assert ui_app.standalone_agent(seat()) == ("held", "idle") and ui_app.standalone_agent(seat(turn="dead")) == ("held", "stopped")
+assert ui_app.standalone_agent(seat(turn="blocked"), dismissed=True) == ("dismissed", "your-turn")
+assert ui_app.standalone_agent(None) == ("", "")
+# the clone's sections, run under Node on stand-in terminals: the group decides, Herdr's status where there is none
+import os, shutil, subprocess, tempfile
+if shutil.which("node"):
+    js = helper[:helper.index("export default class Agents extends View {")]
+    js = ('const shared = () => ({}); const run = () => null; const panes = () => []; const openOverlay = () => null;\n'
+          'const T = { r1: { "shoal.group": "waiting", "shoal.state": "remote-ci", "shoal.pane": "alpha/core" },\n'
+          '            r2: { "shoal.group": "dismissed", "shoal.state": "asked" }, s1: { "shoal.state": "your-turn" } };\n'
+          'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
+          + js +
+          'const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, a, b); process.exit(1); } };\n'
+          'eq(shoalRank({ address: "r1" }, 4), SHOAL_RANK.waiting, "the group wins over the reported status");\n'
+          'eq(SHOAL_SECTION[shoalRank({ address: "r2" }, 4)], "Dismissed", "a dismissed row stands apart");\n'
+          'eq(SHOAL_SECTION[shoalRank({ address: "x" }, 4)], "Needs you", "no group: Herdr\'s blocked is needs-you");\n'
+          'eq(SHOAL_SECTION[shoalRank({ address: "x" }, 3)], "Done", "and its done keeps its section");\n'
+          'eq(SHOAL_SECTION[shoalRank({ address: "x" }, 1)], "Idle", "and idle");\n'
+          'const order = ["needs-you", "working", "waiting", "blocked", "held", "dismissed"].map((g) => SHOAL_RANK[g]);\n'
+          'eq([...order].sort((a, b) => b - a), order, "sections in precedence order");\n'
+          'eq(shoalMore({ address: "r1", space_name: "alpha" }, { role: "core" }, true, "x"), "alpha \\u00b7 remote-ci", "a role: space and state");\n'
+          'eq(shoalMore({ address: "r1", space_name: "alpha" }, { role: "core" }, false, "x"), null, "under a space header: nothing");\n'
+          'eq(shoalMore({ address: "s1" }, null, true, "session"), "your-turn", "a seat: its state");\n'
+          'eq(shoalMore({ address: "y" }, null, true, "session"), "session", "another agent: its own detail");\n')
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
+        fh.write(js)
+    r = subprocess.run(["node", fh.name], capture_output=True, text=True)
+    os.unlink(fh.name)
+    assert r.returncode == 0, r.stderr
 # the issues and PRs an ask names: owner/repo#n, repo#n, a bare #n in the active item's repo; web links only, each once
 import ui_actions, ui_graph
 links = ui_actions.ask_links("#945 map it, see acme/other#3 and repo-one#7; again #945", "acme/repo-one#927:fix", {"repo-one": "acme/repo-one"})

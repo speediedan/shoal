@@ -1165,6 +1165,9 @@ machine's herdr-core. Its `shoal` layout is Herdr's own `main` with five blocks 
 mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home, Lattice, Actions and Usage in the top bar,
 beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
+`shoal-agents` also orders its Priority view by the derived agent state each card writes on its terminal
+(`shoal.group`, `shoal.state`: `ui_app.role_agent` from a status row's `agent`, `ui_app.standalone_agent` from a seat's
+report), with Herdr's status on the same scale for a row that has none;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone

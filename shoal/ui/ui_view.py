@@ -632,7 +632,8 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
-            _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: ""})
+            _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: "",
+                            ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: ""})
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -661,9 +662,11 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
                 osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid), latch, sent)
                 sent = osc or sent
                 rep = ui_app.card_report(rows[0], "")
-                now = (rep.get("need", ""), str(rep.get("asks") or ""), "1" if rep.get("asks_badge") else "")
+                now = (rep.get("need", ""), str(rep.get("asks") or ""), "1" if rep.get("asks_badge") else "",
+                       *ui_app.role_agent(rows[0]))
                 if now != need:
-                    _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1], ui_app.ASKS_BADGE_LABEL: now[2]})
+                    _marks(ui_app, {ui_app.NEED_LABEL: now[0], ui_app.ASKS_LABEL: now[1], ui_app.ASKS_BADGE_LABEL: now[2],
+                                    ui_app.GROUP_LABEL: now[3], ui_app.STATE_LABEL: now[4]})
                     need = now
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
@@ -878,6 +881,16 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "", job:
         if report:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
+            _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: ""})
+
+
+def _seat_dismissed(label: str) -> bool:
+    """The seat is closed in the viewer (the registry's `dismissed`): its row goes in the agents list's Dismissed group."""
+    try:
+        import ui_herdr
+        return any((e.get("label") or e["session"][:12]) == label and e.get("dismissed") for e in ui_herdr.load_standalone())
+    except Exception:  # noqa: BLE001 - an unreadable registry leaves the row in its own group
+        return False
 
 
 class _SeatReport:
@@ -888,6 +901,7 @@ class _SeatReport:
         self.ui_app, self.label = ui_app, label
         self.latch = ui_app.DoneLatch()
         self.prev, self.ended, self.sent = None, "", None
+        self.marked = None  # the group and state labels last written
 
     def text(self, session: str, job: str, rows: list | None = None) -> str:
         import ui_status
@@ -897,6 +911,10 @@ class _SeatReport:
         if self.prev == "working" and rep["state"] == "idle":
             self.ended = _iso(time.time())
         self.prev = rep["state"]
+        agent = self.ui_app.standalone_agent(rep, _seat_dismissed(self.label))
+        if agent != self.marked:
+            _marks(self.ui_app, {self.ui_app.GROUP_LABEL: agent[0], self.ui_app.STATE_LABEL: agent[1]})
+            self.marked = agent
         osc = self.ui_app.standalone_text(rep, self.label, self.latch, self.ended, self.sent)
         self.sent = osc or self.sent
         return osc
@@ -924,6 +942,7 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
                 pick = 0
                 if seat is not None:  # the last report was the old session's; a fresh latch for the new one
                     sys.stdout.write(ui_app.OSC_CLEAR)
+                    _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: ""})
                     seat = _SeatReport(ui_app, label)
         if not host and harness == "claude":
             try:

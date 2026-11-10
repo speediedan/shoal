@@ -648,6 +648,14 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   of it, dismissed or not. To stop a role instead, park it.
 - **Zoom.** `ctrl-shift-z` (`pane.zoom`) zooms the focused pane and back. Clicking a row in the agents list while zoomed zooms that
   role, in its own tab if need be, and the key gives the grid back.
+- **The agents list's sections.** In the Priority view the rows sit in **Needs you**, **Working**, **Waiting**,
+  **Blocked**, **Held** and **Dismissed**, by each card's derived agent state (the `shoal.group` and `shoal.state` labels
+  its card writes; a role's from its status row's `agent`, a dismissed one in Dismissed with its state still shown).
+  A role row reads `space · state`. A standalone seat is mapped from its session: an open question needs you
+  (`question`), a turn is `working`, and between turns it is held (`your-turn` after a reply, `idle`, or `stopped` with no
+  worker), since every reply of a conversation ends waiting for you; a seat closed in the viewer is Dismissed. A row
+  with no derived state (a status from before it, another agent in the app) keeps Herdr's own sections by its reported
+  status, so Done (finished, not looked at) and Idle appear only for those; a card's done is its status dot.
 - **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
   an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.

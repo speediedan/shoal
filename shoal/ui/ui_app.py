@@ -102,6 +102,37 @@ NEED_LABEL = "shoal.need"
 ASKS_LABEL = "shoal.asks"
 ASKS_BADGE_LABEL = "shoal.asks-badge"  # "1" when the badge's question is those asks (not an open prompt): its click opens them
 QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
+# the agents list's sections, from the derived agent state: a card's group and its state there. Both "" leave the row in
+# Herdr's own sections, by its reported status (a status without the derived state, or a harness that reports nothing)
+GROUP_LABEL = "shoal.group"
+STATE_LABEL = "shoal.state"
+AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
+
+
+def role_agent(r: dict) -> tuple[str, str]:
+    """(group, state) of a role's row in the agents list: its derived `agent` (`ui_status.role_row`), in the Dismissed
+    group once you dismissed it (its group's state still shown). ("", "") while the status carries no derived state."""
+    agent = r.get("agent") if isinstance(r.get("agent"), dict) else {}
+    group, state = str(agent.get("group") or ""), str(agent.get("state") or "")
+    if group not in AGENT_GROUPS:
+        return "", ""
+    return ("dismissed" if r.get("dismissed") else group), state
+
+
+def standalone_agent(rep: dict | None, dismissed: bool = False) -> tuple[str, str]:
+    """(group, state) of a standalone seat's row, from its card's report (`standalone_report`). It needs you only at an
+    open question: a seat is a conversation with you, so every reply ends waiting for you, and read as needs-you that
+    buried the seats that do ask (2026-11-08). Between turns it is held (`your-turn` after a reply, `idle`, or `stopped`
+    with no worker); a finished turn you have not looked at keeps its done badge. `dismissed`: closed in the viewer."""
+    if rep is None:
+        return "", ""
+    if rep["state"] == "working":
+        group, state = "working", "working"
+    elif rep.get("kind") == "question":
+        group, state = "needs-you", "question"
+    else:
+        group, state = "held", {"blocked": "your-turn", "idle": "idle"}.get(rep.get("turn", ""), "stopped")
+    return ("dismissed" if dismissed else group), state
 
 
 def starved(r: dict) -> bool:
@@ -230,7 +261,7 @@ def standalone_report(rows: list[dict], session: str, job: str, label: str) -> d
         state, kind, msg = "blocked", "question", "waits at a question"
     elif turn == "blocked":
         msg = "your turn: waiting for a reply"
-    return {"state": state, "kind": kind, "need": "", "title": f"standalone/{label}", "msg": msg}
+    return {"state": state, "kind": kind, "need": "", "title": f"standalone/{label}", "msg": msg, "turn": turn}
 
 
 def standalone_text(rep: dict, label: str, latch: DoneLatch, ended: str, last: str | None) -> str:
@@ -1337,13 +1368,40 @@ function shoalBadge(a) {
     : SHOAL_NEED[term?.labels?.["shoal.need"]] ?? "!";
 }
 
+// The priority view's sections follow a card's derived agent state (its shoal.group label: needs-you, working, waiting,
+// blocked, held, dismissed); a row without one keeps Herdr's own, by its reported status, on the same scale. Done is
+// Herdr's (finished, not looked at yet): a card's done is its status dot, inside its group.
+const SHOAL_RANK = { "needs-you": 10, working: 9, waiting: 7, blocked: 6, held: 5, dismissed: 1 };
+const HERDR_RANK = { 4: 10, 3: 8, 2: 9, 1: 4 }; // Herdr's blocked, done, working, idle
+const SHOAL_SECTION = { 10: "Needs you", 9: "Working", 8: "Done", 7: "Waiting", 6: "Blocked", 5: "Held", 4: "Idle", 1: "Dismissed" };
+const SHOAL_SECTION_STATUS = { 10: "blocked", 9: "working", 8: "done" };
+function shoalLabel(a, key) {
+  return terminals().find((x) => x.address === a.address)?.labels?.[key] ?? "";
+}
+function shoalRank(a, herdr) {
+  return SHOAL_RANK[shoalLabel(a, "shoal.group")] ?? HERDR_RANK[herdr] ?? 0;
+}
+// A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab.
+function shoalMore(a, sr, full, fallback) {
+  const state = shoalLabel(a, "shoal.state");
+  if (sr) return full ? [a.space_name, state].filter(Boolean).join(" \u00b7 ") || null : null;
+  return full && state ? state : fallback;
+}
+
 export default class Agents extends View {"""
 # (exact text in Herdr's shipped mod, its replacement): a text that is gone leaves that block on Herdr's own mod
 CLONES = {
     "agents": ("shoal-agents", [
         ("export default class Agents extends View {", AGENTS_HELPER),
         ("      const more = detail.get(a.address);\n",
-         "      const sr = shoalRole(a);\n      const more = sr ? (byPriority || a.pinned ? a.space_name : null) : detail.get(a.address);\n"),
+         "      const sr = shoalRole(a);\n      const more = shoalMore(a, sr, byPriority || a.pinned, detail.get(a.address));\n"),
+        # the priority view's sections by the derived agent state (shoalRank), Herdr's status where a row has none
+        ("const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));",
+         "const urgency = new Map(list.map((a) => [a.address, shoalRank(a, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)))]));"),
+        ("      const r = rankOf(a) || RANK.idle;\n",
+         "      const r = rankOf(a) || HERDR_RANK[RANK.idle];\n"),
+        ('label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null',
+         'label: byPriority ? SHOAL_SECTION[r] : a.space_name || "", status: byPriority ? SHOAL_SECTION_STATUS[r] : null'),
         ('const machine = a.address.includes("/") ? a.address.split("/")[0] : null;',
          'const machine = sr?.host ?? (a.address.includes("/") ? a.address.split("/")[0] : null);'),
         ("const name = full ? a.space_name || label(a) :", "const name = sr ? sr.role : full ? a.space_name || label(a) :"),
