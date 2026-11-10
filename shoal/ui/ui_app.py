@@ -54,7 +54,7 @@ CORE_PIN = "0.1.18"
 DEAD_RELEASES_URL = "http://127.0.0.1:9"
 APP_UNIT = "shoal-herdr-app"
 FEED_UNIT = "shoal-graph-feed.service"
-MODS = ("lattice-view", "shoal-home", "shoal-actions", "shoal-status")
+MODS = ("lattice-view", "shoal-home", "shoal-actions", "shoal-status", "shoal-usage")
 MOD_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "mods")
 REPORT_APP = "shoal"
 # the plan's own label on each terminal it starts, so a later reconcile finds the pane again
@@ -968,18 +968,21 @@ def start_argv() -> list[str]:
 
 
 HOME_SPACE = "SHOAL-home"
+HOME_TABS = ("home", "lattice", "usage")  # what the top bar's Home, Lattice and Usage open
+LAUNCH_TAB = "launch"  # the terminal a new space has to start with: closed once the mod tabs are there
 
 
 def _home_current(space: dict) -> bool:
-    """Both of the home space's mod tabs are there and made at TABS_V, so there is nothing to reconcile."""
+    """Every home tab is there and made at TABS_V, and the starting terminal is gone, so there is nothing to reconcile."""
     built = load_opened().get("_built") or {}
     have = {t.get("name") for t in space.get("tabs", [])}
-    return all(n in have and built.get(f"local/{HOME_SPACE}/{n}") == TABS_V for n in ("home", "lattice"))
+    return LAUNCH_TAB not in have and all(n in have and built.get(f"local/{HOME_SPACE}/{n}") == TABS_V for n in HOME_TABS)
 
 
 def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
     """A `SHOAL-home` space on this machine with the home screen (the shoal-home mod, else the terminal chooser in app
-    mode) and the global lattice."""
+    mode), the global lattice and the usage dashboard. The sidebar does not list it (shoal's copy of the spaces mod
+    leaves it out): the top bar's Home, Lattice and Usage are the way in."""
     ls = app_ls()
     local = [s for s in ls.get("spaces", []) if not s.get("machine")]
     got = next((s for s in local if s.get("name") == HOME_SPACE), None)
@@ -1002,10 +1005,12 @@ def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
     else:
         tabs.append({"name": "home", "layout": "stack", "panes": [_pane("shoal/home", _cli_argv("ui", "launch"))]})
     tabs.append({"name": "lattice", "mod": "lattice-view", "props": global_lattice_props()})
+    if "shoal-usage" in rec.mods:
+        tabs.append({"name": "usage", "mod": "shoal-usage", "props": {}})
     if got is None:
         if tabs[0].get("mod"):
-            # a space starts with a terminal: the chooser, then the home mod beside it as its own tab
-            tabs.insert(0, {"name": "launch", "layout": "stack",
+            # a space starts with a terminal: the chooser, closed below once the mod tabs are made
+            tabs.insert(0, {"name": LAUNCH_TAB, "layout": "stack",
                             "panes": [_pane("shoal/home", _cli_argv("ui", "launch"))]})
         rec.apply({"spaces": [{"name": HOME_SPACE, "kind": "home", "folder": "", "tabs": tabs, "select": select}]},
                   focus=True)
@@ -1015,7 +1020,33 @@ def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
         if not dry_run:
             app_do("space.select", {"id": got["id"]})
             rec.select_tab(got["id"], select)
+    _close_launch(rec, dry_run)
     return rec.out
+
+
+def _close_launch(rec: "Reconciler", dry_run: bool) -> None:
+    """Close the home space's starting terminal once a mod tab stands in for it: Home is the chooser now."""
+    space = next((s for s in app_ls().get("spaces", []) if not s.get("machine") and s.get("name") == HOME_SPACE), None)
+    tabs = (space or {}).get("tabs", [])
+    launch = next((t for t in tabs if t.get("name") == LAUNCH_TAB), None)
+    if launch is None or not any(t.get("name") == "home" for t in tabs):
+        return
+    rec.say(f"{HOME_SPACE}: close its {LAUNCH_TAB} tab (Home is the chooser)")
+    if not dry_run:
+        app_do("tab.close", {"id": launch["id"], "confirmed": True})
+
+
+def cmd_app_usage(a) -> int:
+    if not app_running():
+        print("the Herdr app is not running here (`shoal ui app-start` starts it with the pin held)")
+        return 1
+    try:
+        for line in home_space(a.dry_run, select="usage"):
+            print(line)
+    except AppError as exc:
+        print(str(exc))
+        return 2
+    return 0
 
 
 def cmd_app_start(a) -> int:
@@ -1335,6 +1366,9 @@ CLONES = {
          '      .child(h_flex().id("shoal-actions").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
          '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
          '.on_click(() => run("mod.open", { name: "shoal-actions" })).child("Actions"))\n'
+         '      .child(h_flex().id("shoal-usage").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
+         '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
+         '.on_click(() => run("shoal-status.usage")).child("Usage"))\n'
          '      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))'),
     ]),
     # the window's mark, top left: SHOAL and its icon (copied in, CLONE_FILES), as the splash and the launchers show it
@@ -1347,6 +1381,9 @@ CLONES = {
          'const head = h_flex().id(`machine-${m ?? "local"}`)'
          '.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "shoal-actions", kind: "dialog", '
          'width: 640, height: 540, props: { scope: m ? `host:${m}` : "all", machine: m } }); }).h(26)'),
+        # the home space is reached by the top bar's Home, Lattice and Usage, not listed under This computer
+        ("    return out.filter(r => this.shown.has(r.w.id));",
+         f'    return out.filter(r => this.shown.has(r.w.id) && !(r.w.machine == null && r.w.name === "{HOME_SPACE}"));'),
     ]),
 }
 LAYOUT_BLOCKS = {"agents": "shoal-agents", "spaces": "shoal-spaces", "workspace-status": "shoal-status",

@@ -2419,6 +2419,11 @@ tout = ui_app.patch_clone("x" + tpatches[0][0] + 'svg("mods/tabs/win-min.svg")',
 assert 'run("shoal-status.home")' in tout and 'run("shoal-status.lattice")' in tout and "mods/shoal-tabs/win-min.svg" in tout, tout
 assert tout.index("shoal-lattice") < tout.index('panelButton("files"') and ui_app.LAYOUT_BLOCKS["tabs"] == "shoal-tabs"
 assert 'run("mod.open", { name: "shoal-actions" })' in tout and tout.index("shoal-actions") < tout.index('panelButton("files"'), "Actions in the top bar too"
+assert 'run("shoal-status.usage")' in tout and tout.index("shoal-actions") < tout.index("shoal-usage") < tout.index('panelButton("files"'), "Usage between Actions and Files"
+# the sidebar leaves out the home space on this computer (the top bar reaches it), and only that one
+sname, (sclone, spatches) = "spaces", ui_app.CLONES["spaces"]
+sout = ui_app.patch_clone("\n".join(o for o, _ in spatches), sname, spatches)
+assert f'r.w.name === "{ui_app.HOME_SPACE}"' in sout and "r.w.machine == null" in sout, sout
 PY2
 # an idle subscription keeps its weekly reset (its last known schedule, rolled forward); ecosystems set aside drop out
 XDG_CONFIG_HOME="$S/xdg-eco" python3 - "$SHOALD" <<'PY2' || fail "usage resets and ecosystems"
@@ -2725,7 +2730,8 @@ python3 - "$SHOALD" <<'PY2' || fail "app-home fast path"
 import importlib, sys
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import ui_app
-space = {"id": "s1", "name": ui_app.HOME_SPACE, "tabs": [{"id": "t1", "name": "home"}, {"id": "t2", "name": "lattice"}]}
+space = {"id": "s1", "name": ui_app.HOME_SPACE, "tabs": [{"id": "t1", "name": "home"}, {"id": "t2", "name": "lattice"},
+                                                       {"id": "t3", "name": "usage"}]}
 ui_app.app_ls = lambda: {"spaces": [space]}
 did = []
 ui_app.app_do = lambda verb, args=None: did.append((verb, (args or {}).get("id")))
@@ -2734,10 +2740,20 @@ class Asked(Exception):
 def asked():
     raise Asked()
 ui_app.global_lattice_props = asked
-current = {f"local/{ui_app.HOME_SPACE}/{n}": ui_app.TABS_V for n in ("home", "lattice")}
+current = {f"local/{ui_app.HOME_SPACE}/{n}": ui_app.TABS_V for n in ("home", "lattice", "usage")}
 ui_app.load_opened = lambda: {"_built": current}
 assert ui_app.home_space() == [f"{ui_app.HOME_SPACE}: home"]
 assert did == [("space.select", "s1"), ("tab.select", "t1")], did
+did.clear()
+assert ui_app.home_space(select="usage") == [f"{ui_app.HOME_SPACE}: usage"] and did[-1] == ("tab.select", "t3"), did
+did.clear()
+# the starting terminal left over: not current, and closed once Home stands in for it
+space["tabs"].append({"id": "t0", "name": ui_app.LAUNCH_TAB})
+assert not ui_app._home_current(space)
+rec = ui_app.Reconciler(None)
+ui_app._close_launch(rec, dry_run=False)
+assert did == [("tab.close", "t0")] and "close its launch tab" in rec.out[-1], (did, rec.out)
+space["tabs"].pop()
 did.clear()
 ui_app.home_space(dry_run=True)
 assert not did, did
@@ -3668,6 +3684,8 @@ if command -v node >/dev/null 2>&1; then
   echo "herdr-app shoal-actions ok"
   node "$TESTD/herdr_app/test_shoal_status.mjs" >"$S/shoal-status.out" 2>&1 || fail "herdr-app shoal-status: $(tail -c 800 "$S/shoal-status.out")"
   echo "herdr-app shoal-status ok"
+  node "$TESTD/herdr_app/test_shoal_usage.mjs" >"$S/shoal-usage.out" 2>&1 || fail "herdr-app shoal-usage: $(tail -c 800 "$S/shoal-usage.out")"
+  echo "herdr-app shoal-usage ok"
 else
   echo "herdr-app lattice-view, shoal-home, shoal-actions: skipped (node not on PATH)"
 fi

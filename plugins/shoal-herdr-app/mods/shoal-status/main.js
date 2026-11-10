@@ -32,6 +32,7 @@ export default class ShoalStatus extends View {
         const c = await nextCommand();
         if (c === "lattice") this.lattice(cx);
         else if (c === "home") this.home(cx);
+        else if (c === "usage") this.usage(cx);
         else if (c === "next") this.nextNeedsYou();
         cx.notify();
       }
@@ -85,6 +86,12 @@ export default class ShoalStatus extends View {
   home(cx) {
     if (this.go(homeTab(safe(spaces, [])))) return;
     this.show(cx, "home", "app-home");
+  }
+
+  usage(cx) {
+    // the dashboard is a tab of the home space: a switch away when it is open, else the CLI makes it
+    if (this.go(homeTab(safe(spaces, []), "SHOAL-home", "usage"))) return;
+    this.show(cx, "usage", "app-usage");
   }
 
   /** Shows a space's tab at once; false when there is none to show (the CLI opens one). */
@@ -168,7 +175,8 @@ export default class ShoalStatus extends View {
       .when(!topBar, (el) => el
         .child(this.button("to-home", "⌂ Home", "the SHOAL-home space on this computer", (_e, cx) => { this.home(cx); cx.notify(); }, t))
         .child(this.button("to-lattice", "◎ Lattice", "the lattice of this space, or the global one (Ctrl+Alt+L)", (_e, cx) => { this.lattice(cx); cx.notify(); }, t)))
-      .when(!topBar, (el) => el.child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t)))
+      .when(!topBar, (el) => el.child(this.button("to-actions", "Actions", "shoal actions (Ctrl+Alt+S)", () => run("mod.open", { name: "shoal-actions" }), t))
+        .child(this.button("to-usage", "Usage", "the usage dashboard", (_e, cx) => { this.usage(cx); cx.notify(); }, t)))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
       .child(div().flex_1());
     for (const u of this.rows) bar.child(this.meter(u, t));
