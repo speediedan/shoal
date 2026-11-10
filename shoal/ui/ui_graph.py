@@ -56,7 +56,7 @@ RELAY_WRITER = "wake-relay"
 EVENT_TYPES = ("msg", "offer", "withdraw", "claim", "release", "done", "grant")
 EDGE_CLASSES = ("msg", "broadcast", "ask", "health", "offer", "grant", "handoff", "blocked-on", "alias")
 ASK_KINDS = ("request", "ask")
-JOB_WAITS = ("local-ci", "remote-ci", "research-proto", "lease")
+JOB_WAITS = ("local-ci", "remote-ci", "research-proto", "research-window", "lease")
 # role-time reads unknown when a source is past its budget; the graph shows the posture instead
 STALE_EVENTS = ("stale-source", "missing-source")
 

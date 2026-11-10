@@ -48,10 +48,10 @@
 
 Sleep only on a real wait or an empty queue:
 - **Waiting:** arm the waiter first, then `queue --wait <sub> --holder <who> --target <kind:ref>`.
-  The substates are `local-ci`, `remote-ci`, `research-proto`, `session-blocked`, `upstream`,
-  `user-auth`, `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
+  The substates are `local-ci`, `remote-ci`, `research-proto`, `research-window`, `session-blocked`,
+  `upstream`, `user-auth`, `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
   (`job:<name>`, `lease:<key>`, `gh-run:<owner/repo>:<id>`, `gh-pr:<owner/repo>#<n>`,
-  `gh-issue:<owner/repo>#<n>`, `az-build:<id>`). A malformed target is refused, and so is one that
+  `gh-issue:<owner/repo>#<n>`, `az-build:<id>`, `time:<ISO UTC>`). A malformed target is refused, and so is one that
   is already resolved (a merged PR, a finished run): there is nothing left to wait on.
 - **CI or research:** `local-ci` and `remote-ci` are for CI only: a suite, a build or a check that
   validates a change. A run that answers a research question or tries out a prototype (an experiment,
@@ -60,6 +60,10 @@ Sleep only on a real wait or an empty queue:
   run). Start such runs with `job run --class research` inside a reservation, never as a `ci` job. A
   CI wait on a `--class research` job is refused. Research counted as CI hides where CI time and GPU
   queues actually go.
+- **A research window:** research that is scheduled but not running yet (an overnight GPU window, a
+  reservation to open) is `research-window` on `--target time:<ISO UTC>`, or on the queued `job:` or
+  `lease:` it waits for. Never cover a window with a timer job (`job run` sleeping until a time) as a
+  `local-ci` wait: it is not CI, and shoal wakes you itself when the window opens.
 - **Which substate:** `session-blocked` is for another role in this shoal (`--blocked-on
   <role>:<item>`, never yourself). Your item waiting on something outside the shoal, such as an
   upstream issue or release, is `upstream` with a `gh-issue:` or `gh-pr:` target.
@@ -72,8 +76,11 @@ Sleep only on a real wait or an empty queue:
   A GPU or cpu-heavy lease held by someone else is a wait (`--wait local-ci --target lease:<key>`),
   not a reason to idle.
 
-**Every wait expires.** Rescans are capped (4 h for maintainer and peer waits, 3 h for CI, 12 h
-for `upstream`). A `session-blocked` wait names its blocker with `--blocked-on <role>:<item>`.
+**Every wait expires, but shoal re-proves it for you.** Rescans are capped (4 h for maintainer and peer
+waits and research, 3 h for CI, 12 h for `upstream`). While a wait's target is still pending, or a user
+wait's ask is still open with no answer, a passed rescan does not wake you: `next` shows `RESCAN PASSED
+..., proven by shoal`, and you are woken when the target resolves, the maintainer answers, or once a
+day. Do not re-verify a proven wait. A `session-blocked` wait names its blocker with `--blocked-on <role>:<item>`.
 `next` prints `WAIT TARGET RESOLVED` or `WAIT TARGET UNVERIFIABLE` when the target no longer
 holds the wait: act on it the same turn. A `user-*` wait exists
 only together with a raised, recorded ask.

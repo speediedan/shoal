@@ -2384,6 +2384,7 @@ check "name a start doc" $H doc-head
 
 echo "== 40 archive: reference-aware warm archive, restore and cold, one commit of exactly its paths, undone on a refused hook"
 python3 "$TESTD/test_archive.py" || fail "archive (tests/test_archive.py)"
+python3 "$TESTD/test_wait_proven.py" || fail "proven waits and blockers, research windows, agent state (tests/test_wait_proven.py)"
 check "name the files to archive" $H archive
 
 echo "== 41 research-proto: research and prototyping waits are counted apart from CI"

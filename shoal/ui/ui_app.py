@@ -445,6 +445,16 @@ def machines() -> list[str]:
         return []
 
 
+def seat_ids(argv) -> tuple[str, str] | None:
+    """(harness, session) a standalone card's `view --harness H --session S` argv names; None for anything else (a
+    role card, a harness client in the foreground)."""
+    argv = [str(x) for x in argv or []]
+    if "view" not in argv or "--harness" not in argv or "--session" not in argv:
+        return None
+    i, j = argv.index("--harness"), argv.index("--session")
+    return (argv[i + 1], argv[j + 1]) if i + 1 < len(argv) and j + 1 < len(argv) else None
+
+
 def foreground_kind(t: dict) -> str:
     """'shell' (an idle shell: the pane may be replaced), 'card' (a shoal card, dash, tail or view), or 'other'
     (anything else, such as an attached harness client: never replaced). The same allowlist as 0.9.3."""
@@ -659,10 +669,14 @@ class Reconciler:
         if tab is not None:
             app_do("tab.select", {"id": tab["id"]})
 
-    def _gaps(self, space: dict, tab_doc: dict, tab: dict) -> None:
+    def _gaps(self, space: dict, tab_doc: dict, tab: dict, moved_only: bool = False) -> None:
         """Fill one existing terminal tab: a planned pane with no live terminal gets one; a planned pane whose
-        terminal came back as a bare shell (a lost terminal, or a card left with `q`) is replaced."""
+        terminal came back as a bare shell (a lost terminal, or a card left with `q`) is replaced, and so is a
+        standalone card at its own screen that still shows the harness or session it was opened with after its seat
+        moved (measured 2026-11-10: a seat handed from Codex to Claude kept its Codex card on another machine's app
+        until the tab was rebuilt by hand). A card with a harness client open in it is left as it is."""
         have: dict[str, tuple[str, str]] = {}
+        moved: set[str] = set()
         panes = []
         for x in tab_doc.get("terminals", []):
             try:
@@ -673,10 +687,16 @@ class Reconciler:
             lab = (t.get("labels") or {}).get(PANE_LABEL)
             if lab:
                 have[lab] = (x["pane"], foreground_kind(t))
-        missing = [p for p in tab["panes"] if p["label"] not in have]
-        stale = [p for p in tab["panes"] if have.get(p["label"], ("", ""))[1] == "shell"]
+                want = next((p for p in tab["panes"] if p["label"] == lab), None)
+                if want is not None and seat_ids((t.get("foreground") or {}).get("argv") or []) not in \
+                        (None, seat_ids(want["argv"])):
+                    moved.add(lab)
+        # the quiet sync replaces only a moved seat's card: a missing pane or a shell left with `q` waits for app-open
+        missing = [] if moved_only else [p for p in tab["panes"] if p["label"] not in have]
+        stale = [p for p in tab["panes"] if p["label"] in moved or (not moved_only and have.get(p["label"], ("", ""))[1] == "shell")]
         for p in stale:
-            self.say(f"{space['name']}/{tab['name']}: restart {p['label']} (its pane is a bare shell)")
+            why = "its seat moved to another session" if p["label"] in moved else "its pane is a bare shell"
+            self.say(f"{space['name']}/{tab['name']}: restart {p['label']} ({why})")
         for p in missing:
             self.say(f"{space['name']}/{tab['name']}: add {p['label']}")
         if self.dry_run or not (missing or stale):
@@ -734,8 +754,8 @@ class Reconciler:
                             built[f"{key}/{s['name']}/{t['name']}"] = TABS_V
                 elif t.get("mod"):
                     self._refresh_mod(got["id"], tabs[t["name"]], t, built, s["name"])
-                elif not sync:
-                    self._gaps(s, tabs[t["name"]], t)
+                elif not sync or s.get("kind") == "standalone":
+                    self._gaps(s, tabs[t["name"]], t, moved_only=sync)
                 if t["name"] == "overview" and t["name"] in tabs:
                     self._drop_ledger(s, tabs[t["name"]], t)
             # a lattice tab shoal made here before the top bar's Lattice replaced them: closed, once

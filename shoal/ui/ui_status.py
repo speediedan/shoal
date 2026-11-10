@@ -293,6 +293,31 @@ def session_state(role, rows: list[dict], opencode_probe: bool, repo_dir: str = 
 
 # ---- per role --------------------------------------------------------------------------
 
+def _client_holds(role, spec) -> bool:
+    """A person's client is attached to the role's session, so the wake its ended wait is owed cannot be delivered
+    (measured 2026-11-10: two Muse roles' waits ended two days before, behind native clients opened from their cards)."""
+    try:
+        if role.ecosystem == "claude":
+            import park
+            return bool(park._claude_client(role))
+        if role.ecosystem in ("muse", "codex"):
+            from backends import get as get_backend
+            return "attached" in get_backend(role.ecosystem).status(role.session, spec.dir or os.getcwd())
+    except Exception:  # noqa: BLE001 - a read model never fails on an advisory
+        pass
+    return False
+
+
+def _ctx_auto_over(spec, role) -> bool | None:
+    """True when the quorum's automatic context restart will hand this role off itself (auto mode, past its limit), so
+    a restart-ready role needs nobody; None when that cannot be read."""
+    try:
+        import context as _ctx
+        return _ctx.mode(spec, role.slug) == "auto" and _ctx.over(spec, role) is not None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _short(s, n: int = 80) -> str:
     s = " ".join(str(s or "").split())
     return s if len(s) <= n else s[: n - 1] + "~"
@@ -369,6 +394,18 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             reasons.append("parked-work")
         if asks or sub in USER_WAITS:
             reasons.append("waiting-on-you")
+        if not q.get("active") and not q.get("next") and hposture == "idle" and getattr(role, "fill", "") == "assigned" \
+                and not view.queue(slug):
+            # an assigned role with an empty queue and nothing offered: the next step is an offer. It stays in needs you
+            # until dismissed, and a dismissal holds until the state changes. A fill=self role finds board work itself
+            reasons.append("no-work")
+        if q.get("restart_ready") and hposture in ("idle", "waiting") and not remote:
+            auto = _ctx_auto_over(spec, role)
+            if auto is False:
+                reasons.append("handoff-pending")
+            elif auto and _client_holds(role, spec):
+                # the quorum holds its automatic restart for an attached client (#150): detaching is the only step left
+                reasons.append("restart-held")
         if hposture == "active" and sess in ("idle", "dead"):
             # degenerate: the ledger says active, but no turn is running (health's turn-ended-active
             # wakes it; measured 2026-10-13: shoal-aux re-wrote active and stopped, again)
@@ -383,14 +420,19 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                 reasons.append("context-large")
         except Exception:  # noqa: BLE001 - a read model never fails on an advisory
             pass
-    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "watcher-dormant", "context-large")]
+    wait_done = (not remote and posture == "wait" and sub in CI_SUBS and job_ended(st.get("target") or "", slug, spec.sid))
+    if wait_done and _client_holds(role, spec):
+        reasons.append("wake-held")
+    blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "watcher-dormant", "context-large",
+                                               "no-work", "handoff-pending", "restart-held")]
     words = (claude_says(claude_session(rows, role.session) or {}, role.session)
              if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
     prompt = (_h.claude_open_prompt(role.session)
               if role.ecosystem == "claude" and "blocked-on-question" in reasons else "")
-    needs_fp = needs_fingerprint(reasons, asks, words, boundary, prompt)
+    agent = agent_state(role, hposture, sub, st, q, reasons, sess, wait_done, stale_nb)
+    needs_fp = needs_fingerprint(reasons, asks, words, boundary, prompt, agent["state"])
     ack = view.dismissals.get(slug)
-    wanting = bool(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
+    wanting = agent["group"] == "needs-you" or bool(set(reasons) & FAILURE_REASONS)
     dismissed = wanting and dismissed_now(ack, needs_fp, reasons, age_s(ack["ts"], now) if ack else None)
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
@@ -409,15 +451,17 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "mail_since_boundary": len(mail),
         "asks": [_short(a, 160) for a in asks],
         "says": _short(words, 160),
-        "wait_done": (not remote and posture == "wait" and sub in CI_SUBS and job_ended(st.get("target") or "", slug, spec.sid)),
+        "wait_done": wait_done,
         "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
         "session": sess,
         "last_write_age_s": age_s(last, now) if last else None,
         "heartbeat_age_s": int(hb * 60) if hb is not None else None,
         "context_k": ctx_k,
         "can_progress": {"ok": not blocking, "reasons": reasons},
-        "needs_you": bool(NEEDS_REASONS & set(reasons)) and not dismissed,
+        "needs_you": agent["group"] == "needs-you" and not dismissed,
         "dismissed": dismissed,
+        # the agents list's attention axis: a dismissed row keeps its group and state, shown apart until they change
+        "agent": agent,
         "needs_fp": needs_fp,
         "view": [config.cli(), "view", spec.sid, slug],
     }
@@ -687,7 +731,7 @@ def limit_until(sid: str) -> str:
     return _h.limit_until_sid(sid)
 
 
-CI_SUBS = ("local-ci", "remote-ci", "research-proto")  # waits on a run (CI, or a research or prototyping run)
+CI_SUBS = ("local-ci", "remote-ci", "research-proto", "research-window")  # waits on a run (CI, research), or its window
 
 
 def working_wait(r: dict) -> bool:
@@ -697,9 +741,9 @@ def working_wait(r: dict) -> bool:
 
 
 def job_ended(target: str, slug: str, sid: str) -> bool:
-    """True when a `job:` wait target has finished, the same check health's `wait-resolved` makes, and local. Other kinds
-    take the network or a provider, so a status read leaves them to health."""
-    if not str(target or "").startswith("job:"):
+    """True when a `job:` or `time:` wait target has ended, the same check health's `wait-resolved` makes, and local.
+    Other kinds take the network or a provider, so a status read leaves them to health."""
+    if not str(target or "").startswith(("job:", "time:")):
         return False
     try:
         import providers
@@ -980,17 +1024,85 @@ def pending_question(row: dict, session: str) -> bool:
     return _h.claude_prompt_open(row, session)
 
 
-NEEDS_REASONS = {"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you", "blocker-role-cannot-take"}
+NEEDS_REASONS = {"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you", "blocker-role-cannot-take",
+                 "wake-held", "handoff-pending", "restart-held", "no-work"}
+# The attention axis of the agents list (docs/ui.md): every role is in exactly one group, and its `state` says why
+AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
+BLOCKED_SUBS = ("session-blocked", "upstream")
+
+
+def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[str], sess: str,
+                wait_done: bool, stale_nb: dict | None = None) -> dict:
+    """{group, state, detail} for one role: an accurate state that does not collapse to the posture word, in the group
+    that says whose move it is. `idle` was the role's own word for every item blocked, nothing assigned, held and
+    handoff pending alike (measured 2026-11-10: 7 of 14 roles read idle for five different reasons). The first match
+    decides, in the order of the groups: needs you, working, waiting, blocked, held."""
+    r = set(reasons)
+    asks = q.get("asks") or []
+    nb = q.get("next_blocked") or {}
+    nxt = list(q.get("next") or [])
+
+    def g(group, state, detail=""):
+        return {"group": group, "state": state, "detail": _short(detail, 160) or None}
+    if asks:  # a parked role's ask too: answering it is the maintainer's move either way
+        return g("needs-you", "asked", ("parked; " if "parked" in r else "") + str(asks[0]))
+    if "parked" in r:
+        return g("held", "parked", "parked by the operator: no session, no wakes")
+    if "blocked-on-question" in r:
+        return g("needs-you", "question", "an open question prompt in its session")
+    if sub in USER_WAITS:
+        return g("needs-you", "asked", f"{sub}: {st.get('holder') or ''}")
+    # a dead watcher and a stopped active turn are the quorum's to fix (it re-arms and wakes): they count as stalled,
+    # and the role keeps the group of what it is doing
+    for why, text in (("dead-worker", "its session's worker is gone"),
+                      ("blocker-role-cannot-take", "a blocker names a role that cannot take the item"),
+                      ("wake-held", "its wait ended, but an attached client holds the wake"),
+                      ("handoff-pending", "restart-ready: waiting for its handoff"),
+                      ("restart-held", "auto restart held by an attached client: detach its card"),
+                      ("blocked-says-waiting", "its last turn ended saying it waits on you")):
+        if why in r:
+            return g("needs-you", why if why != "blocked-says-waiting" else "says-waiting", text)
+    if "no-work" in r:
+        return g("needs-you", "no-work", "nothing assigned or offered (fill=assigned)")
+    if posture == "active" or sess == "working":
+        return g("working", "working", str(q.get("active") or ""))
+    if posture == "waiting" and sub in BLOCKED_SUBS:
+        return g("blocked", sub, str(st.get("target") or st.get("holder") or ""))
+    if posture == "waiting":
+        detail = str(st.get("target") or st.get("holder") or "")
+        if wait_done:
+            return g("waiting", f"{sub}: resolved", f"{detail}: ended; its wake is due")
+        return g("waiting", sub or "waiting", detail)
+    # a blocker only past its daily look is still a blocker: the role reads blocked, with the look due
+    look = bool(stale_nb) and all(str(v).startswith("expired:") for v in stale_nb.values())
+    if "parked-work" in r and not (look and nb):
+        return g("waiting", "work-due", "an unblocked next item: its wake is due")
+    if getattr(role, "fill", "") == "none" and not nxt:
+        return g("held", "observer", "fill=none: works only what it is handed")
+    import blockers as _bl
+    kinds = [_bl.kind(v) for v in nb.values()]
+    for k, state in (("ask", "asked"), ("role", "blocked: role"), ("upstream", "blocked: upstream"),
+                     ("lease", "blocked: lease")):
+        if k in kinds:
+            v = next(v for v in nb.values() if _bl.kind(v) == k)
+            return g("needs-you" if k == "ask" else "blocked", state, str(v) + ("; daily re-check due" if look else ""))
+    if kinds:
+        return g("held", "held", str(next(iter(nb.values()))))
+    return g("held", posture or "idle", str(q.get("reason") or ""))
+
 # a dismissal over one of these lapses: it must not become a silent stall
 FAILURE_REASONS = {"dead-worker", "watcher-dead"}
 DISMISS_FAILURE_S = 86400
 
 
-def needs_fingerprint(reasons, asks, says: str, boundary: str, prompt: str = "") -> str:
-    """What a dismissal is of: why the role needs you, what it asks, which question its session has open, and its last
-    posture. A change to any is something new. The asks and words uncut: a row shows only their first part."""
+def needs_fingerprint(reasons, asks, says: str, boundary: str, prompt: str = "", state: str = "") -> str:
+    """What a dismissal is of: why the role needs you, what it asks, which question its session has open, its derived
+    state and its last posture. A change to any is something new. The asks and words uncut: a row shows only their
+    first part."""
     why = sorted(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
-    return hashlib.sha256(json.dumps([why, [str(a) for a in asks or []], says or "", boundary or "", prompt or ""]).encode()).hexdigest()[:16]
+    # with a derived state, a rewrite of the same state (a woken role writing the same empty queue again) is not new
+    parts = [why, [str(a) for a in asks or []], says or "", "" if state else (boundary or ""), prompt or ""] + ([state] if state else [])
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16]
 
 
 def dismissed_now(ack: dict | None, fp: str, reasons, age_seconds) -> bool:

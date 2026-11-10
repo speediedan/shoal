@@ -62,8 +62,46 @@ reader ignores fields it does not know.
      "watcher": "alive|dead|none", "session": "working|blocked|idle|dead|unknown|parked",
      "last_write_age_s": 900, "heartbeat_age_s": 60,
      "can_progress": {"ok": false, "reasons": ["blocked-on-question"]}, "needs_you": true,
+     "agent": {"group": "needs-you|working|waiting|blocked|held", "state": "asked", "detail": "..."},
      "view": ["shoal", "view", "<id>", "<role>"]}]}]}
 ```
+
+**The agents list's attention axis** (`ui_status.agent_state`). Every role is in exactly one `agent.group`, and
+`agent.state` says why in more detail than the posture word (a role's own `idle` covered every item blocked,
+nothing assigned, held and handoff pending alike). The first match decides, in this order:
+
+| Group | Whose move | States |
+|---|---|---|
+| `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `handoff-pending` (restart-ready, and no automatic restart will run), `restart-held` (its automatic restart is held for an attached client: detach it), `says-waiting`, `no-work` (fill=assigned, empty queue, no offer) |
+| `working` | the role's, now | `working` |
+| `waiting` | nobody's: it resumes by itself | the wait's substate (`local-ci`, `remote-ci`, `research-proto`, `research-window`, ...), `<sub>: resolved` while its wake is due, `work-due` (a blocker resolved, its wake is due) |
+| `blocked` | another role's or the outside world's | `session-blocked`, `upstream`, `blocked: role`, `blocked: upstream`, `blocked: lease` (a blocker only past its daily look says so in `detail`, still blocked) |
+| `held` | the maintainer's, by choice | `parked`, `held` (a `hold:` blocker), `observer` (fill=none) |
+
+`needs_you` is `group == "needs-you"` and not dismissed. A dismissal is keyed on the needs fingerprint, which
+includes `agent.state`, so a dismissed row keeps its group and state (shown apart, under Dismissed) and comes back
+when either changes.
+
+A dead watcher and a stopped active turn are the quorum's to fix (it re-arms the watcher and wakes the role):
+they count as stalled, and the role keeps the group of what it is doing.
+
+A role card writes `agent.group` and `agent.state` on its terminal as the labels `shoal.group` and `shoal.state`
+(`ui_app.role_agent`; group `dismissed` while the row is dismissed), and the `shoal-agents` clone orders its Priority
+view on one scale: Needs you, Working, Done, Waiting, Blocked, Held, Idle, Dismissed (Done and Idle only for rows with
+no group, which keep Herdr's own status). A finished turn not yet looked at keeps its `done` badge inside its group.
+Standalone seats (`ui_app.standalone_agent`) take the same groups from their session and registry entry:
+
+| Group | State | When |
+|---|---|---|
+| `needs-you` | `question` | an open question prompt |
+| `working` | `working` | a turn running |
+| `held` | `your-turn` | its reply ended (the listing reads blocked) with no prompt open |
+| `held` | `idle` | between turns |
+| `held` | `stopped` | no worker |
+| `dismissed` | its state | the seat is closed in the viewer (the registry's `dismissed`) |
+
+A seat's end of reply is not needs-you: every reply of a conversation ends waiting for the maintainer, and reading it
+so buried the seats that really ask (measured 2026-11-08). A seat with an attached client reads as its session does.
 
 **Sources.** Each field is derived once, from the code that already owns it:
 

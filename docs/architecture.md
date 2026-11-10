@@ -257,8 +257,18 @@ lease): a test still holds the host's leases, and takes them again after each re
   tick that sees the target resolved, so a session's own waiter acts first. Measured 2026-10-01: a
   detached job waiter reached no session, and the role slept for an hour past its job's end;
 - `queue` refuses a finished item in `next` (`done` by any role), and `next` names it `GONE`;
-- rescans are capped per substate (maintainer and peer waits 240 minutes, CI 180, `upstream` 720,
+- rescans are capped per substate (maintainer and peer waits 240 minutes, CI 180, research 240, `upstream` 720,
   `queue-empty` 360; overridable with `rescan_cap_min` in the spec);
+- a passed rescan wakes the model only when shoal cannot prove the wait itself (`state.wait_proven`, used by
+  health's `wait-expired`, `heartbeat` and the `next` line). A wait on a target is proven while its provider answers
+  pending; a user wait while its ask is open in the latest queue and the maintainer has not written to the role
+  since (the answer, or the return from offline, wakes it). Unknown is never proven, and nothing is proven past
+  `proven_max_min` (default 1440) since the wait was written, so a sound wait still gets one look a day. `next` says
+  `RESCAN PASSED ..., proven by shoal` instead of `RESCAN EXPIRED`. Recorded blockers follow the same rule
+  (`blockers.check`): another role's open, takeable item and an upstream or lease target its provider answers
+  pending stay live up to `proven_max_min`, rather than expiring after `peer_ttl_min`; a `hold:` still expires on
+  its own age. Measured 2026-11-10: 178 rescans passed in 21 days, 87 on CI or research waits with a pending target
+  and 77 on user waits with the ask open, each a model turn that wrote the same wait again;
 - held claims in neither the active nor the next list are flagged `HELD-UNSCHEDULED`.
 
 ## 5. Work selection
@@ -393,6 +403,12 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   and CI efficiency leave it out. A CI wait on a `--class research` job is refused; a `research-proto`
   wait on a `ci` job gets a note to run research as `--class research`. Like `remote-ci`, it does not
   excuse parked next items.
+- **Research windows.** Research that is scheduled but not yet running (an overnight GPU window, a reservation
+  to open) is `research-window`, on a `time:<ISO UTC>` target (the `time` provider: pending until then) or on the
+  queued `job:` or `lease:` it waits for. It needs a target, it is counted in role time's `research` group beside
+  `research-proto`, and a `time:` target on any other substate is refused. It replaces the timer job (a `job run`
+  sleeping until the window) that read as `local-ci` and was re-verified every 3 h (measured 2026-11-10: 4 to 6 turns
+  a night for one role).
 - **Research reservations** (`shoal/pool_reserve.py`). `shoal pool reserve [--host H] --resources
   gpu@<uuid>,...|gpus:N|cpu-heavy --for <shoal>/<role> --until <ISO|job:NAME> [--note]` takes the
   leases on H with the helper's background-holder mode (`--hold --pidfile`): one hold per device (a
@@ -1233,6 +1249,10 @@ A standalone card follows its registry entry by label each tick (`ui_view.regist
 seat moved from Claude to OpenCode or back switches its card in place, clears the app report of the old session, and
 reports only while the seat is on Claude. A routed card's attach re-reads the registry on the seat's own host, so it
 reaches the session the seat holds now rather than the one the card was opened with.
+The app's reconciler (`ui_app.Reconciler._gaps`) also replaces a standalone card that sits at its own screen
+with the harness and session it was opened with after its seat moved (`ui_app.seat_ids` read from the pane's
+foreground argv against the plan), on `ui app-open` and on the quiet sync. A card with a harness client open in it is
+left alone until the client exits.
 
 `ui_runs.py` owns confirmed background handoffs. `act-apply --background` consumes the one-use token and
 starts a detached worker; `act-status` returns the retained log and running or completed state. A worker

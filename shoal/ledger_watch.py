@@ -138,7 +138,7 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
             from state import read_wait
             w = read_wait(view.ledger.sid, slug) or {}
             target = w.get("target") or ""
-            if w.get("sub") in ("local-ci", "remote-ci", "research-proto") and target.split(":", 1)[0] in ("job", "lease"):
+            if w.get("sub") in ("local-ci", "remote-ci", "research-proto", "research-window") and target.split(":", 1)[0] in ("job", "lease"):
                 import providers
                 pending, why = providers.resolve(target, slug, view.ledger.sid)
                 key = f"waitdone:{w.get('since_utc', '')}:{target}"

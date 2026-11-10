@@ -192,6 +192,16 @@ def _stale_active(spec, role, last_state: dict, threshold_min: float,
             f"or idle, or resume work. [{cli.strip()[:80]}]")
 
 
+def _proven(spec, view, slug: str) -> str:
+    """Why shoal itself proves this role's wait ('' when it does not): state.wait_proven."""
+    from state import wait_proven
+    try:
+        ok, why = wait_proven(spec, view, slug, view.role_state(slug) or {})
+    except Exception:  # noqa: BLE001 - a diagnostic never fails on a provider
+        return ""
+    return why if ok else ""
+
+
 def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
     """One row per role: {slug, klass, age_min, detail, suspect: bool}.
 
@@ -209,6 +219,7 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
     except Exception:
         pass
     rows = []
+    view = None
     ledger_age: dict[str, float] = {}
     last_state: dict[str, tuple[str, str]] = {}  # slug -> (state, ts) of last state event
     now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -228,6 +239,7 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
             for slug, ev in v.states.items():
                 if isinstance(ev, dict) and ev.get("state"):
                     last_state[slug] = (ev["state"], ev.get("ts", ""))
+            view = v
     except Exception:  # noqa: BLE001
         pass
     for role in spec.roles:
@@ -249,6 +261,10 @@ def classify(spec: ShoalSpec, threshold_min: float) -> list[dict]:
                            detail=f"no heartbeat yet (generation {gen_age:.0f}m old, grace)")
             else:
                 row.update(klass="never", suspect=True, detail="NO HEARTBEAT FILE (never ticked)")
+        elif wstate == "stale" and view is not None and _proven(spec, view, role.slug):
+            row.update(klass="covered", suspect=False,
+                       detail=f"rescan {w.get('rescan_utc')} passed, but shoal proves the wait "
+                              f"({_proven(spec, view, role.slug)}; holder: {w.get('holder')})")
         elif wstate == "stale":
             if role.session:
                 q = quota_paused(role, spec.dir)

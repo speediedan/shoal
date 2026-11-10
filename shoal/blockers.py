@@ -31,7 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULTS = {"hold_ttl_min": 240.0, "peer_ttl_min": 720.0, "hold_page_min": 720.0}
+DEFAULTS = {"hold_ttl_min": 240.0, "peer_ttl_min": 720.0, "hold_page_min": 720.0, "proven_max_min": 1440.0}
 ASK_KINDS = ("ask", "user")
 
 
@@ -111,9 +111,13 @@ def provider_target(blocker: str) -> str:
 
 def check(spec, view, slug: str, q: dict, item_k: str, blocker: str, meta: dict | None,
           live: bool = True) -> tuple[str, str]:
-    """(live | resolved | expired | unknown, why) for one recorded blocker. `live=False` skips
-    provider calls (watchers), so a checkable blocker is judged by its age alone."""
-    c = cfg(spec) or DEFAULTS
+    """(live | resolved | expired | unknown, why) for one recorded blocker. A blocker shoal can prove does not expire
+    on its re-verify age: a role's item still open and takeable (the ledger), an upstream target or lease its provider
+    answers pending. Only past `proven_max_min` (one day) is it expired anyway, for a daily look. Measured 2026-11-10:
+    three roles idle behind true blockers (an open upstream issue, a peer's open item) read as parked work every
+    4 to 12 h, each a wake or a page. `live=False` skips provider calls (the read model): an upstream or lease
+    blocker it cannot check reads unknown, not expired."""
+    c = dict(DEFAULTS, **(cfg(spec) or {}))
     k = kind(blocker)
     since = (meta or {}).get("since") or (q or {}).get("ts", "")
     age = _age_min(since)
@@ -133,15 +137,22 @@ def check(spec, view, slug: str, q: dict, item_k: str, blocker: str, meta: dict 
         why_t = takeable(spec, view, blocker)
         if why_t:
             return "expired", f"untakeable: {why_t.split(', so nothing', 1)[0]}"
-        ttl = c["peer_ttl_min"]
+        if other:  # proven by the ledger: the item is open and its role can take it
+            ttl = c["proven_max_min"]
+        else:
+            ttl = c["peer_ttl_min"]
     elif k in ("upstream", "lease"):
         target = provider_target(blocker)
+        ttl = c["peer_ttl_min"]
         if live and target:
             import providers
             pending, why = providers.resolve(target, slug, getattr(spec, "sid", ""), upstream=(k == "upstream"))
             if pending is False:
                 return "resolved", why
-        ttl = c["peer_ttl_min"]
+            if pending is True:
+                ttl = c["proven_max_min"]
+        elif target and age is not None and age < c["proven_max_min"]:
+            return "unknown", "not checked here (no provider calls)"
     else:
         ttl = c["hold_ttl_min"]
     if age is not None and age >= ttl:
