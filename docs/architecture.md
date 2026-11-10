@@ -896,7 +896,8 @@ component off.
 
 In the lattice's global depth view, `sphere.js` caches directional light contours on a unit hemisphere.
 Each contour uses at most six cubic arcs plus its move and close commands, rather than 80 polygon edges:
-the script/native path bridge has a render deadline. The scene retains 128 contour levels, a soft reflection,
+the script/native path bridge has a render deadline. The scene keeps its contour levels (48 since the globes became
+glass, below), a soft reflection,
 curved surface grid lines and role contact shadows
 against a brighter depth-only background. Role coordinates stay anchored to their globe when yaw changes;
 their size and fading follow the camera-facing normal. The local globe projection keeps the surface grid
@@ -904,6 +905,33 @@ and role centers within the same circular silhouette. The SVG preview accepts `-
 Native render checks must load the fixture before the first render: an asynchronous loading screen does
 not exercise the depth scene or its path budget. `preview/check_depth.mjs` creates a temporary synchronous
 fixture wrapper for repeated native checks, with depth, yaw and read-only graph snapshot options.
+
+Depth mode draws each shoal's globe as glass. The globe's 48 nested light contours (`sphere.js`) each carry a small
+alpha, solved from the total opacity wanted at that light level, so the shadow side is nearly clear (7 percent) and
+the lit side a tinted veil (34 percent), with the floor grid and the globe's far-side grid lines showing through.
+With the pointer anywhere on a globe, on its name or middle, or on one of its roles, items or edges, the globe goes a
+little more opaque (16 and 56 percent): `main.js` reports the pointer on a globe as a `globe:<shoal>` hover id and
+`scene.js` `focusedShoals` maps any hover or pin id to the shoals in focus. Transparency comes only from alpha on these
+fills; the layer count went down, not up (the fixture's two globes take about 1,970 path commands, down from about
+3,030), so the native render budget from PR #149 still holds. A role label that sits on a globe takes white or
+near-black ink, whichever has the higher WCAG contrast against the glass under it as drawn (`sphere.js`
+`glassColorAt`, `geom.js` `readableInk`); a needs-you label keeps its state hue. In depth mode every edge gets a dark
+casing under its core and a little more core alpha (`scene.js` `edgeCasing`), so arrows read over a pale surface.
+
+Per shoal, depth mode is a cutout sphere (`depth.js` `projectBowl`, geometry in `sphere.js`). The operator hub sits at
+the middle of a sphere whose near cap is cut away by a plane through its middle, facing the camera and tipped toward
+the top of the screen by the camera's pitch less 32 degrees (20 in tilt, 26 in iso). You look into a bowl: the cut
+edge is a lit ellipse, the near wall's outside a shaded crescent below it, and everything inside the rim is the inner
+surface of the far wall, lit as a hollow (the light pools lower right). Each host is a lune of that inner surface, pole
+to rim, over the same azimuth range as its sector in the flat per-shoal view, washed and outlined in the host color,
+its name just outside the outline. A host's roles sit on its own lune, spread across its azimuths in label order (two
+rows from four roles), each held inside the part of the lune seen through the rim, so none is hidden behind the near
+wall. Outside seats ring the rim in its plane, outside the sphere; a CI tether ends in the middle of its host's lune.
+Edges and arrows are drawn over the bowl with the depth casing; `,` and `.` turn the bowl about its axis. Projected,
+every circle on the bowl is an ellipse arc, so each lune is a few exact cubic arcs: the bowl is about 140 path
+commands. Flat views are unchanged. `plugins/shoal-herdr-app/preview/check_depth.mjs` gained `--shoal <id>` (the
+cutout sphere) and `--hover <id>` (a globe in focus), and now fails if the checked copy drew another view or fell back
+to flat.
 
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
@@ -1095,7 +1123,7 @@ and the contract are in [`ui.md`](ui.md).
   title, on that shoal; anywhere else, across every shoal. An outside writer or parked role can be taken
   off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
   packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click.
-  `d` is the depth mode (`depth.js`, P3b): each shoal (global) or host (per shoal) a translucent slab stacked in depth
+  `d` is the depth mode (`depth.js`, P3b; per shoal, the cutout sphere described in section 12): each shoal (global) a translucent slab stacked in depth
   under a tilted camera seen in perspective (tilt, iso; `,` and `.` turn it), over a floor grid with stems and shadows,
   each shoal a sphere in the global view with its roles placed on it by need, then activity, then recency (the side facing
   you holds what needs you), the operator and outside seats on a plane above; the layout

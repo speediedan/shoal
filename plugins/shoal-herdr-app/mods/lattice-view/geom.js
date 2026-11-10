@@ -369,3 +369,36 @@ export function mix(a, b, t) {
   const ca = p(a), cb = p(b);
   return "#" + ca.map((v, i) => Math.round(lerp(v, cb[i], t)).toString(16).padStart(2, "0")).join("");
 }
+
+/** Relative luminance of "#rrggbb" (WCAG). */
+export function luminance(hex) {
+  const s = String(hex).replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => {
+    const c = parseInt(s.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** The WCAG contrast ratio of two "#rrggbb" colors, 1 to 21. */
+export const contrast = (a, b) => {
+  const x = luminance(a), y = luminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+};
+
+export const INK_LIGHT = "#ffffff", INK_DARK = "#050a12";
+
+/** The ink, light or dark, that reads better on `bg`; with an `accent` (a state color), that hue kept, lightened or
+ * darkened to the same side. */
+export function readableInk(bg, accent = null) {
+  const light = contrast(bg, INK_LIGHT) >= contrast(bg, INK_DARK);
+  if (!accent) return light ? INK_LIGHT : INK_DARK;
+  return light ? mix(accent, "#ffffff", 0.68) : mix(accent, INK_DARK, 0.62);
+}
+
+/** The nearest globe (a disc with `sphere`; later in the list is nearer) under a pointer, or null. */
+export function hitGlobe(discs, p) {
+  let hit = null;
+  for (const c of discs) if (c.sphere && Math.hypot(c.x - p.x, c.y - p.y) <= c.r) hit = c.id;
+  return hit;
+}

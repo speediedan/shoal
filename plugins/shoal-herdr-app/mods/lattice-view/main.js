@@ -39,8 +39,8 @@ import {
 } from "./model.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
-import { buildScene, fitScene, fitText, headerText } from "./scene.js";
-import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
+import { buildScene, fitScene, fitText, headerText, GLOBE } from "./scene.js";
+import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, hitGlobe, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS, REPLAY_SPEEDS, REPLAY_DAY_S } from "./replay.js";
 import { camera, projectLayout, nextDepth, depthFor, YAW_STEP } from "./depth.js";
 
@@ -592,8 +592,10 @@ export default class Lattice extends View {
     // the pointer on the card shown keeps it: its links (each queued or done item) can then be clicked
     const b = this.cardBox;
     if (b && this.hover && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return;
+    // depth mode: the pointer anywhere else on a globe brings that globe up (a little more opaque); it has no card
+    const globe = hitGlobe(this.discs, p);
     const id = hitNode(this.hits, p, 4) ?? hitNode(this.satHits, p, 5) ?? (named ? BOARD_CARD + named : null) ?? hitEdge(this.edgeHits, p)
-      ?? (hole ? SHOAL_CARD + hole : null);
+      ?? (hole ? SHOAL_CARD + hole : null) ?? (globe ? GLOBE + globe : null);
     if (id !== this.hover) {
       this.hover = id;
       cx.notify();
