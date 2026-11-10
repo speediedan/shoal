@@ -440,7 +440,13 @@ def cmd_next(a) -> int:
         out.append(f"BLOCKING {b['role']} since {b['since']} on {b['item'] or '(item unnamed)'}"
                    + ("" if mine else " -- NOT in your queue: schedule it (active or next) or say why in a pass"))
     st = view.role_state(slug) or {}
-    if st.get("state") == "waiting" and st.get("rescan_utc") and st["rescan_utc"] < now_iso():
+    import state as _st
+    proven = (st.get("state") == "waiting" and st.get("rescan_utc") and st["rescan_utc"] < now_iso()
+              and _st.wait_proven(spec, view, slug, st))
+    if proven and proven[0]:
+        out.append(f"RESCAN PASSED {st['rescan_utc']}, proven by shoal ({proven[1]}): no need to re-verify; you are "
+                   "woken when it changes")
+    elif st.get("state") == "waiting" and st.get("rescan_utc") and st["rescan_utc"] < now_iso():
         out.append(f"RESCAN EXPIRED {st['rescan_utc']}: your {st.get('sub')} wait is unproven; re-verify it"
                    + (" and re-raise the prompted ask" if st.get("sub", "").startswith("user-") else "")
                    + ", then write a fresh `queue --wait` (or pivot to the next unblocked item)")
@@ -985,7 +991,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--sha", default="")
     p.add_argument("--claim", action="append", help="extra claims (repeatable)")
     p.add_argument("--pass", dest="pass_", action="append", help="ITEM:CLASS[:suggest=ROLE][:note=TEXT]")
-    p.add_argument("--wait", default="", help="waiting substate: local-ci|remote-ci|research-proto|session-blocked|user-auth|...")
+    p.add_argument("--wait", default="", help="waiting substate: local-ci|remote-ci|research-proto|research-window|session-blocked|user-auth|...")
     p.add_argument("--holder", default="")
     p.add_argument("--target", default="", help="lease:<key>|job:<name>|gh-run:<owner/repo>:<id>|gh-pr:<owner/repo>#<n>|gh-issue:<owner/repo>#<n>|"
                         "az-build:<id>; malformed or already-resolved targets are refused")

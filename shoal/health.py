@@ -641,7 +641,7 @@ def validity_applies(sub: str, target: str, pending, disciplined: bool) -> bool:
     at 90 minutes)."""
     if sub == "upstream" or (pending is True and disciplined):
         return False
-    return sub in CI_WAITS + ("research-proto",) or target.split(":", 1)[0] in providers.kinds()
+    return sub in CI_WAITS + ("research-proto", "research-window") or target.split(":", 1)[0] in providers.kinds()
 
 
 def return_condition(view, slug: str, q: dict) -> dict | None:
@@ -701,6 +701,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # waits
         w = read_wait(spec.sid, slug) or {}
         target = w.get("target") or st.get("target", "")
+        pending = None
         if posture == "waiting" and sub not in USER_WAITS:
             pending, why = target_pending(target, slug, spec.sid, upstream=(sub == "upstream"))
             if pending is False:
@@ -734,7 +735,10 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # wait discipline: expired rescans, and peers blocked on unscheduled items
         if (spec.features or {}).get("waitdiscipline"):
             ru = st.get("rescan_utc", "")
-            if posture == "waiting" and ru and parse(ru) is not None and parse(ru) < utcnow():
+            from state import wait_proven
+            # shoal re-proves the wait itself; the model is woken only when that fails (or once a day)
+            if posture == "waiting" and ru and parse(ru) is not None and parse(ru) < utcnow() and \
+                    not wait_proven(spec, view, slug, st, q, pending if st.get("target") == target else None)[0]:
                 ask = " Re-raise your prompted ask (question tool / AskUserQuestion) or pivot to the next unblocked item." \
                     if sub in USER_WAITS else " Re-verify the blocker (is it still pending?), then write a fresh wait or pivot."
                 out.append({"slug": slug, "condition": "wait-expired", "key": f"rescan:{ru}", "since": ru,

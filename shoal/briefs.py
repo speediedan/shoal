@@ -106,7 +106,7 @@ def state_block(role: Role, spec: ShoalSpec) -> str:
     return (
         f"\nSTATE PRIMITIVE (mandatory, one command per row-state change): "
         f"`{SHOAL_CLI} transition --shoal {spec.sid} --slug {role.slug} --to active|idle|paused|offline` "
-        f"or `--to waiting --sub <local-ci|remote-ci|research-proto|user-auth|user-design|session-blocked|queue-empty> "
+        f"or `--to waiting --sub <local-ci|remote-ci|research-proto|research-window|user-auth|user-design|session-blocked|queue-empty> "
         f"--holder '<who/what clears it>' --rescan-min <N> [--monitor '<armed watch>']`. "
         f"It ticks your heartbeat, proves the wait (stale past rescan = STALL-SUSPECT), and "
         f"emits telemetry in one step; re-run it when you re-verify a wait. Going quiet "

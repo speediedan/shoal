@@ -105,7 +105,10 @@ def clear_wait(sid: str, slug: str) -> bool:
 USER_WAITS = ("user-auth", "user-design", "user-feedback")
 RESCAN_CAP_MIN = {"user-auth": 240, "user-design": 240, "user-feedback": 240,
                   "session-blocked": 240, "queue-empty": 360, "local-ci": 180, "remote-ci": 180,
-                  "research-proto": 240, "upstream": 720}
+                  "research-proto": 240, "research-window": 240, "upstream": 720}
+# A passed rescan needs no model turn while shoal itself shows the wait is still what it says (wait_proven), up to this
+# age of the wait; past it the rescan wakes the model once, as a sanity check, and its rewrite starts the clock again
+PROVEN_MAX_MIN = 1440
 
 
 def wait_discipline(spec) -> dict | None:
@@ -149,8 +152,49 @@ def check_wait(spec, slug: str, sub: str, rescan_min: float, blocked_on: str,
 
 CI_SUBS = ("local-ci", "remote-ci")
 # waits on a run that a target resolves: CI, and research or prototyping runs (research-proto), which are counted
-# apart so research does not read as CI time or CI demand
-RUN_SUBS = CI_SUBS + ("research-proto",)
+# apart so research does not read as CI time or CI demand. A research window (research-window) is research that is
+# scheduled, not yet running: a time window or a reservation to open, on a `time:` target (or the queued job or lease)
+RUN_SUBS = CI_SUBS + ("research-proto", "research-window")
+
+
+def wait_proven(spec, view, slug: str, st: dict, q: dict | None = None, pending=None) -> tuple[bool, str]:
+    """(proven, why) for a waiting role whose rescan has passed: shoal itself can show the wait is still what it says,
+    so the rescan needs no model turn (architecture doc §3.5). A wait on a target is proven while its provider answers
+    pending (`pending` when the caller already asked). A user wait is proven while its ask is open in the role's latest
+    queue and the maintainer has not written to it since: the answer, or the return from offline, wakes it. Unknown is
+    never proven. Past `features.waitdiscipline.proven_max_min` (PROVEN_MAX_MIN) since the wait was written nothing
+    is proven, so even a sound wait is looked at once a day. Measured 2026-11-10: 178 rescans passed in 21 days, 87 on
+    CI or research waits with a pending target and 77 on user waits with the ask still open, each a model turn that
+    wrote the same wait again."""
+    cfg = wait_discipline(spec)
+    if cfg is None or (st or {}).get("state") != "waiting":
+        return False, ""
+    try:
+        cap = float(cfg.get("proven_max_min", PROVEN_MAX_MIN))
+        written = datetime.datetime.strptime(str(st.get("ts", ""))[:19], "%Y-%m-%dT%H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return False, "no wait time"
+    age = (datetime.datetime.now(datetime.timezone.utc) - written).total_seconds() / 60
+    if age >= cap:
+        return False, f"written {age / 60:.0f} h ago (daily look)"
+    sub = st.get("sub", "")
+    if sub in USER_WAITS:
+        q = q if q is not None else (view.current_queue(slug) or {})
+        if not q.get("asks"):
+            return False, "no open ask"
+        if any(m.get("by") == "user" for m in view.msgs_to(slug, st.get("ts", ""))):
+            return False, "the maintainer has written since"
+        return True, f"{len(q['asks'])} ask(s) open"
+    target = st.get("target", "")
+    if not target:
+        return False, "no target"
+    if pending is None:
+        import providers
+        pending, why = providers.resolve(target, slug, spec.sid, upstream=(sub == "upstream"))
+    else:
+        why = "pending"
+    return pending is True, (f"{target} {why}" if pending is True else why)
 
 
 def wait_targets(spec) -> bool:
@@ -170,6 +214,9 @@ def check_target(sub: str, target: str, slug: str, sid: str = "",
         if sub == "upstream":
             return "", [], ("an upstream wait needs a checkable target: --target gh-issue:<owner/repo>#<n> "
                             "(or gh-pr:, gh-run:) so the quorum wakes you when it resolves")
+        if sub == "research-window":
+            return "", [], ("a research-window wait needs what opens it: --target time:<ISO UTC> (a scheduled window), "
+                            "or the queued job:<name> or lease:<key> it waits for")
         if require_ci and sub in RUN_SUBS:
             return "", [], (f"a {sub} wait needs a checkable target: --target job:<name> (a `job run` unit), "
                             f"lease:<key>, az-build:<id>, gh-run:<owner/repo>:<id> or gh-pr:<owner/repo>#<n>, "
@@ -179,6 +226,9 @@ def check_target(sub: str, target: str, slug: str, sid: str = "",
     if err:
         return target, [], f"wait target refused: {err}"
     kind, _, name = canon.partition(":")
+    if kind == "time" and sub != "research-window":
+        return canon, [], (f"a time target is a research window opening: wait on it as research-window, not {sub}, "
+                           "so a scheduled window is neither CI time nor running research")
     if kind == "job" and sid and sub in RUN_SUBS:
         import jobs
         jc = str(jobs.job_meta(sid, name, slug).get("class") or "")
@@ -223,7 +273,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
     sub, raw = a.sub or "", ""
     if a.to == "waiting":
         if not sub:
-            print("ERROR: waiting needs --sub <local-ci|remote-ci|research-proto|user-auth|user-design|"
+            print("ERROR: waiting needs --sub <local-ci|remote-ci|research-proto|research-window|user-auth|user-design|"
                   "session-blocked|queue-empty>")
             return 1
         if sub not in VALID_SUB:

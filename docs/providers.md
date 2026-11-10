@@ -49,6 +49,7 @@ can resolve it without the role. Each kind resolves to `pending`, `resolved` or 
 | `gh-issue` | `<owner/repo>#<n>` | `gh issue view`: open is pending, closed is resolved (for `upstream` waits) | core (needs `gh`) |
 | `offer` | `<role>` | the shoal's ledger: pending until an open offer names that role, a handoff to it included. One addressed to `*` does not count | core |
 | `az-build` | `[<project>/]<build id>` | `az pipelines build show`: notStarted, inProgress and postponed are pending. A bare id is looked up in each of `azure_projects` in turn (default `[azure_project]`), because the CLI needs the project and an id from another project reads "not found". A timeout is unknown: `az` with no Azure DevOps credential waits rather than failing, so a token exported only from a login profile needs `login_shell_tools = ["az"]` | optional (needs `az`) |
+| `time` | an ISO UTC time (`2026-11-11T02:00:00Z`; `2026-11-11 02:00` is accepted and normalized) | the clock: pending until then, resolved after. The target of a `research-window` wait, and refused on any other substate | core |
 
 GitHub refs may be written `repo#n` or `repo:n` and take the configured `default_owner`; they are
 stored in the canonical `owner/repo#n` form. An unknown kind or an unparseable ref is refused when

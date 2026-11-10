@@ -18,6 +18,7 @@ Kinds shipped here:
   gh-pr     <owner/repo>#<n>, via `gh pr checks` (an empty check list is unknown)
   az-build  an Azure Pipelines build, `[<project>/]<id>`, via `az pipelines build show` (optional: needs `az`)
   offer     <role>, via the shoal's ledger: resolved once an open offer is addressed to that role
+  time      an ISO UTC time (`2026-11-11T02:00:00Z`): pending until then, the target of a research window
 """
 from __future__ import annotations
 
@@ -82,7 +83,37 @@ def normalize(target: str) -> tuple[str, str]:
         return target, "offer target needs a role: offer:<role>"
     if kind == "az-build" and not re.fullmatch(r"(?:[\w.-]+/)?\d+", ref):
         return target, f"az-build target {ref!r} is not [<project>/]<build id>"
+    if kind == "time":
+        at = _utc(ref)
+        if at is None:
+            return target, f"time target {ref!r} is not an ISO UTC time (2026-11-11T02:00:00Z)"
+        return "time:" + at.strftime("%Y-%m-%dT%H:%M:%SZ"), ""
     return target, ""
+
+
+def _utc(text: str):
+    """A UTC datetime from `2026-11-11T02:00:00Z`, `2026-11-11T02:00Z` or `2026-11-11 02:00`; None when unparseable."""
+    import datetime
+    t = (text or "").strip().replace(" ", "T").rstrip("Z")
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.datetime.strptime(t, fmt).replace(tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+@register("time")
+def time_at(ref: str, slug: str, sid: str) -> Result:
+    """Pending until the time: a research window opening (an overnight GPU window, a reservation's start). Replaces a
+    timer job (`job run` sleeping until a time), which read as a CI wait and was re-verified by the model every 3 h
+    (measured 2026-11-10: fts-tutorial, 4 to 6 turns a night)."""
+    import datetime
+    at = _utc(ref)
+    if at is None:
+        return None, f"not a time: {ref}"
+    left = (at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    return (True, f"opens in {left / 3600:.1f} h") if left > 0 else (False, f"opened {ref}")
 
 
 @register("offer")
