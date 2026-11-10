@@ -275,7 +275,8 @@ shoal ui usage --refresh
 shoal ui usage --json
 ```
 
-The overview always displays the meter block above the role tables: a boxed
+`shoal ui status` displays the meter block above the role tables (a shoal's overview leaves it to the app's Usage
+tab, so it stays about the shoal): a boxed
 table with one row per provider and its 5h, week and month windows side by side.
 Each reported window is a short bar, its used percentage and its reset date/time
 in the host's configured timezone (`SHOAL_TZ` or `timezone` in host.toml), and
@@ -291,7 +292,7 @@ its first use in a window (Muse, `idle`) keeps showing its next weekly reset: th
 forward by whole weeks, shown at 0% and "unused since its last reset" (until it has been used once, there is none to
 show). `shoal ui set ecosystems claude,codex,opencode` names the agent ecosystems in use on a host (default all four):
 one set aside drops out of Add session's discovery and New role's and Handoff's providers at once, and out of usage
-(overview and status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
+(the Usage tab, `ui status` and the status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
 and `ui set` names those roles, until they are handed off to an ecosystem in use.
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
@@ -604,6 +605,7 @@ shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # t
 shoal ui app-sync                                  # roles tabs follow the roles, everywhere; nothing else changes
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
+shoal ui app-usage                                 # show the usage dashboard (SHOAL-home's usage tab)
 shoal ui act-apply --token T [--json]              # run a planned action once
 shoal ui act-apply --token T --background --json   # detach a confirmed Handoff
 shoal ui act-status --run RUN --json              # follow its retained progress log
@@ -668,7 +670,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   closed. A shoal's or a seat's space has no lattice tab of its own any more (one shoal made before is closed, once): the
   top bar's **Lattice** (Ctrl+Alt+L) opens the global lattice in `SHOAL-home`, drilled into the shoal of the space in view,
   and `shoal ui app-lattice` does the same from a terminal, and
-  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current.
+  `shoal ui app-home` (the bar's Home button) goes to the `SHOAL-home` space from anywhere, at once when its tabs are current,
+  and `shoal ui app-usage` (the bar's Usage) to its usage dashboard.
   Ctrl+Alt+N (or a click on the bar's `need you` count) focuses the next agent that needs you, in the lattice pulse's order:
   a sign-in first, then a question, then a grant, the longest unchanged first; a zoomed view stays zoomed, on it. Each
   saved standalone session gets a space as well, with its `session` tab. A standalone space closed in the app stays closed
@@ -741,13 +744,17 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   launcher with `Icon=shoal` shows it; a different icon already there is kept once as `.bak-shoal`.
 - **The `shoal` layout.** `app-install` writes it from Herdr's `main` and switches to it (Ctrl+Shift+L cycles
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
-  Spaces acts on that host's shoals, the top bar has **Home**, **Lattice** and **Actions** beside Files and Changes
+  Spaces acts on that host's shoals, the top bar has **Home**, **Lattice**, **Actions** and **Usage** beside Files and Changes
   (`shoal-tabs`, a patched copy of Herdr's `tabs`; the status bar shows them instead only when that copy is not in the
   layout), the status bar shows each provider's usage, and the window's mark (top left) is
   SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
   loads no picture through a link).
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal
-  chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
+  chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home, and the
+  `usage` tab (the `shoal-usage` dashboard: a card per provider with each window's meter, reset and pace, the tightest
+  meter first, and panels by shoal, role and standalone seat that fill in once per-session usage is recorded). The
+  sidebar does not list it: the top bar's Home, Lattice and Usage reach it. The terminal a new space must start with
+  (`launch`) is closed once Home stands in for it. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);
   lattice tabs then read its `graph.json` on their machine. Without it they run `shoal ui graph` every 15 s.
@@ -780,7 +787,13 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   The dialog streams progress; **Continue in background** closes it without cancelling the operation. Reopen
   Handoff on the same target to reconnect, including after completion. A failed checkpoint or disappeared worker
   is reported in the retained log. Role handoffs follow the restart log until the new session is recorded.
-  Detach a held native client before Handoff so the checkpoint can run and the source session can be retired.
+  Detach a held native client before Handoff so the checkpoint can run and the source session can be retired: a role
+  whose Claude session has a client attached is refused, and says so. The form says which start doc the new session
+  resumes from (a role's path, or the seat's saved one when none is typed), and its optional **Restart note** goes
+  into the new session's first prompt after the start doc, for that handoff only. A standalone seat stopped at an
+  open question can be handed off **Through an open question** (checkpoint-first only; the question is dropped).
+  The verbs sit in labeled rows: Talk (Message, Asks), Work (Next, Queue, Offer, Withdraw, Fill), Seat (Handoff,
+  Dismiss, New role, Add session, Remove), Shoal (Offline, Freeze) and Inspect (Status, Conditions, Upgrade preview).
   Remove takes a role out for good (`shoal remove-role`): it stops the session and watchers, removes the role from the shoal and its
   incarnations from the harness's list, and keeps its ledger history. A pinned card on a parked role or an outside writer offers
   Handoff for a saved standalone seat, Remove (for a writer, `shoal remove-session` on the saved standalone session

@@ -553,7 +553,7 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 | key (`features.health`) | default | effect |
 | --- | --- | --- |
 | `context_restart_k` | 300 | the context size, in thousands of tokens, past which a role is advised to hand over; 0 is off. A dict sets it per role, with `"*"` as the default: `{"*": 300, "<slug>": 0}` exempts a session that needs a large context |
-| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
+| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. While a client is attached to a Claude role's session (a card's `claude attach`), the restart is held rather than tried: an attached client keeps the worker alive, so the stop would fail and the ladder would move on to its page with no retry. It restarts once the client detaches, and pages once if the hold lasts 30 minutes. A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
 
 1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line (`next` records when the session was first
    shown it). It asks the role, at its next boundary
@@ -1111,8 +1111,18 @@ and the contract are in [`ui.md`](ui.md).
   wake cost, and applies only on Confirm with the plan's one-use token (offline applies right
   after its plan, still shown); the token stays in memory, and the dialog never types into a pane.
   Read-only verbs (next, asks, status, conditions, upgrade) render the CLI's text; Answer on an ask
-  opens Message to that role with wake on. Pure decisions in `model.js` are tested under Node
-  (`tests/herdr_app/test_shoal_actions.mjs`); `props.fixture` answers from bundled fixtures.
+  opens Message to that role with wake on. The verbs sit in five labeled rows by what they are for (Talk, Work,
+  Seat, Shoal, Inspect: `GROUPS` in `model.js`), and a long command is shown broken at its arguments with shell
+  continuations (`commandLines`), since the text renderer's own wrap dropped the spaces at its breaks. Pure decisions
+  in `model.js` are tested under Node (`tests/herdr_app/test_shoal_actions.mjs`); `props.fixture` answers from bundled
+  fixtures.
+- **Herdr app usage dashboard** (`plugins/shoal-herdr-app/mods/shoal-usage/`): the home space's `usage` tab, opened by
+  the top bar's Usage (`shoal-status.usage`, else `ui app-usage`). It reads `shoal ui usage --json` (the cached meters;
+  Refresh adds `--refresh`, the account APIs, never a model turn) from the first machine with a reading. Each provider
+  account is a card of windows: used percent, reset, and pace (how far into the window against how much is used, so a
+  meter heading past 100% before its reset says when it runs out). The tightest meter is the headline. Panels by shoal,
+  by role and by standalone seat read an optional `breakdown` in the same document and say so until shoal records
+  each session's usage. A shoal's overview (`ui dash`) no longer prints the meters; `ui status` still does.
 - **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
   this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
   or the exec line when that `shoal` is a shell wrapper), else `python3`.
@@ -1151,8 +1161,9 @@ offers only to hide it. A blocked Claude session's own words (its job's `needs`)
 
 `shoal/ui/ui_app.py` maps the same layout onto the Herdr app, whose spaces, tabs and terminals live in each
 machine's herdr-core. Its `shoal` layout is Herdr's own `main` with five blocks swapped: `shoal-agents`,
-`shoal-spaces`, `shoal-chrome` (the window's mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home,
-Lattice and Actions in the top bar, beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
+`shoal-spaces` (which also leaves the home space out of the sidebar: the top bar reaches it), `shoal-chrome` (the window's
+mark: SHOAL and its icon, a file the copy carries) and `shoal-tabs` (Home, Lattice, Actions and Usage in the top bar,
+beside Files and Changes) are patched copies of Herdr's mods, redone when the shipped text changes (a moved anchor leaves that
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
@@ -1192,6 +1203,11 @@ session is recorded. Saved standalone seats use `handoff --session`: the current
 start doc and finishes its turn before retirement and creation of its replacement. The saved seat label,
 doc, viewer settings and space remain; provider-specific model defaults are not copied across providers.
 Preview binds the current session id, and a changed seat is refused. A missing checkpoint times out.
+A restart note (`handoff --note`, the dialog's Restart note) goes into the new session's first prompt after its start
+doc: a role's restart gets it as `restart --note SLUG:TEXT`, set on the role for that run's brief only (`briefs.note_block`,
+never saved with the spec), and a standalone seat's resume brief has it appended (`handoff_flow.resume_brief`). A role
+whose Claude session has a client attached is refused before anything stops (`park._claude_client`): the client keeps
+the worker alive, so the stop would report it still live and nothing would restart.
 A standalone seat can explicitly use `--no-prepare` when its checkpoint validates, has no live job-folder
 references and the source is already idle. `OpenChamberBackend.create` sends a supplied resume brief with
 the requested model and effort (`--variant`); role startup creates an empty session and sends separately.
@@ -1220,7 +1236,10 @@ reaches the session the seat holds now rather than the one the card was opened w
 
 `ui_runs.py` owns confirmed background handoffs. `act-apply --background` consumes the one-use token and
 starts a detached worker; `act-status` returns the retained log and running or completed state. A worker
-that disappears is reported as failed. Reopening Handoff on the same target reconnects to its latest run;
+that disappears is reported as failed. The worker must not carry the app exec's `HC_SCOPE`: herdr-core ends every
+process tagged with it once that exec returns, whatever its session or cgroup, so `backends.detached()` drops it
+(`env -u`) for every detached launch, the worker and a Muse or Codex turn runner a dialog wake starts alike.
+Reopening Handoff on the same target reconnects to its latest run;
 closing the dialog does not cancel it. The reply parser preserves progress paths for both background
 handoffs and ordinary streamed actions. All lifecycle changes remain CLI verbs behind preview and confirm.
 
