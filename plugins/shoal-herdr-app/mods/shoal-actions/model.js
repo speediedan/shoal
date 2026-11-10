@@ -931,6 +931,18 @@ export function newDraft(q) {
 const findRow = (d, key) => d.rows.findIndex((r) => r.key === key);
 
 /** Picks a row or candidate to place (click a slot next); picking it again unpicks it. */
+/**
+ * The queue key a `pick` prop names: a row or candidate whose key or item matches it (owner, case and verb aside, so
+ * the Board tab's `repo#n` finds `owner/repo#n`), else null.
+ */
+export function pickKey(q, want) {
+  const norm = (s) => str(s).toLowerCase().split(":")[0].replace(/^[^/#]+\/(?=[^/]+#)/, "");
+  const w = norm(want);
+  if (!w) return null;
+  const rows = [...arr(q?.queue), ...arr(q?.candidates)];
+  return rows.find((r) => norm(r.key) === w || norm(r.item) === w)?.key ?? null;
+}
+
 export function draftPick(d, key) {
   return { ...d, picked: d.picked === key ? null : key };
 }

@@ -71,6 +71,12 @@ def add_parsers(sub) -> None:
     ui_status.add_args(q)
     q.set_defaults(func=ui_status.cmd_line)
 
+    import ui_board
+    q = u.add_parser("board", help="each shoal's priority boards as dependency graphs, with their metrics (read-only)")
+    q.add_argument("--shoal", default="", help="one shoal (default: every shoal this host keeps a digest for)")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=ui_board.cmd_board)
+
     import subscription_usage
     q = u.add_parser("usage", help="cached subscription meters (no model turns); --refresh reads account APIs")
     q.add_argument("--providers", default="", help="comma-separated codex,claude,muse,opencode-go; default UI setting")
@@ -249,6 +255,9 @@ def add_parsers(sub) -> None:
     q = u.add_parser("app-home", help="Herdr app: show the SHOAL-home space on this machine, reopening what was closed")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_app.cmd_app_home)
+    q = u.add_parser("app-board", help="Herdr app: show the board graphs (the home space's board tab), reopening it if closed")
+    q.add_argument("--dry-run", action="store_true")
+    q.set_defaults(func=ui_app.cmd_app_board)
     q = u.add_parser("app-usage", help="Herdr app: show the usage dashboard (the home space's usage tab), reopening it if closed")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=ui_app.cmd_app_usage)

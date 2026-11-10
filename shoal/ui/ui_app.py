@@ -54,7 +54,7 @@ CORE_PIN = "0.1.18"
 DEAD_RELEASES_URL = "http://127.0.0.1:9"
 APP_UNIT = "shoal-herdr-app"
 FEED_UNIT = "shoal-graph-feed.service"
-MODS = ("lattice-view", "shoal-home", "shoal-actions", "shoal-status", "shoal-usage")
+MODS = ("lattice-view", "shoal-home", "shoal-actions", "shoal-status", "shoal-usage", "shoal-board")
 MOD_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "mods")
 REPORT_APP = "shoal"
 # the plan's own label on each terminal it starts, so a later reconcile finds the pane again
@@ -1024,7 +1024,7 @@ def start_argv() -> list[str]:
 
 
 HOME_SPACE = "SHOAL-home"
-HOME_TABS = ("home", "lattice", "usage")  # what the top bar's Home, Lattice and Usage open
+HOME_TABS = ("home", "lattice", "board", "usage")  # what the top bar's Home, Lattice, Board and Usage open
 LAUNCH_TAB = "launch"  # the terminal a new space has to start with: closed once the mod tabs are there
 
 
@@ -1061,6 +1061,8 @@ def home_space(dry_run: bool = False, select: str = "home") -> list[str]:
     else:
         tabs.append({"name": "home", "layout": "stack", "panes": [_pane("shoal/home", _cli_argv("ui", "launch"))]})
     tabs.append({"name": "lattice", "mod": "lattice-view", "props": global_lattice_props()})
+    if "shoal-board" in rec.mods:  # it reads the boards from the first machine with a digest
+        tabs.append({"name": "board", "mod": "shoal-board", "props": {}})
     if "shoal-usage" in rec.mods:
         tabs.append({"name": "usage", "mod": "shoal-usage", "props": {}})
     if got is None:
@@ -1090,6 +1092,19 @@ def _close_launch(rec: "Reconciler", dry_run: bool) -> None:
     rec.say(f"{HOME_SPACE}: close its {LAUNCH_TAB} tab (Home is the chooser)")
     if not dry_run:
         app_do("tab.close", {"id": launch["id"], "confirmed": True})
+
+
+def cmd_app_board(a) -> int:
+    if not app_running():
+        print("the Herdr app is not running here (`shoal ui app-start` starts it with the pin held)")
+        return 1
+    try:
+        for line in home_space(a.dry_run, select="board"):
+            print(line)
+    except AppError as exc:
+        print(str(exc))
+        return 2
+    return 0
 
 
 def cmd_app_usage(a) -> int:
@@ -1446,6 +1461,9 @@ CLONES = {
          '      .child(h_flex().id("shoal-lattice").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
          '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
          '.on_click(() => run("shoal-status.lattice")).child("\u25ce Lattice"))\n'
+         '      .child(h_flex().id("shoal-board").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
+         '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
+         '.on_click(() => run("shoal-status.board")).child("Board"))\n'
          '      .child(h_flex().id("shoal-actions").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)'
          '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
          '.on_click(() => run("mod.open", { name: "shoal-actions" })).child("Actions"))\n'
@@ -1464,7 +1482,7 @@ CLONES = {
          'const head = h_flex().id(`machine-${m ?? "local"}`)'
          '.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "shoal-actions", kind: "dialog", '
          'width: 640, height: 600, props: { scope: m ? `host:${m}` : "all", machine: m } }); }).h(26)'),
-        # the home space is reached by the top bar's Home, Lattice and Usage, not listed under This computer
+        # the home space is reached by the top bar's Home, Lattice, Board and Usage, not listed under This computer
         ("    return out.filter(r => this.shown.has(r.w.id));",
          f'    return out.filter(r => this.shown.has(r.w.id) && !(r.w.machine == null && r.w.name === "{HOME_SPACE}"));'),
     ]),
