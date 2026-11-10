@@ -399,8 +399,13 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             # an assigned role with an empty queue and nothing offered: the next step is an offer. It stays in needs you
             # until dismissed, and a dismissal holds until the state changes. A fill=self role finds board work itself
             reasons.append("no-work")
-        if q.get("restart_ready") and hposture in ("idle", "waiting") and not remote and _ctx_auto_over(spec, role) is False:
-            reasons.append("handoff-pending")
+        if q.get("restart_ready") and hposture in ("idle", "waiting") and not remote:
+            auto = _ctx_auto_over(spec, role)
+            if auto is False:
+                reasons.append("handoff-pending")
+            elif auto and _client_holds(role, spec):
+                # the quorum holds its automatic restart for an attached client (#150): detaching is the only step left
+                reasons.append("restart-held")
         if hposture == "active" and sess in ("idle", "dead"):
             # degenerate: the ledger says active, but no turn is running (health's turn-ended-active
             # wakes it; measured 2026-10-13: shoal-aux re-wrote active and stopped, again)
@@ -419,7 +424,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     if wait_done and _client_holds(role, spec):
         reasons.append("wake-held")
     blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "watcher-dormant", "context-large",
-                                               "no-work", "handoff-pending")]
+                                               "no-work", "handoff-pending", "restart-held")]
     words = (claude_says(claude_session(rows, role.session) or {}, role.session)
              if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
     prompt = (_h.claude_open_prompt(role.session)
@@ -1020,7 +1025,7 @@ def pending_question(row: dict, session: str) -> bool:
 
 
 NEEDS_REASONS = {"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you", "blocker-role-cannot-take",
-                 "wake-held", "handoff-pending", "no-work"}
+                 "wake-held", "handoff-pending", "restart-held", "no-work"}
 # The attention axis of the agents list (docs/ui.md): every role is in exactly one group, and its `state` says why
 AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
 BLOCKED_SUBS = ("session-blocked", "upstream")
@@ -1053,6 +1058,7 @@ def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[s
                       ("blocker-role-cannot-take", "a blocker names a role that cannot take the item"),
                       ("wake-held", "its wait ended, but an attached client holds the wake"),
                       ("handoff-pending", "restart-ready: waiting for its handoff"),
+                      ("restart-held", "auto restart held by an attached client: detach its card"),
                       ("blocked-says-waiting", "its last turn ended saying it waits on you")):
         if why in r:
             return g("needs-you", why if why != "blocked-says-waiting" else "says-waiting", text)

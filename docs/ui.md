@@ -72,7 +72,7 @@ nothing assigned, held and handoff pending alike). The first match decides, in t
 
 | Group | Whose move | States |
 |---|---|---|
-| `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `handoff-pending` (restart-ready, and no automatic restart will run), `says-waiting`, `no-work` (fill=assigned, empty queue, no offer) |
+| `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `handoff-pending` (restart-ready, and no automatic restart will run), `restart-held` (its automatic restart is held for an attached client: detach it), `says-waiting`, `no-work` (fill=assigned, empty queue, no offer) |
 | `working` | the role's, now | `working` |
 | `waiting` | nobody's: it resumes by itself | the wait's substate (`local-ci`, `remote-ci`, `research-proto`, `research-window`, ...), `<sub>: resolved` while its wake is due, `work-due` (a blocker resolved, its wake is due) |
 | `blocked` | another role's or the outside world's | `session-blocked`, `upstream`, `blocked: role`, `blocked: upstream`, `blocked: lease` (a blocker only past its daily look says so in `detail`, still blocked) |

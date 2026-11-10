@@ -104,6 +104,7 @@ class AgentState(unittest.TestCase):
         self.assertEqual(self.state(q={"asks": ["Merge it?"]}, reasons=["parked"])["group"], "needs-you")
         self.assertEqual(self.state(reasons=["parked"])["state"], "parked")
         self.assertEqual(self.state(reasons=["no-work"])["state"], "no-work")
+        self.assertEqual(self.state(posture="waiting", sub="local-ci", reasons=["restart-held"])["group"], "needs-you")
         self.assertEqual(self.state(posture="active", sess="working")["group"], "working")
         self.assertEqual(self.state(posture="waiting", sub="research-window", st={"target": "time:x"})["group"], "waiting")
         self.assertEqual(self.state(posture="waiting", sub="upstream")["group"], "blocked")
