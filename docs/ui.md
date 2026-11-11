@@ -703,10 +703,12 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
 - **Leaving an attach.** A card restores the terminal's modes after every attach, since a client that dies with its link cannot, and a Ctrl-C
   returns to the card: `q` is what leaves one.
-- **The lattice in depth (`d`).** The shoal globes are see-through glass that firm up a little when you point at
-  one, and their role names switch between light and dark ink to stay readable on the globe. Drilled into one
-  shoal, depth mode shows a cutout sphere with you at its middle: each host is a colored region of the inside of the
-  sphere, its roles sit on that region, and the arrows between them are drawn over it.
+- **The lattice in depth (`d`).** The shoal globes are see-through glass, fainter until you point at one, with their
+  names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
+  globe. Every globe casts a soft shadow on the floor below it, all from the one light that shades them. Drilled into
+  one shoal, depth mode looks down into a bowl with you at its middle, nearest and largest: the hosts' colored regions
+  share the whole inside of the bowl, each host's roles sit on its region, and the arrows from you to them are drawn
+  over it.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
   as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
   - **The graph:** the board at the top; every open item a layer below its parent issue and its open blockers. A gray

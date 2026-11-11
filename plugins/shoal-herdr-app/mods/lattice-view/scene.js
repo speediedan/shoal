@@ -14,9 +14,10 @@ import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal, SHOAL_CARD, B
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
   sphereShade, glassColorAt, LIGHT, luneCmds, latitudeCmds, crescentCmds, bowlGlow, bowlColorAt, BOWL, BOWL_BASE, BOWL_LIT,
+  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, bowlSilhouette, shadowLayers, SHADOW_STEPS,
 } from "./sphere.js";
 import {
-  edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, annularSectorCmds,
+  edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, annularSectorCmds,
   samplesBySpacing, pointAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp, readableInk,
 } from "./geom.js";
 
@@ -27,6 +28,15 @@ const DEPTH_UNDER = "#1f2c3f";
 
 /** A hover id for the pointer on a globe away from its roles, its middle and its name. */
 export const GLOBE = "globe:";
+
+/** A globe's name (depth mode): larger than a flat disc's, `gap` px clear above `top`, the highest thing drawn on the
+ * globe (its outline, or a role's body and badge on its top), with the needs-you line between the name and the globe. */
+export const GLOBE_TITLE = { size: 14, h: 19, needs: 11, needsH: 15, gap: 12 };
+export function globeTitleAt(top, needsYou) {
+  const T = GLOBE_TITLE, below = needsYou > 0 ? T.needsH : 0;
+  const y = top - T.gap - below - T.h;
+  return { y, needsY: y + T.h, bottom: top - T.gap };
+}
 
 /**
  * The shoals whose globe is in focus for a hover or pin id: the globe itself, its middle or its name, one of its roles
@@ -73,10 +83,12 @@ export function fitText(text, maxW, size) {
 const textW = (s, size) => String(s).length * size * 0.6;
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-/** The host lune of the bowl seen at unit offsets (nx, ny): the far wall's point there, by its azimuth. */
+/** The host lune of the bowl seen at offsets (nx, ny) in radii, or null outside the rim: the inner surface's point
+ * there, by its azimuth. */
 export function bowlHostAt(fr, bands, nx, ny) {
-  const u = { x: nx, y: ny, z: -Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny)) };
-  const phi = Math.atan2(u.x * fr.e2.x + u.y * fr.e2.y + u.z * fr.e2.z, u.x * fr.e1.x + u.y * fr.e1.y + u.z * fr.e1.z);
+  const u = bowlSurfaceAt(fr, nx, ny);
+  if (!u) return null;
+  const phi = bowlAzimuth(fr, u);
   const TAU = 2 * Math.PI;
   return bands.find((b) => ((phi - b.a0) % TAU + TAU) % TAU <= b.a1 - b.a0) ?? null;
 }
@@ -89,7 +101,7 @@ export function surfaceUnder(surfaces, x, y) {
   for (let i = surfaces.length - 1; i >= 0; i--) {
     const s = surfaces[i], nx = (x - s.x) / s.r, ny = (y - s.y) / s.r;
     if (s.kind === "globe" && Math.hypot(nx, ny) <= 1) return glassColorAt(s.tint, nx, ny, { fog: s.fog, focused: s.focused, under: DEPTH_UNDER });
-    if (s.kind === "bowl" && Math.hypot(nx, ny / Math.cos(s.frame.alpha)) <= 1) {
+    if (s.kind === "bowl" && rimNorm(s.frame, { x: nx, y: ny }) <= 1) {
       const b = bowlHostAt(s.frame, s.bands, nx, ny);
       return bowlColorAt(s.frame, nx, ny, b ? b.color ?? PASTELS[(b.index + 2) % PASTELS.length] : null, DEPTH_UNDER);
     }
@@ -154,12 +166,23 @@ export function buildScene(vm, lay, opts) {
     if (lines.length) items.push({ t: "path", id: "floor-grid", fill: false, width: 1, cmds: lines, bg: solid(withAlpha(P.steel2, 0.11)) });
     if (rim.length) items.push({ t: "path", id: "floor-rim", fill: false, width: 1.2, cmds: rim, bg: solid(withAlpha(P.steel2, 0.2)) });
   }
+  // A shadow is where the one light (depth.js castShadow) puts it, a stack of fine alpha layers so its edge is soft;
+  // a globe's or the bowl's gets the full stack, a lifted seat's a short one.
   for (const st of lay.stems ?? []) {
-    const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 });
-    items.push({ t: "path", id: `shadow-${st.id}`, fill: true, cmds: ellipseCmds(b.x, b.y, st.r * k, st.ry * k), bg: solid(withAlpha("#000000", 0.32)) });
-    items.push({ t: "path", id: `shadow-core-${st.id}`, fill: true, cmds: ellipseCmds(b.x, b.y, st.r * k * 0.6, st.ry * k * 0.6), bg: solid(withAlpha("#000000", 0.25)) });
+    const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 }), sh = st.shadow;
+    if (sh) {
+      const c = S(sh), ax = { x: sh.a.x * k, y: sh.a.y * k }, bx = { x: sh.b.x * k, y: sh.b.y * k };
+      shadowLayers(sh.peak, sh.soft, st.id.startsWith("c-") ? SHADOW_STEPS : 4).forEach((l, i) => items.push({
+        t: "path", id: `shadow-${st.id}-${i}`, fill: true,
+        cmds: conjugateEllipseCmds(c.x, c.y, { x: ax.x * l.s, y: ax.y * l.s }, { x: bx.x * l.s, y: bx.y * l.s }),
+        bg: solid(withAlpha("#01040a", l.alpha)),
+      }));
+    }
     items.push({ t: "path", id: `stem-${st.id}`, fill: false, width: 1, dash: [3, 4], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(P.steel2, 0.32)) });
   }
+
+  // node radii on screen (depth mode: with perspective), wanted by the regions' titles and by the edges' trims
+  const nodeR = new Map(vm.nodes.map((n) => [n.id, screenR(n.visual.r, k) * (lay.scaleOf?.get(n.id) ?? 1)]));
 
   // 2. regions: cluster discs (global) or host bands (per shoal); their titles block node labels
   const discs = [];
@@ -183,9 +206,10 @@ export function buildScene(vm, lay, opts) {
         items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(shade.body) });
         items.push(...shade.paths);
         // Soft glancing reflection, rather than a single sharp white dot.
-        for (let i = 0; i < 12; i++) {
-          const sr = r * (0.17 - 0.012 * i);
-          items.push({ t: "path", id: `sphere-spec-${c.id}-${i}`, fill: true, cmds: ellipseCmds(p.x + r * LIGHT.x, p.y + r * LIGHT.y, sr, sr * 0.7), bg: solid(withAlpha("#ffffff", (focused ? 0.034 : 0.026) * fog)) });
+        // (8 layers, not 12: the same highlight, and room in the render budget for the soft floor shadows)
+        for (let i = 0; i < 8; i++) {
+          const sr = r * (0.17 - 0.018 * i);
+          items.push({ t: "path", id: `sphere-spec-${c.id}-${i}`, fill: true, cmds: ellipseCmds(p.x + r * LIGHT.x, p.y + r * LIGHT.y, sr, sr * 0.7), bg: solid(withAlpha("#ffffff", (focused ? 0.05 : 0.038) * fog)) });
         }
         // the far side's grid shows through the glass
         for (const front of [false, true]) {
@@ -209,44 +233,56 @@ export function buildScene(vm, lay, opts) {
       }
       if (!c.sphere) items.push({ t: "path", id: `disc-rim-${c.id}`, fill: false, width: c.ry !== undefined ? 1.4 : 1, cmds: ring(), bg: solid(withAlpha(c.tint, c.ry !== undefined ? 0.5 * fog : 0.22)) });
       const label = `${c.label.toUpperCase()}${vm.shoals?.find((s) => s.id === c.id)?.boards?.items?.length ? " ↗" : ""}`;
-      items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 120, y: p.y - ry - 22, w: 240, h: 16, text: label, size: 11, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
+      // a globe's name is larger and sits clear above the globe and above any role (body and badge) on its top
+      const top = c.sphere ? Math.min(p.y - r, ...vm.nodes.filter((n) => n.kind === "role" && n.shoal === c.id && posOf(n.id))
+        .map((n) => S(posOf(n.id)).y - nodeR.get(n.id) - 9)) : null;
+      const T = c.sphere ? { ...GLOBE_TITLE, ...globeTitleAt(top, c.needsYou) } : { size: 11, h: 16, needs: 9.5, y: p.y - ry - 22, needsY: p.y - ry - 8 };
+      items.push({ t: "text", id: `disc-label-${c.id}`, x: p.x - 180, y: T.y, w: 360, h: T.h, text: label, size: T.size, color: withAlpha(c.tint, 0.95), align: "center", weight: "semibold" });
       grow(p.x - r - 3, p.y - ry - 3, p.x + r + 3, p.y + ry + 3 + (c.ry !== undefined ? 7 * k : 0));
-      growCentered(p.x, p.y - ry - 22, label, 11, 16);
-      labelObstacles.push({ x: p.x - textW(label, 11) / 2, y: p.y - ry - 22, w: textW(label, 11), h: c.needsYou > 0 ? 29 : 16 });
+      growCentered(p.x, T.y, label, T.size, T.h);
+      labelObstacles.push({ x: p.x - textW(label, T.size) / 2, y: T.y, w: textW(label, T.size), h: c.needsYou > 0 ? T.needsY - T.y + 15 : T.h });
       discs.at(-1).title = labelObstacles.at(-1);
       if (c.needsYou > 0) {
-        items.push({ t: "text", id: `disc-needs-${c.id}`, x: p.x - 120, y: p.y - ry - 8, w: 240, h: 13, text: `${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`, size: 9.5, color: P.magenta, align: "center" });
+        items.push({ t: "text", id: `disc-needs-${c.id}`, x: p.x - 180, y: T.needsY, w: 360, h: 13, text: `${c.needsYou} need${c.needsYou === 1 ? "s" : ""} you`, size: T.needs, color: P.magenta, align: "center" });
       }
     }
   } else if (lay.bowl && lay.clusters[0]) {
     // depth mode: the cutout sphere. You at its middle; each host a lune of its inner surface in the host's color
-    const c = lay.clusters[0], fr = lay.bowl.frame;
-    const o = S(c), R = c.r * k, ry = Math.cos(fr.alpha);
+    // (seen from above in perspective: the rim an ellipse round the hosts' lunes, which tile the whole inside)
+    const c = lay.clusters[0], fr = lay.bowl.frame, rim = fr.rim;
+    const o = S(c), R = c.r * k;
+    const rc = { x: o.x, y: o.y + R * rim.cy }, rimCmds = ellipseCmds(rc.x, rc.y, R * rim.rx, R * rim.ry);
     surfaces.push({ kind: "bowl", x: o.x, y: o.y, r: R, frame: fr, bands: lay.bands });
     // the inside: a dark base, then light pooling where a hollow faces the light (lower right, opposite a ball's)
-    items.push({ t: "path", id: "bowl-in", fill: true, cmds: ellipseCmds(o.x, o.y, R, R * ry), bg: solid(withAlpha(BOWL_BASE, BOWL.base)) });
+    items.push({ t: "path", id: "bowl-in", fill: true, cmds: rimCmds, bg: solid(withAlpha(BOWL_BASE, BOWL.base)) });
     bowlGlow(fr, o.x, o.y, R).forEach((e, i) => items.push({ t: "path", id: `bowl-glow-${i}`, fill: true, cmds: ellipseCmds(e.x, e.y, e.rx, e.ry), bg: solid(withAlpha(BOWL_LIT, BOWL.glow)) }));
     const tintOf = (b) => b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
     for (const b of lay.bands) {
+      // a light wash, so an edge or an arrow over it still reads; the outline carries the host's color
       const tint = tintOf(b), cmds = luneCmds(fr, o.x, o.y, R, b.a0, b.a1);
       items.push({ t: "path", id: `bowl-host-${b.host}`, fill: true, cmds, bg: solid(withAlpha(tint, BOWL.wash)) });
-      items.push({ t: "path", id: `bowl-host-rim-${b.host}`, fill: false, width: 1.3, cmds, bg: solid(withAlpha(tint, 0.62)) });
+      items.push({ t: "path", id: `bowl-host-rim-${b.host}`, fill: false, width: 1.2, cmds, bg: solid(withAlpha(tint, BOWL.outline)) });
     }
     // two circles of latitude, faint, so the hollow reads as curved
-    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], cmds: [Math.PI / 6, Math.PI / 3].flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)), bg: solid(withAlpha("#e4edf4", 0.2)) });
-    // the near wall's outside, lit from the upper left, over whatever of the inside it hides; then the cut edge
+    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], cmds: [Math.PI / 6, Math.PI / 3].flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)), bg: solid(withAlpha("#e4edf4", 0.18)) });
+    // the near wall's outside, where the camera is beyond the rim: a thin crescent under it, lit from the upper left
     const shell = crescentCmds(fr, o.x, o.y, R);
-    items.push({ t: "path", id: "bowl-shell", fill: true, cmds: shell, bg: { kind: "linear", angle: 110, from: withAlpha(mix(c.tint, "#ffffff", 0.25), BOWL.shell * 0.8), to: withAlpha("#050b17", BOWL.shell) } });
-    items.push({ t: "path", id: "bowl-limb", fill: false, width: 1.2, cmds: shell, bg: solid(withAlpha(c.tint, 0.4)) });
-    items.push({ t: "path", id: "bowl-lip", fill: false, width: 1.6, cmds: ellipseCmds(o.x, o.y, R, R * ry), bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.55), to: withAlpha(c.tint, 0.35) } });
-    grow(o.x - R, o.y - R * ry, o.x + R, o.y + R);
+    if (shell.length) {
+      items.push({ t: "path", id: "bowl-shell", fill: true, cmds: shell, bg: { kind: "linear", angle: 110, from: withAlpha(mix(c.tint, "#ffffff", 0.25), BOWL.shell * 0.8), to: withAlpha("#050b17", BOWL.shell) } });
+      items.push({ t: "path", id: "bowl-limb", fill: false, width: 1.2, cmds: shell, bg: solid(withAlpha(c.tint, 0.4)) });
+    }
+    // the cut edge
+    items.push({ t: "path", id: "bowl-lip", fill: false, width: 1.8, cmds: rimCmds, bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.6), to: withAlpha(c.tint, 0.4) } });
+    const below = shell.length ? Math.max(rim.cy + rim.ry, bowlSilhouette(fr)) : rim.cy + rim.ry;
+    grow(rc.x - R * rim.rx, rc.y - R * rim.ry, rc.x + R * rim.rx, o.y + R * below);
     for (const b of lay.bands) {
-      // the host's name just outside the outline: the rim above, the sphere's silhouette below
-      const tint = tintOf(b), am = (b.a0 + b.a1) / 2, up = Math.sin(am) < 0;
+      // the host's name just outside the rim, out from the rim's middle through the lune's middle
+      const tint = tintOf(b), am = (b.a0 + b.a1) / 2;
       const text = `${b.home ? "⌂ " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`;
-      const q = { x: o.x + R * Math.cos(am), y: o.y + R * Math.sin(am) * (up ? ry : 1) };
-      const out = 16 + (textW(text, 10) / 2) * Math.abs(Math.cos(am)); // clear of the outline by the text's half width
-      const lp = { x: q.x + out * Math.cos(am), y: q.y + out * Math.sin(am) };
+      const e = bowlRimAt(fr, am), q = { x: o.x + R * e.x, y: o.y + R * e.y };
+      const dx = q.x - rc.x, dy = q.y - rc.y, dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl;
+      const out = 16 + (textW(text, 10) / 2) * Math.abs(ux); // clear of the outline by the text's half width
+      const lp = { x: q.x + out * ux, y: q.y + out * uy };
       items.push({ t: "text", id: `band-label-${b.host}`, x: lp.x - 70, y: lp.y - 7, w: 140, h: 14, text, size: 10, color: withAlpha(tint, 0.95), align: "center", weight: "semibold" });
       growCentered(lp.x, lp.y - 7, text, 10, 14);
       labelObstacles.push({ x: lp.x - textW(text, 10) / 2, y: lp.y - 7, w: textW(text, 10), h: 14 });
@@ -325,7 +361,6 @@ export function buildScene(vm, lay, opts) {
   }
 
   // 3. edges, batched per color x tier bucket: a glow pass under a core pass, then arrowheads
-  const nodeR = new Map(vm.nodes.map((n) => [n.id, screenR(n.visual.r, k) * (lay.scaleOf?.get(n.id) ?? 1)]));
   const curves = new Map();
   for (const e of vm.edges) {
     const a = posOf(e.src), b = posOf(e.dst);
@@ -641,7 +676,8 @@ function worldBounds(lay) {
     const R = b.r1 * (b.s ?? 1);
     pts.push({ x: b.cx - R, y: b.cy, r: 0 }, { x: b.cx + R, y: b.cy, r: 0 }, { x: b.cx, y: b.cy - R * (b.ry ?? 1), r: 0 }, { x: b.cx, y: b.cy + R * (b.ry ?? 1), r: 0 });
   }
-  for (const st of lay.stems ?? []) pts.push({ x: st.x1, y: st.y1, r: 0 });
+  // and the middle of each shadow, so a shadow cast aside stays in view (its soft edge may run off, as the grid does)
+  for (const st of lay.stems ?? []) pts.push({ x: st.x1, y: st.y1, r: 0 }, ...(st.shadow ? [{ x: st.shadow.x, y: st.shadow.y, r: 0 }] : []));
   return boundsOf(pts);
 }
 

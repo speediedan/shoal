@@ -184,6 +184,23 @@ export function ellipseCmds(cx, cy, rx, ry) {
   ];
 }
 
+/**
+ * An ellipse at (cx, cy) given by two conjugate semi-axes a and b (the image of a circle under any affine map, so it may
+ * be turned): c + a cos t + b sin t, one cubic per quarter.
+ */
+export function conjugateEllipseCmds(cx, cy, a, b) {
+  const k = (4 / 3) * Math.tan(Math.PI / 8);
+  const pt = (t) => ({ x: cx + a.x * Math.cos(t) + b.x * Math.sin(t), y: cy + a.y * Math.cos(t) + b.y * Math.sin(t) });
+  const tan = (t) => ({ x: -a.x * Math.sin(t) + b.x * Math.cos(t), y: -a.y * Math.sin(t) + b.y * Math.cos(t) });
+  const s = pt(0), cmds = [["M", s.x, s.y]];
+  for (let i = 0; i < 4; i++) {
+    const t0 = (i * Math.PI) / 2, t1 = ((i + 1) * Math.PI) / 2, p = pt(t0), q = pt(t1), u = tan(t0), v = tan(t1);
+    cmds.push(["C", p.x + k * u.x, p.y + k * u.y, q.x - k * v.x, q.y - k * v.y, q.x, q.y]);
+  }
+  cmds.push(["Z"]);
+  return cmds;
+}
+
 /** Node outline commands for a shape kind ("circle" uses arcs, the rest polygons). */
 export function shapeCmds(kind, cx, cy, r) {
   return kind === "circle" || !kind ? circleCmds(cx, cy, r) : polygonCmds(shapePoints(kind, cx, cy, r));

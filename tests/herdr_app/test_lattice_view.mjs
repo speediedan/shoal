@@ -1307,15 +1307,16 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
     assert.deepEqual(pa.bands.map((b) => b.host).sort(), hosts, "one lune per host");
     const TAU = 2 * Math.PI;
     const lunes = [...pa.bands].sort((a, b) => a.a0 - b.a0);
-    for (let i = 1; i < lunes.length; i++) assert.ok(lunes[i].a0 >= lunes[i - 1].a1 - 1e-9, "lunes do not overlap");
-    assert.ok(lunes.at(-1).a1 - lunes[0].a0 <= TAU + 1e-9);
+    for (let i = 1; i < lunes.length; i++) assert.ok(Math.abs(lunes[i].a0 - lunes[i - 1].a1) < 1e-9, "lunes meet: no overlap, no gap");
+    assert.ok(Math.abs(lunes.at(-1).a1 - lunes[0].a0 - TAU) < 1e-9, "and close the turn");
     for (const n of alpha.nodes.filter((x) => x.kind === "role")) {
       const s = pa.surfaceOf.get(n.id), p = pa.pos.get(n.id), b = pa.bands.find((x) => x.host === n.host);
       assert.equal(s.host, n.host, `${n.label} on its own host's lune`);
       assert.ok(s.phi >= b.a0 - 1e-9 && s.phi <= b.a1 + 1e-9, `${n.label} inside its lune's azimuths`);
       const u = SP.bowlPoint(fr, s.theta, s.phi);
-      assert.ok(Math.hypot(p.x - Rs * u.x, p.y - Rs * u.y) < 1e-9 && s.theta < Math.PI / 2, "on the inner surface");
-      assert.ok(SP.rimNorm(fr, u) <= 0.86 + 1e-6 && u.z < 0, "on the far wall, seen through the rim");
+      const q = SP.bowlProject(fr, u);
+      assert.ok(Math.hypot(p.x - Rs * q.x, p.y - Rs * q.y) < 1e-9 && s.theta < Math.PI / 2, "on the inner surface, in perspective");
+      assert.ok(SP.bowlSeen(fr, u) <= 0.86 + 1e-6 && u.z < 0, "on the far wall, seen through the rim");
       assert.equal(S.bowlHostAt(fr, pa.bands, p.x / Rs, p.y / Rs)?.host, n.host, "the lune drawn under it is its host's");
       assert.ok(pa.order.indexOf(n) < pa.order.indexOf(user), "you are drawn nearer than every role");
     }
@@ -1327,7 +1328,8 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
     const washes = sc.items.filter((it) => it.id.startsWith("bowl-host-") && it.fill);
     assert.equal(washes.length, hosts.length);
     assert.equal(new Set(washes.map((it) => it.bg.color)).size, hosts.length, "each host its own color");
-    assert.ok(["bowl-in", "bowl-shell", "bowl-lip", "bowl-grid"].every((id) => sc.items.some((it) => it.id === id)));
+    assert.ok(["bowl-in", "bowl-lip", "bowl-grid"].every((id) => sc.items.some((it) => it.id === id)));
+    assert.equal(sc.items.some((it) => it.id === "bowl-shell"), SP.crescentCmds(fr, 0, 0, 1).length > 0, "the near wall's outside only where it shows");
     assert.ok(!sc.items.some((it) => it.id.startsWith("band-slab-") || it.id.startsWith("band-rim-")));
     // the outline: every lune stays inside the sphere's silhouette, and the whole bowl is a small part of the budget
     for (const b of pa.bands) {
@@ -1336,7 +1338,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
         if (c[0] === "M") p0 = { x: c[1], y: c[2] };
         if (c[0] !== "C") continue;
         const curve = { p0, c1: { x: c[1], y: c[2] }, c2: { x: c[3], y: c[4] }, p3: { x: c[5], y: c[6] } };
-        for (let j = 0; j <= 16; j++) { const q = G.pointAt(curve, j / 16); assert.ok(Math.hypot(q.x, q.y) <= 1.0005, "inside the silhouette"); }
+        for (let j = 0; j <= 16; j++) { const q = G.pointAt(curve, j / 16); assert.ok(SP.rimNorm(fr, q) <= 1.002, "inside the rim"); }
         p0 = curve.p3;
       }
     }
@@ -1344,7 +1346,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
   }
   // a lune's outline is exact: the rim projects to the rim ellipse
   const fr = SP.bowlFrame(0.4);
-  for (const phi of [0, 1, 2.5, 4]) assert.ok(Math.abs(SP.rimNorm(fr, SP.bowlPoint(fr, Math.PI / 2, phi)) - 1) < 1e-12);
+  for (const phi of [0, 1, 2.5, 4]) assert.ok(Math.abs(SP.bowlSeen(fr, SP.bowlPoint(fr, Math.PI / 2, phi)) - 1) < 1e-12);
   assert.ok(SP.bowlReach(fr, Math.PI / 2) < SP.bowlReach(fr, -Math.PI / 2), "less is seen low down, behind the near wall");
   assert.ok(D.bowlTheta(fr, 0, 0, 5) !== D.bowlTheta(fr, 0, 1, 5) && D.bowlTheta(fr, 0, 0, 2) === D.bowlTheta(fr, 0, 1, 2), "two rows from four roles");
 });
@@ -1360,4 +1362,169 @@ test("2026-11-10: depth edges get a dark casing and a little more core; flat edg
   const cores = deep.items.filter((it) => it.id.startsWith("ec-")), casings = deep.items.filter((it) => it.id.startsWith("ek-"));
   assert.equal(casings.length, cores.length, "one casing per core");
   assert.ok(deep.items.findIndex((it) => it.id.startsWith("ek-")) < deep.items.findIndex((it) => it.id.startsWith("ec-")), "under the core");
+});
+
+// conjugate coordinates of d in the ellipse with semi-axes a, b: |w| > 1 is outside it
+const ellipseNorm = (a, b, d) => {
+  const det = a.x * b.y - a.y * b.x;
+  return Math.hypot((d.x * b.y - d.y * b.x) / det, (a.x * d.y - a.y * d.x) / det);
+};
+const globeCams = [D.camera("iso"), D.camera("tilt"), D.camera("iso", Math.PI / 3), D.camera("tilt", -Math.PI / 4)];
+
+test("2026-11-11: one light: it is the globes' screen light, above the floor, and every shadow falls from it", () => {
+  for (const cam of globeCams) {
+    const Lw = D.lightWorld(cam), flat = { ...cam, o: { x: 0, y: 0 }, d: 0 };
+    assert.ok(Math.abs(Math.hypot(Lw.x, Lw.y, Lw.z) - 1) < 1e-9 && Lw.z > 0.3, "a unit direction, from above");
+    // seen back through the camera, the world light is the light the globes are shaded from
+    const q = D.project(flat, { x: Lw.x, y: Lw.y }, Lw.z);
+    assert.ok(Math.abs(q.x - SP.LIGHT.x) < 1e-9 && Math.abs(q.y - SP.LIGHT.y) < 1e-9, "the same light as the shading");
+    // orthographic: a ball's shadow is offset straight along the screen light, by its height, and no larger for it
+    const P = (p, z) => D.project(flat, p, z);
+    const lo = D.castShadow(P, Lw, { x: 40, y: -30 }, 100, 50, -200), hi = D.castShadow(P, Lw, { x: -300, y: 120 }, 500, 50, -200);
+    for (const [s, p, z] of [[lo, { x: 40, y: -30 }, 100], [hi, { x: -300, y: 120 }, 500]]) {
+      const c = P(p, z), dx = s.x - c.x, dy = s.y - c.y, len = Math.hypot(dx, dy);
+      assert.ok(Math.abs(dx / len + SP.LIGHT.x / Math.hypot(SP.LIGHT.x, SP.LIGHT.y)) < 1e-9 && Math.abs(dy / len + SP.LIGHT.y / Math.hypot(SP.LIGHT.x, SP.LIGHT.y)) < 1e-9, "away from the light");
+      assert.ok(Math.abs(len / (z + 200) - Math.hypot(SP.LIGHT.x, SP.LIGHT.y) / Lw.z) < 1e-9, "as far as its height says");
+    }
+    assert.ok(Math.abs(Math.hypot(lo.a.x, lo.a.y) - Math.hypot(hi.a.x, hi.a.y)) < 1e-9, "a directional light: the same size at any height");
+    assert.ok(hi.soft > lo.soft && hi.peak < lo.peak, "higher: a softer, paler shadow");
+  }
+});
+
+test("2026-11-11: each globe floats above the floor and its shadow lies there, beside it, the same way as the others'", () => {
+  const base = L.layoutGraph(global);
+  for (const cam of globeCams) {
+    const pl = D.projectLayout(global, base, cam);
+    const top = pl.planes.at(-1).z, P = (p, zz) => D.project(pl.cam, p, zz - top / 2);
+    const planeZ = new Map(pl.planes.map((p) => [p.id, p.z]));
+    const dirs = [];
+    for (const c of base.clusters) {
+      const R = c.r * 0.92, zc = planeZ.get(c.id);
+      assert.ok(pl.floorZ < zc - R, `${c.id}: the floor is below the globe`);
+      const st = pl.stems.find((s) => s.id === `c-${c.id}`), sh = st.shadow;
+      // the shadow's middle is where the line from the light through the globe's middle meets the floor
+      const t = (zc - pl.floorZ) / pl.light.z, g = P({ x: c.x - t * pl.light.x, y: c.y - t * pl.light.y }, pl.floorZ);
+      assert.ok(Math.hypot(g.x - sh.x, g.y - sh.y) < 1e-6, "cast from the one light");
+      // it does not swallow its globe: the globe's middle is outside the shadow, and from the presets outside even its
+      // soft edge (turned, a near globe's floor grows in perspective, so the penumbra may reach under it)
+      const g0 = pl.clusters.find((x) => x.id === c.id), rho = ellipseNorm(sh.a, sh.b, { x: g0.x - sh.x, y: g0.y - sh.y });
+      assert.ok(rho > 1, `${c.id}: its middle is outside its shadow`);
+      if (cam.yaw === D.CAMERAS[cam.name].yaw) assert.ok(rho > 1 + sh.soft, `${c.id}: and clear of its soft edge`);
+      dirs.push(Math.atan2(sh.y - g0.y, sh.x - g0.x));
+    }
+    // the rays are parallel in the world (above); in perspective they converge a little on screen, as rails do, but
+    // every shadow falls the same way
+    const spread = Math.max(...dirs) - Math.min(...dirs);
+    assert.ok(spread < 0.45, `shadows fall the same way: ${spread.toFixed(3)} rad apart`);
+    for (const d of dirs) assert.ok(Math.cos(d - Math.atan2(-SP.LIGHT.y, -SP.LIGHT.x)) > 0.85, "down and away from the lit side");
+  }
+});
+
+test("2026-11-11: a shadow's falloff is smooth: many fine steps, darkest in the middle, within the render budget", () => {
+  const layers = SP.shadowLayers(0.6, 0.3);
+  assert.ok(layers.length >= 14 && layers.length <= SP.SHADOW_STEPS, "many layers");
+  assert.ok(layers[0].s <= 1.3 + 1e-9 && layers[0].s > 1.25 && layers.every((l, i) => i === 0 || l.s < layers[i - 1].s), "nested, from the soft edge in");
+  let prev = 0;
+  for (const l of layers) {
+    const total = 1 - (1 - prev) * (1 - l.alpha);
+    assert.ok(total - prev <= 0.075, "no step adds more than 7.5 percent: no coarse bands");
+    prev = total;
+  }
+  assert.ok(Math.abs(prev - SP.shadowAt(0, 0.6, 0.3)) < 0.03, "the middle adds up to the shadow's darkest");
+  assert.ok(SP.shadowAt(1.3, 0.6, 0.3) === 0 && SP.shadowAt(0.5, 0.6, 0.3) > SP.shadowAt(1, 0.6, 0.3), "it fades out by the soft edge");
+  const pl = D.projectLayout(global, L.layoutGraph(global), D.camera("iso"));
+  const sc = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  for (const c of pl.clusters) {
+    const sh = sc.items.filter((it) => it.id.startsWith(`shadow-c-${c.id}-`));
+    assert.ok(sh.length >= 14 && cmdCount(sh) <= SP.SHADOW_STEPS * 6, "a globe's shadow: fine steps, a few cubics each");
+    assert.ok(sc.items.indexOf(sh.at(-1)) < sc.items.findIndex((it) => it.id === `sphere-body-${c.id}`), "on the floor, under the globe");
+  }
+  assert.ok(cmdCount(sc.items.filter((it) => it.id.startsWith("shadow-"))) <= 300, "every shadow together under a sixth of what the globes take");
+});
+
+test("2026-11-11: a globe's name is larger and clear above its globe and the roles on its top", () => {
+  for (const cam of globeCams) {
+    const lay = D.projectLayout(global, L.layoutGraph(global), cam);
+    const tf = S.fitScene(global, lay, { width: 1100, height: 800 });
+    const sc = S.buildScene(global, lay, { width: 1100, height: 800, tf, motion: "off" });
+    for (const c of lay.clusters) {
+      const p = G.toScreen(tf, c), r = c.r * tf.k;
+      const name = sc.items.find((it) => it.id === `disc-label-${c.id}`), needs = sc.items.find((it) => it.id === `disc-needs-${c.id}`);
+      assert.ok(name.size >= 13, "larger than a flat disc's 11 px");
+      const bottom = (needs ?? name).y + (needs ?? name).h;
+      assert.ok(bottom <= p.y - r - S.GLOBE_TITLE.gap + 1e-6, `${c.id}: clear above the globe`);
+      const w = name.text.length * name.size * 0.6, box = { x: p.x - w / 2, y: name.y, w, h: bottom - name.y };
+      for (const n of global.nodes.filter((x) => x.kind === "role" && x.shoal === c.id)) {
+        const s = sc.nodeScreen.get(n.id);
+        const nx = Math.max(box.x, Math.min(s.x, box.x + box.w)), ny = Math.max(box.y, Math.min(s.y, box.y + box.h));
+        assert.ok(Math.hypot(s.x - nx, s.y - ny) > s.r, `${n.label}: not under ${c.id}'s name`);
+      }
+    }
+  }
+  // the flat view keeps its small titles
+  const flat = S.buildScene(global, L.layoutGraph(global), { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  assert.ok(flat.items.filter((it) => it.id.startsWith("disc-label-")).every((it) => it.size === 11));
+});
+
+test("2026-11-11: idle globes are fainter than in #153; a hovered one steps up as before", () => {
+  assert.ok(SP.GLASS.idle.body < 0.07 && SP.GLASS.idle.lit < 0.34, "fainter idle than the 7 and 34 percent of #153");
+  assert.deepEqual(SP.GLASS.focus, { body: 0.16, lit: 0.56 }, "the hovered step is kept");
+  const total = (focused) => { const s = SP.sphereShade("t", 0, 0, 1, "#50d090", 1, focused); return opacityOf([s.body, ...s.paths.map((p) => p.bg.color)]); };
+  assert.ok(total(true) - total(false) >= 0.25, "hovering clearly lifts it");
+});
+
+test("2026-11-11: the bowl from above: no near wall in the way, you at the middle drawn larger, nearest", () => {
+  const la = L.layoutGraph(alpha);
+  for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3)]) {
+    const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame;
+    // the camera hangs over the opening, at most just past the rim, so the near wall hides next to nothing
+    assert.ok(fr.d * Math.sin(fr.alpha) <= 1.2, "the camera over the opening");
+    let seen = 0, all = 0;
+    for (let i = 1; i < 24; i++) for (let j = 0; j < 48; j++) {
+      all++;
+      if (SP.bowlSeen(fr, SP.bowlPoint(fr, (Math.PI / 2) * (i / 24), (2 * Math.PI * j) / 48)) <= 1 + 1e-9) seen++;
+    }
+    assert.ok(seen / all >= 0.97, `the inner surface is seen: ${seen}/${all}`);
+    const user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
+    assert.ok(pa.scaleOf.get(user.id) >= 1.2, "you read larger than in #153 (1)");
+    for (const n of roles) assert.ok(pa.scaleOf.get(user.id) >= 1.12 * pa.scaleOf.get(n.id), `you, nearer, larger than ${n.label}`);
+    assert.equal(pa.order.findIndex((n) => n.id === user.id) > Math.max(...roles.map((n) => pa.order.indexOf(n))), true, "drawn after every role");
+    // perspective: the rim's far side is smaller than its near side, the pole below you
+    assert.ok(-SP.bowlRimAt(fr, -Math.PI / 2).y < SP.bowlRimAt(fr, Math.PI / 2).y && SP.bowlProject(fr, fr.pole).y > 0);
+    // the washes are light, so edges and arrows over them read
+    assert.ok(SP.BOWL.wash <= 0.12);
+  }
+});
+
+test("2026-11-11: the hosts' lunes tile the whole bowl, with no gaps", () => {
+  const TAU = 2 * Math.PI;
+  for (const H of [1, 2, 3, 5]) {
+    // the flat view's sectors: spans by weight, with a gap between each
+    const gap = H > 1 ? 0.26 : 0, w = Array.from({ length: H }, (_, i) => 1 + i), tw = w.reduce((t, x) => t + x, 0);
+    let a0 = -Math.PI / 2 + gap / 2;
+    const bands = w.map((x, i) => { const span = ((TAU - gap * H) * x) / tw, b = { host: `host-${i}`, a0, a1: a0 + span }; a0 += span + gap; return b; });
+    for (const yaw of [0, 1.1]) {
+      const lunes = D.bowlLunes(bands, yaw);
+      assert.deepEqual(lunes.map((b) => b.host), bands.map((b) => b.host), "in the bands' order");
+      assert.ok(Math.abs(lunes.reduce((t, b) => t + b.a1 - b.a0, 0) - TAU) < 1e-9, `${H} hosts: the spans add up to a whole turn`);
+      const sorted = [...lunes].sort((a, b) => a.a0 - b.a0);
+      for (let i = 1; i < H; i++) assert.ok(Math.abs(sorted[i].a0 - sorted[i - 1].a1) < 1e-9, "each lune meets the next");
+      for (const b of lunes) assert.ok(b.a0 <= b.s0 + 1e-9 && b.s1 <= b.a1 + 1e-9, "a lune holds its host's sector");
+    }
+  }
+  // the fixture: every point seen inside the rim is one host's or the other's
+  for (const cam of [D.camera("tilt"), D.camera("iso", -Math.PI / 5)]) {
+    const pa = D.projectLayout(alpha, L.layoutGraph(alpha), cam), fr = pa.bowl.frame;
+    let inside = 0;
+    const hosts = new Set();
+    for (let i = -40; i <= 40; i++) for (let j = -40; j <= 40; j++) {
+      const s = { x: (i / 40) * fr.rim.rx, y: fr.rim.cy + (j / 40) * fr.rim.ry };
+      if (SP.rimNorm(fr, s) > 0.999) continue;
+      inside++;
+      const b = S.bowlHostAt(fr, pa.bands, s.x, s.y);
+      assert.ok(b, `a host at ${s.x.toFixed(2)}, ${s.y.toFixed(2)}`);
+      hosts.add(b.host);
+    }
+    assert.ok(inside > 4000 && hosts.size === pa.bands.length, "the hosts share all of it");
+  }
 });

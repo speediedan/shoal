@@ -907,8 +907,8 @@ not exercise the depth scene or its path budget. `preview/check_depth.mjs` creat
 fixture wrapper for repeated native checks, with depth, yaw and read-only graph snapshot options.
 
 Depth mode draws each shoal's globe as glass. The globe's 48 nested light contours (`sphere.js`) each carry a small
-alpha, solved from the total opacity wanted at that light level, so the shadow side is nearly clear (7 percent) and
-the lit side a tinted veil (34 percent), with the floor grid and the globe's far-side grid lines showing through.
+alpha, solved from the total opacity wanted at that light level, so the shadow side is nearly clear (5 percent) and
+the lit side a tinted veil (27 percent), with the floor grid and the globe's far-side grid lines showing through.
 With the pointer anywhere on a globe, on its name or middle, or on one of its roles, items or edges, the globe goes a
 little more opaque (16 and 56 percent): `main.js` reports the pointer on a globe as a `globe:<shoal>` hover id and
 `scene.js` `focusedShoals` maps any hover or pin id to the shoals in focus. Transparency comes only from alpha on these
@@ -919,19 +919,44 @@ near-black ink, whichever has the higher WCAG contrast against the glass under i
 casing under its core and a little more core alpha (`scene.js` `edgeCasing`), so arrows read over a pale surface.
 
 Per shoal, depth mode is a cutout sphere (`depth.js` `projectBowl`, geometry in `sphere.js`). The operator hub sits at
-the middle of a sphere whose near cap is cut away by a plane through its middle, facing the camera and tipped toward
-the top of the screen by the camera's pitch less 32 degrees (20 in tilt, 26 in iso). You look into a bowl: the cut
-edge is a lit ellipse, the near wall's outside a shaded crescent below it, and everything inside the rim is the inner
-surface of the far wall, lit as a hollow (the light pools lower right). Each host is a lune of that inner surface, pole
-to rim, over the same azimuth range as its sector in the flat per-shoal view, washed and outlined in the host color,
-its name just outside the outline. A host's roles sit on its own lune, spread across its azimuths in label order (two
-rows from four roles), each held inside the part of the lune seen through the rim, so none is hidden behind the near
-wall. Outside seats ring the rim in its plane, outside the sphere; a CI tether ends in the middle of its host's lune.
-Edges and arrows are drawn over the bowl with the depth casing; `,` and `.` turn the bowl about its axis. Projected,
-every circle on the bowl is an ellipse arc, so each lune is a few exact cubic arcs: the bowl is about 140 path
-commands. Flat views are unchanged. `plugins/shoal-herdr-app/preview/check_depth.mjs` gained `--shoal <id>` (the
-cutout sphere) and `--hover <id>` (a globe in focus), and now fails if the checked copy drew another view or fell back
-to flat.
+the middle of a sphere whose upper half is cut away, seen from above in perspective (the next paragraph). The cut edge
+is a lit ellipse and everything inside it is the bowl's inner surface, lit as a hollow (the light pools lower right).
+Each host is a lune of that inner surface, pole to rim, the lunes together tiling the whole bowl, washed and outlined
+in the host color, its name just outside the outline. A host's roles sit on its own lune, spread across its azimuths
+in label order (two rows from four roles), each held inside the part of the lune seen through the rim, so none is
+hidden behind the near wall. Outside seats ring the rim in its plane, outside the sphere; a CI tether ends in the
+middle of its host's lune. Edges and arrows are drawn over the bowl with the depth casing; `,` and `.` turn the bowl
+about its axis. Projected, every circle on the bowl is an ellipse arc, so each lune is a few exact cubic arcs: the
+bowl is about 160 path commands. Flat views are unchanged. `plugins/shoal-herdr-app/preview/check_depth.mjs` gained
+`--shoal <id>` (the cutout sphere) and `--hover <id>` (a globe in focus), and now fails if the checked copy drew
+another view or fell back to flat.
+
+Depth mode now casts every floor shadow from one light. `depth.js` `lightWorld` turns `sphere.js` `LIGHT`, the screen
+light the globes are shaded from (upper left, toward you), back through the camera into a world direction, and
+`castShadow` puts each shadow where the line from that light through the caster's middle meets the floor: offset the
+same way for every globe and lifted seat, by its height, and sized as a ball's shadow on a plane (its radius across
+the light, its radius over the light's elevation along it). On screen, parallel rays converge a little in perspective,
+as rails do. The floor now lies below the lowest globe's bottom (`FLOOR_CLEAR`, 0.45 plane gaps), so no globe sits
+in its own shadow, and the fit keeps each shadow's middle in view. A shadow is a stack of concentric ellipses (`sphere.js`
+`shadowLayers`, each one `geom.js` `conjugateEllipseCmds`, four cubics, turned to the light) whose 8-bit alphas are
+solved from a smooth falloff: three in four layers fall in the penumbra, which widens and pales the higher the caster
+floats. A globe's shadow has 16 layers, each adding under 7.5 percent, and a lifted seat's has 4. Idle globes are fainter
+(5 percent on the shadow side, 27 lit, down from 7 and 34); the hovered step is unchanged (16 and 56). A globe's name
+is 14 px (11 before) and sits 12 px clear above the globe and above any role body or badge on its top, with the
+needs-you line between (`scene.js` `globeTitleAt`). The cutout sphere is now seen from above in perspective: the
+camera hangs 2.4 sphere radii from the middle, off the bowl's axis by the camera's pitch less 30 degrees (22 in tilt,
+28 in iso), so it looks down into the bowl over its near rim and the near wall hides next to nothing. The near
+wall's outside shows only past the rim (a thin crescent in iso, none in tilt). The rim projects to an exact ellipse
+(`bowlFrame` `rim`), each circle on the bowl is drawn as eighth-turn cubics fitted to its projection (within a pixel),
+and a screen point maps back to the inner surface by the line of sight (`bowlSurfaceAt`). You, on the opening, are
+drawn nearest and 1.25 times your flat size, and a role shrinks with its depth below the opening. The hosts' lunes
+tile the inner surface (`depth.js` `bowlLunes`): each host's sector of the flat view is widened to the middle of the
+gaps either side of it, so the spans add up to a whole turn and every point inside the rim belongs to one host. Roles
+stay within their own sector. The washes are lighter (10 percent, outline 50), so edges and arrows over them read.
+In the fixture, the global depth scene takes about 2,790 path commands (282 path layers: globes about 1,940, shadows
+about 260), up from about 2,600; the per-shoal scene takes about 740, of which the bowl is about 160. The globes'
+highlight went from 12 layers to 8 to make room. `check_depth.mjs` passes 12 of 12 in iso, tilt, turned, hovered and
+per-shoal scenes.
 
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
