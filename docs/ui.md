@@ -316,7 +316,8 @@ shoal ui usage --json
 `shoal ui status` displays the meter block above the role tables (a shoal's overview leaves it to the app's Usage
 tab, so it stays about the shoal): a boxed
 table with one row per provider and its 5h, week and month windows side by side.
-Each reported window is a short bar, its used percentage and its reset date/time
+In the app's Usage tab, each reset also reads as a wall-clock time in the zone of the machine the app runs on
+("resets in 4h (14:30 PST)", the weekday within a week, the date beyond). Each reported window is a short bar, its used percentage and its reset date/time
 in the host's configured timezone (`SHOAL_TZ` or `timezone` in host.toml), and
 the last column says how old the reading is. A reached limit, a fallback reader
 or a read error is named on a line under the table. The bars shrink (8, 5, then 3
@@ -714,10 +715,15 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
     grid below the graph, in progress and queued first. The root reads `closed` once nothing on the board is open.
   - **Where each item stands:** in progress (amber, `▶ role`), queued (blue, `role #n`: its place in that role's
     queue), queued but blocked (blue with a dashed red border, `⛔ role #n`), not queued (gray).
+  - **Cards or Nodes:** the toolbar switches between the cards (key, where it stands, title) and nodes: a shape per
+    repo (named in the legend), its issue number under it, colored and outlined as the cards are, for the relationships
+    at a glance. **Zoom** with - and + (or the keys), **Fit** (0) puts the whole tree in view, and `n` switches the
+    drawing; the choice of drawing is remembered.
   - **Hover** an item for its status, role and place, blocker, parent, sub-issues, assignees, labels, PRs, last update
-    and a body excerpt. **Click** it to select it: the side panel has **Open on GitHub**, and for each other role
-    **Offer to** it (an item no role holds: the actions dialog's Offer, filled in) or **Move to** it (an item another
-    role holds: that role's Queue opens with it picked; place it and the plan transfers it). Both preview and confirm.
+    and a body excerpt. **Click** it to select it: the side panel (its x, or Esc, closes it) has **Open on GitHub**,
+    and **Offer to a role** (an item no role holds: the actions dialog's Offer, filled in) or **Move to a role** (an
+    item another role holds: that role's Queue opens with it picked; place it and the plan transfers it), each a list of
+    the roles to pick from. Both preview and confirm.
   - **Metrics** above the graph: open (and its change over 14 days), done (percent and count), in progress, queued
     (and blocked), not queued (and how many wait on a blocker), closed in 7 days, the days until none are open at that
     pace, and 14-day trends of open items and closes a day. The trends come from `board_history.jsonl`, written with

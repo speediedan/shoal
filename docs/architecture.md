@@ -1163,7 +1163,8 @@ and the contract are in [`ui.md`](ui.md).
 - **Herdr app usage dashboard** (`plugins/shoal-herdr-app/mods/shoal-usage/`): the home space's `usage` tab, opened by
   the top bar's Usage (`shoal-status.usage`, else `ui app-usage`). It reads `shoal ui usage --json` (the cached meters;
   Refresh adds `--refresh`, the account APIs, never a model turn) from the first machine with a reading. Each provider
-  account is a card of windows: used percent, reset, and pace (how far into the window against how much is used, so a
+  account is a card of windows: used percent, reset (with its wall-clock time in the app machine's zone, from its
+  offset: `clockTime`), and pace (how far into the window against how much is used, so a
   meter heading past 100% before its reset says when it runs out). The tightest meter is the headline. Panels by shoal,
   by role and by standalone seat read an optional `breakdown` in the same document and say so until shoal records
   each session's usage. A shoal's overview (`ui dash`) no longer prints the meters; `ui status` still does.
@@ -1175,10 +1176,14 @@ and the contract are in [`ui.md`](ui.md).
   rows: `active` (a role's active item), `queued` at its `pos`, `queued-blocked` (a recorded blocker) or `unqueued`.
   The board is the root; the model lays each item a layer below its parent and blockers, wraps a wide layer into rows,
   and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details; a click
-  selects it for Open on GitHub, Offer to a role (the actions dialog, its `item` prefilled) or Move to a role (that
+  selects it (the side panel closes on its x or Esc) for Open on GitHub, Offer to a role (the actions dialog, its
+  `item` prefilled; the role picked from a list) or Move to a role (that
   role's Queue, with `pick` set, so the plan transfers it). The metrics panel shows the rail card's counts, closes in
   seven days, the days to none open at that pace, and 14-day trends of open items and closes a day, from
-  `board_history.jsonl`, which `digest.write` appends at most every half hour per board and keeps for 90 days. It is
+  `board_history.jsonl`, which `digest.write` appends at most every half hour per board and keeps for 90 days.
+  The graph draws as cards or as nodes (`DIMS.cards`, `DIMS.nodes`: a shape per repo, `repoShapes`, each state's
+  shapes as one fill and one outline path), either at a zoom (`scaleDims`; `fitZoom` finds the largest zoom up to 1
+  at which the whole tree fits the view, a smaller zoom fitting more items to a row). It is
   read line by line, so a torn or foreign line is dropped and the rest kept, and no error there fails the digest.
 - **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
   this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
@@ -1253,7 +1258,8 @@ actions dialog. Its `add-role` verb starts a new role from the app (`shoal add-r
 plan, or first written from guidance by `shoal doc-init`, the plan then stopping at a failed step), and its `sessions` view and `add-session` verb add a standalone seat: every machine's
 candidates, saved by `ui pick --save` on the session's own machine, then opened with `ui app-open --show`. A write verb's plan builds the palette's argv, runs its `--dry-run`, names the wake cost, and
 stores the argv under a one-time token (0600, runtime dir, ten minutes); apply runs only a stored argv, once,
-and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own.
+and logs it like the palette. A caller can confirm what it was shown but cannot pass an argv of its own. The apply runs only the
+CLI verbs the plans build (`ui_actions.APPLY_VERBS`: the dialog's verbs, and `set-fill` for Fill).
 Read-only views (`next`, `status`, `conditions`, `asks`, `queue`, `upgrade`, `roles`) store nothing.
 
 The Actions dialog's **Handoff** defaults to `handoff --prepare`. `handoff_flow.py` requests a role's own
