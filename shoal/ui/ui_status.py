@@ -308,14 +308,26 @@ def _client_holds(role, spec) -> bool:
     return False
 
 
-def _ctx_auto_over(spec, role) -> bool | None:
-    """True when the quorum's automatic context restart will hand this role off itself (auto mode, past its limit), so
-    a restart-ready role needs nobody; None when that cannot be read."""
+def _ctx_restart(spec, role) -> tuple[str, bool] | None:
+    """(mode, over) for the context restart of this role: in `auto` mode the quorum hands it off itself once it is past
+    its limit, so a restart-ready role needs nobody, over the limit or not (under it, restart-ready is only a checkpoint
+    and no restart is due); only `page` mode waits on the operator. None when that cannot be read."""
     try:
         import context as _ctx
-        return _ctx.mode(spec, role.slug) == "auto" and _ctx.over(spec, role) is not None
+        return _ctx.mode(spec, role.slug), _ctx.over(spec, role) is not None
     except Exception:  # noqa: BLE001
         return None
+
+
+def ledger_explains_stop(hposture: str, q: dict) -> bool:
+    """True when the ledger says why a role is not working: a recorded wait, or no active item and a recorded blocker on
+    every next item."""
+    if hposture == "waiting":
+        return True
+    from ledger import item_key
+    nxt = [item_key(x) for x in q.get("next") or []]
+    blocked = {item_key(k) for k, v in (q.get("next_blocked") or {}).items() if v}
+    return bool(nxt) and not q.get("active") and all(k in blocked for k in nxt)
 
 
 def _short(s, n: int = 80) -> str:
@@ -374,7 +386,11 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                     and pending_question(e or {}, role.session))
         if question:
             reasons.append("blocked-on-question")
-        elif sess == "blocked":
+        elif sess == "blocked" and not ledger_explains_stop(hposture, q):
+            # Claude's own reading of a turn that ended sounding like it waits on you, with no prompt open. The ledger
+            # is the role's record: a recorded wait, or a blocker on every next item, says why it stopped, and the role
+            # reads by that instead (measured 2026-11-11: a role with both next items blocked upstream read
+            # says-waiting in needs you). An answer it wants is a `queue --ask`, which needs you on its own
             reasons.append("blocked-says-waiting")
         # the quorum's own predicate; a session mid-turn (or on a question) arms its watcher at the
         # turn's end, and a dead worker is reported as dead-worker instead. As the quorum judges it, a dead
@@ -400,10 +416,10 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             # until dismissed, and a dismissal holds until the state changes. A fill=self role finds board work itself
             reasons.append("no-work")
         if q.get("restart_ready") and hposture in ("idle", "waiting") and not remote:
-            auto = _ctx_auto_over(spec, role)
-            if auto is False:
+            ctx = _ctx_restart(spec, role)
+            if ctx is not None and ctx[0] != "auto":
                 reasons.append("handoff-pending")
-            elif auto and _client_holds(role, spec):
+            elif ctx is not None and ctx[1] and _client_holds(role, spec):
                 # the quorum holds its automatic restart for an attached client (#150): detaching is the only step left
                 reasons.append("restart-held")
         if hposture == "active" and sess in ("idle", "dead"):
@@ -430,6 +446,10 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     prompt = (_h.claude_open_prompt(role.session)
               if role.ecosystem == "claude" and "blocked-on-question" in reasons else "")
     agent = agent_state(role, hposture, sub, st, q, reasons, sess, wait_done, stale_nb)
+    if role.ecosystem == "claude" and sess == "blocked" and not {"blocked-says-waiting", "blocked-on-question"} & set(reasons):
+        said = claude_says(claude_session(rows, role.session) or {}, role.session)
+        if said:  # the words stay readable beside the ledger's reason, without making them a need
+            agent["detail"] = _short(f"{agent['detail'] or ''}; its last turn: {said}".lstrip("; "), 160)
     needs_fp = needs_fingerprint(reasons, asks, words, boundary, prompt, agent["state"])
     ack = view.dismissals.get(slug)
     wanting = agent["group"] == "needs-you" or bool(set(reasons) & FAILURE_REASONS)
@@ -1045,7 +1065,9 @@ def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[s
     def g(group, state, detail=""):
         return {"group": group, "state": state, "detail": _short(detail, 160) or None}
     if asks:  # a parked role's ask too: answering it is the maintainer's move either way
-        return g("needs-you", "asked", ("parked; " if "parked" in r else "") + str(asks[0]))
+        # a role can ask while it waits on something else (a CI run): say both, so "asked" beside remote-ci reads as one
+        also = f"also waiting {sub}; " if posture == "waiting" and sub and sub not in USER_WAITS else ""
+        return g("needs-you", "asked", ("parked; " if "parked" in r else "") + also + str(asks[0]))
     if "parked" in r:
         return g("held", "parked", "parked by the operator: no session, no wakes")
     if "blocked-on-question" in r:

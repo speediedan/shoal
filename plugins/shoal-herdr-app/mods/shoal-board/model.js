@@ -16,7 +16,7 @@ export const ROOT = { w: 260, h: 56 };
 // board's relationships read at a glance); `scale` is the zoom
 export const DIMS = {
   cards: { ...NODE, rootW: ROOT.w, rootH: ROOT.h, looseHead: 30, scale: 1 },
-  nodes: { w: 58, h: 52, gapX: 10, gapY: 34, rowGap: 10, pad: 16, rootW: 220, rootH: 48, looseHead: 30, r: 13, scale: 1 },
+  nodes: { w: 58, h: 52, gapX: 10, gapY: 34, rowGap: 10, pad: 16, rootW: 220, rootH: 56, looseHead: 30, r: 13, scale: 1 },
 };
 export const ZOOM = { min: 0.3, max: 2, step: 1.25 };
 

@@ -390,8 +390,9 @@ export default class Board extends View {
     const r = lay.root;
     canvas.child(v_flex().id("root-node").absolute().left(r.x).top(r.y).w(r.w).h(r.h).px(12 * d.scale).py(7 * d.scale).gap(2).rounded(10)
       .bg(withAlpha(b.closed ? c.done : c.accent, 0.16)).border_2().border_color(b.closed ? c.done : c.accent)
-      .child(div().text_size(t(13)).font_semibold().text_color(c.ink).truncate().child(b.title || b.id))
-      .child(div().text_size(t(11)).text_color(c.muted).child(b.closed ? `closed: all ${b.done} done` : `${b.open} open · ${b.done} done`)));
+      // flex_none: a box too short for both lines clipped the title's top instead of letting the box size them
+      .child(div().flex_none().text_size(t(13)).font_semibold().text_color(c.ink).truncate().child(b.title || b.id))
+      .child(div().flex_none().text_size(t(11)).text_color(c.muted).child(b.closed ? `closed: all ${b.done} done` : `${b.open} open · ${b.done} done`)));
     if (lay.loose.count) {
       canvas.child(h_flex().id("loose-head").absolute().left(d.pad).top(lay.loose.y).h(Math.max(14, d.looseHead - 8)).gap(8).items_center()
         .child(div().text_size(12.5).font_semibold().text_color(c.muted).child(`No dependencies (${lay.loose.count})`))

@@ -167,7 +167,10 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   candidates, or records why fewer. `next` shows candidates whenever the queue has an open slot: a
   next item with a recorded blocker holds no slot, and a role with no active item has one more.
   Without `--reason`, a short queue's default reason is checked against the candidates (`short
-  queue: N eligible candidate(s) not taken` when there are any).
+  queue: N eligible candidate(s) not taken` when there are any). A `fill=self` role with no active item and every
+  next item blocked also gets `TAKE BOARD WORK` when an offer or a workable candidate is listed: a blocked queue is
+  not a reason to idle, so it takes an offer first, else the first candidate, and keeps the blocked items in `next`
+  with their blockers.
 
 **Every turn ends in a sleep posture:** `queue --wait <sub> --holder <who> --target <kind:ref>`
 with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. Idle is
@@ -477,7 +480,9 @@ it (`restart --only`, `unpark`) relaunches it and clears the record. `shoal remo
 on every harness, withdraws the offers addressed to it so those items can be filled again, releases its claims so they stay
 gone if the slug ever returns, removes it from the spec, writes
 `role-removed`; the ledger keeps its history), and `shoal remove-session`
-does the same for a saved standalone session. `shoal handoff` hands a live role to a fresh session
+does the same for a saved standalone session. A retry after the harness already removed it (a Claude job gone from
+`claude agents` and from its jobs directory) succeeds and forgets the entry; a refusal names the worktree that keeps
+a Claude job. `shoal handoff` hands a live role to a fresh session
 in place, optionally on another model or provider (the quorum's `context_restart` run by hand, under its gate: see
 [`handover.md`](handover.md)). `shoal set-fill --only <role> --fill self|assigned|none` changes how a role gets its work
 without a restart: it saves the spec, records a `role-fill` event, and wakes the role with what the new fill means, since
@@ -1047,7 +1052,10 @@ and the contract are in [`ui.md`](ui.md).
   same lock as automated turns. It refuses while busy; `/exit` releases native ownership and
   returns to observation. A native client holds the session and the role's wakes until it exits, so
   `native_client.py` reports it apart from a turn (`held`, with pid, terminal and start) and offers `T`, which ends
-  it unless the session was written to in the last two minutes. Standalone Muse and Codex cards retain native resume when idle. Native
+  it unless the session was written to in the last two minutes. A Muse `/exit` while a turn runs cancels that turn
+  (Muse records the command, then the run's terminal record as `cancelled`): on the way out the view says so and
+  offers `c`, which runs the turn again headless (`muse.continue_cancelled`, only after such an exit) so the role
+  finishes it and brings its own queue up to date. Standalone Muse and Codex cards retain native resume when idle. Native
   `--no-session-log` replay is not used: it permits unsaved divergent turns and does not follow
   ongoing work. Modern Muse journal freshness uses `sessions/YYYY/MM/DD/<id>/session.jsonl`;
   a native lock pid must own the locked file and an interactive resume process before it counts

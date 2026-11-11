@@ -471,8 +471,18 @@ def cmd_next(a) -> int:
     short_by = queue_next_max(spec) - len([x for x in nxt if item_key(x) not in nbk_q]) + (0 if active else 1)
     if short_by > 0:
         excl = {item_key(x) for x in [active] + nxt if x} | {item_key(o["item"]) for o in offers}
-        for c in candidates_for(spec, view, slug, excl, limit=max(short_by, 3)):
-            out.append(c)
+        cands = candidates_for(spec, view, slug, excl, limit=max(short_by, 3))
+        out += cands
+        # a fill=self role idle behind blocked next items read the BOARD lines as optional and went idle (measured
+        # 2026-11-11: both next items blocked upstream, workable candidates listed): say it is the move
+        workable = [c for c in cands if c.startswith("BOARD ") and " blocked-by=" not in c.split(" :: ")[0]]
+        if me.fill == "self" and not active and (offers or workable) \
+                and not [x for x in nxt if item_key(x) not in nbk_q]:
+            first = "the first OFFER above, else the first BOARD item" if offers else "the first BOARD item above"
+            out.append(f"TAKE BOARD WORK: every next item is blocked and you fill your own queue, so a blocked queue is "
+                       f"not a reason to idle. Take {first} (`queue --claim <item>`, then `queue --active <item>`), "
+                       f"keeping the blocked items in next with their blockers. Idle only when nothing listed is "
+                       f"workable: pass each with its class (`queue --pass ITEM:CLASS[:note=TEXT]`)")
     try:
         from state import wait_status
         ws, w = wait_status(spec.sid, slug)

@@ -42,6 +42,32 @@ class MuseViewTests(unittest.TestCase):
         d.mkdir(parents=True)
         return d
 
+    def test_exit_that_cancels_a_turn_is_seen_and_c_continues_only_after_one(self):
+        d = self.native()
+        t0 = time.time()
+        us = lambda dt: int((t0 + dt) * 1e6)  # noqa: E731
+        rows = [
+            {"recorded_at": us(-60), "payload_type": "command.invoked", "payload": {"record": {"command": "/exit"}}},
+            {"recorded_at": us(1), "payload_type": "runtime.user_intent.accepted", "payload": {}},
+            {"recorded_at": us(8), "payload_type": "command.invoked", "payload": {"record": {"command": "/exit"}}},
+            {"recorded_at": us(8), "payload_type": "runtime.session",
+             "payload": {"event": {"kind": "terminal", "terminal": "cancelled"}, "kind": "run"}},
+        ]
+        (d / "session.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        self.assertTrue(muse.exit_cancelled_turn(SID, t0))
+        self.assertFalse(muse.exit_cancelled_turn(SID, t0 + 10), "nothing after the window")
+        # an /exit between turns ends nothing: no cancelled terminal follows it
+        (d / "session.jsonl").write_text(json.dumps(rows[0]) + "\n" + json.dumps(rows[2]) + "\n")
+        self.assertFalse(muse.exit_cancelled_turn(SID, t0))
+        started = []
+        with patch.object(muse, "start_run", side_effect=lambda *a, **k: started.append(a)):
+            self.assertIn("nothing to continue", muse.continue_cancelled(SID))
+            Path(muse.sdir(SID, create=True), "cancelled-by-exit").write_text(f"{t0}\n")
+            self.assertIn("continuing", muse.continue_cancelled(SID, repo_dir=self.tmp.name))
+            self.assertIn("nothing to continue", muse.continue_cancelled(SID), "the marker is spent")
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][2], muse.CONTINUE_PROMPT)
+
     def test_role_observer_in_idle_and_busy_states_preserves_standalone(self):
         for busy in (False, True):
             with patch.object(muse, "busy", return_value=busy):

@@ -132,6 +132,12 @@ test("metrics: tiles and sparklines", () => {
   assert.deepEqual(M.sparkPoints([null, 3], 100, 40), []);
 });
 
+test("the root box holds its title and counts lines in both modes (a 48 px nodes root clipped the title)", () => {
+  // 7 px padding and a 2 px border on each side, a 13 px and an 11 px line at about 1.4 line height, a 2 px gap
+  const need = 2 * 7 + 2 * 2 + Math.ceil(13 * 1.4) + Math.ceil(11 * 1.4) + 2;
+  for (const mode of ["cards", "nodes"]) assert.ok(M.DIMS[mode].rootH >= need, `${mode} rootH ${M.DIMS[mode].rootH} < ${need}`);
+});
+
 test("zoom: every length scales, the steps stay in range, Fit finds a zoom that holds the whole tree", () => {
   const d = M.scaleDims(M.DIMS.cards, 0.5);
   assert.equal(d.w, M.DIMS.cards.w / 2);

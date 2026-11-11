@@ -812,6 +812,11 @@ class ClaudeBackend(Backend):
             _same(str(r.get("sessionId", "")), conv) or (orig and _same(str(r.get("sessionId", "")), orig))
             or (orig and _same(str(r.get("originalSessionId") or _state_of(str(r.get("id")))
                                    .get("sessionId") or ""), orig)))]
+        if not row and not os.path.isdir(os.path.join(claude_base(), "jobs", jid)):
+            # already gone (a retry after `claude rm` ran by hand): a removal that has nothing left to remove succeeds,
+            # so the caller can forget the entry (measured 2026-11-11: a retried remove-session refused on "No job
+            # matching" and left the entry saved)
+            return f"no Claude job {jid} is left: already removed"
         if dry_run:
             return f"would tombstone and `claude rm` {jid}" + (f", then re-stop {', '.join(sibs)}" if sibs else "")
         if row.get("pid"):
@@ -821,7 +826,10 @@ class ClaudeBackend(Backend):
         r = subprocess.run([b, "rm", jid], capture_output=True, text=True, timeout=60, env=_ENV)
         if r.returncode != 0:
             out = ANSI_RE.sub("", r.stdout + r.stderr).strip()
-            raise RuntimeError(f"claude rm {jid} rc={r.returncode}: {out.splitlines()[-1][:120] if out else ''}")
+            lines = out.splitlines()
+            # Claude keeps a job whose worktree is still there and says where first: name that line, not the last
+            why = next((x for x in lines if "worktree" in x), lines[-1] if lines else "")
+            raise RuntimeError(f"claude rm {jid} rc={r.returncode}: {why.strip()[:200]}")
         did = f"purged job {jid} (tombstone {stone})"
         if sibs:
             try:
