@@ -62,6 +62,38 @@ Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age
 `manifest`, `[cold] warm_days`, `[hooks] commit`). The checkpoint, deep-pass and `on_retire` settings are read by the
 commands that follow them.
 
+## Checkpoint pass at restart-ready
+
+Before each restart-ready checkpoint, the role distills its own start doc: append completed details and decisions
+that no longer apply to its append-only log, keep only current guidance, refresh the bounded header, and append the
+session entry and snapshot. Read live PR, CI and queue state when needed instead of preserving copies of it. Commit
+the exact changed paths through the repository's normal hook.
+
+`queue --restart-ready` then runs an advisory lifecycle check. Standalone sessions run the same check explicitly:
+
+```bash
+shoal lifecycle checkpoint <start-doc> [--json]
+```
+
+The check reads `doc-check` and the directory's reference classification, including roots from the host's live specs
+and standalone registry. It reports dangling references, deleted and untracked files, header warnings and archive
+candidates without changing files or running hooks. Each category prints its count and at most five examples. The
+queue event records the bounded report as `lifecycle_checkpoint`; the next session can act on unresolved advice.
+Other hosts' standalone roots are not read here, so this is advice rather than authority to move anything. The
+archive operation still checks roots across hosts before a move.
+
+For `[checkpoint] archive = "propose"`, the role lists candidates for review or records a `keep: <reason>` in their
+front matter. Roots, live files and untracked files cannot be archive candidates. Resolve untracked work first.
+Keep files another owner's live document references and tell that owner through ledger mail to update its link.
+Automatic archival remains deferred pending model-cost measurements: `auto` currently also reports proposals and
+never moves files. `off` skips the lifecycle check. The check itself makes no model calls.
+
+The probe runs in a child process with a 15-second timeout. A failed scan, a timeout, a header warning or unresolved
+candidates never reject `restart_ready`, including beyond the context limit. Existing start-doc freshness, required
+sections and durable-job-reference checks still apply. No lifecycle enforcement gate is introduced in this release.
+Measure the model work separately on one or two roles before enabling routine distillation or automatic archival:
+record turn-token counters immediately before and after the pass, separating cached input and output where available.
+
 ## Hooks run only for a trusted repository
 
 `[hooks]` names commands shoal would run, which makes the file code execution from repository content: any repository a

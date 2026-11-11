@@ -1716,6 +1716,24 @@ check "status=idle" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-
 check "names job folder.s. abcd1234, ffff0000, not on this host" env CLAUDE_CONFIG_DIR="$S/cc" $Q --slug tl --idle --restart-ready
 cp "$S/tldoc.keep" "$TLDOC"
 check "status=idle" $Q --slug tl --idle --restart-ready
+# Even unhealthy lifecycle advice is recorded without preventing the context restart, above or below its limit.
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "advisory lifecycle checkpoint queue"
+import contextlib, io, sys
+from unittest import mock
+sys.path.insert(0, sys.argv[1])
+import checkpoint, cli
+from ledger import Ledger, View
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+advice = {"v": 1, "advisory": True, "ok": False, "notes": ["probe timed out"], "counts": {}, "samples": {}}
+for used in (120000, 412000):
+    with mock.patch.dict("os.environ", SHOAL_FAKE_CONTEXT='{"tl": %d}' % used), \
+            mock.patch.object(checkpoint, "run", return_value=advice), contextlib.redirect_stdout(io.StringIO()):
+        assert cli.main(["queue", "--shoal", spec.sid, "--spec", sys.argv[2], "--slug", "tl", "--idle",
+                         "--restart-ready", "--no-sync"]) == 0
+    q = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec).current_queue("tl")
+    assert q["restart_ready"] and q["lifecycle_checkpoint"] == advice, q
+PY2
 # handover telemetry: advised (the non-peek next above), doc-refreshed (this restart-ready), then the quorum's restart
 # and the new session's first turn, once each
 python3 - "$SHOALD" "$SPEC" "$S/data/$SID/telemetry" <<'PY2' || fail "handover telemetry"
@@ -2382,6 +2400,7 @@ check "name a directory" $H refs
 
 echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head"
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
+python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.py)"
 check "name a start doc" $H doc-head
 
 echo "== 40 archive: reference-aware warm archive, restore and cold, one commit of exactly its paths, undone on a refused hook"
