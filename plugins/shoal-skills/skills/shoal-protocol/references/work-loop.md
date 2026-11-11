@@ -10,7 +10,8 @@
    - `--done <item> --url <evidence>`: records completion with the evidence;
    - `--pass <item>:<class>[:suggest=<role>]`: declines an item at the boundary;
    - `--wait <sub> --holder <who> --target <kind:ref> [--rescan-min N] [--blocked-on <role>:<item>]`;
-   - `--idle`: nothing actionable (an empty queue, or every next item blocked);
+   - `--idle`: nothing actionable: an empty queue, or every next item blocked and, for a fill=self
+     role, no workable `BOARD` candidate left (take one first, or pass each with its class);
    - `--blocked ITEM=<blocker>` (repeatable; `ITEM=` clears): why a next item cannot start. The
      blocker is `<role>:<repo#n>` (that role sees `BLOCKING`), `ask[:<n>]`, `user`,
      `upstream:<target>`, `lease:<key>` or `hold:<why>`. Recorded blockers carry forward while the
@@ -32,6 +33,7 @@
 | `NEXT BLOCKED` | a next item's recorded blocker: re-check it at each boundary and clear it (`--blocked ITEM=`) once gone |
 | `BLOCKER STALE` | that blocker has cleared or expired and no longer lets you idle: start the item, or re-check and record what blocks it now |
 | `BOARD` | an eligible candidate: when your next items are all blocked, take one rather than idling behind them, or pass it with a reason |
+| `TAKE BOARD WORK` | fill=self, no active item and every next item blocked, with a workable `BOARD` candidate: claim it now; the blocked items stay in next |
 | `USER OFFLINE` | never wait on the maintainer; record asks with `queue --ask`; stack work; take unblocked items |
 | `ASKS TO RAISE` | the maintainer is online: follow `asks-and-offline.md` now |
 | `DROPPED ASKS` | disclose each to the maintainer in your next question set |

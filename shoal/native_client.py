@@ -73,7 +73,14 @@ def take_over(h, session: str) -> str:
 
 
 def on_key(h, key: str, session: str, model: str, effort: str, keys: str) -> None:
-    """`i` asks for native access; `T` (a capital, so never by accident) ends the client that refused it first."""
+    """`i` asks for native access; `T` (a capital, so never by accident) ends the client that refused it first; `c`
+    continues a turn an `/exit` cancelled, headless, where the harness can tell (Muse)."""
+    if key in ("c", "C") and hasattr(h, "continue_cancelled"):
+        try:
+            print(f"\n{h.continue_cancelled(session, model, effort)}", flush=True)
+        except h.BusyError as exc:
+            print(f"\nnot continued: {exc}", flush=True)
+        return
     if key == "T":
         why = take_over(h, session)
         if why:

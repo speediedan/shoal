@@ -114,6 +114,29 @@ class AgentState(unittest.TestCase):
         held = {"next": ["a#1:fix"], "next_blocked": {"a#1": "hold:the maintainer's order"}}
         self.assertEqual(self.state(q=held)["group"], "held")
 
+    def test_an_ask_beside_a_ci_wait_says_both(self):
+        s = self.state(posture="waiting", sub="remote-ci", q={"asks": ["Refresh the key?"]})
+        self.assertEqual((s["group"], s["state"]), ("needs-you", "asked"))
+        self.assertTrue(s["detail"].startswith("also waiting remote-ci; Refresh"), s["detail"])
+
+    def test_the_ledger_explains_a_stop_claude_reads_as_blocked(self):
+        f = ui_status.ledger_explains_stop
+        both = {"next": ["a#1:fix", "a#2:fix"], "next_blocked": {"a#1": "upstream:gh-issue:o/r#2", "a#2": "hold:x"}}
+        self.assertTrue(f("waiting", {}), "a recorded wait")
+        self.assertTrue(f("idle", both), "a blocker on every next item")
+        self.assertFalse(f("idle", dict(both, next_blocked={"a#1": "upstream:gh-issue:o/r#2"})), "one item is free")
+        self.assertFalse(f("idle", dict(both, active="a#3:fix")), "an active item it stopped on")
+        self.assertFalse(f("idle", {}), "nothing recorded: Claude's reading stands")
+
+    def test_a_restart_ready_role_in_auto_mode_needs_nobody(self):
+        import context
+        role = types.SimpleNamespace(slug="r")
+        for mode, over, want in (("auto", False, ("auto", False)), ("auto", True, ("auto", True)),
+                                 ("page", False, ("page", False))):
+            with patch.object(context, "mode", return_value=mode), \
+                    patch.object(context, "over", return_value=1 if over else None):
+                self.assertEqual(ui_status._ctx_restart(SPEC, role), want)
+
     def test_a_blocker_past_its_daily_look_stays_blocked(self):
         q = {"next": ["a#1:fix"], "next_blocked": {"a#1": "peer:o/r#3"}}
         s = self.state(q=q, reasons=["parked-work"], stale={"a#1": "expired: recorded 1500m ago"})

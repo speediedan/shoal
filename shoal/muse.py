@@ -416,9 +416,56 @@ def messages(session: str, limit: int = 20) -> str:
     return "\n".join(out[-limit:])
 
 
+CONTINUE_PROMPT = ("Your previous turn was cancelled when the maintainer left the interactive session (/exit) while it "
+                   "ran. Continue from the maintainer's last message as if the turn had not been interrupted. If you "
+                   "hold a shoal role, bring your queue up to date before the turn ends (clear an ask that message "
+                   "answered), then end in a sleep posture as usual.")
+
+
+def exit_cancelled_turn(session: str, since: float, tail_bytes: int = 4 << 20) -> bool:
+    """True when the native client's `/exit` cancelled a running turn after `since` (epoch seconds): Muse records the
+    command, then the run's terminal record as `cancelled` (measured 2026-11-11: an answer typed 7 s before `/exit`
+    was lost with its turn, and the role kept reading "asked")."""
+    path = os.path.join(native_session_dir(session) or "", "session.jsonl")
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - tail_bytes))
+            lines = fh.read().splitlines()
+    except OSError:
+        return False
+    exited = False
+    for raw in lines:
+        try:
+            r = json.loads(raw)
+        except ValueError:
+            continue
+        if float(r.get("recorded_at") or 0) / 1e6 < since:
+            continue
+        pl = r.get("payload") or {}
+        rec = pl.get("record") if isinstance(pl, dict) else None
+        if r.get("payload_type") == "command.invoked" and isinstance(rec, dict) and rec.get("command") == "/exit":
+            exited = True
+        ev = pl.get("event") if isinstance(pl, dict) else None
+        if exited and isinstance(ev, dict) and ev.get("kind") == "terminal" and ev.get("terminal") == "cancelled":
+            return True
+    return False
+
+
+def continue_cancelled(session: str, model: str = "", effort: str = "", repo_dir: str = "") -> str:
+    """Run the turn an `/exit` cancelled again, headless, so the role finishes it and updates its own state. Only
+    right after such an exit (the view leaves a marker), so a stray `c` never starts a turn."""
+    marker = os.path.join(sdir(session, create=True), "cancelled-by-exit")
+    if not os.path.exists(marker):
+        return "nothing to continue: no turn was cancelled by an /exit from this view"
+    start_run(session, repo_dir or os.getcwd(), CONTINUE_PROMPT, model, effort)
+    os.unlink(marker)
+    return "continuing the cancelled turn in the background; the live view shows it"
+
+
 def interactive_view(session: str, model: str = "", effort: str = "") -> int:
     """Explicit native access, serialized with start_run so a watcher cannot win the attach race. The client is
-    checked first: one opened from another observer holds this lock too, and is not a turn."""
+    checked first: one opened from another observer holds this lock too, and is not a turn. An `/exit` while a turn
+    runs cancels that turn (Muse ends it with the client): the view says so on the way out, and `c` continues it."""
     import native_client
     pid = attached_client(session)
     if pid:
@@ -428,9 +475,17 @@ def interactive_view(session: str, model: str = "", effort: str = "") -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise BusyError("a turn is running; the live view remains available")
-        print("Native interactive mode pauses automatic wakes until you exit Muse (/exit).", flush=True)
-        return subprocess.run([muse_bin(), "resume", session, *interactive_flags(model, effort)],
-                              env=turn_env()).returncode
+        print("Native interactive mode pauses automatic wakes until you exit Muse (/exit). An /exit while a turn "
+              "runs cancels it: wait for the turn to end first.", flush=True)
+        since = time.time()
+        rc = subprocess.run([muse_bin(), "resume", session, *interactive_flags(model, effort)],
+                            env=turn_env()).returncode
+    if exit_cancelled_turn(session, since):
+        with open(os.path.join(sdir(session, create=True), "cancelled-by-exit"), "w") as fh:
+            fh.write(f"{since}\n")
+        print("\nYour /exit cancelled the turn that was running. [c] continue it in the background (headless), or "
+              "leave it stopped.", flush=True)
+    return rc
 
 
 def observer_argv(session: str, model: str = "", effort: str = "") -> list[str]:
