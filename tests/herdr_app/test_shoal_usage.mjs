@@ -46,6 +46,21 @@ test("a window's pace: 40% one hour into five runs out before the reset", () => 
   assert.equal(M.windowNote(M.windowView(win("5h", 100, 60, 300), NOW)), "resets in 1m · used up");
 });
 
+test("a reset's wall-clock time where the app runs: today, within a week, later", () => {
+  const pst = { offsetMin: -480, zone: "PST" };
+  const now = Date.UTC(2027, 0, 12, 18, 0, 0) / 1000; // Tue 10:00 PST
+  assert.equal(M.clockTime(now + 4.5 * 3600, now, pst), "14:30 PST");
+  assert.equal(M.clockTime(now + 2 * 86400, now, pst), "Thu 10:00 PST");
+  assert.equal(M.clockTime(now + 9 * 86400, now, pst), "Jan 21 10:00 PST");
+  assert.equal(M.clockTime(now + 3600, now, { offsetMin: 330, zone: "UTC+5:30" }), "Wed 00:30 UTC+5:30", "past midnight there: the next day");
+  assert.equal(M.clockTime(null, now, pst), "");
+  const v = M.windowView(win("5h", 40, 4 * 3600, 300), NOW);
+  assert.match(M.windowNote(v, pst, NOW), /^resets in 4h \(\d\d:\d\d PST\) · runs out/);
+  assert.equal(M.windowNote(v), "resets in 4h · runs out in 1h 30m at this pace", "no clock: no time");
+  const c = M.localClock(new Date());
+  assert.ok(typeof c.zone === "string" && c.zone.length && Number.isInteger(c.offsetMin));
+});
+
 test("cards: one per account and bucket, an account with no reading says why", () => {
   const cs = M.cards(DOC, NOW);
   assert.deepEqual(cs.map((c) => c.title), ["alpha", "beta · beta-team", "gamma"]);
