@@ -1762,10 +1762,19 @@ assert ui_herdr.load_standalone(raw=True)[0]["handover"] == "off"
 # 2026-11-11: no advise-then-refresh round trip)
 os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"seat": 620000})
 A.mode = "auto"
+# mid-turn: never reset, forced or not; it waits for an idle moment
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "fe5e7000", "sessionId": "fe5e7000-0000", "pid": 8, "tempo": "active", "inFlight": {}, "name": "seat"}], "opencode": {}})
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     assert handover.cmd_handover(A) == 0
-assert "handed over" in buf.getvalue() and "advised" not in buf.getvalue(), buf.getvalue()
+assert "waits for an idle moment" in buf.getvalue() and "handed over" not in buf.getvalue(), buf.getvalue()
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "fe5e7000", "sessionId": "fe5e7000-0000", "pid": 8, "tempo": "idle", "inFlight": {}, "name": "seat"}], "opencode": {}})
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert handover.cmd_handover(A) == 0
+assert "handed over:" in buf.getvalue() and "advised" not in buf.getvalue(), buf.getvalue()
 assert ui_herdr.load_standalone(raw=True)[0]["handover_state"]["step"] == "reset"
 A.mode = "off"
 with contextlib.redirect_stdout(io.StringIO()):

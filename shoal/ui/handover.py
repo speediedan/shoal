@@ -146,7 +146,7 @@ def step(e: dict, force: bool = False, dry_run: bool = False) -> str:
             # boundary, so past its limit and idle it is handed over on the doc as it stands. Never mid-turn, forced or
             # not (an opt-in forces only the advice): a busy seat is reset by a later pass at its next idle moment
             if idle_row(e) is None:
-                return f"{label}: past its limit ({k}k): handed over at its next idle moment" if force else ""
+                return f"{label}: past its limit ({k}k): its reset waits for an idle moment" if force else ""
             return _reset(e, label, dry_run)
         after = ("Shoal then hands you over to a fresh session on that doc." if mode == "auto"
                  else "The maintainer resets you on that doc.")
