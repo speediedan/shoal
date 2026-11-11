@@ -165,6 +165,9 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
                 raise ActError(f"{a.ecosystem} is set aside on this host: choose a provider in use")
         cost = "requests a checkpoint turn" if prepare else "uses the existing checkpoint, only if the source is already idle"
         return args, cost + ", then starts a fresh session from its start doc; continues in the background", True
+    if verb == "dismiss" and getattr(a, "session", ""):
+        # a standalone seat: its finished reply, until its next one
+        return ["dismiss", f"--session={a.session}"] + (["--undo"] if getattr(a, "undo", False) else []), "", False
     spec = _spec(a.shoal)
     sid = spec.sid
     if verb == "msg":

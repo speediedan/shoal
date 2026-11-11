@@ -113,7 +113,15 @@ def cmd_offer(a) -> int:
 
 @_guard
 def cmd_dismiss(a) -> int:
-    """Clear a role's needs-you from the lists until something new is raised. It stays as it is, and health is unchanged."""
+    """Clear a role's needs-you from the lists until something new is raised. It stays as it is, and health is unchanged.
+    `--session`: a standalone seat's finished reply instead, until its next reply."""
+    if a.session:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+        import ui_app
+        return ui_app.cmd_seat_dismiss(a.session, a.undo, a.dry_run)
+    if not (a.sid and a.role):
+        print("ERROR: dismiss needs --shoal and --role, or --session for a standalone seat")
+        return 2
     spec = _spec(a)
     led = _ledger(a, spec)
     if spec is None or spec.role(a.role) is None:
@@ -672,9 +680,15 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_withdraw)
 
-    p = sub.add_parser("dismiss", help="clear a role's needs-you until something new is raised; it stays as it is, and health is unchanged")
-    common(p)
-    p.add_argument("--role", required=True)
+    p = sub.add_parser("dismiss", help="clear a role's needs-you until something new is raised, or a standalone seat's "
+                       "finished reply until its next one; it stays as it is, and health is unchanged")
+    config.add_id_arg(p, default="")
+    p.add_argument("--spec", default="")
+    p.add_argument("--ledger-dir", default="")
+    p.add_argument("--no-sync", action="store_true", help="local clone only (tests/offline)")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--role", default="", help="with --shoal: the role")
+    p.add_argument("--session", default="", help="instead: a saved standalone seat (label, job or session id)")
     p.add_argument("--undo", action="store_true", help="show it as needing you again, if it still does")
     p.set_defaults(func=cmd_dismiss)
 

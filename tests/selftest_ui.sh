@@ -1731,9 +1731,9 @@ os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
 os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"seat": 620000})
 import handover, startdoc, ui_herdr
 doc = os.path.join(S, "seat_plan_state.md")
-open(doc, "w").write("# seat\n\n## Mission\n\nm\n\n## Current state\n\nLast updated: 2020-01-01T00:00Z\n\n## Next\n\n- n\n\n## grants-needed\n\n- None pending\n")
+# a doc that fails its contract (no grants-needed): opting in above the limit advises at once (one direct delivery)
+open(doc, "w").write("# seat\n\n## Mission\n\nm\n\n## Current state\n\nLast updated: 2020-01-01T00:00Z\n\n## Next\n\n- n\n")
 ui_herdr.save_standalone([{"harness": "claude", "session": "seat0001-aaaa", "job": "seat0001", "label": "seat"}])
-# opting in above the limit advises at once (one direct delivery)
 A = type("A", (), {"target": "seat", "doc": doc, "mode": "auto", "k": 0, "list": False, "dry_run": False})()
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
@@ -1741,10 +1741,10 @@ with contextlib.redirect_stdout(buf):
 assert "advised (620k past 500k)" in buf.getvalue(), buf.getvalue()
 e = ui_herdr.load_standalone(raw=True)[0]
 assert e["handover_state"]["step"] == "advised" and e["doc"] == doc, e
-# a doc not refreshed since the advice: no reset
+# still failing its contract: no reset
 assert handover.tick() == [] and ui_herdr.load_standalone(raw=True)[0]["handover_state"]["step"] == "advised"
-# refreshed: reset onto it; the registry follows the new job
-open(doc, "a").write("\nLast updated: %s\n" % datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+# the doc meets its contract (its old stamp is fine: no freshness round trip): reset onto it; the registry follows
+open(doc, "a").write("\n## grants-needed\n\n- None pending\n")
 notes = handover.tick()
 assert any("handed over: fake new job fe5e7000" in n for n in notes), notes
 e = ui_herdr.load_standalone(raw=True)[0]
@@ -1758,6 +1758,19 @@ A.mode = "off"
 with contextlib.redirect_stdout(io.StringIO()):
     handover.cmd_handover(A)
 assert ui_herdr.load_standalone(raw=True)[0]["handover"] == "off"
+# a doc that meets its contract: past the limit and idle, auto resets at once with no advice first (maintainer,
+# 2026-11-11: no advise-then-refresh round trip)
+os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"seat": 620000})
+A.mode = "auto"
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    assert handover.cmd_handover(A) == 0
+assert "handed over" in buf.getvalue() and "advised" not in buf.getvalue(), buf.getvalue()
+assert ui_herdr.load_standalone(raw=True)[0]["handover_state"]["step"] == "reset"
+A.mode = "off"
+with contextlib.redirect_stdout(io.StringIO()):
+    handover.cmd_handover(A)
+os.environ["SHOAL_FAKE_CONTEXT"] = json.dumps({"seat": 40000})
 # a stop+resume of a job whose id is not its conversation's prefix leaves two jobs on one conversation: the delivery
 # follows the live copy, and the reset stops both (2026-10-24: b193724a stopped, 4decf3de live beside the new session)
 os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
@@ -1794,6 +1807,42 @@ ui_herdr.save_standalone([{"harness": "opencode", "session": "ses_new0001", "lab
 assert ui_view.registry_follow("claude", "x", "seat", "") == ("claude", "fe5e7000-0000", "fe5e7000")
 ui_herdr.save_standalone([{"harness": "claude", "session": "fe5e7000-0000", "job": "fe5e7000", "label": "seat"}])
 print("handover ok")
+PY2
+# a standalone seat declares what it waits on, and the maintainer dismisses its finished reply
+python3 - "$SHOALD" "$S" <<'PY2' || fail "seat wait and dismiss"
+import contextlib, io, json, os, sys, types; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+os.environ["XDG_CONFIG_HOME"] = os.path.join(sys.argv[2], "xdg-seatwait")
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "seat0009", "sessionId": "seat0009-aaaa", "pid": 7, "tempo": "blocked", "inFlight": {}, "name": "lc"}], "opencode": {}})
+import ui_app, ui_herdr, ui_status
+ui_herdr.save_standalone([{"harness": "claude", "session": "seat0009-aaaa", "job": "seat0009", "label": "lc"}])
+W = lambda **k: types.SimpleNamespace(**dict({"target": "lc", "on": "", "target_ref": "", "sub": "", "why": "", "clear": False,
+                                              "dry_run": False}, **k))
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    assert ui_app.cmd_seat_wait(W()) == 2, "a wait names what it waits on"
+    assert ui_app.cmd_seat_wait(W(target="nobody", on="x")) == 1
+    assert ui_app.cmd_seat_wait(W(on="ext:reviewer", target_ref="gh-pr:acme/app#9", why="review")) == 0
+w = ui_herdr.load_standalone(raw=True)[0]["wait"]
+assert w["on"] == "ext:reviewer" and w["target"] == "gh-pr:acme/app#9" and w["sub"] == "session-blocked" and w["since"], w
+with contextlib.redirect_stdout(out):
+    assert ui_app.cmd_seat_wait(W(clear=True)) == 0
+assert "wait" not in ui_herdr.load_standalone(raw=True)[0]
+# dismiss: only a finished reply (the listing's blocked, no prompt), recorded by when it ended; --undo brings it back
+ui_status.pending_question = lambda r, s: False
+ui_status.claude_rows = lambda: json.loads(os.environ["SHOAL_FAKE_SESSIONS"])["claude"]
+ui_app.standalone_report = (lambda orig: lambda *a, **k: dict(orig(*a, **k), ended="2026-11-11T20:00:00.000Z"))(ui_app.standalone_report)
+with contextlib.redirect_stdout(out):
+    assert ui_app.cmd_seat_dismiss("lc") == 0
+    assert ui_app.cmd_seat_dismiss("lc", undo=True) == 0
+    assert ui_app.cmd_seat_dismiss("lc", undo=True) == 1, "nothing to bring back"
+    assert ui_app.cmd_seat_dismiss("lc") == 0
+assert ui_herdr.load_standalone(raw=True)[0]["needs_dismissed"] == {"ended": "2026-11-11T20:00:00.000Z"}
+os.environ["SHOAL_FAKE_SESSIONS"] = json.dumps({"claude": [
+    {"id": "seat0009", "sessionId": "seat0009-aaaa", "pid": 7, "tempo": "active", "inFlight": {}, "name": "lc"}], "opencode": {}})
+with contextlib.redirect_stdout(out):
+    assert ui_app.cmd_seat_dismiss("lc") == 1, "a working seat has no finished reply to dismiss"
+print("seat wait and dismiss ok")
 PY2
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "stale upkeep"
 import json, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
@@ -2363,16 +2412,39 @@ assert ui_app.role_agent(row) == ("waiting", "remote-ci", "on acme/app#12 CI"), 
 assert ui_app.role_agent(dict(row, dismissed=True)) == ("dismissed", "remote-ci", "on acme/app#12 CI")
 assert ui_app.role_agent({}) == ("", "", "") and ui_app.role_agent({"agent": {"group": "odd"}}) == ("", "", "")
 assert len(ui_app.role_agent({"agent": {"group": "held", "state": "held", "detail": "x" * 500}})[2]) == ui_app.DETAIL_MAX
-# a standalone seat needs you only at an open question; between turns it is held, whatever the listing calls it
+# a standalone seat: working; needs you at a question and after a reply until dismissed (the dismissal lapses at the next
+# reply); waiting while its own background tasks run; blocked or waiting on what it declared, for the turn that declared it
 seat = lambda **k: dict({"state": "idle", "kind": "", "turn": "idle", "msg": "alive, between turns"}, **k)
 agent2 = lambda *a, **k: ui_app.standalone_agent(*a, **k)[:2]
 assert agent2(seat(state="working", turn="working")) == ("working", "working")
 assert agent2(seat(state="blocked", kind="question", turn="blocked")) == ("needs-you", "question")
-assert agent2(seat(turn="blocked")) == ("held", "your-turn")
+assert agent2(seat(turn="blocked", ended="2026-11-11T20:00:00.000Z")) == ("needs-you", "your-turn")
+seen = {"needs_dismissed": {"ended": "2026-11-11T20:00:00.000Z"}}
+assert agent2(seat(turn="blocked", ended="2026-11-11T20:00:00.000Z"), entry=seen) == ("dismissed", "your-turn")
+assert agent2(seat(turn="blocked", ended="2026-11-11T21:00:00.000Z"), entry=seen) == ("needs-you", "your-turn"), \
+    "a dismissal lapses at the next reply"
 assert agent2(seat()) == ("held", "idle") and agent2(seat(turn="dead")) == ("held", "stopped")
 assert agent2(seat(turn="blocked"), dismissed=True) == ("dismissed", "your-turn")
+assert agent2(seat(bg=2, msg="between turns: 2 background tasks running")) == ("waiting", "background")
+review = {"wait": {"on": "ext:reviewer", "target": "gh-pr:acme/app#9", "since": "2026-11-11T20:00:00Z", "sub": "session-blocked"}}
+g = ui_app.standalone_agent(seat(turn="blocked", ended="2026-11-11T20:00:05.000Z"), entry=review)
+assert g[:2] == ("blocked", "session-blocked") and "on ext:reviewer" in g[2] and "acme/app#9" in g[2], g
+assert agent2(seat(turn="blocked", ended="2026-11-11T22:00:00.000Z"), entry=review) == ("needs-you", "your-turn"), \
+    "a later turn's end lapses a wait it did not declare again"
+assert agent2(seat(), entry={"wait": {"target": "gh-run:acme/app:7", "sub": "remote-ci"}}) == ("waiting", "remote-ci")
+assert agent2(seat(state="working", turn="working"), entry=review) == ("working", "working"), "a turn wins over a wait"
 assert ui_app.standalone_agent(seat())[2] == "alive, between turns", "the report's message is the tooltip"
 assert ui_app.standalone_agent(None) == ("", "", "")
+# Muse and Codex seats: their status line; an attached client counts as a turn only while its journal moves
+import muse as _muse
+for line, want in (("ab status:busy", "working"), ("ab status:busy attached active", "working"),
+                   ("ab status:busy attached quiet", "idle"), ("ab status:idle last:done rc:0", "idle")):
+    orig_sl = _muse.status_line
+    _muse.status_line = lambda s, line=line: line
+    try:
+        assert ui_app.native_report("muse", "s", "lc")["state"] == want, (line, want)
+    finally:
+        _muse.status_line = orig_sl
 tip = next(n for o, n in ui_app.CLONES["agents"][1] if o.startswith('\n        .on_click(() => run("pane.focus"'))
 assert 'el.tooltip(shoalLabel(a, "shoal.detail"))' in tip, tip
 # the clone's sections, run under Node on stand-in terminals: the group decides, Herdr's status where there is none

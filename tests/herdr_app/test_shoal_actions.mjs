@@ -399,7 +399,7 @@ test("public gate: fixtures and module hold no local paths or host names", () =>
 test("scopes: across shoals only the verbs that span them, and no shoal to pick", () => {
   const all = { shoal: null, role: null, scope: "all" };
   assert.deepEqual(M.verbsFor(all).map((v) => v.verb), ["offline", "freeze", "add-session"], "and Add session, a host's");
-  assert.deepEqual(M.verbsFor({ session: "some-seat" }).map((v) => v.verb), ["handoff", "remove-session"]);
+  assert.deepEqual(M.verbsFor({ session: "some-seat" }).map((v) => v.verb), ["handoff", "dismiss", "remove-session"]);
   assert.equal(M.verbsFor({ shoal: A, role: null }).length, M.VERBS.length - 1, "all but the standalone session's removal");
   const form = M.setValue(M.setValue(M.newForm("offline", NOW), "state", "off"), "dryRun", true);
   assert.equal(M.validate("offline", all, form), null);
@@ -419,7 +419,7 @@ test("remove: a role of a shoal, or a saved session by name, and nothing else on
   assert.deepEqual(M.planArgv("remove-role", t, M.setValue(f, "force", true)), ["ui", "act-plan", "remove-role", "--shoal", A, "--role=core", "--force", "--json"]);
   assert.equal(M.validate("remove-role", { shoal: A, role: "*" }, f), "pick a role first (not *)");
   const seat = { session: "some-seat" };
-  assert.deepEqual(M.verbsFor(seat).map((v) => v.verb), ["handoff", "remove-session"]);
+  assert.deepEqual(M.verbsFor(seat).map((v) => v.verb), ["handoff", "dismiss", "remove-session"]);
   const g = M.newForm("remove-session", NOW);
   assert.deepEqual(M.planArgv("remove-session", seat, g), ["ui", "act-plan", "remove-session", "--session=some-seat", "--json"]);
   assert.equal(M.validate("remove-session", { shoal: A, role: "core" }, g), "no session named");
@@ -667,7 +667,7 @@ test("the verbs in labeled groups: each in exactly one, in the group's order, on
   // a standalone seat: only its own verbs, and the groups it has none in are left out
   const seat = M.verbGroups({ session: "example-seat" });
   assert.deepEqual(seat.map((g) => g.key), ["seat"]);
-  assert.deepEqual(seat[0].verbs.map((v) => v.verb), ["handoff", "remove-session"]);
+  assert.deepEqual(seat[0].verbs.map((v) => v.verb), ["handoff", "dismiss", "remove-session"]);
 });
 
 test("a pick from the Board tab finds its row or candidate, owner, case and verb aside", () => {

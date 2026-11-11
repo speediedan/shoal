@@ -415,9 +415,10 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             # an assigned role with an empty queue and nothing offered: the next step is an offer. It stays in needs you
             # until dismissed, and a dismissal holds until the state changes. A fill=self role finds board work itself
             reasons.append("no-work")
-        if q.get("restart_ready") and hstatus in ("idle", "waiting") and not remote:
-            ctx = _ctx_restart(spec, role)
-            if ctx is not None and ctx[0] != "auto":
+        ctx = _ctx_restart(spec, role) if hstatus in ("idle", "waiting") and not remote else None
+        if ctx is not None and (q.get("restart_ready") or ctx[0] == "auto"):
+            # in `auto` any quiet boundary past the limit is a handover (no restart-ready needed): an attached client holds it
+            if ctx[0] != "auto" and q.get("restart_ready"):
                 reasons.append("handoff-pending")
             elif ctx is not None and ctx[1] and _client_holds(role, spec):
                 # the quorum holds its automatic restart for an attached client (#150): detaching is the only step left
@@ -686,6 +687,9 @@ def status(ids: list[str] | None = None, root: str = "", include_retired: bool =
 # ---- shared cache: one status computation per host, many readers -----------------------
 
 CACHE_MAX_AGE_S = 45
+# the row keys this code reads from the cache: bumped with any rename, so a cache an older feeder wrote is recomputed, not
+# read (measured 2026-11-11: between a checkout's pull and the feeder's restart, role cards read rows without `status`)
+CACHE_SCHEMA = 2
 
 
 def cache_path() -> str:
@@ -699,7 +703,7 @@ def write_cache(doc: dict) -> None:
         os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
         tmp = p + f".{os.getpid()}.tmp"
         with open(tmp, "w") as fh:
-            json.dump(doc, fh, default=str)
+            json.dump(dict(doc, cache_schema=CACHE_SCHEMA), fh, default=str)
         os.replace(tmp, p)
     except OSError:
         pass
@@ -711,7 +715,7 @@ def read_cache(max_age_s: float = CACHE_MAX_AGE_S) -> dict | None:
     try:
         d = json.load(open(cache_path()))
         a = age_s(d.get("ts", ""))
-        if d.get("v") == CONTRACT_V and a is not None and a <= max_age_s:
+        if d.get("v") == CONTRACT_V and d.get("cache_schema") == CACHE_SCHEMA and a is not None and a <= max_age_s:
             return d
     except (OSError, ValueError, AttributeError):
         pass

@@ -583,13 +583,17 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 | `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. While a client is attached to a Claude role's session (a card's `claude attach`), the restart is held rather than tried: an attached client keeps the worker alive, so the stop would fail and the ladder would move on to its page with no retry. It restarts once the client detaches, and pages once if the hold lasts 30 minutes. A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
 
 1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line (`next` records when the session was first
-   shown it). It asks the role, at its next boundary
-   with nothing mid-flight, to refresh its start doc (current state, decisions taken, next steps) and end with
-   `queue --idle --restart-ready`, or with its wait plus `--restart-ready`. No extra wake is spent on it.
-2. `--restart-ready` is refused unless the start doc meets the contract and its `Last updated` stamp is at or after that first
-   advisory ([`start-doc.md`](start-doc.md)). A restart-ready role between turns raises `context-restart`, page or restart as
-   configured, keyed by its session. A later queue write without the flag clears it.
-3. The new incarnation reads that start doc: the refresh is the handoff.
+   shown it). No extra wake is spent on it. In `auto` it says the handover comes at the next quiet boundary on the start
+   doc as it stands, so the role brings the doc up to date before its turn ends. In `page` it asks the role to refresh the
+   doc and end with `queue --idle --restart-ready`, or with its wait plus `--restart-ready`.
+2. `auto`: a role past its limit at a quiet boundary (idle or waiting, between turns) raises `context-restart` and is
+   restarted, with no restart-ready round trip (maintainer, 2026-11-11: the advise-then-refresh gap was one more step
+   that could stall a handover). Its start doc must meet the contract: one that does not raises `context-doc`, which wakes
+   the role to fix it and pages after an hour, instead of a blind handover. `page`: `--restart-ready` is refused unless the
+   start doc meets the contract and its `Last updated` stamp is at or after that first advisory
+   ([`start-doc.md`](start-doc.md)); a restart-ready role between turns raises `context-restart`, which pages, keyed by
+   its session. A later queue write without the flag clears it.
+3. The new incarnation reads that start doc: the doc each boundary leaves is the handoff.
 4. The overview row carries `context_k`, and `context-large` is an informational reason.
 
 Today only Claude reports its context (the transcript's last `usage`).
@@ -1268,7 +1272,9 @@ beside Files and Changes) are patched copies of Herdr's mods, redone when the sh
 block on Herdr's mod), and name each role in its shoal's color on its real host, or offer host-wide actions;
 `shoal-agents` also orders its Priority view by the derived agent state each card writes on its terminal
 (`shoal.group`, `shoal.state`: `ui_app.role_agent` from a status row's `agent`, `ui_app.standalone_agent` from a seat's
-report), with Herdr's status on the same scale for a row that has none;
+report and registry entry: a Claude seat's job state with its background tasks and last turn's end, a Muse or Codex seat's
+status line (`native_report`), the wait it declared with `ui wait`, and a reply dismissed with `dismiss --session`,
+[`ui.md`](ui.md)), with Herdr's status on the same scale for a row that has none;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone

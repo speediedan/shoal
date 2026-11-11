@@ -162,6 +162,16 @@ def add_parsers(sub) -> None:
     q.add_argument("--list", action="store_true", help="every saved local session's handover settings and context")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=_handover.cmd_handover)
+    import ui_app as _ui_app
+    q = u.add_parser("wait", help="a standalone seat records what it waits on (another session's review, a PR), or --clear")
+    q.add_argument("target", metavar="LABEL_OR_JOB")
+    q.add_argument("--on", default="", help="the session or role it waits on (blocked: session-blocked)")
+    q.add_argument("--target", dest="target_ref", default="", help="what it waits for, kind:ref (gh-pr:<owner/repo>#<n>, ...)")
+    q.add_argument("--sub", default="", help="with --target alone: the wait's substate (default waiting)")
+    q.add_argument("--why", default="", help="a few words for the row")
+    q.add_argument("--clear", action="store_true", help="the wait is over")
+    q.add_argument("--dry-run", action="store_true")
+    q.set_defaults(func=_ui_app.cmd_seat_wait)
 
     q = u.add_parser("forget", help="drop a saved standalone session (open panes stay)")
     q.add_argument("session_id", metavar="ID_OR_LABEL")
