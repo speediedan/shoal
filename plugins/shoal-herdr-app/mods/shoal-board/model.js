@@ -12,8 +12,86 @@ const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 export const NODE = { w: 184, h: 54, gapX: 16, gapY: 42, rowGap: 14, pad: 16 };
 export const ROOT = { w: 260, h: 56 };
+// the two drawings: cards (each item's key, badge and title) and nodes (a shape per repo, its number under it, so a
+// board's relationships read at a glance); `scale` is the zoom
+export const DIMS = {
+  cards: { ...NODE, rootW: ROOT.w, rootH: ROOT.h, looseHead: 30, scale: 1 },
+  nodes: { w: 58, h: 52, gapX: 10, gapY: 34, rowGap: 10, pad: 16, rootW: 220, rootH: 48, looseHead: 30, r: 13, scale: 1 },
+};
+export const ZOOM = { min: 0.3, max: 2, step: 1.25 };
+
+/** The sizes of a drawing at zoom `z`: every length scaled, the text with it (never below a readable floor in main.js). */
+export function scaleDims(d, z) {
+  const out = { ...d, scale: z };
+  for (const k of ["w", "h", "gapX", "gapY", "rowGap", "pad", "rootW", "rootH", "looseHead", "r"]) if (typeof d[k] === "number") out[k] = d[k] * z;
+  return out;
+}
+
+/** The next zoom in or out, held to its range. */
+export function stepZoom(z, dir) {
+  return Math.max(ZOOM.min, Math.min(ZOOM.max, dir > 0 ? z * ZOOM.step : z / ZOOM.step));
+}
+
+/** The zoom at which the whole tree fits a `width` x `height` view (never above 1): tried from 1 down, since a smaller
+ * zoom fits more items to a row and so changes the height too. */
+export function fitZoom(board, width, height, base = DIMS.cards) {
+  for (let z = 1; z >= ZOOM.min; z /= 1.1) {
+    const lay = layout(board, width, scaleDims(base, z));
+    if (lay.height <= height && lay.width <= width + 1) return z;
+  }
+  return ZOOM.min;
+}
+
+// eight, so a board over seven repos (one measured) has a shape for each before any repeats
+const SHAPES = ["circle", "square", "diamond", "triangle", "hexagon", "pentagon", "octagon", "star"];
+
+/** Each repo's shape in the node drawing, by first appearance on the board: {repo: shape}. */
+export function repoShapes(board) {
+  const out = {};
+  for (const n of arr(board?.nodes)) {
+    const repo = str(n.key).split("#")[0];
+    if (repo && !(repo in out)) out[repo] = SHAPES[Object.keys(out).length % SHAPES.length];
+  }
+  return out;
+}
+
+/** A shape of radius `r` centred on (x, y) as display-list commands (a circle as four cubic arcs). */
+export function shapeCmds(shape, x, y, r) {
+  const poly = (k, rot) => {
+    const pts = Array.from({ length: k }, (_, i) => {
+      const a = rot + (i * 2 * Math.PI) / k;
+      return [x + r * Math.cos(a), y + r * Math.sin(a)];
+    });
+    return [["M", ...pts[0]], ...pts.slice(1).map((p) => ["L", ...p]), ["Z"]];
+  };
+  switch (shape) {
+    case "square": return [["M", x - r * 0.86, y - r * 0.86], ["L", x + r * 0.86, y - r * 0.86], ["L", x + r * 0.86, y + r * 0.86], ["L", x - r * 0.86, y + r * 0.86], ["Z"]];
+    case "diamond": return poly(4, -Math.PI / 2);
+    case "triangle": return poly(3, -Math.PI / 2).map((c) => (c[0] === "Z" ? c : [c[0], c[1], c[2] + r * 0.18]));
+    case "hexagon": return poly(6, 0);
+    case "pentagon": return poly(5, -Math.PI / 2);
+    case "octagon": return poly(8, Math.PI / 8);
+    case "star": {
+      const pts = Array.from({ length: 10 }, (_, i) => {
+        const a = -Math.PI / 2 + (i * Math.PI) / 5, rr = i % 2 ? r * 0.45 : r;
+        return [x + rr * Math.cos(a), y + rr * Math.sin(a)];
+      });
+      return [["M", ...pts[0]], ...pts.slice(1).map((q) => ["L", ...q]), ["Z"]];
+    }
+    default: {
+      const k = 0.5523 * r;
+      return [["M", x, y - r], ["C", x + k, y - r, x + r, y - k, x + r, y], ["C", x + r, y + k, x + k, y + r, x, y + r],
+              ["C", x - k, y + r, x - r, y + k, x - r, y], ["C", x - r, y - k, x - k, y - r, x, y - r], ["Z"]];
+    }
+  }
+}
+
+/** Where a node's shape sits in its cell: centred across, near the top (its label goes under it). */
+export function shapeCentre(n, d) {
+  return { x: n.x + d.w / 2, y: n.y + d.r + 3 * d.scale };
+}
 export const ROOT_KEY = "__board__";
-export const LOOSE_HEAD = 30; // the "No dependencies" heading above the loose grid
+export const LOOSE_HEAD = 30; // the "No dependencies" heading above the loose grid (at zoom 1)
 
 /** The CLI's reply as a document, or null for a failed or unreadable one (the last good one then stays). */
 export function parseReply(reply) {
@@ -74,14 +152,15 @@ const WORK_ORDER = { active: 0, queued: 1, "queued-blocked": 2, unqueued: 3 };
  * straight off the board: drawn as edges, dozens of them crossed the graph (measured on a 78-item board, 48 of them), so
  * they go in a grid of their own below it, by where they stand with the roles, then board order.
  */
-export function layout(board, width = 1000) {
+export function layout(board, width = 1000, dims = DIMS.cards) {
+  const D = dims;
   const { layer, preds } = layers(board);
   const linked = new Set();
   for (const [k, ps] of preds) if (ps.length) [k, ...ps].forEach((x) => linked.add(x));
   const all = arr(board?.nodes);
   const nodes = all.filter((n) => linked.has(n.key));
   const loose = all.filter((n) => !linked.has(n.key));
-  const perRow = Math.max(1, Math.floor((Math.max(width, NODE.w + 2 * NODE.pad) - 2 * NODE.pad + NODE.gapX) / (NODE.w + NODE.gapX)));
+  const perRow = Math.max(1, Math.floor((Math.max(width, D.w + 2 * D.pad) - 2 * D.pad + D.gapX) / (D.w + D.gapX)));
   const byLayer = new Map();
   for (const n of nodes) {
     const l = layer.get(n.key);
@@ -89,27 +168,27 @@ export function layout(board, width = 1000) {
     byLayer.get(l).push(n);
   }
   const placed = new Map();
-  const root = { x: Math.max(NODE.pad, (width - ROOT.w) / 2), y: NODE.pad, w: ROOT.w, h: ROOT.h };
-  let y = root.y + ROOT.h + NODE.gapY;
+  const root = { x: Math.max(D.pad, (width - D.rootW) / 2), y: D.pad, w: D.rootW, h: D.rootH };
+  let y = root.y + D.rootH + D.gapY;
   const order = (n) => num(n.pos_board) ?? 1e6;
   for (const l of [...byLayer.keys()].sort((a, b) => a - b)) {
     const centre = (n) => {
-      const xs = preds.get(n.key).map((p) => placed.get(p)).filter(Boolean).map((p) => p.x + NODE.w / 2);
-      return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : root.x + ROOT.w / 2;
+      const xs = preds.get(n.key).map((p) => placed.get(p)).filter(Boolean).map((p) => p.x + D.w / 2);
+      return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : root.x + D.rootW / 2;
     };
     const row = byLayer.get(l).slice().sort((a, b) => centre(a) - centre(b) || order(a) - order(b));
     for (let i = 0; i < row.length; i += perRow) {
       const chunk = row.slice(i, i + perRow);
-      const span = chunk.length * NODE.w + (chunk.length - 1) * NODE.gapX;
-      let x = Math.max(NODE.pad, (width - span) / 2);
+      const span = chunk.length * D.w + (chunk.length - 1) * D.gapX;
+      let x = Math.max(D.pad, (width - span) / 2);
       for (const n of chunk) {
         placed.set(n.key, { ...n, x, y, layer: l });
-        x += NODE.w + NODE.gapX;
+        x += D.w + D.gapX;
       }
-      y += NODE.h + (i + perRow < row.length ? NODE.rowGap : NODE.gapY);
+      y += D.h + (i + perRow < row.length ? D.rowGap : D.gapY);
     }
   }
-  const at = (k) => (k === ROOT_KEY ? { x: root.x, y: root.y, w: ROOT.w, h: ROOT.h } : placed.get(k) && { ...placed.get(k), w: NODE.w, h: NODE.h });
+  const at = (k) => (k === ROOT_KEY ? { x: root.x, y: root.y, w: D.rootW, h: D.rootH } : placed.get(k) && { ...placed.get(k), w: D.w, h: D.h });
   const edges = [];
   const link = (kind, from, to) => {
     const a = at(from), b = at(to);
@@ -118,23 +197,23 @@ export function layout(board, width = 1000) {
   };
   for (const n of nodes) if (!preds.get(n.key).length) link("root", ROOT_KEY, n.key);
   for (const e of arr(board?.edges)) link(e.kind === "blocks" ? "blocks" : "parent", e.from, e.to);
-  const looseAt = { y: nodes.length ? y : root.y + ROOT.h + NODE.gapY, count: loose.length };
+  const looseAt = { y: nodes.length ? y : root.y + D.rootH + D.gapY, count: loose.length };
   if (loose.length) {
-    y = looseAt.y + LOOSE_HEAD;
+    y = looseAt.y + D.looseHead;
     const sorted = loose.slice().sort((a, b) => (WORK_ORDER[a.work] ?? 9) - (WORK_ORDER[b.work] ?? 9) || order(a) - order(b));
     for (let i = 0; i < sorted.length; i += perRow) {
       const chunk = sorted.slice(i, i + perRow);
-      let x = NODE.pad;
+      let x = D.pad;
       for (const n of chunk) {
         placed.set(n.key, { ...n, x, y, layer: 0, loose: true });
-        x += NODE.w + NODE.gapX;
+        x += D.w + D.gapX;
       }
-      y += NODE.h + NODE.rowGap;
+      y += D.h + D.rowGap;
     }
-    y += NODE.gapY - NODE.rowGap;
+    y += D.gapY - D.rowGap;
   }
   return { nodes: [...placed.values()], root, edges, loose: looseAt,
-           width: Math.max(width, perRow * (NODE.w + NODE.gapX) + 2 * NODE.pad), height: y };
+           width: Math.max(width, perRow * (D.w + D.gapX) + 2 * D.pad), height: y, dims: D };
 }
 
 /** An edge as a display-list path: a vertical S-curve (up to the node's top when the target sits higher). */
