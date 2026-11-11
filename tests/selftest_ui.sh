@@ -2631,6 +2631,15 @@ for bad, why in (({"fill": "assigned"}, "already"), ({"fill": "none"}, "self or 
         raise SystemExit(f"accepted {bad}")
     except ui_actions.ActError as exc:
         assert why in str(exc), exc
+# and the stored plan applies: every verb a plan builds is one the apply runs (Fill's set-fill was refused)
+import tempfile, os as _os, ui_herdr
+ran = []
+ui_actions._stream = lambda argv, log, timeout=0: ran.append(argv) or (0, "fill assigned -> self")
+ui_herdr.log_action = lambda argv, code: None
+with tempfile.TemporaryDirectory() as d:
+    r = ui_actions.execute({"verb": "fill", "argv": args}, _os.path.join(d, "progress.log"))
+assert r["rc"] == 0 and ran == [args], (r, ran)
+assert set(ui_actions.APPLY_VERBS) >= set(ui_actions.WRITE_VERBS) | {"set-fill"}
 import ui_graph, ui_status, ui_herdr
 ui_herdr.load_standalone = lambda raw=False: [{"harness": "claude", "session": "1136-aa", "job": "1136", "label": "shoal"},
                                              {"harness": "claude", "session": "2222-bb", "label": "other"}]
