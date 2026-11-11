@@ -21,7 +21,7 @@ Subcommands:
                 session listing (prune.py; --dry-run first).
   transition    THE session-side state primitive: heartbeat + wait proof +
                 telemetry in one command (state.py).
-  status        one line per role: session state, heartbeat/wait posture,
+  status        one line per role: session state, heartbeat/wait status,
                 doc; plus ledger, watcher ticks and timers.
   report        per-incarnation report, md (versioned) + html (bulk).
   watch         systemd-timer watchers: lanes | pipeline (fire into the ledger).
@@ -1314,7 +1314,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default="")
     p.set_defaults(func=lambda a: cmd_brief(a))
 
-    p = sub.add_parser("status", help="restart preconditions + live posture at a glance")
+    p = sub.add_parser("status", help="restart preconditions + live status at a glance")
     p.add_argument("--spec", required=True)
     p.set_defaults(func=lambda a: cmd_status(ShoalSpec.load(a.spec)))
 

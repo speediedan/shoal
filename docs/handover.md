@@ -22,7 +22,7 @@ The advice is the `CONTEXT` line in `next` and in wakes. The proof of refresh is
 `shoal handoff --spec <spec> --only <role> [--model M] [--effort X] [--ecosystem E] [--force] [--dry-run]` runs the same reset by hand,
 on the role's own host, optionally moving it to another model or provider (also the actions dialog's Hand off):
 
-- **It proves what it can first.** The role is at a boundary (restart-ready, posture idle or waiting, between turns), and the
+- **It proves what it can first.** The role is at a boundary (restart-ready, status idle or waiting, between turns), and the
   new provider's tool and the start doc are in order. `--force` skips only the boundary check, and can cut off a Claude turn.
 - **It refuses a session it cannot stop.** Only a Claude session is stopped from here. A Muse, Codex or opencode session held
   by a running turn or an attached client would go on writing as the role beside the new one, so it refuses, even forced.

@@ -8,7 +8,7 @@ most failure modes can be derived from streams shoal already writes.
 
 | source | what it holds | durable? |
 | --- | --- | --- |
-| ledger (`shoals/<id>/ledger/*.jsonl`) | queue (posture, next, `next_blocked`, `next_blocked_meta`, asks), state (sub, target, rescan), claim, release, done, offer, msg, system | yes (git) |
+| ledger (`shoals/<id>/ledger/*.jsonl`) | queue (status, next, `next_blocked`, `next_blocked_meta`, asks), state (sub, target, rescan), claim, release, done, offer, msg, system | yes (git) |
 | telemetry (`<data root>/<id>/telemetry/events-*.jsonl`) | `session_transition`; `watch_event` kinds `health` (`<condition> step<N>:<wake\|page> -> <channel>`), `job-start`, `job-verdict`, `ledger-wake`, `digest-refresh`; `pr_merged`, `issue_closed` | yes |
 | state dir (`/tmp/<id>`) | job `.json`/`.rc`, wait proofs, watcher sidecars, `health.json` | **no**: wiped at reboot |
 | health journal | the same ladder actions as telemetry | depends on journald rotation |
@@ -25,7 +25,7 @@ Keep durable metrics in the ledger or telemetry, never in the state dir alone.
 | FM | metric (`fm_report.py` name) | derivation | history |
 | --- | --- | --- | --- |
 | 1 | `FM1:active_silent_h`, `wake:turn-ended-active` | ledger: `active` segments with no ledger write by the role for more than 90 min (a proxy, since turn state is not logged); telemetry: ladder wakes | yes |
-| 2 | `FM2:idle_all_next_blocked_h` | ledger: posture `idle` and every next item has a blocker. Overstates FM-2: the candidates at that time are not recorded | yes, from the start of `next_blocked` |
+| 2 | `FM2:idle_all_next_blocked_h` | ledger: status `idle` and every next item has a blocker. Overstates FM-2: the candidates at that time are not recorded | yes, from the start of `next_blocked` |
 | 3 | `FM3:idle_on_hold_gt4h_h` | as FM-2, where a `hold:` blocker's `next_blocked_meta.first` is older than `hold_ttl_min`. An age proxy, not a truth test | from the start of the metadata |
 | 4 | none yet | ledger: a `release` with `suggest=` an offer-only role and no later offer of that item. The real evidence is in the harness question history | weak |
 | 5 | `wake:wait-resolved` (upper bound) | telemetry ladder wakes joined to the wait target at fire time | partial |

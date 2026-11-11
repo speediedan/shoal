@@ -579,7 +579,7 @@ def view(verb: str, a) -> dict:
             docs = _role_docs(s)
             shoals.append({"id": s["id"], "tag": ui_herdr.shoal_tag(s["id"]), "roles": [
                 {"slug": r["slug"], "host": r.get("host") or "", "needs_you": bool(r.get("needs_you")),
-                 "posture": ui_status.posture_label(r), "doc": docs.get(r["slug"], "")}
+                 "status": ui_status.status_label(r), "doc": docs.get(r["slug"], "")}
                 for r in s.get("roles", []) if r.get("session_id")]})
         return {"v": V, "kind": "shoal-act-roles", "shoals": shoals, "ecosystems": ui_status.active_ecosystems()}
     if verb == "sessions":

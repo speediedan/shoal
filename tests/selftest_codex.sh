@@ -3,7 +3,7 @@
 # `codex` (a python script that records its argv, environment and stdin and prints the JSONL events `codex exec
 # --json` prints), so no network, no account and no install is needed.
 #
-# Covered: a thread's first turn (the thread id read from its first event, posture and model flags, the prompt on
+# Covered: a thread's first turn (the thread id read from its first event, status and model flags, the prompt on
 # stdin, the environment: no API keys, no Claude session identity), the lock hard-linked into the thread's own
 # state directory (busy from the first moment), a resume turn, the run lock (a second send refused, free after),
 # the result record, quota detection, the status line, an attached interactive client holding a thread, the viewer
@@ -56,7 +56,7 @@ chmod +x "$S/codex"
 export SHOAL_CODEX_BIN="$S/codex"
 mkdir -p "$S/ws"
 
-echo "== 1 a first turn: the thread id from its first event, posture, flags, stdin, environment"
+echo "== 1 a first turn: the thread id from its first event, status, flags, stdin, environment"
 OPENAI_API_KEY=SECRET CODEX_API_KEY=SECRET2 CLAUDE_CODE_SESSION_ID=abc12345 CLAUDECODE=1 FAKE_CODEX_SLEEP=1 \
 python3 - "$S" <<'PY' || fail "first turn"
 import json, os, sys, time

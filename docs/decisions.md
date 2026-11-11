@@ -9,7 +9,7 @@ failure classes these decisions guard against.
 ## All traffic is one append-only ledger, one writer per file
 
 **Decision.** Every piece of coordination traffic (offers, claims, releases, completions, queue
-versions, mail, posture, system notices) is an append-only JSONL event in a git repository, with
+versions, mail, status, system notices) is an append-only JSONL event in a git repository, with
 one file per writer per group. Each `shoal` verb writes one event as one commit and one push, and
 readers fold the files into a projection. The human-readable form is `shoal show`, not the files.
 
@@ -50,7 +50,7 @@ readers fold the files into a projection. The human-readable form is `shoal show
 ## A role's queue is an event stream only that role writes
 
 **Decision.** A role declares its queue as `queue` events in its own ledger file: one active item,
-up to N next items (`features.workwake.next_max`, default 3), recorded asks and its posture. The latest version is the role's queue.
+up to N next items (`features.workwake.next_max`, default 3), recorded asks and its status. The latest version is the role's queue.
 Others influence it only by offering or withdrawing work.
 
 **Why.** A queue anyone could write has several writers, which reopens the lost-write and
@@ -60,7 +60,7 @@ the wake rule, not from where the queue was stored.
 **Rejected alternatives.**
 - **A separate queue file the maintainer and the role both edit:** several writers per file, and
   a second transport to sync, lint and permission-check.
-- **A queue implied by claims and offers alone:** the role's own ordering and its posture would
+- **A queue implied by claims and offers alone:** the role's own ordering and its status would
   exist only in its transcript, invisible to health checks and to successors.
 
 ## Permissions are enforced at read time
@@ -87,7 +87,7 @@ tasking, status or grants.
 **Why.**
 - The measured failures of coordinated groups were in the relay: instructions written assuming
   delivery, sends into restarted servers, acknowledgements from the wrong session, and a
-  coordinator that emitted one posture transition in 91 hours, which left two of four roles
+  coordinator that emitted one status transition in 91 hours, which left two of four roles
   unmeasurable.
 - A relayed authorization is unverifiable from where the recipient sits. A lane correctly declined
   a relayed grant twice, and the second, more emphatic relay was no more verifiable than the first.
@@ -140,8 +140,8 @@ uses no model tokens unless it sends a wake.
   a quiet world.
 - Keying each condition instance by its evidence (an offer id, a dead pid, a wait target, a
   boundary) means the same condition never escalates twice, and new evidence starts a fresh ladder.
-- A ledger write proves the writer alive, not that its posture is true: a role re-emitting
-  `active` on every wake looked fresh for hours while it sat idle. So conditions read posture
+- A ledger write proves the writer alive, not that its status is true: a role re-emitting
+  `active` on every wake looked fresh for hours while it sat idle. So conditions read status
   against session state, not freshness alone.
 
 **Rejected alternatives.**
@@ -154,15 +154,15 @@ uses no model tokens unless it sends a wake.
 - **Sensors each paging on their own:** separate pagers with separate policies; the sensors now
   route through the health adapters instead.
 
-## Every turn ends in a sleep posture, and a stopped `active` turn is continued
+## Every turn ends in a sleep status, and a stopped `active` turn is continued
 
 **Decision.** The last write of every turn is `queue --wait ...` (with the waiter armed first),
-`queue --idle`, or `queue --active` followed by more work in the same turn. When a role's posture
+`queue --idle`, or `queue --active` followed by more work in the same turn. When a role's status
 is `active` and its session is proven between turns for a few minutes (and not blocked on a
 question to the maintainer), the health quorum wakes it to continue (`turn-ended-active`).
 
 **Why.** A model turn ends whenever the model stops calling tools, whatever the instructions say.
-A rule of "keep working without stopping" guarantees the stopped-while-active posture sooner or
+A rule of "keep working without stopping" guarantees the stopped-while-active status sooner or
 later, and nothing reaches an `active` role: offers wake only idle roles and mail wakes nobody.
 The only earlier detector was a crash catcher whose first wake came after 90 minutes.
 

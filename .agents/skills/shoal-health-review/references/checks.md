@@ -1,4 +1,4 @@
-# Checks per posture
+# Checks per status
 
 Every check is read-only. `<id>` is the group id, `<role>` a role slug, and `<state>` the per-group
 state directory (`/tmp/<id>/` by default). Harness stores and the data root come from your host
@@ -20,7 +20,7 @@ map.
    - The tail of its transcript: a recent tool call, and no long-pending tool call or question.
    - Any job units it started: `systemctl --user list-units 'shoal-<id>-<role>-*'`.
 3. **Failure signatures:**
-   - `active` with the turn `done`: the turn ended without a sleep posture. The quorum should catch
+   - `active` with the turn `done`: the turn ended without a sleep status. The quorum should catch
      this as `turn-ended-active`; if it did not, the liveness probe is wrong.
    - `working` for hours with no tool progress: stuck mid-turn. Read what it is blocked on.
 

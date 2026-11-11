@@ -517,7 +517,7 @@ def _settle(t: dict, release: dict) -> None:
 
 
 class View:
-    """Fold the ledger into queue posture. Invalid events (permission
+    """Fold the ledger into queue status. Invalid events (permission
     violations) are collected in `violations` and otherwise ignored."""
 
     def __init__(self, ledger: Ledger, spec=None):

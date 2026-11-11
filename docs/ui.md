@@ -53,7 +53,7 @@ reader ignores fields it does not know.
    "roles": [{
      "slug": "<role>", "tag": "<role>-r3", "harness": "claude", "model": "<model>", "fill": "self",
      "server": "", "aux": false, "session_id": "<id>",
-     "posture": "active|wait|idle|offline|parked", "sub": "local-ci", "posture_age_s": 600,
+     "status": "active|wait|idle|offline|parked", "sub": "local-ci", "status_age_s": 600,
      "wait": {"sub": "...", "target": "...", "holder": "...", "rescan_utc": "..."},
      "active": "<repo>#<n>:fix",
      "next": [{"item": "<repo>#<m>:review", "blocker": "<role>:<repo>#<k>", "stale": true}],
@@ -67,7 +67,7 @@ reader ignores fields it does not know.
 ```
 
 **The agents list's attention axis** (`ui_status.agent_state`). Every role is in exactly one `agent.group`, and
-`agent.state` says why in more detail than the posture word (a role's own `idle` covered every item blocked,
+`agent.state` says why in more detail than the status word (a role's own `idle` covered every item blocked,
 nothing assigned, held and handoff pending alike). The first match decides, in this order:
 
 | Group | Whose move | States |
@@ -105,7 +105,7 @@ so buried the seats that really ask (measured 2026-11-08). A seat with an attach
 
 **Sources.** Each field is derived once, from the code that already owns it:
 
-- Posture, items, blockers, offers and mail come from `ledger.View`.
+- Status, items, blockers, offers and mail come from `ledger.View`.
 - Stale blockers come from `blockers.stale` (no provider calls).
 - Claude liveness comes from `claude agents --json --all`: a row with no `pid` is a dead worker.
 - opencode liveness comes from `openchamber session status`.
@@ -178,7 +178,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
    {"id": "<id>:<role>", "kind": "role", "shoal": "<id>", "slug": "<role>", "label": "<role>",
     "ecosystem": "claude", "model": "<model>", "host": "<host>", "fill": "assigned",
     "state": {"class": "wait", "event": "local-ci", "group": "system", "source": "role-time", "quality": [],
-              "posture": "wait", "sub": "local-ci", "session": "working", "since_s": 900,
+              "status": "wait", "sub": "local-ci", "session": "working", "since_s": 900,
               "needs_you": false, "reasons": [], "shoal_offline": false, "restart_ready": false,
               "job_host": "<pool host>",
               "job": {"unit": "<unit>", "host": "<pool host>", "placed": true, "granted": true,
@@ -202,7 +202,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
 
 **Nodes.**
 
-- `role`: one per spec role. Its row (posture, sub, session, `since_s` from `posture_age_s`,
+- `role`: one per spec role. Its row (status, sub, session, `since_s` from `status_age_s`,
   `needs_you`, reasons, active and next items, asks, offers) is the `ui status` row. Every role node
   carries `host`: the role's server, else the spec's home, else this host.
 - `user` (the maintainer, one for all shoals): open asks summed, and `grants_pending` summed from the
@@ -226,10 +226,10 @@ event (`turn`, `local-ci`, `remote-ci`, `research-proto`, `lease`, `user-auth`, 
 off it; `group` is `WAIT_GROUP` for waits (`research` for `research-proto`, apart from the CI waits' `system`), else empty; `quality` is the classifier's quality flags.
 `state.source` is `role-time` for that reading. A role with no native observation (no cache, or a
 background role) gets a best-effort reading of its status row in the same vocabulary, marked
-`source: posture`. As in role-time accounting, a source is believed only within its budget (the
+`source: status`. As in role-time accounting, a source is believed only within its budget (the
 ledger half only while the clone's last fetch is fresh). Where accounting would read
-`unknown:stale-source` or `unknown:missing-source`, the graph falls back to the posture reading
-instead, marks it `source: posture`, and adds `role-time:<event>` to `quality`, so a host whose clone
+`unknown:stale-source` or `unknown:missing-source`, the graph falls back to the status reading
+instead, marks it `source: status`, and adds `role-time:<event>` to `quality`, so a host whose clone
 stopped fetching still shows what its roles last declared.
 
 For `wait:local-ci`, `wait:remote-ci`, `wait:research-proto` and `wait:lease`, `state.job` describes the job a `job:<name>`
@@ -483,7 +483,7 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   `pane.report_metadata` tokens. A pane whose foreground is a bare shell (a card laid out while its
   role was parked, or a cold restore) gets the tokens only: Herdr clears an agent report from such a
   pane within a fraction of a second, which made the role flash into the agents list every tick. The
-  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `host` (multi-host shoals only), `mode`, `posture`,
+  verbose feeder names those cards; `shoal ui open --reapply` brings them back. The tokens are `role`, `shoal` (the short tag), `host` (multi-host shoals only), `mode`, `status`,
   `item`, `next`, `wait`, `asks`, `offers`, `watch`, `age`, `why` and `harness`. The agents rows
   show the role name, then the `mode` glyph, then the shoal tag dim; Herdr's default `agent_panel_sort = "spaces"`
   already groups agents by workspace.
@@ -493,7 +493,7 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   `◷` the role waits on a job, CI build or lease running for it (by design it reads working, so a lane with a job in
   flight does not look stalled). No glyph means asleep, idle or needing you. The glyphs live in the client's sidebar
   rows: after an upgrade re-run `shoal ui herdr-config --client --write` (the laptop's `shoal-herdr-setup.sh`) and
-  relaunch. **Standalone seats** get the same tokens (`posture` is `working`, `attached` or `idle`). For a Muse or
+  relaunch. **Standalone seats** get the same tokens (`status` is `working`, `attached` or `idle`). For a Muse or
   Codex seat the backend's `status:busy` is a running turn OR a client merely attached, so it also reports `active`
   or `quiet` by the age of the session's journal or rollout file (120 s): `attached quiet` reads idle, so a seat that
   waits for you is not drawn as working. Standalone registry labels are unique: two entries with one label share one
@@ -530,10 +530,10 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   when shoal's code changes (the new modification stamp must hold for two checks), so an upgrade
   reaches open panes within about 30 seconds. Panes started before this existed need one
   `shoal ui open --reapply`, which re-applies the roles and overview tabs when nothing in them is in use.
-- **Role cards** are a field and value table (posture, session, watcher, last write, active, next,
+- **Role cards** are a field and value table (status, session, watcher, last write, active, next,
   wait, asks, offers, attention), fitted to the pane.
 - **Status layout.** `ui status` (and the status popup and dashboard) prints one ASCII table per
-  shoal fitted to the terminal width: role, posture, session, active, next, last write, attention.
+  shoal fitted to the terminal width: role, status, session, active, next, last write, attention.
   Below 110 columns, when that table would not fit, it splits into a status table and a work table.
   `--width N` sets the width; `--json` is unchanged.
 - **Wake costs are named** before confirming: a `--wake`, an offer to an idle role, a mode toggle
@@ -683,7 +683,7 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
 
 - **Dismissing a needs-you.** Right-click a role's row in the agents list, or use `Dismiss` in the actions dialog (`shoal dismiss --shoal ID
   --role R [--undo]`). The row leaves "needs you" until something new is raised: a change to its reasons, its asks, what its session says, or its
-  posture. The role stays as it is, its watcher runs and its work accumulates, and health's conditions and pages are unchanged. A dismissal over a
+  status. The role stays as it is, its watcher runs and its work accumulates, and health's conditions and pages are unchanged. A dismissal over a
   dead session or a dead watcher lapses after 24 hours. It is a `user` event in the shoal's ledger, so every host and app agrees, and a role's own
   host decides, so a row can take a minute to clear. Being display only, it does not change auto-park: a role whose session reads `blocked` stays out
   of it, dismissed or not. To stop a role instead, park it.

@@ -168,7 +168,7 @@ test("replies: roles", () => {
   const r = M.parseReply(ok(fx.roles), "roles");
   assert.equal(r.kind, "roles");
   assert.deepEqual(r.shoals.map((s) => [s.id, s.tag, s.needsYou]), [[A, "alpha", 1], [B, "beta", 1]]);
-  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, posture: "blocked:user-ask", doc: null });
+  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, status: "blocked:user-ask", doc: null });
   // unknown fields ignored; bad rows, repeats and a `*` slug dropped; a missing tag from the id
   const doc = JSON.parse(JSON.stringify(fx.roles));
   doc.future = 1;

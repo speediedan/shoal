@@ -30,19 +30,19 @@ describes the process, not the queue.
 
 ## The per-session status block
 
-Post it after every completed turn. It describes the posture you are sleeping in, not the turn's
+Post it after every completed turn. It describes the status you are sleeping in, not the turn's
 activity, which goes in your prose and the ledger:
 
 ```markdown
 | | status | next (max N) |
 | --- | --- | --- |
 | **Lane** · `<slug> (<slug>-r<N>)` | waiting (remote CI: <what>; watchers <pids>) | [<repo>#<n>](...):fix, ... |
-| **Pipelines** | <gate ids and their states> · lease: <posture> | (none) |
+| **Pipelines** | <gate ids and their states> · lease: <status> | (none) |
 | **Worktrees** | `<path>` (<branch>, clean/dirty; shared with <role> if shared) | (retire only after merge + prune) |
 ```
 
 **Rules:**
-- **Three rows, always.** A renamed row that swallows the others hides gate posture and work
+- **Three rows, always.** A renamed row that swallows the others hides gate status and work
   location at once.
 - **Every item is a link with a verb:** `:fix` or `:review`.
 - **`next` shows the group's `next_max` items (default 3),** or an explicit `(queue empty: deliberate)`.

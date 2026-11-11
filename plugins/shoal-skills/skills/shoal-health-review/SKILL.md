@@ -23,7 +23,7 @@ spec path, data root and harness stores. **Never write a role's queue.** Run `ne
 
 ## 1. Snapshot (five minutes, all read-only)
 
-- `shoal show --shoal <id>`: posture, active item, next, and last event per role. Note the offline
+- `shoal show --shoal <id>`: status, active item, next, and last event per role. Note the offline
   and freeze state, and the tooling sha.
 - `shoal next --shoal <id> --slug <role> --peek` per role: `NEXT BLOCKED`, `BLOCKER STALE`, `BOARD`
   candidates, `WAIT`, `WATCH`, `GONE`, and `HELD-UNSCHEDULED` lines.
@@ -35,13 +35,13 @@ Delegate bulk reads (transcripts, journals, job logs) to subagents that return c
 with exact timestamps, pids and paths. A transcript dump in the reviewer's context is budget spent
 on raw text instead of judgment.
 
-## 2. Prove each posture
+## 2. Prove each status
 
-Check each role against its posture's checklist in `references/checks.md`. In short:
+Check each role against its status's checklist in `references/checks.md`. In short:
 
 - **active:** the session is mid-turn (Claude `state: working`, opencode busy) AND making
-  progress (recent tool calls, a ledger write, or a running job). A session `done` while its posture
-  says `active` ended its turn without a sleep posture.
+  progress (recent tool calls, a ledger write, or a running job). A session `done` while its status
+  says `active` ended its turn without a sleep status.
 - **waiting:** the target is checkable and still pending, AND a watcher owned by the session (or
   the ledger watcher's backstop) will fire when it ends. A long job is not a faulty monitor: compare
   each job's end time with the role's next ledger write before concluding anything.
@@ -64,7 +64,7 @@ Each message names:
 - the one action to take;
 - the protocol rule the role missed, so it does not repeat it.
 
-A message is not a fix. Verify each intervention by the role's next queue write (posture, active
+A message is not a fix. Verify each intervention by the role's next queue write (status, active
 item, blockers), and report the effect, not the send.
 
 ## 4. Feed it back (the recursive part)
@@ -126,7 +126,7 @@ has a numeric answer.
 
 ## 6. Report
 
-One table per review: role, posture, verdict, evidence, action taken, effect observed. Follow it
+One table per review: role, status, verdict, evidence, action taken, effect observed. Follow it
 with:
 - the failure modes found (catalog ids, new ones marked);
 - the shoal or skill changes proposed or opened;

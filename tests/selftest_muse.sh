@@ -4,7 +4,7 @@
 # prints), so no network, no account and no install is needed. Set SHOAL_TEST_REAL_MUSE=1 to also run one
 # turn against the installed binary's built-in `echo` provider (no network either).
 #
-# Covered: a turn's argv (posture, session id, workspace, model, effort), the environment it gets
+# Covered: a turn's argv (status, session id, workspace, model, effort), the environment it gets
 # (auto-update off, no login prompt, META_API_KEY stripped unless allowed), the run lock (busy from the
 # instant a turn starts, a second send refused, free again after), the result record, quota detection,
 # the status line and fake-session override, the viewer argv (resume when idle, read-only tail when busy),

@@ -946,8 +946,8 @@ export function cardLines(vm, id) {
   const v = n.visual;
   const rows = [];
   if (n.kind === "role") {
-    // "~": a posture reading (no role-time probe), less certain than a role-time one
-    rows.push(["state", `${s.source === "posture" ? "~ " : ""}${v.label}${s.event && s.event !== "self" && v.key !== "other" ? ` (${s.event})` : ""} ${fmtAge(s.since_s)}`]);
+    // "~": a status reading (no role-time probe), less certain than a role-time one
+    rows.push(["state", `${s.source === "status" ? "~ " : ""}${v.label}${s.event && s.event !== "self" && v.key !== "other" ? ` (${s.event})` : ""} ${fmtAge(s.since_s)}`]);
     if (arr(s.quality).length) rows.push(["quality", arr(s.quality).map(str).join(", ")]);
     rows.push(["agent", [n.ecosystem, n.model].filter(Boolean).join(" · ") || "?"]);
     rows.push(["host", n.host ?? "?"]);

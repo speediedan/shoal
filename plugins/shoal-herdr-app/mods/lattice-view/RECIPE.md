@@ -249,7 +249,7 @@ you, per-shoal throughput and per-host load.
 - Unknown wait events render as "other", unknown classes as "unknown"; never throw on new values.
 - Feed details to honor: `blocked-on` and `alias` edges have null `last_ts`/`last_age_s`; a
   `stale` blocker draws fainter; the feed's `cross_host` wins over comparing hosts; `writer`
-  nodes (unknown or removed writers) draw as small dashed nodes; a `state.source` of `posture`
+  nodes (unknown or removed writers) draw as small dashed nodes; a `state.source` of `status`
   gets a `~` in the card; `state.job.host` counts as a job host; `hosts[]` counts win in the
   rail; a `cursor_reset` doc is a new event baseline.
 - In Herdr app 0.1.12 an edit to a mod folder that is a symlink did not always refresh copies

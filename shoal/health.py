@@ -21,7 +21,7 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V page@3V
                      (not a target its provider confirms pending, under wait discipline)
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
-  stale-active       posture active, no ledger write, session between turns                wake@90 page@180
+  stale-active       status active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
 
 Wakes go through direct session wake (backends.Backend.wake), one implementation per
@@ -297,7 +297,7 @@ def short_line(s: str, n: int = 90) -> str:
 # `claude agents --json` turn state -> liveness. `status` is not a turn signal: it reads `busy` for as
 # long as any background task runs, and every role keeps its ledger-watch running in the background,
 # so every Claude role read as mid-turn and no between-turns condition could fire for one (measured
-# 2026-09-29: a role ended its turn with posture active and sat 6.6 h unflagged, `state` done,
+# 2026-09-29: a role ended its turn with status active and sat 6.6 h unflagged, `state` done,
 # `status` busy). An unknown `state` falls back to `status`, which errs toward "busy".
 CLAUDE_TURN_STATES = {"working": "busy", "blocked": "blocked", "done": "idle"}
 # `state` stopped being a turn signal too (measured 2026-10-08, Claude Code 2.1.286): it reads
@@ -585,12 +585,12 @@ def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | 
 
 # ---- shared predicates (the quorum's evaluate() and the operator UI's read model) -----------
 
-def watcher_dead(alive: bool, posture: str, between: bool | None) -> bool:
+def watcher_dead(alive: bool, role_status: str, between: bool | None) -> bool:
     """A role's ledger-watch counts as dead when it is not running, the role is not offline, and the
     session is not known to be mid-turn (a session mid-turn arms its watcher at the turn's end).
     `between` is session_between_turns(): True between turns, False mid-turn or on a question,
     None unknown (unknown counts, as a missing watcher on an unknown session is the failure)."""
-    return not alive and posture != "offline" and between is not False
+    return not alive and role_status != "offline" and between is not False
 
 
 def lazy_rearm(spec: ShoalSpec) -> bool:
@@ -599,13 +599,13 @@ def lazy_rearm(spec: ShoalSpec) -> bool:
     return bool(health_cfg(spec).get("lazy_rearm", True))
 
 
-def watcher_dormant(spec: ShoalSpec, view, role, posture: str) -> bool:
+def watcher_dormant(spec: ShoalSpec, view, role, role_status: str) -> bool:
     """True when a dead watcher needs no wake now: lazy_rearm is on, the role is not active, and the
     ledger holds nothing its watcher would have woken it for (ledger_watch.actionable, board off: a
     self-fill role's board is the digest's or its next wake's). Its next real work raises its own
     condition (unacked-work, wait-resolved, a wake request), and that wake goes direct, re-arming
     included. Waking it only to re-arm cost a cold turn each (2026-10-20: six overnight)."""
-    if not lazy_rearm(spec) or posture == "active":
+    if not lazy_rearm(spec) or role_status == "active":
         return False
     try:
         from ledger_watch import actionable, load_sidecar, sidecar_path
@@ -615,13 +615,13 @@ def watcher_dormant(spec: ShoalSpec, view, role, posture: str) -> bool:
         return False
 
 
-def parked_free(spec: ShoalSpec, view, role, q: dict, posture: str, sub: str,
+def parked_free(spec: ShoalSpec, view, role, q: dict, role_status: str, sub: str,
                 live: bool = True) -> tuple[list[str], dict[str, str]]:
     """(next items with no current blocker, {item: why its blocker is stale}) for a role asleep on
     work: idle, or waiting on anything but its own local-ci job (which usually holds the resources
     its next items need). Empty for an observer role (fill=none) and while a freeze is on. `live`
     lets blocker checks call providers (the quorum); the UI passes False to stay off the network."""
-    if not ((posture == "idle" or (posture == "waiting" and sub != "local-ci"))
+    if not ((role_status == "idle" or (role_status == "waiting" and sub != "local-ci"))
             and getattr(role, "fill", "") != "none" and view.freeze() is None):
         return [], {}
     from ledger import item_key
@@ -678,7 +678,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         st = view.role_state(slug) or {}
         boundary = max(q.get("ts", ""), st.get("ts", ""))
         idle = view.is_idle(slug)
-        posture = st.get("state") or ("idle" if idle else "active")
+        role_status = st.get("state") or ("idle" if idle else "active")
         sub = st.get("sub", "")
         between = session_between_turns(role, cbusy, spec.dir)
         # unacked work
@@ -702,7 +702,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         w = read_wait(spec.sid, slug) or {}
         target = w.get("target") or st.get("target", "")
         pending = None
-        if posture == "waiting" and sub not in USER_WAITS:
+        if role_status == "waiting" and sub not in USER_WAITS:
             pending, why = target_pending(target, slug, spec.sid, upstream=(sub == "upstream"))
             if pending is False:
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
@@ -724,7 +724,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # work arrives: a retired worker is dormant, and waking it only to re-arm cost a cold turn
         # (2026-10-20: six in one night)
         alive, sc = watcher_alive(spec.sid, slug)
-        if watcher_dead(alive, posture, between) and not watcher_dormant(spec, view, role, posture):
+        if watcher_dead(alive, role_status, between) and not watcher_dormant(spec, view, role, role_status):
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")
             if ex:
@@ -737,7 +737,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
             ru = st.get("rescan_utc", "")
             from state import wait_proven
             # shoal re-proves the wait itself; the model is woken only when that fails (or once a day)
-            if posture == "waiting" and ru and parse(ru) is not None and parse(ru) < utcnow() and \
+            if role_status == "waiting" and ru and parse(ru) is not None and parse(ru) < utcnow() and \
                     not wait_proven(spec, view, slug, st, q, pending if st.get("target") == target else None)[0]:
                 ask = " Re-raise your prompted ask (question tool / AskUserQuestion) or pivot to the next unblocked item." \
                     if sub in USER_WAITS else " Re-verify the blocker (is it still pending?), then write a fresh wait or pivot."
@@ -765,12 +765,12 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # a local-ci wait is exempt: the role's own machine-bound job (under a lease) usually holds the
         # resources its next items need; remote-ci, upstream, peer and maintainer waits leave it free
         # a freeze parks everything by design, so it is exempt while on
-        free, stale_nb = parked_free(spec, view, role, q, posture, sub)
+        free, stale_nb = parked_free(spec, view, role, q, role_status, sub)
         if free:
             why_stale = "".join(f"; {k} blocker stale ({stale_nb[k]})" for k in sorted(stale_nb))
             out.append({"slug": slug, "condition": "parked-work", "key": f"parked:{','.join(sorted(free))}",
                         "since": boundary or iso(), "first_seen": True,
-                        "detail": f"{posture} while next items have no current blocker ({', '.join(free)}"
+                        "detail": f"{role_status} while next items have no current blocker ({', '.join(free)}"
                                   f"{why_stale}): "
                                   f"pop one (`queue --active <item>`) or record why each cannot start "
                                   f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
@@ -807,7 +807,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         if rc is not None:
             out.append(rc)
         # bounded context: the role marked a quiet boundary after its context passed the limit
-        if q.get("restart_ready") and posture in ("idle", "waiting") and between:
+        if q.get("restart_ready") and role_status in ("idle", "waiting") and between:
             import context as _ctx
             o = _ctx.over(spec, role)
             if o is not None:
@@ -816,25 +816,25 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                             "detail": f"context {o[0]}k past its {o[1]}k limit and the role is restart-ready "
                                       f"(start doc refreshed, nothing mid-flight): `shoal restart --spec <spec> "
                                       f"--only {slug}` hands it to a fresh session"})
-        # continuation: a turn that ended while the posture says active (architecture doc §3.2)
+        # continuation: a turn that ended while the status says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
-        if cont is not None and posture == "active" and between:
+        if cont is not None and role_status == "active" and between:
             last = view.last_by.get(slug, "")
             act = q.get("active") or "(no active item)"
             out.append({"slug": slug, "condition": "turn-ended-active", "key": f"stop:{last}", "since": iso(),
                         "first_seen": True,
-                        "detail": f"CONTINUE {act}: your turn ended with posture active and nothing running. Continue "
-                                  f"the item now; if it cannot continue, write your real sleep posture: `queue --wait "
+                        "detail": f"CONTINUE {act}: your turn ended with status active and nothing running. Continue "
+                                  f"the item now; if it cannot continue, write your real sleep status: `queue --wait "
                                   f"<sub> --holder .. --target ..` after arming the waiter (GPU work: a job unit under "
                                   f"the lease), `--active <next item>` to pivot, or `--idle`"})
             continue_done = True
         else:
             continue_done = False
         # stale active (the crash catcher; superseded by continuation when that is on)
-        if posture == "active" and between and not continue_done:
+        if role_status == "active" and between and not continue_done:
             last = view.last_by.get(slug, "")
             out.append({"slug": slug, "condition": "stale-active", "key": f"last:{last}", "since": last,
-                        "detail": f"posture active, last ledger write {last}, session between turns"})
+                        "detail": f"status active, last ledger write {last}, session between turns"})
     return out
 
 

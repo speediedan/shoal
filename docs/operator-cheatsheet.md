@@ -12,7 +12,7 @@ export S=<id> SPEC=<path to the group's spec>
 
 ## Look (read-only)
 
-- The whole group, one row per role (posture, active and next items, flags):
+- The whole group, one row per role (status, active and next items, flags):
 
     ```bash
     shoal show --shoal $S

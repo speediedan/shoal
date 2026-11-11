@@ -281,7 +281,7 @@ test("event diff by seq", () => {
   }
 });
 
-test("feed contract deltas: writer nodes, structural/stale/cross_host edges, posture, job, host counts, cursor reset", () => {
+test("feed contract deltas: writer nodes, structural/stale/cross_host edges, status, job, host counts, cursor reset", () => {
   const d = structuredClone(doc);
   d.nodes.push({ id: `${A}:writer:ghost`, kind: "writer", shoal: A, label: "ghost", host: "host-a", state: { class: "unknown" } });
   d.edges.push({ id: `${A}:writer:ghost|${A}:core|msg`, src: `${A}:writer:ghost`, dst: `${A}:core`, class: "msg", n_rate: 0, n_1h: 1, n_24h: 1, rate_per_h: 0.2, last_ts: null, last_age_s: null, shoal: A });
@@ -289,7 +289,7 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, pos
   Object.assign(bo, { last_ts: null, last_age_s: null, structural: true, stale: true, cross_host: false });
   d.edges.find((e) => e.id === `${A}:core|${A}:scribe|msg`).cross_host = false;
   const tune = d.nodes.find((x) => x.id === `${A}:tune`);
-  Object.assign(tune.state, { source: "posture", quality: ["no-native-probe"] });
+  Object.assign(tune.state, { source: "status", quality: ["no-native-probe"] });
   const dist = d.nodes.find((x) => x.id === `${A}:dist-ci`);
   dist.state.job = { unit: "ci-gpu-1", host: "host-b", placed: true, granted: true, started_age_s: 120 };
   d.hosts = [{ id: "host:host-a", name: "host-a", home: true, roles: 11, working: 3, waiting: 6, needs_you: 2, msgs_1h: 40 }, { id: "host:host-b", name: "host-b", home: false, roles: 4 }];
@@ -312,7 +312,7 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, pos
   assert.ok(M.TIER_STYLE.stale.coreAlpha < M.TIER_STYLE.struct.coreAlpha, "stale blockers draw fainter");
   assert.equal(vm.edges.find((x) => x.id === `${A}:core|${A}:scribe|msg`).cross, false, "the feed's cross_host wins");
   const card = M.cardLines(vm, `${A}:tune`);
-  assert.ok(card.rows.find(([k]) => k === "state")[1].startsWith("~ "), "posture readings are marked");
+  assert.ok(card.rows.find(([k]) => k === "state")[1].startsWith("~ "), "status readings are marked");
   assert.ok(card.rows.some(([k, v]) => k === "quality" && v.includes("no-native-probe")));
   assert.equal(vm.byId.get(`${A}:dist-ci`).jobHost, "host-b", "state.job.host counts as a job host");
   assert.ok(M.cardLines(vm, `${A}:dist-ci`).rows.some(([k, v]) => k === "job" && v.includes("ci-gpu-1")));

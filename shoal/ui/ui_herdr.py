@@ -848,7 +848,7 @@ def role_mode(r: dict) -> str:
 def herdr_state(r: dict) -> str:
     """Herdr's agent state (idle | working | blocked). A session mid-turn is `working` even when the
     role also waits on the maintainer: the sidebar showed a busy lane as blocked (2026-10-12), and
-    the needs-you signal stays in the row's posture and ask tokens. An open question prompt is the
+    the needs-you signal stays in the row's status and ask tokens. An open question prompt is the
     exception: it is the maintainer's to answer even while subagents keep the job working, so it reads
     `blocked`. So does a question or an ask beside a wait on its own job: the job runs on, but the question was
     hidden for hours under `working` (measured 2026-11-06: a merge ask raised beside a `local-ci` wait), and the
@@ -871,7 +871,7 @@ def role_tokens(r: dict) -> dict[str, str]:
     return {
         "role": r["slug"],
         "mode": role_mode(r),
-        "posture": ui_status.posture_label(r),
+        "status": ui_status.status_label(r),
         "item": (r["active"] or "-")[:80],
         "next": (f"{len(nx)}" + ("!" if r["blocker_stale"] else "")) if nx else "",
         "wait": (f"{r['wait']['sub']}:{(r['wait']['target'] or '')[:50]}" if r["wait"] else ""),
@@ -980,7 +980,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
             p = panes.get(role_label(s["id"], r["slug"]))
             if p is None:
                 continue
-            msg = ui_status.posture_label(r) + (f" {r['active']}" if r["active"] else "")
+            msg = ui_status.status_label(r) + (f" {r['active']}" if r["active"] else "")
             if holds_agent(h, p["pane_id"]):
                 h.call("pane.report_agent", {"pane_id": p["pane_id"], "source": SOURCE, "agent": r["slug"],
                                              "state": herdr_state(r), "message": msg[:80], "seq": seq})
@@ -1006,7 +1006,7 @@ def feed_once(h: Herdr, interval: float, tick: int, seq: int, quiet: bool = True
                                      "state": hstate, "message": f"standalone {st}", "seq": seq})
         h.call("pane.report_metadata", {"pane_id": p["pane_id"], "source": SOURCE, "ttl_ms": ttl, "seq": seq,
                                         "tokens": {"role": e.get("label") or "", "shoal": e.get("harness") or "",
-                                                   "posture": st, "mode": MODE_TURN if hstate == "working" else ""}})
+                                                   "status": st, "mode": MODE_TURN if hstate == "working" else ""}})
     if not quiet:
         print(f"{datetime.datetime.now():%H:%M:%S} fed {pushed} role panes; {ui_status.render_line(doc)}"
               + (f"; bare shell cards not reported (`shoal ui open --reapply`): {', '.join(bare)}" if bare else ""),
@@ -1317,7 +1317,7 @@ def _fmt_event(sid: str, e: dict) -> str:
     t = e.get("ts", "")[11:19]
     what = e.get("type", "?")
     bits = [e.get("item") or "", ("->" + e["to"]) if e.get("to") else "", e.get("kind") or "",
-            e.get("state") or e.get("posture") or "", e.get("active") or ""]
+            e.get("state") or e.get("status") or e.get("posture") or "", e.get("active") or ""]  # posture: before 2026-11-11
     text = e.get("text") or e.get("reason") or e.get("note") or ""
     return f"{t} {sid[:14]:<14} {e.get('by', '?')[:22]:<22} {what:<7} " + " ".join(b for b in bits if b) \
         + (f"  {' '.join(str(text).split())[:90]}" if text else "")
@@ -1786,7 +1786,7 @@ def legend_text(color: bool = True) -> str:
         f"    {MODE_TURN}  a turn is running            {MODE_JOB}  waiting on a job, CI build or lease running for it",
         "    (none) asleep with a watcher, idle, or needing you",
         "",
-        "  second row, the posture word: wait:<kind> orange, blocked:<kind> and QUESTION red, active green, idle orange",
+        "  second row, the status word: wait:<kind> orange, blocked:<kind> and QUESTION red, active green, idle orange",
         "  Standalone seats: `attached` = a client is open but nothing moved in the session for two minutes (idle);",
         "  `working` = the session's own activity is recent or a turn is running.",
     ])
@@ -1918,7 +1918,7 @@ status_indicators = "symbols"
 row_gap = 0
 rows = [
   ["state_icon", "machine", { token = "agent", bold = true }, { token = "$mode", rules = [{ equals = "\u25b6", fg = "#a6e3a1" }, { equals = "\u25f7", fg = "#fab387" }] }, { token = "$shoal", dim = true }, { token = "$host", dim = true }],
-  [{ token = "$posture", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#f38ba8", bold = true }, { equals = "BLOCKED", fg = "#f38ba8" }, { starts_with = "blocked", fg = "#f38ba8" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#fab387", bold = true }, { starts_with = "wait", fg = "#fab387" }, { equals = "idle", fg = "#fab387" }, { equals = "active", fg = "#a6e3a1" }] }, "$item", "$age"],
+  [{ token = "$status", rules = [{ equals = "DEAD", fg = "#f38ba8", bold = true }, { equals = "QUESTION", fg = "#f38ba8", bold = true }, { equals = "BLOCKED", fg = "#f38ba8" }, { starts_with = "blocked", fg = "#f38ba8" }, { equals = "NOWATCH", fg = "#f38ba8" }, { contains = "?", fg = "#fab387", bold = true }, { starts_with = "wait", fg = "#fab387" }, { equals = "idle", fg = "#fab387" }, { equals = "active", fg = "#a6e3a1" }] }, "$item", "$age"],
   [{ token = "$asks", fg = "#fab387", bold = true }, { token = "$next", rules = [{ contains = "!", fg = "#f9e2af" }] }, "$wait", { token = "$why", dim = true }],
 ]
 

@@ -25,7 +25,7 @@ self-recovery) plus one to `user`, and a telemetry watch_event. Ledger
 `state` events count as freshness for roles on other hosts (no /tmp
 heartbeat reaches across hosts). Specs with `features.health` run the
 health quorum (health.py) instead of this daemon; `doctor` still uses
-`classify` for its per-role posture lines.
+`classify` for its per-role status lines.
 """
 from __future__ import annotations
 

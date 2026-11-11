@@ -3,7 +3,7 @@
 //
 // The dialog is a front end over one CLI contract (additive v1; unknown fields are ignored):
 //   shoal ui act-plan roles --json [--shoal ID]
-//     -> {"v":1,"kind":"shoal-act-roles","shoals":[{"id","tag","roles":[{"slug","host","needs_you","posture"}]}]}
+//     -> {"v":1,"kind":"shoal-act-roles","shoals":[{"id","tag","roles":[{"slug","host","needs_you","status"}]}]}
 //   shoal ui act-plan <write verb> --shoal ID [...] --json
 //     -> {"v":1,"kind":"shoal-act-plan","verb","shoal","role","command","preview","cost","confirm","token","expires_s"}
 //   shoal ui act-apply --token T --json
@@ -491,7 +491,7 @@ function normRoles(d) {
       const slug = strOrNull(o?.slug);
       if (!slug || slugs.has(slug) || slug === "*") continue;
       slugs.add(slug);
-      roles.push({ slug, host: strOrNull(o.host), needsYou: o.needs_you === true, posture: strOrNull(o.posture), doc: strOrNull(o.doc) });
+      roles.push({ slug, host: strOrNull(o.host), needsYou: o.needs_you === true, status: strOrNull(o.status), doc: strOrNull(o.doc) });
     }
     shoals.push({ id, tag: strOrNull(s.tag) ?? shortShoal(id), roles, needsYou: roles.filter((r) => r.needsYou).length });
   }

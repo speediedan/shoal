@@ -187,7 +187,7 @@ def doc(ids: list[str] | None = None, now: float | None = None) -> dict:
         gen = _epoch(str((dg or {}).get("generated_utc") or ""))
         shoals.append({
             "id": s["id"], "tag": ui_herdr.shoal_tag(s["id"]),
-            "roles": [{"slug": r["slug"], "fill": r.get("fill") or "", "posture": ui_status.posture_label(r),
+            "roles": [{"slug": r["slug"], "fill": r.get("fill") or "", "status": ui_status.status_label(r),
                        "host": r.get("host") or ""} for r in rows if r.get("session_id")],
             "digest_age_s": int(max(0.0, now - gen)) if gen is not None else None,
             "boards": board_graph(s["id"], dg, rows, now),

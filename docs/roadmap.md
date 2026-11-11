@@ -17,7 +17,7 @@ authenticated, and a clash between two hosts is detected from the beats.
 
 **Missing for a holistic view from any host:**
 - **Live session state of remote roles:** done for hosts with an ssh route (the read model pulls that host's
-  own rows). Without a route, other hosts see ledger state (posture, queue, last write) and the host's beat;
+  own rows). Without a route, other hosts see ledger state (status, queue, last write) and the host's beat;
   carrying a compact per-role liveness summary in each host's beat would cover that case from the ledger alone.
 - **Viewing or attaching to a remote session:** done for hosts with an ssh route (cards run the role's own
   host's `shoal view` over ssh). Without a route, a viewer shows the ledger's view of that role.

@@ -144,7 +144,7 @@ def starved(r: dict) -> bool:
     """A fill=assigned role left with an empty queue past the grace, asking nothing: usually deliberate, so the agents list
     reads it as idle rather than needs-you (the lattice's `STARVED_AFTER_S`; accounting keeps `wait:assignment`)."""
     reasons = set(r["can_progress"]["reasons"])
-    age = r.get("posture_age_s")
+    age = r.get("status_age_s")
     return (r.get("fill") == "assigned" and r.get("sub") == "queue-empty" and not r.get("asks") and not r.get("next")
             and not r.get("grants_pending") and isinstance(age, (int, float)) and age >= STARVED_AFTER_S
             and not reasons & {"blocked-on-question", "blocked-says-waiting", "watcher-dead", "dead-worker"})
@@ -187,13 +187,13 @@ def card_report(r: dict, tag: str) -> dict:
     if state == "blocked" and not kind:
         need = ("dead" if "dead-worker" in reasons else "nowatch" if "watcher-dead" in reasons
                 else "stuck" if "blocker-role-cannot-take" in reasons else "")
-    bits = [ui_status.posture_label(r)]
+    bits = [ui_status.status_label(r)]
     if away:
         bits = [f"{r.get('host') or 'its host'} cannot be reached; last known: {bits[0]}"]
     w = r.get("wait") or {}
     if ui_herdr.role_mode(r) == ui_herdr.MODE_JOB and not away:
         bits = [f"{ui_herdr.MODE_JOB} {w.get('sub') or r.get('sub')}"]
-    if w.get("target") and r.get("posture") == "wait":
+    if w.get("target") and r.get("status") == "wait":
         bits.append(f"on {str(w['target'])[:60]}")
     if r.get("active"):
         bits.append(str(r["active"])[:60])
@@ -202,7 +202,7 @@ def card_report(r: dict, tag: str) -> dict:
         bits.append(says)
     asks = [str(x) for x in r.get("asks") or [] if str(x).strip()]
     if asks and state == "blocked" and kind == "question" and "blocked-on-question" not in reasons:
-        # the badge says a question; the message says which: the asks first, the posture after (it is cut at 200)
+        # the badge says a question; the message says which: the asks first, the status after (it is cut at 200)
         each = max(40, (150 - 10) // len(asks))
         bits.insert(0, f"{len(asks)} ask{'s' if len(asks) > 1 else ''}: " + "; ".join(a[:each].rstrip() + ("…" if len(a) > each else "") for a in asks) + " ·")
     # every ask the role has, for the row's right-click; whether they are the badge's question, for its click

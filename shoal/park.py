@@ -300,9 +300,9 @@ def parkable(spec, view, role, cbusy: dict, after_min: float) -> str:
     if view.queue(slug) or view.active(slug):
         return "it has an open offer or a live claim"
     st = view.role_state(slug) or {}
-    posture = st.get("state") or ("idle" if view.is_idle(slug) else "active")
-    if posture != "idle" and not (posture == "waiting" and st.get("sub") == "queue-empty"):
-        return f"its posture is {posture}"
+    role_status = st.get("state") or ("idle" if view.is_idle(slug) else "active")
+    if role_status != "idle" and not (role_status == "waiting" and st.get("sub") == "queue-empty"):
+        return f"its status is {role_status}"
     # the grace runs from the role's last write or the last message addressed to it: a message that has not been answered
     # yet may be about to wake it, and a park would drop that wake
     stamps = [view.last_by.get(slug, "")] + [m["ts"] for m in view.msgs if m.get("to") == slug]
@@ -406,7 +406,7 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
             dry_run: bool = False, effort: str = "", note: str = "") -> int:
     """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
     or provider: the quorum's `context_restart` run by hand, under the quorum's gate. Everything that can be proved is
-    proved before the old session stops: the role is at a boundary (restart-ready, posture idle or waiting, between
+    proved before the old session stops: the role is at a boundary (restart-ready, status idle or waiting, between
     turns; only that gate yields to `force`, which can cut off a Claude turn), a session nothing here can stop is not
     held (`force` never overrides that), and the new provider's tool and the start doc are in order. A login on the new
     provider is not checked (no harness has a uniform probe), and the restart itself runs detached: its log tells."""
@@ -448,12 +448,12 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     view = View(Ledger(spec.sid, root=spec.ledger_dir or None, sync=False), spec)
     q = view.current_queue(slug) or {}
     st = view.role_state(slug) or {}
-    posture = st.get("state") or ("idle" if view.is_idle(slug) else "active")
+    role_status = st.get("state") or ("idle" if view.is_idle(slug) else "active")
     between = health.session_between_turns(role, health.claude_busy(), spec.dir)
-    if not (q.get("restart_ready") and posture in ("idle", "waiting") and between) and not force:
+    if not (q.get("restart_ready") and role_status in ("idle", "waiting") and between) and not force:
         why = [] if q.get("restart_ready") else ["it has not said it is restart-ready (`queue --restart-ready` refreshes its doc first)"]
-        if posture not in ("idle", "waiting"):
-            why.append(f"its posture is {posture}")
+        if role_status not in ("idle", "waiting"):
+            why.append(f"its status is {role_status}")
         if not between:
             why.append("it is not known to be between turns")
         print(f"REFUSED: {slug}: {'; '.join(why)}. --force hands off anyway and can cut off work in progress")
@@ -466,7 +466,7 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         held = startdoc.split_job_folders(role.doc)[0]
         if held:  # a forced handoff, or a role that went restart-ready earlier: the prune guard keeps those jobs until the doc stops naming them
             print(f"note: its start doc still names job folder(s) {', '.join(held)}: kept until the doc stops naming them")
-    if posture == "waiting":  # what the operator is deciding about: a job or lease goes on without this session
+    if role_status == "waiting":  # what the operator is deciding about: a job or lease goes on without this session
         print(f"{slug} waits on {st.get('sub') or '?'}" + (f" ({st['target']})" if st.get("target") else "")
               + ": the wait stays with the role, and the new session reads it from the ledger")
     extra: list[str] = []

@@ -195,12 +195,12 @@ def _blocker_records(spec, view, slug, q):
 
 
 def ledger_part(spec, view, slug, fetched_at, budget_s=LEDGER_BUDGET_S):
-    """The snapshot's `ledger` source: the role's declared sleep posture (last `state` event, else
-    its queue version's posture) and queue, as of the clone's last fetch. A refill is a recorded
+    """The snapshot's `ledger` source: the role's declared sleep status (last `state` event, else
+    its queue version's status) and queue, as of the clone's last fetch. A refill is a recorded
     request, not an empty queue: an open ask on the current queue version is that record."""
     st = view.role_state(slug) or {}
     q = view.current_queue(slug) or {}
-    state = str(st.get("state") or q.get("posture") or "")
+    state = str(st.get("state") or q.get("status") or q.get("posture") or "")  # `posture`: queue events before 2026-11-11
     # queue items arrive as `<owner>/<repo>#<n>:<verb>` while blockers are keyed by item key:
     # both sides of the snapshot use item keys, or a blocked item would read as runnable
     nxt = [item_key(str(x)) for x in (q.get("next") or [])]
@@ -220,7 +220,7 @@ def job_part(sid, slug, target):
     lease was granted (`lease_granted` in the home meta, or this host's grant marker) and whether it
     has finished (its rc file). For a remote placed job the role's `job wait` supervisor copies the
     remote grant into the home meta, so its absence there means not granted yet (if that supervisor
-    died, the lease wait reads long until the role writes a new posture)."""
+    died, the lease wait reads long until the role writes a new status)."""
     if not target.startswith("job:"):
         return None
     try:
@@ -293,7 +293,7 @@ def _match(cbusy, session):
 def _dormant(sid, role):
     """A Claude background job whose turn ended (`done`, no worker pid) while its ledger watcher is
     alive and armed for this session is between turns, waiting to be woken, not missing: the
-    ledger posture classifies it. The watcher sidecar is host-local, so this runs where the
+    ledger status classifies it. The watcher sidecar is host-local, so this runs where the
     session does and travels in the native cache."""
     import health
     if not sid:

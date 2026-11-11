@@ -6,7 +6,7 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 **metric** (references/metrics.md; a failure mode without one gets one), **fix**, **status**.
 
 ## FM-1: Claude liveness read from the wrong field (2026-09-29)
-- **Signature:** a Claude role's posture is `active`, nothing has run for hours, and the quorum is
+- **Signature:** a Claude role's status is `active`, nothing has run for hours, and the quorum is
   silent.
 - **Detection:** `claude agents --json`, where `state` is `done` while `status` is `busy`.
 - **Fix:** liveness maps the turn `state`; `status` reads busy whenever any background task runs.
@@ -96,7 +96,7 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 
 ## FM-10: stale blockers hidden by a local-ci wait (2026-10-01)
 - **Signature:** a role chaining job units keeps next-item holds that expired hours ago; no wake.
-- **Detection:** `BLOCKER STALE` lines for a role whose posture is `waiting/local-ci`.
+- **Detection:** `BLOCKER STALE` lines for a role whose status is `waiting/local-ci`.
 - **Fix:** the review tells the role to re-verify them when its job ends. Candidate: carry stale
   blockers into the role's job-end wake.
 - **Metric:** `FM10:localci_with_stale_hold_h`
@@ -222,7 +222,7 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   peer mail remains unread while it waits for a future CI run. Watchers are live; no lease cycle exists.
 - **Cause:** informational mail has no wake semantics, so the administrative dependency is unrepresented.
 - **Fix:** operational requests use `msg --kind request`, automatically requesting acknowledgment.
-  The existing `unacked-work` ladder tracks them regardless of recipient posture. A linked response
+  The existing `unacked-work` ladder tracks them regardless of recipient status. A linked response
   from the actual recipient clears them; a queue write or unrelated reply does not.
 - **Metric:** `unacked-work` health-condition intervals keyed `request:<event-id>` measure outstanding
   age, request-to-response latency and escalation cost. Compare those with idle host-resource intervals.

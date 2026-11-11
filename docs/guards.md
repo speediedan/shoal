@@ -78,18 +78,18 @@ ladders.
 - **Signature:** a maintainer message whose instruction is visibly not followed in the role's next
   actions.
 
-## Turn ends while the posture is active
+## Turn ends while the status is active
 
 - **What goes wrong:** a model turn ends whenever the model stops calling tools, whatever the queue
-  says. A role that stops with its posture `active` has work in hand and nothing that will wake it,
+  says. A role that stops with its status `active` has work in hand and nothing that will wake it,
   since offers wake only idle roles and mail wakes nobody. Its ledger writes keep its heartbeat
   fresh, so liveness checks read green while the row is false.
-- **Guard:** health condition `turn-ended-active` (feature `continuation`): posture `active` and the
+- **Guard:** health condition `turn-ended-active` (feature `continuation`): status `active` and the
   session proven between turns for `after_min` (default 5 minutes) produces a CONTINUE wake, a
   second wake, then a page. A session blocked on a question to the maintainer is not between turns
   and never triggers it. For Claude, "between turns" is the session's turn `state` (`done`), never
   its `status`: `status` reads `busy` while the role's own background `ledger-watch` runs, which
-  hid a role that ended its turn while `active` for 6.6 hours (measured 2026-09-29). Without `continuation`, `stale-active` catches the same posture after 90
+  hid a role that ended its turn while `active` for 6.6 hours (measured 2026-09-29). Without `continuation`, `stale-active` catches the same status after 90
   minutes. `queue` prints the closing rule whenever it writes `active`, and `next` prints it at
   every boundary: the last write of a turn is `queue --wait ...`, `queue --idle`, or `queue
   --active` followed by more work in the same turn.
@@ -114,10 +114,10 @@ ladders.
 
 - **What goes wrong:** a role parks on a peer or the maintainer with a long rescan of its own
   choosing, and nothing fires when the rescan passes. Every liveness signal stays green because the
-  role is alive, its watcher runs and its posture is honest; the condition simply never clears.
+  role is alive, its watcher runs and its status is honest; the condition simply never clears.
 - **Guard:** feature `waitdiscipline`. Rescans are capped per substate (defaults: 240 minutes for
   maintainer and peer waits, 180 for CI, 360 for `queue-empty`). Health condition `wait-expired`
-  fires for any waiting posture past its capped rescan. `next` prints `RESCAN EXPIRED`, and the role
+  fires for any waiting status past its capped rescan. `next` prints `RESCAN EXPIRED`, and the role
   re-verifies, re-raises its ask or pivots to the next unblocked item.
 - **Signature:** `wait-expired` wakes; a waiting row past its rescan with no following action.
 
@@ -343,7 +343,7 @@ ladders.
 ## Telemetry that reads complete while miscounting
 
 - **What goes wrong:** a report looks whole while counting some things twice and others not at
-  all: a posture change and its ledger twin both counted, one role split across several session
+  all: a status change and its ledger twin both counted, one role split across several session
   keys, a role with no transition in the window shown as unobserved.
 - **Guard:** the report keys time in state by role slug, resolving slug, then session, then session
   prefix, and counts anything else as `unresolved` rather than giving it a row. It drops a ledger

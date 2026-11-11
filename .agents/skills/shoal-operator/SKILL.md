@@ -50,7 +50,7 @@ answer the question sets each role raises (stale asks are dropped first).
 ## Freeze for a window
 
 Before a restart or maintenance window: `shoal freeze on --shoal <id> --note "<why>"`. Every role
-is woken to checkpoint and sleep, and `job run` refuses new units. Wait for sleep postures and no
+is woken to checkpoint and sleep, and `job run` refuses new units. Wait for sleep statuses and no
 running job units. Afterwards: `shoal freeze off --shoal <id>`, which wakes every role to resume.
 Never announce a freeze by message alone: a message has no end, and lanes honor it indefinitely.
 
@@ -73,7 +73,7 @@ repeats means the ladder ran out: the role could not recover by itself.
 ## Health review
 
 On a schedule, after an upgrade, or when pages repeat, run the review in `shoal-health-review`. It
-proves each role's posture, restarts stalled roles, and feeds every failure mode back into shoal
+proves each role's status, restarts stalled roles, and feeds every failure mode back into shoal
 and into the review itself.
 
 ## Steering

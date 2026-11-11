@@ -12,7 +12,7 @@ linger enabled,
 stale systemd units pointing at missing files.
 
 shoal checks: spec valid; start docs present with required sections; live
-session ids present + reachable; heartbeat/wait posture per role; watcher
+session ids present + reachable; heartbeat/wait status per role; watcher
 ticks vs 3x interval; systemd timers present and active for this shoal (each
 .timer unit's own ActiveState); parked roles (no session) report INFO;
 telemetry dir writable + last event age; reconcile tick age. Ledger: clone

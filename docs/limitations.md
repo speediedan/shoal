@@ -53,7 +53,7 @@ log is then dead weight for every clone).
 2. Archive a retired group: move its directory to an archive branch or tag, then delete it from the
    default branch. Existing clones keep reading it; new clones skip it.
 3. Snapshot and truncate: a checkpoint event records the derived state (open claims, each role's
-   queue version and posture, the ids a watcher has delivered). Projections start from the latest
+   queue version and status, the ids a watcher has delivered). Projections start from the latest
    checkpoint, and the lines before it move to an archive file. This is the only direction that
    bounds replay cost for a group that never retires. It needs a rule for who may write a
    checkpoint and how a reader verifies one.

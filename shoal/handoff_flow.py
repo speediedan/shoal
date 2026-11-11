@@ -161,8 +161,8 @@ def role_ready(spec, slug: str, previous_queue: str = "") -> bool:
     role = spec.role(slug)
     view = View(Ledger(spec.sid, root=spec.ledger_dir or None, sync=False), spec)
     q, st = view.current_queue(slug) or {}, view.role_state(slug) or {}
-    posture = st.get("state") or ("idle" if view.is_idle(slug) else "active")
-    return bool(q.get("restart_ready") and (not previous_queue or q.get("id") != previous_queue) and posture in ("idle", "waiting") and
+    role_status = st.get("state") or ("idle" if view.is_idle(slug) else "active")
+    return bool(q.get("restart_ready") and (not previous_queue or q.get("id") != previous_queue) and role_status in ("idle", "waiting") and
                 not park.session_held(role, spec.dir) and
                 health.session_between_turns(role, health.claude_busy() if role.ecosystem == "claude" else {}, spec.dir))
 
