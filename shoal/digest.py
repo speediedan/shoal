@@ -430,7 +430,7 @@ def write(spec: ShoalSpec, doc: dict) -> str:
     _write_json(path, doc)
     try:
         note_history(spec.sid, doc)
-    except OSError:  # the trend is a convenience: a digest is never lost to it
+    except Exception:  # noqa: BLE001 - the trend is a convenience: a digest is never lost to it
         pass
     return path
 
@@ -448,14 +448,23 @@ def note_history(sid: str, doc: dict, now: float | None = None) -> None:
     HISTORY_EVERY_S per board, keeping HISTORY_KEEP_S of it. The digest itself holds only the open items."""
     now = time.time() if now is None else now
     path = history_path(sid)
+    rows = []
     try:
         with open(path) as fh:
-            rows = [json.loads(line) for line in fh if line.strip()]
-    except (OSError, ValueError):
-        rows = []
+            for line in fh:
+                # line by line: one torn or foreign line is skipped, not the history (a whole-file parse dropped it all,
+                # and the next append wrote back only the new rows)
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and isinstance(r.get("ts"), (int, float)):
+                    rows.append(r)
+    except OSError:
+        pass
     last = {}
     for r in rows:
-        last[r.get("source")] = r.get("ts") or 0
+        last[r.get("source")] = r["ts"]
     items = doc.get("items") or {}
     new = []
     for b in doc.get("boards") or []:
@@ -466,9 +475,9 @@ def note_history(sid: str, doc: dict, now: float | None = None) -> None:
                     "done": int(b.get("done") or 0)})
     if not new:
         return
-    keep = [r for r in rows if now - float(r.get("ts") or 0) <= HISTORY_KEEP_S] + new
+    keep = [r for r in rows if now - r["ts"] <= HISTORY_KEEP_S] + new
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = f"{path}.{os.getpid()}.tmp"  # two writers on one host never share a temporary file
     with open(tmp, "w") as fh:
         fh.writelines(json.dumps(r) + "\n" for r in keep)
     os.replace(tmp, path)

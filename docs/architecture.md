@@ -1178,7 +1178,8 @@ and the contract are in [`ui.md`](ui.md).
   selects it for Open on GitHub, Offer to a role (the actions dialog, its `item` prefilled) or Move to a role (that
   role's Queue, with `pick` set, so the plan transfers it). The metrics panel shows the rail card's counts, closes in
   seven days, the days to none open at that pace, and 14-day trends of open items and closes a day, from
-  `board_history.jsonl`, which `digest.write` appends at most every half hour per board and keeps for 90 days.
+  `board_history.jsonl`, which `digest.write` appends at most every half hour per board and keeps for 90 days. It is
+  read line by line, so a torn or foreign line is dropped and the rest kept, and no error there fails the digest.
 - **The plugin wrapper** (`plugins/shoal-herdr/bin/shoal-ui`): every 0.9.3 pane, Herdr app card and UI unit runs
   this checkout's `cli.py` through it, with `SHOAL_PYTHON`, else the Python of the `shoal` on PATH (its shebang,
   or the exec line when that `shoal` is a shell wrapper), else `python3`.

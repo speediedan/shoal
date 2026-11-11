@@ -92,12 +92,28 @@ class BoardTests(unittest.TestCase):
             got = ui_board.history("sid", SRC, NOW + digest.HISTORY_EVERY_S, path)
             self.assertEqual(len(got), 2)
 
+    def test_a_bad_line_is_skipped_and_the_rest_of_the_history_kept(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(digest, "data_dir", return_value=d):
+            path = digest.history_path("sid")
+            good = {"ts": NOW - DAY, "source": SRC, "open": 7, "done": 2}
+            with open(path, "w") as fh:
+                fh.write(json.dumps(good) + "\n" + '{"ts": 1, "source": "torn' + "\n" + "[1, 2]\n"
+                         + json.dumps({"ts": "soon", "source": SRC}) + "\n")
+            digest.note_history("sid", DIGEST, now=NOW)
+            with open(path) as fh:
+                rows = [json.loads(line) for line in fh]
+            self.assertEqual([r["ts"] for r in rows], [int(NOW - DAY), int(NOW)], "the good row stays; the bad ones go")
+            self.assertFalse([f for f in os.listdir(d) if f.endswith(".tmp")], "no temporary file left behind")
+
     def test_write_keeps_the_digest_when_the_history_cannot_be_written(self):
         spec = type("Spec", (), {"sid": "sid"})()
         with tempfile.TemporaryDirectory() as d, patch.object(digest, "data_dir", return_value=d), \
                 patch.object(digest, "note_history", side_effect=OSError("disk full")):
             path = digest.write(spec, DIGEST)
             self.assertTrue(os.path.exists(path))
+        with tempfile.TemporaryDirectory() as d, patch.object(digest, "data_dir", return_value=d), \
+                patch.object(digest, "note_history", side_effect=TypeError("a malformed board")):
+            self.assertTrue(os.path.exists(digest.write(spec, DIGEST)), "nor for any other error")
 
 
 if __name__ == "__main__":
