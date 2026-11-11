@@ -6,7 +6,7 @@
 // The scene adds what makes it read as space: a floor grid below everything, stems down to it, a shadow on it for each
 // globe and lifted seat (all cast by the one light that shades the globes), and fog on what is far.
 
-import { LIGHT, bowlFrame, bowlPoint, bowlProject, bowlReach } from "./sphere.js";
+import { LIGHT, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing } from "./sphere.js";
 
 const DEG = Math.PI / 180;
 
@@ -287,23 +287,27 @@ function floorGrid(P, o, R, z) {
   return grid;
 }
 
-// Per shoal, depth mode: the cutout sphere. The operator sits at the middle of a sphere whose upper half is cut away
-// (sphere.js has its frame), so the camera looks down into a bowl, in perspective: you, at the middle, are nearer than
-// the bowl and drawn larger. The hosts' lunes tile the inner surface, pole to rim (bowlLunes): each over its sector of
-// the flat view widened to the middle of the gaps either side, turned with the camera. A host's roles sit on its lune,
-// spread across its sector by label order, in two rows when there are four or more, each kept inside the part seen
-// through the rim. Outside seats and anything else ring the rim, in its plane. Turning the camera turns the bowl about
-// its axis.
-export const BOWL_TILT = 30 * DEG; // the bowl's axis is the camera's pitch less this off the line of sight
+// Per shoal, depth mode: the cutout sphere. The operator sits at the middle of a sphere whose near part is cut away
+// (sphere.js has its frame), so the camera looks down into a bowl and in from the side, in perspective: you, at the
+// middle, are nearer than the bowl and drawn larger, its bottom below and beside you. The hosts' lunes tile the inner
+// surface, pole to rim (bowlLunes): each over its sector of the flat view widened to the middle of the gaps either side,
+// turned with the camera. A host's roles sit on its lune, spread across its sector by label order, in two rows when
+// there are four or more, each kept inside the rim and behind you. Outside seats and anything else ring the rim, in
+// the cut's plane. Turning the camera turns the bowl about its axis.
+export const BOWL_TILT = 24 * DEG; // the bowl's axis is the camera's pitch less this off the line of sight, vertically
 const BOWL_EXT = 1.32; // where outside seats ring the rim, in sphere radii
 const BOWL_GAIN = 1.25; // sizes in the bowl: you (perspective scale 1, at the middle) this much larger than flat
+const BOWL_BEHIND = 0.2; // how far behind you, along the line of sight, a role on the inside sits at least
+// sizes shrink with that depth this much faster than perspective alone, so the far wall reads far
+const SIZE_DEPTH = 1.6;
 
-/** The bowl's tilt for a camera: how far off its axis the camera looks down into it. */
-export const bowlTilt = (cam) => Math.min(30 * DEG, Math.max(12 * DEG, cam.pitch - BOWL_TILT));
+/** The bowl's pitch for a camera: how far off its axis, vertically, the camera looks down into it (sphere.js
+ * BOWL_TURN turns it horizontally as well). */
+export const bowlTilt = (cam) => Math.min(36 * DEG, Math.max(12 * DEG, cam.pitch - BOWL_TILT));
 
 /** The polar angle (from the bowl's pole) of the j-th of m roles at azimuth phi: a fraction of what is seen there. */
 export function bowlTheta(fr, phi, j, m) {
-  return bowlReach(fr, phi) * (m >= 4 ? (j % 2 ? 0.6 : 0.9) : 0.8);
+  return bowlReach(fr, phi, 0.86, -BOWL_BEHIND) * (m >= 4 ? (j % 2 ? 0.6 : 0.9) : 0.8);
 }
 
 /**
@@ -332,14 +336,14 @@ function projectBowl(vm, lay, cam0) {
   const P = (p, zz) => project(cam, p, zz);
   const bands = bowlLunes(lay.bands ?? [], cam.yaw).map((b) => ({ ...b, bowl: true, depth: -Rs, fog: 1 }));
   const pos = new Map(), depth = new Map(), scaleOf = new Map(), fogOf = new Map(), surfaceOf = new Map();
-  // a point of the bowl's world (in sphere radii, the camera's frame) on screen, in perspective. Its size and paint
-  // order go by how deep in the bowl it is (below the opening, along the axis), which from above is how far it is: you,
-  // on the opening, are nearest and largest, a role near the pole smallest, even one on the near rim's side below you.
+  // a point of the bowl's world (in sphere radii, the camera's frame) on screen, in perspective. Its paint order goes
+  // by its depth along the line of sight and its size by how far behind you it is: you, at the middle, are nearest and
+  // largest, every role on the inside behind you (BOWL_BEHIND at least) and smaller, the far wall's smallest.
   const put = (id, u) => {
-    const s = bowlProject(fr, u), below = Math.max(0, u.x * fr.pole.x + u.y * fr.pole.y + u.z * fr.pole.z);
+    const s = bowlProject(fr, u);
     pos.set(id, { x: Rs * s.x, y: Rs * s.y });
-    depth.set(id, -Rs * below);
-    return fr.d / (fr.d + below);
+    depth.set(id, Rs * u.z);
+    return fr.d / (fr.d - SIZE_DEPTH * Math.min(0, u.z));
   };
   // roles: on their host's lune, spread across its sector in the flat view's order
   const TAU = 2 * Math.PI;
@@ -364,7 +368,7 @@ function projectBowl(vm, lay, cam0) {
     if (n.kind === "user") scaleOf.set(n.id, BOWL_GAIN * put(n.id, { x: 0, y: 0, z: 0 }));
     else {
       const phi = flatAngle(n.id) + cam.yaw;
-      put(n.id, { x: BOWL_EXT * Math.cos(phi), y: BOWL_EXT * Math.sin(phi) * fr.e2.y, z: BOWL_EXT * Math.sin(phi) * fr.e2.z });
+      put(n.id, bowlRing(fr, phi, BOWL_EXT));
       scaleOf.set(n.id, 1);
     }
     fogOf.set(n.id, 1);
@@ -382,11 +386,11 @@ function projectBowl(vm, lay, cam0) {
   // a CI tether ends in the middle of its host's lune
   const anchors = new Map();
   for (const b of bands) {
-    const phi = (b.a0 + b.a1) / 2, s = bowlProject(fr, bowlPoint(fr, bowlReach(fr, phi) * 0.5, phi));
+    const phi = (b.a0 + b.a1) / 2, s = bowlProject(fr, bowlPoint(fr, bowlReach(fr, phi, 0.86, -BOWL_BEHIND) * 0.5, phi));
     anchors.set(b.host, { x: Rs * s.x, y: Rs * s.y, band: true });
   }
   const tethers = (lay.tethers ?? []).map((t) => ({ ...t, from: pos.get(t.id) ?? t.from, to: t.to && anchors.has(t.host) ? { ...anchors.get(t.host) } : null }));
-  const clusters = c0 ? [{ ...c0, x: 0, y: 0, r: Rs, ry: 1, sphere: false, bowl: { alpha: fr.alpha }, globeGrid: [], s: 1, depth: -Rs, fog: 1, zw: 0 }] : [];
+  const clusters = c0 ? [{ ...c0, x: 0, y: 0, r: Rs, ry: 1, sphere: false, bowl: { alpha: fr.alpha, beta: fr.beta }, globeGrid: [], s: 1, depth: -Rs, fog: 1, zw: 0 }] : [];
   const floorZ = -Rs * 1.2 - 0.3 * PLANE_GAP;
   const grid = floorGrid(P, cam.o, radius * 1.15, floorZ);
   const L = lightWorld(cam);

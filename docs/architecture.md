@@ -969,6 +969,27 @@ about 260), up from about 2,600; the per-shoal scene takes about 740, of which t
 highlight went from 12 layers to 8 to make room. `check_depth.mjs` passes 12 of 12 in iso, tilt, turned, hovered and
 per-shoal scenes.
 
+The cutout sphere is now seen from the side as well as from above, so you and the inner surface behind you read apart
+in depth. `sphere.js` `bowlFrame` turns the bowl's axis off the line of sight both ways: vertically by the camera's
+pitch less 24 degrees (28 in tilt, 34 in iso) and horizontally by `BOWL_TURN`, 30 degrees, so the bowl's bottom lands
+below and to the left of you and its meridians run down to it there. Seen that obliquely, a hemisphere's near wall
+would face the camera and hide the inside, so the cut is no longer the equator but a plane {u . n = h} whose normal
+leans from the bowl's up toward the camera: the far wall keeps the hemisphere's rim and only the near wall is cut lower
+(to about 70 degrees from the bottom), just far enough (3 degrees past the limit) that no kept point faces the camera
+(u.z < 1 / d), so the whole inside is seen through the opening and the near wall's outside crescent is gone. The rim
+(the cut circle) projects to an exact turned ellipse, found as the conic image of the circle; `rimNorm` is that
+ellipse's own measure (1 on the rim), `rimTheta` gives the rim's polar angle at each azimuth, and a lune runs pole to
+rim along two meridians and the cut circle between them. Roles stay on the inside, inside the rim and at least 0.2
+radii behind you along the line of sight (`bowlReach`), drawn smaller with that depth, so you are still nearest and
+largest. You cast a soft shadow (10 layers) on the inside from the one light, square on at the point opposite the
+light, beside you and clear of you; eight faint meridians join the two circles of latitude in the grid. The inside is
+a little clearer (base 12 percent, washes 8, from 16 and 10), and its glow is 48 layers of the rim's ellipse at 2 of
+255 alpha each (from 20 at 5), shrinking toward the lit spot, with about the same total light: a step between two
+layers is under one and a half color levels, so the bands no longer show. In the fixture the bowl takes about 450
+path commands (about 160 before) and the per-shoal scene about 1,040 (about 740 before), well under the global depth
+scene's 2,790, which is unchanged. `check_depth.mjs` passes 12 of 12 per shoal in iso, tilt and turned 60 degrees,
+on the fixture's second shoal, and in the global scene.
+
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
 freshness, and warning thresholds. The UI status contract adds `usage`; overview
