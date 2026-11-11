@@ -51,7 +51,7 @@ reads the traces the others left, acts, and writes one event per decision (stigm
 - **Per boundary a role makes one read (`shoal next`) and one write (`shoal queue`)**, then keeps
   working the active item.
 - **The health quorum** is a pair of timers that use no model tokens unless they wake someone.
-- **Telemetry** records every posture change and every wake; reports are built from it.
+- **Telemetry** records every status change and every wake; reports are built from it.
 
 An item is `<repo>#<n>:<verb>`, with verb `fix` or `review`. The backlog is currently a GitHub
 Projects v2 board; its order is the priority, and SHOAL never reorders it. The board is one source
@@ -146,7 +146,7 @@ generation holds it.
 ## 4. The work loop and wakes
 
 **The queue stream.** A role's latest `queue` event (`active`, `next` of up to `next_max`, `asks`,
-`reason`, `posture`) is its queue and its posture. The maintainer influences it with `offer`
+`reason`, `status`) is its queue and its status. The maintainer influences it with `offer`
 (`--prio`, and `--now` to interrupt a busy role) and `withdraw`. shoal never writes a role's
 queue: `shoal queue-order --to <role> --next a,b,c` checks each item (held, offered, or a board item
 for a self-filler; never another role's, done, or the active item) and sends a woken `request`
@@ -161,7 +161,7 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   is short, the integrity of the active and next items (taken, done elsewhere), unread mail, wait
   status, and whether the role's watcher is alive.
 - `shoal queue` writes one ledger commit: `done`, claims (the active item is claimed if not held),
-  passes with a reason class and an optional `suggest=<role>`, asks, the posture, and the new
+  passes with a reason class and an optional `suggest=<role>`, asks, the status, and the new
   queue version. Heartbeat, wait proof and telemetry are written locally in the same call.
 - Every pop backfills `next` to `next_max` (default 3), from offers by priority and then digest
   candidates, or records why fewer. `next` shows candidates whenever the queue has an open slot: a
@@ -172,7 +172,13 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   not a reason to idle, so it takes an offer first, else the first candidate, and keeps the blocked items in `next`
   with their blockers.
 
-**Every turn ends in a sleep posture:** `queue --wait <sub> --holder <who> --target <kind:ref>`
+**The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),
+`idle`, `offline` or `parked`, from its last `state` event, else its queue version's `status`. It is the canonical
+role state; `session` is the harness's status of the session, and the agents list's `agent` (group and state) is a
+reading derived from both. It was called "posture" until 2026-11-11: queue events written before then store the
+field as `posture`, and the readers of ledger history take `status`, then `posture`.
+
+**Every turn ends in a sleep status:** `queue --wait <sub> --holder <who> --target <kind:ref>`
 with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. Idle is
 refused while any next item lacks a recorded blocker (`queue --blocked ITEM=<blocker>`, carried
 forward while the item stays in `next`; a role blocker shows its holder `BLOCKING`), because an
@@ -194,7 +200,7 @@ refused while `next` would offer strong-fit candidates, until each is taken, lis
 a reason class, and a role's watcher wakes it for board candidates when every next item is blocked,
 not only when `next` is empty. Measured 2026-09-29: two lanes idled 2.5 and 11.5 hours behind
 blockers that were all stale, beside 2 and 8 eligible candidates. With
-`continuation`, a role whose posture is `active` while its session is proven between turns is
+`continuation`, a role whose status is `active` while its session is proven between turns is
 woken to continue after `after_min` (default 5).
 
 **Wakes are work-only.** A role's `ledger-watch` wakes it for: an offer to it or to `*` while it is
@@ -453,14 +459,14 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 
 | condition | evidence | ladder (minutes) |
 | --- | --- | --- |
-| `unacked-work` | an unacknowledged operational request in any posture, an offer to an idle role, a `--now` offer, or an outstanding wake request | wake 10, wake 30, page 60 |
+| `unacked-work` | an unacknowledged operational request in any status, an offer to an idle role, a `--now` offer, or an outstanding wake request | wake 10, wake 30, page 60 |
 | `wait-resolved` | a checkable wait target is no longer pending | wake 15, page 60 |
 | `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
-| `turn-ended-active` (`continuation`) | posture `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
+| `turn-ended-active` (`continuation`) | status `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `checkout-stuck` (when `watch_checkouts` lists it) | a shared checkout has an operation left in progress, a local file differing from one its upstream changed, or commits on both sides; behind alone is not stuck | page 60 |
-| `stale-active` (when `continuation` is off) | posture `active`, no ledger write, session between turns | wake 90, page 180 |
-| `wait-expired` (`waitdiscipline`) | a waiting posture past its capped rescan | wake 0, wake 60, page 120 |
+| `stale-active` (when `continuation` is off) | status `active`, no ledger write, session between turns | wake 90, page 180 |
+| `wait-expired` (`waitdiscipline`) | a waiting status past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:` or `lease:` blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
@@ -548,7 +554,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | --- | --- | --- |
 | `lazy_rearm` | on | a dead watcher on a role that is not active and has nothing its watcher would wake it for raises no `watcher-dead`: its next real work raises its own condition |
 | `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder. Each arm counts fetch failures from zero, so a re-arm during an outage gets its full five attempts |
-| `autopark` (a top-level feature) | off | a `fill=assigned` role holding nothing and quiet for `after_min` (default 60; `true`, or `{"after_min": 60, "exempt": ["<role>"]}`) is parked by the quorum `--until offer:<role>`, and the next offer to it relaunches it from its start doc. So an empty-queue episode costs at most that grace of `wait:assignment`, and parked time is excluded. It stays out for a queue, offer, claim or ask, a posture other than idle, a message or session activity newer than the grace (direct chat writes nothing to the ledger), a turn, a `blocked` Claude row (a request may sit in its job's `needs`), an attached client or interactive session (`claude attach` for Claude, `session_held` for the others), a running job, a condition raised this run, an incomplete start doc, or a freeze. At most one park per quorum run. Only an offer relaunches: a `msg --wake` to a parked role does not. A park or relaunch changes the shoal's viewable roles, so the app rebuilds its roles tabs |
+| `autopark` (a top-level feature) | off | a `fill=assigned` role holding nothing and quiet for `after_min` (default 60; `true`, or `{"after_min": 60, "exempt": ["<role>"]}`) is parked by the quorum `--until offer:<role>`, and the next offer to it relaunches it from its start doc. So an empty-queue episode costs at most that grace of `wait:assignment`, and parked time is excluded. It stays out for a queue, offer, claim or ask, a status other than idle, a message or session activity newer than the grace (direct chat writes nothing to the ledger), a turn, a `blocked` Claude row (a request may sit in its job's `needs`), an attached client or interactive session (`claude attach` for Claude, `session_held` for the others), a running job, a condition raised this run, an incomplete start doc, or a freeze. At most one park per quorum run. Only an offer relaunches: a `msg --wake` to a parked role does not. A park or relaunch changes the shoal's viewable roles, so the app rebuilds its roles tabs |
 | `watch_checkouts` | off | paths of shared checkouts this host's quorum watches for `checkout-stuck`, each fetched per tick. List them on one spec, or each quorum pages about the same checkout. A path that is not a checkout on a host is skipped there |
 | `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
 | `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
@@ -725,7 +731,7 @@ source, harness adapters) and their contracts are in [`providers.md`](providers.
 - **Reports** (`report`, and a weekly timer): outcomes, time in state, transition quality, wait
   discipline, wake efficiency, ledger economics, health actions, job units, digest refreshes, host
   memory-pressure fires and harness reaps, and a verdict section. Time in state there is ledger
-  posture time, not work time (see below).
+  status time, not work time (see below).
 
 ### Role time accounting
 
@@ -737,8 +743,8 @@ and upper bounds and coverage. The module is pure: adapters build observation sn
 host-local caches and the ledger clone, and it never fetches, probes a harness, calls a provider,
 wakes a role or runs a model turn.
 
-- **Work comes from the native turn state**, not ledger posture: the ledger records the posture a
-  role sleeps in at the end of a turn (§4), so a turn inside an unchanged `waiting` posture is work.
+- **Work comes from the native turn state**, not ledger status: the ledger records the status a
+  role sleeps in at the end of a turn (§4), so a turn inside an unchanged `waiting` status is work.
   Ledger `active` with no turn running accrues no work. A positively identified blocking phase
   inside a turn is a wait; an open native question is `wait:user-prompt`.
 - **Between turns the ledger classifies** (policy `role-time/v5.1`): waiting substates map to wait
@@ -746,7 +752,7 @@ wakes a role or runs a model turn.
   started with placement whose lease has not been granted yet is `wait:lease`: the home job meta's
   `lease_granted` decides, which the role's `job wait` supervisor copies back for a remote job, with
   this host's grant marker as a fallback for a local one), explicit `paused` and `offline` are
-  excluded, and an idle posture is classified by its queue. Any runnable item (no blocker, or a
+  excluded, and an idle status is classified by its queue. Any runnable item (no blocker, or a
   resolved or expired one under `blockers.py`) makes the role `wait:self`: it has work it is not
   doing. Only when every item is non-runnable is the role in a blocker wait, with the blockers'
   shared kind, `mixed`, or `unverified`. An empty queue (or `queue-empty`) names who owes the role
@@ -762,11 +768,11 @@ wakes a role or runs a model turn.
   for the cases above), so an old report reads the same. The observer closes a live segment
   written under another policy before appending, so a segment's header describes all of it.
 - **Session-less roles** (v5.1): a role with no session recorded in the spec (not a missing process)
-  whose declared posture is `paused` or `offline` is excluded; one that is idle with no session stays
+  whose declared status is `paused` or `offline` is excluded; one that is idle with no session stays
   `unknown:session-missing`, so a role that should be running but is not stays visible.
 - **Dormant Claude sessions**: a background job whose turn ended (`done`, no worker pid) while its
   ledger watcher is alive and armed for the same session is between turns, not missing; the probe
-  reports it as `between` and the ledger posture classifies it. The watcher sidecar is host-local,
+  reports it as `between` and the ledger status classifies it. The watcher sidecar is host-local,
   so this is decided where the session runs and travels in the native cache.
 - **Population exit**: a `role-removed` system event (written by the `shoal` writer) ends the role's
   membership at its `ts`; a role added back later keeps its later spans. A role that leaves the
@@ -1020,7 +1026,7 @@ and the contract are in [`ui.md`](ui.md).
 - **Read model** (`shoal/ui/ui_status.py`): `ui status` builds one versioned document (`v: 1`,
   additive) for every non-retired shoal under the ledger clone. Each role row is folded by
   `ledger.View` and probed the way the health quorum probes it (`claude agents --json --all`, the
-  OpenChamber status, the watcher sidecar). Rows carry posture, active and next items with
+  OpenChamber status, the watcher sidecar). Rows carry status, active and next items with
   blockers, asks, offers, liveness and `can_progress` with reasons: `dead-worker`,
   `blocked-on-question`, `watcher-dead`, `blocker-role-cannot-take`, `parked-work` and
   `waiting-on-you`. `watcher-dead` and `parked-work` call the quorum's own predicates
@@ -1248,7 +1254,7 @@ as off the board. The same match gives a role's work items their board titles; a
 A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger or was dismissed from the
 app's spaces, and says which session it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
 offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`. `shoal dismiss` records a
-`needs-dismissed` system event with a fingerprint of the role's reasons, asks, words and last posture; while the fingerprint holds, the row's
+`needs-dismissed` system event with a fingerprint of the role's reasons, asks, words and last status; while the fingerprint holds, the row's
 `needs_you` is false and `dismissed` true, and any change raises it again. It is display only: health reads neither, and a dismissal over a
 `dead-worker` or `watcher-dead` lapses after 24 hours.
 

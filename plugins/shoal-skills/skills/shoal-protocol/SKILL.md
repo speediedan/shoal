@@ -22,7 +22,7 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    `shoal next --shoal <id> --slug <you>` UNPIPED, then write exactly one
    `shoal queue --shoal <id> --slug <you> ...`. Then keep working the active item in the same
    turn. Details: `references/work-loop.md`.
-2. **Every turn ends in a sleep posture.** The last write of a turn is `queue --wait <sub>
+2. **Every turn ends in a sleep status.** The last write of a turn is `queue --wait <sub>
    --holder <who> --target <kind:ref>` (with the waiter armed first), `queue --active <next>` (and
    keep working), or `queue --idle`. A turn that stops while `active` gets woken to continue.
    **Idle means an empty queue, or every next item has a recorded blocker** (`queue --blocked
@@ -51,13 +51,13 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    `references/watchers-and-waits.md`.
 6. **Every completed turn ends with your status block**, posted after the last `queue` write. It
    is the maintainer's only per-lane view, and a turn without one reads as a stall. Three rows,
-   always; the Lane row states the posture you sleep in (never `active` once you stop):
+   always; the Lane row states the status you sleep in (never `active` once you stop):
 
    ```markdown
    | | status | next (max N) |
    | --- | --- | --- |
    | **Lane** · `<slug> (<slug>-r<N>)` | waiting (<reason>; watchers <pids>) | [<repo>#<n>](<url>):fix, ... |
-   | **Pipelines** | <gate ids and states> · lease: <posture> | (none) |
+   | **Pipelines** | <gate ids and states> · lease: <status> | (none) |
    | **Worktrees** | `<path>` (<branch>, clean/dirty) | (retire only after merge + prune) |
    ```
 
@@ -68,7 +68,7 @@ per decision. That is stigmergy: coordination through the traces each agent leav
 | file | read it when |
 | --- | --- |
 | `references/ledger.md` | you need the event types, who may write what, claims, declines, handoffs, or you work with a session outside your shoal |
-| `references/work-loop.md` | you are at a boundary, choosing a posture, or popping the next item |
+| `references/work-loop.md` | you are at a boundary, choosing a status, or popping the next item |
 | `references/watchers-and-waits.md` | you are about to wait on CI, a lease, a job, or anything slow |
 | `references/asks-and-offline.md` | you need the maintainer's decision, or `next` shows ASKS / USER OFFLINE |
 | `references/status-and-states.md` | you post a status block, or report your state |

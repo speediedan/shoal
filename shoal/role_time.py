@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import blockers  # noqa: E402
 
 POLICY_VERSION = "role-time/v5.1"
-# v5.1 (2026-11-01): a role with no session recorded in the spec whose declared posture is paused or
+# v5.1 (2026-11-01): a role with no session recorded in the spec whose declared status is paused or
 # offline is excluded, not unknown; and a CI wait on a placed job that has not been granted its
 # lease yet is wait:lease, not wait:local-ci. Snapshots from v5 segments keep v5 behaviour.
 V5_POLICY = "role-time/v5"
@@ -69,7 +69,7 @@ WAIT_GROUP = {"local-ci": "system", "remote-ci": "system", "lease": "system", "r
               "user-prompt": "human", "assignment": "human", "sources": "human", "self": "self",
               "hold": "policy", "handover": "coordination", "refill": "coordination",
               "mixed": "mixed", "unverified": "unverified"}
-POSTURE_WAITS = ("local-ci", "remote-ci", "research-proto", "research-window", "user-auth", "user-design", "session-blocked", "upstream")
+STATUS_WAITS = ("local-ci", "remote-ci", "research-proto", "research-window", "user-auth", "user-design", "session-blocked", "upstream")
 BLOCKER_EVENT = {"role": "session-blocked", "upstream": "upstream", "lease": "lease", "ask": "user-ask",
                  "hold": "hold"}
 INF = math.inf
@@ -113,7 +113,7 @@ def _empty(ledger, now, v5):
 
 
 def _queue(ledger, now, quality, v5=True):
-    """Between turns with an idle/active posture: classify by the queue and its blockers.
+    """Between turns with an idle/active status: classify by the queue and its blockers.
     Returns (class, event, until)."""
     if ledger.get("active"):
         return (*_ready(v5), INF)
@@ -188,7 +188,7 @@ def classify(snap, now):
     if life.get("handover"):
         return out("wait", "handover", n_dead)
     if nstate == "absent":
-        # v5.1: no session recorded at all (not a missing process) and a declared posture that
+        # v5.1: no session recorded at all (not a missing process) and a declared status that
         # says the role is out: excluded. A recorded session with no live worker stays unknown.
         if (v51 and life.get("session_recorded") is False and l_ok
                 and (ledger or {}).get("state") in ("paused", "offline")):
@@ -209,7 +209,7 @@ def classify(snap, now):
         job = ledger.get("job") or {}
         if v51 and sub == "local-ci" and job.get("placed") and job.get("granted") is False and not job.get("done"):
             return out("wait", "lease", until)  # queued for its lease, not yet running
-        if sub in POSTURE_WAITS:
+        if sub in STATUS_WAITS:
             return out("wait", sub, until)
         if sub == "queue-empty":
             if ledger.get("refill_requested"):
@@ -218,7 +218,7 @@ def classify(snap, now):
             return out(c, e, min(until, u))
         return out("unknown", "unmapped-state", until)
     if state == "active":
-        # an `active` sleep posture with no turn running: a turn ended without its closing write
+        # an `active` sleep status with no turn running: a turn ended without its closing write
         q.add("stale-active")
         if ledger.get("active") or ledger.get("next"):
             return out(*_ready(v5), until)

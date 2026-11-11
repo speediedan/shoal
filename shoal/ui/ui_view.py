@@ -574,7 +574,7 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
             f"  \x1b[2m({r['tag']}, {r['harness']} {r['model'] or ''}, fill={r['fill']})\x1b[0m",
             f"shoal {sid} {s['gen']}" + ("  OFFLINE" if s["mode"]["offline"] else "")
             + ("  FREEZE" if s["mode"]["freeze"] else "")]
-    rows = [["posture", f"{ui_status.posture_label(r)}  ({ui_status._age(r['posture_age_s'])})"],
+    rows = [["status", f"{ui_status.status_label(r)}  ({ui_status._age(r['status_age_s'])})"],
             ["session", r["session"]], ["watcher", r["watcher"]],
             *([["host", f"{r['host']} via ssh, state {ui_status._age(r['remote_status'].get('age_s'))} old"
                         + ("  (STALE: host not answering)" if r["remote_status"].get("stale") else "")]]
@@ -605,7 +605,7 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
         rows.append(["offers", f"{r['offers_open']} open"])
     reasons = [ui_status.ATTENTION.get(x, x) for x in r["can_progress"]["reasons"] if x != "parked"]
     rows.append(["attention", ", ".join(reasons) or "-"])
-    paint = ({1: lambda v, row: ui_status.state_color(v) if row[0] in ("posture", "session") else ""}
+    paint = ({1: lambda v, row: ui_status.state_color(v) if row[0] in ("status", "session") else ""}
              if ui_status.use_color() else None)
     table = ui_status.ascii_table(["field", "value"], rows, ui_status.term_width(), flex=(1,), paint=paint)
     return "\n".join(head + [table])

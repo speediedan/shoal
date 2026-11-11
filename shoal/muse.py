@@ -15,7 +15,7 @@ State per session lives in `<state root>/<session uuid>/` (default /tmp/shoal-mu
   last.json  the latest turn: started, ended, rc, terminal (completed|failed|...), reason, text, error
   prompt-*.txt  the prompts handed to `--prompt-file`
 
-Posture (maintainer decision 2026-10-15): the sandbox is off and approval prompts are off for unattended
+Sandbox and approvals (maintainer decision 2026-10-15): the sandbox is off and approval prompts are off for unattended
 turns, `--yolo` (it also trusts the workspace so its rules and skills load, and withholds
 `request_user_input`: a headless turn has nobody to answer a question, so asks go through `queue --ask`).
 `META_API_KEY` is stripped from the environment of every turn: it outranks the account login and bills
@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
 CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
-POSTURE = ["--yolo"]
+SANDBOX_FLAGS = ["--yolo"]
 QUOTA_RE = re.compile(r"(rate.?limit|usage.?limit|quota|out of credits|insufficient|too many requests|\b429\b)", re.I)
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -293,7 +293,7 @@ def quota_hint(session: str) -> str:
 
 def run_argv(session: str, repo_dir: str, prompt_file: str, model: str = "", effort: str = "") -> list[str]:
     argv = [muse_bin(), "exec", "--json", "--session-id", session, "--prompt-file", prompt_file,
-            "--workspace", repo_dir] + POSTURE
+            "--workspace", repo_dir] + SANDBOX_FLAGS
     if model:
         argv += ["--model", model]
     if effort:
@@ -419,7 +419,7 @@ def messages(session: str, limit: int = 20) -> str:
 CONTINUE_PROMPT = ("Your previous turn was cancelled when the maintainer left the interactive session (/exit) while it "
                    "ran. Continue from the maintainer's last message as if the turn had not been interrupted. If you "
                    "hold a shoal role, bring your queue up to date before the turn ends (clear an ask that message "
-                   "answered), then end in a sleep posture as usual.")
+                   "answered), then end in a sleep status as usual.")
 
 
 def exit_cancelled_turn(session: str, since: float, tail_bytes: int = 4 << 20) -> bool:

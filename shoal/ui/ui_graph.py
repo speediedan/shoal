@@ -57,7 +57,7 @@ EVENT_TYPES = ("msg", "offer", "withdraw", "claim", "release", "done", "grant")
 EDGE_CLASSES = ("msg", "broadcast", "ask", "health", "offer", "grant", "handoff", "blocked-on", "alias")
 ASK_KINDS = ("request", "ask")
 JOB_WAITS = ("local-ci", "remote-ci", "research-proto", "research-window", "lease")
-# role-time reads unknown when a source is past its budget; the graph shows the posture instead
+# role-time reads unknown when a source is past its budget; the graph shows the status instead
 STALE_EVENTS = ("stale-source", "missing-source")
 
 
@@ -338,7 +338,7 @@ def recent_doc(e: dict, now: float) -> dict:
 
 
 def tail_event(e: dict) -> bool:
-    """Events the tail carries: traffic and work changes, not postures, queue versions or beats."""
+    """Events the tail carries: traffic and work changes, not statuses, queue versions or beats."""
     typ = e.get("type")
     return typ in EVENT_TYPES or (typ == "system" and bool(e.get("mode")))
 
@@ -353,28 +353,28 @@ def native_cache_paths(sid: str) -> list[str]:
     return [p] + sorted(glob.glob(os.path.join(os.path.dirname(p), "role-time-native-*.json")))
 
 
-def posture_state(row: dict) -> tuple[str, str]:
+def status_state(row: dict) -> tuple[str, str]:
     """Best-effort (class, event) from a status row when no native observation exists for the role.
-    Same vocabulary as role_time; `state.source` says it is a posture reading."""
+    Same vocabulary as role_time; `state.source` says it is a status reading."""
     import blockers
     import role_time as rt
     reasons = set((row.get("can_progress") or {}).get("reasons") or [])
-    posture, sub, sess = row.get("posture") or "", row.get("sub") or "", row.get("session") or ""
-    if posture == "parked" or sess == "parked":
+    role_status, sub, sess = row.get("status") or "", row.get("sub") or "", row.get("session") or ""
+    if role_status == "parked" or sess == "parked":
         return "excluded", "parked"
-    if posture in ("offline", "paused"):
-        return "excluded", posture
+    if role_status in ("offline", "paused"):
+        return "excluded", role_status
     if "dead-worker" in reasons:
         return "unknown", "session-missing"
     if "blocked-on-question" in reasons:
         return "wait", "user-prompt"
-    if posture == "wait" and sub in rt.WAITS:
+    if role_status == "wait" and sub in rt.WAITS:
         return "wait", sub
     if sess == "working":
         return "work", "turn"
-    if posture == "wait" and sub == "queue-empty":
+    if role_status == "wait" and sub == "queue-empty":
         return ("wait", "assignment") if row.get("fill") == "assigned" else ("idle", "no-work")
-    if posture == "wait":
+    if role_status == "wait":
         return "unknown", "unmapped-state"
     nxt = row.get("next") or []
     if row.get("active") or (nxt and any(not n.get("blocker") or n.get("stale") for n in nxt)):
@@ -390,7 +390,7 @@ def posture_state(row: dict) -> tuple[str, str]:
 def role_states(spec, view, rows: list[dict], now: float) -> dict[str, dict]:
     """{slug: {class, event, group, source}}: `role_time.classify` over snapshots built from the
     cached native status and the ledger part (no probe); a role with no native observation reads its
-    posture instead (`source: posture`)."""
+    status instead (`source: status`)."""
     import role_time as rt
     from role_time_adapters import build_snapshots, ledger_fetched_at, read_native_caches
     out: dict[str, dict] = {}
@@ -406,13 +406,13 @@ def role_states(spec, view, rows: list[dict], now: float) -> dict[str, dict]:
             c, e, q, _until = rt.classify(snap, now)
             src = "role-time"
             if c == "unknown" and e in STALE_EVENTS:
-                # a source past its budget says nothing about the role; its posture still does
+                # a source past its budget says nothing about the role; its status still does
                 stale = e
-                c, e = posture_state(row)
-                q, src = (*q, f"role-time:{stale}"), "posture"
+                c, e = status_state(row)
+                q, src = (*q, f"role-time:{stale}"), "status"
         else:
-            c, e = posture_state(row)
-            q, src = (), "posture"
+            c, e = status_state(row)
+            q, src = (), "status"
         out[slug] = {"class": c, "event": e, "group": rt.WAIT_GROUP.get(e, "") if c == "wait" else "",
                      "source": src, "quality": list(q)}
     return out
@@ -670,7 +670,7 @@ class GraphBuilder:
             for row in rows:
                 slug = row.get("slug")
                 nid = f"{sid}:{slug}"
-                st = states.get(slug) or {"class": "unknown", "event": "no-observation", "group": "", "source": "posture"}
+                st = states.get(slug) or {"class": "unknown", "event": "no-observation", "group": "", "source": "status"}
                 counts[st["class"]] += 1
                 reasons = list((row.get("can_progress") or {}).get("reasons") or [])
                 if row.get("host"):
@@ -701,8 +701,8 @@ class GraphBuilder:
                     "host": rhost, "fill": row.get("fill"),
                     "state": {"class": st["class"], "event": st["event"], "group": st["group"],
                               "source": st["source"], "quality": st.get("quality") or [],
-                              "posture": row.get("posture") or "", "sub": row.get("sub") or "",
-                              "session": row.get("session") or "", "since_s": row.get("posture_age_s"),
+                              "status": row.get("status") or "", "sub": row.get("sub") or "",
+                              "session": row.get("session") or "", "since_s": row.get("status_age_s"),
                               "needs_you": bool(row.get("needs_you")), "reasons": reasons,
                               "shoal_offline": bool(off),
                               "says": row.get("says") or "",

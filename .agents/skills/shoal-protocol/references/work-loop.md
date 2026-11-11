@@ -46,7 +46,7 @@
 | `BOARD` | ranked candidates when your queue is short (score, why, excerpt) |
 | `WATCH ... NOT RUNNING` | re-arm your watcher after this boundary |
 
-## Sleep postures
+## Sleep statuses
 
 Sleep only on a real wait or an empty queue:
 - **Waiting:** arm the waiter first, then `queue --wait <sub> --holder <who> --target <kind:ref>`.

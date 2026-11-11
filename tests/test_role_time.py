@@ -12,12 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shoal"))
 import role_time as rt
 
 
-def snap(t, native="between", posture="idle", sub="", seq=0, n_obs=None, l_obs=None, n_budget=1e9,
+def snap(t, native="between", role_status="idle", sub="", seq=0, n_obs=None, l_obs=None, n_budget=1e9,
          l_budget=1e9, **ledger):
     s = {"t": t, "seq": seq, "lifecycle": ledger.pop("lifecycle", {}),
          "native": None if native is None else {"state": native, "observed_at": t if n_obs is None else n_obs,
                                                 "budget_s": n_budget, "wait_event": ledger.pop("wait_event", "")},
-         "ledger": {"observed_at": t if l_obs is None else l_obs, "budget_s": l_budget, "state": posture,
+         "ledger": {"observed_at": t if l_obs is None else l_obs, "budget_s": l_budget, "state": role_status,
                     "sub": sub, **ledger}}
     return s
 
@@ -32,7 +32,7 @@ class Classification(unittest.TestCase):
     def cls(self, s, now=None):
         return rt.classify(s, s["t"] if now is None else now)[:2]
 
-    def test_native_turn_is_work_whatever_the_sleep_posture(self):
+    def test_native_turn_is_work_whatever_the_sleep_status(self):
         self.assertEqual(self.cls(snap(0, "turn", "waiting", "remote-ci")), ("work", "turn"))
         self.assertEqual(self.cls(snap(0, "turn", "paused")), ("work", "turn"))
 
@@ -40,22 +40,22 @@ class Classification(unittest.TestCase):
         self.assertEqual(self.cls(snap(0, "turn", wait_event="local-ci")), ("wait", "local-ci"))
         self.assertEqual(self.cls(snap(0, "turn", wait_event="nonsense")), ("unknown", "unmapped-state"))
 
-    def test_between_turn_postures(self):
-        self.assertEqual(self.cls(snap(0, posture="waiting", sub="remote-ci")), ("wait", "remote-ci"))
-        self.assertEqual(self.cls(snap(0, posture="waiting", sub="local-ci", target="lease:gpu")), ("wait", "lease"))
-        self.assertEqual(self.cls(snap(0, posture="waiting", sub="queue-empty")), ("idle", "no-work"))
-        self.assertEqual(self.cls(snap(0, posture="waiting", sub="queue-empty", refill_requested=True)),
+    def test_between_turn_statuss(self):
+        self.assertEqual(self.cls(snap(0, role_status="waiting", sub="remote-ci")), ("wait", "remote-ci"))
+        self.assertEqual(self.cls(snap(0, role_status="waiting", sub="local-ci", target="lease:gpu")), ("wait", "lease"))
+        self.assertEqual(self.cls(snap(0, role_status="waiting", sub="queue-empty")), ("idle", "no-work"))
+        self.assertEqual(self.cls(snap(0, role_status="waiting", sub="queue-empty", refill_requested=True)),
                          ("wait", "refill"))
-        self.assertEqual(self.cls(snap(0, posture="waiting", sub="mystery")), ("unknown", "unmapped-state"))
-        self.assertEqual(self.cls(snap(0, posture="paused")), ("excluded", "paused"))
-        self.assertEqual(self.cls(snap(0, posture="offline")), ("excluded", "offline"))
+        self.assertEqual(self.cls(snap(0, role_status="waiting", sub="mystery")), ("unknown", "unmapped-state"))
+        self.assertEqual(self.cls(snap(0, role_status="paused")), ("excluded", "paused"))
+        self.assertEqual(self.cls(snap(0, role_status="offline")), ("excluded", "offline"))
         self.assertEqual(self.cls(snap(0, "prompt", "waiting", "remote-ci")), ("wait", "user-prompt"))
 
-    def test_stale_active_posture_never_accrues_work(self):
-        c, e, q, _ = rt.classify(snap(0, posture="active", active="repo#1"), 0)
+    def test_stale_active_status_never_accrues_work(self):
+        c, e, q, _ = rt.classify(snap(0, role_status="active", active="repo#1"), 0)
         self.assertEqual((c, e), ("wait", "self"))
         self.assertIn("stale-active", q)
-        self.assertEqual(self.cls(snap(0, posture="active")), ("idle", "no-work"))
+        self.assertEqual(self.cls(snap(0, role_status="active")), ("idle", "no-work"))
 
     def test_lifecycle(self):
         parked = {"parked": True}
@@ -130,7 +130,7 @@ class PolicyV5(unittest.TestCase):
 
     def test_empty_queue_by_fill_mode(self):
         self.assertEqual(self.cls(snap(0, next=[], fill="assigned")), ("wait", "assignment"))
-        self.assertEqual(self.cls(snap(0, posture="waiting", sub="queue-empty", fill="assigned")),
+        self.assertEqual(self.cls(snap(0, role_status="waiting", sub="queue-empty", fill="assigned")),
                          ("wait", "assignment"))
         self.assertEqual(self.cls(snap(0, next=[], fill="none")), ("idle", "no-work"))
         fresh_empty = {"observed_at": 0, "budget_s": 600, "candidates": 0}
@@ -184,7 +184,7 @@ class PolicyV51(unittest.TestCase):
 
     def test_placed_job_waiting_for_its_lease(self):
         def w(job, **kw):
-            return snap(0, posture="waiting", sub="local-ci", target="job:ci", job=job, **kw)
+            return snap(0, role_status="waiting", sub="local-ci", target="job:ci", job=job, **kw)
         self.assertEqual(self.cls(w({"placed": True, "granted": False, "done": False})), ("wait", "lease"))
         self.assertEqual(self.cls(w({"placed": True, "granted": True, "done": False})), ("wait", "local-ci"))
         # a remote job's grant is not knowable at home: no evidence, no lease claim
@@ -212,8 +212,8 @@ class Accounting(unittest.TestCase):
         self.assertAlmostEqual(s["A_work"], 0.0)
         self.assertAlmostEqual(s["RWF"], 0.0)
 
-    def test_turn_inside_an_unchanged_sleep_posture(self):
-        w = dict(posture="waiting", sub="remote-ci")
+    def test_turn_inside_an_unchanged_sleep_status(self):
+        w = dict(role_status="waiting", sub="remote-ci")
         obs = {"r": [snap(0, "between", **w), snap(1000, "turn", **w), snap(1300, "between", **w)]}
         per, _ = run(obs, 3600)
         self.assertEqual(per["r"][("work", "turn")], 300)
@@ -258,12 +258,12 @@ class Accounting(unittest.TestCase):
     def test_conservation_over_random_fixtures_and_subwindows(self):
         rng = random.Random(7)
         natives = ["turn", "between", "prompt", "absent", "weird", None]
-        postures = [("waiting", "remote-ci"), ("waiting", "queue-empty"), ("idle", ""), ("paused", ""),
+        statuses = [("waiting", "remote-ci"), ("waiting", "queue-empty"), ("idle", ""), ("paused", ""),
                     ("active", ""), ("waiting", "x")]
         obs, mem = {}, {}
         for r in range(6):
             ts = sorted(rng.uniform(0, 1000) for _ in range(rng.randint(0, 30)))
-            obs[f"r{r}"] = [snap(t, rng.choice(natives), *rng.choice(postures), n_budget=rng.choice([5, 50, 1e9]),
+            obs[f"r{r}"] = [snap(t, rng.choice(natives), *rng.choice(statuses), n_budget=rng.choice([5, 50, 1e9]),
                                  next=["a"], blockers={"a": {"blocker": "hold:x", "status": "live",
                                                              "expires_at": t + rng.uniform(0, 100)}})
                             for t in ts]

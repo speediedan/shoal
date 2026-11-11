@@ -822,7 +822,7 @@ export default class Actions extends View {
       for (const r of cur.roles) {
         roleRow.child(this.chip(`ro-${r.slug}`, r.slug, {
           on: r.slug === this.sel.role && !unused, mark: r.needsYou ? c.blocked : null, dimmed: unused,
-          tip: `${r.slug}${r.host ? ` on ${r.host}` : ""}${r.posture ? ` · ${r.posture}` : ""}${r.needsYou ? " · needs you" : ""}${unused ? ` · ${info.label} is shoal-wide` : ""}`,
+          tip: `${r.slug}${r.host ? ` on ${r.host}` : ""}${r.status ? ` · ${r.status}` : ""}${r.needsYou ? " · needs you" : ""}${unused ? ` · ${info.label} is shoal-wide` : ""}`,
           onClick: (_e, cx) => { this.selectRole(r.slug, cx); cx.notify(); },
         }, c));
       }

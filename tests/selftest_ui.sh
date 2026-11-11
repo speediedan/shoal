@@ -61,7 +61,7 @@ r = {x["slug"]: x for x in s["roles"]}
 assert r["cl"]["session"] == "blocked" and "blocked-on-question" in r["cl"]["can_progress"]["reasons"], r["cl"]
 assert r["cl"]["needs_you"] is True
 assert r["dead"]["session"] == "dead" and "dead-worker" in r["dead"]["can_progress"]["reasons"], r["dead"]
-assert r["parked"]["posture"] == "parked" and r["parked"]["can_progress"]["ok"], r["parked"]
+assert r["parked"]["status"] == "parked" and r["parked"]["can_progress"]["ok"], r["parked"]
 assert r["oc"]["session"] == "idle" and r["oc"]["offers_open"] == 1, r["oc"]
 assert r["cl"]["view"][-2:] == ["uiselftest", "cl"], r["cl"]["view"]
 assert s["needs_you"] >= 2, s
@@ -89,7 +89,7 @@ print("idle prompt classification ok")
 PY2
 # the overview table carries each role's ecosystem (claude, opencode, codex, muse) as its own column
 TXT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 200) || fail "ui status text rc"
-grep -Eq '\| role +\| host +\| ecosystem +\| posture' <<<"$TXT" || fail "overview table has no host and ecosystem columns: $TXT"
+grep -Eq '\| role +\| host +\| ecosystem +\| status' <<<"$TXT" || fail "overview table has no host and ecosystem columns: $TXT"
 # a role on another host is never attached from here (sessions resolve through this host's harness), and gets no card
 check "far runs on other-host.invalid: attach from that host's viewer" $H view $SID far --spec "$SPEC" --dry-run
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "remote roles get no card"
@@ -354,21 +354,21 @@ import ui_status as u
 assert u.state_color("BLOCKED") == u.RED and u.state_color("blocked:upstream") == u.RED and u.state_color("DEAD") == u.RED
 assert u.state_color("wait:remote-ci") == u.ORANGE and u.state_color("idle") == u.ORANGE
 assert u.state_color("active") == u.GREEN and u.state_color("working") == u.GREEN
-r = {"can_progress": {"reasons": []}, "posture": "idle", "sub": "",
+r = {"can_progress": {"reasons": []}, "status": "idle", "sub": "",
      "next": [{"item": "a#1", "blocker": "upstream:gh-pr:o/r#1", "stale": None},
               {"item": "a#2", "blocker": "upstream:gh-pr:o/r#2", "stale": None}]}
-assert u.posture_label(r) == "blocked:upstream", u.posture_label(r)
+assert u.status_label(r) == "blocked:upstream", u.status_label(r)
 r["next"][1]["stale"] = True
-assert u.posture_label(r) == "idle"  # a stale blocker frees the item: not blocked
-# a role waiting on its own job keeps the wait as its posture even with a question out
-q = {"can_progress": {"reasons": ["blocked-on-question", "waiting-on-you"]}, "posture": "wait", "sub": "local-ci",
+assert u.status_label(r) == "idle"  # a stale blocker frees the item: not blocked
+# a role waiting on its own job keeps the wait as its status even with a question out
+q = {"can_progress": {"reasons": ["blocked-on-question", "waiting-on-you"]}, "status": "wait", "sub": "local-ci",
      "next": [], "session": "blocked", "needs_you": True}
-assert u.posture_label(q) == "wait:local-ci", u.posture_label(q)
+assert u.status_label(q) == "wait:local-ci", u.status_label(q)
 import ui_herdr
 assert ui_herdr.herdr_state(q) == "blocked"  # a question beside its own job: the job runs on, and the question is yours
 q["sub"] = "user-auth"
-assert u.posture_label(q) == "QUESTION" and ui_herdr.herdr_state(q) == "blocked"
-t = u.ascii_table(["k", "v"], [["posture", "idle"]], 40, paint={1: lambda v, row: u.state_color(v)})
+assert u.status_label(q) == "QUESTION" and ui_herdr.herdr_state(q) == "blocked"
+t = u.ascii_table(["k", "v"], [["status", "idle"]], 40, paint={1: lambda v, row: u.state_color(v)})
 assert u.ORANGE in t and all(len(l.replace(u.ORANGE, "").replace(u.RESET, "")) == len(t.splitlines()[0]) for l in t.splitlines())
 PY2
 # the prompt line editor: pre-filled default, cursor moves, insert, delete, paste, Escape cancels
@@ -449,7 +449,7 @@ now = time.time()
 win = lambda pct: [{"name": n, "used_percent": pct, "resets_at": now + 3600 * (i + 1)} for i, n in enumerate(("5h", "week", "month"))]
 usage = {"accounts": [{"provider": p, "stale": False, "age_s": 60, "rows": [{"bucket": p, "windows": win(10 * (i + 1))}]}
                       for i, p in enumerate(("codex", "claude", "muse", "opencode-go"))]}
-roles = [{"slug": f"role-{i}", "harness": "claude", "host": "", "posture": "idle", "sub": "", "session": "idle",
+roles = [{"slug": f"role-{i}", "harness": "claude", "host": "", "status": "idle", "sub": "", "session": "idle",
           "active": f"example/repo#{i}:fix", "next": [{"item": f"example/repo#{i + 10}:fix", "blocker": "", "stale": False}],
           "last_write_age_s": 60 * i, "asks": [], "offers_open": 0,
           "can_progress": {"ok": i % 2 == 0, "reasons": [] if i % 2 == 0 else ["parked-work"]}} for i in range(8)]
@@ -653,15 +653,15 @@ json.dump({"v": 1, "sessions": [{"harness": "muse", "session": "01a14091-3870-79
 PY2
 check '"--model", "muse-test-9", "--reasoning-effort", "xhigh"' env XDG_CONFIG_HOME="$S/xdg-view" SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session 01a14091-3870-7923-b66b-d3bfd335dd4e --label saved-seat --dry-run
 check '"--reasoning-effort", "high"' env XDG_CONFIG_HOME="$S/xdg-view-none" SHOAL_MUSE_BIN=/x/muse $H view --harness muse --session 01a14091-3870-7923-b66b-d3bfd335dd4e --dry-run
-# a blocked session with no prompt (waitingFor empty) is not a QUESTION, and keeps its ledger posture
+# a blocked session with no prompt (waitingFor empty) is not a QUESTION, and keeps its ledger status
 python3 - "$SHOALD" <<'PY2' || fail "blocked without a prompt"
 import sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import ui_status
 assert ui_status.pending_question({"waitingFor": "input needed"}, "x") is True
 assert ui_status.pending_question({"state": "blocked"}, "x") is False
-says = {"posture": "idle", "sub": None, "next": [], "can_progress": {"reasons": ["blocked-says-waiting"]}}
-assert ui_status.posture_label(says) == "idle", ui_status.posture_label(says)
-assert ui_status.posture_label({**says, "posture": "wait", "sub": "queue-empty"}) == "wait:queue-empty"
+says = {"status": "idle", "sub": None, "next": [], "can_progress": {"reasons": ["blocked-says-waiting"]}}
+assert ui_status.status_label(says) == "idle", ui_status.status_label(says)
+assert ui_status.status_label({**says, "status": "wait", "sub": "queue-empty"}) == "wait:queue-empty"
 import ui_herdr
 mk = lambda s, n, r: {"session": s, "needs_you": n, "can_progress": {"reasons": r}}
 assert ui_herdr.herdr_state(mk("working", True, ["waiting-on-you"])) == "working"  # busy wins over needs-you
@@ -689,8 +689,8 @@ ui_status.BACKGROUND_CONDITIONS = False
 # an open prompt on a session its subagents keep working is blocked; a job or CI wait still reads working
 q = mk("working", True, ["blocked-on-question"])
 assert ui_herdr.herdr_state(q) == "blocked", ui_herdr.herdr_state(q)
-assert ui_herdr.herdr_state(dict(q, posture="wait", sub="local-ci")) == "blocked"
-assert ui_status.posture_label(dict(q, posture="wait", sub="user-auth", next=[], active="x")) == "QUESTION"
+assert ui_herdr.herdr_state(dict(q, status="wait", sub="local-ci")) == "blocked"
+assert ui_status.status_label(dict(q, status="wait", sub="user-auth", next=[], active="x")) == "QUESTION"
 PY2
 check 'CLAUDE_CODE_ENABLE_AWAY_SUMMARY' $H view $SID cl --spec "$SPEC" --dry-run
 # the opencode viewer reads the server password from the server process's own environment
@@ -999,8 +999,8 @@ from roles import ShoalSpec
 s = ShoalSpec.load(sys.argv[2])
 o = ui_herdr.overview_root(s)
 assert o["direction"] == "down" and o["ratio"] == 0.88, o
-q = {"can_progress": {"reasons": ["stopped-active"]}, "posture": "active", "sub": "", "next": []}
-assert ui_status.posture_label(q) == "ACTIVE?"
+q = {"can_progress": {"reasons": ["stopped-active"]}, "status": "active", "sub": "", "next": []}
+assert ui_status.status_label(q) == "ACTIVE?"
 PY2
 check "ui set: one of" $H ui set show_relay false  # the retired setting is refused
 check '^agent_panel_sort = "priority"' $H ui herdr-config --client
@@ -1028,7 +1028,7 @@ st = {r["agent"]: r["state"] for r in ra}
 assert st["cl"] == "blocked" and st["dead"] == "blocked", st
 md = [c["params"] for c in calls if c["method"] == "pane.report_metadata"]
 assert all(m["source"] == "shoal" and m["ttl_ms"] > 0 for m in md) and md, md
-assert any(m["tokens"].get("posture") == "QUESTION" for m in md), md
+assert any(m["tokens"].get("status") == "QUESTION" for m in md), md
 assert all("mode" in m["tokens"] for m in md if m["tokens"].get("role")), md  # why a role reads working
 assert any(c["method"] == "workspace.report_metadata" for c in calls)
 allowed = {"workspace.list", "workspace.create", "layout.apply", "pane.list", "pane.process_info",
@@ -1073,10 +1073,10 @@ python3 - "$SHOALD" <<'PY2' || fail "state clarity"
 import json, os, sys, tempfile, time, types
 sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import ui_herdr, muse, codex_harness, backends
-role = lambda **k: dict({"session": "idle", "posture": "idle", "sub": "", "needs_you": False, "can_progress": {"reasons": []}}, **k)
+role = lambda **k: dict({"session": "idle", "status": "idle", "sub": "", "needs_you": False, "can_progress": {"reasons": []}}, **k)
 assert ui_herdr.role_mode(role(session="working")) == ui_herdr.MODE_TURN
-assert ui_herdr.role_mode(role(posture="wait", sub="remote-ci")) == ui_herdr.MODE_JOB
-assert ui_herdr.herdr_state(role(posture="wait", sub="remote-ci")) == "working"
+assert ui_herdr.role_mode(role(status="wait", sub="remote-ci")) == ui_herdr.MODE_JOB
+assert ui_herdr.herdr_state(role(status="wait", sub="remote-ci")) == "working"
 q = role(session="working", needs_you=True, can_progress={"reasons": ["blocked-on-question"]})
 assert ui_herdr.role_mode(q) == "" and ui_herdr.herdr_state(q) == "blocked"
 assert ui_herdr.role_mode(role()) == "" and ui_herdr.herdr_state(role()) == "idle"
@@ -1981,11 +1981,11 @@ ev(A, "core", 1200, "msg", to="ext:evolution", text="reply to the outside seat",
 ev(A, "core", 3 * 3600, "claim", item="repo-one#101", verb="fix")
 ev(A, "core", 2 * 3600, "done", item="repo-one#99", verb="fix", kind="fix", url="https://github.com/example-org/repo-one/pull/120")
 ev(A, "core", 7000, "queue", version=1, active="repo-one#101:fix", next=["repo-one#104:review"],
-   next_blocked={"repo-one#104": "dist-ci:repo-one#103"}, posture="active")
+   next_blocked={"repo-one#104": "dist-ci:repo-one#103"}, status="active")
 ev(A, "dist-ci", 3 * 3600, "claim", item="repo-one#103", verb="fix")
 ev(A, "dist-ci", 900, "state", state="waiting", sub="local-ci", holder="job ci-1", target="job:ci-1")
 ev(A, "dist-ci", 2400, "msg", to="ext:research", text="cross-shoal note", kind="info")
-ev(A, "tune", 1500, "queue", version=1, active="repo-one#871:fix", asks=["approve image push scope?"], posture="active")
+ev(A, "tune", 1500, "queue", version=1, active="repo-one#871:fix", asks=["approve image push scope?"], status="active")
 ev(A, "tune", 1500, "state", state="waiting", sub="user-auth", holder="image push scope")
 ev(A, "tune", 1500, "msg", to="user", text="approve image push scope?", kind="request")
 ev(A, "shoal", 3000, "msg", to="user", text="health: tune waits on you", kind="health")
@@ -1998,7 +1998,7 @@ t = time.time()
 nat = lambda st: {"native": {"state": st, "observed_at": t, "budget_s": 90.0, "wait_event": "", "raw": ""}}
 json.dump({"v": 1, "shoal": A, "host": "h", "written_at": t, "roles": {"core": nat("turn"), "dist-ci": nat("between")},
            "errors": {}}, open(f"/tmp/{A}/role-time-native.json", "w"))
-# analysis's native observation is past its budget: role-time reads unknown:stale-source, the graph its posture
+# analysis's native observation is past its budget: role-time reads unknown:stale-source, the graph its status
 os.makedirs(f"/tmp/{B}", exist_ok=True)
 json.dump({"v": 1, "shoal": B, "host": "h", "written_at": t - 1000, "roles": {"analysis": {"native": {
            "state": "between", "observed_at": t - 1000, "budget_s": 90.0, "wait_event": "", "raw": ""}}},
@@ -2032,14 +2032,14 @@ for i, k in {"user": "user", f"{A}:shoal": "system", f"{A}:core": "role", f"{A}:
 assert not any(k in ("relay", "writer") for k in kinds.values()) and f"{A}:wake-relay" not in nodes, kinds
 # outside seats: aliased to the role of the same slug in another shoal, or not at all
 assert nodes["ext:research"]["alias_of"] == f"{B}:research" and nodes["ext:evolution"]["alias_of"] is None
-# role state: role-time over the cached native status where there is one, the posture where there is none
+# role state: role-time over the cached native status where there is one, the status where there is none
 st = lambda i: nodes[i]["state"]
 assert (st(f"{A}:core")["class"], st(f"{A}:core")["event"], st(f"{A}:core")["source"]) == ("work", "turn", "role-time"), st(f"{A}:core")
 assert (st(f"{A}:dist-ci")["class"], st(f"{A}:dist-ci")["event"], st(f"{A}:dist-ci")["group"]) == ("wait", "local-ci", "system"), st(f"{A}:dist-ci")
-assert (st(f"{A}:tune")["event"], st(f"{A}:tune")["group"], st(f"{A}:tune")["source"]) == ("user-auth", "human", "posture"), st(f"{A}:tune")
+assert (st(f"{A}:tune")["event"], st(f"{A}:tune")["group"], st(f"{A}:tune")["source"]) == ("user-auth", "human", "status"), st(f"{A}:tune")
 assert st(f"{A}:tune")["needs_you"] and "waiting-on-you" in st(f"{A}:tune")["reasons"], st(f"{A}:tune")
 assert (st(f"{A}:research")["class"], st(f"{A}:research")["event"]) == ("excluded", "parked"), st(f"{A}:research")
-assert st(f"{B}:analysis")["source"] == "posture" and "role-time:stale-source" in st(f"{B}:analysis")["quality"], st(f"{B}:analysis")
+assert st(f"{B}:analysis")["source"] == "status" and "role-time:stale-source" in st(f"{B}:analysis")["quality"], st(f"{B}:analysis")
 assert st(f"{B}:analysis")["class"] != "unknown", st(f"{B}:analysis")
 # work: item URLs from the spec's repos, done with the event's own url
 w = nodes[f"{A}:core"]["work"]
@@ -2199,8 +2199,8 @@ python3 - "$SHOALD" <<'PY2' || fail "agents list state"
 import sys
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import ui_app, ui_herdr, ui_status
-base = dict(slug="lane", posture="wait", sub="local-ci", session="idle", needs_you=False, asks=[], says="", next=[], active="repo#1:fix", host="host-a",
-            fill="assigned", posture_age_s=60, grants_pending=[], wait={"sub": "local-ci", "target": "job:pilot"}, can_progress={"ok": True, "reasons": []})
+base = dict(slug="lane", status="wait", sub="local-ci", session="idle", needs_you=False, asks=[], says="", next=[], active="repo#1:fix", host="host-a",
+            fill="assigned", status_age_s=60, grants_pending=[], wait={"sub": "local-ci", "target": "job:pilot"}, can_progress={"ok": True, "reasons": []})
 job = lambda **k: {**base, **k}
 state = lambda r: ui_app.card_report(r, "t")
 assert state(job())["state"] == "working"
@@ -2336,7 +2336,7 @@ python3 - "$SHOALD" <<'PY2' || fail "asks in the card's message"
 import sys
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import ui_app
-r = {"slug": "jl", "host": "", "posture": "wait", "sub": "local-ci", "session": "idle", "active": "repo#927:fix", "next": [],
+r = {"slug": "jl", "host": "", "status": "wait", "sub": "local-ci", "session": "idle", "active": "repo#927:fix", "next": [],
      "asks": ["#945: map attention as two layer-restricted components, or one?", "#925 step 7: may I publish the converted lens privately?"],
      "says": "", "needs_you": True, "dismissed": False, "wait_done": False, "grants_pending": 0, "fill": "self", "blocker_stale": False,
      "wait": {"sub": "local-ci", "target": "job:rec666a", "holder": None, "rescan_utc": None},
@@ -2417,24 +2417,24 @@ python3 - "$SHOALD" <<'PY2' || fail "dormant watcher and named needs"
 import sys, types
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import health, ui_app, ui_herdr, ui_status
-def row(reasons, session="idle", posture="wait", sub="local-ci", **kw):
-    r = {"slug": "r", "host": "", "posture": posture, "sub": sub, "session": session, "active": None, "next": [], "asks": [],
+def row(reasons, session="idle", status="wait", sub="local-ci", **kw):
+    r = {"slug": "r", "host": "", "status": status, "sub": sub, "session": session, "active": None, "next": [], "asks": [],
          "says": "", "needs_you": bool(set(reasons) & ui_status.NEEDS_REASONS), "dismissed": False, "wait_done": False,
-         "wait": {"sub": sub, "target": "job:x", "holder": None, "rescan_utc": None} if posture == "wait" else None,
+         "wait": {"sub": sub, "target": "job:x", "holder": None, "rescan_utc": None} if status == "wait" else None,
          "can_progress": {"ok": False, "reasons": reasons}, "grants_pending": 0, "fill": "self", "blocker_stale": False}
     r.update(kw)
     return r
 dormant = row(["watcher-dormant"])
 assert ui_herdr.herdr_state(dormant) == "working" and ui_herdr.role_mode(dormant) == ui_herdr.MODE_JOB, ui_herdr.herdr_state(dormant)
-assert ui_app.card_report(dormant, "t")["need"] == "" and ui_status.posture_label(dormant) == "wait:local-ci"
-dead = row(["watcher-dead"], posture="active", sub=None)
+assert ui_app.card_report(dormant, "t")["need"] == "" and ui_status.status_label(dormant) == "wait:local-ci"
+dead = row(["watcher-dead"], status="active", sub=None)
 rep = ui_app.card_report(dead, "t")
 assert rep["state"] == "blocked" and rep["kind"] == "" and rep["need"] == "nowatch", rep
-assert ui_app.card_report(row(["dead-worker"], session="dead", posture="idle", sub=None), "t")["need"] == "dead"
-assert ui_app.card_report(row(["blocker-role-cannot-take"], posture="idle", sub=None), "t")["need"] == "stuck"
-says = ui_app.card_report(row(["blocked-says-waiting"], session="blocked", posture="idle", sub=None), "t")
+assert ui_app.card_report(row(["dead-worker"], session="dead", status="idle", sub=None), "t")["need"] == "dead"
+assert ui_app.card_report(row(["blocker-role-cannot-take"], status="idle", sub=None), "t")["need"] == "stuck"
+says = ui_app.card_report(row(["blocked-says-waiting"], session="blocked", status="idle", sub=None), "t")
 assert says["state"] == "blocked" and says["kind"] == "question", says
-assert ui_app.card_report(row([], posture="idle", sub=None), "t")["need"] == ""
+assert ui_app.card_report(row([], status="idle", sub=None), "t")["need"] == ""
 assert "watcher-dormant" in ui_status.ATTENTION
 helper = ui_app.AGENTS_HELPER
 assert 'SHOAL_NEED[term?.labels?.["shoal.need"]]' in helper and ui_app.NEED_LABEL == "shoal.need"
@@ -2989,7 +2989,7 @@ assert ui_status.dismissed_now(ack, fp, ["dead-worker"], 86400) is False and ui_
 assert ui_status.dismissed_now({"event": "needs-restored", "fp": fp}, fp, ["waiting-on-you"], 1) is False
 assert ui_status.dismissed_now(ack, "other", ["waiting-on-you"], 1) is False and ui_status.dismissed_now(None, fp, ["waiting-on-you"], 1) is False
 import ui_herdr
-row = {"needs_you": False, "dismissed": True, "can_progress": {"reasons": ["watcher-dead"]}, "posture": "idle", "wait": None, "sub": None, "session": "dead", "active": None}
+row = {"needs_you": False, "dismissed": True, "can_progress": {"reasons": ["watcher-dead"]}, "status": "idle", "wait": None, "sub": None, "session": "dead", "active": None}
 assert ui_herdr.herdr_state(row) == "idle", "a dismissed dead watcher does not read blocked"
 PY2
 rm -rf "/tmp/$GA" "/tmp/$GB"
@@ -3301,27 +3301,27 @@ o = ui_app.osc7501("blocked", "auth", "lane/r", "wait user-auth")
 assert o.startswith("\x1b]7501;state=blocked:kind=auth:app=shoal:title=") and o.endswith("\x1b\\"), repr(o)
 assert base64.b64encode(b"wait user-auth").decode() in o
 def row(**kw):
-    r = {"slug": "r", "posture": "idle", "sub": None, "wait": None, "active": None, "session": "idle", "needs_you": False,
+    r = {"slug": "r", "status": "idle", "sub": None, "wait": None, "active": None, "session": "idle", "needs_you": False,
          "asks": [], "can_progress": {"ok": True, "reasons": []}}
     r.update(kw); return r
 # the app heads a pane with the reported `app`: a card names its role there
 assert ":app=core:" in ui_app.report_text(row(slug="core"), "lane"), ui_app.report_text(row(slug="core"), "lane")
 assert ui_app.card_report(row(), "lane")["state"] == "idle"
-w = row(posture="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
+w = row(status="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
         can_progress={"ok": True, "reasons": ["waiting-on-you"]})
 assert (ui_app.card_report(w, "lane")["state"], ui_app.card_report(w, "lane")["kind"]) == ("blocked", "auth")
 q = row(session="working", needs_you=True, can_progress={"ok": False, "reasons": ["blocked-on-question"]})
 assert (ui_app.card_report(q, "lane")["state"], ui_app.card_report(q, "lane")["kind"]) == ("blocked", "question")
 # an open prompt is the thing to answer, even while the ledger wait is user-auth
-qa = row(posture="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
+qa = row(status="wait", sub="user-auth", needs_you=True, wait={"sub": "user-auth", "target": "gh"},
          can_progress={"ok": False, "reasons": ["blocked-on-question", "waiting-on-you"]})
 assert ui_app.card_report(qa, "lane")["kind"] == "question", ui_app.card_report(qa, "lane")
-j = row(posture="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:build"})
+j = row(status="wait", sub="local-ci", wait={"sub": "local-ci", "target": "job:build"})
 rep = ui_app.card_report(j, "lane")
 assert rep["state"] == "working" and "local-ci" in rep["msg"] and rep["title"] == "lane/r", rep
 assert ui_app.card_report(row(host="a-host"), "lane")["title"] == "lane/r@a-host", "the role's own host travels in the report"
 # a role left with no work reads idle in the agents list after the grace, unless it asks or cannot be woken
-sv = lambda age, **kw: row(**{**dict(posture="wait", sub="queue-empty", fill="assigned", needs_you=True, posture_age_s=age, asks=[], next=[],
+sv = lambda age, **kw: row(**{**dict(status="wait", sub="queue-empty", fill="assigned", needs_you=True, status_age_s=age, asks=[], next=[],
                                      can_progress={"ok": True, "reasons": ["waiting-on-you"]}), **kw})
 assert ui_app.card_report(sv(60), "lane")["state"] == "blocked"
 assert ui_app.card_report(sv(ui_app.STARVED_AFTER_S), "lane")["state"] == "idle"

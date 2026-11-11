@@ -143,7 +143,7 @@ def view_argv(server: str, sid: str, slug: str) -> list[str] | None:
 STATUS_CACHE_S = 30
 STATUS_STALE_S = 600
 # the fields of a role row that only the role's own host can know (its harness and its sidecars); the
-# ledger-derived ones (posture, queue, asks, last write) are already right on every host
+# ledger-derived ones (status, queue, asks, last write) are already right on every host
 LIVE_FIELDS = ("session", "watcher", "can_progress", "needs_you", "dismissed", "needs_fp", "says", "wait_done", "context_k", "heartbeat_age_s")
 
 

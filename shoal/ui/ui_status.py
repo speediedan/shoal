@@ -5,7 +5,7 @@
   shoal ui line   [--shoal ID ...] [--all]
 
 Every UI adapter (docs/ui.md) binds to this document and to nothing else, so shoal semantics live
-in one place: claim and offer resolution, read-time permissions, posture and blockers come from
+in one place: claim and offer resolution, read-time permissions, status and blockers come from
 `ledger.View`; liveness from the harness probes the health quorum already uses. The contract is
 versioned (`v`) and additive: a reader ignores fields it does not know.
 
@@ -319,10 +319,10 @@ def _ctx_restart(spec, role) -> tuple[str, bool] | None:
         return None
 
 
-def ledger_explains_stop(hposture: str, q: dict) -> bool:
+def ledger_explains_stop(hstatus: str, q: dict) -> bool:
     """True when the ledger says why a role is not working: a recorded wait, or no active item and a recorded blocker on
     every next item."""
-    if hposture == "waiting":
+    if hstatus == "waiting":
         return True
     from ledger import item_key
     nxt = [item_key(x) for x in q.get("next") or []]
@@ -345,9 +345,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     q = view.current_queue(slug) or {}
     st = view.role_state(slug) or {}
     idle = view.is_idle(slug)
-    # `hposture` is the ledger's word (health's predicates take it); `posture` is the contract's
-    hposture = st.get("state") or ("idle" if idle else "active")
-    posture = "wait" if hposture == "waiting" else hposture
+    # `hstatus` is the ledger's word (health's predicates take it); `status` is the contract's
+    hstatus = st.get("state") or ("idle" if idle else "active")
+    role_status = "wait" if hstatus == "waiting" else hstatus
     boundary = max(q.get("ts", ""), st.get("ts", ""))
     sub = st.get("sub", "")
     nb = q.get("next_blocked") or {}
@@ -386,7 +386,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                     and pending_question(e or {}, role.session))
         if question:
             reasons.append("blocked-on-question")
-        elif sess == "blocked" and not ledger_explains_stop(hposture, q):
+        elif sess == "blocked" and not ledger_explains_stop(hstatus, q):
             # Claude's own reading of a turn that ended sounding like it waits on you, with no prompt open. The ledger
             # is the role's record: a recorded wait, or a blocker on every next item, says why it stopped, and the role
             # reads by that instead (measured 2026-11-11: a role with both next items blocked upstream read
@@ -397,32 +397,32 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         # watcher whose role's next real work raises its own wake (lazy_rearm, nothing it would have woken
         # for) is dormant, not a need: it read `!` beside a running job (measured 2026-11-07, a local-ci wait)
         if not remote and sess != "dead" and \
-                _h.watcher_dead(alive, hposture, BETWEEN.get(sess)):
-            reasons.append("watcher-dormant" if _h.watcher_dormant(spec, view, role, hposture) else "watcher-dead")
+                _h.watcher_dead(alive, hstatus, BETWEEN.get(sess)):
+            reasons.append("watcher-dormant" if _h.watcher_dormant(spec, view, role, hstatus) else "watcher-dead")
         for x in q.get("next") or []:
             b = next((v for kk, v in nb.items() if item_key(kk) == item_key(x)), "")
             if b and _bl.kind(b) == "role" and _bl.takeable(spec, view, b):
                 reasons.append("blocker-role-cannot-take")
                 break
         # the quorum's own predicate, with blocker checks kept off the network (live=False)
-        free, _ = _h.parked_free(spec, view, role, q, hposture, sub, live=False)
+        free, _ = _h.parked_free(spec, view, role, q, hstatus, sub, live=False)
         if free:
             reasons.append("parked-work")
         if asks or sub in USER_WAITS:
             reasons.append("waiting-on-you")
-        if not q.get("active") and not q.get("next") and hposture == "idle" and getattr(role, "fill", "") == "assigned" \
+        if not q.get("active") and not q.get("next") and hstatus == "idle" and getattr(role, "fill", "") == "assigned" \
                 and not view.queue(slug):
             # an assigned role with an empty queue and nothing offered: the next step is an offer. It stays in needs you
             # until dismissed, and a dismissal holds until the state changes. A fill=self role finds board work itself
             reasons.append("no-work")
-        if q.get("restart_ready") and hposture in ("idle", "waiting") and not remote:
+        if q.get("restart_ready") and hstatus in ("idle", "waiting") and not remote:
             ctx = _ctx_restart(spec, role)
             if ctx is not None and ctx[0] != "auto":
                 reasons.append("handoff-pending")
             elif ctx is not None and ctx[1] and _client_holds(role, spec):
                 # the quorum holds its automatic restart for an attached client (#150): detaching is the only step left
                 reasons.append("restart-held")
-        if hposture == "active" and sess in ("idle", "dead"):
+        if hstatus == "active" and sess in ("idle", "dead"):
             # degenerate: the ledger says active, but no turn is running (health's turn-ended-active
             # wakes it; measured 2026-10-13: shoal-aux re-wrote active and stopped, again)
             reasons.append("stopped-active")
@@ -436,7 +436,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
                 reasons.append("context-large")
         except Exception:  # noqa: BLE001 - a read model never fails on an advisory
             pass
-    wait_done = (not remote and posture == "wait" and sub in CI_SUBS and job_ended(st.get("target") or "", slug, spec.sid))
+    wait_done = (not remote and role_status == "wait" and sub in CI_SUBS and job_ended(st.get("target") or "", slug, spec.sid))
     if wait_done and _client_holds(role, spec):
         reasons.append("wake-held")
     blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "watcher-dormant", "context-large",
@@ -445,7 +445,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
              if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
     prompt = (_h.claude_open_prompt(role.session)
               if role.ecosystem == "claude" and "blocked-on-question" in reasons else "")
-    agent = agent_state(role, hposture, sub, st, q, reasons, sess, wait_done, stale_nb)
+    agent = agent_state(role, hstatus, sub, st, q, reasons, sess, wait_done, stale_nb)
     if role.ecosystem == "claude" and sess == "blocked" and not {"blocked-says-waiting", "blocked-on-question"} & set(reasons):
         said = claude_says(claude_session(rows, role.session) or {}, role.session)
         if said:  # the words stay readable beside the ledger's reason, without making them a need
@@ -459,10 +459,10 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "model": role.model, "fill": role.fill,
         "server": role.server or "", "host": _host_of(role, spec), "aux": bool(role.aux),
         "session_id": role.session or None,
-        "posture": posture if role.session else "parked", "sub": sub or None,
-        "posture_age_s": age_s(boundary, now) if boundary else None,
+        "status": role_status if role.session else "parked", "sub": sub or None,
+        "status_age_s": age_s(boundary, now) if boundary else None,
         "wait": ({"sub": sub, "target": st.get("target") or None, "holder": _short(st.get("holder"), 120) or None,
-                  "rescan_utc": st.get("rescan_utc") or None} if posture == "wait" else None),
+                  "rescan_utc": st.get("rescan_utc") or None} if role_status == "wait" else None),
         "active": q.get("active") or None,
         "next": nxt,
         "last_done": ({"item": done[-1]["item"], "ts": done[-1]["ts"]} if (done := view.last_done(slug, 1)) else None),
@@ -757,7 +757,7 @@ CI_SUBS = ("local-ci", "remote-ci", "research-proto", "research-window")  # wait
 def working_wait(r: dict) -> bool:
     """The role waits on something running for it (a job, a CI build), not on the maintainer, even
     when it also has a question out. A job that has ended is not running: the role has yet to take it up."""
-    return r.get("posture") == "wait" and r.get("sub") in CI_SUBS and not r.get("wait_done")
+    return r.get("status") == "wait" and r.get("sub") in CI_SUBS and not r.get("wait_done")
 
 
 def job_ended(target: str, slug: str, sid: str) -> bool:
@@ -772,21 +772,21 @@ def job_ended(target: str, slug: str, sid: str) -> bool:
         return False
 
 
-def posture_label(r: dict) -> str:
-    """The one-word posture a sidebar shows: DEAD, QUESTION (a prompt is open), NOWATCH, ACTIVE?,
-    IDLE? (idle on free work), wait:<sub>, blocked:<kind>, else the ledger posture."""
+def status_label(r: dict) -> str:
+    """The one-word status a sidebar shows: DEAD, QUESTION (a prompt is open), NOWATCH, ACTIVE?,
+    IDLE? (idle on free work), wait:<sub>, blocked:<kind>, else the ledger status."""
     reasons = r["can_progress"]["reasons"]
     if "dead-worker" in reasons:
         return "DEAD"
     if "dormant" in reasons:
         return "DORMANT"
     if working_wait(r):
-        # waiting on its own job or CI: the work runs on, so the wait is the posture and an open
+        # waiting on its own job or CI: the work runs on, so the wait is the status and an open
         # question shows as attention (measured 2026-10-13: a role on a running job read QUESTION)
         return f"wait:{r['sub']}"
     if "blocked-on-question" in reasons:
         return "QUESTION"
-    # a session that only reports itself blocked (no prompt open) keeps its ledger posture: the ledger is
+    # a session that only reports itself blocked (no prompt open) keeps its ledger status: the ledger is
     # the protocol's record, and the self-report goes stale once the thing it waited for lands
     # (it-architect, 2026-10-13: idle in the ledger, BLOCKED in the viewer for a permission already added);
     # the self-report stays visible as attention
@@ -795,24 +795,24 @@ def posture_label(r: dict) -> str:
     if "stopped-active" in reasons:
         return "ACTIVE?"
     if "parked-work" in reasons:
-        return f"{r['posture'].upper()}?"
-    if r["posture"] == "wait" and r["sub"]:
+        return f"{r['status'].upper()}?"
+    if r["status"] == "wait" and r["sub"]:
         return f"wait:{r['sub']}"
     nxt = r.get("next") or []
-    if r["posture"] == "idle" and nxt and all(n["blocker"] and not n["stale"] for n in nxt):
+    if r["status"] == "idle" and nxt and all(n["blocker"] and not n["stale"] for n in nxt):
         # idle with every queued item behind a live blocker reads as blocked, by the blockers' kind
         # (it-upstream-issues-coordination, 2026-10-12: both next items waiting on upstream PRs)
         import blockers as _bl
         kinds = sorted({_bl.kind(n["blocker"]) for n in nxt})
         return "blocked:" + (kinds[0] if len(kinds) == 1 else "mixed")
-    return r["posture"]
+    return r["status"]
 
 
 RED, ORANGE, GREEN, RESET = "\x1b[38;2;243;139;168m", "\x1b[38;2;250;179;135m", "\x1b[38;2;166;227;161m", "\x1b[0m"
 
 
 def state_color(value: str) -> str:
-    """The ANSI color for a posture or session value: red when blocked or dead, orange when waiting or
+    """The ANSI color for a status or session value: red when blocked or dead, orange when waiting or
     idle, green when active or working (the maintainer's scheme, 2026-10-12)."""
     v = (value or "").split()[0] if value else ""
     if v in ("DEAD", "QUESTION", "BLOCKED", "NOWATCH", "blocked", "dead") or v.startswith("blocked:"):
@@ -919,9 +919,9 @@ def render_text(doc: dict, width: int = 0, usage: bool = True) -> str:
             if r["offers_open"]:
                 att.append(f"{r['offers_open']} offer{'s' if r['offers_open'] > 1 else ''}")
             nx = ", ".join(n["item"] + ("[B]" if n["blocker"] else "") + ("!" if n["stale"] else "") for n in r["next"])
-            rows.append([r["slug"], r["harness"], posture_label(r), r["session"], r["active"] or "-", nx or "-",
+            rows.append([r["slug"], r["harness"], status_label(r), r["session"], r["active"] or "-", nx or "-",
                          _age(r["last_write_age_s"]), ", ".join(att) or "-"])
-        heads = ["role", "ecosystem", "posture", "session", "active", "next", "last write", "attention"]
+        heads = ["role", "ecosystem", "status", "session", "active", "next", "last write", "attention"]
         mh = bool(s.get("multi_host"))  # multi-host: a host column after the role (the role rows stay 8 wide)
         hosts_ = [r["host"] for r in s["roles"]]
         wide_h = heads[:1] + ["host"] + heads[1:] if mh else heads
@@ -933,7 +933,7 @@ def render_text(doc: dict, width: int = 0, usage: bool = True) -> str:
         if natural <= width or width >= 110:
             out.append(ascii_table(wide_h, wide_r, width, flex=(4 + o, 5 + o, 7 + o), paint=pt))
         else:  # a narrow terminal: status and work as two tables rather than one unreadable one
-            nh = ["role"] + (["host"] if mh else []) + ["ecosystem", "posture", "last write", "attention"]
+            nh = ["role"] + (["host"] if mh else []) + ["ecosystem", "status", "last write", "attention"]
             nr = [[r[0]] + ([h] if mh else []) + [r[1], r[2], r[6], r[7]] for r, h in zip(rows, hosts_)]
             out.append(ascii_table(nh, nr, width, flex=(4 + o, 0),
                                    paint={2 + o: sc} if pt else None))
@@ -1051,9 +1051,9 @@ AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
 BLOCKED_SUBS = ("session-blocked", "upstream")
 
 
-def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[str], sess: str,
+def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: list[str], sess: str,
                 wait_done: bool, stale_nb: dict | None = None) -> dict:
-    """{group, state, detail} for one role: an accurate state that does not collapse to the posture word, in the group
+    """{group, state, detail} for one role: an accurate state that does not collapse to the status word, in the group
     that says whose move it is. `idle` was the role's own word for every item blocked, nothing assigned, held and
     handoff pending alike (measured 2026-11-10: 7 of 14 roles read idle for five different reasons). The first match
     decides, in the order of the groups: needs you, working, waiting, blocked, held."""
@@ -1066,7 +1066,7 @@ def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[s
         return {"group": group, "state": state, "detail": _short(detail, 160) or None}
     if asks:  # a parked role's ask too: answering it is the maintainer's move either way
         # a role can ask while it waits on something else (a CI run): say both, so "asked" beside remote-ci reads as one
-        also = f"also waiting {sub}; " if posture == "waiting" and sub and sub not in USER_WAITS else ""
+        also = f"also waiting {sub}; " if role_status == "waiting" and sub and sub not in USER_WAITS else ""
         return g("needs-you", "asked", ("parked; " if "parked" in r else "") + also + str(asks[0]))
     if "parked" in r:
         return g("held", "parked", "parked by the operator: no session, no wakes")
@@ -1086,11 +1086,11 @@ def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[s
             return g("needs-you", why if why != "blocked-says-waiting" else "says-waiting", text)
     if "no-work" in r:
         return g("needs-you", "no-work", "nothing assigned or offered (fill=assigned)")
-    if posture == "active" or sess == "working":
+    if role_status == "active" or sess == "working":
         return g("working", "working", str(q.get("active") or ""))
-    if posture == "waiting" and sub in BLOCKED_SUBS:
+    if role_status == "waiting" and sub in BLOCKED_SUBS:
         return g("blocked", sub, str(st.get("target") or st.get("holder") or ""))
-    if posture == "waiting":
+    if role_status == "waiting":
         detail = str(st.get("target") or st.get("holder") or "")
         if wait_done:
             return g("waiting", f"{sub}: resolved", f"{detail}: ended; its wake is due")
@@ -1110,7 +1110,7 @@ def agent_state(role, posture: str, sub: str, st: dict, q: dict, reasons: list[s
             return g("needs-you" if k == "ask" else "blocked", state, str(v) + ("; daily re-check due" if look else ""))
     if kinds:
         return g("held", "held", str(next(iter(nb.values()))))
-    return g("held", posture or "idle", str(q.get("reason") or ""))
+    return g("held", role_status or "idle", str(q.get("reason") or ""))
 
 # a dismissal over one of these lapses: it must not become a silent stall
 FAILURE_REASONS = {"dead-worker", "watcher-dead"}
@@ -1119,7 +1119,7 @@ DISMISS_FAILURE_S = 86400
 
 def needs_fingerprint(reasons, asks, says: str, boundary: str, prompt: str = "", state: str = "") -> str:
     """What a dismissal is of: why the role needs you, what it asks, which question its session has open, its derived
-    state and its last posture. A change to any is something new. The asks and words uncut: a row shows only their
+    state and its last status. A change to any is something new. The asks and words uncut: a row shows only their
     first part."""
     why = sorted(set(reasons) & (NEEDS_REASONS | FAILURE_REASONS))
     # with a derived state, a rewrite of the same state (a woken role writing the same empty queue again) is not new
@@ -1166,7 +1166,7 @@ def _opencode_updated() -> dict[str, int]:
 
 def quiet_snapshot(ids: list[str] | None = None) -> dict:
     """Per role: the harness's own activity evidence (Claude transcript size, opencode `updated`),
-    the role's ledger line count and its posture. Read-only."""
+    the role's ledger line count and its status. Read-only."""
     from roles import ShoalSpec
     from ledger import Ledger
     oc = _opencode_updated()

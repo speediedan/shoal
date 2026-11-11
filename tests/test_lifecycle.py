@@ -119,7 +119,7 @@ assert startdoc.header("# only a title\nno sections\n") == "# only a title\nno s
 assert startdoc.header("# t\n```\n~~~\n## in\n~~~\n```\n## Mission\n") == "# t\n```\n~~~\n## in\n~~~\n```\n"
 assert startdoc.header("# t\n````md\n```\n## in\n```\n````\n## M\n") == "# t\n````md\n```\n## in\n```\n````\n"
 body = "\n## Mission\n\nm\n\n## Current state\n\nc\n\n## Next\n\n- n\n\n## grants-needed\n\n- None pending\n"
-write(f"{D}/lane_start.md", "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nPosture: active on lane#1.\n" + body)
+write(f"{D}/lane_start.md", "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nStatus: active on lane#1.\n" + body)
 write(f"{D}/bare_start.md", "# bare\n\nLast updated: 2026-11-08T10:00Z\n" + body)
 write(f"{D}/long_start.md", "# long\n\nLast updated: 2026-11-08T10:00Z\n" + "".join(f"state line {i}\n" for i in range(9)) + body)
 rc, out = shoal("doc-check", os.path.join(LANE, "lane_start.md"))
@@ -129,7 +129,7 @@ assert rc == 0 and "holds only the title and stamp" in out, "a summary-less head
 rc, out = shoal("doc-check", os.path.join(LANE, "long_start.md"))
 assert rc == 0 and "over the 5 line" in out, "the repository's cap (5) applies, advisory: " + out
 rc, out = shoal("doc-head", os.path.join(LANE, "lane_start.md"))
-assert out == "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nPosture: active on lane#1.\n\n", repr(out)
+assert out == "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nStatus: active on lane#1.\n\n", repr(out)
 h = js("doc-head", os.path.join(LANE, "long_start.md"))
 assert h["over"] and h["lines"] == 12 and h["max_lines"] == 5 and h["summary"], h
 print("header and doc-check ok")
@@ -142,7 +142,7 @@ json.dump({"shoal": "g1", "dir": REPO, "roles": [
     {"slug": "long", "doc": os.path.join(LANE, "long_start.md")},
     {"slug": "gone", "doc": os.path.join(LANE, "gone_start.md")}]}, open(spec, "w"))
 rc, out = shoal("doc-head", "--shoal", "g1", "--slug", "lane")
-assert rc == 0 and "Posture: active on lane#1." in out, out
+assert rc == 0 and "Status: active on lane#1." in out, out
 rep = js("doc-head", "--all")
 by = {os.path.basename(d["path"]): d for d in rep["docs"]}
 assert rep["v"] == 1 and by["long_start.md"]["over"] and not by["lane_start.md"]["over"] and by["gone_start.md"]["missing"], rep
@@ -155,7 +155,7 @@ print("doc-head for a role and --all ok")
 write(f"{D}/lane_prompts.md", "Asked for `kept_for_prompts.md`; see `proj/design/lane/never_existed.md`.\n")
 write(f"{D}/kept_for_prompts.md", "only the prompt archive names this\n")
 write(f"{D}/generated/out.md", "generated\n")
-write(f"{D}/lane_start.md", "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nPosture: active. Prompts: `lane_prompts.md`.\n" + body)
+write(f"{D}/lane_start.md", "# lane\n\nLast updated: 2026-11-08T10:00Z\n\nStatus: active. Prompts: `lane_prompts.md`.\n" + body)
 sh("git", "add", "-A")
 sh("git", "commit", "-q", "-m", "lane")
 r = js("refs", LANE)

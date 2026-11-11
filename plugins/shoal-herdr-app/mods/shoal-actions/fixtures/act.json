@@ -11,25 +11,25 @@
             "slug": "core",
             "host": "host-a",
             "needs_you": false,
-            "posture": "active"
+            "status": "active"
           },
           {
             "slug": "lane-a",
             "host": "host-a",
             "needs_you": true,
-            "posture": "blocked:user-ask"
+            "status": "blocked:user-ask"
           },
           {
             "slug": "lane-b",
             "host": "host-b",
             "needs_you": false,
-            "posture": "wait:remote-ci"
+            "status": "wait:remote-ci"
           },
           {
             "slug": "review",
             "host": "host-a",
             "needs_you": false,
-            "posture": "idle"
+            "status": "idle"
           }
         ]
       },
@@ -41,13 +41,13 @@
             "slug": "core",
             "host": "host-b",
             "needs_you": false,
-            "posture": "active"
+            "status": "active"
           },
           {
             "slug": "docs",
             "host": "host-b",
             "needs_you": true,
-            "posture": "QUESTION"
+            "status": "QUESTION"
           }
         ]
       }

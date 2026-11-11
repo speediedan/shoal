@@ -19,7 +19,7 @@ State per thread lives in `<state root>/<thread id>/` (default /tmp/shoal-codex-
   last.json    the latest turn: started, ended, rc, terminal (completed|failed), text, error
   prompt-*.txt the prompts, handed to codex on stdin (`-`)
 
-Posture: unattended turns run with `--dangerously-bypass-approvals-and-sandbox` (nobody can answer an approval
+Sandbox and approvals: unattended turns run with `--dangerously-bypass-approvals-and-sandbox` (nobody can answer an approval
 prompt, and a sandboxed shell cannot push or reach the CI tooling: the same decision as for Muse, 2026-10-15,
 applied to Codex 2026-10-18 pending the maintainer's confirmation). The environment of every turn drops
 `OPENAI_API_KEY` and `CODEX_API_KEY` (a key outranks the ChatGPT-plan login and bills per token; override with
@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 
 CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
-POSTURE = ["--dangerously-bypass-approvals-and-sandbox"]
+SANDBOX_FLAGS = ["--dangerously-bypass-approvals-and-sandbox"]
 # PROVISIONAL until the first real usage-limit error is seen on this host (calibrate then, as for Muse)
 QUOTA_RE = re.compile(r"(rate.?limit|usage.?limit|quota|out of credits|insufficient|too many requests|\b429\b"
                       r"|try again (in|at|after))", re.I)
@@ -186,7 +186,7 @@ def quota_hint(session: str) -> str:
 def run_argv(session: str, repo_dir: str, model: str = "", effort: str = "") -> list[str]:
     """The command for one turn; the prompt arrives on stdin (`-`). `session` is a thread id, or empty for a
     thread's first turn."""
-    flags = [*POSTURE, "--json"]
+    flags = [*SANDBOX_FLAGS, "--json"]
     if model:
         flags += ["-m", model]
     if effort:
@@ -453,7 +453,7 @@ def cmd_codex_tail(a) -> int:
 
 
 def interactive_flags(model: str = "", effort: str = "") -> list[str]:
-    """Flags for an interactive (TUI) client. The sandbox and approval posture come from the host's
+    """Flags for an interactive (TUI) client. The sandbox and approval settings come from the host's
     config.toml; only the seat's own model and effort are passed (its spec role, or the registry entry
     `codex-new --pick` saved), falling back to the host model. `SHOAL_CODEX_VIEW_ARGS` replaces the whole list."""
     extra = config.env("CODEX_VIEW_ARGS")

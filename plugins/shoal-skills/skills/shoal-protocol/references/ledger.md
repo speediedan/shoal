@@ -17,7 +17,7 @@ file, and only through `shoal` verbs (one verb, one commit, one push).
 | `claim` | a role | owns an item: first landed wins |
 | `release` | a role | gives an item up: `decline`, `blocked`, `handoff --to <role>`, `lost-race` |
 | `done` | a role | completion, with evidence (`--url`); verified against GitHub, never trusted as written |
-| `queue` | a role | the role's declared queue version: active item, up to `next_max` next items (default 3), asks, posture |
+| `queue` | a role | the role's declared queue version: active item, up to `next_max` next items (default 3), asks, status |
 | `msg` | anyone | mail: `--to <role>`, `--to *`, or `--to user`; never wakes the recipient (the maintainer's `--wake` excepted) |
 | `state` | a role (via `transition`/`queue`) | the row state with its reason: the heartbeat and the wait proof |
 | `system` | the tooling or the maintainer | modes (user-offline), upgrades, model switches |

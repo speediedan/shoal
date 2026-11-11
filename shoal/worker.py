@@ -9,7 +9,7 @@
 
 `queue` folds claim, triage passes, done and transition into ONE commit that ends in a new
 version of the role's own `queue` event: `{version, active, next (<= 3), asks, reason}`. The
-latest version IS the role's queue and posture; others influence it only through offers
+latest version IS the role's queue and status; others influence it only through offers
 (`--now` to interrupt a busy role) and withdrawals. Idle = no active item: only then does new
 work wake the role.
 
@@ -523,9 +523,9 @@ def cmd_next(a) -> int:
             out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}")
     except Exception:
         pass
-    out.append("# END EVERY TURN IN A SLEEP POSTURE: the last write of a turn is `queue --wait ..` (waiter armed) or "
+    out.append("# END EVERY TURN IN A SLEEP STATUS: the last write of a turn is `queue --wait ..` (waiter armed) or "
                "`queue --idle`; `active` means you are still working. A turn that stops while active is woken to continue.")
-    out.append(f"# THEN POST YOUR STATUS BLOCK (three rows: Lane `{me.label if me else slug}` with the posture you sleep "
+    out.append(f"# THEN POST YOUR STATUS BLOCK (three rows: Lane `{me.label if me else slug}` with the status you sleep "
                f"in, Pipelines, Worktrees; next shows up to {queue_next_max(spec)} linked items with verbs): "
                f"shoal-protocol references/status-and-states.md")
     out.append(f"# then ONE write: shoal queue --shoal {spec.sid} --slug {slug} --active .. --next .. "
@@ -664,7 +664,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         if h not in planned:
             print(f"note: HELD-UNSCHEDULED {h}: you hold its claim but neither active nor next lists it; "
                   f"schedule it, or release it (`release --kind handoff|blocked`) so another role can take it")
-    posture = "waiting" if a.wait else ("idle" if not active else "active")
+    role_status = "waiting" if a.wait else ("idle" if not active else "active")
     # per-item blockers for next items: carried forward while the item stays in next, then
     # --blocked edits applied. They make a parked item's reason visible (a peer blocker shows the
     # peer BLOCKING) and are what lets a role sleep with a non-empty next.
@@ -717,7 +717,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             if st_b in ("resolved", "expired") and k not in recorded:
                 stale_nb[k] = f"{st_b}: {why_b}"
     unblocked = [x for x in nxt if item_key(x) not in nb or item_key(x) in stale_nb]
-    if posture == "idle" and unblocked and view.freeze() is None:
+    if role_status == "idle" and unblocked and view.freeze() is None:
         stale_txt = "".join(f"; {k} <- {nb[k]} is stale ({stale_nb[k]}), re-verify it or start the item"
                             for k in sorted(stale_nb))
         print(f"ERROR: idle with unblocked next items ({', '.join(unblocked)}): idle is only for an empty queue or "
@@ -726,7 +726,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
               f"hold:<why>`); a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle "
               f"(nothing written)")
         return 3
-    if posture == "waiting" and a.wait != "local-ci" and unblocked and view.freeze() is None \
+    if role_status == "waiting" and a.wait != "local-ci" and unblocked and view.freeze() is None \
             and (spec.features or {}).get("waitgate", True) is not False:
         # the same gate for a wait: a role waiting on CI, a peer, upstream or the maintainer while a next
         # item could start is parked work. Refused here, mid-turn, it costs nothing; caught later by the
@@ -738,7 +738,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
               f"cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
               f"hold:<why>`) (nothing written)")
         return 3
-    if a.restart_ready and posture == "active":
+    if a.restart_ready and role_status == "active":
         print("ERROR: --restart-ready marks a quiet boundary: idle or waiting, never with an active item "
               "(nothing written)")
         return 3
@@ -763,7 +763,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         if absent:
             print(f"note: the start doc names job folder(s) {', '.join(absent)}, not on this host: a next session here "
                   "will not find them, so update those references")
-    if bcfg is not None and posture == "idle" and view.freeze() is None and role.fill == "self":
+    if bcfg is not None and role_status == "idle" and view.freeze() is None and role.fill == "self":
         # a short queue is not a reason to idle while the board offers eligible work (measured
         # 2026-09-29: two lanes idle 2.5 h and 11.5 h beside 2 and 8 eligible candidates)
         excl = {item_key(x) for x in nxt} | {item_key(p["item"]) for p in passes}
@@ -783,16 +783,16 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         reason = (f"short queue: {len(cands)} eligible candidate(s) not taken ({', '.join(cands[:3])})"
                   if cands else "no further eligible items")
     version = int(prev.get("version", 0)) + 1
-    plan = (f"{slug} queue v{version}: active={active or '-'} next={','.join(nxt) or '-'} posture={posture}"
+    plan = (f"{slug} queue v{version}: active={active or '-'} next={','.join(nxt) or '-'} status={role_status}"
             + (f"/{a.wait}" if a.wait else "") + f" claims={claims or '-'} done={a.done or '-'} "
             f"passes={[p['item'] + ':' + p['cls'] for p in passes] or '-'} asks={len(asks)}")
     if a.dry_run:
         print("[dry-run] " + plan)
         return 0
-    # 1. local posture: heartbeat, wait proof, telemetry (the ledger state event rides in the batch)
+    # 1. local status: heartbeat, wait proof, telemetry (the ledger state event rides in the batch)
     import state as _state
     tns = argparse.Namespace(
-        sid=spec.sid, slug=slug, to=posture, sub=a.wait or "", holder=a.holder or "",
+        sid=spec.sid, slug=slug, to=role_status, sub=a.wait or "", holder=a.holder or "",
         rescan_min=rescan_min, monitor=a.monitor or "", target=a.target or "", from_state="", asks=asks,
         blocked_on=a.blocked_on or "",
         note=f"queue v{version}", channel="within-ecosystem", session="", ecosystem="", spec=getattr(a, "spec", ""),
@@ -812,12 +812,12 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         led.append(slug, "release", _commit=False, item=item_key(p["item"]), kind="decline", cls=p["cls"],
                    suggest=p["suggest"] or None, reason=p["note"] or p["cls"])
     w = _state.read_wait(spec.sid, slug) if a.wait else None
-    led.append(slug, "state", _commit=False, state=posture, sub=a.wait or "", holder=a.holder or "",
+    led.append(slug, "state", _commit=False, state=role_status, sub=a.wait or "", holder=a.holder or "",
                rescan_utc=(w or {}).get("rescan_utc", ""), target=a.target or "", note=f"queue v{version}",
                blocked_on=(a.blocked_on or None) if a.wait else None, tag=role.tag,
                session=sess, host=os.uname().nodename)
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
-                     asks=asks or None, reason=reason or None, posture=posture, session=sess, tag=role.tag,
+                     asks=asks or None, reason=reason or None, status=role_status, session=sess, tag=role.tag,
                      dropped=dropped or None, next_blocked=nb or None, next_blocked_meta=nb_meta or None,
                      restart_ready=True if a.restart_ready else None)
     led.commit_own(slug, f"{spec.sid} {slug} queue v{version}")
@@ -841,9 +841,9 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                 lost.append(item_key(c))
     print(plan + f" [{qev['id']}]" + ("" if pushed else " (push pending: `shoal sync`)")
           + (f" CLAIM-LOST {lost}: re-run `next` and repick" if lost else ""))
-    if posture == "active":
-        print("note: posture ACTIVE means you keep working in this turn. The LAST write of every turn is a sleep "
-              "posture: `queue --wait <sub> --holder .. --target ..` (arm the waiter first) or `queue --idle`, or "
+    if role_status == "active":
+        print("note: status ACTIVE means you keep working in this turn. The LAST write of every turn is a sleep "
+              "status: `queue --wait <sub> --holder .. --target ..` (arm the waiter first) or `queue --idle`, or "
               "`--active <next item>` and continue. A turn that ends while active is woken to CONTINUE.")
     try:
         os.remove(os.path.join(state_dir(spec.sid), f"wake-{slug}"))  # a pending health wake is now answered
@@ -984,7 +984,7 @@ def add_parsers(sub) -> None:
     p.add_argument("--no-sync", action="store_true")
     p.set_defaults(func=cmd_next)
 
-    p = sub.add_parser("queue", help="WRITE at a boundary: done/claims/passes/posture + queue version, one commit")
+    p = sub.add_parser("queue", help="WRITE at a boundary: done/claims/passes/status + queue version, one commit")
     config.add_id_arg(p, required=True)
     p.add_argument("--slug", required=True)
     p.add_argument("--spec", default="")

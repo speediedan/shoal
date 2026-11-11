@@ -65,7 +65,7 @@ def make_world(td, now=NOW):
         ev({"ts": iso(now - 200), "by": "worker", "type": "state", "id": "s1", "state": "waiting",
             "sub": "remote-ci", "target": "job:ci", "session": "w1"}) + "\n" +
         ev({"ts": iso(now - 200), "by": "worker", "type": "queue", "id": "q1", "version": 3,
-            "next": ["o/r#7"], "asks": ["more work when ready?"], "posture": "waiting",
+            "next": ["o/r#7"], "asks": ["more work when ready?"], "status": "waiting",
             "next_blocked": {"o/r#7": "peer:o/r#9"},
             "next_blocked_meta": {"o/r#7": {"since": iso(now - 60), "first": iso(now - 60),
                                             "n": 0}}}) + "\n")
@@ -73,7 +73,7 @@ def make_world(td, now=NOW):
         ev({"ts": iso(now - 150), "by": "peer", "type": "state", "id": "s2", "state": "idle",
             "session": "p1"}) + "\n" +
         ev({"ts": iso(now - 150), "by": "peer", "type": "queue", "id": "q2", "version": 1,
-            "next": ["o/r#8"], "posture": "idle",
+            "next": ["o/r#8"], "status": "idle",
             "next_blocked": {"o/r#8": "hold:release-window"},
             "next_blocked_meta": {"o/r#8": {"since": iso(now - 13 * 3600),
                                             "first": iso(now - 13 * 3600), "n": 0}}}) + "\n")
@@ -112,7 +112,7 @@ class LedgerAdapter(unittest.TestCase):
             spec.features = {}
             self.assertAlmostEqual(ad.membership_spans(spec)["worker"][0][1], NOW - 50, delta=2)
 
-    def test_ledger_part_posture_blockers_and_refill(self):
+    def test_ledger_part_status_blockers_and_refill(self):
         with tempfile.TemporaryDirectory() as td:
             sp, root = make_world(td)
             spec, view = load(sp)
@@ -145,7 +145,7 @@ class LedgerAdapter(unittest.TestCase):
                 ev({"ts": iso(NOW - 150), "by": "peer", "type": "state", "id": "s2", "state": "idle",
                     "session": "p1"}) + "\n" +
                 ev({"ts": iso(NOW - 150), "by": "peer", "type": "queue", "id": "q2", "version": 1,
-                    "next": ["someone/r#8:fix"], "posture": "idle",
+                    "next": ["someone/r#8:fix"], "status": "idle",
                     "next_blocked": {key: "hold:release-window"},
                     "next_blocked_meta": {key: {"since": iso(NOW - 60), "first": iso(NOW - 60),
                                                 "n": 0}}}) + "\n")

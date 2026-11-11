@@ -65,18 +65,19 @@ def split_days(t0, t1, w0, w1, acc, key):
 
 
 def role_timelines(led):
-    """Per role: list of snapshots (t, posture, sub, next, next_blocked, meta, target)."""
+    """Per role: list of snapshots (t, status, sub, next, next_blocked, meta, target)."""
     tl, cur = collections.defaultdict(list), {}
     for e in led:
         r = e.get("by")
         if e["type"] not in ("queue", "state") or not r:
             continue
-        c = cur.setdefault(r, {"posture": None, "sub": "", "next": [], "nb": {}, "meta": {}, "target": ""})
+        c = cur.setdefault(r, {"status": None, "sub": "", "next": [], "nb": {}, "meta": {}, "target": ""})
         if e["type"] == "queue":
-            c.update(posture=e.get("posture") or c["posture"], next=e.get("next") or [],
+            # a queue event stored the role status as `posture` until 2026-11-11: history keeps that field
+            c.update(status=e.get("status") or e.get("posture") or c["status"], next=e.get("next") or [],
                      nb=e.get("next_blocked") or {}, meta=e.get("next_blocked_meta") or {})
         else:
-            c.update(posture=e.get("state"), sub=e.get("sub") or "", target=e.get("target") or "")
+            c.update(status=e.get("state"), sub=e.get("sub") or "", target=e.get("target") or "")
         tl[r].append((e["_t"], dict(c)))
     return tl
 
@@ -162,7 +163,7 @@ def main():
         if e.get("by"):
             last_write[e["by"]].append(e["_t"])
 
-    # --- FM-9 hold renewals; FM-2/3/10 posture x blocker intervals; FM-1 proxy; FM-8
+    # --- FM-9 hold renewals; FM-2/3/10 status x blocker intervals; FM-1 proxy; FM-8
     R = collections.Counter()            # (role, metric) -> seconds
     for r, seq in tls.items():
         if r not in roles:
@@ -185,17 +186,17 @@ def main():
             stale = [k for k in holds if (meta.get(k) or {}).get("first")
                      and (t - P(meta[k]["first"])).total_seconds() / 60 > HOLD_TTL_MIN]
             all_blocked = bool(nxt) and set(nxt) <= nbk
-            if c["posture"] == "idle" and all_blocked:
+            if c["status"] == "idle" and all_blocked:
                 split_days(t, t1, w0, w1, H, "FM2:idle_all_next_blocked_h")
                 split_days(t, t1, w0, w1, R, (r, "idle_all_blocked"))
                 if stale:
                     split_days(t, t1, w0, w1, H, "FM3:idle_on_hold_gt4h_h")
                     split_days(t, t1, w0, w1, R, (r, "idle_on_hold_gt4h"))
-            if c["posture"] == "idle":
+            if c["status"] == "idle":
                 split_days(t, t1, w0, w1, R, (r, "idle_total"))
-            if c["posture"] == "waiting" and c["sub"] == "local-ci" and stale:
+            if c["status"] == "waiting" and c["sub"] == "local-ci" and stale:
                 split_days(t, t1, w0, w1, H, "FM10:localci_with_stale_hold_h")
-            if c["posture"] == "active":
+            if c["status"] == "active":
                 # silent active: no ledger write by the role for > ACTIVE_SILENT_MIN inside the segment
                 ws = [x for x in last_write[r] if t <= x < t1] + [t1]
                 p = t
@@ -205,7 +206,7 @@ def main():
                         C[(day(p), "FM1:active_silent_segments")] += 1 if inw(p) else 0
                     p = x
             # FM-6: blank-target CI wait right after a targeted one
-            if (c["posture"] == "waiting" and c["sub"] in ("local-ci", "remote-ci", "research-proto") and not c["target"] and i
+            if (c["status"] == "waiting" and c["sub"] in ("local-ci", "remote-ci", "research-proto") and not c["target"] and i
                     and seq[i - 1][1]["target"] and seq[i - 1][1]["sub"] == c["sub"] and (t - seq[i - 1][0]).total_seconds() <= FM6_PAIR_S and inw(t)):
                 C[(day(t), "FM6:target_blanked")] += 1
 
@@ -241,7 +242,7 @@ def main():
             continue
         slug = j.get("slug", "")
         st = [c for t, c in tls.get(slug, []) if t <= end]
-        if slug not in roles or not st or st[-1]["posture"] != "waiting":
+        if slug not in roles or not st or st[-1]["status"] != "waiting":
             continue  # only jobs the role was waiting on at end
         nw = next((x for x in last_write.get(slug, []) if x > end), None)
         gap = (nw - end).total_seconds() / 60 if nw else (w1 - end).total_seconds() / 60

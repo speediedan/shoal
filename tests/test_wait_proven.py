@@ -97,25 +97,25 @@ class ProvenBlockers(unittest.TestCase):
 class AgentState(unittest.TestCase):
     role = types.SimpleNamespace(fill="assigned")
 
-    def state(self, posture="idle", sub="", st=None, q=None, reasons=(), sess="idle", wait_done=False, stale=None):
-        return ui_status.agent_state(self.role, posture, sub, st or {}, q or {}, list(reasons), sess, wait_done, stale)
+    def state(self, role_status="idle", sub="", st=None, q=None, reasons=(), sess="idle", wait_done=False, stale=None):
+        return ui_status.agent_state(self.role, role_status, sub, st or {}, q or {}, list(reasons), sess, wait_done, stale)
 
     def test_groups(self):
         self.assertEqual(self.state(q={"asks": ["Merge it?"]}, reasons=["parked"])["group"], "needs-you")
         self.assertEqual(self.state(reasons=["parked"])["state"], "parked")
         self.assertEqual(self.state(reasons=["no-work"])["state"], "no-work")
-        self.assertEqual(self.state(posture="waiting", sub="local-ci", reasons=["restart-held"])["group"], "needs-you")
-        self.assertEqual(self.state(posture="active", sess="working")["group"], "working")
-        self.assertEqual(self.state(posture="waiting", sub="research-window", st={"target": "time:x"})["group"], "waiting")
-        self.assertEqual(self.state(posture="waiting", sub="upstream")["group"], "blocked")
-        self.assertEqual(self.state(posture="waiting", sub="local-ci", reasons=["wake-held"], wait_done=True)["group"], "needs-you")
+        self.assertEqual(self.state(role_status="waiting", sub="local-ci", reasons=["restart-held"])["group"], "needs-you")
+        self.assertEqual(self.state(role_status="active", sess="working")["group"], "working")
+        self.assertEqual(self.state(role_status="waiting", sub="research-window", st={"target": "time:x"})["group"], "waiting")
+        self.assertEqual(self.state(role_status="waiting", sub="upstream")["group"], "blocked")
+        self.assertEqual(self.state(role_status="waiting", sub="local-ci", reasons=["wake-held"], wait_done=True)["group"], "needs-you")
         blocked = {"next": ["a#1:fix"], "next_blocked": {"a#1": "upstream:gh-issue:o/r#2"}}
         self.assertEqual(self.state(q=blocked)["state"], "blocked: upstream")
         held = {"next": ["a#1:fix"], "next_blocked": {"a#1": "hold:the maintainer's order"}}
         self.assertEqual(self.state(q=held)["group"], "held")
 
     def test_an_ask_beside_a_ci_wait_says_both(self):
-        s = self.state(posture="waiting", sub="remote-ci", q={"asks": ["Refresh the key?"]})
+        s = self.state(role_status="waiting", sub="remote-ci", q={"asks": ["Refresh the key?"]})
         self.assertEqual((s["group"], s["state"]), ("needs-you", "asked"))
         self.assertTrue(s["detail"].startswith("also waiting remote-ci; Refresh"), s["detail"])
 
