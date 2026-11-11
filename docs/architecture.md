@@ -167,9 +167,10 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   candidates, or records why fewer. `next` shows candidates whenever the queue has an open slot: a
   next item with a recorded blocker holds no slot, and a role with no active item has one more.
   Without `--reason`, a short queue's default reason is checked against the candidates (`short
-  queue: N eligible candidate(s) not taken` when there are any). A `fill=self` role with no active item, no offer
-  and every next item blocked also gets `TAKE BOARD WORK` when a candidate is workable: a blocked queue is not a
-  reason to idle, so it claims the first one and keeps the blocked items in `next` with their blockers.
+  queue: N eligible candidate(s) not taken` when there are any). A `fill=self` role with no active item and every
+  next item blocked also gets `TAKE BOARD WORK` when an offer or a workable candidate is listed: a blocked queue is
+  not a reason to idle, so it takes an offer first, else the first candidate, and keeps the blocked items in `next`
+  with their blockers.
 
 **Every turn ends in a sleep posture:** `queue --wait <sub> --holder <who> --target <kind:ref>`
 with the waiter armed first, `queue --idle`, or `queue --active <item>` and keep working. Idle is
