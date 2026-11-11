@@ -39,6 +39,9 @@ V = 1
 PLAN_TTL_S = 600
 WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remove-role", "remove-session", "dismiss",
                "add-session", "add-role", "fill")
+# the CLI verbs a stored plan may run: the dialog's verbs, under the name the CLI gives them where it differs (the dialog's
+# Fill plans `shoal set-fill`, which the apply refused, so no Fill ever applied: measured 2026-11-11)
+APPLY_VERBS = WRITE_VERBS + ("set-fill",)
 SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions", "queue")
@@ -500,7 +503,7 @@ def execute(p: dict, progress: str) -> dict:
     import ui_herdr
     argvs = [[str(x) for x in argv] for argv in (p.get("argvs") or [p["argv"]])]
     import ui_queue
-    if not all(args and (args[0] in WRITE_VERBS + ui_queue.BATCH_VERBS or args[0] == "doc-init" or args[:2] == ["ui", "pick"])
+    if not all(args and (args[0] in APPLY_VERBS + ui_queue.BATCH_VERBS or args[0] == "doc-init" or args[:2] == ["ui", "pick"])
                for args in argvs):
         raise ActError("a stored plan names no write verb")
     rc, outs = 0, []

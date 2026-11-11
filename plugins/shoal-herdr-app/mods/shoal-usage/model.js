@@ -61,15 +61,52 @@ export function windowView(w, now) {
   }
   const name = str(w?.name);
   return {
-    key: name, label: WINDOW_LABEL[name] ?? name, pct, resetIn, elapsed, projected, runsOutIn,
+    key: name, label: WINDOW_LABEL[name] ?? name, pct, resetIn, resetsAt, elapsed, projected, runsOutIn,
     severity: severity(pct, projected),
   };
 }
 
-/** What a window's sub-line says: the reset, then the pace. */
-export function windowNote(v) {
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * This machine's clock for the reset times: {offsetMin, zone}, the offset east of UTC and a short zone name (the
+ * runtime's own, else `UTC+h`). `date` is a stand-in for tests.
+ */
+export function localClock(date = new Date()) {
+  const offsetMin = -date.getTimezoneOffset();
+  let zone = "";
+  try {
+    zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(date).find((p) => p.type === "timeZoneName")?.value ?? "";
+  } catch (_e) {
+    zone = "";
+  }
+  if (!zone) {
+    const h = Math.trunc(Math.abs(offsetMin) / 60), m = Math.abs(offsetMin) % 60;
+    zone = `UTC${offsetMin < 0 ? "-" : "+"}${h}${m ? `:${String(m).padStart(2, "0")}` : ""}`;
+  }
+  return { offsetMin, zone };
+}
+
+/**
+ * A reset as a wall-clock time where the app runs: "14:30 PST" today, "Tue 14:30 PST" within a week, else
+ * "Nov 18 14:30 PST". Computed from the offset, so no time zone database is needed.
+ */
+export function clockTime(ts, now, clock) {
+  if (num(ts) === null || !clock) return "";
+  const local = (t) => new Date((t + clock.offsetMin * 60) * 1000); // read with UTC getters: the local wall clock
+  const d = local(ts), today = local(now);
+  const hm = `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  const sameDay = d.getUTCFullYear() === today.getUTCFullYear() && d.getUTCMonth() === today.getUTCMonth() && d.getUTCDate() === today.getUTCDate();
+  const day = sameDay ? "" : ts - now < 6.5 * 86400 ? `${DAYS[d.getUTCDay()]} ` : `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} `;
+  return `${day}${hm} ${clock.zone}`.trim();
+}
+
+/** What a window's sub-line says: the reset (with its wall-clock time where the app runs, given `clock`), then the pace. */
+export function windowNote(v, clock = null, now = null) {
   const bits = [];
-  if (v.resetIn !== null) bits.push(`resets in ${duration(v.resetIn)}`);
+  const at = clock && v.resetsAt !== null && v.resetsAt !== undefined ? clockTime(v.resetsAt, now ?? v.resetsAt - (v.resetIn ?? 0), clock) : "";
+  if (v.resetIn !== null) bits.push(`resets in ${duration(v.resetIn)}${at ? ` (${at})` : ""}`);
   if (v.pct >= 100) bits.push("used up");
   else if (v.runsOutIn !== null) bits.push(`runs out in ${duration(v.runsOutIn)} at this pace`);
   else if (v.projected !== null) bits.push(`on pace for ${Math.round(v.projected)}%`);

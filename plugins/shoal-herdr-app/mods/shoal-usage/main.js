@@ -12,7 +12,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, props, theme, machines, nextCommand } from "herdr";
-import { cards, tightest, windowNote, breakdownRows, updatedAge, parseReply, usageArgv, duration, BREAKDOWNS } from "./model.js";
+import { cards, tightest, windowNote, breakdownRows, updatedAge, parseReply, usageArgv, duration, BREAKDOWNS, localClock } from "./model.js";
 
 const UI = "Geist";
 const MONO = "Geist Mono";
@@ -113,7 +113,7 @@ export default class Usage extends View {
         .child(div().flex_1())
         .child(div().font_family(MONO).text_size(22).font_semibold().text_color(w.severity === "ok" ? c.ink : c[w.severity]).child(`${Math.round(w.pct)}%`)))
       .child(this.bar(`${cardId}-${w.key}-bar`, w, c))
-      .child(div().text_size(11).text_color(c.dim).child(windowNote(w) || " "));
+      .child(div().text_size(11).text_color(c.dim).child(windowNote(w, localClock(), Date.now() / 1000) || " "));
   }
 
   card(k, c) {
@@ -177,7 +177,7 @@ export default class Usage extends View {
         .child(div().w(8).h(8).rounded(4).bg(c[w.severity]))
         .child(div().text_size(12.5).text_color(c.muted).child("Tightest"))
         .child(div().text_size(12.5).font_semibold().child(`${top.card.title} ${w.label.toLowerCase()} at ${Math.round(w.pct)}%`))
-        .child(div().text_size(12).text_color(c.dim).child(windowNote(w))));
+        .child(div().text_size(12).text_color(c.dim).child(windowNote(w, localClock(), now))));
     }
     if (this.note) root.child(div().text_size(12).text_color(c.dim).child(this.note));
     const grid = h_flex().id("cards").flex_wrap().gap(16).items_start();

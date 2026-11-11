@@ -132,6 +132,43 @@ test("metrics: tiles and sparklines", () => {
   assert.deepEqual(M.sparkPoints([null, 3], 100, 40), []);
 });
 
+test("zoom: every length scales, the steps stay in range, Fit finds a zoom that holds the whole tree", () => {
+  const d = M.scaleDims(M.DIMS.cards, 0.5);
+  assert.equal(d.w, M.DIMS.cards.w / 2);
+  assert.equal(d.rootH, M.DIMS.cards.rootH / 2);
+  assert.equal(d.scale, 0.5);
+  assert.ok(M.stepZoom(1, 1) > 1 && M.stepZoom(1, -1) < 1);
+  assert.equal(M.stepZoom(M.ZOOM.max, 1), M.ZOOM.max);
+  assert.equal(M.stepZoom(M.ZOOM.min, -1), M.ZOOM.min);
+  const big = { nodes: Array.from({ length: 40 }, (_, i) => node(`z#${i + 2}`, { parent: "z#1" })).concat([node("z#1")]),
+                edges: Array.from({ length: 40 }, (_, i) => ({ from: "z#1", to: `z#${i + 2}`, kind: "parent" })) };
+  const z = M.fitZoom(big, 900, 500);
+  assert.ok(z < 1 && z >= M.ZOOM.min, String(z));
+  const lay = M.layout(big, 900, M.scaleDims(M.DIMS.cards, z));
+  assert.ok(lay.height <= 500, `${lay.height}`);
+  assert.equal(M.fitZoom(BOARD, 1400, 2000), 1, "a tree that fits is not shrunk");
+});
+
+test("nodes: a shape per repo by first appearance, closed outlines, a smaller cell than a card", () => {
+  const mixed = { nodes: [node("app#1"), node("lib#2"), node("app#3"), node("doc#4")] };
+  assert.deepEqual(M.repoShapes(mixed), { app: "circle", lib: "square", doc: "diamond" });
+  const seven = { nodes: Array.from({ length: 7 }, (_, i) => node(`r${i}#1`)) };
+  assert.equal(new Set(Object.values(M.repoShapes(seven))).size, 7, "seven repos, seven shapes");
+  for (const shape of ["circle", "square", "diamond", "triangle", "hexagon", "pentagon", "octagon", "star"]) {
+    const cmds = M.shapeCmds(shape, 50, 50, 10);
+    assert.equal(cmds[0][0], "M");
+    assert.deepEqual(cmds.at(-1), ["Z"], shape);
+    const xs = cmds.flatMap((c) => (c[0] === "Z" ? [] : c.slice(1).filter((_, i) => i % 2 === 0)));
+    assert.ok(xs.every((x) => x >= 39 && x <= 61), shape);
+  }
+  const lay = M.layout(BOARD, 1200, M.DIMS.nodes);
+  assert.equal(lay.dims, M.DIMS.nodes);
+  assert.ok(M.DIMS.nodes.w < M.DIMS.cards.w / 2);
+  const n = lay.nodes.find((x) => x.key === "app#2");
+  const o = M.shapeCentre(n, lay.dims);
+  assert.ok(o.x === n.x + lay.dims.w / 2 && o.y > n.y && o.y < n.y + lay.dims.h);
+});
+
 test("public gate: the module holds no local paths or host names", () => {
   const text = readFileSync(join(MOD, "model.js"), "utf8") + readFileSync(join(MOD, "main.js"), "utf8");
   assert.ok(!/\/home\/|\/mnt\/|speedie/i.test(text));

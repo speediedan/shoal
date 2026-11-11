@@ -55,13 +55,18 @@ you, per-shoal throughput and per-host load.
   at the node (global), labeled `remote-ci -> host-b`.
 - **Depth:** `d` cycles the camera: flat, tilt (52 degrees) and iso (an isometric turn), seen in perspective. In the
   global view each shoal is on its own plane, stacked in depth, the operator and outside seats on a plane above, so
-  traffic between planes visibly crosses them. A floor grid lies below,
-  its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor, with a
-  shadow there; far things are smaller and fade, near ones larger and drawn last. In the global view each shoal is a
-  glass sphere: 48 directional light contours, each adding a little alpha, so the shadow side is nearly clear (7
-  percent) and the lit side a tinted veil (34 percent), the floor and the far side's grid showing through; with the
+  traffic between planes visibly crosses them. A floor grid lies below every globe,
+  its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. Every
+  globe and lifted node casts a shadow on the floor from the one light that shades the globes (upper left, toward
+  you): the line from the light through its middle meets the floor at the shadow's middle, so every shadow falls the
+  same way, further the higher its caster; it is a stack of 16 fine alpha layers (4 for a seat), a dark core and a soft
+  penumbra that widens as the caster rises. Far things are smaller and fade, near ones larger and drawn last. In the
+  global view each shoal is a
+  glass sphere: 48 directional light contours, each adding a little alpha, so the shadow side is nearly clear (5
+  percent) and the lit side a tinted veil (27 percent), the floor and the far side's grid showing through; with the
   pointer on it (anywhere on the globe, its name, a role, an item or an edge of it) it goes a little more opaque (16
-  and 56 percent). A soft highlight and curved surface grid lines finish it. Front roles cast contact shadows. A label
+  and 56 percent). Its name is 14 px, 12 px clear above the globe and any role on its top, the needs-you count
+  between. A soft highlight and curved surface grid lines finish it. Front roles cast contact shadows. A label
   on a globe takes white or near-black ink, whichever reads better (WCAG contrast) against the glass under it as
   drawn; a needs-you label keeps its hue. In depth, every edge has a dark casing under its core and a little more core
   alpha, so it reads over a pale surface. Where a role sits on its globe says how much it matters now: the initial point facing you holds what needs you most
@@ -70,18 +75,19 @@ you, per-shoal throughput and per-host load.
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
   turn the camera 15 degrees. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
-- **Depth, per shoal: the cutout sphere.** `you` sits at the middle of a sphere whose near cap is cut away by a plane
-  through its middle, facing the camera and tipped toward the top of the screen (the camera's pitch less 32 degrees:
-  20 in tilt, 26 in iso), so you look into a bowl: the cut edge is a lit ellipse, the near wall's outside a shaded
-  crescent below it, and everything inside the rim is the inner surface of the far wall, lit opposite to a ball (the
-  light pools lower right). Each host is a lune of that inner surface, pole to rim, over the same azimuths as its
-  sector in the flat view, washed and outlined in the host color (the home host first, from the top), its name just
-  outside the outline. A host's roles sit on its lune, spread across its azimuths in label order (two rows from four
-  roles), each kept inside the part seen through the rim; they shrink and fade a little toward the pole, and you are
-  drawn nearest. Outside seats ring the rim, in its plane, outside the sphere; a CI tether ends in the middle of its
-  host's lune. Edges and arrows are drawn over the bowl, with the depth casing. Labels in the bowl get the same
-  readable ink against its inside. `,` and `.` turn the bowl about its axis. Flat per shoal is unchanged (the ring of
-  host sectors).
+- **Depth, per shoal: the cutout sphere.** `you` sits at the middle of a sphere whose upper half is cut away, and the
+  camera looks down into the bowl that is left, in perspective: it hangs 2.4 radii from the middle, off the bowl's axis
+  by the camera's pitch less 30 degrees (22 in tilt, 28 in iso), so it sees over the near rim and the near wall hides
+  next to nothing (its outside shows as a thin crescent only past the rim, in iso). The cut edge is a lit ellipse and
+  everything inside it is the inner surface, lit opposite to a ball (the light pools lower right). The hosts' lunes,
+  pole to rim, tile that whole surface: each over its sector of the flat view widened to the middle of the gaps either
+  side, so together they make a whole turn, washed lightly and outlined in the host color (the home host first, from
+  the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
+  rows from four roles), each kept inside the part seen through the rim; they shrink and fade with their depth below the
+  opening, and you, on the opening, are drawn nearest and largest (1.25 times flat). Outside seats ring the rim, in its
+  plane, outside the sphere; a CI tether ends in the middle of its host's lune. Edges and arrows are drawn over the
+  bowl, with the depth casing. Labels in the bowl get the same readable ink against its inside. `,` and `.` turn the
+  bowl about its axis. Flat per shoal is unchanged (the ring of host sectors).
 - **Replay:** `r` plays the last 24 h back on the live picture, a day in 32 s by default (the bar's speeds: a day in
   96, 32, 11 or 3.2 s; `[` and `]` step them): each event a packet
   along its edge, a done a flash, at most a dozen a tick. A bar along the foot shows a quarter hour a column, its
@@ -202,11 +208,17 @@ you, per-shoal throughput and per-host load.
   alpha on all of them turns the lit cap opaque. Each glass contour's alpha is solved from the
   total opacity wanted at its level, and alpha is 8-bit, so fewer, slightly stronger layers (48,
   1 to 6 of 255 each) beat 128 layers rounded to 0 or 1. Transparency comes only from alpha on
-  these fills, never from more layers. The fixture's two globes now take about 1,970 path
-  commands, down from about 3,030; the bowl about 140.
-- The bowl's lunes and circles are circles on a sphere seen orthographically, so each projects
-  to an ellipse arc and one cubic per quarter turn is exact. The visible inside is exactly the
-  inside of the rim ellipse; the near wall's crescent, drawn after the lunes, covers the rest.
+  these fills, never from more layers. The fixture's two globes now take about 1,940 path
+  commands, down from about 3,030; their shadows about 260; the bowl about 160. The global depth
+  scene is about 2,790 in all; a trial with 24-layer shadows (about 2,980) failed about one native
+  check in 50, so keep a globe's shadow at 16 layers.
+- A shadow on the dark floor cannot show more than about 15 to 20 distinct 8-bit levels, so more
+  layers buy nothing; each layer's alpha is solved against the rounded layers outside it, and one
+  that rounds to 0 is dropped.
+- The bowl's circles are circles on a sphere seen in perspective, so each projects to an ellipse,
+  but not at an even pace: eighth-turn cubics fitted to the projection stay within a pixel. The
+  rim's ellipse is exact (`bowlFrame` `rim`), the visible inside is exactly its inside, and a
+  screen point maps back to the inner surface along the line of sight (`bowlSurfaceAt`).
 - Any `loop` makes the window redraw at about 30 fps; `frames` and `spin` redraw at their own
   interval. The cost is per window frame, not per element: on lavapipe (two threads) a frame of
   this window cost about a core-second whatever the mod drew, so one 700 ms blink cost over a

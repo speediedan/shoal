@@ -316,7 +316,8 @@ shoal ui usage --json
 `shoal ui status` displays the meter block above the role tables (a shoal's overview leaves it to the app's Usage
 tab, so it stays about the shoal): a boxed
 table with one row per provider and its 5h, week and month windows side by side.
-Each reported window is a short bar, its used percentage and its reset date/time
+In the app's Usage tab, each reset also reads as a wall-clock time in the zone of the machine the app runs on
+("resets in 4h (14:30 PST)", the weekday within a week, the date beyond). Each reported window is a short bar, its used percentage and its reset date/time
 in the host's configured timezone (`SHOAL_TZ` or `timezone` in host.toml), and
 the last column says how old the reading is. A reached limit, a fallback reader
 or a read error is named on a line under the table. The bars shrink (8, 5, then 3
@@ -702,10 +703,12 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
 - **Leaving an attach.** A card restores the terminal's modes after every attach, since a client that dies with its link cannot, and a Ctrl-C
   returns to the card: `q` is what leaves one.
-- **The lattice in depth (`d`).** The shoal globes are see-through glass that firm up a little when you point at
-  one, and their role names switch between light and dark ink to stay readable on the globe. Drilled into one
-  shoal, depth mode shows a cutout sphere with you at its middle: each host is a colored region of the inside of the
-  sphere, its roles sit on that region, and the arrows between them are drawn over it.
+- **The lattice in depth (`d`).** The shoal globes are see-through glass, fainter until you point at one, with their
+  names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
+  globe. Every globe casts a soft shadow on the floor below it, all from the one light that shades them. Drilled into
+  one shoal, depth mode looks down into a bowl with you at its middle, nearest and largest: the hosts' colored regions
+  share the whole inside of the bowl, each host's roles sit on its region, and the arrows from you to them are drawn
+  over it.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
   as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
   - **The graph:** the board at the top; every open item a layer below its parent issue and its open blockers. A gray
@@ -714,10 +717,15 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
     grid below the graph, in progress and queued first. The root reads `closed` once nothing on the board is open.
   - **Where each item stands:** in progress (amber, `▶ role`), queued (blue, `role #n`: its place in that role's
     queue), queued but blocked (blue with a dashed red border, `⛔ role #n`), not queued (gray).
+  - **Cards or Nodes:** the toolbar switches between the cards (key, where it stands, title) and nodes: a shape per
+    repo (named in the legend), its issue number under it, colored and outlined as the cards are, for the relationships
+    at a glance. **Zoom** with - and + (or the keys), **Fit** (0) puts the whole tree in view, and `n` switches the
+    drawing; the choice of drawing is remembered.
   - **Hover** an item for its status, role and place, blocker, parent, sub-issues, assignees, labels, PRs, last update
-    and a body excerpt. **Click** it to select it: the side panel has **Open on GitHub**, and for each other role
-    **Offer to** it (an item no role holds: the actions dialog's Offer, filled in) or **Move to** it (an item another
-    role holds: that role's Queue opens with it picked; place it and the plan transfers it). Both preview and confirm.
+    and a body excerpt. **Click** it to select it: the side panel (its x, or Esc, closes it) has **Open on GitHub**,
+    and **Offer to a role** (an item no role holds: the actions dialog's Offer, filled in) or **Move to a role** (an
+    item another role holds: that role's Queue opens with it picked; place it and the plan transfers it), each a list of
+    the roles to pick from. Both preview and confirm.
   - **Metrics** above the graph: open (and its change over 14 days), done (percent and count), in progress, queued
     (and blocked), not queued (and how many wait on a blocker), closed in 7 days, the days until none are open at that
     pace, and 14-day trends of open items and closes a day. The trends come from `board_history.jsonl`, written with
