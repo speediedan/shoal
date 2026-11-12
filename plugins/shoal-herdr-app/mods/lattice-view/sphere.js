@@ -466,10 +466,19 @@ export function gradientAt(cmds, angle, x, y) {
  * as a hollow is lit opposite to a ball), each adding a little alpha. Many faint layers, so no step between two of them
  * shows: {x, y, a, b, s}, a conjugate ellipse each (s: its scale of the rim). */
 export const BOWL_GLOW = 44;
+/** The bowl's light: LIGHT as it falls in the view the inside's shading was made for (28 degrees tilt, 30 turn), held in
+ * the bowl's own frame, so the lit spot stays on the far wall and the bottom stays darkest as the camera orbits (lit
+ * from the camera's fixed LIGHT, the bottom of the 2026-11-12 opening view faced it and read lighter than the walls). */
+const LIGHT_REF = (() => {
+  const sa = Math.sin(28 * Math.PI / 180), ca = Math.cos(28 * Math.PI / 180), sb = Math.sin(30 * Math.PI / 180), cb = Math.cos(30 * Math.PI / 180);
+  const pole = { x: -ca * sb, y: sa, z: -ca * cb }, e1 = { x: cb, y: 0, z: -sb }, e2 = { x: sa * sb, y: ca, z: sa * cb };
+  return [dot(LIGHT, pole), dot(LIGHT, e1), dot(LIGHT, e2)];
+})();
+export const bowlLight = (fr) => unit(comb(LIGHT_REF[0], fr.pole, LIGHT_REF[1], fr.e1, LIGHT_REF[2], fr.e2));
 export function bowlGlow(fr, cx, cy, R) {
   const { cx: mx, cy: my, a, b } = fr.rim;
-  // the inner point whose normal faces the light: u = -LIGHT, seen through the opening
-  const sp = bowlProject(fr, { x: -LIGHT.x, y: -LIGHT.y, z: -LIGHT.z });
+  // the inner point whose normal faces the light: u = -bowlLight, seen through the opening
+  const Lb = bowlLight(fr), sp = bowlProject(fr, { x: -Lb.x, y: -Lb.y, z: -Lb.z });
   const spot = { x: mx + (sp.x - mx) * 0.92, y: my + (sp.y - my) * 0.92 };
   return Array.from({ length: BOWL_GLOW }, (_, i) => {
     const s = 1 - (i / BOWL_GLOW) * 0.88;

@@ -730,10 +730,10 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   soft shadow falls near the bottom. The hosts' colored regions share the whole inside of the bowl, each host's roles
   sit on its region behind you, and the arrows from you to them are drawn over it, their heads smaller on the far wall,
   so they point away from you into the bowl.
-  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). In the bowl, up and down raise and lower
-    the camera, from looking straight into the bowl to looking down over its side, and left and right take it round
-    the bowl's side; each stops at its limit, so the bowl never flips, and from an oblique angle you are seen to stand
-    off the wall behind you. In the global view left and right turn the shoals' planes and up and down raise and lower
+  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). The bowl opens low and well round to the
+    side (10 degrees tilt, -40 turn), with you floating out in front of its opening. Up and down raise and lower the
+    camera (4.6 to 50 degrees), and left and right take it round the bowl's side (-61 to 43 degrees); each stops at its
+    limit, so the bowl never flips, and from every angle you are seen to stand off the wall behind you. In the global view left and right turn the shoals' planes and up and down raise and lower
     the camera. Shift with an arrow pans (a plain arrow pans in the flat view), drag pans in any view, and `,` and `.`
     turn the view 15 degrees: the planes in the global view, the bowl round its own axis per shoal. Going back to flat
     (`d`) resets the orbit and the turn.

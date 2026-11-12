@@ -989,8 +989,8 @@ per-shoal scenes.
 
 The cutout sphere is now seen from the side as well as from above, so you and the inner surface behind you read apart
 in depth. `sphere.js` `bowlFrame` turns the bowl's axis off the line of sight both ways: vertically by the camera's
-pitch less 24 degrees (28 in tilt, 34 in iso) and horizontally by `BOWL_TURN`, 30 degrees, so the bowl's bottom lands
-below and to the left of you and its meridians run down to it there. Seen that obliquely, a hemisphere's near wall
+pitch less 24 degrees (28 in tilt, 34 in iso) and horizontally by `BOWL_TURN`, 30 degrees (it now opens at 10 and -40
+degrees: the orbit paragraph below), so the bowl's bottom lands below and to the left of you and its meridians run down to it there. Seen that obliquely, a hemisphere's near wall
 would face the camera and hide the inside, so the cut is no longer the equator but a plane {u . n = h} whose normal
 leans from the bowl's up toward the camera: the far wall keeps the hemisphere's rim and only the near wall is cut lower
 (to about 70 degrees from the bottom), just far enough (3 degrees past the limit) that no kept point faces the camera
@@ -1034,16 +1034,21 @@ top of the preset, 8 degrees a press (`ORBIT_STEP`), and `orbitBy` keeps it to w
 past a limit so the way back answers at once. In the global view x adds to the yaw (the turn `,` and `.` make, round
 the planes' up) and y to the pitch, held between 24 and 80 degrees (`PITCH_RANGE`); with no orbit the global scene is
 unchanged. Per shoal the orbit turns the bowl, not about its own axis (that stays `,` and `.`, the camera's `spin`)
-but round the screen's two axes: y adds to the bowl's tilt (`bowlTilt`, 10 to 50 degrees, `BOWL_ALPHA_RANGE`) and x to
-its turn (`bowlTurn`, `BOWL_TURN` plus x, within 40 degrees either way, `BOWL_BETA_MAX`), so its axis is at most about
-60 degrees off the line of sight and its bottom always faces away. You no longer sit at the sphere's middle, which
-projects onto the wall behind it from every angle and so read as drawn on it: `bowlYou` lifts you 0.28 radii up the
-axis toward the opening (`YOU_LIFT`), nearer the camera, sized by your own perspective as well as `BOWL_GAIN`, and the
+but round the screen's two axes: y adds to the bowl's tilt (`bowlTilt`, `BOWL_HOME_TILT` plus y, 4.6 to 50 degrees,
+`BOWL_ALPHA_RANGE`) and x to its turn (`bowlTurn`, `BOWL_HOME_TURN` plus x, -61 to 43 degrees, `BOWL_BETA_RANGE`), so
+its bottom always faces away. The bowl opens (in tilt and iso alike) at the view the arrows first reached at their down
+and left limits, 10 degrees tilt and -40 turn (the maintainer's pick, 2026-11-12), and the limits reach 30% further out
+than they did from the earlier opening view (28 tilt, 30 turn). The inside's lit spot follows the bowl (`sphere.js`
+`bowlLight`: the light in the bowl's own frame as it fell in that earlier view), so the bottom stays darkest as it
+turns. You no longer sit at the sphere's middle, which projects onto the wall behind it from every angle and so read as
+drawn on it: `bowlYou` lifts you 0.5 radii (`YOU_LIFT`) from the middle, leaning from the axis toward the camera two to
+one, out past the cut and in front of the opening, so the wall behind you is the far one at every orbit; you are drawn
+`YOU_GAIN` (1.2) larger again than a role at your depth, sized by your own perspective as well as `BOWL_GAIN`, and the
 shadow you cast lands where the light's line through you leaves the sphere (`sphere.js` `bowlShadowAt`). A dashed plumb
 line runs from you down the axis to a small ring at the bottom (`bowlPlumb`, the scene's `bowl-plumb` and
 `bowl-foot`), and in the bowl an arrowhead is sized with the node it is at (the square root of its scale, 0.75 to
-1.2), so an edge from you ends in a smaller head on the far wall. Roles keep their place on the surface as the camera
-orbits: a role's polar angle is the one the preset's frame gives (`bowlTheta`'s `home`), capped by what the current
+1.2), so an edge from you ends in a smaller head on the far wall. Roles keep their azimuth on the surface as the camera
+orbits: a role's polar angle is the one the opening frame gives (`bowlTheta`'s `home`), capped by what the current
 frame shows, and moved down the wall while you would cover it on screen. A camera far round the side cuts the near
 wall low, so only the rings of latitude still whole are drawn (`bowlRings`). The SVG preview and `check_depth.mjs`
 take `--orbit h,v` in degrees; `check_depth.mjs` passes 12 of 12 per shoal orbited in tilt and iso (to the limits), on
