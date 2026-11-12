@@ -2111,7 +2111,7 @@ assert w["next"][0]["blocker"] == "dist-ci:repo-one#103" and w["next"][0]["url"]
 assert w["done_recent"] == [{"item": "repo-one#99", "url": "https://github.com/example-org/repo-one/pull/120",
                              "ts": w["done_recent"][0]["ts"]}], w
 assert nodes[f"{A}:tune"]["work"]["asks"] == ["approve image push scope?"]
-assert nodes["user"]["work"] == {"asks_open": 1, "grants_pending": 0}, nodes["user"]   # no row lists any
+assert nodes["user"]["work"] == {"asks_open": 3, "grants_pending": 0}, nodes["user"]   # tune 1, analysis 2; no row lists grants
 assert "grants_pending" not in nodes[f"{A}:core"]["work"] and "grants_pending_n" not in d["shoals"][0]["metrics"]
 # a CI wait names its job: where it runs (a pool host here), placed, granted, started
 j = st(f"{A}:dist-ci")["job"]
