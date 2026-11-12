@@ -165,6 +165,11 @@ def add_parser(sub) -> None:
     q.add_argument("path", nargs="?", default="")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_lifecycle_show)
+    import checkpoint
+    q = s.add_parser("checkpoint", help="read-only, bounded checkpoint advice for a start doc (never archives)")
+    q.add_argument("path")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=checkpoint.cmd_checkpoint)
 
 
 if __name__ == "__main__":

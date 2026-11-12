@@ -747,6 +747,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         print("ERROR: --restart-ready marks a quiet boundary: idle or waiting, never with an active item "
               "(nothing written)")
         return 3
+    checkpoint_result = None
     if a.restart_ready:
         # the proof of refresh (docs/start-doc.md): the start doc meets the contract and was stamped since this session
         # was first advised (else since its previous boundary), so the fresh session continues from current state
@@ -768,6 +769,9 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         if absent:
             print(f"note: the start doc names job folder(s) {', '.join(absent)}, not on this host: a next session here "
                   "will not find them, so update those references")
+        import checkpoint as _checkpoint
+        checkpoint_result = _checkpoint.run(role.doc)
+        _checkpoint.report(checkpoint_result)
     if bcfg is not None and role_status == "idle" and view.freeze() is None and role.fill == "self":
         # a short queue is not a reason to idle while the board offers eligible work (measured
         # 2026-09-29: two lanes idle 2.5 h and 11.5 h beside 2 and 8 eligible candidates)
@@ -824,7 +828,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     qev = led.append(slug, "queue", _commit=False, version=version, active=active or None, next=nxt,
                      asks=asks or None, reason=reason or None, status=role_status, session=sess, tag=role.tag,
                      dropped=dropped or None, next_blocked=nb or None, next_blocked_meta=nb_meta or None,
-                     restart_ready=True if a.restart_ready else None)
+                     restart_ready=True if a.restart_ready else None, lifecycle_checkpoint=checkpoint_result)
     led.commit_own(slug, f"{spec.sid} {slug} queue v{version}")
     pushed = sync_push(led.root) if led.sync else True
     try:  # handover telemetry: a refreshed doc at a restart-ready boundary, and a new incarnation's first turn
