@@ -139,19 +139,23 @@ export function shadowLayers(peak, soft, n = SHADOW_STEPS) {
 // and from the side: the camera hangs `d` radii from the middle and sees the bowl's axis turned `alpha` off the line of
 // sight toward the bottom of the screen (pitch) and `beta` about the screen's vertical (yaw), so its bottom (the pole)
 // sits below and to one side of you and the two read apart in depth. The cut is a plane slanted toward the camera:
-// the far wall stays high and the near wall is cut low enough that no part of what is kept faces the camera, so the
-// whole inner surface is seen through the opening and no overhang hides it. In perspective you, at the middle, are
-// nearer than any role on the inside and so larger, and the rim (the cut circle) projects to an ellipse turned by the
-// yaw. Hosts are lunes of the inner surface (a range of azimuth around the bowl's axis, pole to rim) that tile it:
-// together they are the whole bowl, each in its host color.
+// the far wall stays high and the near wall is cut lower, to just past where the camera would see over it, so the near
+// wall's outside shows only as a thin crescent below the lip and hides next to nothing of the inside. The wall has a
+// thickness (BOWL_LIP), so the cut face is a lip, a band between the rim and its outer edge, and the opening reads as
+// one. In perspective you, at the middle, are nearer than any role on the inside and so larger, and the rim (the cut
+// circle) projects to an ellipse turned by the yaw. Hosts are lunes of the inner surface (a range of azimuth around the
+// bowl's axis, pole to rim) that tile it: together they are the whole bowl, each in its host color.
 // Unit vectors are in the camera's frame: x right, y down the screen, z toward you; the camera sits at (0, 0, d).
 
 /** The camera's distance from the bowl's middle, in sphere radii: smaller is stronger perspective. */
 export const BOWL_DIST = 2.4;
 /** The bowl's turn about the screen's vertical, so the camera sees into it from the side as well as from above. */
 export const BOWL_TURN = (30 * Math.PI) / 180;
-// How far past the last cut that would keep a point facing the camera the cut is made.
-const CUT_MARGIN = (3 * Math.PI) / 180;
+// How far past the last cut that would keep no point of the inner sphere facing the camera the cut is made: below
+// zero the near wall's top shows from outside, as a thin crescent under the lip.
+const CUT_MARGIN = (-9 * Math.PI) / 180;
+/** The wall's thickness, in sphere radii: the lip's width. */
+export const BOWL_LIP = 0.035;
 
 const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
 const comb = (...terms) => {
@@ -191,10 +195,10 @@ export function bowlFrame(alpha, d = BOWL_DIST, beta = BOWL_TURN) {
   const e1 = { x: cb, y: 0, z: -sb };
   const e2 = { x: sa * sb, y: ca, z: sa * cb };
   // The cut. A point of the unit sphere faces the camera when u.z > 1 / d, and a cut whose normal is `toward` off the
-  // line of sight keeps none when acos(h) >= toward + acos(1 / d). Its normal leans `lean` from the bowl's up toward
-  // the camera, so the rim's polar angle runs from pi - tilt - kappa on the near side to that plus 2 lean on the far
-  // side: the lean that keeps the far wall up to the equator (a hemisphere's rim) cuts away only the near wall. A
-  // camera that already sees all of the hemisphere's inside keeps it whole.
+  // line of sight keeps none when acos(h) >= toward + acos(1 / d) (kappa, less a little: CUT_MARGIN). Its normal leans
+  // `lean` from the bowl's up toward the camera, so the rim's polar angle runs from pi - tilt - kappa on the near side to
+  // that plus 2 lean on the far side: the lean that keeps the far wall up to the equator (a hemisphere's rim) cuts away
+  // only the near wall. A camera that already sees all of the hemisphere's inside keeps it whole.
   const tilt = Math.acos(Math.max(-1, Math.min(1, -pole.z))), kappa = Math.acos(1 / d) + CUT_MARGIN;
   const lean = Math.max(0, (tilt + kappa - Math.PI / 2) / 2), toward = tilt - lean;
   const side = Math.hypot(pole.x, pole.y) > 1e-9 ? unit({ x: -pole.x, y: -pole.y, z: 0 }) : { x: 0, y: -1, z: 0 };
@@ -204,7 +208,9 @@ export function bowlFrame(alpha, d = BOWL_DIST, beta = BOWL_TURN) {
   const f2 = unit(comb(1, e2, -dot(e2, n), n, -dot(e2, f1), f1));
   const rho = Math.sqrt(1 - h * h), c = comb(h, n);
   const cut = { n, h, c, rho, f1, f2, pn: dot(pole, n), e1n: dot(e1, n), e2n: dot(e2, n) };
-  return { alpha, beta, d, pole, e1, e2, cut, rim: projectedCircle(d, c, f1, f2, rho) };
+  const outer = 1 + BOWL_LIP;
+  return { alpha, beta, d, pole, e1, e2, cut, outer, rim: projectedCircle(d, c, f1, f2, rho),
+    lip: projectedCircle(d, c, f1, f2, Math.sqrt(outer * outer - h * h)) };
 }
 
 /** Where a point of the camera's frame lands on screen, in radii from the middle, and its perspective scale `f`. */
@@ -296,11 +302,6 @@ const meridian = (fr, phi) => [(t) => bowlPoint(fr, t, phi), (t) => {
   const w = (k) => -s * fr.pole[k] + c * (cp * fr.e1[k] + sp * fr.e2[k]);
   return { x: w("x"), y: w("y"), z: w("z") };
 }];
-const latitude = (fr, theta) => [(p) => bowlPoint(fr, theta, p), (p) => {
-  const s = Math.sin(theta), cp = Math.cos(p), sp = Math.sin(p);
-  const w = (k) => s * (-sp * fr.e1[k] + cp * fr.e2[k]);
-  return { x: w("x"), y: w("y"), z: w("z") };
-}];
 // the cut circle, by its own angle psi from f1 toward f2
 const cutCircle = (fr) => {
   const { c, rho, f1, f2 } = fr.cut;
@@ -315,14 +316,38 @@ export function rimCmds(fr, cx, cy, R) {
   return conjugateEllipseCmds(cx + R * mx, cy + R * my, { x: R * a.x, y: R * a.y }, { x: R * b.x, y: R * b.y });
 }
 
-/** A host's lune, pole to rim between azimuths a0 and a1, along the cut between them (a whole turn: the rim). */
+/** How far up the meridian at phi the inside is seen: to the rim, or on the near side to where the near wall's top
+ * comes between (the meridian leaves the rim's ellipse on screen there). */
+export function seenTheta(fr, phi) {
+  const top = rimTheta(fr, phi), n = 32;
+  let prev = 0;
+  for (let i = 1; i < n; i++) {
+    const t = (top * i) / n;
+    if (bowlSeen(fr, bowlPoint(fr, t, phi)) > 1) {
+      let lo = prev, hi = t;
+      for (let k = 0; k < 30; k++) { const mid = (lo + hi) / 2; if (bowlSeen(fr, bowlPoint(fr, mid, phi)) <= 1) lo = mid; else hi = mid; }
+      return lo;
+    }
+    prev = t;
+  }
+  return top;
+}
+// The cut circle's angle at a screen point on the rim's ellipse: where the line of sight through it meets the cut.
+function cutAngleAt(fr, s) {
+  const { n, h } = fr.cut, D = { x: s.x, y: s.y, z: -fr.d }, t = (h - fr.d * n.z) / dot(D, n);
+  return cutAngle(fr, { x: t * s.x, y: t * s.y, z: fr.d + t * D.z });
+}
+
+/** A host's lune, pole to rim between azimuths a0 and a1, along the cut between them (a whole turn: the rim). Each side
+ * runs up its meridian as far as it is seen, and the top along the rim between where they leave it. */
 export function luneCmds(fr, cx, cy, R, a0, a1) {
   if (a1 - a0 >= 2 * Math.PI - 1e-6) return rimCmds(fr, cx, cy, R);
   const cmds = [startAt(fr, cx, cy, R, fr.pole)];
-  const th0 = rimTheta(fr, a0), th1 = rimTheta(fr, a1);
+  const th0 = seenTheta(fr, a0), th1 = seenTheta(fr, a1);
   const [m0, t0] = meridian(fr, a0), [m1, t1] = meridian(fr, a1), [cut, ct] = cutCircle(fr);
   // the cut circle's angle at each end, unwrapped to turn the same way, and about as far, as the azimuths do
-  const p0 = cutAngle(fr, bowlPoint(fr, th0, a0)), raw = cutAngle(fr, bowlPoint(fr, th1, a1)) - p0 - (a1 - a0);
+  const end = (th, a) => cutAngleAt(fr, bowlProject(fr, bowlPoint(fr, th, a)));
+  const p0 = end(th0, a0), raw = end(th1, a1) - p0 - (a1 - a0);
   const p1 = p0 + (a1 - a0) + raw - 2 * Math.PI * Math.round(raw / (2 * Math.PI));
   bowlArc(cmds, fr, cx, cy, R, m0, t0, 0, th0);
   bowlArc(cmds, fr, cx, cy, R, cut, ct, p0, p1);
@@ -333,23 +358,97 @@ export function luneCmds(fr, cx, cy, R, a0, a1) {
 
 /** A whole circle of latitude (theta from the pole), closed: below the rim's lowest point, all of it is kept. */
 export function latitudeCmds(fr, cx, cy, R, theta) {
-  const [p, t] = latitude(fr, theta), cmds = [startAt(fr, cx, cy, R, p(0))];
-  bowlArc(cmds, fr, cx, cy, R, p, t, 0, 2 * Math.PI);
+  // a whole circle projects to an exact ellipse: four cubics, not eight
+  const e = projectedCircle(fr.d, comb(Math.cos(theta), fr.pole), fr.e1, fr.e2, Math.sin(theta));
+  return conjugateEllipseCmds(cx + R * e.cx, cy + R * e.cy, { x: R * e.a.x, y: R * e.a.y }, { x: R * e.b.x, y: R * e.b.y });
+}
+
+/** The meridian at azimuth phi, pole to rim (as far as it is seen), as an open stroke. */
+export function meridianCmds(fr, cx, cy, R, phi) {
+  const [p, t] = meridian(fr, phi), cmds = [startAt(fr, cx, cy, R, p(0))];
+  bowlArc(cmds, fr, cx, cy, R, p, t, 0, seenTheta(fr, phi));
+  return cmds;
+}
+
+/** The lip, the wall's cut face: a band between the rim's ellipse and the outer edge's, one closed path (out round the
+ * outer edge, back round the inner). */
+export function lipCmds(fr, cx, cy, R) {
+  const at = (e, sign) => conjugateEllipseCmds(cx + R * e.cx, cy + R * e.cy, { x: R * e.a.x, y: R * e.a.y }, { x: sign * R * e.b.x, y: sign * R * e.b.y });
+  const out = at(fr.lip, 1), inn = at(fr.rim, -1);
+  return [...out.slice(0, -1), ["L", inn[0][1], inn[0][2]], ...inn.slice(1, -1), ["Z"]];
+}
+
+/** The near wall's outside, where the cut leaves its top facing the camera: a thin crescent between the lip's outer
+ * edge and the outer wall's outline on screen (a circle about the middle), or none. */
+export function crescentCmds(fr, cx, cy, R) {
+  const { c, h, f1, f2 } = fr.cut, Ro = fr.outer, rho = Math.sqrt(Ro * Ro - h * h), d = fr.d;
+  // the lip's outer edge c + rho (cos psi f1 + sin psi f2) faces the camera where its z > Ro^2 / d
+  const A = Math.hypot(f1.z, f2.z), psi0 = Math.atan2(f2.z, f1.z), k = (Ro * Ro / d - c.z) / (rho * A);
+  if (!(k < 1 - 1e-6)) return [];
+  const del = Math.acos(Math.max(-1, k));
+  const point = (p) => comb(1, c, rho * Math.cos(p), f1, rho * Math.sin(p), f2);
+  const tangent = (p) => comb(-rho * Math.sin(p), f1, rho * Math.cos(p), f2);
+  const cmds = [startAt(fr, cx, cy, R, point(psi0 - del))];
+  bowlArc(cmds, fr, cx, cy, R, point, tangent, psi0 - del, psi0 + del);
+  // back along the outline, the short way, from where the edge leaves it to where it met it
+  const rs = (Ro * d) / Math.sqrt(d * d - Ro * Ro), p1 = bowlProject(fr, point(psi0 + del)), p0 = bowlProject(fr, point(psi0 - del));
+  const a1 = Math.atan2(p1.y, p1.x), a0 = Math.atan2(p0.y, p0.x), sweep = ((a0 - a1 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI;
+  arc(cmds, (t) => ({ x: cx + R * rs * Math.cos(t), y: cy + R * rs * Math.sin(t) }), (t) => ({ x: -R * rs * Math.sin(t), y: R * rs * Math.cos(t) }), a1, a1 + sweep);
   cmds.push(["Z"]);
   return cmds;
 }
 
-/** The meridian at azimuth phi, pole to rim, as an open stroke. */
-export function meridianCmds(fr, cx, cy, R, phi) {
-  const [p, t] = meridian(fr, phi), cmds = [startAt(fr, cx, cy, R, p(0))];
-  bowlArc(cmds, fr, cx, cy, R, p, t, 0, rimTheta(fr, phi));
-  return cmds;
+/** The inside's shade from its own lip: the light comes in through the opening from above and the upper left
+ * (bowlShadowLight), so the wall under the lip on the light's side is out of it, a crescent under the upper-left rim.
+ * The part of the rim facing the light (r . L > 0) casts it: its shadow edge is that rim reflected through the light's
+ * line, r - 2 (r . L) L. One closed path, rim arc out and shadow edge back, and the screen line its gradient runs
+ * along, dark at the rim. */
+export function rimShade(fr, cx, cy, R) {
+  const L = bowlShadowLight(fr), { c, rho, f1, f2 } = fr.cut, [cut, ct] = cutCircle(fr);
+  const A = Math.hypot(dot(f1, L), dot(f2, L)), psi0 = Math.atan2(dot(f2, L), dot(f1, L)), k = -dot(c, L) / (rho * A);
+  if (!(k < 1 - 1e-6)) return null;
+  const del = Math.acos(Math.max(-1 + 1e-6, k));
+  const fold = (u) => comb(1, u, -2 * dot(u, L), L);
+  const cmds = [startAt(fr, cx, cy, R, cut(psi0 - del))];
+  bowlArc(cmds, fr, cx, cy, R, cut, ct, psi0 - del, psi0 + del);
+  bowlArc(cmds, fr, cx, cy, R, (p) => fold(cut(p)), (p) => fold(ct(p)), psi0 + del, psi0 - del);
+  cmds.push(["Z"]);
+  const from = bowlProject(fr, cut(psi0)), to = bowlProject(fr, fold(cut(psi0)));
+  return { cmds, angle: angleOf(to.x - from.x, to.y - from.y) };
+}
+/** Whether a point of the inner surface is out of the light: it faces away from it, or the wall is in the way. */
+export function inRimShade(fr, u) {
+  const L = bowlShadowLight(fr), uL = dot(u, L);
+  if (uL >= 0) return true;
+  return bowlKept(fr, comb(1, u, -2 * uL, L));
+}
+
+/** The inside's depth: rings of latitude round the bottom (polar angles from the pole, all below the rim's lowest
+ * point), each the edge of a cap that darkens what is below it a little more, so the inside recedes to the bottom and
+ * every step in the shading sits under a ring. */
+export const BOWL_RINGS = [1, 2, 3, 4].map((i) => (i * Math.PI) / 12);
+export const bowlDepthAt = (fr, u) => BOWL_RINGS.filter((t) => dot(u, fr.pole) >= Math.cos(t)).length;
+
+// A linear gradient's angle (degrees, 0 up, clockwise, as GPUI takes it) for a screen direction, and where a point
+// falls along one over a path's bounds (0 at the start, 1 at the end, as CSS spans them): the lip's shade runs so.
+const angleOf = (dx, dy) => (Math.atan2(dx, -dy) * 180) / Math.PI;
+function boundsOf(cmds) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of cmds) for (let i = 1; i + 1 < c.length; i += 2) {
+    x0 = Math.min(x0, c[i]); x1 = Math.max(x1, c[i]); y0 = Math.min(y0, c[i + 1]); y1 = Math.max(y1, c[i + 1]);
+  }
+  return { x0, y0, x1, y1 };
+}
+export function gradientAt(cmds, angle, x, y) {
+  const b = boundsOf(cmds), a = (angle * Math.PI) / 180, dx = Math.sin(a), dy = -Math.cos(a);
+  const len = Math.abs((b.x1 - b.x0) * dx) + Math.abs((b.y1 - b.y0) * dy) || 1;
+  return Math.min(1, Math.max(0, 0.5 + ((x - (b.x0 + b.x1) / 2) * dx + (y - (b.y0 + b.y1) / 2) * dy) / len));
 }
 
 /** The inside's light: the rim's ellipse again and again, shrinking toward the spot that faces the light (lower right,
  * as a hollow is lit opposite to a ball), each adding a little alpha. Many faint layers, so no step between two of them
  * shows: {x, y, a, b, s}, a conjugate ellipse each (s: its scale of the rim). */
-export const BOWL_GLOW = 48;
+export const BOWL_GLOW = 44;
 export function bowlGlow(fr, cx, cy, R) {
   const { cx: mx, cy: my, a, b } = fr.rim;
   // the inner point whose normal faces the light: u = -LIGHT, seen through the opening
@@ -362,28 +461,33 @@ export function bowlGlow(fr, cx, cy, R) {
   });
 }
 
-/** The shadow you (a ball of radius rb, in sphere radii, at the middle) cast on the inner surface from the one light:
- * the light's line through the middle meets the surface at -LIGHT, square on, so the shadow is a disc of radius rb
- * there (its penumbra wider), seen in perspective, beside you and apart from you. Its layers, outermost first:
- * {x, y, a, b, alpha}, a conjugate ellipse each. */
+/** The shadow you (a ball of radius rb, in sphere radii, at the middle) cast on the inner surface: from above the
+ * opening and the upper left (bowlShadowLight: the bowl's up and the one light, SHADOW_UP to 1, which the lip's shade
+ * falls from too), so it falls near the bottom, just down and to the right of your foot on the axis, not on the lit
+ * far wall. It is a disc of radius rb there, shrunk a little
+ * and soft (its penumbra wide), seen in perspective. Its layers, outermost first: {x, y, a, b, alpha}, a conjugate
+ * ellipse each. */
 export const BOWL_SHADOW_STEPS = 10;
+const SHADOW_UP = 1.6;
+export const bowlShadowLight = (fr) => unit(comb(-SHADOW_UP, fr.pole, 1, LIGHT));
 export function bowlShadow(fr, cx, cy, R, rb) {
-  const L = LIGHT, t1 = unit({ x: L.y, y: -L.x, z: 0 });
+  const L = bowlShadowLight(fr), t1 = unit({ x: L.y, y: -L.x, z: 0 });
   const t2 = { x: L.y * t1.z - L.z * t1.y, y: L.z * t1.x - L.x * t1.z, z: L.x * t1.y - L.y * t1.x };
   const c = { x: -L.x, y: -L.y, z: -L.z };
-  return shadowLayers(0.36, 0.45, BOWL_SHADOW_STEPS).map((l) => {
-    const e = projectedCircle(fr.d, c, t1, t2, rb * l.s);
+  return shadowLayers(0.4, 0.6, BOWL_SHADOW_STEPS).map((l) => {
+    const e = projectedCircle(fr.d, c, t1, t2, 0.8 * rb * l.s);
     return { x: cx + R * e.cx, y: cy + R * e.cy, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
   });
 }
 
 /** The bowl's look: the inside's base, each glow layer's alpha (2 of 255, so the step at a layer's edge is under one and
  * a half of the 255 color levels between the base and the light, and does not show), a host's wash over it (light, so
- * edges over it read), a host's outline. */
-export const BOWL = { base: 0.12, glow: 2 / 255, wash: 0.08, outline: 0.5 };
-const BOWL_BASE = "#16243a", BOWL_LIT = "#c9d8e6";
-
-/** What the eye sees at a point inside the bowl (nx, ny: radii from its middle), in a host's tint. */
+ * edges over it read) and how dark it gets at the bottom, a host's outline, the lip's shade under it at the rim and at
+ * its edge. */
+export const BOWL = { base: 0.12, glow: 2 / 255, wash: 0.08, deep: 0.055, outline: 0.5, shade: 0.18, shadeEdge: 0 };
+const BOWL_BASE = "#16243a", BOWL_LIT = "#c9d8e6", BOWL_SHADE = "#01040a";
+/** What the eye sees at a point inside the bowl (nx, ny: radii from its middle), in a host's tint: the layers the
+ * scene draws there, blended in order. */
 export function bowlColorAt(fr, nx, ny, tint, under = "#1d2a3c") {
   if (rimNorm(fr, { x: nx, y: ny }) > 1) return under;
   let out = over(under, withAlpha(BOWL_BASE, BOWL.base));
@@ -392,6 +496,13 @@ export function bowlColorAt(fr, nx, ny, tint, under = "#1d2a3c") {
     const x = nx - e.x, y = ny - e.y;
     if (m[0] * x * x + 2 * m[1] * x * y + m[2] * y * y <= e.s * e.s) out = over(out, withAlpha(BOWL_LIT, BOWL.glow));
   }
-  return tint ? over(out, withAlpha(tint, BOWL.wash)) : out;
+  if (tint) out = over(out, withAlpha(tint, BOWL.wash));
+  const u = bowlSurfaceAt(fr, nx, ny), sh = rimShade(fr, 0, 0, 1);
+  if (u) for (let i = bowlDepthAt(fr, u); i > 0; i--) out = over(out, withAlpha(BOWL_SHADE, BOWL.deep));
+  if (u && sh && inRimShade(fr, u)) {
+    const t = gradientAt(sh.cmds, sh.angle, nx, ny);
+    out = over(out, withAlpha(BOWL_SHADE, BOWL.shade + (BOWL.shadeEdge - BOWL.shade) * t));
+  }
+  return out;
 }
-export { BOWL_BASE, BOWL_LIT };
+export { BOWL_BASE, BOWL_LIT, BOWL_SHADE };

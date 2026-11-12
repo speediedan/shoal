@@ -98,9 +98,14 @@ assert "good.py" in (m["model"] or ""), m["model"]
 sem = doc["shadow"]
 # effective priority: #5 blocks tl's active #1 -> lifted; #7 blocked -> sunk
 assert sem["items"]["app#5"]["eff_pos"] == 0.5 and sem["items"]["app#7"]["eff_pos"] == 14.0
-# lanes rank by fit: jl sees #2 only; tl's own item is taken, and its keyword 'hygiene' weight is ignored
-assert [r["item"] for r in sem["roles"]["jl"]] == ["app#2"], sem["roles"]["jl"]
-assert sem["roles"]["tl"] == [], sem["roles"]["tl"]
+# lanes rank by fit: jl's only fit is #2; tl's own item is taken, and its keyword 'hygiene' weight is ignored
+strong = lambda r: [x["item"] for x in sem["roles"][r] if x["strong"]]
+assert strong("jl") == ["app#2"] and sem["roles"]["jl"][0]["item"] == "app#2", sem["roles"]["jl"]
+assert strong("tl") == [], sem["roles"]["tl"]
+# a short lane fills with weak workable rows after its fits (capacious), never a taken or blocked item
+for r in ("jl", "tl"):
+    weak = [x["item"] for x in sem["roles"][r] if not x["strong"]]
+    assert weak and not {"app#1", "app#7"} & set(weak), (r, weak)
 # aux: unblocker first, then minmax over ACTIVE lanes (up is parked, so #6 is aux work); #7 blocked, #2 jl's
 aux = [r["item"] for r in sem["roles"]["shoal-aux"]]
 assert aux[0] == "app#5" and "unblocks" in sem["roles"]["shoal-aux"][0]["why"], aux
@@ -146,7 +151,8 @@ from ledger import Ledger, View
 spec = ShoalSpec.load(sys.argv[1]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
 live = copy.deepcopy(spec); live.features["matcher"]["live"] = True
 doc = digest.build(live, view, items=items())
-assert doc["ranking"] == "semantic" and "shadow" not in doc and doc["roles"]["tl"] == [], doc["ranking"]
+assert doc["ranking"] == "semantic" and "shadow" not in doc, doc["ranking"]
+assert not any(r["strong"] for r in doc["roles"]["tl"]), doc["roles"]["tl"]
 off = copy.deepcopy(spec); off.features.pop("matcher")
 doc = digest.build(off, view, items=items())
 assert doc["ranking"] == "keyword" and "matcher" not in doc and "shadow" not in doc

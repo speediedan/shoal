@@ -195,6 +195,14 @@ function assignKey(s, node) {
 }
 
 /** The state key of a node, from its role-time class and event. Never throws. */
+function waitKey(s, node, ev, grp) {
+  if (ev === "self" || (!ev && grp === "self")) return selfKey(s, node);
+  if (ev === "assignment") return assignKey(s, node);
+  if (Object.prototype.hasOwnProperty.call(EVENT_KEY, ev)) return EVENT_KEY[ev];
+  if (!ev && Object.prototype.hasOwnProperty.call(GROUP_KEY, grp)) return GROUP_KEY[grp];
+  return "other";
+}
+
 export function stateKey(node) {
   const s = obj(node?.state);
   if (s.dismissed === true) return "dismissed";
@@ -203,11 +211,11 @@ export function stateKey(node) {
   const grp = str(s.group);
   if (cls === "work") return "working";
   if (cls === "wait") {
-    if (ev === "self" || (!ev && grp === "self")) return selfKey(s, node);
-    if (ev === "assignment") return assignKey(s, node);
-    if (Object.prototype.hasOwnProperty.call(EVENT_KEY, ev)) return EVENT_KEY[ev];
-    if (!ev && Object.prototype.hasOwnProperty.call(GROUP_KEY, grp)) return GROUP_KEY[grp];
-    return "other";
+    const k = waitKey(s, node, ev, grp);
+    // an open ask is the operator's move whatever else the role waits on: a role waiting on its own CI with an ask read
+    // as a CI wait (2026-11-11) while the agents list rightly said asked. A wait that already needs you keeps its look
+    if (!STATE_STYLE[k]?.needsYou && s.needs_you === true && arr(obj(node?.work).asks).length) return "ask";
+    return k;
   }
   if (cls === "idle") return "idle";
   if (cls === "excluded") return "excluded";
@@ -649,6 +657,7 @@ export function buildModel(doc, view = "global", opts = {}) {
     });
   }
   edges.sort((a, b) => (a.id < b.id ? -1 : 1));
+  if (global) edges.splice(0, edges.length, ...mergePairs(edges));
 
   const neighbors = new Map(nodes.map((n) => [n.id, new Set()]));
   for (const e of edges) {
@@ -864,10 +873,90 @@ export function pulseSignature(pm) {
 }
 
 /** The text lines of a hover card for an edge: its counts per window and its last few events. */
+// which class a merged pair edge is drawn as: what stops work first, then what asks of you, then traffic
+const PAIR_ORDER = ["blocked-on", "ask", "health", "handoff", "grant", "offer", "msg", "alias"];
+const TIER_ORDER = ["fade", "cold", "stale", "struct", "warm", "hot"];
+
+/**
+ * The multi-shoal view draws one edge per pair of nodes (maintainer, 2026-11-12): every class and both directions
+ * merge into it, drawn as the most important class with the hottest tier, arrowheads at each end that receives
+ * traffic, and `dirs` (per direction: counts and classes) for its hover card. A single shoal keeps its edges.
+ */
+export function mergePairs(edges) {
+  const pairs = new Map();
+  for (const e of edges) {
+    const [a, b] = e.src <= e.dst ? [e.src, e.dst] : [e.dst, e.src];
+    const key = `${a}|${b}`;
+    if (!pairs.has(key)) pairs.set(key, { a, b, parts: [] });
+    pairs.get(key).parts.push(e);
+  }
+  const out = [];
+  for (const { a, b, parts } of pairs.values()) {
+    if (parts.length === 1 && parts[0].src === a) {
+      out.push({ ...parts[0], dirs: pairDirs(a, b, parts), heads: parts[0].cls === "alias" ? "none" : "dst" });
+      continue;
+    }
+    const top = [...parts].sort((x, y) => PAIR_ORDER.indexOf(x.cls) - PAIR_ORDER.indexOf(y.cls))[0];
+    const hottest = parts.reduce((t, x) => (TIER_ORDER.indexOf(x.tier) > TIER_ORDER.indexOf(t) ? x.tier : t), parts[0].tier);
+    const dirs = pairDirs(a, b, parts);
+    const traffic = (d) => d.parts.some((x) => x.cls !== "alias");
+    const ages = parts.map((x) => x.last_age_s).filter((x) => x !== null);
+    const opens = parts.map((x) => x.open).filter((x) => x !== null);
+    const rate = parts.reduce((t, x) => t + x.rate, 0);
+    out.push({
+      ...top,
+      id: `${a}|${b}|pair`,
+      src: a,
+      dst: b,
+      tier: hottest,
+      rate,
+      n_rate: parts.reduce((t, x) => t + x.n_rate, 0),
+      n_1h: parts.reduce((t, x) => t + x.n_1h, 0),
+      n_24h: parts.reduce((t, x) => t + x.n_24h, 0),
+      last_age_s: ages.length ? Math.min(...ages) : null,
+      shoal: parts.every((x) => x.shoal === top.shoal) ? top.shoal : null,
+      flow: parts.some((x) => x.flow),
+      flowMs: flowMs(rate),
+      cross: parts.some((x) => x.cross),
+      stale: parts.every((x) => x.stale),
+      open: opens.length ? opens.reduce((t, x) => t + x, 0) : null,
+      recent: parts.flatMap((x) => x.recent).sort((x, y) => num(x.age_s) - num(y.age_s)).slice(0, 3),
+      dirs,
+      heads: traffic(dirs.fwd) && traffic(dirs.back) ? "both" : traffic(dirs.back) ? "src" : traffic(dirs.fwd) ? "dst" : "none",
+    });
+  }
+  return out.sort((x, y) => (x.id < y.id ? -1 : 1));
+}
+
+function pairDirs(a, b, parts) {
+  const side = (src) => {
+    const ps = parts.filter((x) => x.src === src);
+    return { parts: ps, n_1h: ps.reduce((t, x) => t + x.n_1h, 0), n_24h: ps.reduce((t, x) => t + x.n_24h, 0),
+      classes: [...new Set(ps.map((x) => x.cls))] };
+  };
+  return { fwd: side(a), back: side(b) };
+}
+
 export function edgeCardLines(vm, id) {
   const e = vm.edges.find((x) => x.id === id);
   if (!e) return null;
   const a = vm.byId.get(e.src), b = vm.byId.get(e.dst);
+  if (e.dirs && e.id.endsWith("|pair")) {
+    // a merged pair: each direction's counts and kinds, then the pair's own state
+    const rows = [];
+    for (const [d, from, to] of [[e.dirs.fwd, a, b], [e.dirs.back, b, a]]) {
+      if (!d.parts.length) continue;
+      rows.push([`${from.label} → ${to.label}`, `${d.n_1h} / ${d.n_24h} (1h / 24h)${d.classes.length ? ` · ${d.classes.join(", ")}` : ""}`]);
+    }
+    if (e.last_age_s !== null) rows.push(["last", fmtAge(e.last_age_s)]);
+    if (e.open !== null) rows.push(["open", String(e.open)]);
+    if (e.stale) rows.push(["blocker", "stale"]);
+    if (e.cross) rows.push(["hosts", `${a.host ?? "?"} ↔ ${b.host ?? "?"}`]);
+    const links = e.recent.map((r) => ({ kind: "event", text: `${typeof r.age_s === "number" ? `${fmtAge(r.age_s)} ` : ""}${r.summary}`,
+      url: webUrl(r.url), stale: false }));
+    return { title: `${a.label} ↔ ${b.label}`, subtitle: [...new Set([...e.dirs.fwd.classes, ...e.dirs.back.classes])].join(", "),
+      color: e.color, rows, list: [], links, command: null };
+  }
   const rows = [["1h / 24h", `${e.n_1h} / ${e.n_24h}`]];
   if (e.last_age_s !== null) rows.push(["last", fmtAge(e.last_age_s)]);
   if (e.open !== null) rows.push(["open", String(e.open)]);
@@ -966,6 +1055,7 @@ export function cardLines(vm, id) {
     if (n.alias_of) rows.push(["alias of", n.alias_of]);
     else if (n.kind === "external" && n.standalone) {
       rows.push(["session", `${n.standalone.harness} ${n.standalone.id}`]);
+      rows.push(["host", n.host ?? "?"]);
       rows.push(["now", STANDALONE_NOW[n.standalone.state] ?? "not read here"]);
       if (n.standalone.dismissed) rows.push(["app", "dismissed: no space of its own"]);
     } else if (n.kind === "external" && !n.saved) rows.push(["session", "none saved here"]);

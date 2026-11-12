@@ -266,6 +266,11 @@ row's list, passed through when the row has one, else omitted (likewise the shoa
 | `blocked-on` | a role's next item whose blocker names another role of the shoal (`<role>:<item>` or `role:<role>`); no event needed, `structural: true`, `stale` when every such blocker is stale |
 | `alias` | an outside seat to the role it aliases; `structural: true`, `shoal: null` |
 
+The feed keeps one edge per direction and class. The lattice's multi-shoal view draws one per pair of nodes: every
+class and both directions merge into it (drawn as its most important class, a blocker first, then an ask, at its
+hottest tier, with an arrowhead at each end that receives traffic), and its hover card lists each direction's
+`1h / 24h` counts and kinds. A single shoal's view keeps its edges per class.
+
 `n_rate`, `n_1h` and `n_24h` count events within the rate window (`--window-rate`, default 300 s),
 an hour and a day. They are counts, never per-hour averages, and an ask a role raises in a queue version (new
 against its previous version) counts as an `ask` message from it to you, in the edge and in the role's and the
@@ -719,9 +724,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
   globe. Every globe casts a soft shadow on the floor below it, all from the one light that shades them. Drilled into
   one shoal, depth mode looks down into a bowl from above and from the side, with you floating at its middle, nearest
-  and largest, its bottom below and beside you and your soft shadow on the inside: the near wall is cut low so nothing
-  hides the inside, the hosts' colored regions share the whole inside of the bowl, each host's roles sit on its region
-  behind you, and the arrows from you to them are drawn over it.
+  and largest, its bottom below and beside you: the opening has a lit lip, the near wall's outside shows as a thin
+  crescent under it, the wall under the upper-left lip is in shade while the lower-right wall is lit, rings round the
+  bottom darken toward it, and your small soft shadow falls near the bottom. The hosts' colored regions share the
+  whole inside of the bowl, each host's roles sit on its region behind you, and the arrows from you to them are drawn
+  over it.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
   as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
   - **The graph:** the board at the top; every open item a layer below its parent issue and its open blockers. A gray
@@ -844,7 +851,9 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home, and the
   `usage` tab (the `shoal-usage` dashboard: a card per provider with each window's meter, reset and pace, the tightest
   meter first, and panels by shoal, role and standalone seat that fill in once per-session usage is recorded), and the
-  `board` tab (below). The sidebar does not list it: the top bar's Home, Lattice, Board and Usage reach it. The terminal a new space must start with
+  `board` tab (below). The sidebar does not list it: the top bar's Home, Lattice, Board and Usage reach it, and for the
+  same reason its tab strip shows only `home` (the `lattice`, `board` and `usage` tabs stay, out of the strip, and those
+  buttons select them). The terminal a new space must start with
   (`launch`) is closed once Home stands in for it. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);

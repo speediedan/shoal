@@ -66,9 +66,10 @@ def timer_unit(description: str, on_calendar: str) -> str:
 def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]:
     """(job, description, argv, OnCalendar, exe) for THIS host. Multi-host: every host that runs a role
     gets the health quorum and the lanes sensor for its own roles; the group duties (the pipeline
-    sensor, digest, reconcile, weekly report) run on the shoal's home only, so a second host never
-    duplicates board reads, matcher calls or reports. A single-host shoal (no `home`) gets the full set."""
-    from roles import is_home, is_local
+    sensor, reconcile, weekly report) run on the shoal's home only, so a second host never
+    duplicates matcher calls or reports. The board digest runs on home and on every host where a self-filling role
+    runs, since `next` reads its own host's digest. A single-host shoal (no `home`) gets the full set."""
+    from roles import host_of, is_home, is_local
     local = [r for r in spec.roles if is_local(r, spec)]
     home = is_home(spec)
     if not local and not home:
@@ -94,11 +95,15 @@ def jobs_for(spec, spec_path: str) -> list[tuple[str, str, list[str], str, str]]
         jobs.append(("heartbeat", f"shoal {spec.sid} stall daemon",
                      ["heartbeat", "--spec", spec_path, "--threshold-min", "60"],
                      "*:0/5", ""))
+    # the digest on every host where a self-filling role runs: `next` reads this host's digest, so a role on another
+    # host than home saw no board candidates at all (measured 2026-11-12: three fill=self roles on a second host)
+    here = config.server()
+    fills_here = any(r.fill == "self" and host_of(r, spec) == here for r in spec.roles)
+    if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources and (home or fills_here):
+        jobs.append(("digest", f"shoal {spec.sid} board digest (one board read per host with self-filling roles)",
+                     ["digest", "--shoal", spec.sid, "--spec", spec_path, "--refresh"], "*:3/10", ""))
     if not home:
         return jobs
-    if (getattr(spec, "features", {}) or {}).get("digest") and spec.sources:
-        jobs.append(("digest", f"shoal {spec.sid} board digest (one board read per shoal)",
-                     ["digest", "--shoal", spec.sid, "--spec", spec_path, "--refresh"], "*:3/10", ""))
     jobs.append(("reconcile", f"shoal {spec.sid} reconcile (twice daily)",
                  ["--shoal", spec.sid, "--spec", spec_path], "04,16:07",
                  os.path.join(config.cli_pkg_dir(), "telemetry", "shoal-reconcile.py")))

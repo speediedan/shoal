@@ -70,6 +70,23 @@ class Fill(unittest.TestCase):
         self.assertEqual([c["weak"] for c in got], [False, True, True])
         self.assertIn("declined-earlier:out-of-lane", digest.fmt_candidate(got[1]))
 
+    def test_the_semantic_ranking_is_capacious_too(self):
+        items = [{"item": f"o/r#{i}", "kind": "issue", "pos": i, "labels": [], "title": f"t{i}", "excerpt": "",
+                  "repo": "o/r", "blocked_by": []} for i in range(1, 6)]
+        fits = {"o/r#1": {"fits": {"r": 2}, "class": "workable"}, "o/r#2": {"fits": {"r": 0}, "class": "workable"},
+                "o/r#3": {"fits": {"r": 2}, "class": "workable"}, "o/r#4": {"fits": {"r": 0}, "class": "needs-maintainer"},
+                "o/r#5": {"fits": {"r": 1}, "class": "workable"}}
+        v = self.view([decline("o/r#3", "out-of-lane", 1), decline("o/r#5", "needs-hardware", 1)])
+        with patch("time.time", return_value=NOW):
+            mine = v.declined("r", now=NOW)
+        out = digest.semantic_roles(self.spec, v, items, {"fits": fits, "lanes": ["r"]}, {}, set(), set(), {"r": mine})
+        got = [(x["item"], x.get("declined"), x["strong"]) for x in out["r"]]
+        self.assertEqual(got[0], ("o/r#1", None, True), "a real fit first")
+        self.assertEqual({g[0] for g in got[1:]}, {"o/r#2", "o/r#3"}, "no fit and an out-of-lane pass come back weak")
+        self.assertTrue(all(not s for _, _, s in got[1:]))
+        self.assertNotIn("o/r#4", [g[0] for g in got], "not workable: never a fallback")
+        self.assertNotIn("o/r#5", [g[0] for g in got], "a hardware pass holds")
+
     def test_a_role_with_enough_candidates_gets_no_fallback(self):
         items = [{"item": f"o/r#{i}", "kind": "issue", "pos": i, "labels": [], "title": f"t{i}", "excerpt": "",
                   "repo": "o/r", "blocked_by": []} for i in range(1, digest.FALLBACK_BELOW + 3)]

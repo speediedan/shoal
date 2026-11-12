@@ -800,6 +800,8 @@ class GraphBuilder:
                           "metrics": {"msgs_out_1h": em.get("msgs_out_1h", 0), "msgs_in_1h": em.get("msgs_in_1h", 0)}}
             if slug in saved:
                 nodes[eid]["standalone"] = standalone_doc(saved[slug], self._harness_rows(now))
+                # the server it runs on, for its card: a remote entry names its host, a local one runs here
+                nodes[eid]["host"] = nodes[eid]["host"] or saved[slug].get("host") or this_host
                 if slug in renamed:  # shown by the session's own name; `seat` keeps the saved label (Remove uses it)
                     nodes[eid].update(label=renamed[slug], seat=slug)
             if alias:

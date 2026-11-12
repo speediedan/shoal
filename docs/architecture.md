@@ -177,7 +177,8 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   while (`ledger.DECLINE_LAPSE_H`: `blocked` a day, `out-of-lane` three days, the rest a week), and every pass made
   before the role's latest fill change lapses at once. A role with fewer than `digest.FALLBACK_BELOW` ranked candidates
   gets back, last and weak, the items it passed on as out of lane or blocked, so a fill=self queue stays full: an
-  imperfect lane match beats an idle role. `digest.candidates` fills its limit with weaker rows after the strong ones
+  imperfect lane match beats an idle role. With the semantic matcher the same holds: a lane short of fitting work also
+  gets the board's other workable items the matcher scored as no fit for it. `digest.candidates` fills its limit with weaker rows after the strong ones
   instead of showing the strong ones alone.
 
 **The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),
@@ -713,8 +714,9 @@ is the only coordination path (no host-to-host connection is needed for correctn
   asks popup refuse to try (answer a remote role by mail).
 - **Clocks.** Events are stamped by the writer's clock, the fold orders by them and conditions are ages:
   `doctor` fails a host that is not NTP-synchronized.
-- **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the pipeline
-  sensor, digest, reconcile and report on home only); every host with a live role writes a `host-beat`
+- **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the board digest on home
+  and on every host where a self-filling role runs, since `next` reads its own host's digest; the pipeline sensor,
+  reconcile and report on home only); every host with a live role writes a `host-beat`
   system event and home pages `host-silent` for one that stops; a Claude role's detached watcher runs
   on its own host and resumes its session there; `upgrade` off home leaves the spec's tooling and
   features to home. Still open: telemetry merge for reports ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
@@ -878,8 +880,12 @@ configured repository from the same store, with no provider call.
 
 ## 10. Live upgrades
 
-`shoal upgrade --spec <spec> [--dry-run]` says how each change reaches a running group before it
-changes anything:
+`shoal upgrade --spec <spec> [--pull] [--dry-run]` says how each change reaches a running group before it
+changes anything. `--pull` first fast-forwards shoal's own checkout, here and on every other host the shoal's roles run
+on (`upgrade --pull-only` over each `[hosts]` route), then upgrades on the code just pulled (it re-executes itself):
+for any install that runs shoal from a git clone, with no configuration management of its own. It refuses a checkout
+with uncommitted tracked changes, a detached HEAD, no upstream, or one that cannot fast-forward. A host whose shoal
+predates `--pull-only` is pulled by hand once.
 
 | class | what | how it arrives |
 | --- | --- | --- |
@@ -1001,6 +1007,26 @@ layers is under one and a half color levels, so the bands no longer show. In the
 path commands (about 160 before) and the per-shoal scene about 1,040 (about 740 before), well under the global depth
 scene's 2,790, which is unchanged. `check_depth.mjs` passes 12 of 12 per shoal in iso, tilt and turned 60 degrees,
 on the fixture's second shoal, and in the global scene.
+
+The oblique bowl still read as a convex ball seen from outside: its only edge was one bright outline, like a sphere's
+silhouette, and nothing on the inside said hollow. It now has an opening and a depth. The wall has a thickness
+(`sphere.js` `BOWL_LIP`, 0.035 radii), so the cut face is a lip: a lit band between the rim and its outer edge (the
+conic image of the outer circle), drawn as one closed path (`lipCmds`) with both edges stroked. The cut is set 9
+degrees short of where the camera would see over the near wall (`CUT_MARGIN`), so the near wall's top shows from
+outside as a thin crescent under the lip (`crescentCmds`, between the lip's outer edge and the outer wall's outline)
+and only a sliver of the inside under the near lip, about 3 percent, is hidden; the lunes and meridians stop where
+they leave the opening on screen (`seenTheta`). Inside, the light comes in through the opening from above and the
+upper left (`bowlShadowLight`, the bowl's up and the screen light), so the wall under the upper-left lip is out of it:
+`rimShade` is the shadow the lip casts there (the rim reflected through the light's line), a gradient dark at the rim,
+while the glow still pools on the lower-right wall. Your shadow falls from the same light, near the bottom just down
+and right of your foot on the axis, smaller and softer (peak 0.4 over a wide penumbra), not on the lit far wall. Four
+rings of latitude round the bottom (15 to 60 degrees) are solid and stronger, and each bounds a cap that darkens what
+is below it a little (5.5 percent), so the inside recedes to its bottom and every step of that shading sits under a
+ring; the meridians stay faint and dashed. A whole circle of latitude is now drawn as its exact projected ellipse,
+four cubics instead of eight, and the glow has 44 layers (from 48), so the bowl takes about 490 path commands (about
+450 before) and the per-shoal scene about 1,080 in the fixture; the global scene is unchanged. `check_depth.mjs`
+passes 12 of 12 per shoal in iso, tilt and turned 60 degrees, on the fixture's second shoal, on a live feed snapshot
+and in the global scene.
 
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
@@ -1184,8 +1210,13 @@ and the contract are in [`ui.md`](ui.md).
   count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
   which event, and the legend lists what is on screen, with the full key a click away. A research or prototyping run
   (`wait:research-proto`, role-time group `research`) spins like a CI wait but reads apart from both: a dashed outline, a
-  wide hatch and `⚗`. Message counts (`n_1h`, `n_24h`, `msgs_*`) are counts in the window, and an ask raised in a
-  queue version counts as an `ask` message to you ([`ui.md`](ui.md)). Each role's active, next and
+  wide hatch and `⚗`. A role waiting on something that does not need you (its own CI) but holding an open ask reads
+  as an ask. The multi-shoal view draws one edge per pair of nodes (`model.mergePairs`): every class and both
+  directions merge into it, drawn as its most important class (a blocker, then an ask) at its hottest tier, with an
+  arrowhead at each end that receives traffic, and its hover card gives each direction's counts and kinds; a single
+  shoal keeps its edges per class. A standalone seat's card names the host it runs on. Message counts (`n_1h`,
+  `n_24h`, `msgs_*`) are counts in the window, and an ask raised in a queue version counts as an `ask` message to you
+  ([`ui.md`](ui.md)). Each role's active, next and
   recently done items are satellites on short spokes: a next item with a recorded blocker is a ring in the Board's
   blocked color (so is one only past its daily re-check, `stale_kind: expired`), one whose blocker cleared
   (`resolved`) a red dot, and a hover shows the item's card (its title, what it waits on, how many are queued past those

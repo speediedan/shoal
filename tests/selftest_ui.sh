@@ -2549,7 +2549,9 @@ assert os.path.exists(os.path.join(dest, "search.svg")) and ui_app.install_clone
 assert ui_app.LAYOUT_BLOCKS["workspace-chrome"] == clone
 # the top bar: Home and Lattice beside Files and Changes, as the status bar's own commands
 tname, (tclone, tpatches) = "tabs", ui_app.CLONES["tabs"]
-tout = ui_app.patch_clone("x" + tpatches[0][0] + 'svg("mods/tabs/win-min.svg")', tname, tpatches)
+tout = ui_app.patch_clone("x" + tpatches[0][0] + "\n" + tpatches[1][0] + 'svg("mods/tabs/win-min.svg")', tname, tpatches)
+# the home space's lattice, board and usage tabs are left out of the tab strip: the top bar's buttons reach them
+assert f'space?.name === "{ui_app.HOME_SPACE}"' in tout and '["lattice", "board", "usage"].includes(c.name)' in tout, tout
 assert 'run("shoal-status.home")' in tout and 'run("shoal-status.lattice")' in tout and "mods/shoal-tabs/win-min.svg" in tout, tout
 assert tout.index("shoal-lattice") < tout.index('panelButton("files"') and ui_app.LAYOUT_BLOCKS["tabs"] == "shoal-tabs"
 assert 'run("mod.open", { name: "shoal-actions" })' in tout and tout.index("shoal-actions") < tout.index('panelButton("files"'), "Actions in the top bar too"

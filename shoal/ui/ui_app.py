@@ -1617,6 +1617,11 @@ CLONES = {
          '.text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).on_mouse_down("left", stop)'
          '.on_click(() => run("shoal-status.usage")).child("Usage"))\n'
          '      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))'),
+        # the home space's lattice, board and usage tabs are reached by those buttons: the tab strip leaves them out
+        # rather than show each twice (maintainer, 2026-11-12); the tabs stay, so the buttons still select them
+        ("    const shown = space?.tabs ?? [];",
+         "    const shown = (space?.tabs ?? []).filter(c => !(space?.name === "
+         + json.dumps(HOME_SPACE) + " && [\"lattice\", \"board\", \"usage\"].includes(c.name)));"),
     ]),
     # the window's mark, top left: SHOAL and its icon (copied in, CLONE_FILES), as the splash and the launchers show it
     "workspace-chrome": ("shoal-chrome", [

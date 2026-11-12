@@ -14,7 +14,8 @@ import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal, SHOAL_CARD, B
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
   sphereShade, glassColorAt, LIGHT, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
-  BOWL_BASE, BOWL_LIT, rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS,
+  BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, BOWL_RINGS, lipCmds, crescentCmds, rimShade,
+  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS,
 } from "./sphere.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, annularSectorCmds,
@@ -81,6 +82,15 @@ export function fitText(text, maxW, size) {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }
 const textW = (s, size) => String(s).length * size * 0.6;
+
+/** An edge's arrowheads: at its destination (the default), at its source, at both ends (a merged pair carrying
+ * traffic both ways), or none. */
+function headsAt(e, c, size) {
+  const back = { p0: c.p3, c1: c.c2, c2: c.c1, p3: c.p0 };
+  const at = e.heads ?? "dst";
+  return at === "both" ? [arrowHead(c, size), arrowHead(back, size)] : at === "src" ? [arrowHead(back, size)]
+    : at === "none" ? [] : [arrowHead(c, size)];
+}
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 /** The host lune of the bowl seen at offsets (nx, ny) in radii, or null outside the rim: the inner surface's point
@@ -264,27 +274,43 @@ export function buildScene(vm, lay, opts) {
       items.push({ t: "path", id: `bowl-host-${b.host}`, fill: true, cmds, bg: solid(withAlpha(tint, BOWL.wash)) });
       items.push({ t: "path", id: `bowl-host-rim-${b.host}`, fill: false, width: 1.2, cmds, bg: solid(withAlpha(tint, BOWL.outline)) });
     }
-    // your shadow on the inside, from the one light: on the wall beside you, so you read as floating in front of it
+    // depth: each ring of latitude round the bottom bounds a cap a little darker, so the inside recedes to the bottom
+    const rings = BOWL_RINGS.map((t) => latitudeCmds(fr, o.x, o.y, R, t));
+    rings.forEach((cmds, i) => items.push({ t: "path", id: `bowl-deep-${i}`, fill: true, cmds, bg: solid(withAlpha(BOWL_SHADE, BOWL.deep)) }));
+    // the lip's shade on the inside: the wall under the lip on the light's side (upper left) is out of the light
+    const shade = rimShade(fr, o.x, o.y, R);
+    if (shade) items.push({ t: "path", id: "bowl-shade", fill: true, cmds: shade.cmds, bg: { kind: "linear", angle: shade.angle, from: withAlpha(BOWL_SHADE, BOWL.shade), to: withAlpha(BOWL_SHADE, BOWL.shadeEdge) } });
+    // your shadow on the inside, soft and small, near the bottom just down and right of your foot on the axis
     if (hub && nodeR.has(hub.id)) {
       bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R).forEach((e, i) => items.push({
         t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)),
       }));
     }
-    // two circles of latitude and eight meridians down to the bottom, faint, so the hollow reads as curved and deep
+    // four rings of latitude round the bottom (what shows a hollow) and eight faint meridians down to it
     const yaw = lay.cam?.yaw ?? 0;
-    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], bg: solid(withAlpha("#e4edf4", 0.18)),
-      cmds: [...[Math.PI / 6, Math.PI / 3].flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)),
-        ...Array.from({ length: 8 }, (_, i) => meridianCmds(fr, o.x, o.y, R, yaw + (i * Math.PI) / 4)).flat()] });
-    // the cut edge (the cut leaves no outside wall facing the camera, so nothing of the bowl shows beyond it)
-    items.push({ t: "path", id: "bowl-lip", fill: false, width: 1.8, cmds: rimCmds, bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.6), to: withAlpha(c.tint, 0.4) } });
-    grow(rc.x - R * rim.w, rc.y - R * rim.h, rc.x + R * rim.w, rc.y + R * rim.h);
+    items.push({ t: "path", id: "bowl-rings", fill: false, width: 0.9, bg: solid(withAlpha("#e4edf4", 0.24)), cmds: rings.flat() });
+    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], bg: solid(withAlpha("#e4edf4", 0.14)),
+      cmds: Array.from({ length: 8 }, (_, i) => meridianCmds(fr, o.x, o.y, R, yaw + (i * Math.PI) / 4)).flat() });
+    // the opening: the near wall's outside as a thin crescent under the lip, lit from the upper left, then the lip (the
+    // wall's cut face, a lit band) with its inner edge (the rim) and its outer edge
+    const shell = crescentCmds(fr, o.x, o.y, R);
+    if (shell.length) {
+      items.push({ t: "path", id: "bowl-shell", fill: true, cmds: shell, bg: { kind: "linear", angle: 110, from: withAlpha(mix(c.tint, "#ffffff", 0.25), 0.6), to: withAlpha("#050b17", 0.75) } });
+      items.push({ t: "path", id: "bowl-limb", fill: false, width: 1, cmds: shell, bg: solid(withAlpha(c.tint, 0.4)) });
+    }
+    const lip = fr.lip, lipOut = conjugateEllipseCmds(o.x + R * lip.cx, o.y + R * lip.cy, { x: R * lip.a.x, y: R * lip.a.y }, { x: R * lip.b.x, y: R * lip.b.y });
+    items.push({ t: "path", id: "bowl-lip-face", fill: true, cmds: lipCmds(fr, o.x, o.y, R), bg: { kind: "linear", angle: 135, from: withAlpha("#eef4fa", 0.3), to: withAlpha(mix(c.tint, "#c9d8e6", 0.5), 0.14) } });
+    items.push({ t: "path", id: "bowl-lip", fill: false, width: 1.4, cmds: rimCmds, bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.7), to: withAlpha(c.tint, 0.45) } });
+    items.push({ t: "path", id: "bowl-lip-out", fill: false, width: 1, cmds: lipOut, bg: solid(withAlpha(mix(c.tint, "#050b17", 0.3), 0.55)) });
+    grow(o.x + R * (lip.cx - lip.w), o.y + R * (lip.cy - lip.h), o.x + R * (lip.cx + lip.w), o.y + R * (lip.cy + lip.h));
+    for (const cmd of shell) for (let i = 1; i + 1 < cmd.length; i += 2) grow(cmd[i], cmd[i + 1], cmd[i], cmd[i + 1]);
     for (const b of lay.bands) {
       // the host's name just outside the rim, out from the rim's middle through the lune's middle
       const tint = tintOf(b), am = (b.a0 + b.a1) / 2;
       const text = `${b.home ? "⌂ " : ""}${b.host}${b.jobsOnly ? " (jobs)" : ""}`;
       const e = bowlRimAt(fr, am), q = { x: o.x + R * e.x, y: o.y + R * e.y };
       const dx = q.x - rc.x, dy = q.y - rc.y, dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl;
-      const out = 16 + (textW(text, 10) / 2) * Math.abs(ux); // clear of the outline by the text's half width
+      const out = 16 + R * BOWL_LIP + (textW(text, 10) / 2) * Math.abs(ux); // clear of the lip by the text's half width
       const lp = { x: q.x + out * ux, y: q.y + out * uy };
       items.push({ t: "text", id: `band-label-${b.host}`, x: lp.x - 70, y: lp.y - 7, w: 140, h: 14, text, size: 10, color: withAlpha(tint, 0.95), align: "center", weight: "semibold" });
       growCentered(lp.x, lp.y - 7, text, 10, 14);
@@ -383,7 +409,7 @@ export function buildScene(vm, lay, opts) {
     if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
     items.push({ t: "path", id: `ec-${bk.key}`, fill: false, width: bk.core, dash: bk.dash, cmds, bg: solid(withAlpha(bk.color, coreAlpha)) });
     if (bk.cls !== "alias") {
-      const heads = bk.edges.flatMap((e) => polygonCmds(arrowHead(curves.get(e.id), bk.arrow)));
+      const heads = bk.edges.flatMap((e) => headsAt(e, curves.get(e.id), bk.arrow).flatMap((h) => polygonCmds(h)));
       if (casing) items.push({ t: "path", id: `eak-${bk.key}`, fill: false, width: 1.6, cmds: heads, bg: solid(withAlpha(P.void, casing.alpha)) });
       items.push({ t: "path", id: `ea-${bk.key}`, fill: true, cmds: heads, bg: solid(withAlpha(bk.color, Math.min(1, coreAlpha + 0.1))) });
     }

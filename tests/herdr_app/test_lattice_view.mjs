@@ -120,7 +120,8 @@ test("edge bucketing by color x tier (and cross-host dash)", () => {
   const cross = alpha.edges.find((e) => e.id === `${A}:core|${A}:scribe|msg`);
   assert.ok(cross.cross, "host-a -> host-b edge is cross-host");
   assert.deepEqual(seen.get(cross.id).dash, M.CROSS_HOST_DASH);
-  assert.equal(seen.get(`${A}:core|${A}:dist-ci|msg`).dash, null);
+  // a single shoal keeps its own edges; the multi-shoal view merges each pair (its own test below)
+  assert.equal(M.edgeBuckets(alpha.edges).find((b) => b.edges.some((e) => e.id === `${A}:core|${A}:dist-ci|msg`)).dash, null);
   const keep = M.incidentEdges(global, `${A}:tune`);
   const faded = M.edgeBuckets(global.edges, keep);
   assert.ok(faded.some((b) => b.tier === "fade"));
@@ -130,9 +131,48 @@ test("edge bucketing by color x tier (and cross-host dash)", () => {
   assert.ok(!global.edges.some((e) => e.cls === "broadcast"));
 });
 
+test("the multi-shoal view merges each pair into one edge with both directions in its card", () => {
+  const ids = global.edges.map((e) => [e.src, e.dst].sort().join("|"));
+  assert.equal(new Set(ids).size, ids.length, "one edge per pair of nodes");
+  const mk = (src, dst, cls, n1, n24, tier = "warm") => ({ id: `${src}|${dst}|${cls}`, src, dst, cls, tier, color: "#fff", bend: 0.14,
+    rate: n1, n_rate: 0, n_1h: n1, n_24h: n24, last_age_s: 60, shoal: "s", flow: false, flowMs: 0, cross: false, stale: false,
+    open: null, recent: [{ summary: `${src}->${dst}`, age_s: 60 }] });
+  const [m] = M.mergePairs([mk("s:a", "s:b", "msg", 2, 5), mk("s:b", "s:a", "ask", 1, 1, "hot"), mk("s:a", "s:b", "offer", 0, 1, "cold")]);
+  assert.equal(m.id, "s:a|s:b|pair");
+  assert.equal(m.cls, "ask", "drawn as its most important class");
+  assert.equal(m.tier, "hot", "its hottest tier");
+  assert.equal(m.heads, "both", "traffic both ways: arrowheads at both ends");
+  assert.deepEqual([m.n_1h, m.n_24h], [3, 7]);
+  assert.deepEqual([m.dirs.fwd.n_24h, m.dirs.back.n_24h], [6, 1]);
+  assert.deepEqual(m.dirs.fwd.classes.sort(), ["msg", "offer"]);
+  const one = M.mergePairs([mk("s:b", "s:a", "msg", 1, 2)])[0];
+  assert.equal(one.heads, "src", "a reverse-only pair points back at its source end");
+  // the card shows each direction on its own row
+  const vm = { edges: [m], byId: new Map([["s:a", { label: "a", host: "h1" }], ["s:b", { label: "b", host: "h1" }]]) };
+  const card = M.edgeCardLines(vm, m.id);
+  assert.equal(card.title, "a ↔ b");
+  assert.ok(card.rows.some(([k, v]) => k === "a → b" && v.startsWith("2 / 6")), JSON.stringify(card.rows));
+  assert.ok(card.rows.some(([k, v]) => k === "b → a" && v.startsWith("1 / 1") && v.includes("ask")), JSON.stringify(card.rows));
+  // a single shoal keeps its per-class edges
+  assert.ok(alpha.edges.some((e) => e.id.endsWith("|msg")) && !alpha.edges.some((e) => e.id.endsWith("|pair")));
+});
+
+test("an open ask reads as an ask over a CI wait, and a seat's card names its host", () => {
+  const role = (event, asks) => ({ id: "s:r", kind: "role", state: { class: "wait", event, needs_you: asks.length > 0 }, work: { asks } });
+  assert.equal(M.stateKey(role("local-ci", ["merge it?"])), "ask");
+  assert.equal(M.stateKey(role("local-ci", [])), "local-ci");
+  assert.equal(M.stateKey(role("user-prompt", ["x?"])), "prompt", "a wait that already needs you keeps its look");
+  const d = structuredClone(doc);
+  d.nodes.push({ id: "ext:seat", kind: "external", label: "seat", host: "host-z", saved: true,
+    standalone: { harness: "claude", id: "abcd1234", state: "alive", dismissed: false }, state: { class: "unknown" }, metrics: {} });
+  const vm = M.buildModel(d, "global");
+  assert.ok(M.cardLines(vm, "ext:seat").rows.some(([k, v]) => k === "host" && v === "host-z"));
+});
+
 test("blocked-on edges present; alias edge in global view only", () => {
   const bo = (vm) => vm.edges.filter((e) => e.cls === "blocked-on").map((e) => e.id).sort();
-  assert.deepEqual(bo(global), [`${A}:core|${A}:dist-ci|blocked-on`, `${B}:research|${B}:analysis|blocked-on`]);
+  // the multi-shoal view merges each pair into one edge, drawn as its most important class (a blocker)
+  assert.deepEqual(bo(global), [`${A}:core|${A}:dist-ci|pair`, `${B}:analysis|${B}:research|pair`]);
   assert.deepEqual(bo(alpha), [`${A}:core|${A}:dist-ci|blocked-on`]);
   assert.ok(global.edges.some((e) => e.cls === "alias"));
   assert.ok(!alpha.edges.some((e) => e.cls === "alias"));
@@ -305,12 +345,13 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, sta
     assert.ok(finiteDeep(sc.items));
   }
   const vm = M.buildModel(d, "global");
-  const e = vm.edges.find((x) => x.id === bo.id);
+  // per-class edges are a single shoal's (the multi-shoal view merges each pair)
+  const e = M.buildModel(d, B).edges.find((x) => x.id === bo.id);
   assert.equal(e.tier, "stale");
   assert.equal(e.last_age_s, null);
   assert.equal(M.edgeBuckets([e])[0].coreAlpha, M.TIER_STYLE.stale.coreAlpha);
   assert.ok(M.TIER_STYLE.stale.coreAlpha < M.TIER_STYLE.struct.coreAlpha, "stale blockers draw fainter");
-  assert.equal(vm.edges.find((x) => x.id === `${A}:core|${A}:scribe|msg`).cross, false, "the feed's cross_host wins");
+  assert.equal(M.buildModel(d, A).edges.find((x) => x.id === `${A}:core|${A}:scribe|msg`).cross, false, "the feed's cross_host wins");
   const card = M.cardLines(vm, `${A}:tune`);
   assert.ok(card.rows.find(([k]) => k === "state")[1].startsWith("~ "), "status readings are marked");
   assert.ok(card.rows.some(([k, v]) => k === "quality" && v.includes("no-native-probe")));
@@ -1138,8 +1179,8 @@ test("2026-11-08: replay speeds, rates per 24 h, the edge card's 1 h / 24 h", ()
   assert.equal(R.replayAdvance(rm) * (1000 / R.REPLAY_TICK_MS) * 32, 86400);
   assert.equal(R.replayAdvance(rm, 3.2) / R.replayAdvance(rm, 32), 10, "a picked speed");
   assert.deepEqual(R.REPLAY_SPEEDS.map((s) => s.day_s), [96, 32, 11, 3.2]);
-  const e = global.edges.find((x) => x.n_24h > 0) ?? global.edges[0];
-  const card = M.cardLines(global, e.id);
+  const e = alpha.edges.find((x) => x.n_24h > 0) ?? alpha.edges[0];
+  const card = M.cardLines(alpha, e.id);
   assert.deepEqual(card.rows[0], ["1h / 24h", `${e.n_1h} / ${e.n_24h}`]);
   assert.ok(!card.rows.some(([k]) => k === "rate"));
   assert.ok(M.hostSummaries(global).every((h) => typeof h.msgs24 === "number"));
@@ -1352,7 +1393,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
     assert.equal(washes.length, hosts.length);
     assert.equal(new Set(washes.map((it) => it.bg.color)).size, hosts.length, "each host its own color");
     assert.ok(["bowl-in", "bowl-lip", "bowl-grid"].every((id) => sc.items.some((it) => it.id === id)));
-    assert.ok(!sc.items.some((it) => it.id === "bowl-shell" || it.id === "bowl-limb"), "the cut leaves no outside wall to draw");
+    assert.ok(["bowl-lip-face", "bowl-lip-out", "bowl-shell", "bowl-rings", "bowl-shade"].every((id) => sc.items.some((it) => it.id === id)), "the opening: a lip, the near wall's outside, rings, the lip's shade");
     assert.ok(!sc.items.some((it) => it.id.startsWith("band-slab-") || it.id.startsWith("band-rim-")));
     // the outline: every lune stays inside the sphere's silhouette, and the whole bowl is a small part of the budget
     for (const b of pa.bands) {
@@ -1366,7 +1407,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
       }
     }
     // the bowl (48 faint glow layers, the most of it) stays under half of one globe's 970 or so
-    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 480, "the bowl costs a fraction of one globe");
+    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 500, "the bowl costs a fraction of one globe");
   }
   // a lune's outline is exact: the rim, where each meridian meets the cut, projects to the rim ellipse
   const fr = SP.bowlFrame(0.4);
@@ -1506,16 +1547,17 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
   const la = L.layoutGraph(alpha);
   for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3)]) {
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame;
-    // the cut leaves nothing facing the camera (a point of the unit sphere does when u.z > 1 / d), so all of the
-    // inside is seen through the opening, and nothing of the bowl shows past the rim
+    // the cut is just past where the camera sees over the near wall (a point of the unit sphere faces it when
+    // u.z > 1 / d): nearly all of the inside is seen through the opening, and what is not is a sliver under the near lip
     let seen = 0, all = 0;
     for (let i = 1; i <= 24; i++) for (let j = 0; j < 48; j++) {
       const phi = (2 * Math.PI * j) / 48, u = SP.bowlPoint(fr, SP.rimTheta(fr, phi) * (i / 24), phi);
       all++;
-      assert.ok(u.z < 1 / fr.d - 0.02 && SP.bowlKept(fr, u), "no kept point faces the camera");
+      assert.ok(SP.bowlKept(fr, u));
       if (SP.bowlSeen(fr, u) <= 1 + 1e-9) seen++;
+      else assert.ok(i >= 18 && u.z > 0.25, "only the top of the near wall, under the lip, is hidden");
     }
-    assert.equal(seen, all, "the whole inner surface is seen");
+    assert.ok(seen / all >= 0.96, `the inner surface is seen: ${seen}/${all}`);
     const user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
     assert.ok(pa.scaleOf.get(user.id) >= 1.2, "you read larger than in #153 (1)");
     for (const n of roles) assert.ok(pa.scaleOf.get(user.id) >= 1.12 * pa.scaleOf.get(n.id), `you, nearer, larger than ${n.label}`);
@@ -1526,14 +1568,19 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
     assert.ok(Math.abs(pole.x) > 0.2 && pole.y > 0.2, `the pole off the middle both ways: ${pole.x.toFixed(2)}, ${pole.y.toFixed(2)}`);
     assert.ok(Math.abs(fr.rim.m[1]) > 0.05 * Math.max(fr.rim.m[0], fr.rim.m[2]), "the rim's ellipse is turned, not square to the screen");
     const rims = Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72));
-    assert.ok(Math.max(...rims) <= Math.PI / 2 + 1e-9 && Math.max(...rims) > Math.PI / 2 - 0.01 && Math.min(...rims) < Math.PI / 2 - 0.2, "far rim at the equator, near rim lower");
+    assert.ok(Math.max(...rims) <= Math.PI / 2 + 1e-9 && Math.max(...rims) > Math.PI / 2 - 0.01 && Math.min(...rims) < Math.PI / 2 - 0.1, "far rim at the equator, near rim lower");
     assert.ok(Math.min(...rims) > Math.PI / 3 + 0.05, "both circles of latitude are whole");
-    // your shadow from the one light falls on the inside, inside the rim and clear of you
+    // your shadow falls near the bottom, just down and right of your foot on the axis, inside the rim and clear of you,
+    // nearer the bottom than the lit spot on the far wall; it is small and soft
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
     const shadow = sc.items.filter((it) => it.id.startsWith("bowl-shadow-"));
     assert.equal(shadow.length, SP.BOWL_SHADOW_STEPS);
-    const sh = SP.bowlShadow(fr, 0, 0, 1, 0.1).at(-1), you = pa.pos.get(user.id);
-    assert.ok(SP.rimNorm(fr, sh) < 0.9 && Math.hypot(sh.x - you.x / pa.bowl.R, sh.y - you.y / pa.bowl.R) > 0.3, "a shadow on the wall, apart from you");
+    const layers = SP.bowlShadow(fr, 0, 0, 1, 0.1), sh = layers.at(-1), you = pa.pos.get(user.id);
+    const spot = SP.bowlProject(fr, { x: -SP.LIGHT.x, y: -SP.LIGHT.y, z: -SP.LIGHT.z });
+    assert.ok(SP.rimNorm(fr, sh) < 0.9 && Math.hypot(sh.x - you.x / pa.bowl.R, sh.y - you.y / pa.bowl.R) > 0.3, "a shadow on the inside, apart from you");
+    assert.ok(sh.x > pole.x && sh.y > pole.y - 0.1, "down and right of your foot");
+    assert.ok(Math.hypot(sh.x - pole.x, sh.y - pole.y) < Math.hypot(sh.x - spot.x, sh.y - spot.y), "nearer the bottom than the lit spot");
+    assert.ok(Math.max(...layers.map((l) => l.alpha)) < 0.12 && Math.hypot(layers[0].a.x, layers[0].a.y) < 0.18, "small and soft");
     // the washes are light, so edges and arrows over them read; the inside is clearer than in #155
     assert.ok(SP.BOWL.wash < 0.1 && SP.BOWL.base < 0.16);
   }
@@ -1542,7 +1589,7 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
 test("2026-11-11: the bowl's glow is smooth: many faint layers, no step between two of them shows", () => {
   for (const alphaT of [0.4, 0.6]) {
     const fr = SP.bowlFrame(alphaT), layers = SP.bowlGlow(fr, 0, 0, 1);
-    assert.ok(layers.length >= 48 && SP.BOWL.glow * 255 <= 2.01, "48 or more layers at 2 of 255 each, not 20 at 5");
+    assert.ok(layers.length >= 44 && SP.BOWL.glow * 255 <= 2.01, "44 or more layers at 2 of 255 each, not 20 at 5");
     const total = 1 - (1 - Math.round(SP.BOWL.glow * 255) / 255) ** layers.length;
     assert.ok(total > 0.25 && total < 0.34, `about the light it had: ${total.toFixed(3)}`);
     // each layer inside the one before it, and all inside the rim
@@ -1555,16 +1602,18 @@ test("2026-11-11: the bowl's glow is smooth: many faint layers, no step between 
         assert.ok(m[0] * x * x + 2 * m[1] * x * y + m[2] * y * y <= prev.s * prev.s + 1e-9, "nested");
       }
     }
-    // across the inside, the color steps by at most two of 255 between neighboring points
+    // across the inside, the color steps by at most two of 255 between neighboring points (between two on the same
+    // depth cap and the same side of the lip's shade: a cap's edge is a step on purpose, under a ring)
     const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
     let prev = null, worst = 0, lit = 0;
     for (let i = -100; i <= 100; i++) {
       const p = { x: fr.rim.cx + (i / 100) * fr.rim.w * 0.99, y: fr.rim.cy + (i / 100) * fr.rim.h * 0.3 };
       if (SP.rimNorm(fr, p) > 1) { prev = null; continue; }
+      const u = SP.bowlSurfaceAt(fr, p.x, p.y), key = `${SP.bowlDepthAt(fr, u)} ${SP.inRimShade(fr, u)}`;
       const c = rgb(SP.bowlColorAt(fr, p.x, p.y, null));
-      if (prev) worst = Math.max(worst, ...c.map((v, k) => Math.abs(v - prev[k])));
+      if (prev && prev.key === key) worst = Math.max(worst, ...c.map((v, k) => Math.abs(v - prev.c[k])));
       lit = Math.max(lit, c[0]);
-      prev = c;
+      prev = { c, key };
     }
     assert.ok(worst <= 2 && lit > 60, `smooth (worst step ${worst}) and still lit`);
   }
@@ -1572,6 +1621,53 @@ test("2026-11-11: the bowl's glow is smooth: many faint layers, no step between 
   const glow = sc.items.filter((it) => it.id.startsWith("bowl-glow-"));
   assert.equal(glow.length, SP.BOWL_GLOW);
   assert.ok(glow.every((it) => it.cmds.length === 6 && it.bg.color.endsWith("02")), "a conjugate ellipse each, 2 of 255");
+});
+
+test("2026-11-12: the bowl reads as a bowl: a lip round the opening, the near wall's outside, depth to the bottom", () => {
+  for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3)]) {
+    const pa = D.projectLayout(alpha, L.layoutGraph(alpha), cam), fr = pa.bowl.frame;
+    const ell = (e, t) => ({ x: e.cx + e.a.x * Math.cos(t) + e.b.x * Math.sin(t), y: e.cy + e.a.y * Math.cos(t) + e.b.y * Math.sin(t) });
+    // the lip: its outer edge outside the rim all round, a band a few hundredths of a radius wide
+    for (let j = 0; j < 36; j++) {
+      const q = ell(fr.lip, (2 * Math.PI * j) / 36), r = SP.rimNorm(fr, q);
+      assert.ok(r > 1.01 && r < 1.12, `the lip's outer edge outside the rim: ${r.toFixed(3)}`);
+    }
+    const lip = SP.lipCmds(fr, 0, 0, 1);
+    assert.ok(lip[0][0] === "M" && lip.at(-1)[0] === "Z" && lip.filter((c) => c[0] === "C").length === 8, "one closed band: out round, back round");
+    // the near wall's outside: a thin crescent below the lip on the near side (the bottom's side), outside it
+    const shell = SP.crescentCmds(fr, 0, 0, 1);
+    assert.ok(shell.length > 3, "the near wall's outside shows");
+    const pts = shell.flatMap((c) => (c[0] === "Z" ? [] : [{ x: c.at(-2), y: c.at(-1) }]));
+    const pole = SP.bowlProject(fr, fr.pole);
+    for (const q of pts) assert.ok(SP.rimNorm(fr, q) > 1.01, "the crescent is outside the rim");
+    const mid = pts.reduce((m, q) => ({ x: m.x + q.x / pts.length, y: m.y + q.y / pts.length }), { x: 0, y: 0 });
+    assert.ok((mid.x - fr.rim.cx) * (pole.x - fr.rim.cx) + (mid.y - fr.rim.cy) * (pole.y - fr.rim.cy) > 0, "on the near side, where the bottom is");
+    assert.ok(Math.max(...pts.map((q) => Math.hypot(q.x, q.y))) - Math.min(...pts.map((q) => SP.rimNorm(fr, q) > 1.01 ? Math.hypot(q.x, q.y) : 9)) < 0.12, "thin");
+    // the lip's shade: under the rim on the light's side (upper left), and the lit spot (lower right) out of it
+    const shade = SP.rimShade(fr, 0, 0, 1);
+    assert.ok(shade, "the lip shades the inside");
+    const a = { x: shade.cmds[0][1], y: shade.cmds[0][2] };
+    assert.ok(Math.abs(SP.rimNorm(fr, a) - 1) < 1e-6, "it starts on the rim");
+    const dark = SP.bowlSurfaceAt(fr, fr.rim.cx - 0.6 * fr.rim.w, fr.rim.cy - 0.6 * fr.rim.h);
+    const lit = SP.bowlSurfaceAt(fr, ...(({ x, y }) => [x, y])(SP.bowlProject(fr, { x: -SP.LIGHT.x, y: -SP.LIGHT.y, z: -SP.LIGHT.z })));
+    assert.ok(dark && SP.inRimShade(fr, dark) && lit && !SP.inRimShade(fr, lit), "dark under the upper-left lip, lit on the lower-right wall");
+    const sl = SP.bowlShadowLight(fr);
+    assert.ok(sl.x * fr.cut.n.x + sl.y * fr.cut.n.y + sl.z * fr.cut.n.z > 0.5, "the light comes in through the opening");
+    // depth: four rings round the bottom, each the edge of a cap a little darker, so the bottom is darkest
+    assert.equal(SP.BOWL_RINGS.length, 4);
+    assert.ok(Math.max(...SP.BOWL_RINGS) < Math.min(...Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72))), "every ring whole, below the rim");
+    assert.equal(SP.bowlDepthAt(fr, fr.pole), 4);
+    assert.equal(SP.bowlDepthAt(fr, SP.bowlPoint(fr, 1.2, 0.5)), 0);
+    const lum = (h) => [1, 3, 5].reduce((t, i) => t + parseInt(h.slice(i, i + 2), 16), 0);
+    const ring = (t, phi) => SP.bowlProject(fr, SP.bowlPoint(fr, t, phi));
+    for (const phi of [0, 2, 4]) {
+      const inner = ring(0.1, phi), outer = ring(0.95, phi);
+      assert.ok(lum(SP.bowlColorAt(fr, inner.x, inner.y, null)) < lum(SP.bowlColorAt(fr, outer.x, outer.y, null)) + 40, "the bottom no lighter than the wall above it");
+    }
+    const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    assert.equal(sc.items.filter((it) => it.id.startsWith("bowl-deep-")).length, 4);
+    assert.equal(sc.items.find((it) => it.id === "bowl-rings").cmds.filter((c) => c[0] === "M").length, 4);
+  }
 });
 
 test("2026-11-11: the hosts' lunes tile the whole bowl, with no gaps", () => {
