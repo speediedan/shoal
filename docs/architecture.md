@@ -177,7 +177,8 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   while (`ledger.DECLINE_LAPSE_H`: `blocked` a day, `out-of-lane` three days, the rest a week), and every pass made
   before the role's latest fill change lapses at once. A role with fewer than `digest.FALLBACK_BELOW` ranked candidates
   gets back, last and weak, the items it passed on as out of lane or blocked, so a fill=self queue stays full: an
-  imperfect lane match beats an idle role. `digest.candidates` fills its limit with weaker rows after the strong ones
+  imperfect lane match beats an idle role. With the semantic matcher the same holds: a lane short of fitting work also
+  gets the board's other workable items the matcher scored as no fit for it. `digest.candidates` fills its limit with weaker rows after the strong ones
   instead of showing the strong ones alone.
 
 **The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),

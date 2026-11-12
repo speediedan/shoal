@@ -291,11 +291,23 @@ def semantic_roles(spec: ShoalSpec, view, items: list[dict], sem: dict, eff: dic
     out: dict[str, list[dict]] = {}
     for r in [r for r in spec.roles if r.fill == "self"]:
         ctx = r.working_context() or {}
-        rows = []
+        rows, spare = [], []
+        mine = declined.get(r.slug, {})
         for it in items:
             key = item_key(it["item"])
             f = fits.get(it["item"])
-            if f is None or key in taken or key in declined.get(r.slug, set()) or _never(it, ctx):
+            if f is None or key in taken or _never(it, ctx):
+                continue
+            if key in mine or (not getattr(r, "aux", False) and int((f.get("fits") or {}).get(r.slug, 0)) < 1):
+                # passed on as out of lane or blocked, or judged no fit: kept back as a fallback for a short queue
+                cls = str(mine[key].get("cls") or "") if key in mine and isinstance(mine, dict) else ""
+                if (key not in mine or cls in FALLBACK_CLASSES) and f.get("class") == "workable" \
+                        and not getattr(r, "aux", False):
+                    e = eff.get(it["item"], it["pos"])
+                    spare.append({"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix", "pos": it["pos"],
+                                  "eff_pos": e, "class": f.get("class"), "score": 0.0, "strong": False,
+                                  "rank": round(-e / n, 3), **({"declined": cls} if cls else {}),
+                                  "why": [f"declined-earlier:{cls}" if cls else "sem:0", f.get("why", "")]})
                 continue
             base = {"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix", "pos": it["pos"],
                     "eff_pos": eff.get(it["item"], it["pos"]), "class": f.get("class")}
@@ -321,7 +333,10 @@ def semantic_roles(spec: ShoalSpec, view, items: list[dict], sem: dict, eff: dic
                                  + ([f"class:{f['class']}"] if f.get("class") != "workable" else [])
                                  + (["unblocks"] if it["item"] in unblock else [])))
         rows.sort(key=lambda x: -x["rank"])
-        out[r.slug] = rows[:15]
+        spare.sort(key=lambda x: -x["rank"])
+        # capacious (maintainer, 2026-11-12): a lane short of fitting work gets the board's other workable items, last
+        # and weak, so a fill=self queue stays full; an imperfect fit beats an idle role
+        out[r.slug] = (rows + (spare if len(rows) < FALLBACK_BELOW else []))[:15]
     return out
 
 
