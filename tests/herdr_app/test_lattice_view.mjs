@@ -1362,7 +1362,8 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame, Rs = pa.bowl.R;
     assert.ok(Math.abs(fr.alpha - D.bowlTilt(cam)) < 1e-12 && pa.clusters[0].bowl && pa.clusters[0].r === Rs);
     const user = alpha.nodes.find((n) => n.kind === "user");
-    assert.deepEqual(pa.pos.get(user.id), { x: 0, y: 0 }, "you at the middle of the sphere");
+    const yu = SP.bowlProject(fr, D.bowlYou(fr)), yp = pa.pos.get(user.id);
+    assert.ok(Math.hypot(yp.x - Rs * yu.x, yp.y - Rs * yu.y) < 1e-9 && pa.bowl.you.z > 0, "you up the axis from the middle, toward the camera");
     const hosts = [...new Set(alpha.nodes.filter((n) => n.kind === "role").map((n) => n.host ?? "?"))].sort();
     assert.deepEqual(pa.bands.map((b) => b.host).sort(), hosts, "one lune per host");
     const TAU = 2 * Math.PI;
@@ -1701,4 +1702,94 @@ test("2026-11-11: the hosts' lunes tile the whole bowl, with no gaps", () => {
     }
     assert.ok(inside > 4000 && hosts.size === pa.bands.length, "the hosts share all of it");
   }
+});
+
+test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never flips", () => {
+  const DEG = Math.PI / 180;
+  // no orbit: the presets as they were
+  for (const name of ["tilt", "iso"]) {
+    const c = D.camera(name), p = D.CAMERAS[name];
+    assert.ok(c.pitch === p.pitch && c.yaw === p.yaw && c.spin === p.yaw && c.orbit.x === 0 && c.orbit.y === 0);
+    assert.equal(D.bowlTurn(c), SP.BOWL_TURN);
+  }
+  assert.deepEqual(D.orbitBy("flat", { x: 1, y: 1 }, 0.1, 0.1, true), { x: 0, y: 0 }, "flat has no orbit");
+  for (const name of ["tilt", "iso"]) {
+    // per shoal: up tips the bowl further down the screen (looking down from higher), right turns it round to the right,
+    // and each stops at its limit; a press past it is dropped, so the way back answers at once
+    let o = { x: 0, y: 0 };
+    const alpha0 = D.bowlTilt(D.camera(name));
+    o = D.orbitBy(name, o, 0, D.ORBIT_STEP, true);
+    assert.ok(D.bowlTilt(D.camera(name, 0, o)) > alpha0, "up: tipped further");
+    for (let i = 0; i < 20; i++) o = D.orbitBy(name, o, D.ORBIT_STEP, D.ORBIT_STEP, true);
+    const top = D.camera(name, 0, o);
+    assert.ok(Math.abs(D.bowlTilt(top) - D.BOWL_ALPHA_RANGE[1]) < 1e-12 && Math.abs(D.bowlTurn(top) - D.BOWL_BETA_MAX) < 1e-12, "held at the top and right limits");
+    const back = D.orbitBy(name, o, -D.ORBIT_STEP, -D.ORBIT_STEP, true);
+    assert.ok(D.bowlTilt(D.camera(name, 0, back)) < D.bowlTilt(top) - 0.1 && D.bowlTurn(D.camera(name, 0, back)) < D.bowlTurn(top) - 0.1, "one press back moves");
+    for (let i = 0; i < 40; i++) o = D.orbitBy(name, o, -D.ORBIT_STEP, -D.ORBIT_STEP, true);
+    const low = D.camera(name, 0, o);
+    assert.ok(Math.abs(D.bowlTilt(low) - D.BOWL_ALPHA_RANGE[0]) < 1e-12 && Math.abs(D.bowlTurn(low) + D.BOWL_BETA_MAX) < 1e-12, "held at the bottom and left limits");
+    // whatever the camera asks, the frame stays a bowl seen from in front: its bottom faces away
+    for (const ask of [{ x: 9, y: 9 }, { x: -9, y: -9 }, { x: 9, y: -9 }]) {
+      const c = D.camera(name, 0, ask), fr = SP.bowlFrame(D.bowlTilt(c), SP.BOWL_DIST, D.bowlTurn(c));
+      assert.ok(fr.pole.z < -0.3, `the pole away from the camera: ${fr.pole.z.toFixed(2)}`);
+    }
+    // global: the pitch is held in its range, the yaw goes round freely, and `,` and `.` add to it as before
+    let g = { x: 0, y: 0 };
+    for (let i = 0; i < 20; i++) g = D.orbitBy(name, g, D.ORBIT_STEP, D.ORBIT_STEP, false);
+    const gc = D.camera(name, 0.3, g);
+    assert.ok(Math.abs(gc.pitch - D.PITCH_RANGE[1]) < 1e-12 && Math.abs(g.x) <= Math.PI + 1e-12);
+    assert.ok(Math.abs(gc.yaw - (D.CAMERAS[name].yaw + 0.3 + g.x)) < 1e-12 && Math.abs(gc.spin - (D.CAMERAS[name].yaw + 0.3)) < 1e-12);
+    for (let i = 0; i < 40; i++) g = D.orbitBy(name, g, 0, -D.ORBIT_STEP, false);
+    assert.ok(Math.abs(D.camera(name, 0, g).pitch - D.PITCH_RANGE[0]) < 1e-12, "the planes never go edge-on");
+  }
+  // the global scene draws at any orbit
+  const lay = L.layoutGraph(global);
+  for (const o of [{ x: 0.5, y: 0.3 }, { x: -1, y: -0.5 }]) {
+    const pl = D.projectLayout(global, lay, D.camera("iso", 0, o));
+    assert.ok(finiteDeep([...pl.pos.values()]) && finiteDeep(S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off" }).items));
+  }
+  assert.ok(D.ORBIT_STEP > 4 * DEG && D.ORBIT_STEP < D.YAW_STEP);
+});
+
+test("2026-11-12: you float in front of the inside: nearer than the surface behind you at every orbit", () => {
+  const la = L.layoutGraph(alpha), user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
+  const home = D.projectLayout(alpha, la, D.camera("tilt"));
+  for (const name of ["tilt", "iso"]) for (const [ox, oy] of [[0, 0], [-24, 24], [24, -16], [40, 30], [-40, -30], [0, 30]]) {
+    const DEG = Math.PI / 180, o = D.orbitBy(name, null, ox * DEG, oy * DEG, true), cam = D.camera(name, 0, o);
+    const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame, Rs = pa.bowl.R, you = pa.bowl.you, at = `${name} ${ox},${oy}`;
+    assert.ok(Math.abs(fr.alpha - D.bowlTilt(cam)) < 1e-12 && Math.abs(fr.beta - D.bowlTurn(cam)) < 1e-12, `${at}: the frame is the orbit's`);
+    // you, up the axis toward the opening, are nearer the camera than the middle and than every role, drawn after them
+    assert.ok(Math.abs(Math.hypot(you.x, you.y, you.z) - D.YOU_LIFT) < 1e-12 && you.z > 0.1, `${at}: toward the camera`);
+    const yp = pa.pos.get(user.id);
+    // and in front of the inner surface: the wall seen behind you (along the line of sight) is well behind you
+    const wall = SP.bowlSurfaceAt(fr, yp.x / Rs, yp.y / Rs);
+    assert.ok(wall && you.z - wall.z > 0.9, `${at}: the wall behind you is ${(you.z - (wall?.z ?? 0)).toFixed(2)} radii behind`);
+    for (const n of roles) {
+      const s = pa.surfaceOf.get(n.id), u = SP.bowlPoint(fr, s.theta, s.phi), p = pa.pos.get(n.id);
+      assert.ok(u.z < you.z - 0.3, `${at}: ${n.label} behind you`);
+      assert.ok(SP.bowlSeen(fr, u) <= 0.86 + 1e-6 && SP.bowlKept(fr, u), `${at}: ${n.label} still seen through the rim`);
+      assert.ok(pa.order.indexOf(n) < pa.order.indexOf(user) && pa.scaleOf.get(user.id) > pa.scaleOf.get(n.id) * 1.12, `${at}: you drawn over ${n.label}, larger`);
+      // you never hide a role: it is clear of your disc on screen
+      const gap = Math.hypot(p.x - yp.x, p.y - yp.y) - user.visual.r * pa.scaleOf.get(user.id) - n.visual.r * pa.scaleOf.get(n.id);
+      assert.ok(gap > 0, `${at}: ${n.label} clear of you by ${gap.toFixed(1)}`);
+      // and a role keeps its place on the surface as the camera orbits, unless the view or you made it move down
+      if (name === "tilt") assert.ok(s.theta <= home.surfaceOf.get(n.id).theta + 1e-9 && Math.abs(s.phi - home.surfaceOf.get(n.id).phi) < 1e-9, `${at}: ${n.label} kept its azimuth, no higher`);
+    }
+    // the scene: a plumb line from you down to the bottom, your shadow where the light's line through you meets the
+    // wall, every ring of latitude drawn whole
+    const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    assert.ok(finiteDeep(sc.items), `${at}: no NaN`);
+    const plumb = sc.items.find((it) => it.id === "bowl-plumb"), pole = SP.bowlProject(fr, fr.pole);
+    assert.ok(plumb && Math.hypot(plumb.cmds[0][1] - yp.x, plumb.cmds[0][2] - yp.y) < 1e-6, `${at}: the plumb line starts at you`);
+    assert.ok(Math.hypot(plumb.cmds[1][1] - Rs * pole.x, plumb.cmds[1][2] - Rs * pole.y) < 1e-6 && sc.items.some((it) => it.id === "bowl-foot"), `${at}: and stands at the bottom`);
+    const sh = SP.bowlShadowAt(fr, you);
+    assert.ok(Math.abs(Math.hypot(sh.x, sh.y, sh.z) - 1) < 1e-9 && SP.bowlKept(fr, sh) && sh.z < you.z - 0.5, `${at}: your shadow on the wall, behind you`);
+    const low = Math.min(...Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72)));
+    assert.ok(SP.bowlRings(fr).length >= 2 && SP.bowlRings(fr).every((t) => t < low), `${at}: the rings drawn are whole`);
+    assert.equal(sc.items.find((it) => it.id === "bowl-rings").cmds.filter((c) => c[0] === "M").length, SP.bowlRings(fr).length);
+    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 500, `${at}: the bowl's budget holds`);
+  }
+  // at the middle (no lift) the shadow is where it always was: the point opposite the light
+  const fr = home.bowl.frame, L0 = SP.bowlShadowLight(fr), s0 = SP.bowlShadowAt(fr);
+  assert.ok(Math.hypot(s0.x + L0.x, s0.y + L0.y, s0.z + L0.z) < 1e-12);
 });

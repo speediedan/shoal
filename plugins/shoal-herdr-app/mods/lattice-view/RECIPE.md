@@ -73,24 +73,34 @@ you, per-shoal throughput and per-host load.
   (auth, then a question, a prompt, a design call, an empty queue, a stalled session), then the roles spiral back by what
   they are doing (a turn, their own job, a hand-over, waiting on others, idle with work queued, idle), then by how fresh
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
-  turn the camera 15 degrees. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
+  turn the camera 15 degrees. The arrow keys orbit it 8 degrees a press: left and right turn it round as `,` and `.`
+  do, up and down raise and lower it (its pitch held between 24 and 80 degrees, so the planes never go edge-on);
+  shift with an arrow pans, as a plain arrow does in flat. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
-- **Depth, per shoal: the cutout sphere.** `you` sits at the middle of a sphere whose near part is cut away, and the
-  camera looks down into the bowl that is left and in from the side, in perspective: it hangs 2.4 radii from the
-  middle, and the bowl's axis is turned off the line of sight by the camera's pitch less 24 degrees vertically (28 in
-  tilt, 34 in iso) and 30 degrees horizontally, so the bowl's bottom lies below and beside you. The cut is a slanted
+- **Depth, per shoal: the cutout sphere.** `you` floats on the axis of a sphere whose near part is cut away, 0.28 radii
+  up from its middle toward the opening, and the camera looks down into the bowl that is left and in from the side, in
+  perspective: it hangs 2.4 radii from the middle, and the bowl's axis is turned off the line of sight by the camera's
+  pitch less 24 degrees vertically (28 in tilt, 34 in iso) and 30 degrees horizontally, so the bowl's bottom lies below
+  and beside you. The arrow keys orbit the camera round the bowl, 8 degrees a press: up and down tip its axis further
+  or less down the screen (10 to 50 degrees, so from straight into the bowl to well over its side), left and right turn
+  it round the screen's vertical (within 40 degrees either way), and the bowl never flips. You are nearer the camera
+  than the middle, so from an oblique angle you stand visibly off the wall behind you: a dashed plumb line drops from
+  you down the axis to a small ring at the bottom, your shadow lands where the light's line through you meets the wall,
+  and an arrowhead is sized with the node it is at, so an edge from you narrows to a smaller head on the far wall and
+  reads as pointing away, into the bowl. A role keeps its place on the surface as the camera orbits (where the preset
+  puts it), moved down the wall only to stay in view or clear of you. The cut is a slanted
   plane: the far wall keeps a hemisphere's rim, the near wall is cut lower, to just short of where the camera would
   see over it, so the near wall's outside shows as a thin crescent under the lip. The wall has a thickness, so the
   opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
   the inner surface, lit opposite to a ball: the light pools lower right (in 44 faint layers so no band shows) and the
   wall under the upper-left lip is in its shade. Four rings round the bottom each bound a cap a little darker, so the
-  inside recedes to the bottom, with eight faint meridians; your small soft shadow falls near the bottom, just down
-  and right of your foot on the axis. The hosts' lunes,
+  inside recedes to the bottom, with eight faint meridians (orbited far round the side, a ring the cut would break is
+  left out); your small soft shadow falls near the bottom, just down and right of your foot on the axis. The hosts' lunes,
   pole to rim, tile that whole surface: each over its sector of the flat view widened to the middle of the gaps either
   side, so together they make a whole turn, washed lightly and outlined in the host color (the home host first, from
   the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
   rows from four roles), each kept inside the rim and at least 0.2 radii behind you; they shrink and fade with their
-  depth, and you are drawn nearest and largest (1.25 times flat). Outside seats ring the rim, in the cut's plane,
+  depth, and you are drawn nearest and largest (1.25 times flat, times your perspective). Outside seats ring the rim, in the cut's plane,
   outside it; a CI tether ends in the middle of its host's lune. Edges and arrows are drawn over the
   bowl, with the depth casing. Labels in the bowl get the same readable ink against its inside. `,` and `.` turn the
   bowl about its axis. Flat per shoal is unchanged (the ring of host sectors).

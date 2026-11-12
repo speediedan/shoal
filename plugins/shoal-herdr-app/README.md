@@ -108,7 +108,8 @@ card stays inside the canvas, flipping left of or above its node near an edge. `
 closes the legend, then goes back to the home view (the `shoal` prop's shoal, else global); `g`
 toggles the global view; `l` legend (it shows the motion tier), `m`
 cycles the motion tier, `f` lays the view out afresh and fits every node, label and cluster ring
-inside the canvas, `i` items, `+`/`-` zoom, arrows pan. Node positions are kept across polls: a
+inside the canvas, `i` items, `+`/`-` zoom, arrows pan (in depth mode, `d`, the arrows orbit the
+camera instead and shift with an arrow pans; `,` and `.` turn it). Node positions are kept across polls: a
 poll with the same nodes moves nothing, and a new node is placed without moving the rest. With `"focusable": true`, `pane.go` reaches the pane.
 
 ### Motion budget
