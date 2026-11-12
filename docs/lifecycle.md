@@ -125,8 +125,9 @@ of its start doc. Relative overrides resolve against the group's working directo
 document directory must contain the start doc and stay inside its repository.
 
 The hook command is split into argv using shell-style quoting, with no implicit shell. Its first executable must
-resolve before anything is removed. Relative executable paths resolve against the repository root, which is also
-the hook's working directory. A hook can explicitly invoke a shell if needed. It inherits the caller's environment,
+resolve before anything is removed: a relative path containing a slash resolves against the repository root, a bare
+name is looked up on `PATH`. The repository root is also the hook's working directory. A hook can explicitly invoke
+a shell if needed. It inherits the caller's environment,
 with these five injected values:
 
 | Variable | Value |
