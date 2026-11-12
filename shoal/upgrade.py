@@ -2,7 +2,11 @@
 """`shoal upgrade`: roll shoal/ tooling and feature flags into a LIVE shoal (architecture doc §11).
 
   shoal upgrade --spec S [--enable a.b] [--disable a.b] [--set a.b=JSON] [--rearm lazy|now]
-                 [--skip-selftests] [--allow-dirty] [--dry-run]
+                 [--skip-selftests] [--allow-dirty] [--pull] [--dry-run]
+  shoal upgrade --pull-only [--dry-run]     # fast-forward this host's checkout only (what --pull runs per host)
+
+`--pull` fast-forwards the git checkout shoal runs from, here and on every other host the shoal's roles run on, then
+re-executes the upgrade on the code just pulled.
 
 Every change has one rollout class, and this command says which apply:
   live     loaded per run or per invocation (health, digest, matcher, report, next, queue):
@@ -188,9 +192,80 @@ def run_selftests() -> tuple[bool, str]:
     return True, "selftests passed: " + ", ".join(SELFTESTS)
 
 
+def pull_here(dry_run: bool = False) -> tuple[int, str, bool]:
+    """(rc, what happened, moved) for a fast-forward of the git checkout shoal runs from (this file's), to its branch's
+    upstream. Infrastructure neutral: any install that runs shoal from a clone. Refused on uncommitted tracked
+    changes, a detached HEAD or no upstream, and when it cannot fast-forward (a diverged branch is the operator's)."""
+    top = git("rev-parse", "--show-toplevel")
+    if not top:
+        return 2, "not a git checkout: --pull needs shoal running from a clone (a package install upgrades its own way)", False
+    if git("status", "--porcelain", "--untracked-files=no"):
+        return 1, f"{top}: uncommitted changes: commit or stash them first (a pull would mix them into the upgrade)", False
+    if not git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"):
+        return 1, f"{top}: the branch has no upstream to pull from", False
+    old = git("rev-parse", "--short=12", "HEAD")
+    if dry_run:
+        r = subprocess.run(["git", "fetch", "--quiet"], capture_output=True, text=True, timeout=120, cwd=HERE)
+        behind = git("rev-list", "--count", "HEAD..@{u}") if r.returncode == 0 else "?"
+        return 0, f"{top}: would fast-forward {old} ({behind} commit(s) behind its upstream)", False
+    r = subprocess.run(["git", "pull", "--ff-only", "--quiet"], capture_output=True, text=True, timeout=300, cwd=HERE)
+    if r.returncode != 0:
+        return 1, f"{top}: pull refused ({(r.stderr or r.stdout).strip()[-200:]}): resolve it by hand", False
+    new = git("rev-parse", "--short=12", "HEAD")
+    return 0, (f"{top}: {old} -> {new}" if new != old else f"{top}: already at {new}"), new != old
+
+
+def pull_hosts(spec, dry_run: bool = False) -> int:
+    """Fast-forward the checkout on every other host that runs one of the shoal's roles, through its route
+    (`shoal upgrade --pull-only` there). A host still on a shoal without the flag is pulled by hand once."""
+    import routes
+    from roles import host_of
+    here = config.server()
+    rc = 0
+    for host in sorted({host_of(r, spec) for r in spec.roles} - {here, "", None}):
+        r = routes.route(host)
+        if r is None:
+            print(f"pull {host}: no [hosts] route: pull its checkout by hand")
+            rc = 1
+            continue
+        cmd = routes.remote_cmd(r, "upgrade", "--pull-only", *(["--dry-run"] if dry_run else []))
+        try:
+            out = subprocess.run(routes.ssh_argv(r) + [cmd], capture_output=True, text=True, timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"pull {host}: unreachable ({exc})")
+            rc = 1
+            continue
+        text = (out.stdout + out.stderr).strip()
+        if out.returncode != 0 and "unrecognized arguments" in text:
+            print(f"pull {host}: its shoal predates --pull-only: pull its checkout by hand this once")
+        else:
+            print(f"pull {host}: " + (text.splitlines()[-1] if text else f"rc={out.returncode}"))
+        rc = rc or (1 if out.returncode else 0)
+    return rc
+
+
 def cmd_upgrade(a) -> int:
+    if getattr(a, "pull_only", False):
+        rc, what, _ = pull_here(a.dry_run)
+        print(what)
+        return rc
     path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
+    if getattr(a, "pull", False):
+        # the checkouts first, everywhere the shoal runs; then the upgrade itself runs on the code just pulled
+        rc, what, moved = pull_here(a.dry_run)
+        print(f"pull {config.server() or 'here'}: {what}")
+        if rc:
+            return rc
+        if pull_hosts(spec, a.dry_run):
+            print("ERROR: a host's checkout was not pulled: fix it, then upgrade again" if not a.dry_run
+                  else "note: a host's checkout would not be pulled")
+            if not a.dry_run:
+                return 1
+        if moved and not a.dry_run:
+            argv = [x for x in sys.argv if x != "--pull"]
+            sys.stdout.flush()
+            os.execv(sys.executable, [sys.executable, os.path.join(HERE, "cli.py"), *argv[1:]])
     pkgdir = rel_pkg()
     sha = git("rev-parse", "--short=12", "HEAD")
     dirty = git("status", "--porcelain", "--", ".")
@@ -315,5 +390,10 @@ def add_parser(sub) -> None:
     p.add_argument("--restart-note", default="", help="declare a change that needs a restart (printed, not done)")
     p.add_argument("--skip-selftests", action="store_true")
     p.add_argument("--allow-dirty", action="store_true")
+    p.add_argument("--pull", action="store_true",
+                   help="first fast-forward shoal's checkout here and on every host the shoal's roles run on, then "
+                        "upgrade on the code just pulled")
+    p.add_argument("--pull-only", action="store_true", help="only fast-forward this host's checkout (what --pull runs on "
+                                                            "each host)")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_upgrade)

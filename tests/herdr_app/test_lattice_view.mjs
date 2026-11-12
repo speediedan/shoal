@@ -120,7 +120,8 @@ test("edge bucketing by color x tier (and cross-host dash)", () => {
   const cross = alpha.edges.find((e) => e.id === `${A}:core|${A}:scribe|msg`);
   assert.ok(cross.cross, "host-a -> host-b edge is cross-host");
   assert.deepEqual(seen.get(cross.id).dash, M.CROSS_HOST_DASH);
-  assert.equal(seen.get(`${A}:core|${A}:dist-ci|msg`).dash, null);
+  // a single shoal keeps its own edges; the multi-shoal view merges each pair (its own test below)
+  assert.equal(M.edgeBuckets(alpha.edges).find((b) => b.edges.some((e) => e.id === `${A}:core|${A}:dist-ci|msg`)).dash, null);
   const keep = M.incidentEdges(global, `${A}:tune`);
   const faded = M.edgeBuckets(global.edges, keep);
   assert.ok(faded.some((b) => b.tier === "fade"));
@@ -130,9 +131,48 @@ test("edge bucketing by color x tier (and cross-host dash)", () => {
   assert.ok(!global.edges.some((e) => e.cls === "broadcast"));
 });
 
+test("the multi-shoal view merges each pair into one edge with both directions in its card", () => {
+  const ids = global.edges.map((e) => [e.src, e.dst].sort().join("|"));
+  assert.equal(new Set(ids).size, ids.length, "one edge per pair of nodes");
+  const mk = (src, dst, cls, n1, n24, tier = "warm") => ({ id: `${src}|${dst}|${cls}`, src, dst, cls, tier, color: "#fff", bend: 0.14,
+    rate: n1, n_rate: 0, n_1h: n1, n_24h: n24, last_age_s: 60, shoal: "s", flow: false, flowMs: 0, cross: false, stale: false,
+    open: null, recent: [{ summary: `${src}->${dst}`, age_s: 60 }] });
+  const [m] = M.mergePairs([mk("s:a", "s:b", "msg", 2, 5), mk("s:b", "s:a", "ask", 1, 1, "hot"), mk("s:a", "s:b", "offer", 0, 1, "cold")]);
+  assert.equal(m.id, "s:a|s:b|pair");
+  assert.equal(m.cls, "ask", "drawn as its most important class");
+  assert.equal(m.tier, "hot", "its hottest tier");
+  assert.equal(m.heads, "both", "traffic both ways: arrowheads at both ends");
+  assert.deepEqual([m.n_1h, m.n_24h], [3, 7]);
+  assert.deepEqual([m.dirs.fwd.n_24h, m.dirs.back.n_24h], [6, 1]);
+  assert.deepEqual(m.dirs.fwd.classes.sort(), ["msg", "offer"]);
+  const one = M.mergePairs([mk("s:b", "s:a", "msg", 1, 2)])[0];
+  assert.equal(one.heads, "src", "a reverse-only pair points back at its source end");
+  // the card shows each direction on its own row
+  const vm = { edges: [m], byId: new Map([["s:a", { label: "a", host: "h1" }], ["s:b", { label: "b", host: "h1" }]]) };
+  const card = M.edgeCardLines(vm, m.id);
+  assert.equal(card.title, "a ↔ b");
+  assert.ok(card.rows.some(([k, v]) => k === "a → b" && v.startsWith("2 / 6")), JSON.stringify(card.rows));
+  assert.ok(card.rows.some(([k, v]) => k === "b → a" && v.startsWith("1 / 1") && v.includes("ask")), JSON.stringify(card.rows));
+  // a single shoal keeps its per-class edges
+  assert.ok(alpha.edges.some((e) => e.id.endsWith("|msg")) && !alpha.edges.some((e) => e.id.endsWith("|pair")));
+});
+
+test("an open ask reads as an ask over a CI wait, and a seat's card names its host", () => {
+  const role = (event, asks) => ({ id: "s:r", kind: "role", state: { class: "wait", event, needs_you: asks.length > 0 }, work: { asks } });
+  assert.equal(M.stateKey(role("local-ci", ["merge it?"])), "ask");
+  assert.equal(M.stateKey(role("local-ci", [])), "local-ci");
+  assert.equal(M.stateKey(role("user-prompt", ["x?"])), "prompt", "a wait that already needs you keeps its look");
+  const d = structuredClone(doc);
+  d.nodes.push({ id: "ext:seat", kind: "external", label: "seat", host: "host-z", saved: true,
+    standalone: { harness: "claude", id: "abcd1234", state: "alive", dismissed: false }, state: { class: "unknown" }, metrics: {} });
+  const vm = M.buildModel(d, "global");
+  assert.ok(M.cardLines(vm, "ext:seat").rows.some(([k, v]) => k === "host" && v === "host-z"));
+});
+
 test("blocked-on edges present; alias edge in global view only", () => {
   const bo = (vm) => vm.edges.filter((e) => e.cls === "blocked-on").map((e) => e.id).sort();
-  assert.deepEqual(bo(global), [`${A}:core|${A}:dist-ci|blocked-on`, `${B}:research|${B}:analysis|blocked-on`]);
+  // the multi-shoal view merges each pair into one edge, drawn as its most important class (a blocker)
+  assert.deepEqual(bo(global), [`${A}:core|${A}:dist-ci|pair`, `${B}:analysis|${B}:research|pair`]);
   assert.deepEqual(bo(alpha), [`${A}:core|${A}:dist-ci|blocked-on`]);
   assert.ok(global.edges.some((e) => e.cls === "alias"));
   assert.ok(!alpha.edges.some((e) => e.cls === "alias"));
@@ -305,12 +345,13 @@ test("feed contract deltas: writer nodes, structural/stale/cross_host edges, sta
     assert.ok(finiteDeep(sc.items));
   }
   const vm = M.buildModel(d, "global");
-  const e = vm.edges.find((x) => x.id === bo.id);
+  // per-class edges are a single shoal's (the multi-shoal view merges each pair)
+  const e = M.buildModel(d, B).edges.find((x) => x.id === bo.id);
   assert.equal(e.tier, "stale");
   assert.equal(e.last_age_s, null);
   assert.equal(M.edgeBuckets([e])[0].coreAlpha, M.TIER_STYLE.stale.coreAlpha);
   assert.ok(M.TIER_STYLE.stale.coreAlpha < M.TIER_STYLE.struct.coreAlpha, "stale blockers draw fainter");
-  assert.equal(vm.edges.find((x) => x.id === `${A}:core|${A}:scribe|msg`).cross, false, "the feed's cross_host wins");
+  assert.equal(M.buildModel(d, A).edges.find((x) => x.id === `${A}:core|${A}:scribe|msg`).cross, false, "the feed's cross_host wins");
   const card = M.cardLines(vm, `${A}:tune`);
   assert.ok(card.rows.find(([k]) => k === "state")[1].startsWith("~ "), "status readings are marked");
   assert.ok(card.rows.some(([k, v]) => k === "quality" && v.includes("no-native-probe")));
@@ -1119,8 +1160,8 @@ test("2026-11-08: replay speeds, rates per 24 h, the edge card's 1 h / 24 h", ()
   assert.equal(R.replayAdvance(rm) * (1000 / R.REPLAY_TICK_MS) * 32, 86400);
   assert.equal(R.replayAdvance(rm, 3.2) / R.replayAdvance(rm, 32), 10, "a picked speed");
   assert.deepEqual(R.REPLAY_SPEEDS.map((s) => s.day_s), [96, 32, 11, 3.2]);
-  const e = global.edges.find((x) => x.n_24h > 0) ?? global.edges[0];
-  const card = M.cardLines(global, e.id);
+  const e = alpha.edges.find((x) => x.n_24h > 0) ?? alpha.edges[0];
+  const card = M.cardLines(alpha, e.id);
   assert.deepEqual(card.rows[0], ["1h / 24h", `${e.n_1h} / ${e.n_24h}`]);
   assert.ok(!card.rows.some(([k]) => k === "rate"));
   assert.ok(M.hostSummaries(global).every((h) => typeof h.msgs24 === "number"));

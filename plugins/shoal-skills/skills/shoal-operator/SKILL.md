@@ -39,7 +39,8 @@ registered session, a live one, or one whose worktree still exists.
 
 `shoal upgrade --spec <spec> --dry-run` first. It names each change's rollout class (live, re-arm,
 brief, restart), runs the selftests and applies feature edits. A restart class is never done by
-`upgrade`: follow it with `restart --only`.
+`upgrade`: follow it with `restart --only`. `--pull` fast-forwards shoal's checkout here and on the
+shoal's other hosts first, so a merged change is rolled out in one command.
 
 ## Offline and back
 

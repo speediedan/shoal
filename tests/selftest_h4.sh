@@ -993,6 +993,7 @@ OUT=$($H upgrade --spec "$SPEC" --rearm now --skip-selftests --allow-dirty --dry
 grep -q "re-arm (ledger-watch): " <<<"$OUT" || fail "upgrade lost its ledger-watch re-arm class :: $OUT"
 ! grep -qi "relay" <<<"$OUT" || fail "upgrade still plans a relay re-arm :: $OUT"
 [ "$(rc_of $H upgrade --spec "$SPEC" --rearm-verify-s 2 --skip-selftests --dry-run)" = 2 ] || fail "--rearm-verify-s still parses"
+python3 "$TESTD/test_upgrade_pull.py" || fail "upgrade --pull (tests/test_upgrade_pull.py)"
 
 echo "== 18 liveness from turn state; candidates shown to a role idle behind blocked next items"
 # Claude: `status` reads busy while any background task (the role's own ledge-watch) runs, so only

@@ -871,8 +871,12 @@ configured repository from the same store, with no provider call.
 
 ## 10. Live upgrades
 
-`shoal upgrade --spec <spec> [--dry-run]` says how each change reaches a running group before it
-changes anything:
+`shoal upgrade --spec <spec> [--pull] [--dry-run]` says how each change reaches a running group before it
+changes anything. `--pull` first fast-forwards shoal's own checkout, here and on every other host the shoal's roles run
+on (`upgrade --pull-only` over each `[hosts]` route), then upgrades on the code just pulled (it re-executes itself):
+for any install that runs shoal from a git clone, with no configuration management of its own. It refuses a checkout
+with uncommitted tracked changes, a detached HEAD, no upstream, or one that cannot fast-forward. A host whose shoal
+predates `--pull-only` is pulled by hand once.
 
 | class | what | how it arrives |
 | --- | --- | --- |
@@ -1177,7 +1181,11 @@ and the contract are in [`ui.md`](ui.md).
   count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
   which event, and the legend lists what is on screen, with the full key a click away. A research or prototyping run
   (`wait:research-proto`, role-time group `research`) spins like a CI wait but reads apart from both: a dashed outline, a
-  wide hatch and `⚗`. Each role's active, next and
+  wide hatch and `⚗`. A role waiting on something that does not need you (its own CI) but holding an open ask reads
+  as an ask. The multi-shoal view draws one edge per pair of nodes (`model.mergePairs`): every class and both
+  directions merge into it, drawn as its most important class (a blocker, then an ask) at its hottest tier, with an
+  arrowhead at each end that receives traffic, and its hover card gives each direction's counts and kinds; a single
+  shoal keeps its edges per class. A standalone seat's card names the host it runs on. Each role's active, next and
   recently done items are satellites on short spokes: a next item with a recorded blocker is a ring, a stale
   blocker red, and a hover shows the item's card (its title, what it waits on, how many are queued past those
   drawn) while a click opens its issue (an `http` or `https` link only, since a role writes it). A ring is the

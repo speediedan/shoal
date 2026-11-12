@@ -266,6 +266,11 @@ row's list, passed through when the row has one, else omitted (likewise the shoa
 | `blocked-on` | a role's next item whose blocker names another role of the shoal (`<role>:<item>` or `role:<role>`); no event needed, `structural: true`, `stale` when every such blocker is stale |
 | `alias` | an outside seat to the role it aliases; `structural: true`, `shoal: null` |
 
+The feed keeps one edge per direction and class. The lattice's multi-shoal view draws one per pair of nodes: every
+class and both directions merge into it (drawn as its most important class, a blocker first, then an ask, at its
+hottest tier, with an arrowhead at each end that receives traffic), and its hover card lists each direction's
+`1h / 24h` counts and kinds. A single shoal's view keeps its edges per class.
+
 `n_rate`, `n_1h` and `n_24h` count events within the rate window (`--window-rate`, default 300 s),
 an hour and a day. `rate_per_h` is an exponentially weighted rate with a one-hour half-life
 (`ln 2` times the sum of `2^(-age_h)` over the day's events), so a steady r per hour reads r and a
@@ -839,7 +844,9 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home, and the
   `usage` tab (the `shoal-usage` dashboard: a card per provider with each window's meter, reset and pace, the tightest
   meter first, and panels by shoal, role and standalone seat that fill in once per-session usage is recorded), and the
-  `board` tab (below). The sidebar does not list it: the top bar's Home, Lattice, Board and Usage reach it. The terminal a new space must start with
+  `board` tab (below). The sidebar does not list it: the top bar's Home, Lattice, Board and Usage reach it, and for the
+  same reason its tab strip shows only `home` (the `lattice`, `board` and `usage` tabs stay, out of the strip, and those
+  buttons select them). The terminal a new space must start with
   (`launch`) is closed once Home stands in for it. In a Herdr app terminal, `shoal ui launch` opens the chosen host in
   the app instead of starting a 0.9.3 client.
 - **The graph feed.** `app-install` writes and starts `shoal-graph-feed.service` (`shoal ui graph-feed`);

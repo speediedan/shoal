@@ -81,6 +81,15 @@ export function fitText(text, maxW, size) {
   return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }
 const textW = (s, size) => String(s).length * size * 0.6;
+
+/** An edge's arrowheads: at its destination (the default), at its source, at both ends (a merged pair carrying
+ * traffic both ways), or none. */
+function headsAt(e, c, size) {
+  const back = { p0: c.p3, c1: c.c2, c2: c.c1, p3: c.p0 };
+  const at = e.heads ?? "dst";
+  return at === "both" ? [arrowHead(c, size), arrowHead(back, size)] : at === "src" ? [arrowHead(back, size)]
+    : at === "none" ? [] : [arrowHead(c, size)];
+}
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 /** The host lune of the bowl seen at offsets (nx, ny) in radii, or null outside the rim: the inner surface's point
@@ -383,7 +392,7 @@ export function buildScene(vm, lay, opts) {
     if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
     items.push({ t: "path", id: `ec-${bk.key}`, fill: false, width: bk.core, dash: bk.dash, cmds, bg: solid(withAlpha(bk.color, coreAlpha)) });
     if (bk.cls !== "alias") {
-      const heads = bk.edges.flatMap((e) => polygonCmds(arrowHead(curves.get(e.id), bk.arrow)));
+      const heads = bk.edges.flatMap((e) => headsAt(e, curves.get(e.id), bk.arrow).flatMap((h) => polygonCmds(h)));
       if (casing) items.push({ t: "path", id: `eak-${bk.key}`, fill: false, width: 1.6, cmds: heads, bg: solid(withAlpha(P.void, casing.alpha)) });
       items.push({ t: "path", id: `ea-${bk.key}`, fill: true, cmds: heads, bg: solid(withAlpha(bk.color, Math.min(1, coreAlpha + 0.1))) });
     }
