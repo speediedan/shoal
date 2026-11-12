@@ -401,9 +401,13 @@ export function buildScene(vm, lay, opts) {
     if (!o) continue;
     const dim = dimOf(o.id);
     const a = S({ x: s.ax, y: s.ay }), b = S(s);
-    const color = s.kind === "active" ? withAlpha(o.visual.color, 0.95 * dim) : s.stale ? withAlpha(P.red, 0.85 * dim) : withAlpha(o.tint, (s.kind === "next" ? 0.9 : 0.5) * dim);
+    // a next item still blocked (its blocker as recorded, or only past its daily re-check) is a ring in the board's
+    // blocked color: in the role's own tint it read as free work (2026-11-11). One whose blocker cleared is red: work due
+    const cleared = s.stale && s.staleKind !== "expired";
+    const ring = s.kind === "next" && s.blocker && !cleared;
+    const color = s.kind === "active" ? withAlpha(o.visual.color, 0.95 * dim) : ring ? withAlpha(P.magenta, 0.9 * dim)
+      : cleared ? withAlpha(P.red, 0.85 * dim) : withAlpha(o.tint, (s.kind === "next" ? 0.9 : 0.5) * dim);
     const sr = s.r * clamp(Math.sqrt(k), 0.7, 1.4);
-    const ring = s.kind === "next" && s.blocker && !s.stale;
     const into = ring ? satRing : satFill;
     // a ring's spoke stops at its rim
     const len = Math.hypot(b.x - a.x, b.y - a.y), cut = ring && len > sr ? (len - sr) / len : 1;

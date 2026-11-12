@@ -120,7 +120,11 @@ python3 - "$S/data/$SID/board_digest.json" "$TOP" <<'PY' || fail "routing bonus 
 import json,sys; d=json.load(open(sys.argv[1])); top=sys.argv[2]
 row=[r for r in d["roles"]["tl"] if r["item"]==top]
 assert row and any(w.startswith("routed") for w in row[0]["why"]), row
-assert all(r["item"]!=top for r in d["roles"]["up"]), "decliner still sees its declined item"
+# the decliner sees its declined item only as a weak fallback, after every fresh candidate (capacious fill)
+up = d["roles"]["up"]
+mine = [i for i, r in enumerate(up) if r["item"] == top]
+assert all(up[i].get("declined") == "out-of-lane" and up[i]["strong"] is False for i in mine), up
+assert all(i > j for i in mine for j, r in enumerate(up) if not r.get("declined")), "a fallback ranks after fresh rows"
 PY
 
 echo "== 5 ledger-watch reads the digest (no board call) and records its exit verdict"
@@ -1026,7 +1030,7 @@ check "status=idle" $Q --slug tl --idle --next app#9802,app#9803 \
   --blocked "app#9802=hold:x" --blocked "app#9803=up:app#9301"
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
 grep -q "^BOARD app#80" <<<"$OUT" || fail "no candidates for a role idle behind blocked next items :: $OUT"
-grep -q "^TAKE BOARD WORK" <<<"$OUT" || fail "a fill=self role idle behind blocked items is not told to take board work :: $OUT"
+grep -q "^RETURN BLOCKED WORK: .*--pass app#9802:blocked --pass app#9803:blocked" <<<"$OUT" || fail "a fill=self role behind blocked items is not told to return them and take board work :: $OUT"
 grep -q "short queue: [1-9][0-9]* eligible candidate" <<<"$(tail -1 $A/shoals/$SID/ledger/tl.jsonl)" \
   || fail "default reason claims no eligible items beside candidates :: $(tail -1 $A/shoals/$SID/ledger/tl.jsonl)"
 # three unblocked next items and an active one: the queue is full, no candidates
@@ -1034,7 +1038,7 @@ check "status=active" $Q --slug tl --active app#9801:fix \
   --next app#9802,app#9803,app#9804 --blocked "app#9802=" --blocked "app#9803="
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
 ! grep -q "^BOARD " <<<"$OUT" || fail "candidates shown for a full queue :: $OUT"
-! grep -q "^TAKE BOARD WORK" <<<"$OUT" || fail "told to take board work with an active item :: $OUT"
+! grep -q "^RETURN BLOCKED WORK" <<<"$OUT" || fail "told to return blocked work with no blocked item :: $OUT"
 # --peek never claims to have marked mail read
 $H msg --shoal $SID --spec "$SPEC" --by up --to tl --text "peek probe" --no-sync >/dev/null
 check "left unread for the role" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
@@ -2423,6 +2427,7 @@ check "name a directory" $H refs
 echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head"
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
 python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.py)"
+python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
 check "name a start doc" $H doc-head
 
 echo "== 40 archive: reference-aware warm archive, restore and cold, one commit of exactly its paths, undone on a refused hook"

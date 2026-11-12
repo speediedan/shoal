@@ -613,14 +613,25 @@ class GraphBuilder:
             done_by: dict[str, list[dict]] = collections.defaultdict(list)
             per: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)  # by node id
             m = collections.Counter()
+            asked: dict[str, set] = {}  # a role's open asks as its last queue version had them
             for e in evs:
                 t = e.get("_t")
                 if t is None:
                     continue
+                typ, by = e.get("type"), e.get("by", "")
+                if typ == "queue" and by in slugs:
+                    # an ask is raised in a queue version, not a msg: a new one counts as a message to you, so a role
+                    # holding an open ask never reads 0 msgs to you in its window (maintainer, 2026-11-11). New against
+                    # its previous version, so the asks open when the window starts are not counted again
+                    now_asks = {str(a) for a in e.get("asks") or []}
+                    new = sorted(now_asks - asked[by]) if by in asked else []
+                    asked[by] = now_asks
+                    if new:
+                        e = dict(e, type="msg", to="user", kind="ask", text=new[0])
+                        typ = "msg"
                 age = now - t
                 if age >= WEEK_S:
                     continue
-                typ, by = e.get("type"), e.get("by", "")
                 if typ == "done":
                     m["done_7d"] += 1
                 if age >= DAY_S:
@@ -682,6 +693,7 @@ class GraphBuilder:
                     if n.get("blocker"):
                         x["blocker"] = n["blocker"]
                         x["stale"] = bool(n.get("stale"))
+                        x["stale_kind"] = n.get("stale_kind") or None
                         dst_role = blocker_role(n["blocker"], slugs)
                         if dst_role and dst_role != slug:
                             be = edge(nid, f"{sid}:{dst_role}", "blocked-on", sid, structural=True)

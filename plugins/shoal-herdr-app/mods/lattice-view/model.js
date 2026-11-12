@@ -408,7 +408,7 @@ export function roleItems(node, caps = { next: 4, done: 5 }) {
   const out = [];
   const active = work.active && typeof work.active === "object" ? work.active : null;
   if (active?.item) out.push({ kind: "active", item: active.item, url: webUrl(active.url), title: active.title ?? null });
-  for (const n of arr(work.next).slice(0, caps.next)) if (n?.item) out.push({ kind: "next", item: n.item, url: webUrl(n.url), blocker: n.blocker ?? null, stale: n.stale === true, title: n.title ?? null });
+  for (const n of arr(work.next).slice(0, caps.next)) if (n?.item) out.push({ kind: "next", item: n.item, url: webUrl(n.url), blocker: n.blocker ?? null, stale: n.stale === true, staleKind: typeof n.stale_kind === "string" ? n.stale_kind : null, title: n.title ?? null });
   for (const d of arr(work.done_recent).slice(-caps.done)) if (d?.item) out.push({ kind: "done", item: d.item, url: webUrl(d.url), ts: d.ts ?? null, title: d.title ?? null });
   return out;
 }

@@ -168,10 +168,17 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   candidates, or records why fewer. `next` shows candidates whenever the queue has an open slot: a
   next item with a recorded blocker holds no slot, and a role with no active item has one more.
   Without `--reason`, a short queue's default reason is checked against the candidates (`short
-  queue: N eligible candidate(s) not taken` when there are any). A `fill=self` role with no active item and every
-  next item blocked also gets `TAKE BOARD WORK` when an offer or a workable candidate is listed: a blocked queue is
-  not a reason to idle, so it takes an offer first, else the first candidate, and keeps the blocked items in `next`
-  with their blockers.
+  queue: N eligible candidate(s) not taken` when there are any). A `fill=self` role with blocked next items gets
+  `RETURN BLOCKED WORK` when an offer or a workable candidate is listed: blocked items do not hold places while there
+  is work to fill them, so it passes each back to the board (`--pass ITEM:blocked`), fills their places (an offer
+  first), and takes the first at once when it has no active item. It keeps a blocked item only when nothing listed is
+  workable (maintainer, 2026-11-11).
+- **Candidates are capacious.** A pass (`release --kind decline`, `queue --pass`) keeps a role off an item only for a
+  while (`ledger.DECLINE_LAPSE_H`: `blocked` a day, `out-of-lane` three days, the rest a week), and every pass made
+  before the role's latest fill change lapses at once. A role with fewer than `digest.FALLBACK_BELOW` ranked candidates
+  gets back, last and weak, the items it passed on as out of lane or blocked, so a fill=self queue stays full: an
+  imperfect lane match beats an idle role. `digest.candidates` fills its limit with weaker rows after the strong ones
+  instead of showing the strong ones alone.
 
 **The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),
 `idle`, `offline` or `parked`, from its last `state` event, else its queue version's `status`. It is the canonical
@@ -1177,9 +1184,11 @@ and the contract are in [`ui.md`](ui.md).
   count on the rail; the agents list reads it as idle). States use five colors by what you would do, badges and hatches say
   which event, and the legend lists what is on screen, with the full key a click away. A research or prototyping run
   (`wait:research-proto`, role-time group `research`) spins like a CI wait but reads apart from both: a dashed outline, a
-  wide hatch and `⚗`. Each role's active, next and
-  recently done items are satellites on short spokes: a next item with a recorded blocker is a ring, a stale
-  blocker red, and a hover shows the item's card (its title, what it waits on, how many are queued past those
+  wide hatch and `⚗`. Message counts (`n_1h`, `n_24h`, `msgs_*`) are counts in the window, and an ask raised in a
+  queue version counts as an `ask` message to you ([`ui.md`](ui.md)). Each role's active, next and
+  recently done items are satellites on short spokes: a next item with a recorded blocker is a ring in the Board's
+  blocked color (so is one only past its daily re-check, `stale_kind: expired`), one whose blocker cleared
+  (`resolved`) a red dot, and a hover shows the item's card (its title, what it waits on, how many are queued past those
   drawn) while a click opens its issue (an `http` or `https` link only, since a role writes it). A ring is the
   blocker as last recorded, judged stale by age as `ui status` does, so one that has cleared reads as held until
   re-recorded. A hover or
