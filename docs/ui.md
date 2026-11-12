@@ -217,7 +217,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
 - `system` (`<id>:shoal`, the `shoal` writer), with the shoal's home as `host`. The retired wake
   relay's writer folds into it, so its historical traffic stays counted without a node of its own.
 - `external` (`ext:<slug>`): an outside seat, from an `ext-<slug>.jsonl` writer file or an `ext:<slug>`
-  target. `alias_of` names `<other-shoal>:<slug>` when that slug is a role in another discovered shoal;
+  target with an event in the last day, or a saved standalone seat. `alias_of` names `<other-shoal>:<slug>` when that slug is a role in another discovered shoal;
   the seat then takes that role's state and host.
 - `writer`: any other edge or event endpoint (a removed role, a tool's own writer file), state unknown.
 

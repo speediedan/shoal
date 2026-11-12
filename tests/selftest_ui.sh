@@ -2048,6 +2048,7 @@ ev(A, "tune", 1500, "state", state="waiting", sub="user-auth", holder="image pus
 ev(A, "tune", 1500, "msg", to="user", text="approve image push scope?", kind="request")
 ev(A, "shoal", 3000, "msg", to="user", text="health: tune waits on you", kind="health")
 ev(A, "ext-evolution", 900, "msg", by="ext:evolution", to="core", text="a note from outside", kind="info")
+ev(A, "ext-oldseat", 86400 * 20, "state", by="ext:oldseat", state="idle")  # a writer file weeks old: off the picture
 ev(A, "wake-relay", 86400 * 2, "state", state="waiting", sub="queue-empty")
 ev(B, "shoal", 86400, "system", event="ledger-init")
 ev(B, "analysis", 7200, "msg", to="research", text="findings attached", kind="info")
@@ -2095,6 +2096,8 @@ for i, k in {"user": "user", f"{A}:shoal": "system", f"{A}:core": "role", f"{A}:
 assert not any(k in ("relay", "writer") for k in kinds.values()) and f"{A}:wake-relay" not in nodes, kinds
 # outside seats: aliased to the role of the same slug in another shoal, or not at all
 assert nodes["ext:research"]["alias_of"] == f"{B}:research" and nodes["ext:evolution"]["alias_of"] is None
+# an outside seat that last wrote weeks ago is not drawn: its writer file alone does not make a node
+assert "ext:oldseat" not in nodes, sorted(i for i in nodes if i.startswith("ext:"))
 # role state: role-time over the cached native status where there is one, the status where there is none
 st = lambda i: nodes[i]["state"]
 assert (st(f"{A}:core")["class"], st(f"{A}:core")["event"], st(f"{A}:core")["source"]) == ("work", "turn", "role-time"), st(f"{A}:core")

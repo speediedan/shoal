@@ -148,8 +148,10 @@ class LedgerTail:
     def offsets(self) -> dict[str, int]:
         return {k: st["off"] for k, st in self.files.items()}
 
-    def writers(self, sid: str) -> list[str]:
-        return [k.split("/", 1)[1][:-6] for k in self.files if k.split("/", 1)[0] == sid]
+    def writers(self, sid: str, since: float | None = None) -> list[str]:
+        """The writer files of one shoal; with `since`, only those with an event at or after it."""
+        return [k.split("/", 1)[1][:-6] for k, st in self.files.items() if k.split("/", 1)[0] == sid
+                and (since is None or any((e.get("_t") or 0) >= since for e in st["events"]))]
 
 
 def encode_cursor(offsets: dict[str, int], seq: int) -> str:
@@ -663,7 +665,9 @@ class GraphBuilder:
                         ext_seen.setdefault("ext:" + EXT_ALIAS.get(name[4:], name[4:]), set()).add(sid)
                 if dst is not None and cls in EDGE_CLASSES:
                     edge(src, dst, cls, sid).add(t, now, self.rate_s, e)
-            for w in self.tail.writers(sid):
+            # an outside seat's own writer file counts only while it wrote in the window: a seat that mailed this
+            # shoal weeks ago is not on the picture (measured 2026-11-12: seven October cross-shoal writers drawn)
+            for w in self.tail.writers(sid, since=now - DAY_S):
                 if w.startswith("ext-") and w not in slugs:
                     ext_seen.setdefault("ext:" + EXT_ALIAS.get(w[4:], w[4:]), set()).add(sid)
 
