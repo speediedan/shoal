@@ -3042,7 +3042,7 @@ node = lambda: next(n for n in ui_graph.GraphBuilder(root=root).build()["nodes"]
 n = node()
 assert n["state"]["dismissed"] is True and n["state"]["needs_you"] is False, n["state"]
 hub = next(x for x in ui_graph.GraphBuilder(root=root).build()["nodes"] if x["id"] == "user")
-assert hub["work"]["asks_open"] == 0, hub["work"]
+assert hub["work"]["asks_open"] == 2, hub["work"]   # the analysis role's two remain; the dismissed one is out
 assert n["work"]["asks"], "the ask itself is still there"
 # something new: a further ask raises it again
 p = os.path.join(GL, "shoals", GA, "ledger", "tune.jsonl")
