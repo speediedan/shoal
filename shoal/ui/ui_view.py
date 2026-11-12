@@ -40,6 +40,8 @@ STRIP_PREFIXES = ("HERDR_", "ZELLIJ")
 CARD_REFRESH_S = 15
 # a standalone card that reports its session: each refresh lists `claude agents` (about 0.4 s of CPU), so half a role card's rate
 SEAT_REFRESH_S = 30
+# a Muse or Codex seat's card reads its harness's status line (no listing): a declared wait or a turn shows within a minute
+NATIVE_SEAT_REFRESH_S = 60
 # measured 2026-10-12 under a pty: Ctrl+Z ends `claude attach` (exit 0) and Ctrl+C ends the opencode
 # client; the session keeps running either way, and the card comes back
 DETACH_HINT = "back: ctrl+z (claude), ctrl+c (opencode), q/esc (Muse live view); native Muse: /exit"
@@ -903,13 +905,20 @@ def standalone_stub(harness: str, session: str, label: str, host: str = "", job:
             _marks(ui_app, {ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: ""})
 
 
-def _seat_dismissed(label: str) -> bool:
-    """The seat is closed in the viewer (the registry's `dismissed`): its row goes in the agents list's Dismissed group."""
+def _seat_entry(label: str) -> dict:
+    """The seat's registry entry ({} when unreadable): its `dismissed` (closed in the viewer), `needs_dismissed` (a
+    dismissed reply) and declared `wait`."""
     try:
         import ui_herdr
-        return any((e.get("label") or e["session"][:12]) == label and e.get("dismissed") for e in ui_herdr.load_standalone())
+        return next((e for e in ui_herdr.load_standalone(raw=True)
+                     if not e.get("host") and (e.get("label") or e["session"][:12]) == label), {})
     except Exception:  # noqa: BLE001 - an unreadable registry leaves the row in its own group
-        return False
+        return {}
+
+
+def _seat_dismissed(label: str) -> bool:
+    """The seat is closed in the viewer (the registry's `dismissed`): its row goes in the agents list's Dismissed group."""
+    return bool(_seat_entry(label).get("dismissed"))
 
 
 class _SeatReport:
@@ -922,15 +931,20 @@ class _SeatReport:
         self.prev, self.ended, self.sent = None, "", None
         self.marked = None  # the group and state labels last written
 
-    def text(self, session: str, job: str, rows: list | None = None) -> str:
+    def text(self, session: str, job: str, rows: list | None = None, harness: str = "claude") -> str:
         import ui_status
-        rep = self.ui_app.standalone_report(ui_status.claude_rows_cached()[1] if rows is None else rows, session, job, self.label)
+        if harness == "claude":
+            rep = self.ui_app.standalone_report(ui_status.claude_rows_cached()[1] if rows is None else rows, session, job,
+                                                self.label)
+        else:  # Muse and Codex: the harness's status line, so a declared wait shows instead of the app's bare idle
+            rep = self.ui_app.native_report(harness, session, self.label)
         if rep is None:
             return ""
         if self.prev == "working" and rep["state"] == "idle":
             self.ended = _iso(time.time())
         self.prev = rep["state"]
-        agent = self.ui_app.standalone_agent(rep, _seat_dismissed(self.label))
+        entry = _seat_entry(self.label)
+        agent = self.ui_app.standalone_agent(rep, bool(entry.get("dismissed")), entry)
         if agent != self.marked:
             _marks(self.ui_app, {self.ui_app.GROUP_LABEL: agent[0], self.ui_app.STATE_LABEL: agent[1],
                                  self.ui_app.DETAIL_LABEL: agent[2]})
@@ -1014,9 +1028,9 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
                 f"this card hosts the {harness.capitalize()} client itself: quit {harness} to come back here; the "
                 "session is saved on disk and [enter] resumes it (a name that does not exist yet starts a new session)")
         osc = ""
-        if seat is not None and harness == "claude":
+        if seat is not None and harness in ("claude", "muse", "codex"):
             try:
-                osc = seat.text(session, job, listed[1] if listed else None)
+                osc = seat.text(session, job, listed[1] if listed else None, harness=harness)
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
         sys.stdout.write(f"\x1b[2J\x1b[H\x1b[1m{label}\x1b[0m  (standalone {harness} session {session})\n\n"
@@ -1025,7 +1039,8 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
                          + f"\x1b[2m[enter] attach   [q] shell\n{hint}\x1b[0m\n" + osc)
         sys.stdout.flush()
         # a card that reports refreshes far more often: its 5 minutes was too slow for a live state
-        k = _getkey(SEAT_REFRESH_S if seat is not None and harness == "claude" else 300)
+        k = _getkey(SEAT_REFRESH_S if seat is not None and harness == "claude" else
+                    NATIVE_SEAT_REFRESH_S if seat is not None and harness in ("muse", "codex") else 300)
         if k in ("q", "Q"):
             return 0
         if k in ("\r", "\n"):

@@ -123,21 +123,151 @@ def role_agent(r: dict) -> tuple[str, str, str]:
     return ("dismissed" if r.get("dismissed") else group), state, detail
 
 
-def standalone_agent(rep: dict | None, dismissed: bool = False) -> tuple[str, str, str]:
-    """(group, state, detail) of a standalone seat's row, from its card's report (`standalone_report`). It needs you only at an
-    open question: a seat is a conversation with you, so every reply ends waiting for you, and read as needs-you that
-    buried the seats that do ask (2026-11-08). Between turns it is held (`your-turn` after a reply, `idle`, or `stopped`
-    with no worker); a finished turn you have not looked at keeps its done badge. `dismissed`: closed in the viewer. The
-    detail is the report's message."""
+SEAT_WAIT_GRACE_S = 600  # a declared wait covers the turn that declared it: one ending later than this lapses it
+
+
+def _ts(s: str) -> float | None:
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def seat_wait(entry: dict | None, rep: dict | None) -> dict | None:
+    """The wait a standalone seat declared (`shoal ui wait`), while it still holds: it covers the turn that declared it,
+    so a later turn's end (more than SEAT_WAIT_GRACE_S after it) lapses it unless the seat declares it again, as a role
+    writes a fresh sleep status every turn. A harness that reports no turn end keeps it until it is cleared."""
+    w = (entry or {}).get("wait")
+    if not isinstance(w, dict) or not (w.get("on") or w.get("target")):
+        return None
+    since, ended = _ts(w.get("since") or ""), _ts((rep or {}).get("ended") or "")
+    if since is not None and ended is not None and ended > since + SEAT_WAIT_GRACE_S:
+        return None
+    return w
+
+
+def standalone_agent(rep: dict | None, dismissed: bool = False, entry: dict | None = None) -> tuple[str, str, str]:
+    """(group, state, detail) of a standalone seat's row, from its card's report (`standalone_report`, or `native_report`
+    for Muse and Codex) and its registry `entry`. Working for a turn; needs you at an open question; waiting while its own
+    background tasks run (they re-invoke it); blocked or waiting on what it declared (`shoal ui wait`: another session's
+    review, a PR); after a reply, needs you (`your-turn`) until you dismiss it (`shoal dismiss --session`), which lapses
+    at its next reply (maintainer, 2026-11-11); held when idle or stopped. `dismissed`: closed in the viewer."""
     if rep is None:
         return "", "", ""
+    entry = entry or {}
+    msg = str(rep.get("msg") or "")
+    w = seat_wait(entry, rep)
     if rep["state"] == "working":
         group, state = "working", "working"
     elif rep.get("kind") == "question":
         group, state = "needs-you", "question"
+    elif rep.get("bg"):
+        group, state = "waiting", "background"
+    elif w is not None:
+        group, state = ("blocked", "session-blocked") if w.get("on") else ("waiting", str(w.get("sub") or "waiting"))
+        msg = " ".join(x for x in (f"on {w['on']}" if w.get("on") else "", str(w.get("target") or ""),
+                                   str(w.get("why") or "")) if x)
+    elif rep.get("turn") == "blocked":
+        ack = entry.get("needs_dismissed") if isinstance(entry.get("needs_dismissed"), dict) else {}
+        seen = bool(rep.get("ended")) and ack.get("ended") == rep.get("ended")
+        group, state = ("dismissed" if seen else "needs-you"), "your-turn"
     else:
-        group, state = "held", {"blocked": "your-turn", "idle": "idle"}.get(rep.get("turn", ""), "stopped")
-    return ("dismissed" if dismissed else group), state, str(rep.get("msg") or "")[:DETAIL_MAX]
+        group, state = "held", {"idle": "idle"}.get(rep.get("turn", ""), "stopped")
+    return ("dismissed" if dismissed else group), state, msg[:DETAIL_MAX]
+
+
+def _seat(entries: list[dict], key: str) -> dict | None:
+    """A local registry entry by label, job or session id (prefix)."""
+    return next((e for e in entries if not e.get("host") and (key in (e.get("label"), e.get("job"))
+                                                             or str(e.get("session", "")).startswith(key))), None)
+
+
+def cmd_seat_wait(a) -> int:
+    """`shoal ui wait <seat> --on <who> [--target T] [--why W] | --clear`: a standalone seat records what it waits on, as a
+    role writes `queue --wait`: another session's review (`--on`: blocked, session-blocked), or a target such as a PR or a
+    run (waiting). It covers the turn that declares it: declare it again at each turn's end while it still holds."""
+    import ui_herdr
+    entries = ui_herdr.load_standalone(raw=True)
+    e = _seat(entries, a.target)
+    if e is None:
+        print(f"ui wait: no saved local session named {a.target!r}")
+        return 1
+    label = e.get("label") or e["session"][:12]
+    if a.clear:
+        if a.dry_run:
+            print(f"[dry-run] {label}: would clear its wait")
+            return 0
+        had = e.pop("wait", None)
+        ui_herdr.save_standalone(entries)
+        print(f"{label}: wait cleared" if had else f"{label}: had no wait")
+        return 0
+    if not (a.on or a.target_ref):
+        print("ui wait: say what it waits on: --on <session or role> (another session's review), or --target <kind:ref>")
+        return 2
+    import datetime as _dt
+    w = {"on": a.on or None, "target": a.target_ref or None, "why": a.why or None,
+         "sub": "session-blocked" if a.on else (a.sub or "waiting"),
+         "since": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    w = {k: v for k, v in w.items() if v}
+    if a.dry_run:
+        print(f"[dry-run] {label}: would record wait {w}")
+        return 0
+    e["wait"] = w
+    ui_herdr.save_standalone(entries)
+    print(f"{label}: waits {('on ' + a.on) if a.on else ''} {a.target_ref or ''}".rstrip()
+          + " (covers this turn: declare it again at each turn's end while it holds; `--clear` when it ends)")
+    return 0
+
+
+def cmd_seat_dismiss(key: str, undo: bool = False, dry_run: bool = False) -> int:
+    """`shoal dismiss --session <seat>`: clear a standalone seat's finished reply (`your-turn`) from needs you until its
+    next reply ends."""
+    import ui_herdr
+    import ui_status
+    entries = ui_herdr.load_standalone(raw=True)
+    e = _seat(entries, key)
+    if e is None:
+        print(f"dismiss: no saved local session named {key!r}")
+        return 1
+    label = e.get("label") or e["session"][:12]
+    if undo:
+        if not e.get("needs_dismissed"):
+            print(f"{label}: nothing to bring back")
+            return 1
+        if not dry_run:
+            e.pop("needs_dismissed", None)
+            ui_herdr.save_standalone(entries)
+        print(f"{'[dry-run] ' if dry_run else ''}{label}: shows as needing you again if it still does")
+        return 0
+    if (e.get("harness") or "claude") != "claude":
+        print(f"{label}: a {e.get('harness')} seat reports no finished reply, so there is nothing to dismiss")
+        return 1
+    rep = standalone_report(ui_status.claude_rows(), e["session"], e.get("job", ""), label)
+    if rep is None or rep.get("turn") != "blocked" or not rep.get("ended"):
+        print(f"{label}: does not need you now (no finished reply waiting), so there is nothing to dismiss")
+        return 1
+    if dry_run:
+        print(f"[dry-run] {label}: would clear its finished reply from needs you until its next reply")
+        return 0
+    e["needs_dismissed"] = {"ended": rep["ended"]}
+    ui_herdr.save_standalone(entries)
+    print(f"{label}: dismissed until its next reply")
+    return 0
+
+
+def native_report(harness: str, session: str, label: str) -> dict | None:
+    """{state, kind, title, msg, turn} for a Muse or Codex standalone seat, from its harness's status line: working while
+    a turn runs (an attached client counts only while its journal moves), else idle. Neither reports a turn's end."""
+    try:
+        import importlib
+        mod = importlib.import_module({"muse": "muse", "codex": "codex_harness"}[harness])
+        line = mod.status_line(session)
+    except Exception:  # noqa: BLE001 - no report rather than a wrong one
+        return None
+    busy = "status:busy" in line and ("attached" not in line or " active" in line)
+    return {"state": "working" if busy else "idle", "kind": "", "need": "", "title": f"standalone/{label}",
+            "msg": "running a turn" if busy else "between turns", "turn": "working" if busy else "idle", "bg": 0, "ended": ""}
 
 
 def starved(r: dict) -> bool:
@@ -253,6 +383,7 @@ def standalone_report(rows: list[dict], session: str, job: str, label: str) -> d
     (`claude agents`): working for a turn, blocked on a question only while a prompt is open, else idle. A standalone seat
     is a conversation with you, so the end of each reply reads `blocked` in the listing: that is your turn to type, not a
     question, and as needs-you it buried the seats that do ask (2026-11-08). None when the listing failed."""
+    import health as _h
     import ui_status
     from backends import claude_holders
     if not rows:
@@ -260,13 +391,28 @@ def standalone_report(rows: list[dict], session: str, job: str, label: str) -> d
     row = next(iter(claude_holders(rows, session, job)), {})
     turn = ui_status.claude_turn(row) if row else "dead"
     state, kind, msg = "idle", "", {"working": "running a turn", "idle": "alive, between turns"}.get(turn, "stopped")
+    st = _h.claude_job_state(row) if row else {}
+    fl = st.get("inFlight") if isinstance(st.get("inFlight"), dict) else {}
+    try:
+        bg = int(fl.get("tasks") or 0) + int(fl.get("queued") or 0)
+    except (TypeError, ValueError):
+        bg = 0
     if turn == "working":
         state = "working"
     elif turn == "blocked" and ui_status.pending_question(row, session):
         state, kind, msg = "blocked", "question", "waits at a question"
+    elif bg and turn != "dead":
+        # between turns with its own background tasks running (a suite, a CI watch): it is waiting on its own work, which
+        # re-invokes it, not held (measured 2026-11-11: a seat running suites read held)
+        msg = f"between turns: {bg} background task{'s' if bg > 1 else ''} running"
     elif turn == "blocked":
         msg = "your turn: waiting for a reply"
-    return {"state": state, "kind": kind, "need": "", "title": f"standalone/{label}", "msg": msg, "turn": turn}
+    # when its last turn ended, so a dismissal lapses at the next reply and a declared wait at a later turn: the job's
+    # `lastTerminalAt` (set at done or stopped), else its `updatedAt` (a job waiting for your reply records no terminal
+    # time; measured 2026-11-11). An `updatedAt` that moves without a reply only brings a dismissed row back: the safe side
+    ended = str(st.get("lastTerminalAt") or st.get("updatedAt") or "") if turn in ("blocked", "idle") else ""
+    return {"state": state, "kind": kind, "need": "", "title": f"standalone/{label}", "msg": msg, "turn": turn,
+            "bg": bg if turn != "dead" else 0, "ended": ended}
 
 
 def standalone_text(rep: dict, label: str, latch: DoneLatch, ended: str, last: str | None) -> str:

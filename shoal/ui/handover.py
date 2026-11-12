@@ -7,13 +7,14 @@ the viewer registry that is in no shoal.
 
 Opt-in per session (registry fields `doc`, `handover`, `handover_k`). The feeder checks each opted-in session about
 every 5 minutes, with no model calls:
-  1. **advise**: past its limit and idle at its prompt, the session gets ONE message (a turn): refresh the start doc
-     and its `Last updated` stamp, then end the turn.
-  2. **verify**: the start doc meets the contract (`shoal doc-check`) and its stamp is at or after the advice.
-  3. **reset** (`auto` only): `Backend.reset` starts a new conversation in the same seat whose first message is the
-     start doc to resume from, retires the old one, and the registry follows the new session.
-`advise` stops after step 1 (the maintainer resets by hand). A stale doc after STALL_H hours is shown as stalled.
-Opting in while past the limit starts step 1 at once.
+  1. **reset** (`auto`): past its limit and idle at its prompt, a session whose start doc meets the contract
+     (`shoal doc-check`) is reset at once: `Backend.reset` starts a new conversation in the same seat whose first
+     message is the start doc to resume from, retires the old one, and the registry follows the new session. There is
+     no advise-then-refresh round trip (maintainer, 2026-11-11): a seat keeps its start doc current at every boundary.
+  2. **advise**: in `advise` mode, or in `auto` when the doc fails its contract, the session gets ONE message (a
+     turn): refresh the start doc, then end the turn. In `auto` the reset follows once the doc meets the contract.
+`advise` stops after the advice (the maintainer resets by hand). A doc still failing after STALL_H hours is shown as
+stalled. Opting in while past the limit starts at once.
 """
 from __future__ import annotations
 
@@ -138,6 +139,15 @@ def step(e: dict, force: bool = False, dry_run: bool = False) -> str:
             return ""
         if idle_row(e) is None and not force:
             return ""
+        import startdoc as _sd
+        if mode == "auto" and e.get("harness") == "claude" and _sd.check(e["doc"])["ok"]:
+            # (other harnesses have no automatic reset yet: they get the advice, and the reset is done by hand)
+            # no advise-then-refresh round trip (maintainer, 2026-11-11): a seat keeps its start doc current at every
+            # boundary, so past its limit and idle it is handed over on the doc as it stands. Never mid-turn, forced or
+            # not (an opt-in forces only the advice): a busy seat is reset by a later pass at its next idle moment
+            if idle_row(e) is None:
+                return f"{label}: past its limit ({k}k): its reset waits for an idle moment" if force else ""
+            return _reset(e, label, dry_run)
         after = ("Shoal then hands you over to a fresh session on that doc." if mode == "auto"
                  else "The maintainer resets you on that doc.")
         text = ADVISE.format(k=k, lim=lim, doc=e["doc"], after=after)
@@ -162,31 +172,38 @@ def step(e: dict, force: bool = False, dry_run: bool = False) -> str:
         if mode != "auto":
             return ""
         import startdoc as _sd
-        r = _sd.check(e["doc"], _sd.parse_ts(st.get("at", "")))
+        # advised only because its doc failed the contract: a doc that meets it now hands over (no freshness stamp)
+        r = _sd.check(e["doc"])
         if not r["ok"]:
             if _age_h(st.get("at", "")) >= STALL_H and not st.get("stalled"):
                 st["stalled"] = now_iso()
-                return f"{label}: handover STALLED: the start doc was not refreshed: " + "; ".join(r["problems"])
+                return f"{label}: handover STALLED: the start doc still fails its contract: " + "; ".join(r["problems"])
             return ""
         if idle_row(e) is None:
             return ""  # still finishing its turn: reset at a quiet moment
-        if dry_run:
-            return f"{label}: would reset onto {e['doc']}"
-        from backends import UnsupportedError, get as get_backend
-        try:
-            out = get_backend(e["harness"]).reset(e["session"], RESUME.format(doc=e["doc"]), label=label)
-        except UnsupportedError as exc:
-            st["stalled"] = now_iso()
-            return f"{label}: reset unsupported ({exc}); reset it by hand on {e['doc']}"
-        except Exception as exc:  # noqa: BLE001
-            return f"{label}: reset FAILED ({str(exc)[:120]}); retried later"
-        old = e.get("job") or e["session"][:8]
-        e["session"], e["job"] = out["session"], out.get("job") or ""
-        e["handover_state"] = {"step": "reset", "at": now_iso(), "from": old}
-        if out.get("still_live"):
-            e["handover_state"]["still_live"] = out["still_live"]  # shown by --list until someone stops them
-        return f"{label}: handed over: {out['did']}"
+        return _reset(e, label, dry_run)
     return ""
+
+
+def _reset(e: dict, label: str, dry_run: bool) -> str:
+    """Reset the seat onto its start doc: a new conversation whose first message is the doc, the old one retired."""
+    if dry_run:
+        return f"{label}: would reset onto {e['doc']}"
+    st = e.setdefault("handover_state", {})
+    from backends import UnsupportedError, get as get_backend
+    try:
+        out = get_backend(e["harness"]).reset(e["session"], RESUME.format(doc=e["doc"]), label=label)
+    except UnsupportedError as exc:
+        st["stalled"] = now_iso()
+        return f"{label}: reset unsupported ({exc}); reset it by hand on {e['doc']}"
+    except Exception as exc:  # noqa: BLE001
+        return f"{label}: reset FAILED ({str(exc)[:120]}); retried later"
+    old = e.get("job") or e["session"][:8]
+    e["session"], e["job"] = out["session"], out.get("job") or ""
+    e["handover_state"] = {"step": "reset", "at": now_iso(), "from": old}
+    if out.get("still_live"):
+        e["handover_state"]["still_live"] = out["still_live"]  # shown by --list until someone stops them
+    return f"{label}: handed over: {out['did']}"
 
 
 def tick(dry_run: bool = False) -> list[str]:
