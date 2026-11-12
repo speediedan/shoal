@@ -95,13 +95,20 @@ Standalone seats (`ui_app.standalone_agent`) take the same groups from their ses
 |---|---|---|
 | `needs-you` | `question` | an open question prompt |
 | `working` | `working` | a turn running |
-| `held` | `your-turn` | its reply ended (the listing reads blocked) with no prompt open |
-| `held` | `idle` | between turns |
+| `waiting` | `background` | between turns with its own background tasks running (Claude's `inFlight`): they re-invoke it |
+| `blocked` | `session-blocked` | it declared a wait on another session or role (`shoal ui wait <seat> --on <who>`) |
+| `waiting` | its substate | it declared a wait on a target only (`shoal ui wait <seat> --target <kind:ref>`) |
+| `needs-you` | `your-turn` | its reply ended (the listing reads blocked) with no prompt open |
+| `dismissed` | `your-turn` | that reply was dismissed (`shoal dismiss --session <seat>`); it lapses at the next reply |
+| `held` | `idle` | between turns, nothing declared |
 | `held` | `stopped` | no worker |
 | `dismissed` | its state | the seat is closed in the viewer (the registry's `dismissed`) |
 
-A seat's end of reply is not needs-you: every reply of a conversation ends waiting for the maintainer, and reading it
-so buried the seats that really ask (measured 2026-11-08). A seat with an attached client reads as its session does.
+A finished reply needs you until you dismiss it (maintainer, 2026-11-11, replacing the 2026-11-08 reading of every
+reply as held). A declared wait covers the turn that declared it: a later turn's end lapses it unless the seat declares it
+again, as a role writes a fresh sleep status each turn. Muse and Codex seats report from their harness's status line
+(`ui_app.native_report`): working while a turn runs, else what they declared, else held. A seat with an attached client
+reads as its session does.
 
 **Sources.** Each field is derived once, from the code that already owns it:
 

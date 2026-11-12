@@ -236,7 +236,15 @@ def advisory(spec, role) -> str:
     if o is None:
         return ""
     k, lim = o
-    who = "the quorum restarts you there" if mode(spec, role.slug) == "auto" else "the operator restarts you there"
+    if mode(spec, role.slug) == "auto":
+        # no advise-then-refresh round trip (maintainer, 2026-11-11): the quorum hands the role over at its next quiet
+        # boundary on the start doc as it stands, so the advice is to bring the doc up to date now
+        return (f"CONTEXT {k}k (limit {lim}k): every cold wake re-reads about {k}k tokens, so the quorum hands you to a "
+                f"fresh session at your next quiet boundary (idle or waiting, between turns) on your start doc "
+                f"({role.doc or 'your plan_state'}) as it stands. Before this turn ends, bring it up to date so a fresh "
+                f"session can continue from it alone (current state, decisions taken, next steps) and update its "
+                f"`Last updated: <UTC>` line. Do not restart yourself.")
+    who = "the operator restarts you there"
     return (f"CONTEXT {k}k (limit {lim}k): every cold wake re-reads about {k}k tokens. At your next boundary with "
             f"nothing mid-flight, refresh your start doc ({role.doc or 'your plan_state'}) so a fresh session can "
             f"continue from it alone (current state, decisions taken, next steps) and update its `Last updated: <UTC>` "

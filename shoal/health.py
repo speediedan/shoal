@@ -79,6 +79,8 @@ LADDERS = {
     # bounded context (context.py): a role past its limit that marked a quiet boundary `--restart-ready` is
     # handed to a fresh session; `auto` mode does it from here, `page` (the default) asks the operator
     "context-restart": [(0, "page")],
+    # past its limit in `auto`, at a quiet boundary, with a start doc that fails its contract: the role fixes it first
+    "context-doc": [(0, "wake"), (60, "page")],
     # the maintainer's return (user-offline off): a role holding asks raises them. `offline off` wakes only the roles of
     # the host it ran on, so each host's quorum wakes its own, once per return, after RETURN_GRACE_MIN
     "asks-on-return": [(0, "wake")],
@@ -806,16 +808,29 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         rc = return_condition(view, slug, q)
         if rc is not None:
             out.append(rc)
-        # bounded context: the role marked a quiet boundary after its context passed the limit
-        if q.get("restart_ready") and role_status in ("idle", "waiting") and between:
+        # bounded context: past its limit at a quiet boundary. In `page` mode the role marks that boundary itself
+        # (restart-ready); in `auto` any quiet boundary counts, with no advise-then-refresh round trip (maintainer,
+        # 2026-11-11): a role keeps its start doc current at every boundary, so it is handed over on the doc as it stands,
+        # once that doc meets its contract (else it is woken to fix it: no blind handover)
+        if role_status in ("idle", "waiting") and between:
             import context as _ctx
-            o = _ctx.over(spec, role)
-            if o is not None:
+            auto = _ctx.mode(spec, slug) == "auto"
+            o = _ctx.over(spec, role) if (q.get("restart_ready") or auto) else None
+            doc = None
+            if o is not None and auto and not q.get("restart_ready"):
+                import startdoc as _sd
+                doc = _sd.check(role.doc) if role.doc else {"ok": False, "problems": ["no start doc in the spec"]}
+            if o is not None and doc is not None and not doc["ok"]:
+                out.append({"slug": slug, "condition": "context-doc", "key": f"session:{role.session}",
+                            "since": q.get("ts") or iso(), "first_seen": True,
+                            "detail": f"context {o[0]}k past its {o[1]}k limit, but the start doc fails its contract "
+                                      f"({'; '.join(doc['problems'])[:160]}): fix {role.doc or 'it'} (`shoal doc-check`), "
+                                      f"then end your turn; the handover follows at your next quiet boundary"})
+            elif o is not None:
                 out.append({"slug": slug, "condition": "context-restart", "key": f"session:{role.session}",
                             "since": q.get("ts") or iso(), "first_seen": True,
-                            "detail": f"context {o[0]}k past its {o[1]}k limit and the role is restart-ready "
-                                      f"(start doc refreshed, nothing mid-flight): `shoal restart --spec <spec> "
-                                      f"--only {slug}` hands it to a fresh session"})
+                            "detail": f"context {o[0]}k past its {o[1]}k limit at a quiet boundary (nothing mid-flight): "
+                                      f"`shoal restart --spec <spec> --only {slug}` hands it to a fresh session"})
         # continuation: a turn that ended while the status says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
         if cont is not None and role_status == "active" and between:
