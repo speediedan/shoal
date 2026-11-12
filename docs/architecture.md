@@ -1028,6 +1028,27 @@ four cubics instead of eight, and the glow has 44 layers (from 48), so the bowl 
 passes 12 of 12 per shoal in iso, tilt and turned 60 degrees, on the fixture's second shoal, on a live feed snapshot
 and in the global scene.
 
+The arrow keys now orbit the depth camera instead of panning (shift with an arrow pans, as a plain arrow still does in
+flat, and drag pans in every view). `depth.js` `camera(name, yawTurn, orbit)` takes the orbit as {x, y} radians on
+top of the preset, 8 degrees a press (`ORBIT_STEP`), and `orbitBy` keeps it to what the view shows, dropping a press
+past a limit so the way back answers at once. In the global view x adds to the yaw (the turn `,` and `.` make, round
+the planes' up) and y to the pitch, held between 24 and 80 degrees (`PITCH_RANGE`); with no orbit the global scene is
+unchanged. Per shoal the orbit turns the bowl, not about its own axis (that stays `,` and `.`, the camera's `spin`)
+but round the screen's two axes: y adds to the bowl's tilt (`bowlTilt`, 10 to 50 degrees, `BOWL_ALPHA_RANGE`) and x to
+its turn (`bowlTurn`, `BOWL_TURN` plus x, within 40 degrees either way, `BOWL_BETA_MAX`), so its axis is at most about
+60 degrees off the line of sight and its bottom always faces away. You no longer sit at the sphere's middle, which
+projects onto the wall behind it from every angle and so read as drawn on it: `bowlYou` lifts you 0.28 radii up the
+axis toward the opening (`YOU_LIFT`), nearer the camera, sized by your own perspective as well as `BOWL_GAIN`, and the
+shadow you cast lands where the light's line through you leaves the sphere (`sphere.js` `bowlShadowAt`). A dashed plumb
+line runs from you down the axis to a small ring at the bottom (`bowlPlumb`, the scene's `bowl-plumb` and
+`bowl-foot`), and in the bowl an arrowhead is sized with the node it is at (the square root of its scale, 0.75 to
+1.2), so an edge from you ends in a smaller head on the far wall. Roles keep their place on the surface as the camera
+orbits: a role's polar angle is the one the preset's frame gives (`bowlTheta`'s `home`), capped by what the current
+frame shows, and moved down the wall while you would cover it on screen. A camera far round the side cuts the near
+wall low, so only the rings of latitude still whole are drawn (`bowlRings`). The SVG preview and `check_depth.mjs`
+take `--orbit h,v` in degrees; `check_depth.mjs` passes 12 of 12 per shoal orbited in tilt and iso (to the limits), on
+a live feed snapshot, and in the global scene orbited.
+
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
 freshness, and warning thresholds. The UI status contract adds `usage`; overview
@@ -1229,7 +1250,8 @@ and the contract are in [`ui.md`](ui.md).
   off the picture (shared `lattice.hidden`, restored from the rail). `r` replays the last 24 h (`replay.js`, the feed's `--replay`): its events as
   packets on the live picture, a quarter hour a second, under a bar of a quarter hour a column that seeks on a click.
   `d` is the depth mode (`depth.js`, P3b; per shoal, the cutout sphere described in section 12): each shoal (global) a translucent slab stacked in depth
-  under a tilted camera seen in perspective (tilt, iso; `,` and `.` turn it), over a floor grid with stems and shadows,
+  under a tilted camera seen in perspective (tilt, iso; `,` and `.` turn it, the arrows orbit it and shift with an arrow
+  pans), over a floor grid with stems and shadows,
   each shoal a sphere in the global view with its roles placed on it by need, then activity, then recency (the side facing
   you holds what needs you), the operator and outside seats on a plane above; the layout
   is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
@@ -1302,7 +1324,7 @@ and the contract are in [`ui.md`](ui.md).
 `v: 1`, additive; contract in [`ui.md`](ui.md)). Role nodes take their rows from the status cache
 (else `ui_status.role_row` over the graph's own View) and their state from `role_time.classify`
 over cached native status only, so the graph speaks the role-time vocabulary; a CI or lease wait
-carries its job's host from the local job meta. The maintainer, each shoal's system writer (which absorbs the retired relay's writer) and outside seats (`ext:<slug>`, aliased to a role in another shoal) are
+carries its job's host from the local job meta. The maintainer, each shoal's system writer (which absorbs the retired relay's writer) and outside seats (`ext:<slug>`, aliased to a role in another shoal; drawn only with traffic in the last day or when saved as a standalone seat) are
 nodes too. Edges aggregate ledger events per (src, dst, class) over a rate window, an hour and a
 day, plus `blocked-on` and `alias` edges that need no event, each marked `cross_host`; an edge carries
 its last three events' summaries for the lattice's edge hover card. Events are a

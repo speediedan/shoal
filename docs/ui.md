@@ -217,7 +217,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
 - `system` (`<id>:shoal`, the `shoal` writer), with the shoal's home as `host`. The retired wake
   relay's writer folds into it, so its historical traffic stays counted without a node of its own.
 - `external` (`ext:<slug>`): an outside seat, from an `ext-<slug>.jsonl` writer file or an `ext:<slug>`
-  target. `alias_of` names `<other-shoal>:<slug>` when that slug is a role in another discovered shoal;
+  target with an event in the last day, or a saved standalone seat. `alias_of` names `<other-shoal>:<slug>` when that slug is a role in another discovered shoal;
   the seat then takes that role's state and host.
 - `writer`: any other edge or event endpoint (a removed role, a tool's own writer file), state unknown.
 
@@ -723,12 +723,20 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
 - **The lattice in depth (`d`).** The shoal globes are see-through glass, fainter until you point at one, with their
   names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
   globe. Every globe casts a soft shadow on the floor below it, all from the one light that shades them. Drilled into
-  one shoal, depth mode looks down into a bowl from above and from the side, with you floating at its middle, nearest
-  and largest, its bottom below and beside you: the opening has a lit lip, the near wall's outside shows as a thin
-  crescent under it, the wall under the upper-left lip is in shade while the lower-right wall is lit, rings round the
-  bottom darken toward it, and your small soft shadow falls near the bottom. The hosts' colored regions share the
-  whole inside of the bowl, each host's roles sit on its region behind you, and the arrows from you to them are drawn
-  over it.
+  one shoal, depth mode looks down into a bowl from above and from the side, with you floating above its middle toward
+  the opening, nearest and largest, its bottom below and beside you, and a dashed plumb line from you down to the
+  bottom: the opening has a lit lip, the near wall's outside shows as a thin crescent under it, the wall under the
+  upper-left lip is in shade while the lower-right wall is lit, rings round the bottom darken toward it, and your small
+  soft shadow falls near the bottom. The hosts' colored regions share the whole inside of the bowl, each host's roles
+  sit on its region behind you, and the arrows from you to them are drawn over it, their heads smaller on the far wall,
+  so they point away from you into the bowl.
+  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). In the bowl, up and down raise and lower
+    the camera, from looking straight into the bowl to looking down over its side, and left and right take it round
+    the bowl's side; each stops at its limit, so the bowl never flips, and from an oblique angle you are seen to stand
+    off the wall behind you. In the global view left and right turn the shoals' planes and up and down raise and lower
+    the camera. Shift with an arrow pans (a plain arrow pans in the flat view), drag pans in any view, and `,` and `.`
+    turn the view 15 degrees: the planes in the global view, the bowl round its own axis per shoal. Going back to flat
+    (`d`) resets the orbit and the turn.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
   as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
   - **The graph:** the board at the top; every open item a layer below its parent issue and its open blockers. A gray
