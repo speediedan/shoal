@@ -22,6 +22,16 @@ assert.deepEqual(rows[1].windows.map((w) => w.pct), [95], "only windows with a r
 assert.equal(rows[2].error, "no key");
 assert.deepEqual(M.usageRows({ accounts: [{ provider: "x", rows: [{ windows: [{ name: "5h", used_percent: 240 }] }] }] })[0].windows[0].pct, 100, "clamped");
 assert.deepEqual(M.usageRows(null), []);
+// the hover gives each window's time to reset, not the percentages the bars already show
+const tipRow = M.usageRows({ accounts: [{ provider: "claude", rows: [{ windows: [
+  { name: "5h", used_percent: 4, resets_at: 1000 + 2 * 3600 + 14 * 60 },
+  { name: "week", used_percent: 45, resets_at: 1000 + 3 * 86400 + 4 * 3600 + 59 },
+  { name: "day", used_percent: 1 }] }] }] })[0];
+assert.equal(M.usageTip(tipRow, 1000), "claude: 5h resets in 2h 14m, wk resets in 3d 4h, day resets in ?");
+assert.ok(!/%/.test(M.usageTip(tipRow, 1000)));
+assert.equal(M.usageTip({ ...tipRow, windows: [{ name: "5h", resetsAt: 1000 }] }, 1030), "claude: 5h resets in <1m", "a passed reset reads as now");
+assert.equal(M.usageTip({ name: "x", error: "no key", windows: [] }, 0), "no key");
+assert.equal(M.untilText(-1), "");
 assert.ok(M.usageColor(5) !== M.usageColor(75) && M.usageColor(75) !== M.usageColor(95));
 assert.deepEqual(M.parseUsage({ code: 0, stdout: JSON.stringify(doc) }).length, 3);
 assert.equal(M.parseUsage({ code: 1, stdout: JSON.stringify(doc) }), null, "a failed read keeps the last good rows");

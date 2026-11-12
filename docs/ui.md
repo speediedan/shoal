@@ -844,7 +844,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   back): Agents lists role names in their shoal's color and the host each really runs on, a right-click on a machine in
   Spaces acts on that host's shoals, the top bar has **Home**, **Lattice**, **Board**, **Actions** and **Usage** beside Files and Changes
   (`shoal-tabs`, a patched copy of Herdr's `tabs`; the status bar shows them instead only when that copy is not in the
-  layout), the status bar shows each provider's usage, and the window's mark (top left) is
+  layout), the status bar shows each provider's usage (bars and percentages; hovering a provider gives each window's
+  time to its reset, such as `claude: 5h resets in 2h 14m, wk resets in 3d 4h`), and the window's mark (top left) is
   SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
   loads no picture through a link).
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal

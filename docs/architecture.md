@@ -1337,7 +1337,7 @@ block on Herdr's mod), and name each role in its shoal's color on its real host,
 report and registry entry: a Claude seat's job state with its background tasks and last turn's end, a Muse or Codex seat's
 status line (`native_report`), the wait it declared with `ui wait`, and a reply dismissed with `dismiss --session`,
 [`ui.md`](ui.md)), with Herdr's status on the same scale for a row that has none;
-`shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage, and runs `ui app-sync` on a
+`shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage (its hover gives each window's time to reset, not the percentages the bars show), and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone
 session, with its `session` tab; the top bar's Lattice opens the global lattice, drilled into the shoal in view). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
