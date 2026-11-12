@@ -893,7 +893,7 @@ predates `--pull-only` is pulled by hand once.
 | re-arm | code a running watcher executes (`ledger-watch`) | `--rearm lazy` (default): at each role's next wake (a detached watcher reloads itself in place when the code changes); `--rearm now`: one wake per stale `ledger-watch` |
 | brief | `briefs.py` text | the next restart; `next` and `queue` output carry rule changes now |
 | restart | a spec change a live session depends on (model, harness) | never done by `upgrade`; `restart --only` does it |
-| ui | the operator UI's feeder (`shoal-ui-feed`) | restarted on any module change (it keeps the protocol modules loaded); it only reads, so no session is woken |
+| ui | the operator UI's feeds (`shoal-ui-feed`, and the lattice's `shoal-graph-feed`) | each one running is restarted on any module change (they keep the protocol modules loaded); with `--pull`, on every host whose checkout moved too; they only read, so no session is woken |
 
 The command refuses a dirty package tree, runs the four selftests, diffs the package against the
 spec's recorded `tooling.sha`, applies `--enable`, `--disable` and `--set` feature edits, records
