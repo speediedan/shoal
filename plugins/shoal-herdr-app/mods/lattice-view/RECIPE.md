@@ -77,13 +77,13 @@ you, per-shoal throughput and per-host load.
   do, up and down raise and lower it (its pitch held between 24 and 80 degrees, so the planes never go edge-on);
   shift with an arrow pans, as a plain arrow does in flat. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
-- **Depth, per shoal: the cutout sphere.** `you` floats on the axis of a sphere whose near part is cut away, 0.28 radii
-  up from its middle toward the opening, and the camera looks down into the bowl that is left and in from the side, in
-  perspective: it hangs 2.4 radii from the middle, and the bowl's axis is turned off the line of sight by the camera's
-  pitch less 24 degrees vertically (28 in tilt, 34 in iso) and 30 degrees horizontally, so the bowl's bottom lies below
-  and beside you. The arrow keys orbit the camera round the bowl, 8 degrees a press: up and down tip its axis further
-  or less down the screen (10 to 50 degrees, so from straight into the bowl to well over its side), left and right turn
-  it round the screen's vertical (within 40 degrees either way), and the bowl never flips. You are nearer the camera
+- **Depth, per shoal: the cutout sphere.** `you` float 0.5 radii from the middle of a sphere whose near part is cut
+  away, leaning from its axis toward the camera, out past the cut in front of the opening, and the camera looks into
+  the bowl that is left from the side, in perspective: it hangs 2.4 radii from the middle, and the bowl opens with its
+  axis turned off the line of sight 10 degrees vertically and -40 horizontally (tilt and iso alike), so its bottom lies
+  beside you. The arrow keys orbit the camera round the bowl, 8 degrees a press: up and down tip its axis further or
+  less down the screen (4.6 to 50 degrees), left and right turn it round the screen's vertical (-61 to 43 degrees), and
+  the bowl never flips; the inside's lit spot turns with the bowl. You are nearer the camera
   than the middle, so from an oblique angle you stand visibly off the wall behind you: a dashed plumb line drops from
   you down the axis to a small ring at the bottom, your shadow lands where the light's line through you meets the wall,
   and an arrowhead is sized with the node it is at, so an edge from you narrows to a smaller head on the far wall and

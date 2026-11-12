@@ -1357,7 +1357,7 @@ test("2026-11-10: a label on a globe or in the bowl gets the ink that reads ther
 
 test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lune per host, its roles on it", () => {
   const la = L.layoutGraph(alpha);
-  assert.ok(D.bowlTilt(D.camera("iso")) > D.bowlTilt(D.camera("tilt")), "a steeper camera tips the opening up more");
+  assert.ok(D.bowlTilt(D.camera("iso")) === D.BOWL_HOME_TILT && D.bowlTilt(D.camera("tilt")) === D.BOWL_HOME_TILT, "both presets open the bowl at the same view");
   for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3), D.camera("tilt", -Math.PI / 4)]) {
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame, Rs = pa.bowl.R;
     assert.ok(Math.abs(fr.alpha - D.bowlTilt(cam)) < 1e-12 && pa.clusters[0].bowl && pa.clusters[0].r === Rs);
@@ -1566,7 +1566,8 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
     // seen from above and from the side: the bottom lands below and beside you, the rim is a turned ellipse, the far
     // wall keeps a hemisphere's rim and only the near wall is cut lower
     const pole = SP.bowlProject(fr, fr.pole);
-    assert.ok(Math.abs(pole.x) > 0.2 && pole.y > 0.2, `the pole off the middle both ways: ${pole.x.toFixed(2)}, ${pole.y.toFixed(2)}`);
+    // the opening view (2026-11-12) is turned well to the side and tipped a little, so the bottom lands mostly beside you
+    assert.ok(Math.abs(pole.x) > 0.3 && pole.y > 0.05, `the pole off the middle, to the side: ${pole.x.toFixed(2)}, ${pole.y.toFixed(2)}`);
     assert.ok(Math.abs(fr.rim.m[1]) > 0.05 * Math.max(fr.rim.m[0], fr.rim.m[2]), "the rim's ellipse is turned, not square to the screen");
     const rims = Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72));
     assert.ok(Math.max(...rims) <= Math.PI / 2 + 1e-9 && Math.max(...rims) > Math.PI / 2 - 0.01 && Math.min(...rims) < Math.PI / 2 - 0.1, "far rim at the equator, near rim lower");
@@ -1579,7 +1580,6 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
     const layers = SP.bowlShadow(fr, 0, 0, 1, 0.1), sh = layers.at(-1), you = pa.pos.get(user.id);
     const spot = SP.bowlProject(fr, { x: -SP.LIGHT.x, y: -SP.LIGHT.y, z: -SP.LIGHT.z });
     assert.ok(SP.rimNorm(fr, sh) < 0.9 && Math.hypot(sh.x - you.x / pa.bowl.R, sh.y - you.y / pa.bowl.R) > 0.3, "a shadow on the inside, apart from you");
-    assert.ok(sh.x > pole.x && sh.y > pole.y - 0.1, "down and right of your foot");
     assert.ok(Math.hypot(sh.x - pole.x, sh.y - pole.y) < Math.hypot(sh.x - spot.x, sh.y - spot.y), "nearer the bottom than the lit spot");
     assert.ok(Math.max(...layers.map((l) => l.alpha)) < 0.12 && Math.hypot(layers[0].a.x, layers[0].a.y) < 0.18, "small and soft");
     // the washes are light, so edges and arrows over them read; the inside is clearer than in #155
@@ -1710,8 +1710,14 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
   for (const name of ["tilt", "iso"]) {
     const c = D.camera(name), p = D.CAMERAS[name];
     assert.ok(c.pitch === p.pitch && c.yaw === p.yaw && c.spin === p.yaw && c.orbit.x === 0 && c.orbit.y === 0);
-    assert.equal(D.bowlTurn(c), SP.BOWL_TURN);
+    assert.equal(D.bowlTurn(c), D.BOWL_HOME_TURN);
   }
+  // the bowl opens at the old down and left limits (10 and -40 degrees), and the limits reach 30% further out than they
+  // did from the old opening view (28 degrees tilt, 30 turn): down 18 -> 23.4, left 70 -> 91, right 10 -> 13
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  assert.ok(near(D.BOWL_HOME_TILT, 10 * DEG) && near(D.BOWL_HOME_TURN, -40 * DEG));
+  assert.ok(near(D.BOWL_ALPHA_RANGE[0], (28 - 18 * 1.3) * DEG) && near(D.BOWL_BETA_RANGE[0], (30 - 70 * 1.3) * DEG)
+            && near(D.BOWL_BETA_RANGE[1], (30 + 10 * 1.3) * DEG), "30% further down, left and right");
   assert.deepEqual(D.orbitBy("flat", { x: 1, y: 1 }, 0.1, 0.1, true), { x: 0, y: 0 }, "flat has no orbit");
   for (const name of ["tilt", "iso"]) {
     // per shoal: up tips the bowl further down the screen (looking down from higher), right turns it round to the right,
@@ -1722,12 +1728,12 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
     assert.ok(D.bowlTilt(D.camera(name, 0, o)) > alpha0, "up: tipped further");
     for (let i = 0; i < 20; i++) o = D.orbitBy(name, o, D.ORBIT_STEP, D.ORBIT_STEP, true);
     const top = D.camera(name, 0, o);
-    assert.ok(Math.abs(D.bowlTilt(top) - D.BOWL_ALPHA_RANGE[1]) < 1e-12 && Math.abs(D.bowlTurn(top) - D.BOWL_BETA_MAX) < 1e-12, "held at the top and right limits");
+    assert.ok(Math.abs(D.bowlTilt(top) - D.BOWL_ALPHA_RANGE[1]) < 1e-12 && Math.abs(D.bowlTurn(top) - D.BOWL_BETA_RANGE[1]) < 1e-12, "held at the top and right limits");
     const back = D.orbitBy(name, o, -D.ORBIT_STEP, -D.ORBIT_STEP, true);
     assert.ok(D.bowlTilt(D.camera(name, 0, back)) < D.bowlTilt(top) - 0.1 && D.bowlTurn(D.camera(name, 0, back)) < D.bowlTurn(top) - 0.1, "one press back moves");
     for (let i = 0; i < 40; i++) o = D.orbitBy(name, o, -D.ORBIT_STEP, -D.ORBIT_STEP, true);
     const low = D.camera(name, 0, o);
-    assert.ok(Math.abs(D.bowlTilt(low) - D.BOWL_ALPHA_RANGE[0]) < 1e-12 && Math.abs(D.bowlTurn(low) + D.BOWL_BETA_MAX) < 1e-12, "held at the bottom and left limits");
+    assert.ok(Math.abs(D.bowlTilt(low) - D.BOWL_ALPHA_RANGE[0]) < 1e-12 && Math.abs(D.bowlTurn(low) - D.BOWL_BETA_RANGE[0]) < 1e-12, "held at the bottom and left limits");
     // whatever the camera asks, the frame stays a bowl seen from in front: its bottom faces away
     for (const ask of [{ x: 9, y: 9 }, { x: -9, y: -9 }, { x: 9, y: -9 }]) {
       const c = D.camera(name, 0, ask), fr = SP.bowlFrame(D.bowlTilt(c), SP.BOWL_DIST, D.bowlTurn(c));
@@ -1754,7 +1760,7 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
 test("2026-11-12: you float in front of the inside: nearer than the surface behind you at every orbit", () => {
   const la = L.layoutGraph(alpha), user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
   const home = D.projectLayout(alpha, la, D.camera("tilt"));
-  for (const name of ["tilt", "iso"]) for (const [ox, oy] of [[0, 0], [-24, 24], [24, -16], [40, 30], [-40, -30], [0, 30]]) {
+  for (const name of ["tilt", "iso"]) for (const [ox, oy] of [[0, 0], [-24, 24], [24, -16], [40, 30], [-40, -30], [0, 30], [-30, -10], [90, 0], [90, 40]]) {
     const DEG = Math.PI / 180, o = D.orbitBy(name, null, ox * DEG, oy * DEG, true), cam = D.camera(name, 0, o);
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame, Rs = pa.bowl.R, you = pa.bowl.you, at = `${name} ${ox},${oy}`;
     assert.ok(Math.abs(fr.alpha - D.bowlTilt(cam)) < 1e-12 && Math.abs(fr.beta - D.bowlTurn(cam)) < 1e-12, `${at}: the frame is the orbit's`);
@@ -1772,8 +1778,9 @@ test("2026-11-12: you float in front of the inside: nearer than the surface behi
       // you never hide a role: it is clear of your disc on screen
       const gap = Math.hypot(p.x - yp.x, p.y - yp.y) - user.visual.r * pa.scaleOf.get(user.id) - n.visual.r * pa.scaleOf.get(n.id);
       assert.ok(gap > 0, `${at}: ${n.label} clear of you by ${gap.toFixed(1)}`);
-      // and a role keeps its place on the surface as the camera orbits, unless the view or you made it move down
-      if (name === "tilt") assert.ok(s.theta <= home.surfaceOf.get(n.id).theta + 1e-9 && Math.abs(s.phi - home.surfaceOf.get(n.id).phi) < 1e-9, `${at}: ${n.label} kept its azimuth, no higher`);
+      // and a role keeps its azimuth on the surface as the camera orbits; how far down the wall it sits follows the view
+      // and you (it moves down until it is clear of you, and you move on screen as the camera does)
+      if (name === "tilt") assert.ok(Math.abs(s.phi - home.surfaceOf.get(n.id).phi) < 1e-9, `${at}: ${n.label} kept its azimuth`);
     }
     // the scene: a plumb line from you down to the bottom, your shadow where the light's line through you meets the
     // wall, every ring of latitude drawn whole

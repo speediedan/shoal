@@ -6,7 +6,7 @@
 // The scene adds what makes it read as space: a floor grid below everything, stems down to it, a shadow on it for each
 // globe and lifted seat (all cast by the one light that shades the globes), and fog on what is far.
 
-import { LIGHT, BOWL_DIST, BOWL_TURN, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing } from "./sphere.js";
+import { LIGHT, BOWL_DIST, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing } from "./sphere.js";
 
 const DEG = Math.PI / 180;
 
@@ -94,13 +94,17 @@ export function castShadow(P, L, p, z, r, floorZ) {
 // The arrow keys orbit the camera: left and right round the screen's vertical, up and down round its horizontal (up
 // raises the camera, so it looks down from higher). `orbit` {x, y} is that turn, in radians, on top of the preset. In
 // the global view x adds to the yaw (round the planes' up, as `,` and `.` do) and y to the pitch, kept in PITCH_RANGE.
-// Per shoal, x turns the bowl's axis round the screen's vertical (sphere.js BOWL_TURN plus x, kept within BOWL_BETA_MAX
-// either way) and y tips it further down the screen (bowlTilt, kept in BOWL_ALPHA_RANGE), so the bowl never turns its
-// back or rolls over; `,` and `.` still spin it round its own axis.
+// Per shoal, x turns the bowl's axis round the screen's vertical (BOWL_HOME_TURN plus x, kept in BOWL_BETA_RANGE) and y
+// tips it further down the screen (BOWL_HOME_TILT plus y, kept in BOWL_ALPHA_RANGE), so the bowl never turns its back or
+// rolls over; `,` and `.` still spin it round its own axis. The bowl opens at the view the arrows used to reach at their
+// down and left limits (10 and -40 degrees, the maintainer's pick, 2026-11-12), and the limits reach 30% further out than
+// they did from the old opening view (28 degrees tilt, 30 turn): down to 4.6, left to -61, right to 43.
 export const ORBIT_STEP = 8 * DEG;
 export const PITCH_RANGE = [24 * DEG, 80 * DEG];
-export const BOWL_ALPHA_RANGE = [10 * DEG, 50 * DEG];
-export const BOWL_BETA_MAX = 40 * DEG;
+export const BOWL_HOME_TILT = 10 * DEG;
+export const BOWL_HOME_TURN = -40 * DEG;
+export const BOWL_ALPHA_RANGE = [4.6 * DEG, 50 * DEG];
+export const BOWL_BETA_RANGE = [-61 * DEG, 43 * DEG];
 const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /**
@@ -125,8 +129,8 @@ export function orbitBy(name, orbit, dx = 0, dy = 0, bowl = false) {
   if (!c) return { x: 0, y: 0 };
   let x = (Number.isFinite(orbit?.x) ? orbit.x : 0) + dx, y = (Number.isFinite(orbit?.y) ? orbit.y : 0) + dy;
   if (bowl) {
-    x = clampTo(BOWL_TURN + x, -BOWL_BETA_MAX, BOWL_BETA_MAX) - BOWL_TURN;
-    y = clampTo(c.pitch - BOWL_TILT + y, ...BOWL_ALPHA_RANGE) - (c.pitch - BOWL_TILT);
+    x = clampTo(BOWL_HOME_TURN + x, ...BOWL_BETA_RANGE) - BOWL_HOME_TURN;
+    y = clampTo(BOWL_HOME_TILT + y, ...BOWL_ALPHA_RANGE) - BOWL_HOME_TILT;
   } else {
     x = Math.atan2(Math.sin(x), Math.cos(x));
     y = clampTo(c.pitch + y, ...PITCH_RANGE) - c.pitch;
@@ -331,9 +335,11 @@ function floorGrid(P, o, R, z) {
 // in two rows when there are four or more, each kept inside the rim and behind you. Outside seats and anything else
 // ring the rim, in the cut's plane. `,` and `.` spin the bowl about its axis; the arrows orbit the camera round it
 // (bowlTilt, bowlTurn), so you are seen to stand off the far wall.
-export const BOWL_TILT = 24 * DEG; // the bowl's axis is the camera's pitch less this off the line of sight, vertically
-/** How far you float from the sphere's middle up its axis toward the opening, in sphere radii. */
-export const YOU_LIFT = 0.28;
+/** How far you float from the sphere's middle up its axis toward the opening, in sphere radii: out at the cut, so you
+ * read clearly in front of the inner surface (0.28 read as on it; maintainer, 2026-11-12). */
+export const YOU_LIFT = 0.5;
+/** Your size in the bowl over a role's at the same depth: perspective alone undersold how near you are. */
+export const YOU_GAIN = 1.2;
 const YOU_CLEAR = 0.06; // a role is moved down the wall until it is this far clear of you on screen, in sphere radii
 const BOWL_EXT = 1.32; // where outside seats ring the rim, in sphere radii
 const BOWL_GAIN = 1.25; // sizes in the bowl: this much larger than flat, times the perspective scale where they are
@@ -341,14 +347,22 @@ const BOWL_BEHIND = 0.2; // how far behind you, along the line of sight, a role 
 // sizes shrink with that depth this much faster than perspective alone, so the far wall reads far
 const SIZE_DEPTH = 1.6;
 
-/** The bowl's pitch for a camera: how far off its axis, vertically, the camera looks down into it: the preset's pitch
- * less BOWL_TILT, plus the vertical orbit, in BOWL_ALPHA_RANGE. */
-export const bowlTilt = (cam) => clampTo((CAMERAS[cam.name]?.pitch ?? cam.pitch) - BOWL_TILT + (cam.orbit?.y ?? 0), ...BOWL_ALPHA_RANGE);
-/** The bowl's turn for a camera: sphere.js BOWL_TURN round the screen's vertical, plus the horizontal orbit, within
- * BOWL_BETA_MAX either way. */
-export const bowlTurn = (cam) => clampTo(BOWL_TURN + (cam.orbit?.x ?? 0), -BOWL_BETA_MAX, BOWL_BETA_MAX);
-/** Where you float in the bowl's frame (camera space, sphere radii): YOU_LIFT up the axis from the middle. */
-export const bowlYou = (fr) => ({ x: -YOU_LIFT * fr.pole.x, y: -YOU_LIFT * fr.pole.y, z: -YOU_LIFT * fr.pole.z });
+/** The bowl's pitch for a camera: how far off its axis, vertically, the camera looks down into it: BOWL_HOME_TILT plus
+ * the vertical orbit, in BOWL_ALPHA_RANGE (the same opening view in tilt and iso). */
+export const bowlTilt = (cam) => clampTo(BOWL_HOME_TILT + (cam.orbit?.y ?? 0), ...BOWL_ALPHA_RANGE);
+/** The bowl's turn for a camera: BOWL_HOME_TURN round the screen's vertical, plus the horizontal orbit, in
+ * BOWL_BETA_RANGE. */
+export const bowlTurn = (cam) => clampTo(BOWL_HOME_TURN + (cam.orbit?.x ?? 0), ...BOWL_BETA_RANGE);
+/** Where you float in the bowl's frame (camera space, sphere radii): YOU_LIFT from the middle, between the axis up toward
+ * the opening and the line toward the camera (YOU_TOWARD of the latter to one of the former). Straight up the axis, a
+ * camera far round the side saw you over the near wall, just in front of it; leaning toward the camera, the wall behind
+ * you stays the far one at every orbit, and you still sit off the axis, so the plumb line to the bottom shows how far
+ * out you float. */
+const YOU_TOWARD = 2;
+export const bowlYou = (fr) => {
+  const x = -fr.pole.x, y = -fr.pole.y, z = YOU_TOWARD - fr.pole.z, l = Math.hypot(x, y, z) || 1;
+  return { x: (YOU_LIFT * x) / l, y: (YOU_LIFT * y) / l, z: (YOU_LIFT * z) / l };
+};
 
 /** The polar angle (from the bowl's pole) of the j-th of m roles at azimuth phi: a fraction of what is seen there from
  * `home` (the preset's frame), so a role keeps its place on the surface as the camera orbits, and never more than is
@@ -398,14 +412,14 @@ function projectBowl(vm, lay, cam0) {
   // the operator on the axis, lifted toward the opening: nearest the camera of anything in the bowl
   const you = bowlYou(fr), youS = bowlProject(fr, you);
   const user = vm.nodes.find((n) => n.kind === "user" && lay.pos.has(n.id));
-  if (user) scaleOf.set(user.id, BOWL_GAIN * put(user.id, you));
+  if (user) scaleOf.set(user.id, YOU_GAIN * BOWL_GAIN * put(user.id, you));
   const youR = user ? ((user.visual?.r ?? 0) * scaleOf.get(user.id)) / Rs : 0;
   // roles: on their host's lune, spread across its sector in the flat view's order, at the place the preset gives them
   // (so they stay put on the surface as the camera orbits), moved down toward the bottom if you would hide them
   const TAU = 2 * Math.PI;
   const flatAngle = (id) => { const p = lay.pos.get(id); return p && Math.hypot(p.x, p.y) > 1e-6 ? Math.atan2(p.y, p.x) : -Math.PI / 2; };
   const roles = vm.nodes.filter((n) => n.kind === "role" && lay.pos.has(n.id));
-  const home = cam.orbit && (cam.orbit.x || cam.orbit.y) ? bowlFrame(bowlTilt({ name: cam.name }), BOWL_DIST, BOWL_TURN) : fr;
+  const home = cam.orbit && (cam.orbit.x || cam.orbit.y) ? bowlFrame(bowlTilt({ name: cam.name }), BOWL_DIST, bowlTurn({ name: cam.name })) : fr;
   for (const b of bands) {
     const rel = (id) => ((flatAngle(id) + spin - b.s0) % TAU + TAU) % TAU;
     const mine = roles.filter((n) => (n.host ?? "?") === b.host).sort((x, y) => rel(x.id) - rel(y.id) || (x.id < y.id ? -1 : 1));
