@@ -1301,7 +1301,8 @@ and the contract are in [`ui.md`](ui.md).
   and board, the digest's open items as nodes and `parent` (issue to sub-issue) and `blocks` (open blocker to the item)
   edges, a parent or blocker not open on the board kept as an `off_board` node. Each node's `work` comes from the status
   rows: `active` (a role's active item), `queued` at its `pos`, `queued-blocked` (a recorded blocker) or `unqueued`.
-  The board is the root; the model lays each item a layer below its parent and blockers, wraps a wide layer into rows,
+  The board is the root; the model puts prerequisites below (each item a layer below its parent and below every item it
+  blocks, a blocks edge rising from the blocker into what it unblocks), wraps a wide layer into rows,
   and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details; a click
   selects it (the side panel closes on its x or Esc) for Open on GitHub, Offer to a role (the actions dialog, its
   `item` prefilled; the role picked from a list) or Move to a role (that

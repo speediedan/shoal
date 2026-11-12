@@ -52,11 +52,21 @@ test("the reply and the view: a failed read keeps the last; the shoal asked for,
   assert.deepEqual(M.pickView(null), { shoal: null, board: null });
 });
 
-test("layers: an item sits below its parent and its blockers; a cycle still gets a layer", () => {
+test("layers: prerequisites below, a sub-issue under its parent and a blocker under what it blocks; a cycle still gets a layer", () => {
   const { layer } = M.layers(BOARD);
   assert.equal(layer.get("app#1"), 1);
   assert.equal(layer.get("app#2"), 2);
-  assert.equal(layer.get("app#4"), 3, "below its blocker, which is below their parent");
+  assert.equal(layer.get("app#4"), 1, "it waits on #3, so it sits above it, off the root");
+  assert.equal(layer.get("app#3"), 2, "under its parent and under the item it blocks");
+  // a foundation blocking several items sits under all of them, as the five above #864 on a live board
+  const fan = { nodes: ["f#1", "f#2", "f#3", "f#9"].map((k) => node(k)),
+                edges: ["f#1", "f#2", "f#3"].map((k) => ({ from: "f#9", to: k, kind: "blocks" })) };
+  const lf = M.layers(fan).layer;
+  assert.deepEqual(["f#1", "f#2", "f#3", "f#9"].map((k) => lf.get(k)), [1, 1, 1, 2]);
+  // a sub-issue that blocks its parent is consistent now (it was a cycle when a blocker sat above)
+  const sub = { nodes: [node("s#1"), node("s#2", { parent: "s#1" })],
+                edges: [{ from: "s#1", to: "s#2", kind: "parent" }, { from: "s#2", to: "s#1", kind: "blocks" }] };
+  assert.deepEqual([M.layers(sub).layer.get("s#1"), M.layers(sub).layer.get("s#2")], [1, 2]);
   const cyc = { nodes: [node("a#1"), node("a#2")], edges: [{ from: "a#1", to: "a#2", kind: "blocks" }, { from: "a#2", to: "a#1", kind: "blocks" }] };
   const l = M.layers(cyc).layer;
   assert.ok(l.get("a#1") >= 1 && l.get("a#2") >= 1);
@@ -65,17 +75,24 @@ test("layers: an item sits below its parent and its blockers; a cycle still gets
 test("layout: the board at the top, the tree below it, items in no dependency in their own grid", () => {
   const lay = M.layout(BOARD, 1200);
   const at = new Map(lay.nodes.map((n) => [n.key, n]));
-  assert.ok(lay.root.y < at.get("app#1").y && at.get("app#1").y < at.get("app#2").y && at.get("app#3").y < at.get("app#4").y);
+  assert.ok(lay.root.y < at.get("app#1").y && at.get("app#1").y < at.get("app#2").y && at.get("app#4").y < at.get("app#3").y);
   assert.ok(at.get("app#5").loose && at.get("app#6").loose && !at.get("app#1").loose);
   assert.equal(lay.loose.count, 2);
   assert.ok(at.get("app#6").x < at.get("app#5").x, "in the loose grid, queued before not queued");
   assert.ok(lay.loose.y > at.get("app#4").y, "the grid comes after the graph");
   // edges: the root to the tree's top, the parent edges, the blocker edge; none to a loose item
   assert.deepEqual(lay.edges.map((e) => `${e.kind}:${e.from}>${e.to}`).sort(),
-    ["blocks:app#3>app#4", "parent:app#1>app#2", "parent:app#1>app#3", `root:${M.ROOT_KEY}>app#1`].sort());
+    ["blocks:app#3>app#4", "parent:app#1>app#2", "parent:app#1>app#3", `root:${M.ROOT_KEY}>app#1`, `root:${M.ROOT_KEY}>app#4`].sort());
+  // the blocker's edge rises from its top into the bottom of what it unblocks, the arrowhead pointing up
   const e = lay.edges.find((x) => x.kind === "blocks");
+  assert.equal(e.dir, "up");
+  assert.equal(e.y1, at.get("app#3").y);
+  assert.equal(e.y2, at.get("app#4").y + M.NODE.h);
   assert.equal(M.edgeCmds(e)[0][0], "M");
-  assert.deepEqual(M.arrowCmds(e).at(-1), ["Z"]);
+  const head = M.arrowCmds(e);
+  assert.deepEqual(head.at(-1), ["Z"]);
+  assert.ok(head[0][2] > e.y2 && head[1][2] === e.y2, "the head's base below its tip");
+  assert.ok(lay.edges.filter((x) => x.kind !== "blocks").every((x) => x.dir === "down"), "tree edges run down");
   // a narrow canvas wraps a wide layer into rows, never wider than it needs
   const wide = { nodes: Array.from({ length: 9 }, (_, i) => node(`w#${i + 2}`, { parent: "w#1" })).concat([node("w#1")]),
                  edges: Array.from({ length: 9 }, (_, i) => ({ from: "w#1", to: `w#${i + 2}`, kind: "parent" })) };

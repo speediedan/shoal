@@ -262,7 +262,7 @@ export default class Board extends View {
     const row = h_flex().id("legend").gap(14).flex_wrap().items_center()
       .child(swatch("active", WORK_LABEL.active)).child(swatch("queued", "queued (#: its place)"))
       .child(swatch("queued-blocked", WORK_LABEL["queued-blocked"])).child(swatch("unqueued", WORK_LABEL.unqueued))
-      .child(line(c.edge, "sub-issue")).child(line(c.dep, "blocks"));
+      .child(line(c.edge, "sub-issue")).child(line(c.dep, "unblocks"));
     if (this.mode === "nodes" && board) {
       for (const [repo, shape] of Object.entries(repoShapes(board))) {
         const icon = div().relative().w(14).h(14).flex_none().child(path(shapeCmds(shape, 7, 7, 6), c.muted, { fill: true }));
