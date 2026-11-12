@@ -26,6 +26,19 @@ class Retirement(unittest.TestCase):
         self.sid = "retire-test-" + uuid.uuid4().hex[:12]
         self.specfile = self.ledger / "shoals" / self.sid / "shoal.json"
         self.registry = self.root / "xdg/shoal/ui-standalone.json"
+        # remove-role prunes incarnations across every harness, and prune lists codex threads through
+        # `codex app-server`: point it at a fake with no threads so no test reaches the real binary.
+        codex_fake = self.root / "codex-fake"
+        codex_fake.write_text("#!" + sys.executable + """
+import json, sys
+for line in sys.stdin:
+    m = json.loads(line)
+    if "id" not in m:
+        continue
+    res = {"data": [], "nextCursor": None} if m.get("method") == "thread/list" else {}
+    print(json.dumps({"id": m["id"], "result": res}), flush=True)
+""")
+        codex_fake.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("SHOAL_")}
         self.env.update(SHOAL_CONFIG=str(self.host), SHOAL_LEDGER_DIR=str(self.ledger),
                         SHOAL_DATA_ROOT=str(self.root / "data"), SHOAL_SERVER="host-a",
@@ -35,6 +48,7 @@ class Retirement(unittest.TestCase):
                         GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="tester", GIT_COMMITTER_NAME="tester",
                         GIT_AUTHOR_EMAIL="tester@example.invalid", GIT_COMMITTER_EMAIL="tester@example.invalid",
                         SHOAL_FAKE_SESSIONS='{"claude": [], "opencode": {}}',
+                        SHOAL_CODEX_BIN=str(codex_fake), SHOAL_CODEX_STATE=str(self.root / "codex-state"),
                         SHOAL_ROUTE_CACHE=str(self.root / "routes"),
                         SHOAL_CLI=sys.executable + " " + str(SOURCE / "cli.py"))
         for repo in (self.repo, self.ledger):
