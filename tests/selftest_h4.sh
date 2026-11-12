@@ -120,7 +120,11 @@ python3 - "$S/data/$SID/board_digest.json" "$TOP" <<'PY' || fail "routing bonus 
 import json,sys; d=json.load(open(sys.argv[1])); top=sys.argv[2]
 row=[r for r in d["roles"]["tl"] if r["item"]==top]
 assert row and any(w.startswith("routed") for w in row[0]["why"]), row
-assert all(r["item"]!=top for r in d["roles"]["up"]), "decliner still sees its declined item"
+# the decliner sees its declined item only as a weak fallback, after every fresh candidate (capacious fill)
+up = d["roles"]["up"]
+mine = [i for i, r in enumerate(up) if r["item"] == top]
+assert all(up[i].get("declined") == "out-of-lane" and up[i]["strong"] is False for i in mine), up
+assert all(i > j for i in mine for j, r in enumerate(up) if not r.get("declined")), "a fallback ranks after fresh rows"
 PY
 
 echo "== 5 ledger-watch reads the digest (no board call) and records its exit verdict"
