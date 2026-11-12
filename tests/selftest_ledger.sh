@@ -556,6 +556,19 @@ want = {"hostA": {"health-a", "health-b", "lanes", "pipeline", "reconcile", "wee
         "hostB": {"health-a", "health-b", "lanes"},  # beta (opencode) only: no group duty, no duplicated board reads
         "hostC": set()}[sys.argv[3]]
 assert jobs == want, (sys.argv[3], jobs)
+# the board digest also runs on a non-home host where a self-filling role runs: `next` there reads its own digest
+spec.features = {"health": True, "digest": True}
+spec.sources = [{"kind": "github-project", "owner": "o", "number": 1}]
+from roles import host_of
+here = [r for r in spec.roles if host_of(r, spec) == sys.argv[3]]
+for r in here:
+    r.fill = "self"
+jobs = {j[0] for j in systemd.jobs_for(spec, sys.argv[2])}
+assert ("digest" in jobs) == (sys.argv[3] in ("hostA", "hostB")), (sys.argv[3], jobs)
+for r in here:
+    r.fill = "assigned"
+jobs = {j[0] for j in systemd.jobs_for(spec, sys.argv[2])}
+assert ("digest" in jobs) == (sys.argv[3] == "hostA"), ("home keeps it; a host with no self-filling role does not", jobs)
 print(sys.argv[3], "jobs ok")
 PY3
 done

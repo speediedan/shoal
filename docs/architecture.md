@@ -714,8 +714,9 @@ is the only coordination path (no host-to-host connection is needed for correctn
   asks popup refuse to try (answer a remote role by mail).
 - **Clocks.** Events are stamped by the writer's clock, the fold orders by them and conditions are ages:
   `doctor` fails a host that is not NTP-synchronized.
-- **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the pipeline
-  sensor, digest, reconcile and report on home only); every host with a live role writes a `host-beat`
+- **Per host:** `install-systemd` installs this host's set (health and lanes for its roles; the board digest on home
+  and on every host where a self-filling role runs, since `next` reads its own host's digest; the pipeline sensor,
+  reconcile and report on home only); every host with a live role writes a `host-beat`
   system event and home pages `host-silent` for one that stops; a Claude role's detached watcher runs
   on its own host and resumes its session there; `upgrade` off home leaves the spec's tooling and
   features to home. Still open: telemetry merge for reports ([`limitations.md`](limitations.md) section 2). The providers (resource leases, wait targets, the board
