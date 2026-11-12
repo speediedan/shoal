@@ -82,20 +82,26 @@ you, per-shoal throughput and per-host load.
   the bowl that is left from the side, in perspective: it hangs 2.4 radii from the middle, and the bowl opens with its
   axis turned off the line of sight 10 degrees vertically and -40 horizontally (tilt and iso alike), so its bottom lies
   beside you. The arrow keys orbit the camera round the bowl, 8 degrees a press: up and down tip its axis further or
-  less down the screen (4.6 to 50 degrees), left and right turn it round the screen's vertical (-61 to 43 degrees), and
-  the bowl never flips; the inside's lit spot turns with the bowl. You are nearer the camera
-  than the middle, so from an oblique angle you stand visibly off the wall behind you: a dashed plumb line drops from
-  you down the axis to a small ring at the bottom, your shadow lands where the light's line through you meets the wall,
-  and an arrowhead is sized with the node it is at, so an edge from you narrows to a smaller head on the far wall and
-  reads as pointing away, into the bowl. A role keeps its place on the surface as the camera orbits (where the preset
-  puts it), moved down the wall only to stay in view or clear of you. The cut is a slanted
+  less down the screen (-14 to 64 degrees), left and right turn it round the screen's vertical (-72 to 72 degrees), the
+  two together held to at most 72 degrees off the line of sight (cos tilt cos turn above its floor; a press past a limit
+  goes to it and the rest is dropped), so the bowl never goes edge-on or flips; the inside's lit spot turns with the
+  bowl. You are nearer the camera than the middle (orbited far round the side, leaning further toward it), so from an
+  oblique angle you stand visibly off the wall behind you: you are a small glass ball (about 90 path commands: a clear
+  body graded to a deep limb, twelve faint layers rounding it toward the light, a highlight up and to the left, a
+  crescent of gathered light inside the far limb, a lit rim and a dark hairline), your soft shadow falls on the wall
+  just behind you, down and to the right, from a key light by the camera (so it is plainly yours and shows how far in
+  front you float), and a dashed plumb line drops from you down the axis to a small ring at the bottom. An edge from you
+  is a tapered ribbon (five commands), wide and bright at you and thinner and dimmer at the far wall by the two ends'
+  perspective, and an arrowhead is sized with the node it is at, so the edge reads as running away, into the bowl. A
+  role keeps its place on the surface as the camera orbits (where the preset puts it), moved down the wall only to stay
+  in view, clear of you, or clear of a role placed before it. The cut is a slanted
   plane: the far wall keeps a hemisphere's rim, the near wall is cut lower, to just short of where the camera would
   see over it, so the near wall's outside shows as a thin crescent under the lip. The wall has a thickness, so the
   opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
-  the inner surface, lit opposite to a ball: the light pools lower right (in 44 faint layers so no band shows) and the
-  wall under the upper-left lip is in its shade. Four rings round the bottom each bound a cap a little darker, so the
+  the inner surface, lit opposite to a ball: the light pools lower right (16 faint layers over a smooth linear sweep,
+  so no band shows) and the wall under the upper-left lip is in its shade. Four rings round the bottom each bound a cap a little darker, so the
   inside recedes to the bottom, with eight faint meridians (orbited far round the side, a ring the cut would break is
-  left out); your small soft shadow falls near the bottom, just down and right of your foot on the axis. The hosts' lunes,
+  left out). The hosts' lunes,
   pole to rim, tile that whole surface: each over its sector of the flat view widened to the middle of the gaps either
   side, so together they make a whole turn, washed lightly and outlined in the host color (the home host first, from
   the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
@@ -226,8 +232,12 @@ you, per-shoal throughput and per-host load.
   1 to 6 of 255 each) beat 128 layers rounded to 0 or 1. Transparency comes only from alpha on
   these fills, never from more layers. The fixture's two globes now take about 1,940 path
   commands, down from about 3,030; their shadows about 260; the bowl about 490 (its glow 264 of them). The global depth
-  scene is about 2,790 in all; a trial with 24-layer shadows (about 2,980) failed about one native
-  check in 50, so keep a globe's shadow at 16 layers.
+  scene was about 2,790 in all; a trial with 24-layer shadows (about 2,980) failed about one native
+  check in 50, so keep a globe's shadow at 16 layers. A globe's grid was six 96-point polylines, about 600
+  commands a globe; each circle's image is an ellipse, so a cubic per quarter turn draws it (about 40), and the global
+  depth scene is about 1,620 in the fixture (2,750 before) and 2,000 on a two-shoal live feed (3,130 before). The
+  per-shoal scene stays at or under its count before the glass you and the tapered edges (the fixture's first shoal
+  1,085 at the opening view, now about 1,040): the glow gave 168 commands for them.
 - A shadow on the dark floor cannot show more than about 15 to 20 distinct 8-bit levels, so more
   layers buy nothing; each layer's alpha is solved against the rounded layers outside it, and one
   that rounds to 0 is dropped.
@@ -240,7 +250,15 @@ you, per-shoal throughput and per-host load.
   keeps none when acos(h) >= b + acos(1 / d).
 - The bowl's glow was 20 layers at 5 of 255 alpha: each edge a step of three or so color
   levels, which showed as rings. 44 layers at 2 of 255 give a little less light in steps under
-  one and a half levels; 1 of 255 would need about 90 layers for the same light. Where a step is
+  one and a half levels; 1 of 255 would need about 90 layers for the same light. A linear gradient has
+  no steps at all, so a sweep over the rim toward the lit spot now gives half that light and 16
+  layers at 2 of 255 the pooling (six commands a layer, the cheapest smooth light there is).
+- You in the bowl read as drawn on its wall whatever the depth math said: a flat ring with a
+  two-step halo showed bands and no depth. What separates a thing from a wall behind it is a
+  shadow attached to it, offset by how far in front it is: lit from the opening the shadow fell
+  near the bottom, two or three of your widths away, and read as the bowl's, not yours; from a key
+  light by the camera it lands just down and right of you. A filled ribbon tapers smoothly for five
+  commands, where a stroke can only step its width per segment. Where a step is
   wanted (the depth caps round the bottom), it sits under a ring's stroke, so it reads as the ring.
 - A bowl with one bright outline reads as a ball seen from outside. What says opening is a lip
   with two edges, the near wall's outside under it, and shade under the lip on the light's side;

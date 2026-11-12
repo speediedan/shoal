@@ -464,8 +464,10 @@ export function gradientAt(cmds, angle, x, y) {
 
 /** The inside's light: the rim's ellipse again and again, shrinking toward the spot that faces the light (lower right,
  * as a hollow is lit opposite to a ball), each adding a little alpha. Many faint layers, so no step between two of them
- * shows: {x, y, a, b, s}, a conjugate ellipse each (s: its scale of the rim). */
-export const BOWL_GLOW = 44;
+ * shows: {x, y, a, b, s}, a conjugate ellipse each (s: its scale of the rim). Half the light they gave at 44 layers now
+ * comes from one linear gradient over the rim toward the spot (bowlSweep, no steps at all), so 20 layers at the same
+ * fine 2 of 255 each are enough: 144 fewer path commands, for the glass you and your tapered edges. */
+export const BOWL_GLOW = 16;
 /** The bowl's light: LIGHT as it falls in the view the inside's shading was made for (28 degrees tilt, 30 turn), held in
  * the bowl's own frame, so the lit spot stays on the far wall and the bottom stays darkest as the camera orbits (lit
  * from the camera's fixed LIGHT, the bottom of the 2026-11-12 opening view faced it and read lighter than the walls). */
@@ -475,11 +477,22 @@ const LIGHT_REF = (() => {
   return [dot(LIGHT, pole), dot(LIGHT, e1), dot(LIGHT, e2)];
 })();
 export const bowlLight = (fr) => unit(comb(LIGHT_REF[0], fr.pole, LIGHT_REF[1], fr.e1, LIGHT_REF[2], fr.e2));
+/** The lit spot: the inner point whose normal faces the light (u = -bowlLight), seen through the opening, pulled a
+ * little in from the rim. */
+function bowlSpot(fr) {
+  const { cx: mx, cy: my } = fr.rim, Lb = bowlLight(fr), sp = bowlProject(fr, { x: -Lb.x, y: -Lb.y, z: -Lb.z });
+  return { x: mx + (sp.x - mx) * 0.92, y: my + (sp.y - my) * 0.92 };
+}
+/** The inside's sweep of light: a linear gradient over the rim's ellipse, clear on the side away from the lit spot and
+ * BOWL.sweep of BOWL_LIT at the side toward it. Its angle (GPUI's: 0 up, clockwise), and where a screen point (radii
+ * from the middle) falls along it, 0 to 1 over the rim's bounds as CSS spans a gradient. */
+export function bowlSweep(fr) {
+  const { cx: mx, cy: my, w, h } = fr.rim, spot = bowlSpot(fr);
+  const dx = spot.x - mx, dy = spot.y - my, l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l;
+  return { angle: angleOf(ux, uy), at: (x, y) => Math.min(1, Math.max(0, 0.5 + ((x - mx) * ux + (y - my) * uy) / (2 * (w * Math.abs(ux) + h * Math.abs(uy))))) };
+}
 export function bowlGlow(fr, cx, cy, R) {
-  const { cx: mx, cy: my, a, b } = fr.rim;
-  // the inner point whose normal faces the light: u = -bowlLight, seen through the opening
-  const Lb = bowlLight(fr), sp = bowlProject(fr, { x: -Lb.x, y: -Lb.y, z: -Lb.z });
-  const spot = { x: mx + (sp.x - mx) * 0.92, y: my + (sp.y - my) * 0.92 };
+  const { cx: mx, cy: my, a, b } = fr.rim, spot = bowlSpot(fr);
   return Array.from({ length: BOWL_GLOW }, (_, i) => {
     const s = 1 - (i / BOWL_GLOW) * 0.88;
     return { x: cx + R * (spot.x + s * (mx - spot.x)), y: cy + R * (spot.y + s * (my - spot.y)),
@@ -488,26 +501,36 @@ export function bowlGlow(fr, cx, cy, R) {
 }
 
 /** The shadow you (a ball of radius rb, in sphere radii, at `at`: depth.js bowlYou, up the axis from the middle; the
- * middle by default) cast on the inner surface: from above the opening and the upper left (bowlShadowLight: the bowl's
- * up and the one light, SHADOW_UP to 1, which the lip's shade falls from too), so it falls near the bottom, just down
- * and to the right of your foot on the axis, not on the lit far wall. It lands where the light's line through you
- * leaves the sphere, so the higher you float the further it falls from you on screen. It is a disc of radius rb there,
- * shrunk a little and soft (its penumbra wide), seen in perspective. Its layers, outermost first: {x, y, a, b, alpha},
- * a conjugate ellipse each. */
+ * middle by default) cast on the inner surface. The wall behind you is what you must read in front of, so your shadow
+ * falls on it from a key light near the camera (youShadowLight: the one LIGHT, upper left, leaned toward you
+ * YOU_SHADOW_FRONT to 1), fixed to the camera like the glass ball's highlight: it lands just down and right of you
+ * on the wall, at every orbit, offset by how far you float in front of it (from the opening's light it fell near the
+ * bottom, two or three of your widths away, and read as a dark spot of the bowl's, not yours). It lands where the
+ * light's line through you leaves the sphere; it is a disc of YOU_SHADOW.size times rb there, soft, seen in
+ * perspective. Its layers, outermost first: {x, y, a, b, alpha}, a conjugate ellipse each; none where the line leaves
+ * the sphere outside the opening (you floated past the rim on screen). */
 export const BOWL_SHADOW_STEPS = 10;
+/** Your shadow's darkest (in its core), penumbra and size (of your radius): dark and large enough to be seen on the lit
+ * wall, the clearest sign that you float in front of it (0.4 and 0.8 of you, with a wide penumbra, was not seen). */
+export const YOU_SHADOW = { peak: 0.5, soft: 0.6, size: 1.15 };
 const SHADOW_UP = 1.6;
 export const bowlShadowLight = (fr) => unit(comb(-SHADOW_UP, fr.pole, 1, LIGHT));
+export const YOU_SHADOW_FRONT = 2.2;
+export const youShadowLight = () => unit(comb(1, LIGHT, YOU_SHADOW_FRONT, { x: 0, y: 0, z: 1 }));
 /** Where the light's line through `at` (inside the sphere) meets the inner surface, away from the light. */
 export function bowlShadowAt(fr, at = { x: 0, y: 0, z: 0 }) {
-  const L = bowlShadowLight(fr), pl = dot(at, L), t = pl + Math.sqrt(Math.max(0, pl * pl - dot(at, at) + 1));
+  const L = youShadowLight(), pl = dot(at, L), t = pl + Math.sqrt(Math.max(0, pl * pl - dot(at, at) + 1));
   return comb(1, at, -t, L);
 }
+/** Whether your shadow lands on the inside, seen through the opening. */
+export const bowlShadowSeen = (fr, at) => { const u = bowlShadowAt(fr, at); return bowlKept(fr, u) && bowlSeen(fr, u) <= 1; };
 export function bowlShadow(fr, cx, cy, R, rb, at) {
-  const L = bowlShadowLight(fr), t1 = unit({ x: L.y, y: -L.x, z: 0 });
+  if (!bowlShadowSeen(fr, at)) return [];
+  const L = youShadowLight(), t1 = unit({ x: L.y, y: -L.x, z: 0 });
   const t2 = { x: L.y * t1.z - L.z * t1.y, y: L.z * t1.x - L.x * t1.z, z: L.x * t1.y - L.y * t1.x };
   const c = bowlShadowAt(fr, at);
-  return shadowLayers(0.4, 0.6, BOWL_SHADOW_STEPS).map((l) => {
-    const e = projectedCircle(fr.d, c, t1, t2, 0.8 * rb * l.s);
+  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, BOWL_SHADOW_STEPS).map((l) => {
+    const e = projectedCircle(fr.d, c, t1, t2, YOU_SHADOW.size * rb * l.s);
     return { x: cx + R * e.cx, y: cy + R * e.cy, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
   });
 }
@@ -516,7 +539,7 @@ export function bowlShadow(fr, cx, cy, R, rb, at) {
  * a half of the 255 color levels between the base and the light, and does not show), a host's wash over it (light, so
  * edges over it read) and how dark it gets at the bottom, a host's outline, the lip's shade under it at the rim and at
  * its edge. */
-export const BOWL = { base: 0.12, glow: 2 / 255, wash: 0.08, deep: 0.055, outline: 0.5, shade: 0.18, shadeEdge: 0 };
+export const BOWL = { base: 0.12, glow: 2 / 255, sweep: 0.28, wash: 0.08, deep: 0.055, outline: 0.5, shade: 0.18, shadeEdge: 0 };
 const BOWL_BASE = "#16243a", BOWL_LIT = "#c9d8e6", BOWL_SHADE = "#01040a";
 /** What the eye sees at a point inside the bowl (nx, ny: radii from its middle), in a host's tint: the layers the
  * scene draws there, blended in order. */
@@ -528,6 +551,7 @@ export function bowlColorAt(fr, nx, ny, tint, under = "#1d2a3c") {
     const x = nx - e.x, y = ny - e.y;
     if (m[0] * x * x + 2 * m[1] * x * y + m[2] * y * y <= e.s * e.s) out = over(out, withAlpha(BOWL_LIT, BOWL.glow));
   }
+  out = over(out, withAlpha(BOWL_LIT, BOWL.sweep * bowlSweep(fr).at(nx, ny)));
   if (tint) out = over(out, withAlpha(tint, BOWL.wash));
   const u = bowlSurfaceAt(fr, nx, ny), sh = rimShade(fr, 0, 0, 1);
   if (u) for (let i = bowlDepthAt(fr, u); i > 0; i--) out = over(out, withAlpha(BOWL_SHADE, BOWL.deep));
@@ -538,3 +562,45 @@ export function bowlColorAt(fr, nx, ny, tint, under = "#1d2a3c") {
   return out;
 }
 export { BOWL_BASE, BOWL_LIT, BOWL_SHADE };
+
+// ---- you, in the bowl: a small glass ball
+//
+// You float in front of the bowl's inside, so you are drawn as a thing in front of it, not a ring on it: a glass ball lit
+// by the one LIGHT (upper left, toward you), as the globes are. Its body is clear glass, a linear gradient from nearly
+// clear on the lit side to a deeper tint at the far limb (no steps at all), with the wall showing through; the limb
+// darkens in three soft strokes (glass is most reflective at a grazing angle); YOU_GLASS circles shrinking toward the
+// lit point each add a little light, so it rounds smoothly (each step under 2 percent, about 3 of 255 levels: no band shows);
+// then a specular highlight where the light strikes, the light the glass gathers glowing low on the far side inside
+// the limb, a limb stroked light to dark, and a dark hairline outside it, so it stands off the wall behind it. About
+// 92 path commands (YOU_GLASS_CMDS).
+export const YOU_GLASS = 12;
+export const YOU_GLASS_CMDS = 4 * (YOU_GLASS + 10) + 4;
+const circle = (x, y, r) => [["M", x + r, y], ["A", r, r, 0, false, true, x - r, y], ["A", r, r, 0, false, true, x + r, y], ["Z"]];
+/** The glass ball's paths at (x, y), radius r, in `tint`, `op` its opacity (a faded you fades it): {t: "path"} items. */
+export function glassBall(id, x, y, r, tint, op = 1) {
+  const away = angleOf(-LIGHT.x, -LIGHT.y), fill = (color, a) => ({ kind: "solid", color: withAlpha(color, a * op) });
+  const deep = mix(tint, "#050b17", 0.72), lit = mix(tint, "#ffffff", 0.62);
+  const path = (part, cmds, bg, stroke = 0) => ({ t: "path", id: `you-glass-${part}-${id}`, fill: !stroke, ...(stroke ? { width: stroke } : {}), cmds, bg });
+  const paths = [path("body", circle(x, y, r), { kind: "linear", angle: away, from: withAlpha(mix(tint, "#ffffff", 0.3), 0.06 * op), to: withAlpha(deep, 0.72 * op) })];
+  // the limb: darker toward the edge, soft
+  [[0.89, 0.22, 0.14], [0.94, 0.12, 0.2], [0.975, 0.05, 0.28]].forEach(([k, w, a], i) => paths.push(path(`limb${i}`, circle(x, y, k * r), fill(deep, a), Math.max(0.6, w * r))));
+  // the roundness: homothetic about the lit point, so each lies inside the one before and inside the ball
+  const lx = x + r * LIGHT.x * 0.5, ly = y + r * LIGHT.y * 0.5, step = 1 - (1 - 0.18) ** (1 / YOU_GLASS);
+  for (let i = 0; i < YOU_GLASS; i++) {
+    const s = 1 - ((i + 1) / (YOU_GLASS + 1)) * 0.9;
+    paths.push(path(`lit${i}`, circle(lx + s * (x - lx), ly + s * (y - ly), s * r), fill(lit, step)));
+  }
+  // the light the glass gathers, a bright crescent low on the far side just inside the limb (two arcs, soft and sharp)
+  const th = Math.atan2(-LIGHT.y, -LIGHT.x);
+  [[0.84, 0.13, 0.16, 0.95], [0.86, 0.045, 0.3, 0.6]].forEach(([k, w, a, half], i) => {
+    const t0 = th - half, t1 = th + half, rr = k * r;
+    paths.push(path(`glow${i}`, [["M", x + rr * Math.cos(t0), y + rr * Math.sin(t0)], ["A", rr, rr, 0, false, true, x + rr * Math.cos(t1), y + rr * Math.sin(t1)]],
+      fill(lit, a), Math.max(0.8, w * r)));
+  });
+  // the specular highlight: soft round a bright core
+  const hx = x + r * LIGHT.x * 0.52, hy = y + r * LIGHT.y * 0.52;
+  [[0.26, 0.08], [0.16, 0.14], [0.09, 0.3], [0.045, 0.6]].forEach(([k, a], i) => paths.push(path(`spec${i}`, circle(hx, hy, k * r), fill("#ffffff", a))));
+  paths.push(path("rim", circle(x, y, r - 0.7), { kind: "linear", angle: away, from: withAlpha("#ffffff", 0.65 * op), to: withAlpha(deep, 0.8 * op) }, 1.4));
+  paths.push(path("edge", circle(x, y, r + 0.5), fill("#01040a", 0.55), 1));
+  return paths;
+}

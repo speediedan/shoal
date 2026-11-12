@@ -1262,8 +1262,8 @@ test("turning a globe reveals other roles without detaching them or their grid",
       const p = lay.pos.get(id);
       assert.ok(Math.hypot(p.x - c.x, p.y - c.y) <= c.r + 1e-8, "roles remain on the globe");
     }
-    for (const g of c.globeGrid) for (const p of g.points)
-      assert.ok(Math.hypot(p.x - c.x, p.y - c.y) <= c.r + 1e-8, "the grid shares the silhouette");
+    for (const g of c.globeGrid) for (const p of gridPoints(g.cmds))
+      assert.ok(Math.hypot(p.x - c.x, p.y - c.y) <= c.r * (1 + 1e-3), "the grid shares the silhouette");
   }
   const sc = S.buildScene(global, a, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
   assert.ok(sc.items.some((x) => x.id.startsWith("contact-")), "front roles cast contact shadows");
@@ -1277,6 +1277,22 @@ test("2026-11-08: a renamed standalone seat's Remove uses its saved label", () =
   assert.equal(M.removeOverlay(vm, "ext:old-label").props.session, "old-label");
   assert.equal(M.actionsOverlay(vm, "ext:old-label").props.session, "old-label", "Handoff uses the same saved seat identity");
 });
+
+// points along a path's cubics (and its moves), for checking where a curve runs
+function gridPoints(cmds) {
+  const out = [];
+  let at = null;
+  for (const c of cmds) {
+    if (c[0] === "M") { at = { x: c[1], y: c[2] }; out.push(at); continue; }
+    if (c[0] !== "C") continue;
+    for (const t of [0.25, 0.5, 0.75, 1]) {
+      const u = 1 - t, b = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+      out.push({ x: b[0] * at.x + b[1] * c[1] + b[2] * c[3] + b[3] * c[5], y: b[0] * at.y + b[1] * c[2] + b[2] * c[4] + b[3] * c[6] });
+    }
+    at = { x: c[5], y: c[6] };
+  }
+  return out;
+}
 
 const alphaOf = (hex) => parseInt(String(hex).slice(7, 9) || "ff", 16) / 255;
 const cmdCount = (paths) => paths.reduce((t, p) => t + p.cmds.length, 0);
@@ -1572,16 +1588,18 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
     const rims = Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72));
     assert.ok(Math.max(...rims) <= Math.PI / 2 + 1e-9 && Math.max(...rims) > Math.PI / 2 - 0.01 && Math.min(...rims) < Math.PI / 2 - 0.1, "far rim at the equator, near rim lower");
     assert.ok(Math.min(...rims) > Math.PI / 3 + 0.05, "both circles of latitude are whole");
-    // your shadow falls near the bottom, just down and right of your foot on the axis, inside the rim and clear of you,
-    // nearer the bottom than the lit spot on the far wall; it is small and soft
+    // 2026-11-12: your shadow falls on the wall just behind you, down and to the right (from a key light by the camera),
+    // so it peeks out from under you and is plainly yours; it is dark and large enough to be seen, and soft
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
     const shadow = sc.items.filter((it) => it.id.startsWith("bowl-shadow-"));
     assert.equal(shadow.length, SP.BOWL_SHADOW_STEPS);
-    const layers = SP.bowlShadow(fr, 0, 0, 1, 0.1), sh = layers.at(-1), you = pa.pos.get(user.id);
-    const spot = SP.bowlProject(fr, { x: -SP.LIGHT.x, y: -SP.LIGHT.y, z: -SP.LIGHT.z });
-    assert.ok(SP.rimNorm(fr, sh) < 0.9 && Math.hypot(sh.x - you.x / pa.bowl.R, sh.y - you.y / pa.bowl.R) > 0.3, "a shadow on the inside, apart from you");
-    assert.ok(Math.hypot(sh.x - pole.x, sh.y - pole.y) < Math.hypot(sh.x - spot.x, sh.y - spot.y), "nearer the bottom than the lit spot");
-    assert.ok(Math.max(...layers.map((l) => l.alpha)) < 0.12 && Math.hypot(layers[0].a.x, layers[0].a.y) < 0.18, "small and soft");
+    const Rs = pa.bowl.R, you = pa.pos.get(user.id), youR = sc.nodeScreen.get(user.id).r / Rs;
+    const layers = SP.bowlShadow(fr, 0, 0, 1, youR, pa.bowl.you), sh = layers.at(-1);
+    const off = { x: sh.x - you.x / Rs, y: sh.y - you.y / Rs }, apart = Math.hypot(off.x, off.y) / youR;
+    assert.ok(SP.rimNorm(fr, sh) < 1 && SP.bowlShadowSeen(fr, pa.bowl.you), "on the inside, seen through the opening");
+    assert.ok(off.x > 0 && off.y > 0 && apart > 0.6 && apart < 2.5, `down and right of you, peeking out: ${apart.toFixed(2)} of your radius`);
+    assert.ok(1 - layers.reduce((w, l) => w * (1 - l.alpha), 1) > 0.4, "dark enough to be seen");
+    assert.ok(Math.hypot(layers[0].a.x, layers[0].a.y) > 0.8 * youR && layers.length >= 8, "about your size, soft at its edge");
     // the washes are light, so edges and arrows over them read; the inside is clearer than in #155
     assert.ok(SP.BOWL.wash < 0.1 && SP.BOWL.base < 0.16);
   }
@@ -1590,9 +1608,14 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
 test("2026-11-11: the bowl's glow is smooth: many faint layers, no step between two of them shows", () => {
   for (const alphaT of [0.4, 0.6]) {
     const fr = SP.bowlFrame(alphaT), layers = SP.bowlGlow(fr, 0, 0, 1);
-    assert.ok(layers.length >= 44 && SP.BOWL.glow * 255 <= 2.01, "44 or more layers at 2 of 255 each, not 20 at 5");
+    // 2026-11-12: 16 layers at 2 of 255 each (not 20 at 5), and a linear sweep toward the lit spot (no steps) for the rest
+    // of the light the 44 layers gave, so the bowl costs 168 fewer path commands for the same look
+    assert.ok(layers.length >= 16 && layers.length <= 20 && SP.BOWL.glow * 255 <= 2.01, "16 or more layers at 2 of 255 each");
     const total = 1 - (1 - Math.round(SP.BOWL.glow * 255) / 255) ** layers.length;
-    assert.ok(total > 0.25 && total < 0.34, `about the light it had: ${total.toFixed(3)}`);
+    const spotAt = layers.at(-1), sweep = SP.BOWL.sweep * SP.bowlSweep(fr).at(spotAt.x, spotAt.y);
+    const atSpot = 1 - (1 - total) * (1 - sweep);
+    assert.ok(atSpot > 0.25 && atSpot < 0.34, `about the light it had at the lit spot: ${atSpot.toFixed(3)}`);
+    assert.ok(SP.bowlSweep(fr).at(2 * fr.rim.cx - spotAt.x, 2 * fr.rim.cy - spotAt.y) < SP.bowlSweep(fr).at(spotAt.x, spotAt.y) - 0.25, "and less across from it");
     // each layer inside the one before it, and all inside the rim
     const pts = (e) => Array.from({ length: 24 }, (_, i) => { const t = (2 * Math.PI * i) / 24; return { x: e.x + e.a.x * Math.cos(t) + e.b.x * Math.sin(t), y: e.y + e.a.y * Math.cos(t) + e.b.y * Math.sin(t) }; });
     for (const p of pts(layers[0])) assert.ok(Math.abs(SP.rimNorm(fr, p) - 1) < 1e-9, "the outermost layer is the rim");
@@ -1712,32 +1735,52 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
     assert.ok(c.pitch === p.pitch && c.yaw === p.yaw && c.spin === p.yaw && c.orbit.x === 0 && c.orbit.y === 0);
     assert.equal(D.bowlTurn(c), D.BOWL_HOME_TURN);
   }
-  // the bowl opens at the old down and left limits (10 and -40 degrees), and the limits reach 30% further out than they
-  // did from the old opening view (28 degrees tilt, 30 turn): down 18 -> 23.4, left 70 -> 91, right 10 -> 13
+  // the bowl opens at 10 degrees tilt and -40 turn (the maintainer's pick); 2026-11-12, later: each axis reaches well past
+  // where it stopped (4.6 to 50 tilt, -61 to 43 turn), and the two together keep the axis at most 70 to 75 degrees off
+  // the line of sight, so the bowl never goes edge-on
   const near = (a, b) => Math.abs(a - b) < 1e-9;
   assert.ok(near(D.BOWL_HOME_TILT, 10 * DEG) && near(D.BOWL_HOME_TURN, -40 * DEG));
-  assert.ok(near(D.BOWL_ALPHA_RANGE[0], (28 - 18 * 1.3) * DEG) && near(D.BOWL_BETA_RANGE[0], (30 - 70 * 1.3) * DEG)
-            && near(D.BOWL_BETA_RANGE[1], (30 + 10 * 1.3) * DEG), "30% further down, left and right");
+  assert.ok(D.BOWL_ALPHA_RANGE[0] <= -10 * DEG && D.BOWL_ALPHA_RANGE[1] >= 60 * DEG, "further down and up");
+  assert.ok(D.BOWL_BETA_RANGE[0] <= -70 * DEG && D.BOWL_BETA_RANGE[1] >= 70 * DEG, "further left and right");
+  assert.ok(D.BOWL_OFF_AXIS_MAX >= 70 * DEG && D.BOWL_OFF_AXIS_MAX <= 75 * DEG && Math.cos(D.BOWL_ALPHA_RANGE[1]) > Math.cos(D.BOWL_OFF_AXIS_MAX), "the tilt alone never reaches it");
+  const floor = Math.cos(D.BOWL_OFF_AXIS_MAX), offAxis = (o) => { const a = D.bowlAngles(o); return Math.cos(a.alpha) * Math.cos(a.beta); };
   assert.deepEqual(D.orbitBy("flat", { x: 1, y: 1 }, 0.1, 0.1, true), { x: 0, y: 0 }, "flat has no orbit");
   for (const name of ["tilt", "iso"]) {
     // per shoal: up tips the bowl further down the screen (looking down from higher), right turns it round to the right,
-    // and each stops at its limit; a press past it is dropped, so the way back answers at once
+    // and each stops at its limit; a press past it goes to the limit and the rest is dropped, so the way back answers at
+    // once, from a corner too
+    const press = (o, dx, dy) => D.orbitBy(name, o, dx * D.ORBIT_STEP, dy * D.ORBIT_STEP, true);
     let o = { x: 0, y: 0 };
     const alpha0 = D.bowlTilt(D.camera(name));
-    o = D.orbitBy(name, o, 0, D.ORBIT_STEP, true);
+    o = press(o, 0, 1);
     assert.ok(D.bowlTilt(D.camera(name, 0, o)) > alpha0, "up: tipped further");
-    for (let i = 0; i < 20; i++) o = D.orbitBy(name, o, D.ORBIT_STEP, D.ORBIT_STEP, true);
-    const top = D.camera(name, 0, o);
-    assert.ok(Math.abs(D.bowlTilt(top) - D.BOWL_ALPHA_RANGE[1]) < 1e-12 && Math.abs(D.bowlTurn(top) - D.BOWL_BETA_RANGE[1]) < 1e-12, "held at the top and right limits");
-    const back = D.orbitBy(name, o, -D.ORBIT_STEP, -D.ORBIT_STEP, true);
-    assert.ok(D.bowlTilt(D.camera(name, 0, back)) < D.bowlTilt(top) - 0.1 && D.bowlTurn(D.camera(name, 0, back)) < D.bowlTurn(top) - 0.1, "one press back moves");
-    for (let i = 0; i < 40; i++) o = D.orbitBy(name, o, -D.ORBIT_STEP, -D.ORBIT_STEP, true);
-    const low = D.camera(name, 0, o);
-    assert.ok(Math.abs(D.bowlTilt(low) - D.BOWL_ALPHA_RANGE[0]) < 1e-12 && Math.abs(D.bowlTurn(low) - D.BOWL_BETA_RANGE[0]) < 1e-12, "held at the bottom and left limits");
-    // whatever the camera asks, the frame stays a bowl seen from in front: its bottom faces away
-    for (const ask of [{ x: 9, y: 9 }, { x: -9, y: -9 }, { x: 9, y: -9 }]) {
+    const seen = [];
+    for (let i = 0; i < 20; i++) seen.push(o = press(o, 0, 1));
+    assert.ok(near(D.bowlTilt(D.camera(name, 0, o)), D.BOWL_ALPHA_RANGE[1]), "held at the top limit");
+    for (let i = 0; i < 30; i++) seen.push(o = press(o, 1, 0));
+    const corner = o, turn = D.bowlTurn(D.camera(name, 0, o));
+    assert.ok(Math.abs(offAxis(o) - floor) < 1e-9 && turn < D.BOWL_BETA_RANGE[1] - 0.2, `right, up high: held where the axis is ${(Math.acos(offAxis(o)) / DEG).toFixed(1)} degrees off`);
+    const same = (a, b) => near(a.x, b.x) && near(a.y, b.y);
+    assert.ok(same(press(corner, 1, 0), corner), "a press further right is dropped");
+    assert.ok(same(press(corner, 0, 1), corner), "and further up");
+    const left = press(corner, -1, 0), down = press(corner, 0, -1);
+    assert.ok(near(D.bowlTurn(D.camera(name, 0, left)), turn - D.ORBIT_STEP) && near(left.y, corner.y), "one press back left moves a whole step");
+    assert.ok(near(D.bowlTilt(D.camera(name, 0, down)), D.BOWL_ALPHA_RANGE[1] - D.ORBIT_STEP) && near(down.x, corner.x), "and one down");
+    // low: the turn reaches further, up to its range or the combined limit
+    for (let i = 0; i < 40; i++) seen.push(o = press(o, 0, -1));
+    assert.ok(near(D.bowlTilt(D.camera(name, 0, o)), D.BOWL_ALPHA_RANGE[0]), "held at the bottom limit");
+    for (let i = 0; i < 40; i++) seen.push(o = press(o, -1, 0));
+    const lowLeft = D.bowlTurn(D.camera(name, 0, o));
+    assert.ok(lowLeft < -70 * DEG && (near(lowLeft, D.BOWL_BETA_RANGE[0]) || Math.abs(offAxis(o) - floor) < 1e-9), `low, left as far as ${(lowLeft / DEG).toFixed(1)}`);
+    assert.ok(near(D.bowlTurn(D.camera(name, 0, press(o, 1, 0))), lowLeft + D.ORBIT_STEP), "and back at once");
+    for (const s of seen) assert.ok(offAxis(s) >= floor - 1e-9, "every press stays in view");
+    // whatever the camera asks, the frame stays a bowl seen from in front: its bottom faces away, never more than the
+    // limit off the line of sight
+    for (const ask of [{ x: 9, y: 9 }, { x: -9, y: -9 }, { x: 9, y: -9 }, { x: -9, y: 9 }, { x: 2.1, y: 0.9 }]) {
       const c = D.camera(name, 0, ask), fr = SP.bowlFrame(D.bowlTilt(c), SP.BOWL_DIST, D.bowlTurn(c));
-      assert.ok(fr.pole.z < -0.3, `the pole away from the camera: ${fr.pole.z.toFixed(2)}`);
+      assert.ok(fr.pole.z <= -floor + 1e-9, `the pole away from the camera: ${fr.pole.z.toFixed(2)}`);
+      const held = D.orbitBy(name, ask, 0, 0, true);
+      assert.ok(offAxis(held) >= floor - 1e-9 && near(offAxis(held), offAxis(ask)), "a stored orbit is held to what the camera shows");
     }
     // global: the pitch is held in its range, the yaw goes round freely, and `,` and `.` add to it as before
     let g = { x: 0, y: 0 };
@@ -1760,7 +1803,9 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
 test("2026-11-12: you float in front of the inside: nearer than the surface behind you at every orbit", () => {
   const la = L.layoutGraph(alpha), user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
   const home = D.projectLayout(alpha, la, D.camera("tilt"));
-  for (const name of ["tilt", "iso"]) for (const [ox, oy] of [[0, 0], [-24, 24], [24, -16], [40, 30], [-40, -30], [0, 30], [-30, -10], [90, 0], [90, 40]]) {
+  for (const name of ["tilt", "iso"]) for (const [ox, oy] of [[0, 0], [-24, 24], [24, -16], [40, 30], [-40, -30], [0, 30], [-30, -10], [90, 0], [90, 40],
+    // 2026-11-12, the wider range: each limit, the corners and past them (held at the combined limit)
+    [-40, 0], [120, 0], [0, 60], [0, -30], [120, 60], [-120, 60], [-120, -60], [120, -60], [60, 54], [-16, 54]]) {
     const DEG = Math.PI / 180, o = D.orbitBy(name, null, ox * DEG, oy * DEG, true), cam = D.camera(name, 0, o);
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame, Rs = pa.bowl.R, you = pa.bowl.you, at = `${name} ${ox},${oy}`;
     assert.ok(Math.abs(fr.alpha - D.bowlTilt(cam)) < 1e-12 && Math.abs(fr.beta - D.bowlTurn(cam)) < 1e-12, `${at}: the frame is the orbit's`);
@@ -1789,14 +1834,110 @@ test("2026-11-12: you float in front of the inside: nearer than the surface behi
     const plumb = sc.items.find((it) => it.id === "bowl-plumb"), pole = SP.bowlProject(fr, fr.pole);
     assert.ok(plumb && Math.hypot(plumb.cmds[0][1] - yp.x, plumb.cmds[0][2] - yp.y) < 1e-6, `${at}: the plumb line starts at you`);
     assert.ok(Math.hypot(plumb.cmds[1][1] - Rs * pole.x, plumb.cmds[1][2] - Rs * pole.y) < 1e-6 && sc.items.some((it) => it.id === "bowl-foot"), `${at}: and stands at the bottom`);
-    const sh = SP.bowlShadowAt(fr, you);
-    assert.ok(Math.abs(Math.hypot(sh.x, sh.y, sh.z) - 1) < 1e-9 && SP.bowlKept(fr, sh) && sh.z < you.z - 0.5, `${at}: your shadow on the wall, behind you`);
+    const sh = SP.bowlShadowAt(fr, you), shadow = sc.items.filter((it) => it.id.startsWith("bowl-shadow-"));
+    assert.ok(Math.abs(Math.hypot(sh.x, sh.y, sh.z) - 1) < 1e-9 && sh.z < you.z - 0.5, `${at}: your shadow falls behind you`);
+    // drawn where it lands on the inside, seen through the opening (at the opening view and near it, always)
+    assert.equal(shadow.length, SP.bowlShadowSeen(fr, you) ? SP.BOWL_SHADOW_STEPS : 0, `${at}: drawn where it is seen`);
+    if (Math.abs(ox) <= 40 && Math.abs(oy) <= 30) assert.equal(shadow.length, SP.BOWL_SHADOW_STEPS, `${at}: your shadow is seen`);
     const low = Math.min(...Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72)));
     assert.ok(SP.bowlRings(fr).length >= 2 && SP.bowlRings(fr).every((t) => t < low), `${at}: the rings drawn are whole`);
     assert.equal(sc.items.find((it) => it.id === "bowl-rings").cmds.filter((c) => c[0] === "M").length, SP.bowlRings(fr).length);
     assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 500, `${at}: the bowl's budget holds`);
   }
-  // at the middle (no lift) the shadow is where it always was: the point opposite the light
-  const fr = home.bowl.frame, L0 = SP.bowlShadowLight(fr), s0 = SP.bowlShadowAt(fr);
+  // at the middle (no lift) the shadow is the point opposite its light
+  const fr = home.bowl.frame, L0 = SP.youShadowLight(), s0 = SP.bowlShadowAt(fr);
   assert.ok(Math.hypot(s0.x + L0.x, s0.y + L0.y, s0.z + L0.z) < 1e-12);
+});
+
+test("2026-11-12: in the bowl you are a small glass ball, finely graded, lit from the one light, cheap", () => {
+  const user = alpha.nodes.find((n) => n.kind === "user");
+  const pa = D.projectLayout(alpha, L.layoutGraph(alpha), D.camera("tilt"));
+  const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "full" });
+  const glass = sc.items.filter((it) => it.id.startsWith("you-glass-"));
+  const at = sc.nodeScreen.get(user.id);
+  assert.ok(glass.length > 0 && glass.every((it) => it.t === "path"), "you are drawn as paths");
+  assert.ok(cmdCount(glass) === SP.YOU_GLASS_CMDS && SP.YOU_GLASS_CMDS <= 120, `well under 150 path commands: ${cmdCount(glass)}`);
+  assert.ok(!sc.items.some((it) => it.id === `halo-${user.id}` || it.id === `halo-in-${user.id}` || it.id === `body-${user.id}`), "no halo or flat ring");
+  // the roundness: many faint layers, each inside the ball, none adding more than 2 percent (no band shows)
+  const lit = glass.filter((it) => it.id.includes("-lit"));
+  assert.ok(lit.length >= 10 && lit.every((it) => alphaOf(it.bg.color) <= 0.02), "fine steps");
+  for (const it of glass.filter((x) => x.fill)) {
+    const [, x0, y0] = it.cmds[0], [, rx, , , , , x1, y1] = it.cmds[1], cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    assert.ok(Math.hypot(cx - at.x, cy - at.y) + rx <= at.r + 1e-6, `${it.id} inside the ball`);
+  }
+  // lit from the one light: the highlight up and to the left, the body clear there and deep at the far limb
+  const spec = glass.filter((it) => it.id.includes("-spec")).at(-1), sx = (spec.cmds[0][1] + spec.cmds[1][6]) / 2, sy = spec.cmds[0][2];
+  assert.ok(sx < at.x - 0.2 * at.r && sy < at.y - 0.2 * at.r && alphaOf(spec.bg.color) > 0.5, "a bright highlight toward the light");
+  const body = glass[0];
+  assert.ok(body.bg.kind === "linear" && alphaOf(body.bg.from) < 0.2 && alphaOf(body.bg.to) > 0.5, "clear on the lit side, deep at the far limb");
+  assert.ok(Math.cos(((body.bg.angle - 90) * Math.PI) / 180 - Math.atan2(-SP.LIGHT.y, -SP.LIGHT.x)) > 0.99, "graded along the light");
+  // outside the bowl (flat, and the global view) you keep your ring and halo
+  for (const [vm, lay] of [[alpha, L.layoutGraph(alpha)], [global, D.projectLayout(global, L.layoutGraph(global), D.camera("tilt"))]]) {
+    const other = S.buildScene(vm, lay, { width: 1000, height: 700, tf: G.identity(), motion: "full" });
+    assert.ok(!other.items.some((it) => it.id.startsWith("you-glass-")) && other.items.some((it) => it.id === `body-${user.id}`));
+  }
+});
+
+test("2026-11-12: an edge from you tapers into the bowl: wide and bright at you, thin and dim at the wall, a small head there", () => {
+  const user = alpha.nodes.find((n) => n.kind === "user"), DEG = Math.PI / 180;
+  const mine = alpha.edges.filter((e) => e.src === user.id || e.dst === user.id);
+  assert.ok(mine.length >= 2, "the fixture has edges at you");
+  for (const [ox, oy] of [[0, 0], [-40, -30], [120, 60]]) {
+    const pa = D.projectLayout(alpha, L.layoutGraph(alpha), D.camera("tilt", 0, D.orbitBy("tilt", null, ox * DEG, oy * DEG, true)));
+    const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    const you = sc.nodeScreen.get(user.id);
+    for (const e of mine.filter((x) => !M.EDGE_DASH[x.cls])) {
+      const core = sc.items.find((it) => it.id === `et-${e.id}`), casing = sc.items.find((it) => it.id === `etk-${e.id}`);
+      assert.ok(core && casing && core.fill && cmdCount([core]) === 5, `${e.id}: a filled ribbon, five commands`);
+      // the ribbon's width at each end, and which end is at you
+      const c = core.cmds, w0 = Math.hypot(c[0][1] - c[3][5], c[0][2] - c[3][6]), w1 = Math.hypot(c[1][5] - c[2][1], c[1][6] - c[2][2]);
+      const startAtYou = Math.hypot(c[0][1] - you.x, c[0][2] - you.y) < Math.hypot(c[1][5] - you.x, c[1][6] - you.y);
+      assert.equal(startAtYou, e.src === user.id, `${e.id}: it starts at its source`);
+      const [near, far] = startAtYou ? [w0, w1] : [w1, w0], [aNear, aFar] = startAtYou ? [core.bg.from, core.bg.to] : [core.bg.to, core.bg.from];
+      assert.ok(near > 2 * far && far > 0.3, `${e.id}: ${near.toFixed(2)} wide at you, ${far.toFixed(2)} at the wall`);
+      assert.ok(core.bg.kind === "linear" && alphaOf(aNear) > 1.4 * alphaOf(aFar), `${e.id}: brighter at you`);
+      const p0 = startAtYou ? [c[0][1], c[0][2]] : [c[1][5], c[1][6]];
+      assert.ok(!sc.items.some((it) => it.id.startsWith("ec-") && it.cmds.some((k) => k[0] === "M" && Math.hypot(k[1] - p0[0], k[2] - p0[1]) < 3)), `${e.id}: not also drawn as a plain line`);
+    }
+    // a head on the far wall is smaller than one at you, in step with how near each is (smaller than the square root gave)
+    const sRole = Math.min(...alpha.nodes.filter((n) => n.kind === "role").map((n) => pa.scaleOf.get(n.id))), sYou = pa.scaleOf.get(user.id);
+    assert.ok(S.headScaleOf(sRole) < 0.75 && S.headScaleOf(sRole) < Math.sqrt(sRole / 1.25) - 0.05 && S.headScaleOf(sYou) > 1.2, `heads ${S.headScaleOf(sRole).toFixed(2)} on the wall, ${S.headScaleOf(sYou).toFixed(2)} at you`);
+  }
+  // the taper itself: from near to far, narrower and dimmer
+  const t = S.taperOf(1.9, 0.8);
+  assert.ok(t.w0 > 2 * t.w1 && t.a0 > t.a1, "narrower and dimmer away from you");
+  // outside the bowl edges are as they were: no ribbons
+  const g = S.buildScene(global, D.projectLayout(global, L.layoutGraph(global), D.camera("tilt")), { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  assert.ok(!g.items.some((it) => it.id.startsWith("et-") || it.id.startsWith("etk-")));
+});
+
+test("2026-11-12: the render budget: the per-shoal scene no more than before, the global depth scene well under the safe line", () => {
+  const DEG = Math.PI / 180, total = (sc) => cmdCount(sc.items.filter((it) => it.t === "path"));
+  // the fixture's per-shoal scenes measured before the glass you and the tapered edges (alpha 1085 at the opening view,
+  // 1087 at most orbited; beta 823 to 825): now no more, at any orbit, the new extremes too
+  for (const [vm, before] of [[alpha, 1085], [M.buildModel(doc, B), 823]]) {
+    const la = L.layoutGraph(vm);
+    for (const [ox, oy] of [[0, 0], [-24, -8], [80, 40], [-40, 0], [120, 0], [0, 60], [0, -30], [120, 60], [-40, -30]]) {
+      for (const name of ["tilt", "iso"]) {
+        const pa = D.projectLayout(vm, la, D.camera(name, 0, D.orbitBy(name, null, ox * DEG, oy * DEG, true)));
+        const n = total(S.buildScene(vm, pa, { width: 1400, height: 860, tf: G.identity(), motion: "full" }));
+        assert.ok(n <= before, `${vm.view} ${name} ${ox},${oy}: ${n} path commands (before: ${before})`);
+      }
+    }
+  }
+  // global depth: each globe's grid in cubic arcs (about 600 commands each as 96-point polylines), the scene 2750 before
+  const la = L.layoutGraph(global);
+  for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", 0.6, { x: 0.7, y: 0.3 })]) {
+    const pl = D.projectLayout(global, la, cam), sc = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full" });
+    for (const c of pl.clusters) {
+      const grid = sc.items.filter((it) => it.id.startsWith(`sphere-grid-${c.id}-`));
+      assert.ok(grid.length === 2 && cmdCount(grid) <= 60, `${c.id}: the grid in ${cmdCount(grid)} commands`);
+      // the arcs are the circles they were: every point on the globe's six circles, front and back meeting at its outline
+      for (const g of c.globeGrid) for (const p of gridPoints(g.cmds)) {
+        const nx = (p.x - c.x) / c.r, ny = (p.y - c.y) / c.r;
+        assert.ok(nx * nx + ny * ny <= 1 + 2e-3, "on the globe");
+      }
+    }
+    assert.ok(total(sc) <= 1700, `the global depth scene: ${total(sc)} path commands`);
+  }
 });

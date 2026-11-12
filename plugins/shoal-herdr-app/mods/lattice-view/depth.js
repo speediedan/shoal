@@ -95,16 +95,18 @@ export function castShadow(P, L, p, z, r, floorZ) {
 // raises the camera, so it looks down from higher). `orbit` {x, y} is that turn, in radians, on top of the preset. In
 // the global view x adds to the yaw (round the planes' up, as `,` and `.` do) and y to the pitch, kept in PITCH_RANGE.
 // Per shoal, x turns the bowl's axis round the screen's vertical (BOWL_HOME_TURN plus x, kept in BOWL_BETA_RANGE) and y
-// tips it further down the screen (BOWL_HOME_TILT plus y, kept in BOWL_ALPHA_RANGE), so the bowl never turns its back or
-// rolls over; `,` and `.` still spin it round its own axis. The bowl opens at the view the arrows used to reach at their
-// down and left limits (10 and -40 degrees, the maintainer's pick, 2026-11-12), and the limits reach 30% further out than
-// they did from the old opening view (28 degrees tilt, 30 turn): down to 4.6, left to -61, right to 43.
+// tips it further down the screen (BOWL_HOME_TILT plus y, kept in BOWL_ALPHA_RANGE); `,` and `.` still spin it round its
+// own axis. The bowl opens at 10 degrees tilt and -40 turn (the maintainer's pick, 2026-11-12). Each axis reaches well
+// past where it stopped before (4.6 to 50 tilt, -61 to 43 turn), and the two together are held so the axis is never
+// more than BOWL_OFF_AXIS_MAX off the line of sight (cos tilt cos turn, the cosine of that angle, kept above its floor):
+// further round, the bowl goes edge-on and its inside closes up.
 export const ORBIT_STEP = 8 * DEG;
 export const PITCH_RANGE = [24 * DEG, 80 * DEG];
 export const BOWL_HOME_TILT = 10 * DEG;
 export const BOWL_HOME_TURN = -40 * DEG;
-export const BOWL_ALPHA_RANGE = [4.6 * DEG, 50 * DEG];
-export const BOWL_BETA_RANGE = [-61 * DEG, 43 * DEG];
+export const BOWL_ALPHA_RANGE = [-14 * DEG, 64 * DEG];
+export const BOWL_BETA_RANGE = [-72 * DEG, 72 * DEG];
+export const BOWL_OFF_AXIS_MAX = 72 * DEG;
 const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /**
@@ -119,22 +121,43 @@ export function camera(name, yawTurn = 0, orbit = null) {
   return { name, pitch, yaw, spin, orbit: { x: ox, y: oy }, c: Math.cos(pitch), s: Math.sin(pitch), cyaw: Math.cos(yaw), syaw: Math.sin(yaw), d: 0, o: { x: 0, y: 0 } };
 }
 
+/** The bowl's tilt and turn {alpha, beta} for an orbit: each kept in its range, then the turn held to what the tilt
+ * leaves of BOWL_OFF_AXIS_MAX (cos alpha cos beta >= cos BOWL_OFF_AXIS_MAX), so any orbit gives a bowl seen from in
+ * front. */
+export function bowlAngles(orbit) {
+  const alpha = clampTo(BOWL_HOME_TILT + (Number.isFinite(orbit?.y) ? orbit.y : 0), ...BOWL_ALPHA_RANGE);
+  let beta = clampTo(BOWL_HOME_TURN + (Number.isFinite(orbit?.x) ? orbit.x : 0), ...BOWL_BETA_RANGE);
+  const most = Math.acos(Math.min(1, Math.cos(BOWL_OFF_AXIS_MAX) / Math.cos(alpha)));
+  if (Math.abs(beta) > most) beta = Math.sign(beta) * most;
+  return { alpha, beta };
+}
+/** Whether a tilt and turn keep the bowl's axis within BOWL_OFF_AXIS_MAX of the line of sight. */
+export const bowlInView = (alpha, beta) => Math.cos(alpha) * Math.cos(beta) >= Math.cos(BOWL_OFF_AXIS_MAX) - 1e-12;
+
 /**
  * The orbit after an arrow (dx, dy in radians) on preset `name`, kept to what the view shows: per shoal (`bowl`) the
- * bowl's turn and tilt stay in their ranges; globally the pitch does, and the yaw goes round freely. A turn past a limit
- * is dropped, not stored, so the way back is never dead. Flat: no orbit.
+ * bowl's turn and tilt stay in their ranges and its axis within BOWL_OFF_AXIS_MAX of the line of sight; globally the
+ * pitch does, and the yaw goes round freely. A press that would pass a limit goes as far as the limit and the rest is
+ * dropped, not stored, so the way back is never dead, from a corner too. Flat: no orbit.
  */
 export function orbitBy(name, orbit, dx = 0, dy = 0, bowl = false) {
   const c = CAMERAS[name];
   if (!c) return { x: 0, y: 0 };
-  let x = (Number.isFinite(orbit?.x) ? orbit.x : 0) + dx, y = (Number.isFinite(orbit?.y) ? orbit.y : 0) + dy;
   if (bowl) {
-    x = clampTo(BOWL_HOME_TURN + x, ...BOWL_BETA_RANGE) - BOWL_HOME_TURN;
-    y = clampTo(BOWL_HOME_TILT + y, ...BOWL_ALPHA_RANGE) - BOWL_HOME_TILT;
-  } else {
-    x = Math.atan2(Math.sin(x), Math.cos(x));
-    y = clampTo(c.pitch + y, ...PITCH_RANGE) - c.pitch;
+    const a0 = bowlAngles(orbit), from = { x: a0.beta - BOWL_HOME_TURN, y: a0.alpha - BOWL_HOME_TILT };
+    const at = (t) => ({
+      x: clampTo(BOWL_HOME_TURN + from.x + t * dx, ...BOWL_BETA_RANGE) - BOWL_HOME_TURN,
+      y: clampTo(BOWL_HOME_TILT + from.y + t * dy, ...BOWL_ALPHA_RANGE) - BOWL_HOME_TILT,
+    });
+    const ok = (o) => bowlInView(BOWL_HOME_TILT + o.y, BOWL_HOME_TURN + o.x);
+    if (ok(at(1))) return at(1);
+    // past the combined limit: as far along the press as stays in view (bisection: the start is in view)
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (ok(at(mid))) lo = mid; else hi = mid; }
+    return at(lo);
   }
+  const x = Math.atan2(Math.sin((Number.isFinite(orbit?.x) ? orbit.x : 0) + dx), Math.cos((Number.isFinite(orbit?.x) ? orbit.x : 0) + dx));
+  const y = clampTo(c.pitch + (Number.isFinite(orbit?.y) ? orbit.y : 0) + dy, ...PITCH_RANGE) - c.pitch;
   return { x, y };
 }
 
@@ -250,25 +273,12 @@ export function projectLayout(vm, lay, cam0) {
     const globeGrid = [];
     if (vm.global) {
       const R = c.r * SPHERE_R;
-      const line = (at) => {
-        let points = [], front = null;
-        for (let j = 0; j <= 96; j++) {
-          const u = at(2 * Math.PI * j / 96);
-          const near = (u.x * cam.syaw + u.y * cam.cyaw) * cam.s + u.z * cam.c >= 0;
-          const v = { x: q.x + R * q.f * (u.x * cam.cyaw - u.y * cam.syaw),
-            y: q.y + R * q.f * ((u.x * cam.syaw + u.y * cam.cyaw) * cam.c - u.z * cam.s) };
-          if (front !== null && near !== front) {
-            globeGrid.push({ front, points: [...points, v] });
-            points = [v];
-          }
-          points.push(v); front = near;
-        }
-        if (points.length > 1) globeGrid.push({ front, points });
-      };
-      for (const lat of [-Math.PI / 6, 0, Math.PI / 6]) line((a) => ({ x: Math.cos(lat) * Math.cos(a), y: Math.cos(lat) * Math.sin(a), z: Math.sin(lat) }));
+      for (const lat of [-Math.PI / 6, 0, Math.PI / 6]) {
+        globeGrid.push(...globeCircle(cam, q, R * q.f, { x: 0, y: 0, z: Math.sin(lat) }, { x: Math.cos(lat), y: 0, z: 0 }, { x: 0, y: Math.cos(lat), z: 0 }));
+      }
       for (let i = 0; i < 3; i++) {
         const a = i * Math.PI / 3;
-        line((b) => ({ x: Math.cos(b) * Math.cos(a), y: Math.cos(b) * Math.sin(a), z: Math.sin(b) }));
+        globeGrid.push(...globeCircle(cam, q, R * q.f, { x: 0, y: 0, z: 0 }, { x: Math.cos(a), y: Math.sin(a), z: 0 }, { x: 0, y: 0, z: 1 }));
       }
     }
     return { ...c, x: q.x, y: q.y, r: c.r * (vm.global ? SPHERE_R : 1) * q.f, ry: vm.global ? 1 : cam.c, sphere: vm.global, globeGrid, s: q.f, depth: q.depth, zw: zc };
@@ -313,6 +323,38 @@ export function projectLayout(vm, lay, cam0) {
   return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, floorZ, light: L };
 }
 
+/**
+ * A circle of a globe's unit sphere, u(t) = C + A cos t + B sin t, seen through `cam` on the globe whose middle is at q
+ * (radius Rf on screen): its arcs on the near side and on the far side, [{front, cmds}], each a move and cubics. The
+ * globe is seen square on (its outline a circle), so the circle's image is an ellipse, the affine image of (cos t,
+ * sin t): a cubic per quarter turn of t stays within a fraction of a pixel of it, where 96 straight lines a circle
+ * cost the global scene about 1,100 path commands for its two globes' grids. The two sides meet where the circle
+ * crosses the globe's outline, n . u(t) = 0 (n toward the camera).
+ */
+export function globeCircle(cam, q, Rf, C, A, B) {
+  const sx = (u) => q.x + Rf * (u.x * cam.cyaw - u.y * cam.syaw), sy = (u) => q.y + Rf * ((u.x * cam.syaw + u.y * cam.cyaw) * cam.c - u.z * cam.s);
+  const dx = (u) => Rf * (u.x * cam.cyaw - u.y * cam.syaw), dy = (u) => Rf * ((u.x * cam.syaw + u.y * cam.cyaw) * cam.c - u.z * cam.s);
+  const facing = (u) => (u.x * cam.syaw + u.y * cam.cyaw) * cam.s + u.z * cam.c;
+  const at = (t) => ({ x: C.x + A.x * Math.cos(t) + B.x * Math.sin(t), y: C.y + A.y * Math.cos(t) + B.y * Math.sin(t), z: C.z + A.z * Math.cos(t) + B.z * Math.sin(t) });
+  const tan = (t) => ({ x: -A.x * Math.sin(t) + B.x * Math.cos(t), y: -A.y * Math.sin(t) + B.y * Math.cos(t), z: -A.z * Math.sin(t) + B.z * Math.cos(t) });
+  const fc = facing(C), fa = facing(A), fb = facing(B), amp = Math.hypot(fa, fb);
+  let spans = [[0, 2 * Math.PI]];
+  if (amp > 1e-12 && Math.abs(fc) < amp) {
+    const ph = Math.atan2(fb, fa), d = Math.acos(-fc / amp);
+    spans = [[ph - d, ph + d], [ph + d, ph - d + 2 * Math.PI]];
+  }
+  return spans.map(([t0, t1]) => {
+    const p0 = at(t0), cmds = [["M", sx(p0), sy(p0)]];
+    const n = Math.max(1, Math.ceil((t1 - t0) / (Math.PI / 2) - 1e-9));
+    for (let i = 0; i < n; i++) {
+      const a = t0 + ((t1 - t0) * i) / n, b = t0 + ((t1 - t0) * (i + 1)) / n, k = (4 / 3) * Math.tan((b - a) / 4);
+      const p = at(a), r = at(b), u = tan(a), v = tan(b);
+      cmds.push(["C", sx(p) + k * dx(u), sy(p) + k * dy(u), sx(r) - k * dx(v), sy(r) - k * dy(v), sx(r), sy(r)]);
+    }
+    return { front: facing(at((t0 + t1) / 2)) >= 0, cmds };
+  });
+}
+
 /** A floor grid at height z, R either side of o, seen through P: GRID + 1 lines each way, the outermost marked. */
 function floorGrid(P, o, R, z) {
   const grid = [];
@@ -341,6 +383,7 @@ export const YOU_LIFT = 0.5;
 /** Your size in the bowl over a role's at the same depth: perspective alone undersold how near you are. */
 export const YOU_GAIN = 1.2;
 const YOU_CLEAR = 0.06; // a role is moved down the wall until it is this far clear of you on screen, in sphere radii
+const ROLE_CLEAR = 0.07; // and this far clear of every role placed before it
 const BOWL_EXT = 1.32; // where outside seats ring the rim, in sphere radii
 const BOWL_GAIN = 1.25; // sizes in the bowl: this much larger than flat, times the perspective scale where they are
 const BOWL_BEHIND = 0.2; // how far behind you, along the line of sight, a role on the inside sits at least
@@ -349,27 +392,40 @@ const SIZE_DEPTH = 1.6;
 
 /** The bowl's pitch for a camera: how far off its axis, vertically, the camera looks down into it: BOWL_HOME_TILT plus
  * the vertical orbit, in BOWL_ALPHA_RANGE (the same opening view in tilt and iso). */
-export const bowlTilt = (cam) => clampTo(BOWL_HOME_TILT + (cam.orbit?.y ?? 0), ...BOWL_ALPHA_RANGE);
+export const bowlTilt = (cam) => bowlAngles(cam.orbit).alpha;
 /** The bowl's turn for a camera: BOWL_HOME_TURN round the screen's vertical, plus the horizontal orbit, in
- * BOWL_BETA_RANGE. */
-export const bowlTurn = (cam) => clampTo(BOWL_HOME_TURN + (cam.orbit?.x ?? 0), ...BOWL_BETA_RANGE);
+ * BOWL_BETA_RANGE and held to what the tilt leaves of BOWL_OFF_AXIS_MAX. */
+export const bowlTurn = (cam) => bowlAngles(cam.orbit).beta;
 /** Where you float in the bowl's frame (camera space, sphere radii): YOU_LIFT from the middle, between the axis up toward
  * the opening and the line toward the camera (YOU_TOWARD of the latter to one of the former). Straight up the axis, a
  * camera far round the side saw you over the near wall, just in front of it; leaning toward the camera, the wall behind
  * you stays the far one at every orbit, and you still sit off the axis, so the plumb line to the bottom shows how far
- * out you float. */
-const YOU_TOWARD = 2;
+ * out you float. Orbited far round the side (the axis more than 55 degrees off the line of sight, up to
+ * BOWL_OFF_AXIS_MAX), you lean further toward the camera (to 3.5 to 1), so you stay over the opening, not over its rim. */
+const YOU_TOWARD = 2, YOU_TOWARD_SIDE = 3.5;
+/** How far round the side a frame is seen: 0 with the axis up to 55 degrees off the line of sight (the opening view is
+ * 41), easing to 1 at BOWL_OFF_AXIS_MAX. */
+export function bowlSide(fr) {
+  const off = Math.acos(Math.max(-1, Math.min(1, -fr.pole.z))), t = clampTo((off - 55 * DEG) / (BOWL_OFF_AXIS_MAX - 55 * DEG), 0, 1);
+  return t * t * (3 - 2 * t);
+}
 export const bowlYou = (fr) => {
-  const x = -fr.pole.x, y = -fr.pole.y, z = YOU_TOWARD - fr.pole.z, l = Math.hypot(x, y, z) || 1;
+  const toward = YOU_TOWARD + (YOU_TOWARD_SIDE - YOU_TOWARD) * bowlSide(fr);
+  const x = -fr.pole.x, y = -fr.pole.y, z = toward - fr.pole.z, l = Math.hypot(x, y, z) || 1;
   return { x: (YOU_LIFT * x) / l, y: (YOU_LIFT * y) / l, z: (YOU_LIFT * z) / l };
 };
 
 /** The polar angle (from the bowl's pole) of the j-th of m roles at azimuth phi: a fraction of what is seen there from
  * `home` (the preset's frame), so a role keeps its place on the surface as the camera orbits, and never more than is
- * seen there from `fr`, so it stays in view. */
+ * seen there from `fr`, so it stays in view. Orbited far round the side the bottom itself comes near the middle's depth,
+ * so what counts as behind you there eases from BOWL_BEHIND behind the middle to BOWL_BEHIND_SIDE in front of it (you,
+ * leaning further toward the camera there, are still well in front): otherwise every role near the bottom's side was
+ * pressed onto the bottom, and two of them met. */
+const BOWL_BEHIND_SIDE = 0.05;
+export const bowlBehind = (fr) => -BOWL_BEHIND + (BOWL_BEHIND + BOWL_BEHIND_SIDE) * bowlSide(fr);
 export function bowlTheta(fr, phi, j, m, home = fr) {
-  const t = bowlReach(home, phi, 0.86, -BOWL_BEHIND) * (m >= 4 ? (j % 2 ? 0.6 : 0.9) : 0.8);
-  return home === fr ? t : Math.min(t, bowlReach(fr, phi, 0.86, -BOWL_BEHIND));
+  const t = bowlReach(home, phi, 0.86, bowlBehind(home)) * (m >= 4 ? (j % 2 ? 0.6 : 0.9) : 0.8);
+  return home === fr ? t : Math.min(t, bowlReach(fr, phi, 0.86, bowlBehind(fr)));
 }
 
 /**
@@ -420,19 +476,25 @@ function projectBowl(vm, lay, cam0) {
   const flatAngle = (id) => { const p = lay.pos.get(id); return p && Math.hypot(p.x, p.y) > 1e-6 ? Math.atan2(p.y, p.x) : -Math.PI / 2; };
   const roles = vm.nodes.filter((n) => n.kind === "role" && lay.pos.has(n.id));
   const home = cam.orbit && (cam.orbit.x || cam.orbit.y) ? bowlFrame(bowlTilt({ name: cam.name }), BOWL_DIST, bowlTurn({ name: cam.name })) : fr;
+  const rolesAt = []; // the roles placed so far, on screen: {x, y, r} in sphere radii
   for (const b of bands) {
     const rel = (id) => ((flatAngle(id) + spin - b.s0) % TAU + TAU) % TAU;
     const mine = roles.filter((n) => (n.host ?? "?") === b.host).sort((x, y) => rel(x.id) - rel(y.id) || (x.id < y.id ? -1 : 1));
     mine.forEach((n, j) => {
       const phi = b.s0 + ((b.s1 - b.s0) * (j + 0.5)) / mine.length;
       let theta = bowlTheta(fr, phi, j, mine.length, home), u = bowlPoint(fr, theta, phi);
-      const clear = youR + ((n.visual?.r ?? 0) * BOWL_GAIN * fr.d / (fr.d - SIZE_DEPTH * u.z)) / Rs + YOU_CLEAR;
-      for (let i = 0; i < 12 && theta > 0.05; i++) {
-        const s = bowlProject(fr, u);
-        if (Math.hypot(s.x - youS.x, s.y - youS.y) >= clear) break;
+      // its radius on screen there, in sphere radii; clear of you, and of every role placed before it (orbited far round
+      // the side, the far wall's reach narrows and two roles near a lune's edge would meet there)
+      const rAt = (w) => ((n.visual?.r ?? 0) * BOWL_GAIN * fr.d / (fr.d - SIZE_DEPTH * w.z)) / Rs;
+      const clear = (w) => {
+        const s = bowlProject(fr, w), r = rAt(w);
+        return Math.hypot(s.x - youS.x, s.y - youS.y) >= youR + r + YOU_CLEAR && rolesAt.every((q) => Math.hypot(s.x - q.x, s.y - q.y) >= q.r + r + ROLE_CLEAR);
+      };
+      for (let i = 0; i < 14 && theta > 0.05 && !clear(u); i++) {
         theta *= 0.85;
         u = bowlPoint(fr, theta, phi);
       }
+      rolesAt.push({ ...bowlProject(fr, u), r: rAt(u) });
       scaleOf.set(n.id, BOWL_GAIN * put(n.id, u));
       fogOf.set(n.id, 0.82 + 0.18 * (1 + u.z));
       surfaceOf.set(n.id, { shoal: vm.view, host: b.host, facing: -u.z, theta, phi });
@@ -459,7 +521,7 @@ function projectBowl(vm, lay, cam0) {
   // a CI tether ends in the middle of its host's lune
   const anchors = new Map();
   for (const b of bands) {
-    const phi = (b.a0 + b.a1) / 2, s = bowlProject(fr, bowlPoint(fr, bowlReach(fr, phi, 0.86, -BOWL_BEHIND) * 0.5, phi));
+    const phi = (b.a0 + b.a1) / 2, s = bowlProject(fr, bowlPoint(fr, bowlReach(fr, phi, 0.86, bowlBehind(fr)) * 0.5, phi));
     anchors.set(b.host, { x: Rs * s.x, y: Rs * s.y, band: true });
   }
   const tethers = (lay.tethers ?? []).map((t) => ({ ...t, from: pos.get(t.id) ?? t.from, to: t.to && anchors.has(t.host) ? { ...anchors.get(t.host) } : null }));
