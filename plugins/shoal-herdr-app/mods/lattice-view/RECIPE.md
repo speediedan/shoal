@@ -79,10 +79,13 @@ you, per-shoal throughput and per-host load.
   camera looks down into the bowl that is left and in from the side, in perspective: it hangs 2.4 radii from the
   middle, and the bowl's axis is turned off the line of sight by the camera's pitch less 24 degrees vertically (28 in
   tilt, 34 in iso) and 30 degrees horizontally, so the bowl's bottom lies below and beside you. The cut is a slanted
-  plane: the far wall keeps a hemisphere's rim, the near wall is cut lower, just enough that nothing kept faces the
-  camera, so the whole inside is seen and nothing of the outside shows. The cut edge is a lit, turned ellipse and
-  everything inside it is the inner surface, lit opposite to a ball (the light pools lower right, in 48 faint layers so
-  no band shows), with your soft shadow on it and a faint grid of two latitudes and eight meridians. The hosts' lunes,
+  plane: the far wall keeps a hemisphere's rim, the near wall is cut lower, to just short of where the camera would
+  see over it, so the near wall's outside shows as a thin crescent under the lip. The wall has a thickness, so the
+  opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
+  the inner surface, lit opposite to a ball: the light pools lower right (in 44 faint layers so no band shows) and the
+  wall under the upper-left lip is in its shade. Four rings round the bottom each bound a cap a little darker, so the
+  inside recedes to the bottom, with eight faint meridians; your small soft shadow falls near the bottom, just down
+  and right of your foot on the axis. The hosts' lunes,
   pole to rim, tile that whole surface: each over its sector of the flat view widened to the middle of the gaps either
   side, so together they make a whole turn, washed lightly and outlined in the host color (the home host first, from
   the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
@@ -212,7 +215,7 @@ you, per-shoal throughput and per-host load.
   total opacity wanted at its level, and alpha is 8-bit, so fewer, slightly stronger layers (48,
   1 to 6 of 255 each) beat 128 layers rounded to 0 or 1. Transparency comes only from alpha on
   these fills, never from more layers. The fixture's two globes now take about 1,940 path
-  commands, down from about 3,030; their shadows about 260; the bowl about 450 (its glow 288 of them). The global depth
+  commands, down from about 3,030; their shadows about 260; the bowl about 490 (its glow 264 of them). The global depth
   scene is about 2,790 in all; a trial with 24-layer shadows (about 2,980) failed about one native
   check in 50, so keep a globe's shadow at 16 layers.
 - A shadow on the dark floor cannot show more than about 15 to 20 distinct 8-bit levels, so more
@@ -226,8 +229,13 @@ you, per-shoal throughput and per-host load.
   faces a camera d radii away when u.z > 1 / d, so a cut whose normal is b off the line of sight
   keeps none when acos(h) >= b + acos(1 / d).
 - The bowl's glow was 20 layers at 5 of 255 alpha: each edge a step of three or so color
-  levels, which showed as rings. 48 layers at 2 of 255 give about the same light in steps under
-  one and a half levels; 1 of 255 would need about 90 layers for the same light.
+  levels, which showed as rings. 44 layers at 2 of 255 give a little less light in steps under
+  one and a half levels; 1 of 255 would need about 90 layers for the same light. Where a step is
+  wanted (the depth caps round the bottom), it sits under a ring's stroke, so it reads as the ring.
+- A bowl with one bright outline reads as a ball seen from outside. What says opening is a lip
+  with two edges, the near wall's outside under it, and shade under the lip on the light's side;
+  what says depth is rings round the bottom. Meridians whose planes pass near the camera
+  project nearly straight, so they show little curvature on their own.
 - Any `loop` makes the window redraw at about 30 fps; `frames` and `spin` redraw at their own
   interval. The cost is per window frame, not per element: on lavapipe (two threads) a frame of
   this window cost about a core-second whatever the mod drew, so one 700 ms blink cost over a
