@@ -103,6 +103,15 @@ since that folder goes when your incarnation is pruned: keep anything the doc na
 as `tools/` beside the doc, not under `$CLAUDE_JOB_DIR`. The operator, or the quorum in `auto` mode, restarts you on that doc. Never restart
 yourself, and never mark `--restart-ready` with an item active.
 
+At that checkpoint, keep your start doc focused on current guidance: append completed details and obsolete decisions
+to your append-only log, refresh the header, and append the session entry and snapshot. Work only in your own role
+directory and commit by exact path. `queue --restart-ready` adds bounded, read-only lifecycle advice (header, dangling
+references, untracked files and archive candidates), recorded in its queue event. Standalone sessions can run
+`shoal lifecycle checkpoint <start-doc>` explicitly. In this advisory rollout, unresolved advice and scan timeouts
+never stop a context restart, and no files are moved automatically. Routine model distillation and automatic archival
+wait for measured pass costs on one or two roles. In propose mode list candidates for review or keep them with a
+`keep: <reason>`; notify an owner whose live document references a file before proposing its move.
+
 ## Wakes
 
 You are woken by new work while you are idle, a change to your active item, a wait you armed, or a
