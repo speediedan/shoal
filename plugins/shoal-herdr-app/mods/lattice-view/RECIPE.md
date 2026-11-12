@@ -75,17 +75,20 @@ you, per-shoal throughput and per-host load.
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
   turn the camera 15 degrees. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
-- **Depth, per shoal: the cutout sphere.** `you` sits at the middle of a sphere whose upper half is cut away, and the
-  camera looks down into the bowl that is left, in perspective: it hangs 2.4 radii from the middle, off the bowl's axis
-  by the camera's pitch less 30 degrees (22 in tilt, 28 in iso), so it sees over the near rim and the near wall hides
-  next to nothing (its outside shows as a thin crescent only past the rim, in iso). The cut edge is a lit ellipse and
-  everything inside it is the inner surface, lit opposite to a ball (the light pools lower right). The hosts' lunes,
+- **Depth, per shoal: the cutout sphere.** `you` sits at the middle of a sphere whose near part is cut away, and the
+  camera looks down into the bowl that is left and in from the side, in perspective: it hangs 2.4 radii from the
+  middle, and the bowl's axis is turned off the line of sight by the camera's pitch less 24 degrees vertically (28 in
+  tilt, 34 in iso) and 30 degrees horizontally, so the bowl's bottom lies below and beside you. The cut is a slanted
+  plane: the far wall keeps a hemisphere's rim, the near wall is cut lower, just enough that nothing kept faces the
+  camera, so the whole inside is seen and nothing of the outside shows. The cut edge is a lit, turned ellipse and
+  everything inside it is the inner surface, lit opposite to a ball (the light pools lower right, in 48 faint layers so
+  no band shows), with your soft shadow on it and a faint grid of two latitudes and eight meridians. The hosts' lunes,
   pole to rim, tile that whole surface: each over its sector of the flat view widened to the middle of the gaps either
   side, so together they make a whole turn, washed lightly and outlined in the host color (the home host first, from
   the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
-  rows from four roles), each kept inside the part seen through the rim; they shrink and fade with their depth below the
-  opening, and you, on the opening, are drawn nearest and largest (1.25 times flat). Outside seats ring the rim, in its
-  plane, outside the sphere; a CI tether ends in the middle of its host's lune. Edges and arrows are drawn over the
+  rows from four roles), each kept inside the rim and at least 0.2 radii behind you; they shrink and fade with their
+  depth, and you are drawn nearest and largest (1.25 times flat). Outside seats ring the rim, in the cut's plane,
+  outside it; a CI tether ends in the middle of its host's lune. Edges and arrows are drawn over the
   bowl, with the depth casing. Labels in the bowl get the same readable ink against its inside. `,` and `.` turn the
   bowl about its axis. Flat per shoal is unchanged (the ring of host sectors).
 - **Replay:** `r` plays the last 24 h back on the live picture, a day in 32 s by default (the bar's speeds: a day in
@@ -209,7 +212,7 @@ you, per-shoal throughput and per-host load.
   total opacity wanted at its level, and alpha is 8-bit, so fewer, slightly stronger layers (48,
   1 to 6 of 255 each) beat 128 layers rounded to 0 or 1. Transparency comes only from alpha on
   these fills, never from more layers. The fixture's two globes now take about 1,940 path
-  commands, down from about 3,030; their shadows about 260; the bowl about 160. The global depth
+  commands, down from about 3,030; their shadows about 260; the bowl about 450 (its glow 288 of them). The global depth
   scene is about 2,790 in all; a trial with 24-layer shadows (about 2,980) failed about one native
   check in 50, so keep a globe's shadow at 16 layers.
 - A shadow on the dark floor cannot show more than about 15 to 20 distinct 8-bit levels, so more
@@ -217,8 +220,14 @@ you, per-shoal throughput and per-host load.
   that rounds to 0 is dropped.
 - The bowl's circles are circles on a sphere seen in perspective, so each projects to an ellipse,
   but not at an even pace: eighth-turn cubics fitted to the projection stay within a pixel. The
-  rim's ellipse is exact (`bowlFrame` `rim`), the visible inside is exactly its inside, and a
-  screen point maps back to the inner surface along the line of sight (`bowlSurfaceAt`).
+  rim's ellipse is exact (`bowlFrame` `rim`, the conic image of the cut circle, turned), the
+  visible inside is exactly its inside, and a screen point maps back to the inner surface along
+  the line of sight (`bowlSurfaceAt`). The cut is set from the camera: a point of the unit sphere
+  faces a camera d radii away when u.z > 1 / d, so a cut whose normal is b off the line of sight
+  keeps none when acos(h) >= b + acos(1 / d).
+- The bowl's glow was 20 layers at 5 of 255 alpha: each edge a step of three or so color
+  levels, which showed as rings. 48 layers at 2 of 255 give about the same light in steps under
+  one and a half levels; 1 of 255 would need about 90 layers for the same light.
 - Any `loop` makes the window redraw at about 30 fps; `frames` and `spin` redraw at their own
   interval. The cost is per window frame, not per element: on lavapipe (two threads) a frame of
   this window cost about a core-second whatever the mod drew, so one 700 ms blink cost over a
