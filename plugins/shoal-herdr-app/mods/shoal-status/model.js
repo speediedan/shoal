@@ -9,8 +9,8 @@ export function usageColor(pct) {
 }
 
 /**
- * `shoal ui usage --json` as one entry per provider and bucket: {name, stale, error, windows: [{name, pct, color}]}, only
- * the windows with a reading. An entry with neither windows nor an error says nothing and is left out.
+ * `shoal ui usage --json` as one entry per provider and bucket: {name, stale, error, windows: [{name, pct, color,
+ * resetsAt}]}, only the windows with a reading. An entry with neither windows nor an error says nothing and is left out.
  */
 export function usageRows(doc) {
   const out = [];
@@ -24,7 +24,8 @@ export function usageRows(doc) {
       for (const w of arr(r?.windows)) {
         if (typeof w?.used_percent !== "number" || !Number.isFinite(w.used_percent)) continue;
         const pct = Math.max(0, Math.min(100, w.used_percent));
-        windows.push({ name: SHORT[w.name] ?? String(w.name ?? "?"), pct, color: usageColor(pct) });
+        const resetsAt = typeof w.resets_at === "number" && Number.isFinite(w.resets_at) ? w.resets_at : null;
+        windows.push({ name: SHORT[w.name] ?? String(w.name ?? "?"), pct, color: usageColor(pct), resetsAt });
       }
       if (!windows.length) continue;
       const bucket = r?.bucket && r.bucket !== a.provider ? `/${r.bucket}` : "";
@@ -32,6 +33,34 @@ export function usageRows(doc) {
     }
   }
   return out;
+}
+
+/** Seconds as its two largest units ("2h 14m", "3d 4h"); "" when unknown. */
+export function untilText(s) {
+  if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return "";
+  const out = [];
+  let left = Math.round(s);
+  for (const [u, n] of [["d", 86400], ["h", 3600], ["m", 60]]) {
+    if (left >= n) {
+      out.push(`${Math.floor(left / n)}${u}`);
+      left %= n;
+    }
+    if (out.length === 2) break;
+  }
+  return out.join(" ") || "<1m";
+}
+
+/**
+ * A meter's hover: each window's time to its reset (the bars already show the percentages), at `now` in unix seconds.
+ * A window whose reset is not reported says so.
+ */
+export function usageTip(u, now) {
+  if (u?.error) return String(u.error);
+  const parts = arr(u?.windows).map((w) => {
+    const t = w.resetsAt !== null && w.resetsAt !== undefined ? untilText(Math.max(0, w.resetsAt - now)) : "";
+    return `${w.name} resets in ${t || "?"}`;
+  });
+  return `${u?.name ?? "?"}: ${parts.join(", ")}${u?.stale ? " (stale)" : ""}`;
 }
 
 /** Reads the CLI's reply, keeping nothing from a failed or unreadable one: the bar then shows the last good rows. */

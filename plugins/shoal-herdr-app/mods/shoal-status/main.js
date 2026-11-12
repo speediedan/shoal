@@ -7,7 +7,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand, props, setShared } from "herdr";
-import { parseUsage, usageMachines, nextNeedsYou, latticeTab, homeTab, shoalInView } from "./model.js";
+import { parseUsage, usageMachines, usageTip, nextNeedsYou, latticeTab, homeTab, shoalInView } from "./model.js";
 
 const USAGE_MS = 60000;
 const SYNC_MS = 120000;
@@ -150,7 +150,7 @@ export default class ShoalStatus extends View {
 
   meter(u, t) {
     const row = h_flex().id(`u-${u.name}`).gap(5).items_center().flex_none()
-      .tooltip(u.error || `${u.name}: ${u.windows.map((w) => `${w.name} ${Math.round(w.pct)}%`).join(", ")}${u.stale ? " (stale)" : ""}`)
+      .tooltip(usageTip(u, Date.now() / 1000))
       .child(div().text_color(u.stale ? t.dim : t.muted).child(u.name));
     if (u.error) return row.child(div().text_color(t.dim).child("?"));
     for (const w of u.windows) {
