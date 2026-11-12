@@ -119,14 +119,21 @@ export function pickView(doc, want = {}) {
 }
 
 /**
- * Each node's layer: 1 below the deepest of what it hangs from (its parent and its blockers, when they are nodes), the
- * root's children at 1. A cycle (two items blocking each other) is cut where it closes, so every node gets a layer.
+ * Each node's layer: 1 below the deepest of what it hangs from, the root's children at 1. Prerequisites sit below: a
+ * sub-issue hangs from its parent and a blocker hangs from what it blocks, so the board reads one way throughout (each
+ * item waits on what is under it, the goal at the top waits on everything). A cycle (two items blocking each other, or a
+ * parent blocking its own sub-issue) is cut where it closes, so every node gets a layer.
  */
 export function layers(board) {
   const nodes = arr(board?.nodes);
   const keys = new Set(nodes.map((n) => n.key));
   const preds = new Map(nodes.map((n) => [n.key, []]));
-  for (const e of arr(board?.edges)) if (keys.has(e.from) && keys.has(e.to) && e.from !== e.to) preds.get(e.to).push(e.from);
+  for (const e of arr(board?.edges)) {
+    if (!keys.has(e.from) || !keys.has(e.to) || e.from === e.to) continue;
+    // a `blocks` edge runs blocker -> blocked: the blocker is the prerequisite, so it hangs under the item it blocks
+    if (e.kind === "blocks") preds.get(e.from).push(e.to);
+    else preds.get(e.to).push(e.from);
+  }
   const layer = new Map();
   const visiting = new Set();
   const visit = (k) => {
@@ -193,7 +200,11 @@ export function layout(board, width = 1000, dims = DIMS.cards) {
   const link = (kind, from, to) => {
     const a = at(from), b = at(to);
     if (!a || !b) return;
-    edges.push({ kind, from, to, x1: a.x + a.w / 2, y1: a.y + a.h, x2: b.x + b.w / 2, y2: b.y });
+    // from a's bottom down to b's top; a target above (a blocker's edge up into what it unblocks) from a's top to b's
+    // bottom; one beside it (a cut cycle) bottom to bottom
+    const up = b.y + b.h <= a.y, beside = !up && b.y < a.y + a.h;
+    edges.push({ kind, from, to, x1: a.x + a.w / 2, y1: up ? a.y : a.y + a.h, x2: b.x + b.w / 2,
+                 y2: up || beside ? b.y + b.h : b.y, dir: up ? "up" : beside ? "beside" : "down" });
   };
   for (const n of nodes) if (!preds.get(n.key).length) link("root", ROOT_KEY, n.key);
   for (const e of arr(board?.edges)) link(e.kind === "blocks" ? "blocks" : "parent", e.from, e.to);
@@ -216,15 +227,17 @@ export function layout(board, width = 1000, dims = DIMS.cards) {
            width: Math.max(width, perRow * (D.w + D.gapX) + 2 * D.pad), height: y, dims: D };
 }
 
-/** An edge as a display-list path: a vertical S-curve (up to the node's top when the target sits higher). */
+/** An edge as a display-list path: a vertical S-curve, rising when the target sits higher, dipping under a row beside. */
 export function edgeCmds(e) {
   const dy = Math.max(24, Math.abs(e.y2 - e.y1) / 2);
-  return [["M", e.x1, e.y1], ["C", e.x1, e.y1 + dy, e.x2, e.y2 - dy, e.x2, e.y2]];
+  const [c1, c2] = e.dir === "up" ? [e.y1 - dy, e.y2 + dy] : e.dir === "beside" ? [e.y1 + dy, e.y2 + dy] : [e.y1 + dy, e.y2 - dy];
+  return [["M", e.x1, e.y1], ["C", e.x1, c1, e.x2, c2, e.x2, e.y2]];
 }
 
-/** The small arrowhead at a `blocks` edge's end, pointing into the blocked item. */
+/** The small arrowhead at a `blocks` edge's end, pointing into the item it unblocks (up, from below, as a rule). */
 export function arrowCmds(e, size = 6) {
-  return [["M", e.x2 - size, e.y2 - size * 1.4], ["L", e.x2, e.y2], ["L", e.x2 + size, e.y2 - size * 1.4], ["Z"]];
+  const back = e.dir === "up" || e.dir === "beside" ? size * 1.4 : -size * 1.4; // the head's base: below the tip when rising
+  return [["M", e.x2 - size, e.y2 + back], ["L", e.x2, e.y2], ["L", e.x2 + size, e.y2 + back], ["Z"]];
 }
 
 export const WORK_LABEL = { active: "in progress", queued: "queued", "queued-blocked": "queued, blocked", unqueued: "not queued" };

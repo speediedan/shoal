@@ -739,8 +739,10 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
     (`d`) resets the orbit and the turn.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
   as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
-  - **The graph:** the board at the top; every open item a layer below its parent issue and its open blockers. A gray
-    curve joins an issue to its sub-issue, a dashed orange arrow a blocker to what it blocks. A parent or blocker not
+  - **The graph:** the board at the top, prerequisites below, so it reads one way throughout: every item waits on what
+    is under it. A sub-issue sits a layer below its parent, and a blocker a layer below every item it blocks. A gray
+    curve joins an issue to its sub-issue; a dashed orange arrow rises from a blocker into what it unblocks
+    ("unblocks" in the legend). A parent or blocker not
     open on the board is drawn dashed, `off board`. Items with no parent, sub-issue or blocker on the board are in a
     grid below the graph, in progress and queued first. The root reads `closed` once nothing on the board is open.
   - **Where each item stands:** in progress (amber, `▶ role`), queued (blue, `role #n`: its place in that role's
