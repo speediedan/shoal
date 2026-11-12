@@ -79,6 +79,8 @@ The check reads `doc-check` and the directory's reference classification, includ
 and standalone registry. It reports dangling references, deleted and untracked files, header warnings and archive
 candidates without changing files or running hooks. Each category prints its count and at most five examples. The
 queue event records the bounded report as `lifecycle_checkpoint`; the next session can act on unresolved advice.
+Notes are limited to ten entries of at most 200 characters each, including a final `(N more)` entry when notes were
+omitted, so every reader can fold the shared ledger without an unbounded diagnostic payload.
 Other hosts' standalone roots are not read here, so this is advice rather than authority to move anything. The
 archive operation still checks roots across hosts before a move.
 

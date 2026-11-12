@@ -69,6 +69,13 @@ with tempfile.TemporaryDirectory(prefix="shoal-checkpoint-") as tmp:
         checkpoint.report(r)
     with mock.patch.object(checkpoint.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "bad JSON")):
         assert not checkpoint.run(str(doc))["ok"]
+    for count in (10, 12):
+        output = json.dumps({"notes": ["n" * 300] * count})
+        with mock.patch.object(checkpoint.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)):
+            bounded = checkpoint.run(str(doc))["notes"]
+        assert len(bounded) == 10 and all(len(n) <= 200 for n in bounded), bounded
+        assert bounded[0] == "n" * 197 + "...", bounded
+        assert bounded[-1] == ("(3 more)" if count == 12 else "n" * 197 + "..."), bounded
     with contextlib.redirect_stdout(io.StringIO()) as stream:
         from argparse import Namespace
         assert checkpoint.cmd_checkpoint(Namespace(path=str(doc), json=True)) == 0

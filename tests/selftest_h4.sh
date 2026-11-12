@@ -1791,6 +1791,28 @@ check "status=idle" $Q --slug tl --idle
 rm -f /tmp/$SID/health.json
 OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "context-restart" <<<"$OUT" || fail "restart-ready survived a later queue write :: $OUT"
+# auto: any quiet boundary past the limit hands over on the doc as it stands, no restart-ready round trip; a doc that fails
+# its contract wakes the role to fix it instead of a blind handover
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].setdefault("health", {})["context_restart"]={"*": "page", "tl": "auto"}; json.dump(d,open(p,"w"),indent=1)
+PY2
+rm -f /tmp/$SID/health.json
+check "tl context-restart step1:restart -> would restart (dry-run): .*--only tl" env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl \
+  $H health --spec "$SPEC" --instance a --dry-run
+OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
+grep -q "CONTEXT 412k (limit 300k).*hands you to a fresh session at your next quiet boundary" <<<"$OUT" \
+  || fail "the auto advisory does not say the handover comes at the next quiet boundary :: $(grep CONTEXT <<<"$OUT")"
+cp "$TLDOC" "$S/tl-doc.auto"
+printf '# tl\n\nLast updated: 2026-10-22T10:00Z\n\n## Mission\n\nm\n' > "$TLDOC"
+rm -f /tmp/$SID/health.json
+OUT=$(env SHOAL_FAKE_CONTEXT='{"tl": 412000}' SHOAL_HEALTH_BETWEEN=tl $H health --spec "$SPEC" --instance a --dry-run 2>&1)
+grep -q "tl context-doc step1:wake" <<<"$OUT" || fail "a failing doc past the limit is not woken to fix it :: $OUT"
+! grep -q "tl context-restart" <<<"$OUT" || fail "a blind handover on a doc that fails its contract :: $OUT"
+cp "$S/tl-doc.auto" "$TLDOC"
+python3 - "$SPEC" <<'PY2'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["health"].pop("context_restart",None); json.dump(d,open(p,"w"),indent=1)
+PY2
+rm -f /tmp/$SID/health.json
 
 echo "== 36 park and unpark: no session and no watcher, the queue kept; a full restart keeps it parked; --until unparks"
 cat > "$S/handoff_tool.py" <<'PY_HANDOFF'

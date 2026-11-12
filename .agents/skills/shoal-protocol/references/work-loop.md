@@ -89,11 +89,14 @@ only together with a raised, recorded ask.
 
 ## Bounded context
 
-Every wake re-reads your whole context, so a long-lived session gets more expensive to wake. When
-`next` or a wake prints `CONTEXT <n>k (limit <m>k)`, hand over at your next quiet boundary (nothing
-mid-flight): refresh your start doc so a fresh session can continue from it alone (current state,
-decisions taken, next steps), update its `Last updated: <UTC>` line, then end the turn with
-`queue --idle --restart-ready` (or your wait plus `--restart-ready`). The flag is refused for a doc not
+Every wake re-reads your whole context, so a long-lived session gets more expensive to wake. Keep your
+start doc restart-ready at every boundary: a fresh session must be able to continue from it alone
+(current state, decisions taken, next steps), with its `Last updated: <UTC>` line current. When `next`
+or a wake prints `CONTEXT <n>k (limit <m>k)` in a shoal whose context restart is `auto`, the quorum hands
+you to a fresh session at your next quiet boundary (idle or waiting, between turns) on the doc as it
+stands, with no further step: bring the doc up to date before that turn ends. A doc that fails its
+contract is not handed over; you are woken (`context-doc`) to fix it. In `page` mode, end the turn with
+`queue --idle --restart-ready` (or your wait plus `--restart-ready`) instead. The flag is refused for a doc not
 refreshed since the advisory or missing a required section; `shoal doc-check <doc>` says which (the
 contract: shoal `docs/start-doc.md`). It is also refused for a doc naming a job folder still on this host,
 since that folder goes when your incarnation is pruned: keep anything the doc names somewhere durable, such

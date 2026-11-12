@@ -3,21 +3,29 @@
 A cold turn re-reads the session's whole context, so a session whose context has grown large is cheaper to hand to a fresh
 session than to keep. The handover is the same protocol for every session that keeps a start doc ([`start-doc.md`](start-doc.md)):
 
-1. **Advise.** Past its limit, the session is asked once to refresh its start doc and its `Last updated` stamp, then end its
-   turn with nothing mid-flight.
-2. **Verify.** The start doc meets the contract, and its stamp is at or after the advice (`shoal doc-check`).
-3. **Reset.** A new conversation starts in the same seat, with the start doc as its first message, and the old one is retired.
+1. **Keep the doc current.** A session keeps its start doc restart-ready at every boundary, so a handover can happen at
+   any quiet one. Past its limit, the `CONTEXT` advice says the handover comes at the next quiet boundary.
+2. **Verify.** The start doc meets the contract (`shoal doc-check`). A doc that fails it is not handed over blind: the
+   session is asked to fix it first.
+3. **Reset.** At the next quiet boundary past the limit (idle or waiting, between turns), a new conversation starts in the
+   same seat, with the start doc as its first message, and the old one is retired.
+
+In `auto` there is no advise-then-refresh round trip and no freshness stamp to prove (maintainer, 2026-11-11): it was one
+more step between the limit and the restart that could stall a handover. `page` keeps the operator's step: the role
+marks the boundary with `queue --restart-ready`, which proves a refreshed doc, and the operator restarts it.
 
 ## Shoal roles
 
 Configured per shoal and per role in `features.health`:
 - `context_restart_k`: the limit, in thousands of tokens. A dict sets it per role; 0 exempts a role.
 - `context_restart`: `page` (the operator restarts) or `auto` (the quorum restarts). A dict sets it per role:
-  `{"*": "page", "<slug>": "auto"}`. In `auto`, a restart-ready Claude role with a client attached (a card's
+  `{"*": "page", "<slug>": "auto"}`. In `auto`, the quorum restarts a role past its limit at its next quiet boundary
+  (idle or waiting, between turns; `restart-ready` is not needed) once its start doc meets the contract, and wakes it
+  to fix a doc that does not (`context-doc`, paging after an hour). A Claude role with a client attached (a card's
   `claude attach`) waits for it to detach, and pages once if that takes 30 minutes.
 
-The advice is the `CONTEXT` line in `next` and in wakes. The proof of refresh is `queue --restart-ready`. The reset is
-`restart --only <role>`, a new incarnation. See architecture §7, "Bounding context".
+The advice is the `CONTEXT` line in `next` and in wakes. In `page` mode the proof of refresh is `queue --restart-ready`.
+The reset is `restart --only <role>`, a new incarnation. See architecture §7, "Bounding context".
 
 `shoal handoff --spec <spec> --only <role> [--model M] [--effort X] [--ecosystem E] [--force] [--dry-run]` runs the same reset by hand,
 on the role's own host, optionally moving it to another model or provider (also the actions dialog's Hand off):
@@ -44,13 +52,15 @@ shoal ui handover <label|job> --mode off                          # turn it off
 shoal ui handover --list                                          # every saved session: mode, limit, context, step
 ```
 
-- **Live toggle:** it works on a live session. Opting in while past the limit starts the advice at once: one turn, delivered
+- **Live toggle:** it works on a live session. Opting in while past the limit starts at once: in `auto` a Claude seat whose
+  doc meets the contract is reset at its next idle moment (never mid-turn); otherwise it is advised, one turn delivered
   directly (an idle session is stopped and resumed with the message).
-- **Who drives it:** after that, the feeder (`shoal ui feed`) checks every opted-in session about every 5 minutes, with no
-  model calls. It advises at most once per crossing; in `auto` mode it then resets once the doc is refreshed and the session
-  is idle at its prompt.
-- **`advise` mode** stops after the advice, and you reset by hand.
-- **A stale doc** three hours after the advice shows as `STALLED` in `--list`.
+- **Who drives it:** the feeder (`shoal ui feed`) checks every opted-in session about every 5 minutes, with no model calls.
+  In `auto` mode it resets a Claude seat past its limit and idle at its prompt (no turn or background task running) on
+  its doc as it stands; it advises only when the doc fails the contract, and resets once it meets it.
+- **`advise` mode** stops after the advice, and you reset by hand. So do Muse, Codex and opencode seats in `auto`, whose
+  reset is not automatic yet.
+- **A failing doc** three hours after the advice shows as `STALLED` in `--list`.
 
 ## The reset, per harness
 

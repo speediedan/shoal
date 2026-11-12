@@ -57,6 +57,10 @@ def run(path: str, timeout: float = TIMEOUT_S) -> dict:
     except Exception as exc:  # advisory checks must never reject restart_ready
         out = {"v": 1, "advisory": True, "ok": False, "counts": {}, "samples": {},
                "notes": [f"checkpoint check unavailable: {str(exc)[:500]}"]}
+    notes = out["notes"]
+    if len(notes) > 10:
+        notes = notes[:9] + [f"({len(notes) - 9} more)"]
+    out["notes"] = [note if len(note) <= 200 else note[:197] + "..." for note in notes]
     out["elapsed_ms"] = round((time.monotonic() - before) * 1000)
     return out
 
