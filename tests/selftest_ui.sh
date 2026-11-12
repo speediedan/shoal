@@ -2051,6 +2051,11 @@ ev(A, "ext-evolution", 900, "msg", by="ext:evolution", to="core", text="a note f
 ev(A, "wake-relay", 86400 * 2, "state", state="waiting", sub="queue-empty")
 ev(B, "shoal", 86400, "system", event="ledger-init")
 ev(B, "analysis", 7200, "msg", to="research", text="findings attached", kind="info")
+# an ask raised in a later queue version (no msg): it counts as a message to you, once; asks already open in the first
+# version the window sees are not counted again
+ev(B, "analysis", 9000, "queue", version=1, asks=["older ask?"], status="idle")
+ev(B, "analysis", 600, "queue", version=2, asks=["older ask?", "release the GPU?"], status="idle")
+ev(B, "analysis", 300, "queue", version=3, asks=["older ask?", "release the GPU?"], status="idle")
 # role-time native cache: core is mid-turn, dist-ci between turns (its CI wait comes from the ledger); tune has none
 t = time.time()
 nat = lambda st: {"native": {"state": st, "observed_at": t, "budget_s": 90.0, "wait_event": "", "raw": ""}}
@@ -2134,6 +2139,10 @@ bo = E[(f"{A}:core", f"{A}:dist-ci", "blocked-on")]
 assert bo["structural"] and bo["last_ts"] is None and bo["stale"] is False, bo
 ask = E[(f"{A}:tune", "user", "ask")]
 assert ask["n_24h"] == 1 and ask["open"] == 1, ask
+qa = E[(f"{B}:analysis", "user", "ask")]
+assert (qa["n_1h"], qa["n_24h"]) == (1, 1) and qa["recent"][0]["summary"] == "release the GPU?", qa
+assert nodes[f"{B}:analysis"]["metrics"]["msgs_out_1h"] == 1 and nodes[f"{B}:analysis"]["metrics"]["msgs_out_24h"] == 2, \
+    nodes[f"{B}:analysis"]["metrics"]
 assert E[(f"{A}:shoal", "user", "health")]["n_1h"] == 1
 assert E[("user", f"{A}:tune", "offer")]["n_1h"] == 0 and E[("user", f"{A}:tune", "offer")]["n_24h"] == 1
 assert E[("user", f"{A}:core", "grant")]["n_24h"] == 1

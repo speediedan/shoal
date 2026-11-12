@@ -98,6 +98,20 @@ def parse_ts(s: str) -> datetime.datetime:
     return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
 
 
+def _ts(s: str) -> float | None:
+    """Epoch seconds of a ledger stamp, None when it does not parse."""
+    try:
+        return parse_ts(s).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+# How long a pass (`release --kind decline`, `queue --pass`) keeps a role off an item, by its class, in hours: a blocked
+# item comes back once its blocker has had a day to clear; a lane judgment is revisited after three; a duplicate, a call
+# for the maintainer or for hardware holds a week. A pass made before the role's latest fill change lapses at once
+DECLINE_LAPSE_H = {"blocked": 24, "out-of-lane": 72, "*": 168}
+
+
 def split_item(item: str) -> tuple[str, str]:
     """'app#600:fix' -> ('app#600', 'fix'); no verb -> ''."""
     item = (item or "").strip()
@@ -539,6 +553,7 @@ class View:
         self.violations: list[tuple[dict, str]] = []
         self.contested: dict[str, list[dict]] = {}
         self.dismissals: dict[str, dict] = {}     # slug -> latest needs-dismissed or needs-restored event
+        self.fills: dict[str, str] = {}           # slug -> ts of its latest role-fill change
         self._transfers: list[dict] = []          # `shoal transfer` records, each with its status (transfers())
         self._fold()
 
@@ -664,6 +679,8 @@ class View:
                     self._viol(e, f"{by} may not dismiss a role's needs-you")
                     continue
                 self.dismissals[str(e.get("role") or "")] = e
+            elif typ == "system" and e.get("event") == "role-fill":
+                self.fills[str(e.get("role") or "")] = e.get("ts", "")  # the latest fill change: older passes lapse
             elif typ == "system" and e.get("event") == "transfer":
                 if by not in OFFER_WRITERS:
                     self._viol(e, f"{by} may not transfer an item")
@@ -720,11 +737,25 @@ class View:
                and o["to"] in (slug, "*") and slug not in o.get("declined_by", [])]
         return sorted(out, key=lambda o: (int(o.get("prio", DEFAULT_PRIO)), o["ts"]))
 
-    def declined(self, slug: str) -> dict[str, dict]:
+    def declined(self, slug: str, now: float | None = None) -> dict[str, dict]:
+        """The items `slug` passed on that still keep it off them. A pass lapses (DECLINE_LAPSE_H by its class: a
+        `blocked` pass after a day, an `out-of-lane` one after three, the rest after a week), and so does every pass
+        made before the role's latest fill change, so an item comes back to the pool instead of staying out of reach
+        (measured 2026-11-11: two fill=self roles idle with 19 and 17 of the board's 30 items passed, most from their
+        fill=assigned days)."""
+        refill = self.fills.get(slug, "")
+        now = time.time() if now is None else now
         out = {}
         for r in self.releases:
-            if r["by"] == slug and r.get("kind") == "decline":
-                out[item_key(r.get("item", ""))] = r
+            if r["by"] != slug or r.get("kind") != "decline":
+                continue
+            if refill and r.get("ts", "") < refill:
+                continue
+            t = _ts(r.get("ts", ""))
+            hours = DECLINE_LAPSE_H.get(str(r.get("cls") or ""), DECLINE_LAPSE_H["*"])
+            if t is not None and now - t > hours * 3600:
+                continue
+            out[item_key(r.get("item", ""))] = r
         return out
 
     def taken(self) -> set[str]:

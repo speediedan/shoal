@@ -1015,8 +1015,27 @@ test("a satellite can be hovered and clicked: its card names the item, its title
   const lay = L.layoutGraph(vm);
   const sc = S.buildScene(vm, lay, { width: 1000, height: 700, tf: G.identity() });
   assert.equal(sc.satHits.length, lay.sats.length);
-  const blocked = lay.sats.some((s) => s.kind === "next" && s.blocker && !s.stale);
+  const blocked = lay.sats.some((s) => s.kind === "next" && s.blocker && !(s.stale && s.staleKind !== "expired"));
   assert.equal(sc.items.some((it) => it.id.startsWith("sat-ring-")), blocked);
+  // a blocked next item is a ring in the board's blocked color, never the role's own tint; one past its daily re-check
+  // (stale: expired) is still a blocked ring; one whose blocker cleared (resolved) is a red dot, work due
+  const colors = (doc) => {
+    const v = M.buildModel(doc, "global"), l = L.layoutGraph(v), s = S.buildScene(v, l, { width: 1000, height: 700, tf: G.identity() });
+    const ring = s.items.filter((it) => it.id.startsWith("sat-ring-")).map((it) => JSON.stringify(it.bg));
+    const fill = s.items.filter((it) => it.id.startsWith("sat-fill-") || it.id.startsWith("sat-dot-")).map((it) => JSON.stringify(it.bg));
+    return { ring, fill };
+  };
+  const withNext = (stale, staleKind) => {
+    const x = structuredClone(d), r = x.nodes.find((y) => y.id === n.id);
+    r.work.next = [{ item: "acme/repo#7:fix", blocker: "upstream:gh-issue:acme/repo#8", stale, stale_kind: staleKind }];
+    return x;
+  };
+  const magenta = M.PALETTE.magenta.toLowerCase();
+  for (const [stale, kind] of [[false, null], [true, "expired"]]) {
+    const { ring } = colors(withNext(stale, kind));
+    assert.ok(ring.length && ring.every((c) => c.toLowerCase().includes(magenta)), `${stale}/${kind}: ${ring}`);
+  }
+  assert.equal(colors(withNext(true, "resolved")).ring.length, 0, "a cleared blocker is no ring");
   assert.ok(sc.satScreen.get(id), "a satellite's card has a place on screen");
   const at = sc.satScreen.get(id);
   assert.equal(G.hitNode(sc.satHits, { x: at.x + 1, y: at.y }, 2), id, "a point on the dot hits it");
