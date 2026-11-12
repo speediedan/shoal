@@ -33,7 +33,7 @@
 | `NEXT BLOCKED` | a next item's recorded blocker: re-check it at each boundary and clear it (`--blocked ITEM=`) once gone |
 | `BLOCKER STALE` | that blocker has cleared or expired and no longer lets you idle: start the item, or re-check and record what blocks it now |
 | `BOARD` | an eligible candidate: when your next items are all blocked, take one rather than idling behind them, or pass it with a reason |
-| `TAKE BOARD WORK` | fill=self, no active item and every next item blocked, with an `OFFER` or a workable `BOARD` candidate listed: take the offer first, else the candidate, now; the blocked items stay in next |
+| `RETURN BLOCKED WORK` | fill=self, blocked next items, and an `OFFER` or a workable `BOARD` candidate listed: pass each blocked item back (`--pass ITEM:blocked`, it returns to the pool once unblocked), fill its place (an offer first), and take the first now if nothing is active. An imperfect lane fit beats a short queue: `out-of-lane` is not a reason to leave your queue short |
 | `USER OFFLINE` | never wait on the maintainer; record asks with `queue --ask`; stack work; take unblocked items |
 | `ASKS TO RAISE` | the maintainer is online: follow `asks-and-offline.md` now |
 | `DROPPED ASKS` | disclose each to the maintainer in your next question set |

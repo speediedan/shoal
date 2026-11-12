@@ -272,7 +272,12 @@ hottest tier, with an arrowhead at each end that receives traffic), and its hove
 `1h / 24h` counts and kinds. A single shoal's view keeps its edges per class.
 
 `n_rate`, `n_1h` and `n_24h` count events within the rate window (`--window-rate`, default 300 s),
-an hour and a day. `rate_per_h` is an exponentially weighted rate with a one-hour half-life
+an hour and a day. They are counts, never per-hour averages, and an ask a role raises in a queue version (new
+against its previous version) counts as an `ask` message from it to you, in the edge and in the role's and the
+shoal's `msgs_*` counts, so a role with an open ask never reads no messages to you in the window it raised it.
+In the items layer a next item still blocked (its blocker as recorded, or only past its daily re-check:
+`stale_kind: expired`) is a ring in the Board's blocked color, never the role's own tint; one whose blocker cleared
+(`stale_kind: resolved`) is a red dot, work due. `rate_per_h` is an exponentially weighted rate with a one-hour half-life
 (`ln 2` times the sum of `2^(-age_h)` over the day's events), so a steady r per hour reads r and a
 burst fades within hours. `last_ts` and `last_age_s` are the newest event's, `null` for a structural
 edge with none. `cross_host` is true when both ends have a known host and the hosts differ (the

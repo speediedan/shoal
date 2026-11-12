@@ -2051,6 +2051,11 @@ ev(A, "ext-evolution", 900, "msg", by="ext:evolution", to="core", text="a note f
 ev(A, "wake-relay", 86400 * 2, "state", state="waiting", sub="queue-empty")
 ev(B, "shoal", 86400, "system", event="ledger-init")
 ev(B, "analysis", 7200, "msg", to="research", text="findings attached", kind="info")
+# an ask raised in a later queue version (no msg): it counts as a message to you, once; asks already open in the first
+# version the window sees are not counted again
+ev(B, "analysis", 9000, "queue", version=1, asks=["older ask?"], status="idle")
+ev(B, "analysis", 600, "queue", version=2, asks=["older ask?", "release the GPU?"], status="idle")
+ev(B, "analysis", 300, "queue", version=3, asks=["older ask?", "release the GPU?"], status="idle")
 # role-time native cache: core is mid-turn, dist-ci between turns (its CI wait comes from the ledger); tune has none
 t = time.time()
 nat = lambda st: {"native": {"state": st, "observed_at": t, "budget_s": 90.0, "wait_event": "", "raw": ""}}
@@ -2106,7 +2111,7 @@ assert w["next"][0]["blocker"] == "dist-ci:repo-one#103" and w["next"][0]["url"]
 assert w["done_recent"] == [{"item": "repo-one#99", "url": "https://github.com/example-org/repo-one/pull/120",
                              "ts": w["done_recent"][0]["ts"]}], w
 assert nodes[f"{A}:tune"]["work"]["asks"] == ["approve image push scope?"]
-assert nodes["user"]["work"] == {"asks_open": 1, "grants_pending": 0}, nodes["user"]   # no row lists any
+assert nodes["user"]["work"] == {"asks_open": 3, "grants_pending": 0}, nodes["user"]   # tune 1, analysis 2; no row lists grants
 assert "grants_pending" not in nodes[f"{A}:core"]["work"] and "grants_pending_n" not in d["shoals"][0]["metrics"]
 # a CI wait names its job: where it runs (a pool host here), placed, granted, started
 j = st(f"{A}:dist-ci")["job"]
@@ -2134,6 +2139,10 @@ bo = E[(f"{A}:core", f"{A}:dist-ci", "blocked-on")]
 assert bo["structural"] and bo["last_ts"] is None and bo["stale"] is False, bo
 ask = E[(f"{A}:tune", "user", "ask")]
 assert ask["n_24h"] == 1 and ask["open"] == 1, ask
+qa = E[(f"{B}:analysis", "user", "ask")]
+assert (qa["n_1h"], qa["n_24h"]) == (1, 1) and qa["recent"][0]["summary"] == "release the GPU?", qa
+assert nodes[f"{B}:analysis"]["metrics"]["msgs_out_1h"] == 1 and nodes[f"{B}:analysis"]["metrics"]["msgs_out_24h"] == 2, \
+    nodes[f"{B}:analysis"]["metrics"]
 assert E[(f"{A}:shoal", "user", "health")]["n_1h"] == 1
 assert E[("user", f"{A}:tune", "offer")]["n_1h"] == 0 and E[("user", f"{A}:tune", "offer")]["n_24h"] == 1
 assert E[("user", f"{A}:core", "grant")]["n_24h"] == 1
@@ -3035,7 +3044,7 @@ node = lambda: next(n for n in ui_graph.GraphBuilder(root=root).build()["nodes"]
 n = node()
 assert n["state"]["dismissed"] is True and n["state"]["needs_you"] is False, n["state"]
 hub = next(x for x in ui_graph.GraphBuilder(root=root).build()["nodes"] if x["id"] == "user")
-assert hub["work"]["asks_open"] == 0, hub["work"]
+assert hub["work"]["asks_open"] == 2, hub["work"]   # the analysis role's two remain; the dismissed one is out
 assert n["work"]["asks"], "the ask itself is still there"
 # something new: a further ask raises it again
 p = os.path.join(GL, "shoals", GA, "ledger", "tune.jsonl")

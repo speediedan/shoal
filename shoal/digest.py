@@ -55,6 +55,9 @@ DIGEST_MAX_AGE_MIN = 30.0
 ROUTING_BONUS = 2.0
 BLOCKED_PENALTY = 1.0
 DEFAULT_MIN_SCORE = 0.5
+# a role with fewer ranked candidates than this gets back the items it passed on for these classes, last (`build`)
+FALLBACK_BELOW = 6
+FALLBACK_CLASSES = ("out-of-lane", "blocked")
 
 QUERY = """
 query($login:String!, $number:Int!, $after:String) {
@@ -348,7 +351,7 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
             boards.append(board)
     taken = (view.taken() | view.offered_open()) if view is not None else set()
     routing = _routing(view) if view is not None else {}
-    declined = {r.slug: set(view.declined(r.slug)) for r in spec.roles} if view is not None else {}
+    declined = {r.slug: view.declined(r.slug) for r in spec.roles} if view is not None else {}
     import matcher
     mcfg = matcher.config(spec)
     sem_doc = None
@@ -376,20 +379,31 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
         # affinity weights are optional: a role with none ranks by board order alone, and every
         # item counts as a fit (no weak-candidate withholding for a role that expressed no weights)
         weighted = has_affinity(ctx)
-        ranked = []
+        ranked, passed = [], []
+        mine = declined.get(r.slug, {})
         for it in items:
             key = item_key(it["item"])
-            if key in taken or key in declined.get(r.slug, set()):
+            if key in taken:
                 continue
             sc, why = score_item(it, ctx, routed=r.slug in routing.get(key, set()))
             if sc is None:
                 continue
-            ranked.append({"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix",
-                           "pos": it["pos"], "score": round(sc, 2),
-                           "rank": round(sc - it["pos"] / n, 3), "why": why,
-                           **({} if weighted else {"strong": True})})
+            row = {"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix",
+                   "pos": it["pos"], "score": round(sc, 2),
+                   "rank": round(sc - it["pos"] / n, 3), "why": why,
+                   **({} if weighted else {"strong": True})}
+            if key in mine:
+                # an item it passed on comes back only as a fallback, and only for a lane or blocker judgment
+                cls = str(mine[key].get("cls") or "")
+                if cls in FALLBACK_CLASSES:
+                    passed.append(dict(row, strong=False, declined=cls, why=why + [f"declined-earlier:{cls}"]))
+                continue
+            ranked.append(row)
         ranked.sort(key=lambda x: -x["rank"])
-        roles[r.slug] = ranked[:15]
+        passed.sort(key=lambda x: -x["rank"])
+        # capacious (maintainer, 2026-11-11): a role short of candidates gets back what it passed on as out of lane or
+        # blocked, after everything else, so a fill=self queue stays full; a suboptimal match beats an idle role
+        roles[r.slug] = (ranked + (passed if len(ranked) < FALLBACK_BELOW else []))[:15]
     unowned = []
     if fillers and view is not None:
         for it in items:
@@ -497,20 +511,22 @@ def load(sid: str, max_age_min: float = DIGEST_MAX_AGE_MIN) -> dict | None:
 
 def candidates(sid: str, slug: str, taken: set[str], declined: set[str], limit: int = 5,
                min_score: float = DEFAULT_MIN_SCORE) -> list[dict] | None:
-    """Ranked digest candidates for one role with excerpts; None when no fresh digest.
-    Items under `min_score` are withheld unless nothing clears it (then the top few
-    are shown, so an empty queue still sees the best available work)."""
+    """Ranked digest candidates for one role with excerpts; None when no fresh digest. Strong
+    candidates first (`min_score`), then weaker ones to fill `limit`, then the fallback rows the digest
+    keeps for a role short of work (items it passed on as out of lane or blocked): capacious, so a
+    short queue always sees the best available work (maintainer, 2026-11-11)."""
     doc = load(sid)
     if doc is None:
         return None
     from ledger import item_key
     rows = [r for r in (doc.get("roles") or {}).get(slug, [])
-            if item_key(r["item"]) not in taken and item_key(r["item"]) not in declined]
-    strong = [r for r in rows if r.get("strong", r["score"] >= min_score)]
+            if item_key(r["item"]) not in taken and (r.get("declined") or item_key(r["item"]) not in declined)]
+    strong = [r for r in rows if not r.get("declined") and r.get("strong", r["score"] >= min_score)]
+    rest = [r for r in rows if r not in strong]
     out = []
-    for r in (strong or rows)[:limit]:
+    for r in (strong + rest)[:limit]:
         it = (doc.get("items") or {}).get(r["item"], {})
-        out.append(dict(it, **r, weak=not strong))
+        out.append(dict(it, **r, weak=r not in strong))
     return out
 
 

@@ -359,7 +359,9 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     for x in q.get("next") or []:
         k = item_key(x)
         b = next((v for kk, v in nb.items() if item_key(kk) == k), None)
-        nxt.append({"item": x, "blocker": b, "stale": k in stale_nb or None})
+        # stale: past its daily look (`expired`, still a blocker until re-checked) or cleared (`resolved`, the item is free)
+        nxt.append({"item": x, "blocker": b, "stale": k in stale_nb or None,
+                    "stale_kind": str(stale_nb[k]).split(":", 1)[0] if k in stale_nb else None})
     remote = is_remote(role, spec)
     alive, sc = (False, {}) if remote else _h.watcher_alive(spec.sid, slug)
     sess = session_state(role, rows, opencode_probe, spec.dir, spec)
