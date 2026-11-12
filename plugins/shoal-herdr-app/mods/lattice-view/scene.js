@@ -13,8 +13,8 @@
 import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal, SHOAL_CARD, BOARD_CARD } from "./model.js";
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
-  sphereShade, glassColorAt, LIGHT, luneCmds, latitudeCmds, crescentCmds, bowlGlow, bowlColorAt, BOWL, BOWL_BASE, BOWL_LIT,
-  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, bowlSilhouette, shadowLayers, SHADOW_STEPS,
+  sphereShade, glassColorAt, LIGHT, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
+  BOWL_BASE, BOWL_LIT, rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS,
 } from "./sphere.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, annularSectorCmds,
@@ -248,14 +248,15 @@ export function buildScene(vm, lay, opts) {
     }
   } else if (lay.bowl && lay.clusters[0]) {
     // depth mode: the cutout sphere. You at its middle; each host a lune of its inner surface in the host's color
-    // (seen from above in perspective: the rim an ellipse round the hosts' lunes, which tile the whole inside)
+    // (seen from above and from the side in perspective: the rim a turned ellipse round the hosts' lunes, which tile
+    // the whole inside, the bottom below and beside you)
     const c = lay.clusters[0], fr = lay.bowl.frame, rim = fr.rim;
     const o = S(c), R = c.r * k;
-    const rc = { x: o.x, y: o.y + R * rim.cy }, rimCmds = ellipseCmds(rc.x, rc.y, R * rim.rx, R * rim.ry);
+    const rc = { x: o.x + R * rim.cx, y: o.y + R * rim.cy }, rimCmds = bowlRimCmds(fr, o.x, o.y, R);
     surfaces.push({ kind: "bowl", x: o.x, y: o.y, r: R, frame: fr, bands: lay.bands });
     // the inside: a dark base, then light pooling where a hollow faces the light (lower right, opposite a ball's)
     items.push({ t: "path", id: "bowl-in", fill: true, cmds: rimCmds, bg: solid(withAlpha(BOWL_BASE, BOWL.base)) });
-    bowlGlow(fr, o.x, o.y, R).forEach((e, i) => items.push({ t: "path", id: `bowl-glow-${i}`, fill: true, cmds: ellipseCmds(e.x, e.y, e.rx, e.ry), bg: solid(withAlpha(BOWL_LIT, BOWL.glow)) }));
+    bowlGlow(fr, o.x, o.y, R).forEach((e, i) => items.push({ t: "path", id: `bowl-glow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha(BOWL_LIT, BOWL.glow)) }));
     const tintOf = (b) => b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
     for (const b of lay.bands) {
       // a light wash, so an edge or an arrow over it still reads; the outline carries the host's color
@@ -263,18 +264,20 @@ export function buildScene(vm, lay, opts) {
       items.push({ t: "path", id: `bowl-host-${b.host}`, fill: true, cmds, bg: solid(withAlpha(tint, BOWL.wash)) });
       items.push({ t: "path", id: `bowl-host-rim-${b.host}`, fill: false, width: 1.2, cmds, bg: solid(withAlpha(tint, BOWL.outline)) });
     }
-    // two circles of latitude, faint, so the hollow reads as curved
-    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], cmds: [Math.PI / 6, Math.PI / 3].flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)), bg: solid(withAlpha("#e4edf4", 0.18)) });
-    // the near wall's outside, where the camera is beyond the rim: a thin crescent under it, lit from the upper left
-    const shell = crescentCmds(fr, o.x, o.y, R);
-    if (shell.length) {
-      items.push({ t: "path", id: "bowl-shell", fill: true, cmds: shell, bg: { kind: "linear", angle: 110, from: withAlpha(mix(c.tint, "#ffffff", 0.25), BOWL.shell * 0.8), to: withAlpha("#050b17", BOWL.shell) } });
-      items.push({ t: "path", id: "bowl-limb", fill: false, width: 1.2, cmds: shell, bg: solid(withAlpha(c.tint, 0.4)) });
+    // your shadow on the inside, from the one light: on the wall beside you, so you read as floating in front of it
+    if (hub && nodeR.has(hub.id)) {
+      bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R).forEach((e, i) => items.push({
+        t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)),
+      }));
     }
-    // the cut edge
+    // two circles of latitude and eight meridians down to the bottom, faint, so the hollow reads as curved and deep
+    const yaw = lay.cam?.yaw ?? 0;
+    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], bg: solid(withAlpha("#e4edf4", 0.18)),
+      cmds: [...[Math.PI / 6, Math.PI / 3].flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)),
+        ...Array.from({ length: 8 }, (_, i) => meridianCmds(fr, o.x, o.y, R, yaw + (i * Math.PI) / 4)).flat()] });
+    // the cut edge (the cut leaves no outside wall facing the camera, so nothing of the bowl shows beyond it)
     items.push({ t: "path", id: "bowl-lip", fill: false, width: 1.8, cmds: rimCmds, bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.6), to: withAlpha(c.tint, 0.4) } });
-    const below = shell.length ? Math.max(rim.cy + rim.ry, bowlSilhouette(fr)) : rim.cy + rim.ry;
-    grow(rc.x - R * rim.rx, rc.y - R * rim.ry, rc.x + R * rim.rx, o.y + R * below);
+    grow(rc.x - R * rim.w, rc.y - R * rim.h, rc.x + R * rim.w, rc.y + R * rim.h);
     for (const b of lay.bands) {
       // the host's name just outside the rim, out from the rim's middle through the lune's middle
       const tint = tintOf(b), am = (b.a0 + b.a1) / 2;

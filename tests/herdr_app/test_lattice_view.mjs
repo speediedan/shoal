@@ -1316,11 +1316,15 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
       const u = SP.bowlPoint(fr, s.theta, s.phi);
       const q = SP.bowlProject(fr, u);
       assert.ok(Math.hypot(p.x - Rs * q.x, p.y - Rs * q.y) < 1e-9 && s.theta < Math.PI / 2, "on the inner surface, in perspective");
-      assert.ok(SP.bowlSeen(fr, u) <= 0.86 + 1e-6 && u.z < 0, "on the far wall, seen through the rim");
+      assert.ok(SP.bowlSeen(fr, u) <= 0.86 + 1e-6 && SP.bowlKept(fr, u), "on the inside, seen through the rim");
+      assert.ok(u.z <= -0.2 + 1e-9, `${n.label} sits behind you`);
       assert.equal(S.bowlHostAt(fr, pa.bands, p.x / Rs, p.y / Rs)?.host, n.host, "the lune drawn under it is its host's");
       assert.ok(pa.order.indexOf(n) < pa.order.indexOf(user), "you are drawn nearer than every role");
     }
-    for (const n of alpha.nodes.filter((x) => x.kind === "external" || x.kind === "writer")) assert.ok(Math.hypot(pa.pos.get(n.id).x, pa.pos.get(n.id).y) > Rs, "outside seats outside the sphere");
+    for (const n of alpha.nodes.filter((x) => x.kind === "external" || x.kind === "writer")) {
+      const q = pa.pos.get(n.id);
+      assert.ok(SP.rimNorm(fr, { x: q.x / Rs, y: q.y / Rs }) > 1.15, `outside seats outside the rim: ${n.label}`);
+    }
     for (const t of pa.tethers.filter((x) => x.to)) assert.equal(S.bowlHostAt(fr, pa.bands, t.to.x / Rs, t.to.y / Rs)?.host, t.host, "a CI tether ends on its host's lune");
     // the scene: a lune per host in its own color, the near wall, the cut edge; no stacked host slabs
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
@@ -1329,7 +1333,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
     assert.equal(washes.length, hosts.length);
     assert.equal(new Set(washes.map((it) => it.bg.color)).size, hosts.length, "each host its own color");
     assert.ok(["bowl-in", "bowl-lip", "bowl-grid"].every((id) => sc.items.some((it) => it.id === id)));
-    assert.equal(sc.items.some((it) => it.id === "bowl-shell"), SP.crescentCmds(fr, 0, 0, 1).length > 0, "the near wall's outside only where it shows");
+    assert.ok(!sc.items.some((it) => it.id === "bowl-shell" || it.id === "bowl-limb"), "the cut leaves no outside wall to draw");
     assert.ok(!sc.items.some((it) => it.id.startsWith("band-slab-") || it.id.startsWith("band-rim-")));
     // the outline: every lune stays inside the sphere's silhouette, and the whole bowl is a small part of the budget
     for (const b of pa.bands) {
@@ -1342,12 +1346,18 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
         p0 = curve.p3;
       }
     }
-    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 200, "the bowl costs a fraction of one globe");
+    // the bowl (48 faint glow layers, the most of it) stays under half of one globe's 970 or so
+    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 480, "the bowl costs a fraction of one globe");
   }
-  // a lune's outline is exact: the rim projects to the rim ellipse
+  // a lune's outline is exact: the rim, where each meridian meets the cut, projects to the rim ellipse
   const fr = SP.bowlFrame(0.4);
-  for (const phi of [0, 1, 2.5, 4]) assert.ok(Math.abs(SP.bowlSeen(fr, SP.bowlPoint(fr, Math.PI / 2, phi)) - 1) < 1e-12);
-  assert.ok(SP.bowlReach(fr, Math.PI / 2) < SP.bowlReach(fr, -Math.PI / 2), "less is seen low down, behind the near wall");
+  for (const phi of [0, 1, 2.5, 4]) {
+    const u = SP.bowlPoint(fr, SP.rimTheta(fr, phi), phi);
+    assert.ok(Math.abs(SP.bowlSeen(fr, u) - 1) < 1e-9 && Math.abs(u.x * fr.cut.n.x + u.y * fr.cut.n.y + u.z * fr.cut.n.z - fr.cut.h) < 1e-12);
+    const e = SP.rimCmds(fr, 0, 0, 1);
+    assert.ok(Math.abs(SP.rimNorm(fr, { x: e[0][1], y: e[0][2] }) - 1) < 1e-9, "the drawn rim is the rim");
+  }
+  assert.ok(SP.bowlReach(fr, Math.PI / 2) < SP.bowlReach(fr, -Math.PI / 2), "less is reached on the near side, where the cut is lower");
   assert.ok(D.bowlTheta(fr, 0, 0, 5) !== D.bowlTheta(fr, 0, 1, 5) && D.bowlTheta(fr, 0, 0, 2) === D.bowlTheta(fr, 0, 1, 2), "two rows from four roles");
 });
 
@@ -1477,23 +1487,72 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
   const la = L.layoutGraph(alpha);
   for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3)]) {
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame;
-    // the camera hangs over the opening, at most just past the rim, so the near wall hides next to nothing
-    assert.ok(fr.d * Math.sin(fr.alpha) <= 1.2, "the camera over the opening");
+    // the cut leaves nothing facing the camera (a point of the unit sphere does when u.z > 1 / d), so all of the
+    // inside is seen through the opening, and nothing of the bowl shows past the rim
     let seen = 0, all = 0;
-    for (let i = 1; i < 24; i++) for (let j = 0; j < 48; j++) {
+    for (let i = 1; i <= 24; i++) for (let j = 0; j < 48; j++) {
+      const phi = (2 * Math.PI * j) / 48, u = SP.bowlPoint(fr, SP.rimTheta(fr, phi) * (i / 24), phi);
       all++;
-      if (SP.bowlSeen(fr, SP.bowlPoint(fr, (Math.PI / 2) * (i / 24), (2 * Math.PI * j) / 48)) <= 1 + 1e-9) seen++;
+      assert.ok(u.z < 1 / fr.d - 0.02 && SP.bowlKept(fr, u), "no kept point faces the camera");
+      if (SP.bowlSeen(fr, u) <= 1 + 1e-9) seen++;
     }
-    assert.ok(seen / all >= 0.97, `the inner surface is seen: ${seen}/${all}`);
+    assert.equal(seen, all, "the whole inner surface is seen");
     const user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
     assert.ok(pa.scaleOf.get(user.id) >= 1.2, "you read larger than in #153 (1)");
     for (const n of roles) assert.ok(pa.scaleOf.get(user.id) >= 1.12 * pa.scaleOf.get(n.id), `you, nearer, larger than ${n.label}`);
     assert.equal(pa.order.findIndex((n) => n.id === user.id) > Math.max(...roles.map((n) => pa.order.indexOf(n))), true, "drawn after every role");
-    // perspective: the rim's far side is smaller than its near side, the pole below you
-    assert.ok(-SP.bowlRimAt(fr, -Math.PI / 2).y < SP.bowlRimAt(fr, Math.PI / 2).y && SP.bowlProject(fr, fr.pole).y > 0);
-    // the washes are light, so edges and arrows over them read
-    assert.ok(SP.BOWL.wash <= 0.12);
+    // seen from above and from the side: the bottom lands below and beside you, the rim is a turned ellipse, the far
+    // wall keeps a hemisphere's rim and only the near wall is cut lower
+    const pole = SP.bowlProject(fr, fr.pole);
+    assert.ok(Math.abs(pole.x) > 0.2 && pole.y > 0.2, `the pole off the middle both ways: ${pole.x.toFixed(2)}, ${pole.y.toFixed(2)}`);
+    assert.ok(Math.abs(fr.rim.m[1]) > 0.05 * Math.max(fr.rim.m[0], fr.rim.m[2]), "the rim's ellipse is turned, not square to the screen");
+    const rims = Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72));
+    assert.ok(Math.max(...rims) <= Math.PI / 2 + 1e-9 && Math.max(...rims) > Math.PI / 2 - 0.01 && Math.min(...rims) < Math.PI / 2 - 0.2, "far rim at the equator, near rim lower");
+    assert.ok(Math.min(...rims) > Math.PI / 3 + 0.05, "both circles of latitude are whole");
+    // your shadow from the one light falls on the inside, inside the rim and clear of you
+    const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    const shadow = sc.items.filter((it) => it.id.startsWith("bowl-shadow-"));
+    assert.equal(shadow.length, SP.BOWL_SHADOW_STEPS);
+    const sh = SP.bowlShadow(fr, 0, 0, 1, 0.1).at(-1), you = pa.pos.get(user.id);
+    assert.ok(SP.rimNorm(fr, sh) < 0.9 && Math.hypot(sh.x - you.x / pa.bowl.R, sh.y - you.y / pa.bowl.R) > 0.3, "a shadow on the wall, apart from you");
+    // the washes are light, so edges and arrows over them read; the inside is clearer than in #155
+    assert.ok(SP.BOWL.wash < 0.1 && SP.BOWL.base < 0.16);
   }
+});
+
+test("2026-11-11: the bowl's glow is smooth: many faint layers, no step between two of them shows", () => {
+  for (const alphaT of [0.4, 0.6]) {
+    const fr = SP.bowlFrame(alphaT), layers = SP.bowlGlow(fr, 0, 0, 1);
+    assert.ok(layers.length >= 48 && SP.BOWL.glow * 255 <= 2.01, "48 or more layers at 2 of 255 each, not 20 at 5");
+    const total = 1 - (1 - Math.round(SP.BOWL.glow * 255) / 255) ** layers.length;
+    assert.ok(total > 0.25 && total < 0.34, `about the light it had: ${total.toFixed(3)}`);
+    // each layer inside the one before it, and all inside the rim
+    const pts = (e) => Array.from({ length: 24 }, (_, i) => { const t = (2 * Math.PI * i) / 24; return { x: e.x + e.a.x * Math.cos(t) + e.b.x * Math.sin(t), y: e.y + e.a.y * Math.cos(t) + e.b.y * Math.sin(t) }; });
+    for (const p of pts(layers[0])) assert.ok(Math.abs(SP.rimNorm(fr, p) - 1) < 1e-9, "the outermost layer is the rim");
+    for (let i = 1; i < layers.length; i++) {
+      const prev = layers[i - 1], m = fr.rim.m;
+      for (const p of pts(layers[i])) {
+        const x = p.x - prev.x, y = p.y - prev.y;
+        assert.ok(m[0] * x * x + 2 * m[1] * x * y + m[2] * y * y <= prev.s * prev.s + 1e-9, "nested");
+      }
+    }
+    // across the inside, the color steps by at most two of 255 between neighboring points
+    const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    let prev = null, worst = 0, lit = 0;
+    for (let i = -100; i <= 100; i++) {
+      const p = { x: fr.rim.cx + (i / 100) * fr.rim.w * 0.99, y: fr.rim.cy + (i / 100) * fr.rim.h * 0.3 };
+      if (SP.rimNorm(fr, p) > 1) { prev = null; continue; }
+      const c = rgb(SP.bowlColorAt(fr, p.x, p.y, null));
+      if (prev) worst = Math.max(worst, ...c.map((v, k) => Math.abs(v - prev[k])));
+      lit = Math.max(lit, c[0]);
+      prev = c;
+    }
+    assert.ok(worst <= 2 && lit > 60, `smooth (worst step ${worst}) and still lit`);
+  }
+  const sc = S.buildScene(alpha, D.projectLayout(alpha, L.layoutGraph(alpha), D.camera("iso")), { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+  const glow = sc.items.filter((it) => it.id.startsWith("bowl-glow-"));
+  assert.equal(glow.length, SP.BOWL_GLOW);
+  assert.ok(glow.every((it) => it.cmds.length === 6 && it.bg.color.endsWith("02")), "a conjugate ellipse each, 2 of 255");
 });
 
 test("2026-11-11: the hosts' lunes tile the whole bowl, with no gaps", () => {
@@ -1518,7 +1577,7 @@ test("2026-11-11: the hosts' lunes tile the whole bowl, with no gaps", () => {
     let inside = 0;
     const hosts = new Set();
     for (let i = -40; i <= 40; i++) for (let j = -40; j <= 40; j++) {
-      const s = { x: (i / 40) * fr.rim.rx, y: fr.rim.cy + (j / 40) * fr.rim.ry };
+      const s = { x: fr.rim.cx + (i / 40) * fr.rim.w, y: fr.rim.cy + (j / 40) * fr.rim.h };
       if (SP.rimNorm(fr, s) > 0.999) continue;
       inside++;
       const b = S.bowlHostAt(fr, pa.bands, s.x, s.y);
