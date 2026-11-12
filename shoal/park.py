@@ -518,7 +518,8 @@ def _remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: 
     Its live claims are released too: replay already ignores a claim by a writer not in the spec, but it would come back to
     life if the slug were ever added again. A session
     held by a turn or client nothing here can stop refuses, even forced, as does one that will not stop; an active item
-    refuses unless forced. It takes the role's restart lock, so a restart in flight cannot bring the role back."""
+    refuses unless forced. The caller holds the role's restart lock (see `retire_hooks.lock`), so a restart in flight
+    cannot bring the role back."""
     import prune
     from cli import persist_spec
     from ledger import SYSTEM_WRITER, Ledger, View, item_key
