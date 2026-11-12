@@ -4,7 +4,9 @@
 //
 //   node plugins/shoal-herdr-app/preview/render_svg.mjs [--doc graph.json] [--view global|<shoal>]
 //        [--pin <node id>] [--hover <id>] [--legend] [--depth flat|tilt|iso] [--yaw degrees]
-//        [--motion full|balanced|low|off] [--width 1400] [--height 860] [--out lattice.svg]
+//        [--orbit h,v] [--motion full|balanced|low|off] [--width 1400] [--height 860] [--out lattice.svg]
+// --yaw is the turn `,` and `.` make; --orbit the arrows' orbit, in degrees (h: right is positive; v: up is positive),
+// kept to the view's range as the mod keeps it.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -27,7 +29,9 @@ const H = Number(opt("height", 860));
 const RAIL = 272;
 const doc = JSON.parse(readFileSync(opt("doc", join(MOD, "fixtures", "graph-v1.json")), "utf8"));
 const vm = M.buildModel(doc, opt("view", "global"));
-const lay = D.projectLayout(vm, L.layoutGraph(vm), D.camera(opt("depth", "flat"), Number(opt("yaw", 0)) * Math.PI / 180));
+const [oh, ov] = String(opt("orbit", "0,0")).split(",").map((v) => (Number(v) || 0) * Math.PI / 180);
+const orbit = D.orbitBy(opt("depth", "flat"), null, oh, ov ?? 0, !vm.global);
+const lay = D.projectLayout(vm, L.layoutGraph(vm), D.camera(opt("depth", "flat"), Number(opt("yaw", 0)) * Math.PI / 180, orbit));
 const CW = W - RAIL;
 // the same fit as the mod's `f`: every node, label and ring inside the canvas
 const tf = S.fitScene(vm, lay, { width: CW, height: H }, { pad: 24, top: 48, kMax: 1.6 });

@@ -425,9 +425,26 @@ export function inRimShade(fr, u) {
 
 /** The inside's depth: rings of latitude round the bottom (polar angles from the pole, all below the rim's lowest
  * point), each the edge of a cap that darkens what is below it a little more, so the inside recedes to the bottom and
- * every step in the shading sits under a ring. */
+ * every step in the shading sits under a ring. A camera orbited far round the side cuts the near wall low, so only the
+ * rings that stay whole there are drawn (bowlRings): at the presets, all four. */
 export const BOWL_RINGS = [1, 2, 3, 4].map((i) => (i * Math.PI) / 12);
-export const bowlDepthAt = (fr, u) => BOWL_RINGS.filter((t) => dot(u, fr.pole) >= Math.cos(t)).length;
+export function bowlRings(fr) {
+  if (!fr.rings) {
+    const low = Math.min(...Array.from({ length: 72 }, (_, j) => rimTheta(fr, (2 * Math.PI * j) / 72)));
+    fr.rings = BOWL_RINGS.filter((t) => t < low - 0.03);
+  }
+  return fr.rings;
+}
+export const bowlDepthAt = (fr, u) => bowlRings(fr).filter((t) => dot(u, fr.pole) >= Math.cos(t)).length;
+
+/** The plumb line from you (`at`, up the axis) down the bowl's axis to its bottom (the pole), on screen in radii from
+ * the middle, and the small ring it stands in at the bottom (a circle of radius `r` round the pole, in perspective):
+ * {from, to, foot: {cx, cy, a, b}}. What shows that you float off the inside, not on it. */
+export function bowlPlumb(fr, at, r = 0.05) {
+  const from = bowlProject(fr, at), to = bowlProject(fr, fr.pole);
+  const foot = projectedCircle(fr.d, comb(1 - 1e-3, fr.pole), fr.e1, fr.e2, r);
+  return { from, to, foot };
+}
 
 // A linear gradient's angle (degrees, 0 up, clockwise, as GPUI takes it) for a screen direction, and where a point
 // falls along one over a path's bounds (0 at the start, 1 at the end, as CSS spans them): the lip's shade runs so.
@@ -461,19 +478,25 @@ export function bowlGlow(fr, cx, cy, R) {
   });
 }
 
-/** The shadow you (a ball of radius rb, in sphere radii, at the middle) cast on the inner surface: from above the
- * opening and the upper left (bowlShadowLight: the bowl's up and the one light, SHADOW_UP to 1, which the lip's shade
- * falls from too), so it falls near the bottom, just down and to the right of your foot on the axis, not on the lit
- * far wall. It is a disc of radius rb there, shrunk a little
- * and soft (its penumbra wide), seen in perspective. Its layers, outermost first: {x, y, a, b, alpha}, a conjugate
- * ellipse each. */
+/** The shadow you (a ball of radius rb, in sphere radii, at `at`: depth.js bowlYou, up the axis from the middle; the
+ * middle by default) cast on the inner surface: from above the opening and the upper left (bowlShadowLight: the bowl's
+ * up and the one light, SHADOW_UP to 1, which the lip's shade falls from too), so it falls near the bottom, just down
+ * and to the right of your foot on the axis, not on the lit far wall. It lands where the light's line through you
+ * leaves the sphere, so the higher you float the further it falls from you on screen. It is a disc of radius rb there,
+ * shrunk a little and soft (its penumbra wide), seen in perspective. Its layers, outermost first: {x, y, a, b, alpha},
+ * a conjugate ellipse each. */
 export const BOWL_SHADOW_STEPS = 10;
 const SHADOW_UP = 1.6;
 export const bowlShadowLight = (fr) => unit(comb(-SHADOW_UP, fr.pole, 1, LIGHT));
-export function bowlShadow(fr, cx, cy, R, rb) {
+/** Where the light's line through `at` (inside the sphere) meets the inner surface, away from the light. */
+export function bowlShadowAt(fr, at = { x: 0, y: 0, z: 0 }) {
+  const L = bowlShadowLight(fr), pl = dot(at, L), t = pl + Math.sqrt(Math.max(0, pl * pl - dot(at, at) + 1));
+  return comb(1, at, -t, L);
+}
+export function bowlShadow(fr, cx, cy, R, rb, at) {
   const L = bowlShadowLight(fr), t1 = unit({ x: L.y, y: -L.x, z: 0 });
   const t2 = { x: L.y * t1.z - L.z * t1.y, y: L.z * t1.x - L.x * t1.z, z: L.x * t1.y - L.y * t1.x };
-  const c = { x: -L.x, y: -L.y, z: -L.z };
+  const c = bowlShadowAt(fr, at);
   return shadowLayers(0.4, 0.6, BOWL_SHADOW_STEPS).map((l) => {
     const e = projectedCircle(fr.d, c, t1, t2, 0.8 * rb * l.s);
     return { x: cx + R * e.cx, y: cy + R * e.cy, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
