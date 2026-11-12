@@ -2428,6 +2428,7 @@ check "name a directory" $H refs
 echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head"
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
 python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.py)"
+python3 "$TESTD/test_retire_hooks.py" || fail "retirement hooks (tests/test_retire_hooks.py)"
 python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
 check "name a start doc" $H doc-head
 

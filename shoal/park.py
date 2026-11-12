@@ -488,7 +488,29 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     return 1 if out.startswith("FAILED") else 0
 
 
-def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False) -> int:
+def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False,
+                no_archive: bool = False) -> int:
+    import contextlib
+    import retire_hooks as rh
+    role = spec.role(slug)
+    from roles import is_local
+    if role is None or not is_local(role, spec):
+        return _remove_role(spec, spec_path, slug, force, dry_run)
+    try:
+        with contextlib.ExitStack() as stack:
+            op = rh.Operation(rh.role_target(spec, role), rh.ledger_for(spec), stack, no_archive)
+            op.preview()
+            rc = _remove_role(spec, spec_path, slug, force, dry_run, op)
+            if rc or dry_run:
+                return rc
+            print(f"removal {slug}: complete")
+            return op.finish()
+    except (rh.Refused, OSError, RuntimeError) as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+
+
+def _remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False, hook=None) -> int:
     """Take a role out for good: stop its session and watchers, prune its incarnations from every harness's listing, remove
     it from the spec and write `role-removed`. The ledger keeps its history. In that order because a prune protects any
     session the spec still names, and a role only stops being recognised once the spec drops it. Its open offers are
@@ -497,11 +519,10 @@ def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: b
     life if the slug were ever added again. A session
     held by a turn or client nothing here can stop refuses, even forced, as does one that will not stop; an active item
     refuses unless forced. It takes the role's restart lock, so a restart in flight cannot bring the role back."""
-    import fcntl
     import prune
     from cli import persist_spec
     from ledger import SYSTEM_WRITER, Ledger, View, item_key
-    from roles import host_of, is_local, state_dir
+    from roles import host_of, is_local
     role = spec.role(slug)
     if role is None:
         print(f"remove-role: no role {slug} (spec has {[x.slug for x in spec.roles]})")
@@ -512,13 +533,6 @@ def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: b
     if role.session and session_held(role, spec.dir):
         print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing here "
               f"can stop it; --force does not change that. Detach it or let the turn end, then try again")
-        return 1
-    os.makedirs(state_dir(spec.sid), exist_ok=True)
-    guard = open(os.path.join(state_dir(spec.sid), f"context-restart-{slug}.lock"), "a")  # the lock `context_restart` holds
-    try:
-        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print(f"REFUSED: a restart of {slug} is running: try again when it ends")
         return 1
     led = Ledger(spec.sid, root=spec.ledger_dir)
     led.pull()
@@ -535,6 +549,8 @@ def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: b
     offers = sorted({key for key, os_ in view.by_item.items() for o in os_ if o.get("to") == slug and o.get("status") in ("open", "claimed")})
     for item in q.get("next") or []:
         print(f"{slug}: next item {item} goes back to no one: offer it elsewhere if it still matters")
+    if hook and not dry_run:
+        hook.prepare()
     if role.session:
         did = stop_session(role, dry_run)
         print(f"{slug}: {did}")
@@ -564,7 +580,29 @@ def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: b
     return 0
 
 
-def remove_session(key: str, force: bool = False, dry_run: bool = False) -> int:
+def remove_session(key: str, force: bool = False, dry_run: bool = False, no_archive: bool = False) -> int:
+    import contextlib
+    import retire_hooks as rh
+    import standalone
+    entries = standalone.load_standalone(raw=True)
+    entry = next((e for e in entries if not e.get("host") and key in (e.get("label"), e.get("session"), e.get("job"))), None)
+    if entry is None:
+        return _remove_session(key, force, dry_run)
+    try:
+        with contextlib.ExitStack() as stack:
+            op = rh.Operation(rh.session_target(entry), rh.ledger_for(), stack, no_archive)
+            op.preview()
+            rc = _remove_session(key, force, dry_run, op)
+            if rc or dry_run:
+                return rc
+            print(f"removal {op.target.role}: complete")
+            return op.finish()
+    except (rh.Refused, OSError, RuntimeError) as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+
+
+def _remove_session(key: str, force: bool = False, dry_run: bool = False, hook=None) -> int:
     """Take a saved standalone session out for good: stop it (a live one only when forced), remove it from its harness's
     listing and forget it. Refuses the session this runs inside, and one a worktree still hangs off unless forced."""
     import types
@@ -575,6 +613,9 @@ def remove_session(key: str, force: bool = False, dry_run: bool = False) -> int:
     e = next((x for x in entries if not x.get("host") and key in (x.get("label"), x.get("session"), x.get("job"))), None)
     if e is None:
         print(f"REFUSED: no saved standalone session {key!r} on this host (a writer with no saved session can only be hidden)")
+        return 1
+    if hook and e["session"] != hook.target.session:
+        print("REFUSED: the saved seat changed sessions during retirement preflight; preview it again")
         return 1
     label = e.get("label") or e["session"][:12]
     harness = e.get("harness") or "claude"
@@ -600,6 +641,8 @@ def remove_session(key: str, force: bool = False, dry_run: bool = False) -> int:
     if dry_run:
         print(f"{label}: would {'stop it, ' if live else ''}remove it from the {harness} listing and forget it")
         return 0
+    if hook:
+        hook.prepare()
     if live:
         print(f"{label}: {stop_session(seat)}")
     try:
@@ -659,12 +702,12 @@ def cmd_set_fill(a) -> int:
 
 def cmd_remove_role(a) -> int:
     from roles import ShoalSpec
-    return remove_role(ShoalSpec.load(a.spec), a.spec, a.only, a.force, a.dry_run)
+    return remove_role(ShoalSpec.load(a.spec), a.spec, a.only, a.force, a.dry_run, getattr(a, "no_archive", False))
 
 
 def cmd_remove_session(a) -> int:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
-    return remove_session(a.session, a.force, a.dry_run)
+    return remove_session(a.session, a.force, a.dry_run, getattr(a, "no_archive", False))
 
 
 def cmd_handoff(a) -> int:
@@ -689,6 +732,7 @@ def cmd_handoff(a) -> int:
 
 def add_parser(sub) -> None:
     p = sub.add_parser("remove-role", help="take a role out for good: stop it, prune its incarnations, drop it from the spec; the ledger keeps its history")
+    p.add_argument("--no-archive", action="store_true", help="skip the retirement hook and record the opt-out")
     p.add_argument("--spec", required=True)
     p.add_argument("--only", required=True, help="one slug")
     p.add_argument("--force", action="store_true", help="even with an active item")
@@ -704,6 +748,7 @@ def add_parser(sub) -> None:
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_set_fill)
     p = sub.add_parser("remove-session", help="take a saved standalone session out for good: stop it, remove it from its harness, forget it")
+    p.add_argument("--no-archive", action="store_true", help="skip the retirement hook and record the opt-out")
     p.add_argument("--session", required=True, help="its label, session id or job")
     p.add_argument("--force", action="store_true", help="even when it is live or a worktree hangs off it")
     p.add_argument("--dry-run", action="store_true")

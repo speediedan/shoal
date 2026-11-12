@@ -59,8 +59,8 @@ repository, and files are moved by it, so where files go never leaves the reposi
 
 Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age_days`, unless flags name them), by
 `doc-check` and `doc-head` (the header cap), and by `shoal archive` ([`archive.md`](archive.md): `[layout] archive` and
-`manifest`, `[cold] warm_days`, `[hooks] commit`). The checkpoint, deep-pass and `on_retire` settings are read by the
-commands that follow them.
+`manifest`, `[cold] warm_days`, `[hooks] commit`). The checkpoint reads `[checkpoint]`; retirement commands read
+`[hooks] on_retire`. Deep-pass settings are reserved for the deep-pass command.
 
 ## Checkpoint pass at restart-ready
 
@@ -108,7 +108,7 @@ in:
 trusted_repos = ["/path/to/repository"]
 ```
 
-In a hook, only `{message}` and `{paths}` are replaced, each already shell-quoted, so write them unquoted
+In a commit hook, only `{message}` and `{paths}` are replaced, each already shell-quoted, so write them unquoted
 (`commit = "my-commit.sh -m {message} {paths}"`); any other brace (`${VAR}`, awk's `{print}`) is left as written.
 
 For any other repository the hooks are ignored, with a note, and the defaults apply. The other settings run nothing and
@@ -116,3 +116,74 @@ are read from any repository.
 
 A repository is its git top level, so a worktree is its own repository here: list each worktree path that should run
 hooks. A hook trusted for a main checkout is not trusted in that checkout's worktrees, which is the safer default.
+
+## Retirement and recovery
+
+`retire`, `remove-role` and `remove-session` run a configured, trusted `on_retire` hook after the role or saved session
+has left the live start-doc roots. A role's `dir` field overrides its document directory; otherwise it is the directory
+of its start doc. Relative overrides resolve against the group's working directory (a standalone seat's `cwd`). The
+document directory must contain the start doc and stay inside its repository.
+
+The hook command is split into argv using shell-style quoting, with no implicit shell. Its first executable must
+resolve before anything is removed. Relative executable paths resolve against the repository root, which is also
+the hook's working directory. A hook can explicitly invoke a shell if needed. It inherits the caller's environment,
+with these five injected values:
+
+| Variable | Value |
+| --- | --- |
+| `SHOAL_ID` | group id, empty for a standalone seat |
+| `SHOAL_ROLE` | role slug or standalone label |
+| `SHOAL_DOC` | absolute start-doc path |
+| `SHOAL_ROLE_DIR` | absolute document directory |
+| `SHOAL_HOST` | document host |
+
+Preflight verifies host trust, executable availability, a clean document directory (including untracked files), live
+roots and symlinks. The owning root is allowed before removal; another owner's root in, or pointing into, the
+directory blocks teardown. Dry-run prints exact resolved argv, repository and injected environment, without running
+the hook or recording removal. No-hook and untrusted configurations retain the existing removal behavior. A known
+repository's empty hook configuration also keeps group retirement's existing offline behavior; a remote-only
+directory or a configured routed hook requires a reachable document-host route and compatible worker CLI.
+
+The role's context-restart lock and the seat's handoff lock cover preflight, removal and hook execution. For a routed
+hook, a worker holds the locks on the document host while the caller updates metadata, and releases them when the
+caller completes or disconnects. Immediately before the hook, cleanliness, live roots and symlinks are checked again.
+Root snapshots are refreshed from the ledger and routed caches are bypassed (`refs --roots --all-hosts --refresh`).
+There is no dependency on a context advisory timestamp or a restart-ready declaration.
+
+Whole-group `retire` normally leaves sessions intact. With a trusted hook enabled, every target role must instead be
+parked or have no live session. A live role blocks retirement before the spec changes and the CLI prints its park
+command. `--no-archive` explicitly skips hooks, preserves ordinary teardown behavior and records the opt-out:
+
+```bash
+shoal retire --spec <spec> --dry-run
+shoal remove-role --spec <spec> --only <role> --no-archive
+shoal remove-session --session <label> --dry-run
+```
+
+Hooks and explicit opt-out receipts require a configured ledger repository. Hook outcomes are durable `system`
+events named `retire-hook`, with `status` (`ok` or `failed`), role, document directory, host, argv, environment, retry
+target and an error tail. Group events live in the group's ledger. Standalone events use the reserved ledger
+namespace `shoals/_standalone/ledger/`, without a group spec. A prepared receipt precedes teardown; a pending receipt
+confirms removal before execution, so an interrupted operation remains discoverable. The terminal outcome follows.
+`shoal show` and `shoal status` display unresolved failures, including standalone failures; successful retry clears
+the warning. No health page is raised.
+
+Removal and hook outcome are reported separately. A hook failure returns nonzero and never rolls back a completed
+removal or attempts to restore a pruned session. Hooks must be idempotent: a partial run can be retried safely. Retry
+reads the recorded target, resolves the current trusted hook, obtains the same locks and performs the full preflight
+again. The repository identity is retained even if a partial hook already archived the original directory:
+
+```bash
+shoal lifecycle retire-hook --shoal <id> --role <role> --dry-run
+shoal lifecycle retire-hook --shoal <id> --role <role>
+shoal lifecycle retire-hook --session <original-session-id-or-label>
+shoal lifecycle retire-hook --status
+```
+
+A prepared receipt with live roots still present requires finishing the original removal first. A dirty directory
+or a new live root blocks retry. A disabled or untrusted hook is not executed from an old receipt. If several older
+directories match a role, their unresolved outcomes are retried separately under their locks. Hook execution has a
+600-second timeout; a lost routed connection leaves an unresolved outcome for inspection and idempotent retry.
+
+Generic cross-owner reference rewriting is a separate archive feature. Until it exists, an archive hook must keep
+the archive command's reference checks and report references that prevent whole-directory archival.
