@@ -658,7 +658,7 @@ shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; t
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
 shoal ui act-plan VERB --shoal ID [...] [--json]   # an action's preview and one-time token, or a view
 shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # the same across shoals
-shoal ui app-sync                                  # roles tabs follow the roles, everywhere; nothing else changes
+shoal ui app-sync                                  # copied mods and clones refreshed here, roles tabs follow the roles everywhere
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
 shoal ui app-usage                                 # show the usage dashboard (SHOAL-home's usage tab)
@@ -722,15 +722,23 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   returns to the card: `q` is what leaves one.
 - **The lattice in depth (`d`).** The shoal globes are see-through glass, fainter until you point at one, with their
   names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
-  globe. Every globe casts a soft shadow on the floor below it, all from the one light that shades them. Drilled into
-  one shoal, depth mode looks down into a bowl from above and from the side, with you floating above its middle toward
-  the opening, nearest and largest, its bottom below and beside you, and a dashed plumb line from you down to the
-  bottom: the opening has a lit lip, the near wall's outside shows as a thin crescent under it, the wall under the
-  upper-left lip is in shade while the lower-right wall is lit, and rings round the bottom darken toward it. You are a
-  small glass ball, lit from the upper left like the globes, and your soft shadow falls on the wall just behind you,
-  down and to the right, so you read as floating in front of it. The hosts' colored regions share the whole inside of
-  the bowl, each host's roles sit on its region behind you, and the arrows from you to them taper as they go: wide and
-  bright at you, thin and dimmer at the far wall, with smaller heads there, so they run away from you into the bowl.
+  globe. The canvas behind them is a lighter slate than the flat view's, so shadows read on it. One light, a lamp high
+  over the scene, up and to the left at the opening views, lights every globe and casts every shadow: each globe's,
+  yours (you float highest, so yours lands furthest, down and to the right of the foot of your stem) and each arrow's,
+  on the floor below, where the light's ray through it meets the floor. The lamp stays put as you orbit, so the lit
+  sides and the shadows turn with the scene. Drilled into one shoal, depth mode looks down into a bowl from above and
+  from the side, with you floating above its middle toward the opening, nearest and largest, its bottom below and beside
+  you, and a dashed plumb line from you down to the bottom: the opening has a lit lip, the near wall's outside shows as a
+  thin crescent under it, and the far wall rises a little past the rim of a hemisphere, so you see more of the back.
+  The bowl has its own lamp, fixed to the bowl just above the camera at the opening view: the wall under the lip on its
+  side is in shade, the wall it faces is lit, and the inside darkens smoothly toward the bottom (no rings of shading;
+  four faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow and
+  each arrow's small shadow fall on the wall where its rays put them, so the arrows from you start at your shadow and
+  you read as floating in front of the wall. The hosts' regions share the whole inside of the bowl in clearly
+  different colors (azure, then amber, green, rose and on), each host's roles sit on its region behind you, and the
+  arrows, light cores over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far
+  wall, with smaller heads there, so they run away from you into the bowl. A role that needs you or asks you pulses in
+  depth as in flat (breathing at `full`, blinking at `balanced`, still at `low` and `off`).
   - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). The bowl opens low and well round to the
     side (10 degrees tilt, -40 turn), with you floating out in front of its opening. Up and down raise and lower the
     camera (-14 to 64 degrees), and left and right take it round the bowl's side (-72 to 72 degrees), together never

@@ -420,6 +420,11 @@ def cmd_next(a) -> int:
         elif w is not None and w["by"] != slug:
             out.append(f"TAKEN {it}: claimed by {w['by']} {w['ts']}"
                        + (" (you lost the race on your ACTIVE item: release kind=lost-race)" if it == active else " (drop it)"))
+    try:  # an umbrella's rows and who holds each; open PRs that already close what you hold or intend
+        import umbrella
+        out += umbrella.next_lines(spec, view, slug, active, nxt)
+    except Exception:  # noqa: BLE001 - an umbrella note never breaks `next`
+        pass
     held = view.held_unscheduled(slug) if q else [
         fmt_item(c) for c in view.active(slug) if item_key(c["item"]) != item_key(active)]
     if held:
@@ -817,6 +822,12 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     for c in claims:
         key, verb = split_item(c)
         led.append(slug, "claim", _commit=False, item=key, verb=verb, src="queue", session=sess)
+    try:  # a row claimed under another lane's active umbrella: that lane is told the row is not theirs to build
+        import umbrella
+        for to, text in umbrella.claim_mail(spec, view, slug, claims):
+            led.append(slug, "msg", _commit=False, to=to, kind="info", text=text)
+    except Exception:  # noqa: BLE001 - an umbrella note never fails a queue write
+        pass
     for p in passes:
         led.append(slug, "release", _commit=False, item=item_key(p["item"]), kind="decline", cls=p["cls"],
                    suggest=p["suggest"] or None, reason=p["note"] or p["cls"])
@@ -850,6 +861,14 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                 lost.append(item_key(c))
     print(plan + f" [{qev['id']}]" + ("" if pushed else " (push pending: `shoal sync`)")
           + (f" CLAIM-LOST {lost}: re-run `next` and repick" if lost else ""))
+    if active:
+        try:
+            import umbrella
+            for line in umbrella.next_lines(spec, view, slug, active, []):
+                if line.startswith("UMBRELLA "):
+                    print(line)
+        except Exception:  # noqa: BLE001
+            pass
     if role_status == "active":
         print("note: status ACTIVE means you keep working in this turn. The LAST write of every turn is a sleep "
               "status: `queue --wait <sub> --holder .. --target ..` (arm the waiter first) or `queue --idle`, or "
