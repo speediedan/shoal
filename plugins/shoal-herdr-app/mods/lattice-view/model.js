@@ -114,8 +114,11 @@ export const LEGEND_GROUPS = [
   { id: "off", label: "OFF", keys: ["held", "excluded"] },
 ];
 
-/** Per-host palette for host tags, bands and tethers (distinct from state hues). */
-export const HOST_COLORS = ["#9ad1ff", "#f2a7c6", "#b7e08a", "#e6c08f", "#c3a6ff", "#8fe0d2", "#f0e68c"];
+/** Per-host palette for host tags, bands, lunes and tethers: seven hues evenly round the wheel at one lightness and a
+ * moderate chroma (OKLCH 0.8 and 0.13), every pair at least 30 apart in Lab (CIE76), the first two (most groups run on
+ * one or two hosts) opposite each other, azure and amber (2026-11-13: the old pastels read alike as washes in the bowl).
+ * Light enough for labels on the dark canvas. */
+export const HOST_COLORS = ["#70c6ff", "#f7ab5d", "#86d489", "#fc9ac9", "#c4acff", "#2ad7d7", "#cac256"];
 
 // Traffic is one color: an edge's hover card says which kind. What stands apart is what stops work (blocked-on).
 const TRAFFIC = "#7fb6cc";
@@ -306,7 +309,7 @@ export function legendEntries(vm = null, all = false) {
   const hosts = vm ? [...vm.hostColor.entries()].map(([name, color]) => ({ name, color })) : [];
   const extra = [];
   if (!nodes || nodes.some((n) => n.grants?.length)) extra.push(["grant pending", P.olive, "⚑"]);
-  if (!nodes || nodes.some((n) => n.jobHost)) extra.push(["CI or research run on another host", "#9ad1ff", "→"]);
+  if (!nodes || nodes.some((n) => n.jobHost)) extra.push(["CI or research run on another host", HOST_COLORS[0], "→"]);
   return { groups, states, hiddenStates, shapes, edges, hosts: hosts.length > 1 ? hosts : [], extra };
 }
 

@@ -13,8 +13,8 @@
 import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal, SHOAL_CARD, BOARD_CARD } from "./model.js";
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
-  sphereShade, glassColorAt, LIGHT, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
-  BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlPlumb, lipCmds, crescentCmds, rimShade,
+  sphereShade, glassColorAt, LIGHT, lightOf, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
+  BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlCaps, bowlPlumb, lipCmds, crescentCmds, rimShade,
   rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS, bowlSweep, glassBall,
 } from "./sphere.js";
 import {
@@ -23,9 +23,13 @@ import {
 } from "./geom.js";
 
 const P = PALETTE;
+/** The layers of the bowl's shadow on its floor: the bowl stands in front of most of it, so fewer than a globe's. */
+export const BOWL_FLOOR_SHADOW_STEPS = 8;
 const solid = (color) => ({ kind: "solid", color });
-// what a depth-mode surface sits on: the middle of the depth canvas's gradient
-const DEPTH_UNDER = "#1f2c3f";
+// The depth canvas: a slate gradient, brighter than the flat view's near-black (2026-11-13: so the dark shadows of the
+// globes, the bowl, you and the edges read against it), and what a depth-mode surface sits on, its middle.
+export const DEPTH_BG = { from: "#3d4e67", to: "#1f3047" };
+const DEPTH_UNDER = "#2e3f57";
 
 /** A hover id for the pointer on a globe away from its roles, its middle and its name. */
 export const GLOBE = "globe:";
@@ -58,12 +62,29 @@ export function focusedShoals(vm, focus) {
 }
 
 /**
- * Depth mode: an edge over a globe or the bowl gets a dark casing under its core (a map road's), and its core a
- * little more alpha, so a pale surface never swallows it. Faded edges (another node hovered) keep a faint one.
+ * Depth mode: an edge over a globe or the bowl gets a dark casing under its core (a map road's), its core a little more
+ * alpha and a lighter ink (its color toward white by EDGE_INK.lift), so it stands out against a pale surface and a dark
+ * one alike (2026-11-13: the bowl's walls swallowed the plain edges). Faded edges (another node hovered) keep a faint one
+ * and their color. {width, alpha: the casing's; coreAlpha, color: the core's}.
  */
+export const EDGE_INK = { lift: 0.35, casing: 2.8, head: 2.2 };
 export function edgeCasing(bk) {
   const faded = bk.tier === "fade";
-  return { width: bk.core + 2.4, alpha: Math.min(0.55, bk.coreAlpha * 0.6), coreAlpha: faded ? bk.coreAlpha : Math.min(1, bk.coreAlpha * 1.2 + 0.08) };
+  return { width: bk.core + EDGE_INK.casing, alpha: faded ? Math.min(0.55, bk.coreAlpha * 0.6) : Math.min(0.85, 0.4 + bk.coreAlpha * 0.5),
+    coreAlpha: faded ? bk.coreAlpha : Math.min(1, bk.coreAlpha * 1.2 + 0.12), color: faded || !bk.color ? bk.color : mix(bk.color, "#ffffff", EDGE_INK.lift) };
+}
+
+/**
+ * The edges' shadows, cast by the view's one light: on the floor in the global view, on the bowl's inner wall per shoal.
+ * Each end's shadow is where the light's ray through that end meets the surface (depth.js shadowOf); the edge's shadow
+ * is its curve carried there, each point moved as its ends' shadows are, between them. A soft wide stroke under a core
+ * one, and the arrowheads' shadows filled. Fainter on the far floor than on the bowl's wall, just behind the edges.
+ */
+export const EDGE_SHADOW = { floor: { softW: 5, soft: 0.07, coreW: 2, core: 0.14, heads: 0.16 }, bowl: { softW: 4.5, soft: 0.12, coreW: 1.8, core: 0.3, heads: 0.32 } };
+/** An edge's curve c carried by its ends' shadow offsets d0 (at its start) and d1 (at its end), screen px. */
+export function shadowCurve(c, d0, d1) {
+  const at = (p, t) => ({ x: p.x + d0.x + (d1.x - d0.x) * t, y: p.y + d0.y + (d1.y - d0.y) * t });
+  return { p0: at(c.p0, 0), c1: at(c.c1, 1 / 3), c2: at(c.c2, 2 / 3), p3: at(c.p3, 1) };
 }
 
 /** The glyph a marching dot shows at frame j: bright head, a short tail behind it. */
@@ -111,7 +132,7 @@ export function bowlHostAt(fr, bands, nx, ny) {
 export function surfaceUnder(surfaces, x, y) {
   for (let i = surfaces.length - 1; i >= 0; i--) {
     const s = surfaces[i], nx = (x - s.x) / s.r, ny = (y - s.y) / s.r;
-    if (s.kind === "globe" && Math.hypot(nx, ny) <= 1) return glassColorAt(s.tint, nx, ny, { fog: s.fog, focused: s.focused, under: DEPTH_UNDER });
+    if (s.kind === "globe" && Math.hypot(nx, ny) <= 1) return glassColorAt(s.tint, nx, ny, { fog: s.fog, focused: s.focused, under: DEPTH_UNDER, light: s.light });
     if (s.kind === "bowl" && rimNorm(s.frame, { x: nx, y: ny }) <= 1) {
       const b = bowlHostAt(s.frame, s.bands, nx, ny);
       return bowlColorAt(s.frame, nx, ny, b ? b.color ?? PASTELS[(b.index + 2) % PASTELS.length] : null, DEPTH_UNDER);
@@ -188,7 +209,7 @@ export function buildScene(vm, lay, opts) {
 
   // 1. canvas: near-black violet to navy, a cool wash, and a soft bloom behind the hub
   const rect = [["M", 0, 0], ["L", width, 0], ["L", width, height], ["L", 0, height], ["Z"]];
-  items.push({ t: "path", id: "bg", fill: true, cmds: rect, bg: { kind: "linear", angle: 165, from: lay.cam ? "#29364b" : P.bgTop, to: lay.cam ? "#142333" : P.bgBottom } });
+  items.push({ t: "path", id: "bg", fill: true, cmds: rect, bg: { kind: "linear", angle: 165, from: lay.cam ? DEPTH_BG.from : P.bgTop, to: lay.cam ? DEPTH_BG.to : P.bgBottom } });
   items.push({ t: "path", id: "bg-wash", fill: true, cmds: rect, bg: { kind: "linear", angle: 35, from: withAlpha(P.navy, lay.cam ? 0.18 : 0.7), to: withAlpha(P.navy, 0) } });
   const hub = vm.nodes.find((n) => n.kind === "user");
   const bloomAt = hub ? S(posOf(hub.id)) : { x: width / 2, y: height / 2 };
@@ -196,6 +217,18 @@ export function buildScene(vm, lay, opts) {
   [1, 0.72, 0.48, 0.28].forEach((f, i) => {
     items.push({ t: "path", id: `bloom-${i}`, fill: true, cmds: circleCmds(bloomAt.x, bloomAt.y, bloomR * f), bg: solid(withAlpha("#2a2148", 0.05 + i * 0.012)) });
   });
+
+  // the edges' shadows: kept in their place in the paint order (on the floor, or on the bowl's inside, after its shading),
+  // and filled in with the edges themselves (3.)
+  const edgeShadow = {};
+  const edgeShadowsHere = () => {
+    if (!lay.shadowOf || edgeShadow.core) return;
+    const tone = lay.bowl ? EDGE_SHADOW.bowl : EDGE_SHADOW.floor, ink = (a) => solid(withAlpha("#01040a", a));
+    edgeShadow.soft = { t: "path", id: "edge-shadow-soft", fill: false, width: tone.softW, cmds: [], bg: ink(tone.soft) };
+    edgeShadow.core = { t: "path", id: "edge-shadow", fill: false, width: tone.coreW, cmds: [], bg: ink(tone.core) };
+    edgeShadow.heads = { t: "path", id: "edge-shadow-heads", fill: true, cmds: [], bg: ink(tone.heads) };
+    items.push(edgeShadow.soft, edgeShadow.core, edgeShadow.heads);
+  };
 
   // 1b. depth mode: the floor grid, and stems from each plane and lifted node down to it, with their shadows
   if (lay.grid) {
@@ -208,12 +241,12 @@ export function buildScene(vm, lay, opts) {
     if (rim.length) items.push({ t: "path", id: "floor-rim", fill: false, width: 1.2, cmds: rim, bg: solid(withAlpha(P.steel2, 0.2)) });
   }
   // A shadow is where the one light (depth.js castShadow) puts it, a stack of fine alpha layers so its edge is soft;
-  // a globe's or the bowl's gets the full stack, a lifted seat's a short one.
+  // a globe's gets the full stack, the bowl's half of it (the opaque bowl hides most of it), a lifted seat's a short one.
   for (const st of lay.stems ?? []) {
     const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 }), sh = st.shadow;
     if (sh) {
       const c = S(sh), ax = { x: sh.a.x * k, y: sh.a.y * k }, bx = { x: sh.b.x * k, y: sh.b.y * k };
-      shadowLayers(sh.peak, sh.soft, st.id.startsWith("c-") ? SHADOW_STEPS : 4).forEach((l, i) => items.push({
+      shadowLayers(sh.peak, sh.soft, !st.id.startsWith("c-") ? 4 : lay.bowl ? BOWL_FLOOR_SHADOW_STEPS : SHADOW_STEPS).forEach((l, i) => items.push({
         t: "path", id: `shadow-${st.id}-${i}`, fill: true,
         cmds: conjugateEllipseCmds(c.x, c.y, { x: ax.x * l.s, y: ax.y * l.s }, { x: bx.x * l.s, y: bx.y * l.s }),
         bg: solid(withAlpha("#01040a", l.alpha)),
@@ -221,6 +254,7 @@ export function buildScene(vm, lay, opts) {
     }
     items.push({ t: "path", id: `stem-${st.id}`, fill: false, width: 1, dash: [3, 4], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(P.steel2, 0.32)) });
   }
+  if (!lay.bowl) edgeShadowsHere();
 
   // node radii on screen (depth mode: with perspective), wanted by the regions' titles and by the edges' trims
   const nodeR = new Map(vm.nodes.map((n) => [n.id, screenR(n.visual.r, k) * (lay.scaleOf?.get(n.id) ?? 1)]));
@@ -241,23 +275,24 @@ export function buildScene(vm, lay, opts) {
       const fog = c.fog ?? 1;
       if (c.sphere) {
         // glass: much clearer with nothing on it in focus, a little more opaque when the pointer is on it
-        const focused = inFocus.has(c.id), glassFog = 0.72 + 0.28 * fog;
-        const shade = sphereShade(c.id, p.x, p.y, r, c.tint, glassFog, focused);
-        surfaces.push({ kind: "globe", x: p.x, y: p.y, r, tint: c.tint, fog: glassFog, focused });
+        // lit from the way to the one light from this globe (depth.js lightFrom), so its lit side and its shadow agree
+        const focused = inFocus.has(c.id), glassFog = 0.72 + 0.28 * fog, gl = lightOf(c.light ?? LIGHT);
+        const shade = sphereShade(c.id, p.x, p.y, r, c.tint, glassFog, focused, gl);
+        surfaces.push({ kind: "globe", x: p.x, y: p.y, r, tint: c.tint, fog: glassFog, focused, light: gl });
         items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(shade.body) });
         items.push(...shade.paths);
         // Soft glancing reflection, rather than a single sharp white dot.
         // (8 layers, not 12: the same highlight, and room in the render budget for the soft floor shadows)
         for (let i = 0; i < 8; i++) {
           const sr = r * (0.17 - 0.018 * i);
-          items.push({ t: "path", id: `sphere-spec-${c.id}-${i}`, fill: true, cmds: ellipseCmds(p.x + r * LIGHT.x, p.y + r * LIGHT.y, sr, sr * 0.7), bg: solid(withAlpha("#ffffff", (focused ? 0.05 : 0.038) * fog)) });
+          items.push({ t: "path", id: `sphere-spec-${c.id}-${i}`, fill: true, cmds: ellipseCmds(p.x + r * gl.x, p.y + r * gl.y, sr, sr * 0.7), bg: solid(withAlpha("#ffffff", (focused ? 0.05 : 0.038) * fog)) });
         }
         // the far side's grid shows through the glass
         for (const front of [false, true]) {
           const cmds = (c.globeGrid ?? []).filter((g) => g.front === front).flatMap((g) => g.cmds.map(([op, ...xy]) => [op, ...xy.map((v, i) => (i % 2 ? v * k + tf.ty : v * k + tf.tx))]));
           items.push({ t: "path", id: `sphere-grid-${c.id}-${front}`, fill: false, width: front ? 0.9 : 0.6, dash: front ? null : [2, 5], cmds, bg: solid(withAlpha(front ? "#e4edf4" : c.tint, (front ? 0.19 : 0.12) * fog)) });
         }
-        items.push({ t: "path", id: `sphere-limb-${c.id}`, fill: false, width: 1.5, cmds: circleCmds(p.x, p.y, r * 0.993), bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.4 * fog), to: withAlpha("#020814", focused ? 0.7 : 0.5) } });
+        items.push({ t: "path", id: `sphere-limb-${c.id}`, fill: false, width: 1.5, cmds: circleCmds(p.x, p.y, r * 0.993), bg: { kind: "linear", angle: (Math.atan2(-gl.x, gl.y) * 180) / Math.PI, from: withAlpha("#ffffff", 0.4 * fog), to: withAlpha("#020814", focused ? 0.7 : 0.5) } });
         items.push({ t: "path", id: `sphere-rim-${c.id}`, fill: false, width: 0.8, cmds: circleCmds(p.x, p.y, r), bg: solid(withAlpha(c.tint, (focused ? 0.55 : 0.42) * fog)) });
       } else if (c.ry !== undefined) {
         // the slab's thickness: its near edge as a band between the top ellipse's lower half and the same one dropped
@@ -295,37 +330,39 @@ export function buildScene(vm, lay, opts) {
     const o = S(c), R = c.r * k;
     const rc = { x: o.x + R * rim.cx, y: o.y + R * rim.cy }, rimCmds = bowlRimCmds(fr, o.x, o.y, R);
     surfaces.push({ kind: "bowl", x: o.x, y: o.y, r: R, frame: fr, bands: lay.bands });
-    // the inside: a dark base, then light pooling where a hollow faces the light (lower right, opposite a ball's)
-    items.push({ t: "path", id: "bowl-in", fill: true, cmds: rimCmds, bg: solid(withAlpha(BOWL_BASE, BOWL.base)) });
+    // the inside: an opaque base (the bowl hides the floor behind it), then light pooling where the bowl's light falls
+    // brightest (sphere.js bowlSpot), in many faint layers over a smooth sweep, so no band shows
+    items.push({ t: "path", id: "bowl-in", fill: true, cmds: rimCmds, bg: solid(BOWL_BASE) });
     bowlGlow(fr, o.x, o.y, R).forEach((e, i) => items.push({ t: "path", id: `bowl-glow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha(BOWL_LIT, BOWL.glow)) }));
-    // and a smooth sweep of light toward the lit spot over the whole inside, no steps at all
     items.push({ t: "path", id: "bowl-sweep", fill: true, cmds: rimCmds, bg: { kind: "linear", angle: bowlSweep(fr).angle, from: withAlpha(BOWL_LIT, 0), to: withAlpha(BOWL_LIT, BOWL.sweep) } });
     const tintOf = (b) => b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
     for (const b of lay.bands) {
-      // a light wash, so an edge or an arrow over it still reads; the outline carries the host's color
+      // a wash strong enough that two hosts read apart, light enough that an edge or an arrow over it still reads; the
+      // outline carries the host's color
       const tint = tintOf(b), cmds = luneCmds(fr, o.x, o.y, R, b.a0, b.a1);
       items.push({ t: "path", id: `bowl-host-${b.host}`, fill: true, cmds, bg: solid(withAlpha(tint, BOWL.wash)) });
-      items.push({ t: "path", id: `bowl-host-rim-${b.host}`, fill: false, width: 1.2, cmds, bg: solid(withAlpha(tint, BOWL.outline)) });
+      items.push({ t: "path", id: `bowl-host-rim-${b.host}`, fill: false, width: 1.4, cmds, bg: solid(withAlpha(tint, BOWL.outline)) });
     }
-    // depth: each ring of latitude round the bottom bounds a cap a little darker, so the inside recedes to the bottom
-    const rings = bowlRings(fr).map((t) => latitudeCmds(fr, o.x, o.y, R, t));
-    rings.forEach((cmds, i) => items.push({ t: "path", id: `bowl-deep-${i}`, fill: true, cmds, bg: solid(withAlpha(BOWL_SHADE, BOWL.deep)) }));
-    // the lip's shade on the inside: the wall under the lip on the light's side (upper left) is out of the light
+    // depth: many faint caps of latitude round the bottom, nested, so the inside darkens smoothly toward it (no step
+    // shows, sphere.js bowlCaps)
+    bowlCaps(fr).forEach((t, i) => items.push({ t: "path", id: `bowl-deep-${i}`, fill: true, cmds: latitudeCmds(fr, o.x, o.y, R, t), bg: solid(withAlpha(BOWL_SHADE, BOWL.deep)) }));
+    // the lip's shade on the inside: the wall under the lip on the light's side is out of the light
     const shade = rimShade(fr, o.x, o.y, R);
     if (shade) items.push({ t: "path", id: "bowl-shade", fill: true, cmds: shade.cmds, bg: { kind: "linear", angle: shade.angle, from: withAlpha(BOWL_SHADE, BOWL.shade), to: withAlpha(BOWL_SHADE, BOWL.shadeEdge) } });
-    // your shadow on the inside, soft and small, near the bottom just down and right of your foot on the axis, where the
-    // light's line through you (floating up the axis) meets the wall
+    // faint guides: four rings of latitude round the bottom (what shows a hollow) and eight meridians down to it
+    const yaw = lay.cam?.spin ?? lay.cam?.yaw ?? 0;
+    items.push({ t: "path", id: "bowl-rings", fill: false, width: 0.8, bg: solid(withAlpha("#e4edf4", 0.1)), cmds: bowlRings(fr).flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)) });
+    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], bg: solid(withAlpha("#e4edf4", 0.12)),
+      cmds: Array.from({ length: 8 }, (_, i) => meridianCmds(fr, o.x, o.y, R, yaw + (i * Math.PI) / 4)).flat() });
+    // your shadow on the inside, where the bowl's light's ray through you meets the wall, and the edges' shadows (filled
+    // in with the edges, below): on the surface, so over its shading and its guides
     const youAt = lay.bowl.you ?? { x: 0, y: 0, z: 0 };
     if (hub && nodeR.has(hub.id)) {
       bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R, youAt).forEach((e, i) => items.push({
         t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)),
       }));
     }
-    // four rings of latitude round the bottom (what shows a hollow) and eight faint meridians down to it
-    const yaw = lay.cam?.spin ?? lay.cam?.yaw ?? 0;
-    items.push({ t: "path", id: "bowl-rings", fill: false, width: 0.9, bg: solid(withAlpha("#e4edf4", 0.24)), cmds: rings.flat() });
-    items.push({ t: "path", id: "bowl-grid", fill: false, width: 0.7, dash: [2, 5], bg: solid(withAlpha("#e4edf4", 0.14)),
-      cmds: Array.from({ length: 8 }, (_, i) => meridianCmds(fr, o.x, o.y, R, yaw + (i * Math.PI) / 4)).flat() });
+    edgeShadowsHere();
     // the plumb line: from you down the axis to the bottom, where it stands in a small ring, so you read as floating in
     // front of the inside, not drawn on it (your body, drawn last, covers its top)
     if (hub && posOf(hub.id)) {
@@ -454,25 +491,36 @@ export function buildScene(vm, lay, opts) {
     const tapered = bk.dash ? [] : bk.edges.filter(tapers), plain = tapered.length ? bk.edges.filter((e) => !tapered.includes(e)) : bk.edges;
     const cmds = plain.flatMap((e) => curveCmds(curves.get(e.id)));
     const casing = lay.cam ? edgeCasing(bk) : null; // depth mode: a dark casing so the line reads over a surface
-    const coreAlpha = casing ? casing.coreAlpha : bk.coreAlpha;
+    const coreAlpha = casing ? casing.coreAlpha : bk.coreAlpha, ink = casing?.color ?? bk.color;
+    // and its shadow, where the light puts it (not for faded edges, nor an alias's line)
+    if (edgeShadow.core && bk.tier !== "fade" && bk.cls !== "alias") {
+      for (const e of bk.edges) {
+        const a = lay.shadowOf.get(e.src), b = lay.shadowOf.get(e.dst);
+        if (!a || !b) continue;
+        const sc = shadowCurve(curves.get(e.id), { x: a.dx * k, y: a.dy * k }, { x: b.dx * k, y: b.dy * k }), cc = curveCmds(sc);
+        edgeShadow.soft.cmds.push(...cc);
+        edgeShadow.core.cmds.push(...cc);
+        edgeShadow.heads.cmds.push(...headsAt(e, sc, bk.arrow, headScale).flatMap((h) => polygonCmds(h)));
+      }
+    }
     if (cmds.length) {
       if (casing) items.push({ t: "path", id: `ek-${bk.key}`, fill: false, width: casing.width, dash: bk.dash, cmds, bg: solid(withAlpha(P.void, casing.alpha)) });
-      if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
-      items.push({ t: "path", id: `ec-${bk.key}`, fill: false, width: bk.core, dash: bk.dash, cmds, bg: solid(withAlpha(bk.color, coreAlpha)) });
+      if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(ink, bk.glowAlpha)) });
+      items.push({ t: "path", id: `ec-${bk.key}`, fill: false, width: bk.core, dash: bk.dash, cmds, bg: solid(withAlpha(ink, coreAlpha)) });
     }
     for (const e of tapered) {
       const c = curves.get(e.id), t = taperOf(lay.scaleOf?.get(e.src) ?? BOWL_UNIT, lay.scaleOf?.get(e.dst) ?? BOWL_UNIT);
       const angle = (Math.atan2(c.p3.x - c.p0.x, -(c.p3.y - c.p0.y)) * 180) / Math.PI;
       if (casing) items.push({ t: "path", id: `etk-${e.id}`, fill: true, cmds: ribbonCmds(c, bk.core * t.w0 + 2.4, bk.core * t.w1 + 1.6), bg: solid(withAlpha(P.void, casing.alpha)) });
       if (bk.glow > 0) items.push({ t: "path", id: `etg-${e.id}`, fill: true, cmds: ribbonCmds(c, bk.glow * t.w0, bk.glow * t.w1),
-        bg: { kind: "linear", angle, from: withAlpha(bk.color, bk.glowAlpha * t.a0), to: withAlpha(bk.color, bk.glowAlpha * t.a1) } });
+        bg: { kind: "linear", angle, from: withAlpha(ink, bk.glowAlpha * t.a0), to: withAlpha(ink, bk.glowAlpha * t.a1) } });
       items.push({ t: "path", id: `et-${e.id}`, fill: true, cmds: ribbonCmds(c, bk.core * t.w0, bk.core * t.w1),
-        bg: { kind: "linear", angle, from: withAlpha(bk.color, Math.min(1, coreAlpha * t.a0)), to: withAlpha(bk.color, Math.min(1, coreAlpha * t.a1)) } });
+        bg: { kind: "linear", angle, from: withAlpha(ink, Math.min(1, coreAlpha * t.a0)), to: withAlpha(ink, Math.min(1, coreAlpha * t.a1)) } });
     }
     if (bk.cls !== "alias") {
       const heads = bk.edges.flatMap((e) => headsAt(e, curves.get(e.id), bk.arrow, headScale).flatMap((h) => polygonCmds(h)));
-      if (casing) items.push({ t: "path", id: `eak-${bk.key}`, fill: false, width: 1.6, cmds: heads, bg: solid(withAlpha(P.void, casing.alpha)) });
-      items.push({ t: "path", id: `ea-${bk.key}`, fill: true, cmds: heads, bg: solid(withAlpha(bk.color, Math.min(1, coreAlpha + 0.1))) });
+      if (casing) items.push({ t: "path", id: `eak-${bk.key}`, fill: false, width: EDGE_INK.head, cmds: heads, bg: solid(withAlpha(P.void, casing.alpha)) });
+      items.push({ t: "path", id: `ea-${bk.key}`, fill: true, cmds: heads, bg: solid(withAlpha(ink, Math.min(1, coreAlpha + 0.1))) });
     }
   }
 
@@ -558,27 +606,36 @@ export function buildScene(vm, lay, opts) {
     const v = n.visual;
     const p = S(p0);
     const r = nodeR.get(n.id);
-    const dim = dimOf(n.id) * (lay.fogOf?.get(n.id) ?? 1); // depth mode: what is far fades
+    // depth mode: what is far fades (fog); a hover fades what is not near it (dimOf). Only the hover's fading stops a
+    // pulse: fog only makes it fainter (2026-11-13: gated on both, almost no needs-you node pulsed in depth mode)
+    const fog = lay.fogOf?.get(n.id) ?? 1, dim = dimOf(n.id) * fog;
     const op = v.opacity * dim;
     hits.push({ id: n.id, x: p.x, y: p.y, r: Math.max(r, 7) });
     nodeScreen.set(n.id, { x: p.x, y: p.y, r });
+    const hs = v.halo?.scale ?? 2.4;
+    const pulse = pulsing.has(n.id) && dimOf(n.id) === 1;
+    const loopPulse = pulse && policy.pulseMode === "loop";
     if (lay.bowl && n.kind === "user") {
-      // in the bowl you are a small glass ball in front of the inside (sphere.js glassBall), not a ring with a halo
-      items.push(...glassBall(n.id, p.x, p.y, r, v.color, op));
+      // in the bowl you are a small glass ball in front of the inside (sphere.js glassBall), lit from the bowl's light, not a
+      // ring; your halo still breathes behind it where the flat view's would
+      if (v.halo && loopPulse) {
+        const hr = r * hs;
+        items.push({ t: "box", id: `halo-${n.id}`, x: p.x - hr, y: p.y - hr, w: hr * 2, h: hr * 2, radius: hr, bg: withAlpha(v.color, 0.16), opacity: v.halo.to * dim,
+          loops: [{ prop: "opacity", from: v.halo.from * fog, to: v.halo.to * fog, period: v.halo.period, easing: "ease-in-out" }] });
+        animated++;
+      }
+      items.push(...glassBall(n.id, p.x, p.y, r, v.color, op, lay.bowl.youLight ?? LIGHT));
       grow(p.x - r - 2, p.y - r - 2, p.x + r + 2, p.y + r + 2);
       continue;
     }
-    const hs = v.halo?.scale ?? 2.4;
     const outer = v.halo ? r * hs : v.ring ? r + 7 : r + 2;
     grow(p.x - outer, p.y - outer, p.x + outer, p.y + outer);
-    const pulse = pulsing.has(n.id) && dim === 1;
-    const loopPulse = pulse && policy.pulseMode === "loop";
     if (v.halo) {
       const hr = r * hs;
       items.push({
         t: "box", id: `halo-${n.id}`, x: p.x - hr, y: p.y - hr, w: hr * 2, h: hr * 2, radius: hr,
         bg: withAlpha(v.color, 0.16), opacity: loopPulse ? v.halo.to * dim : (v.needsYou ? 0.55 : 0.32) * dim,
-        loops: loopPulse ? [{ prop: "opacity", from: v.halo.from, to: v.halo.to, period: v.halo.period, easing: "ease-in-out" }] : [],
+        loops: loopPulse ? [{ prop: "opacity", from: v.halo.from * fog, to: v.halo.to * fog, period: v.halo.period, easing: "ease-in-out" }] : [],
       });
       if (loopPulse) animated++;
       const ir = r * (1 + (hs - 1) * 0.45);
@@ -589,20 +646,23 @@ export function buildScene(vm, lay, opts) {
       items.push({
         t: "box", id: `ring-${n.id}`, x: p.x - rr, y: p.y - rr, w: rr * 2, h: rr * 2, radius: rr,
         border: { w: 1.5, color: withAlpha(v.color, 0.95) }, opacity: loopPulse ? dim : 0.85 * dim,
-        loops: loopPulse ? [{ prop: "opacity", from: 0.15, to: 1, period: v.ring.period, easing: "ease-in-out" }] : [],
+        loops: loopPulse ? [{ prop: "opacity", from: 0.15 * fog, to: fog, period: v.ring.period, easing: "ease-in-out" }] : [],
       });
     }
     if (pulse && policy.pulseMode === "frames") {
       // a stepped pulse: an outer ring glyph that blinks on the policy's shared frame interval
       const gs = 2 * (r + 11);
-      items.push({ t: "text", id: `pulse-${n.id}`, x: p.x - gs / 2, y: p.y - gs / 2, w: gs, h: gs, text: PULSE_GLYPH, size: gs * 0.92, color: withAlpha(v.color, v.needsYou ? 0.9 : 0.5), align: "center", frames: { list: pulseFrames(v.needsYou ? "needs" : "work"), ms: policy.frameMs } });
+      items.push({ t: "text", id: `pulse-${n.id}`, x: p.x - gs / 2, y: p.y - gs / 2, w: gs, h: gs, text: PULSE_GLYPH, size: gs * 0.92, color: withAlpha(v.color, (v.needsYou ? 0.9 : 0.5) * fog), align: "center", frames: { list: pulseFrames(v.needsYou ? "needs" : "work"), ms: policy.frameMs } });
       animated++;
     }
     const bodyColor = v.fill > 0 ? withAlpha(v.color, v.fill * op) : withAlpha(P.void, 0.6 * op);
     const surface = lay.surfaceOf?.get(n.id);
     if (surface?.facing > 0.18) {
+      // a role's contact shadow on its surface, offset away from the light (the way its shadow falls, depth.js shadowOf)
+      const sh = lay.shadowOf?.get(n.id), sl = sh ? Math.hypot(sh.dx, sh.dy) : 0;
+      const [ux, uy] = sl > 1e-6 ? [sh.dx / sl, sh.dy / sl] : [0.57, 0.82];
       for (let i = 3; i >= 1; i--) items.push({ t: "path", id: `contact-${n.id}-${i}`, fill: true,
-        cmds: ellipseCmds(p.x + r * 0.45, p.y + r * 0.65, r * (1 + i * 0.15), r * (0.7 + i * 0.1)),
+        cmds: ellipseCmds(p.x + r * 0.7 * ux, p.y + r * 0.7 * uy, r * (1 + i * 0.15), r * (0.7 + i * 0.1)),
         bg: solid(withAlpha("#01040a", 0.13 * dim)) });
     }
     if (v.shape === "circle") {
@@ -762,6 +822,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
+  for (const it of [edgeShadow.soft, edgeShadow.core, edgeShadow.heads]) if (it && !it.cmds.length) items.splice(items.indexOf(it), 1);
   return { items, hits, satHits, edgeHits, discs, nodeScreen, satScreen, edgeScreen, animated, extent };
 }
 
@@ -777,7 +838,8 @@ function worldBounds(lay) {
     pts.push({ x: b.cx - R, y: b.cy, r: 0 }, { x: b.cx + R, y: b.cy, r: 0 }, { x: b.cx, y: b.cy - R * (b.ry ?? 1), r: 0 }, { x: b.cx, y: b.cy + R * (b.ry ?? 1), r: 0 });
   }
   // and the middle of each shadow, so a shadow cast aside stays in view (its soft edge may run off, as the grid does)
-  for (const st of lay.stems ?? []) pts.push({ x: st.x1, y: st.y1, r: 0 }, ...(st.shadow ? [{ x: st.shadow.x, y: st.shadow.y, r: 0 }] : []));
+  // (the bowl's lies behind it, on its own floor)
+  for (const st of lay.stems ?? []) pts.push({ x: st.x1, y: st.y1, r: 0 }, ...(st.shadow && !lay.bowl ? [{ x: st.shadow.x, y: st.shadow.y, r: 0 }] : []));
   return boundsOf(pts);
 }
 

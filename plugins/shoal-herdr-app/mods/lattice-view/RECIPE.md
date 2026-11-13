@@ -56,11 +56,14 @@ you, per-shoal throughput and per-host load.
 - **Depth:** `d` cycles the camera: flat, tilt (52 degrees) and iso (an isometric turn), seen in perspective. In the
   global view each shoal is on its own plane, stacked in depth, the operator and outside seats on a plane above, so
   traffic between planes visibly crosses them. A floor grid lies below every globe,
-  its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. Every
-  globe and lifted node casts a shadow on the floor from the one light that shades the globes (upper left, toward
-  you): the line from the light through its middle meets the floor at the shadow's middle, so every shadow falls the
-  same way, further the higher its caster; it is a stack of 16 fine alpha layers (4 for a seat), a dark core and a soft
-  penumbra that widens as the caster rises. Far things are smaller and fade, near ones larger and drawn last. In the
+  its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. The canvas
+  is a lighter slate in depth, so the shadows read. One light, a point high over the scene (`depth.js` `lightPoint`, up,
+  to the left and a little toward the far side, fixed in the world so it stays put as the camera orbits), shades each
+  globe from the way to it from that globe and casts every shadow: each globe and lifted node's on the floor, where the
+  ray from the light through its middle meets the floor (`castShadow`), so the shadows fall down and to the right of
+  their casters at the presets, further the higher the caster (yours furthest); it is a stack of 16 fine alpha layers
+  (4 for a seat), a dark core and a soft penumbra that widens as the caster rises. Each edge casts a faint shadow there
+  too: its ends' shadows are the rays' through them, and its curve is carried between them, arrowheads included. Far things are smaller and fade, near ones larger and drawn last. In the
   global view each shoal is a
   glass sphere: 48 directional light contours, each adding a little alpha, so the shadow side is nearly clear (5
   percent) and the lit side a tinted veil (27 percent), the floor and the far side's grid showing through; with the
@@ -68,8 +71,8 @@ you, per-shoal throughput and per-host load.
   and 56 percent). Its name is 14 px, 12 px clear above the globe and any role on its top, the needs-you count
   between. A soft highlight and curved surface grid lines finish it. Front roles cast contact shadows. A label
   on a globe takes white or near-black ink, whichever reads better (WCAG contrast) against the glass under it as
-  drawn; a needs-you label keeps its hue. In depth, every edge has a dark casing under its core and a little more core
-  alpha, so it reads over a pale surface. Where a role sits on its globe says how much it matters now: the initial point facing you holds what needs you most
+  drawn; a needs-you label keeps its hue. In depth, every edge has a dark casing under its core, and its core a little
+  more alpha and a lighter ink (its color toward white), so it reads over a pale surface and a dark one. Where a role sits on its globe says how much it matters now: the initial point facing you holds what needs you most
   (auth, then a question, a prompt, a design call, an empty queue, a stalled session), then the roles spiral back by what
   they are doing (a turn, their own job, a hand-over, waiting on others, idle with work queued, idle), then by how fresh
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
@@ -84,26 +87,33 @@ you, per-shoal throughput and per-host load.
   beside you. The arrow keys orbit the camera round the bowl, 8 degrees a press: up and down tip its axis further or
   less down the screen (-14 to 64 degrees), left and right turn it round the screen's vertical (-72 to 72 degrees), the
   two together held to at most 72 degrees off the line of sight (cos tilt cos turn above its floor; a press past a limit
-  goes to it and the rest is dropped), so the bowl never goes edge-on or flips; the inside's lit spot turns with the
-  bowl. You are nearer the camera than the middle (orbited far round the side, leaning further toward it), so from an
-  oblique angle you stand visibly off the wall behind you: you are a small glass ball (about 90 path commands: a clear
-  body graded to a deep limb, twelve faint layers rounding it toward the light, a highlight up and to the left, a
-  crescent of gathered light inside the far limb, a lit rim and a dark hairline), your soft shadow falls on the wall
-  just behind you, down and to the right, from a key light by the camera (so it is plainly yours and shows how far in
-  front you float), and a dashed plumb line drops from you down the axis to a small ring at the bottom. An edge from you
+  goes to it and the rest is dropped), so the bowl never goes edge-on or flips. The bowl has one light, a point 4 radii
+  out fixed to the bowl (`sphere.js` `BOWL_LIGHT`), just above the camera at the opening view, so as the camera orbits
+  the light and the shadows turn with the bowl; every shadow in the bowl is the ray from it through the caster, meeting
+  the wall (`bowlCast`). You are nearer the camera than the middle (orbited far round the side, leaning further toward
+  it), so from an oblique angle you stand visibly off the wall behind you: you are a small glass ball (about 90 path
+  commands: a clear body graded to a deep limb, twelve faint layers rounding it toward the light, a highlight toward
+  the light, a crescent of gathered light inside the far limb, a lit rim and a dark hairline; at `full` your halo
+  breathes behind it), your soft shadow falls on the wall where the light's ray through you meets it (below you at the
+  opening view, further off as the camera orbits round, and not drawn where it would land outside the opening), each
+  edge's small shadow runs from its ends' shadows (yours, and a role's just beside it), and a dashed plumb line drops
+  from you down the axis to a small ring at the bottom. An edge from you
   is a tapered ribbon (five commands), wide and bright at you and thinner and dimmer at the far wall by the two ends'
   perspective, and an arrowhead is sized with the node it is at, so the edge reads as running away, into the bowl. A
   role keeps its place on the surface as the camera orbits (where the preset puts it), moved down the wall only to stay
   in view, clear of you, or clear of a role placed before it. The cut is a slanted
-  plane: the far wall keeps a hemisphere's rim, the near wall is cut lower, to just short of where the camera would
-  see over it, so the near wall's outside shows as a thin crescent under the lip. The wall has a thickness, so the
+  plane: the far wall rises 14 degrees past a hemisphere's rim (so more of the back shows), the near wall is cut lower, to
+  just short of where the camera would see over it, so the near wall's outside shows as a thin crescent under the lip. The wall has a thickness, so the
   opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
-  the inner surface, lit opposite to a ball: the light pools lower right (16 faint layers over a smooth linear sweep,
-  so no band shows) and the wall under the upper-left lip is in its shade. Four rings round the bottom each bound a cap a little darker, so the
-  inside recedes to the bottom, with eight faint meridians (orbited far round the side, a ring the cut would break is
-  left out). The hosts' lunes,
+  the inner surface, opaque (it hides its own floor behind it) and lit as a hollow is: the light pools where it falls
+  brightest (16 faint layers over a smooth linear sweep, so no band shows), the wall under the lip on the light's side
+  is in its shade (the ray past each rim point meets the wall at the shade's edge), and 18 faint caps round the bottom
+  (6 of 255 each) darken it smoothly toward the bottom, so no ring of shading shows. Four faint rings of latitude and
+  eight faint meridians stay as guides (orbited far round the side, a ring the cut would break is left out). The bowl
+  stands over its own floor, square to its axis, and casts its shadow there from the same light. The hosts' lunes,
   pole to rim, tile that whole surface: each over its sector of the flat view widened to the middle of the gaps either
-  side, so together they make a whole turn, washed lightly and outlined in the host color (the home host first, from
+  side, so together they make a whole turn, washed (17 percent) and outlined in the host color, the host colors clearly
+  apart (azure, amber, green, rose, violet, cyan, olive: every pair at least 30 apart in Lab; the home host first, from
   the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
   rows from four roles), each kept inside the rim and at least 0.2 radii behind you; they shrink and fade with their
   depth, and you are drawn nearest and largest (1.25 times flat, times your perspective). Outside seats ring the rim, in the cut's plane,
@@ -150,7 +160,9 @@ you, per-shoal throughput and per-host load.
   a `done` flashes a mint ring.
 - In `balanced` the pulses are a ring glyph stepping on one shared 220 ms interval and dots run
   on the six busiest edges; `low` and `off` draw nothing that moves (edge width and brightness
-  carry the rate), and a data poll redraws only when what is shown changed.
+  carry the rate), and a data poll redraws only when what is shown changed. Every role that needs you
+  or asks you pulses at `full` and `balanced` in flat and depth alike: only a hover's fading stops a
+  pulse, a far node's depth fog makes it fainter (gated on both, almost none pulsed in depth).
 - Hover a node: everything not connected fades, a card shows its state and age, ecosystem, model,
   host, CI job host, grants, done and messages, context size, asks, items with blockers (stale in
   red) and the `shoal view` command. Click pins the card; item lines become links; the command
@@ -237,7 +249,10 @@ you, per-shoal throughput and per-host load.
   commands a globe; each circle's image is an ellipse, so a cubic per quarter turn draws it (about 40), and the global
   depth scene is about 1,620 in the fixture (2,750 before) and 2,000 on a two-shoal live feed (3,130 before). The
   per-shoal scene stays at or under its count before the glass you and the tapered edges (the fixture's first shoal
-  1,085 at the opening view, now about 1,040): the glow gave 168 commands for them.
+  1,085 at the opening view, now about 1,040): the glow gave 168 commands for them. With one light, the fine depth caps
+  and the edges' shadows (2026-11-13) the fixture's bowl is at most about 1,160 and its global scene about 1,720; a
+  live two-host bowl about 1,190 and its global scene about 1,910. The tests hold a bowl to 1,300 and the global scene
+  to 2,400: about 2,800 never failed a native render and 3,500 sometimes did.
 - A shadow on the dark floor cannot show more than about 15 to 20 distinct 8-bit levels, so more
   layers buy nothing; each layer's alpha is solved against the rounded layers outside it, and one
   that rounds to 0 is dropped.
@@ -256,13 +271,16 @@ you, per-shoal throughput and per-host load.
 - You in the bowl read as drawn on its wall whatever the depth math said: a flat ring with a
   two-step halo showed bands and no depth. What separates a thing from a wall behind it is a
   shadow attached to it, offset by how far in front it is: lit from the opening the shadow fell
-  near the bottom, two or three of your widths away, and read as the bowl's, not yours; from a key
-  light by the camera it lands just down and right of you. A filled ribbon tapers smoothly for five
-  commands, where a stroke can only step its width per segment. Where a step is
-  wanted (the depth caps round the bottom), it sits under a ring's stroke, so it reads as the ring.
+  near the bottom, two or three of your widths away, and read as the bowl's, not yours. A key light by
+  the camera for your shadow alone put it just down and right of you, but no other shadow agreed with it
+  (2026-11-13): now one light, a little off the line of sight at the opening view, casts yours and the
+  edges', so the edges from you start at your shadow and say whose it is. A filled ribbon tapers smoothly for five
+  commands, where a stroke can only step its width per segment. Four depth caps of 14 of 255 under the
+  rings still read as topographic rings: 18 caps of 6 of 255 step under three color levels, which no eye
+  sees, and leave the rings as faint guides.
 - A bowl with one bright outline reads as a ball seen from outside. What says opening is a lip
   with two edges, the near wall's outside under it, and shade under the lip on the light's side;
-  what says depth is rings round the bottom. Meridians whose planes pass near the camera
+  what says depth is the inside darkening toward the bottom and shadows that fall on it. Meridians whose planes pass near the camera
   project nearly straight, so they show little curvature on their own.
 - Any `loop` makes the window redraw at about 30 fps; `frames` and `spin` redraw at their own
   interval. The cost is per window frame, not per element: on lavapipe (two threads) a frame of

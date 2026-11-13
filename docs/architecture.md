@@ -1089,6 +1089,40 @@ live feed (1,015 to 1,060 before). The global view is as it was, but each globe'
 crosses the outline): the global depth scene is about 1,620 in the fixture (2,750 before) and 2,000 on a two-shoal
 live feed (3,130 before), under the 2,800 that never failed a native render.
 
+Depth mode now has one physical light per view, a point, and every shadow is the ray from it through its caster (the
+maintainer, 2026-11-13: your shadow in the global view read as misplaced, and the shadows disagreed). In the global view
+it is `depth.js` `lightPoint`: `LIGHT_DIST` (7) scene radii from the middle toward `LIGHT_WORLD` (up, to the left and a
+little toward the far side), fixed in the world, so it stays put as the camera orbits. Each globe is shaded from the
+way to it from its middle as the camera sees it (`lightFrom`; `sphere.js` `sphereShade` and `glassColorAt` take the
+light, `contoursFor` caches the contours per rounded direction), up and to the left at the presets as before.
+`castShadow` puts a shadow where that ray meets the floor (`floorCast`), across the ray by the caster's radius grown
+by how much further the floor is from the light, and along it over the cosine of the incidence. The camera-fixed
+`lightWorld` had made your shadow, the highest caster, fall up and to the right among the globes; it now falls down and
+to the right of your stem's foot. Per shoal the light is fixed to the bowl (`sphere.js` `BOWL_LIGHT`, `bowlLightAt`: 4
+radii out, just above the camera at the opening view), and it replaces the three lights the bowl had
+(`bowlLight` for the inside, `bowlShadowLight` for the lip's shade, `youShadowLight` by the camera for your shadow):
+`bowlCast` finds where its ray through a point leaves the sphere, so your shadow (`ballShadow`, an ellipse in the wall's
+tangent plane) is where the ray through you meets the wall; the lip's shade follows the ray past each rim point (its arc
+ends where each rim point's own way to the light grazes it, so the shade stays inside the rim); the lit spot is where
+the light falls brightest (`bowlLitAt`: the cosine over the squared distance); the glass you is lit from the way to it
+from you. The bowl now stands over its own floor (`bowlFloor`: 1.45 radii below its middle, square to its axis, in its
+frame), its shadow there the ray's through its middle (8 layers: the bowl hides most of it). Edges cast shadows too
+(`scene.js` `EDGE_SHADOW`, `shadowCurve`): each end's shadow is the ray's through it (`projectLayout`'s `shadowOf`,
+on the floor globally, on the inner wall per shoal, a role's end 0.07 radii off the wall, `EDGE_LIFT`), and the edge's
+curve is carried there, a soft stroke under a core one with its arrowheads' shadows; a role's contact shadow is offset
+the same way. The inside's depth caps are 18 at 6 of 255 (`BOWL_DEPTH`, `bowlCaps`, up to just under the rim's lowest
+point), not 4 at 14 under the rings: those steps read as topographic rings. The rings stay as faint guides (10
+percent). The inside's base is opaque (it hides the floor behind it), its sweep and caps stronger, and the far wall
+rises 14 degrees past the equator (`BOWL_FAR_EXTRA`; the near wall's cut is unchanged), so more of the back shows. The
+depth canvas is brighter (`scene.js` `DEPTH_BG`), so the dark shadows read. `model.js` `HOST_COLORS` are seven hues
+round the wheel at one lightness (every pair at least 30 apart in Lab, the first two, azure and amber, 92), and a host's
+wash is 17 percent (from 8): the two lunes at one point are about 12 apart, from about 3.5. In depth an edge's core is
+its color lifted toward white over a darker casing (`EDGE_INK`). Pulses: a node faded by depth fog no longer stops
+pulsing (only a hover's fading does); fog only makes the pulse fainter. Before, almost no needs-you role pulsed in
+depth mode, though the legend promised it; and your halo still breathes behind the glass you at `full`. The live
+two-host bowl takes at most about 1,190 path commands (1,020 before) and the global depth scene about 1,910 (1,750);
+the tests hold them to 1,300 and 2,400.
+
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
 freshness, and warning thresholds. The UI status contract adds `usage`; overview
