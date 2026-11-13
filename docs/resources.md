@@ -25,9 +25,11 @@ python3 resource_usage.py watch --host <host> --directory <output-root> --lease-
 
 With `--prom-out <file>`, `sample` and `watch` also write each sample's GPU and lease projection
 (utilization, VRAM, runtime-suspended state, held reservations and queue lengths, with measured zeros for known idle lease keys) as Prometheus text for a textfile collector;
-a missing measurement gets no series. With `--role-time-spec <spec>` (repeatable) they also refresh
-that shoal's role-time native status cache each sample (architecture doc §9). `install` carries
-both flags into the generated unit.
+a missing measurement gets no series. Each sample also refreshes the role-time native status cache
+(architecture doc §9) of every live group with a foreground role on this host, read from the ledger
+clone each time, so a group added, moved here or retired is followed without touching the unit.
+`--role-time-spec <spec>` (repeatable) adds a spec by path; `--no-role-time-live` keeps only those.
+A copied standalone sampler refreshes none. `install` carries these flags into the generated unit.
 
 `install --enable` reloads systemd, enables the service and restarts it, so a reinstall (new flags, a moved
 checkout) replaces a running sampler instead of leaving the old process in place. The default cadence is 15 seconds. The service is `shoal-resources.service`, shared across groups.

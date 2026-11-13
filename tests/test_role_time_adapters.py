@@ -312,6 +312,41 @@ class V5Inputs(unittest.TestCase):
                 self.assertEqual(ad._probe_claude([role], NOW, SID)["peer"]["state"], "absent")
 
 
+class LiveLocalSpecs(unittest.TestCase):
+    def test_caches_follow_the_live_specs_with_a_role_here(self):
+        """The sampler refreshes every live group with a foreground role on this host: not one only on another host,
+        not a retired one, not a spec that does not load, and a group moved here is followed at the next read."""
+        from unittest import mock
+        import config
+        with tempfile.TemporaryDirectory() as td:
+            here, root = make_world(td)
+            def group(sid, server="", retired=""):
+                path = Path(root) / "shoals" / sid / "shoal.json"
+                ShoalSpec(sid=sid, dir=td, roles=[Role(slug="w", ecosystem="claude", title="w", doc="/x/w.md",
+                                                       fill="self", session="s1", server=server)],
+                          retired_utc=retired).save(str(path))
+                return str(path)
+            away = group("away", server="otherhost")
+            group("retired", retired=iso(NOW))
+            group("background-only")
+            spec = ShoalSpec.load(str(Path(root) / "shoals" / "background-only" / "shoal.json"))
+            spec.roles[0].fill = "none"
+            spec.save(str(Path(root) / "shoals" / "background-only" / "shoal.json"))
+            (Path(root) / "shoals" / "broken").mkdir()
+            (Path(root) / "shoals" / "broken" / "shoal.json").write_text("{not json")
+            with mock.patch.object(config, "server", lambda: "thishost"):
+                self.assertEqual(ad.live_local_specs(str(root)), [str(here)])
+                spec = ShoalSpec.load(away)
+                spec.roles[0].server = "thishost"
+                spec.save(away)
+                self.assertEqual(ad.live_local_specs(str(root)), [away, str(here)])
+                a = types.SimpleNamespace(role_time_spec=[str(here)], no_role_time_live=False)
+                with mock.patch.object(config, "ledger_dir", lambda: str(root)):
+                    self.assertEqual(ru.role_time_specs(a), [str(here), away], "named first, each spec once")
+                    a.no_role_time_live = True
+                    self.assertEqual(ru.role_time_specs(a), [str(here)])
+
+
 class RemoteNativeCaches(unittest.TestCase):
     def test_other_hosts_cache_is_read_over_its_route(self):
         from unittest import mock

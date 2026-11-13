@@ -818,7 +818,7 @@ wakes a role or runs a model turn.
 - **Adapters** (`shoal/role_time_adapters.py`) build those records and stay read-only toward every
   role: no queue write, no wake, no model turn, no live provider call. `shoal role-time
   native-status --spec S` probes the sessions running on the current host and writes a per-host
-  cache (`resources watch --role-time-spec S` refreshes the same cache each sample): Claude through
+  cache (`resources watch` refreshes the same cache each sample for every live group with a role on its host): Claude through
   `health.claude_liveness`, Codex and Muse through their exec lock plus durable-session-file
   activity, opencode through its status line. An attached but idle interactive client is never work:
   quiet reads as between turns, moving or unreadable activity is a raw state the classifier charges
@@ -1563,9 +1563,11 @@ unit file takes effect. See [resource telemetry](resources.md).
 
 `sample` and `watch` also accept `--prom-out FILE`, writing each sample's GPU and lease projection
 (utilization, VRAM, runtime-suspended state, held reservations and queue lengths with measured zeros for known idle keys, sample timestamp) as Prometheus text for a
-textfile collector, and `--role-time-spec SPEC`, refreshing that shoal's role-time native status
-cache each sample on hosts that run sessions (a copied standalone sampler skips it). `install`
-carries both flags into the generated unit.
+textfile collector. Each sample refreshes the role-time native status cache of every live group
+(not retired) with a foreground role on this host, read from the ledger clone each sample, so the
+caches follow the specs; `--role-time-spec SPEC` adds one by path and `--no-role-time-live` keeps
+only those (a copied standalone sampler refreshes none). `install` carries the flags into the
+generated unit.
 
 ## 13. Known limitations
 

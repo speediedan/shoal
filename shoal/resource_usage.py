@@ -477,6 +477,26 @@ def defaults():
             "lease_command": config.lease_cmd() if config else os.environ.get("GPU_LEASE_CMD", "")}
 
 
+def role_time_specs(a):
+    """The specs whose role-time native status cache each sample refreshes: every live group with a foreground role on
+    this host, read from the ledger clone each sample (so the caches follow the specs, with no per-group flag to keep in
+    step), plus any `--role-time-spec`, once each. `--no-role-time-live` keeps only the named ones; a copied standalone
+    sampler has no specs to read and refreshes none."""
+    out = list(getattr(a, "role_time_spec", []) or [])
+    if config is not None and not getattr(a, "no_role_time_live", False):
+        try:
+            import role_time_adapters
+            out += role_time_adapters.live_local_specs()
+        except Exception as exc:  # noqa: BLE001 - telemetry extras never stop the sampler
+            print(json.dumps({"role_time_live_specs_error": str(exc)[:200]}), file=sys.stderr, flush=True)
+    seen, kept = set(), []
+    for path in out:
+        if os.path.realpath(path) not in seen:
+            seen.add(os.path.realpath(path))
+            kept.append(path)
+    return kept
+
+
 def execute(a):
     if a.resource_cmd in ("sample", "watch"):
         while True:
@@ -499,7 +519,7 @@ def execute(a):
                     pool_reserve.expire(s["ts"])
                 except Exception as exc:  # noqa: BLE001 - never stops the sampler
                     print(json.dumps({"reservation_expiry_error": str(exc)[:200]}), file=sys.stderr, flush=True)
-            for spec_path in getattr(a, "role_time_spec", []) or []:
+            for spec_path in role_time_specs(a):
                 # role-time native status rides this loop on hosts that run sessions; a copied
                 # standalone sampler (no shoal package beside it) simply skips it
                 try:
@@ -521,6 +541,8 @@ def execute(a):
             argv += ["--prom-out", a.prom_out]
         for spec_path in getattr(a, "role_time_spec", []) or []:
             argv += ["--role-time-spec", spec_path]
+        if getattr(a, "no_role_time_live", False):
+            argv += ["--no-role-time-live"]
         quote = lambda x: json.dumps(str(x).replace("%", "%%"))
         text = ("[Unit]\nDescription=SHOAL host resource observations\n[Service]\nType=simple\n"
                 + "ExecStart=" + " ".join(quote(x) for x in argv) + "\nRestart=on-failure\nRestartSec=5\n"
@@ -568,7 +590,10 @@ def add_parser(sub):
             q.add_argument("--session-ready", default="", help="harnesses with completed session preflight, comma separated")
             q.add_argument("--prom-out", default="", help="also write the GPU/lease projection as Prometheus text here")
             q.add_argument("--role-time-spec", action="append", default=[],
-                           help="also refresh the role-time native status cache for this spec (repeatable)")
+                           help="also refresh the role-time native status cache for this spec (repeatable); every live "
+                                "group with a role on this host is refreshed without it")
+            q.add_argument("--no-role-time-live", action="store_true",
+                           help="refresh only the --role-time-spec caches, not every live group's with a role here")
         if name in ("sample", "watch"):
             q.add_argument("--retain-days", type=positive, default=RETAIN_DAYS,
                            help="days compressed daily event files are kept")
