@@ -355,7 +355,8 @@ def release_hidden(h: Herdr, dry_run: bool = False, keep: list[str] | None = Non
 UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "usage_providers": "comma-separated subscription providers; empty disables account polling",
                "ecosystems": "comma-separated agent ecosystems in use here (default all: claude,codex,opencode,muse); one set aside "
-                             "drops out of usage, standalone discovery and the actions dialog's providers",
+                             "drops out of usage, standalone discovery and the actions dialog's providers, and handoff and "
+                             "add-role refuse it; --from <UTC> schedules the change (it takes over at that time)",
                "usage_bridge": "JSON object: providers and command argv for an operator-owned quota reader",
                "sidebar_max_width": "sidebar max width: columns, or a share of the window like 50% (laptop launcher)",
                "role_order": "role_order.<shoal> = comma-separated role slugs, first shown first",
@@ -396,6 +397,25 @@ def cmd_set(a) -> int:
         if any(s not in backends.ecosystems() for s in ecos):
             print("ui set: ecosystems are " + ",".join(backends.ecosystems()))
             return 1
+        at = getattr(a, "from_utc", "") or ""
+        if at:
+            try:
+                when = datetime.datetime.fromisoformat(at.replace("Z", "+00:00"))
+                assert when.tzinfo is not None
+            except (ValueError, AssertionError):
+                print("ui set: --from takes a UTC time such as 2026-11-16T00:00:00Z")
+                return 1
+            d["ecosystems_from"] = {"at": when.timestamp(), "utc": when.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                    "value": list(dict.fromkeys(ecos)) if ecos else []}
+            ui_status.save_ui_config(d)
+            print(f"ecosystems = {a.value or '(default: all)'} from {d['ecosystems_from']['utc']}; until then "
+                  f"{','.join(ui_status.active_ecosystems())} ({ui_status.ui_config_path()})")
+            held = ui_status.roles_on(set(backends.ecosystems()) - set(ecos)) if ecos else []
+            if held:
+                print(f"still used by {len(held)} role(s): {', '.join(held)}; hand them off before then, or their usage "
+                      "stays shown and their next turns spend a subscription that has ended")
+            return 0
+        d.pop("ecosystems_from", None)  # a plain setting replaces a scheduled one
         if ecos:
             d[key] = list(dict.fromkeys(ecos))
             # a role still running on one set aside keeps spending it: say so, and its meter stays (usage_providers)

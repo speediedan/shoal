@@ -82,6 +82,24 @@ class UsageTests(unittest.TestCase):
         self.assertNotIn("0%", u.render_table(doc))
         self.assertEqual(u.severity(doc["accounts"][0], rows[0]), "ok")
 
+    def test_idle_muse_reading_keeps_the_week_it_last_read_until_the_week_resets(self):
+        # a week at 79% read 0% once Muse omitted its usage block at the start of a new short window
+        now = time.time()
+        week_end = now + 86400
+        used = {"is_subs_active": True, "subs_tier_name": "Power", "subs_usage": {
+            "window": {"used_percent": 0, "resets_at": now + 3600, "window_duration_mins": 300},
+            "weekly": {"used_percent": 79, "resets_at": week_end}}}
+        u.collect(["muse"], fetcher=lambda _: used, now=now)
+        u.collect(["muse"], force=True, fetcher=lambda _: {"is_subs_active": True, "subs_tier_name": "Power"}, now=now + 60)
+        row = u.snapshot(["muse"], now=now + 120)["accounts"][0]["rows"][0]
+        self.assertTrue(row["idle"])
+        self.assertEqual([(w["name"], w["used_percent"], w.get("carried")) for w in row["windows"]], [("week", 79, True)])
+        self.assertIn("week 79%", u.render_lines(u.snapshot(["muse"], now=now + 120)))
+        # once the week's reset has passed, nothing read since says otherwise: unused, the next reset rolled forward
+        row = u.snapshot(["muse"], now=week_end + 60)["accounts"][0]["rows"][0]
+        self.assertEqual([(w["name"], w["used_percent"], w.get("projected")) for w in row["windows"]], [("week", 0, True)])
+        self.assertGreater(row["windows"][0]["resets_at"], week_end)
+
     def test_status_line_retains_denial_without_a_meter_or_in_another_bucket(self):
         rows = u.normalize("codex", {"ordinaryUsageAllowed": False})
         self.assertEqual("codex: LIMIT", u.summary({"accounts": [{"provider": "codex", "rows": rows}]}))

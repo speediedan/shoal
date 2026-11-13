@@ -1129,8 +1129,8 @@ cycle. The bowl opens turned far round to the side, at -14 degrees tilt and -70 
 `BOWL_HOME_TURN`; the view the maintainer orbited to from the old opening, 10 and -40, matched on the rim's aspect and
 lean and where you and the bottom sit), with room to orbit on past it: the tilt runs -30 to 64, the turn -78 to 78, and
 the two together at most 78 degrees off the line of sight (`BOWL_OFF_AXIS_MAX`). Your lean toward the camera far round
-the side (`bowlSide`) is still whole at 72 degrees (`BOWL_SIDE_FULL`), so the opening view places you as the
-maintainer saw it. The bowl's light stays where it was in the bowl's world (`sphere.js` `BOWL_LIGHT`, placed from the
+the side (`bowlSide`) is still whole at 72 degrees (`sphere.js` `SIDE_FULL`, shared with the cut since 2026-11-13),
+so the opening view places you as the maintainer saw it. The bowl's light stays where it was in the bowl's world (`sphere.js` `BOWL_LIGHT`, placed from the
 old opening view), so the opening view is lit as it was when picked: above and behind the opening, shining in onto the
 bottom, the bowl's shadow on the floor to its right. More of the sphere's back shows: the cut is made 17 degrees past
 the last that keeps no camera-facing point (`CUT_MARGIN`, from 9), so the outer wall shows as a shell beside the
@@ -1156,6 +1156,34 @@ degrees, as SVG's), and the bowl's floor shadow drops the layers its opaque insi
 shadow is four strokes, 7 px down to 1.6, stepping up evenly (`edgeShadowStrokes`). In the fixture the global depth
 scene takes 2,054 path commands (1,724 before) and the bowls at most 1,358 and 967 (1,161 and 830); the tests hold
 them to 2,300 and 1,450, and every scene at the canvas fit and at the fit's largest zoom to 2,800 (`RENDER_CEILING`).
+
+Edge shadows are physical (2026-11-13). Carrying the arrow's screen curve by its ends' shadow offsets (`shadowCurve`,
+removed) made a translated, distorted copy of the arrow, and an edge to you, whose end floats far off the wall, threw a
+shadow that matched no arrow. Now each edge has a path in the world: every point of the curve its arrow is drawn
+along, lifted onto its line of sight at a depth between its two ends' (`projectLayout`'s `shade`: `depthOf` gives each
+end's depth, `lift` the world point, `cast` where the light's ray through it meets the surface, `seen` whether that is
+on the floor's grid or on the inside seen through the opening, `screen` where it is drawn). Per shoal a lifted point
+is held just in front of the inner wall (`sphere.js` `bowlLift`, `BOWL_LIFT_CLEAR`), so no shadow is cast from beyond
+the surface, and a seat on the ring, outside the sphere, has no depth there: its edges leave over the lip, and the part
+near the opening threw long streaks across the inside. `scene.js` `castCurve` probes the arrow for the runs whose
+shadow is seen (each end found by bisection; behind the near wall, outside the opening or off the floor it is clipped)
+and fits each with cubics through cast points, matching the cast curve's direction at each knot and split until within
+`EDGE_SHADOW_TOL` (1 px) of it, so a short or nearly straight shadow is one cubic and the four strokes still share one
+list of commands; an arrowhead's shadow is its corners cast from its end's depth (`castHead`). The scene returns what it
+cast (`edgeShadows`: each knot's path point, shadow and screen point). Every shadow now paints before every edge and
+node: a role's contact shadow is drawn with the other shadows, after the bowl's inside, not with its role far to near
+(a nearer role's lay over the roles behind it), and a node a shadow reaches (`shadowReaches`) stands on an opaque disc
+of the surface's own color there (`under-`, a box: no path commands), so a faint body, a parked role's 22 percent veil,
+no longer shows its contact shadow through it as if the shadow lay over it. The bowl shows more of its outside from the
+side: the cut is made up to 26 degrees past the last that keeps no camera-facing point (`CUT_MARGIN_MAX`), 17 seen from
+in front (`CUT_MARGIN_FRONT`), easing up with how far round the side the view is (`sideOf`, the 55 to 72 degree ease of
+`bowlSide`), and held at each view so the bottom stays at most 0.84 of the way out to the rim (`BOWL_POLE_SEEN`, the
+frame's `cutMargin`: 24.8 degrees at the opening view, 18.4 at the furthest orbit); the far wall rises 29 degrees past
+the equator (from 22). The taller near wall hides most of a lune on the camera's side, so a role not clear of you or of
+the roles placed before it is moved along its meridian, down or up, to the nearest clear place, and at the preset's
+view, if none is, to the clear place on its lune nearest where it was wanted (`LUNE_SEARCH`); orbiting keeps its
+azimuth. In the fixture the global depth scene's worst case at the canvas fit and 1.6x zoom is 2,284 path commands
+(2,278 before) and the bowls 1,428 and 1,005 (1,365 and 969).
 
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
@@ -1198,7 +1226,11 @@ Not every provider returns every window. Missing monthly meters are marked as
 not reported, authentication failures are visible, and a Muse response with an active
 subscription but no usage block is the server reporting no use in the current windows (the Muse
 CLI's own `server_sent_no_usage`), shown as unused since reset: never a fabricated zero, and not a
-read failure, so polling does not back off. A malformed usage block stays an error. CLI account APIs
+read failure, so polling does not back off. Its week keeps the use last read in it until the week's own reset passes
+(`known_resets` records each fixed window's last percent; `projected` carries it), since an idle reading speaks only
+for the new short window. The ecosystems in use on a host (`ui set ecosystems`, `ui_status.active_ecosystems`, with
+a scheduled `ecosystems_from` taking over at its time) bound usage, standalone discovery, the actions dialog's
+providers and the CLI's `handoff` and `add-role` (`ui_status.ecosystem_refusal`). A malformed usage block stays an error. CLI account APIs
 and local credential layouts are version-sensitive; hermetic fixtures exercise
 their boundaries and live read-only verification establishes actual coverage.
 OpenCode Go's current `percent` wire field maps to the same internal percentage

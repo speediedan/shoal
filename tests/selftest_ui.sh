@@ -2576,7 +2576,7 @@ T0 = time.time() - 3 * 604800 - 3600  # the last reading saw a weekly reset thre
 seen = [{"bucket": "muse", "windows": [{"name": "5h", "used_percent": 40, "resets_at": T0 - 100, "minutes": 300},
                                        {"name": "week", "used_percent": 12, "resets_at": T0, "minutes": 10080}]}]
 k = su.known_resets({}, seen)
-assert k == {"muse/week": {"resets_at": T0, "minutes": 10080}}, "a 5h window starts at first use: only the week"
+assert k == {"muse/week": {"resets_at": T0, "minutes": 10080, "used_percent": 12}}, "a 5h window starts at first use: only the week"
 assert su.known_resets({"known_resets": k}, [{"bucket": "muse", "windows": [], "idle": True}]) == k, "an idle reading keeps it"
 row = {"rows": [{"bucket": "muse", "windows": [], "idle": True}], "known_resets": k}
 now = time.time()
@@ -2602,6 +2602,21 @@ try:
     raise SystemExit("a provider set aside was accepted")
 except ui_actions.ActError as exc:
     assert "in use here" in str(exc), exc
+# a change scheduled with --from takes over at its time (a subscription ending at its quota reset), with nothing to run
+ui_status.save_ui_config({"ecosystems_from": {"at": now + 3600, "value": ["claude", "codex", "opencode"]}})
+assert "muse" in ui_status.active_ecosystems(now) and "muse" not in ui_status.active_ecosystems(now + 3601)
+assert ui_status.ecosystem_refusal("muse") == "" and ui_status.ecosystem_refusal("") == ""
+ui_status.save_ui_config({"ecosystems": ["claude", "codex", "opencode"]})
+assert "set aside on this host" in ui_status.ecosystem_refusal("muse") and ui_status.ecosystem_refusal("codex") == ""
+import park
+assert "set aside" in park._ecosystem_refusal("muse"), "handoff and add-role refuse one set aside"
+import ui_herdr
+assert ui_herdr.cmd_set(types.SimpleNamespace(key="ecosystems", value="claude,codex,opencode", from_utc="2026-11-16T00:00:00Z")) == 0
+d = ui_status.ui_config()
+assert d["ecosystems_from"]["utc"] == "2026-11-16T00:00:00Z" and d["ecosystems"] == ["claude", "codex", "opencode"], d
+assert ui_herdr.cmd_set(types.SimpleNamespace(key="ecosystems", value="claude,codex,opencode,muse", from_utc="")) == 0
+assert "ecosystems_from" not in ui_status.ui_config(), "a plain setting replaces a scheduled one"
+assert ui_herdr.cmd_set(types.SimpleNamespace(key="ecosystems", value="claude", from_utc="tomorrow")) == 1
 PY2
 # the replay: the last day's tail events in ts order, numbered on their own, the live cursor untouched
 python3 - "$SHOALD" <<'PY2' || fail "the graph replay"

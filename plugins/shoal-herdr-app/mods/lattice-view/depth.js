@@ -7,7 +7,7 @@
 // globe, lifted seat and edge (all cast by the one light, a point above the scene that also shades the globes), and fog
 // on what is far.
 
-import { BOWL_DIST, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing, bowlCast, bowlKept, bowlSeen, bowlFloor, bowlLightDir } from "./sphere.js";
+import { BOWL_DIST, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing, bowlCast, bowlKept, bowlSeen, bowlFloor, bowlLightDir, bowlLightAt, bowlLift, sideOf } from "./sphere.js";
 
 const DEG = Math.PI / 180;
 
@@ -197,6 +197,15 @@ export function project(cam, p, z = 0) {
   return { x: cam.o.x + xr * f, y: cam.o.y + sy * f, depth, f };
 }
 
+/** The inverse of project at a known depth: the plane point and height (as project took them) that `cam` sees at the
+ * layout point s, `depth` along its line of sight. */
+export function unproject(cam, s, depth) {
+  const f = cam.d > 0 ? Math.min(SCALE_MAX, Math.max(SCALE_MIN, cam.d / Math.max(cam.d * 0.2, cam.d - depth))) : 1;
+  const xr = (s.x - cam.o.x) / f, sy = (s.y - cam.o.y) / f;
+  const yr = sy * cam.c + depth * cam.s, z = depth * cam.c - sy * cam.s;
+  return { x: cam.o.x + xr * cam.cyaw + yr * cam.syaw, y: cam.o.y - xr * cam.syaw + yr * cam.cyaw, z };
+}
+
 /**
  * Each node's plane height and the planes themselves, far to near: {zOf: Map id -> z, planes: [{id, z, kind}]}. Global:
  * one plane per shoal, in the layout's cluster order; per shoal: one per host band. The operator and outside seats go on
@@ -358,8 +367,19 @@ export function projectLayout(vm, lay, cam0) {
     const w = placed.get(id), g = floorCast(Lp, w ?? { x: p.x, y: p.y, z: z(id) }, floorZ), sp = P(g, floorZ), at = pos.get(id);
     shadowOf.set(id, { x: sp.x, y: sp.y, dx: sp.x - at.x, dy: sp.y - at.y });
   }
+  // what an edge's shadow is cast with (scene.js castCurve): each end's depth along its line of sight, the point of
+  // the world seen at a layout point at a depth (the edge's 3D path is its curve on screen, lifted between its ends'
+  // depths), where the light's ray through it meets the floor, whether the floor is there, and where that is on screen
+  const floorR = radius * 1.15;
+  const shade = {
+    surface: "floor", light: Lp, floorZ, depthOf: depth,
+    lift: (s, dd) => { const q = unproject(cam, s, dd); return { x: q.x, y: q.y, z: q.z + mid }; },
+    cast: (X) => (X.z > floorZ && X.z < Lp.z ? { ...floorCast(Lp, X, floorZ), z: floorZ } : null),
+    seen: (W) => Math.abs(W.x - o.x) <= floorR && Math.abs(W.y - o.y) <= floorR,
+    screen: (W) => { const q = P(W, W.z); return { x: q.x, y: q.y }; },
+  };
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, shadowOf };
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, shadowOf, shade };
 }
 
 /**
@@ -423,6 +443,8 @@ export const YOU_LIFT = 0.5;
 export const YOU_GAIN = 1.2;
 const YOU_CLEAR = 0.06; // a role is moved down the wall until it is this far clear of you on screen, in sphere radii
 const ROLE_CLEAR = 0.07; // and this far clear of every role placed before it
+const MERIDIAN_SEARCH = 20; // and if moving it down does not clear it, this many places up and down its meridian
+const LUNE_SEARCH = 24; // and if none of those does, in the preset's view, this many meridians of its lune
 const BOWL_EXT = 1.32; // where outside seats ring the rim, in sphere radii
 const BOWL_GAIN = 1.25; // sizes in the bowl: this much larger than flat, times the perspective scale where they are
 const BOWL_BEHIND = 0.2; // how far behind you, along the line of sight, a role on the inside sits at least
@@ -442,18 +464,13 @@ export const bowlTurn = (cam) => bowlAngles(cam.orbit).beta;
  * the opening and the line toward the camera (YOU_TOWARD of the latter to one of the former). Straight up the axis, a
  * camera far round the side saw you over the near wall, just in front of it; leaning toward the camera, the wall behind
  * you stays the far one at every orbit, and you still sit off the axis, so the plumb line to the bottom shows how far
- * out you float. Orbited far round the side (the axis more than 55 degrees off the line of sight, up to BOWL_SIDE_FULL),
+ * out you float. Orbited far round the side (the axis more than 55 degrees off the line of sight, up to 72: bowlSide),
  * you lean further toward the camera (to 3.5 to 1), so you stay over the opening, not over its rim. */
 const YOU_TOWARD = 2, YOU_TOWARD_SIDE = 3.5;
-/** Where the lean toward the side is whole: 72 degrees off the line of sight (the old combined limit, so the opening
- * view, 70.6 off, places you as the maintainer saw it there), held on to BOWL_OFF_AXIS_MAX. */
-const BOWL_SIDE_FULL = 72 * DEG;
 /** How far round the side a frame is seen: 0 with the axis up to 55 degrees off the line of sight, easing to 1 at
- * BOWL_SIDE_FULL. */
-export function bowlSide(fr) {
-  const off = Math.acos(Math.max(-1, Math.min(1, -fr.pole.z))), t = clampTo((off - 55 * DEG) / (BOWL_SIDE_FULL - 55 * DEG), 0, 1);
-  return t * t * (3 - 2 * t);
-}
+ * 72 (sphere.js SIDE_FULL: the old combined limit, so the opening view, 70.6 off, places you as the maintainer saw it
+ * there), held on to BOWL_OFF_AXIS_MAX (sphere.js sideOf: the cut's outer wall grows with it too). */
+export const bowlSide = (fr) => sideOf(Math.acos(Math.max(-1, Math.min(1, -fr.pole.z))));
 export const bowlYou = (fr) => {
   const toward = YOU_TOWARD + (YOU_TOWARD_SIDE - YOU_TOWARD) * bowlSide(fr);
   const x = -fr.pole.x, y = -fr.pole.y, z = toward - fr.pole.z, l = Math.hypot(x, y, z) || 1;
@@ -511,48 +528,94 @@ function projectBowl(vm, lay, cam0) {
   };
   // where a point's shadow falls on the inner wall (the ray from the bowl's light through it), when it is seen there:
   // {x, y} on screen and {dx, dy} from the point
-  const shadowOf = new Map();
+  const shadowOf = new Map(), liftZ = new Map();
   const castAt = (id, X) => {
+    liftZ.set(id, X.z);
     const w = bowlCast(fr, X);
     if (!bowlKept(fr, w) || bowlSeen(fr, w) > 1) return;
     const s = bowlProject(fr, w), q = bowlProject(fr, X);
     shadowOf.set(id, { x: Rs * s.x, y: Rs * s.y, dx: Rs * (s.x - q.x), dy: Rs * (s.y - q.y) });
   };
   // the operator on the axis, lifted toward the opening: nearest the camera of anything in the bowl
-  const you = bowlYou(fr), youS = bowlProject(fr, you);
+  const you = bowlYou(fr);
   const user = vm.nodes.find((n) => n.kind === "user" && lay.pos.has(n.id));
   if (user) { scaleOf.set(user.id, YOU_GAIN * BOWL_GAIN * put(user.id, you)); castAt(user.id, you); }
-  const youR = user ? ((user.visual?.r ?? 0) * scaleOf.get(user.id)) / Rs : 0;
   // roles: on their host's lune, spread across its sector in the flat view's order, at the place the preset gives them
   // (so they stay put on the surface as the camera orbits), moved down toward the bottom if you would hide them
   const TAU = 2 * Math.PI;
   const flatAngle = (id) => { const p = lay.pos.get(id); return p && Math.hypot(p.x, p.y) > 1e-6 ? Math.atan2(p.y, p.x) : -Math.PI / 2; };
   const roles = vm.nodes.filter((n) => n.kind === "role" && lay.pos.has(n.id));
   const home = cam.orbit && (cam.orbit.x || cam.orbit.y) ? bowlFrame(bowlTilt({ name: cam.name }), BOWL_DIST, bowlTurn({ name: cam.name })) : fr;
-  const rolesAt = []; // the roles placed so far, on screen: {x, y, r} in sphere radii
-  for (const b of bands) {
-    const rel = (id) => ((flatAngle(id) + spin - b.s0) % TAU + TAU) % TAU;
-    const mine = roles.filter((n) => (n.host ?? "?") === b.host).sort((x, y) => rel(x.id) - rel(y.id) || (x.id < y.id ? -1 : 1));
-    mine.forEach((n, j) => {
-      const phi = b.s0 + ((b.s1 - b.s0) * (j + 0.5)) / mine.length;
-      let theta = bowlTheta(fr, phi, j, mine.length, home), u = bowlPoint(fr, theta, phi);
-      // its radius on screen there, in sphere radii; clear of you, and of every role placed before it (orbited far round
-      // the side, the far wall's reach narrows and two roles near a lune's edge would meet there)
-      const rAt = (w) => ((n.visual?.r ?? 0) * BOWL_GAIN * fr.d / (fr.d - SIZE_DEPTH * w.z)) / Rs;
-      const clear = (w) => {
-        const s = bowlProject(fr, w), r = rAt(w);
-        return Math.hypot(s.x - youS.x, s.y - youS.y) >= youR + r + YOU_CLEAR && rolesAt.every((q) => Math.hypot(s.x - q.x, s.y - q.y) >= q.r + r + ROLE_CLEAR);
-      };
-      for (let i = 0; i < 14 && theta > 0.05 && !clear(u); i++) {
-        theta *= 0.85;
-        u = bowlPoint(fr, theta, phi);
-      }
-      rolesAt.push({ ...bowlProject(fr, u), r: rAt(u) });
-      castAt(n.id, { x: (1 - EDGE_LIFT) * u.x, y: (1 - EDGE_LIFT) * u.y, z: (1 - EDGE_LIFT) * u.z });
-      scaleOf.set(n.id, BOWL_GAIN * put(n.id, u));
-      fogOf.set(n.id, 0.82 + 0.18 * (1 + u.z));
-      surfaceOf.set(n.id, { shoal: vm.view, host: b.host, facing: -u.z, theta, phi });
-    });
+  // Each role's place, seen from frame f: from the preset's frame (`from` null) across its sector, or where it was
+  // wanted there (`from`: id -> {phi, wanted}), as far up as f sees; moved down its meridian until it is clear of you
+  // and of every role placed before it; if that does not clear it, the clear place nearest where it was wanted, up its
+  // meridian too; and in the preset's frame, if none there is clear, the clear place on its lune, seen inside the rim,
+  // nearest where it was wanted (2026-11-13: with more of the outside shown, the near wall hides most of a lune on the
+  // camera's side, so its roles all came down to the little of it seen near the bottom, and met there). Placed in the
+  // preset's frame first, so a role keeps its place on the surface as the camera orbits (its azimuth kept: only the
+  // preset's frame searches the lune), and moves only along its meridian to stay clear and in view.
+  const place = (f, from) => {
+    const fYou = bowlYou(f), fYouS = bowlProject(f, fYou), fYouR = user ? ((user.visual?.r ?? 0) * YOU_GAIN * BOWL_GAIN * f.d / (f.d - fYou.z)) / Rs : 0;
+    const rolesAt = [], out = new Map(); // the roles placed so far, on screen: {x, y, r} in sphere radii
+    for (const b of bands) {
+      const rel = (id) => ((flatAngle(id) + spin - b.s0) % TAU + TAU) % TAU;
+      const mine = roles.filter((n) => (n.host ?? "?") === b.host).sort((x, y) => rel(x.id) - rel(y.id) || (x.id < y.id ? -1 : 1));
+      mine.forEach((n, j) => {
+        let phi = from?.get(n.id)?.phi ?? b.s0 + ((b.s1 - b.s0) * (j + 0.5)) / mine.length;
+        let theta = from ? Math.min(from.get(n.id).wanted, bowlReach(f, phi, 0.86, bowlBehind(f))) : bowlTheta(f, phi, j, mine.length);
+        let u = bowlPoint(f, theta, phi), wanted = theta;
+        const want = bowlProject(f, u);
+        // its radius on screen there, in sphere radii; clear of you, and of every role placed before it (orbited far round
+        // the side, the far wall's reach narrows and two roles near a lune's edge would meet there)
+        const rAt = (w) => ((n.visual?.r ?? 0) * BOWL_GAIN * f.d / (f.d - SIZE_DEPTH * w.z)) / Rs;
+        // how far clear of you and of every role placed before it a point is, in sphere radii (under 0: they meet)
+        const slack = (w) => {
+          const s = bowlProject(f, w), r = rAt(w);
+          let m = Math.hypot(s.x - fYouS.x, s.y - fYouS.y) - (fYouR + r + YOU_CLEAR);
+          for (const q of rolesAt) m = Math.min(m, Math.hypot(s.x - q.x, s.y - q.y) - (q.r + r + ROLE_CLEAR));
+          return m;
+        };
+        for (let i = 0; i < 14 && theta > 0.05 && slack(u) < 0; i++) {
+          theta *= 0.85;
+          u = bowlPoint(f, theta, phi);
+        }
+        if (slack(u) < 0) {
+          // not clear lower down: the clear place on its meridian nearest where it was wanted, up it too, as far as f sees
+          let best = null;
+          const top = bowlReach(f, phi, 0.86, bowlBehind(f));
+          for (let k = 1; k <= MERIDIAN_SEARCH; k++) {
+            const th = (top * k) / MERIDIAN_SEARCH, w = bowlPoint(f, th, phi), sl = slack(w);
+            if (sl >= 0 ? !best?.ok || Math.abs(th - wanted) < best.key : !best?.ok && (!best || sl > best.sl)) best = { ok: sl >= 0, key: Math.abs(th - wanted), sl, th, w };
+          }
+          // and in the preset's frame, if none there is clear, the clear place on its lune nearest where it was wanted
+          if (!best.ok && !from) {
+            for (let a = 0; a < LUNE_SEARCH; a++) {
+              // (inside the lune, a little clear of its edges, so the lune under the role is its host's)
+              const ph = b.a0 + (b.a1 - b.a0) * (0.04 + (0.92 * (a + 0.5)) / LUNE_SEARCH), reach = bowlReach(f, ph, 0.86, bowlBehind(f));
+              for (let k = 1; k <= 8; k++) {
+                const th = (reach * k) / 8, w = bowlPoint(f, th, ph), q = bowlProject(f, w), dist = Math.hypot(q.x - want.x, q.y - want.y);
+                if (slack(w) >= 0 && (!best.ok || dist < best.dist)) best = { ok: true, dist, th, ph, w };
+              }
+            }
+            if (best.ok) phi = best.ph;
+          }
+          ({ th: theta, w: u } = best);
+          if (best.ph !== undefined) wanted = theta;
+        }
+        rolesAt.push({ ...bowlProject(f, u), r: rAt(u) });
+        out.set(n.id, { phi, theta, u, host: b.host, wanted });
+      });
+    }
+    return out;
+  };
+  const at = place(fr, home === fr ? null : place(home, null));
+  for (const n of roles) {
+    if (!at.has(n.id)) continue;
+    const { u, theta, phi, host } = at.get(n.id);
+    castAt(n.id, { x: (1 - EDGE_LIFT) * u.x, y: (1 - EDGE_LIFT) * u.y, z: (1 - EDGE_LIFT) * u.z });
+    scaleOf.set(n.id, BOWL_GAIN * put(n.id, u));
+    fogOf.set(n.id, 0.82 + 0.18 * (1 + u.z));
+    surfaceOf.set(n.id, { shoal: vm.view, host, facing: -u.z, theta, phi });
   }
   // everything else on a ring round the rim, in its plane
   if (user) fogOf.set(user.id, 1);
@@ -590,8 +653,21 @@ function projectBowl(vm, lay, cam0) {
     stems.push({ id: `c-${c0.id}`, x0: Rs * a.x, y0: Rs * a.y, x1: Rs * b.x, y1: Rs * b.y,
       shadow: sh ? { x: Rs * sh.x, y: Rs * sh.y, a: sc(sh.a), b: sc(sh.b), peak: 0.62, soft: 0.4, h: sh.h, at: sh.at } : null });
   }
+  // what an edge's shadow is cast with (scene.js castCurve), as in the global view: each end's depth (you; a role's
+  // middle, EDGE_LIFT off the wall), the point seen at a layout point at a depth, held inside the sphere (sphere.js
+  // bowlLift), where the light's ray through it leaves the sphere (none from outside it), whether that is on the inside
+  // seen through the opening, and where it is on screen. A seat on the ring has no depth here: its edges leave the bowl
+  // over the lip, and the part of one near the opening cast a long thin streak across the inside that read as no arrow
+  // (its shadow outside falls on the outer wall and the floor, which are not drawn), so they cast none
+  const shade = {
+    surface: "wall", light: bowlLightAt(fr), frame: fr, R: Rs, depthOf: liftZ,
+    lift: (s, z) => bowlLift(fr, { x: s.x / Rs, y: s.y / Rs }, z),
+    cast: (X) => (X.x * X.x + X.y * X.y + X.z * X.z < 1 ? bowlCast(fr, X) : null),
+    seen: (W) => bowlKept(fr, W) && bowlSeen(fr, W) <= 1,
+    screen: (W) => { const q = bowlProject(fr, W); return { x: Rs * q.x, y: Rs * q.y }; },
+  };
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes: [], grid, stems, shadowOf,
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes: [], grid, stems, shadowOf, shade,
     light: null, bowl: { frame: fr, R: Rs, you, youLight: bowlLightDir(fr, you) } };
 }
 

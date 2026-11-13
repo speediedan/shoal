@@ -97,13 +97,31 @@ def ui_config() -> dict:
 USAGE_ECOSYSTEM = {"codex": "codex", "claude": "claude", "muse": "muse", "opencode-go": "opencode"}
 
 
-def active_ecosystems() -> list[str]:
+def active_ecosystems(now: float | None = None) -> list[str]:
     """The agent ecosystems in use on this host (`shoal ui set ecosystems`; default every one shoal knows). One that
-    is set aside drops out of usage, standalone discovery and the actions dialog's providers; its roles keep running."""
+    is set aside drops out of usage, standalone discovery and the actions dialog's providers, and `handoff` and
+    `add-role` refuse it; its roles keep running. A change set with `--from <UTC>` (`ecosystems_from`) takes over once
+    that time has passed, so a subscription that ends at its quota reset is set aside at the reset, with nothing to run
+    then."""
     import backends
+    import time
     known = list(backends.ecosystems())
-    want = ui_config().get("ecosystems")
+    d = ui_config()
+    want = d.get("ecosystems")
+    pending = d.get("ecosystems_from")
+    if isinstance(pending, dict) and isinstance(pending.get("at"), (int, float)) and \
+            (time.time() if now is None else now) >= pending["at"]:
+        want = pending.get("value")
     return [e for e in known if e in want] if isinstance(want, list) and want else known
+
+
+def ecosystem_refusal(ecosystem: str) -> str:
+    """Why a role may not be started on or moved to `ecosystem` on this host ("" when it may)."""
+    on = active_ecosystems()
+    if not ecosystem or ecosystem in on:
+        return ""
+    return (f"{ecosystem} is set aside on this host (`shoal ui set ecosystems`; in use: {', '.join(on)}); "
+            "pick one in use, or add it back to the setting")
 
 
 def roles_on(ecosystems: set[str]) -> list[str]:

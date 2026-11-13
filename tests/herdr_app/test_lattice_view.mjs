@@ -1548,11 +1548,13 @@ test("2026-11-13: the globes', your and the edges' shadows point the same way fr
       const yp = pl.pos.get(user.id);
       assert.ok(ysh.x > yp.x && ysh.y > yp.y, "your shadow: down and right of you");
     }
-    // the scene draws each edge's shadow from its ends' shadows
+    // the scene draws each edge's shadow from its arrow's own points, cast to the floor (in full below), from near its
+    // start's shadow
     const sc = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
-    const es = sc.items.find((it) => it.id === "edge-shadow"), starts = es.cmds.filter((c) => c[0] === "M");
-    const c = sc.edgeHits.find((h) => h.id === e.id).c, d0 = pl.shadowOf.get(e.src);
-    assert.ok(starts.some((m) => Math.hypot(m[1] - (c.p0.x + d0.dx), m[2] - (c.p0.y + d0.dy)) < 1e-6), "an edge's shadow starts at its start's shadow");
+    const es = sc.items.find((it) => it.id === "edge-shadow"), cast = sc.edgeShadows.find((x) => x.id === e.id);
+    const d0 = pl.shadowOf.get(e.src), s0 = cast.samples[0];
+    assert.ok(es.cmds.some((m) => m[0] === "M" && Math.hypot(m[1] - s0.p.x, m[2] - s0.p.y) < 1e-6), "an edge's shadow drawn from its first cast point");
+    assert.ok(s0.t < 1e-9 && Math.hypot(s0.p.x - d0.x, s0.p.y - d0.y) < 3 * (global.byId.get(e.src).visual.r + 3), "which lies by its start's shadow");
     assert.ok(sc.items.indexOf(es) < sc.items.findIndex((it) => it.id.startsWith("sphere-body-")), "on the floor, under the globes");
   }
 });
@@ -1667,17 +1669,19 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
   for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3)]) {
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame;
     // the cut is past where the camera sees over the near wall (a point of the unit sphere faces it when u.z > 1 / d),
-    // by enough that the outer wall shows beside the opening (2026-11-13): most of the inside is seen through the
-    // opening, and what is not is the near wall's upper part, on the camera's side of the middle, under the shell
+    // by enough that the outer wall shows beside the opening (2026-11-13: 26 degrees of it, 17 before): most of the
+    // inside is seen through the opening, and what is not is the near wall, on the camera's side of the axis, clear of
+    // the bottom, under the shell
+    const toward = { x: -fr.pole.z * fr.pole.x, y: -fr.pole.z * fr.pole.y, z: 1 - fr.pole.z * fr.pole.z };
     let seen = 0, all = 0;
     for (let i = 1; i <= 24; i++) for (let j = 0; j < 48; j++) {
       const phi = (2 * Math.PI * j) / 48, u = SP.bowlPoint(fr, SP.rimTheta(fr, phi) * (i / 24), phi);
       all++;
       assert.ok(SP.bowlKept(fr, u));
       if (SP.bowlSeen(fr, u) <= 1 + 1e-9) seen++;
-      else assert.ok(i >= 9 && u.z > 0.05, "only the upper near wall, on the camera's side, is hidden");
+      else assert.ok(i >= 4 && u.x * toward.x + u.y * toward.y + u.z * toward.z > 0, "only the near wall, on the camera's side, is hidden");
     }
-    assert.ok(seen / all >= 0.82, `the inner surface is seen: ${seen}/${all}`);
+    assert.ok(seen / all >= 0.7, `the inner surface is seen: ${seen}/${all}`);
     const user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
     assert.ok(pa.scaleOf.get(user.id) >= 1.2, "you read larger than in #153 (1)");
     for (const n of roles) assert.ok(pa.scaleOf.get(user.id) >= 1.12 * pa.scaleOf.get(n.id), `you, nearer, larger than ${n.label}`);
@@ -1834,7 +1838,8 @@ test("2026-11-12: the bowl reads as a bowl: a lip round the opening, the near wa
     const lum = (h) => [1, 3, 5].reduce((t, i) => t + parseInt(h.slice(i, i + 2), 16), 0);
     const ring = (t, phi) => SP.bowlProject(fo, SP.bowlPoint(fo, t, phi));
     for (const phi of [0, 2, 4]) {
-      const inner = ring(0.1, phi), outer = ring(0.95, phi);
+      // (the wall above, where it is seen: on the near side the near wall hides the inside above 0.73 since 2026-11-13)
+      const inner = ring(0.1, phi), outer = ring(Math.min(0.95, 0.9 * SP.seenTheta(fo, phi)), phi);
       assert.ok(lum(SP.bowlColorAt(fo, inner.x, inner.y, null)) < lum(SP.bowlColorAt(fo, outer.x, outer.y, null)) + 40, "the bottom no lighter than the wall above it");
     }
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
@@ -2075,7 +2080,8 @@ test("2026-11-12: an edge from you tapers into the bowl: wide and bright at you,
     }
     // a head on the far wall is smaller than one at you, in step with how near each is (smaller than the square root gave)
     const sRole = Math.min(...alpha.nodes.filter((n) => n.kind === "role").map((n) => pa.scaleOf.get(n.id))), sYou = pa.scaleOf.get(user.id);
-    assert.ok(S.headScaleOf(sRole) < 0.75 && S.headScaleOf(sRole) < Math.sqrt(sRole / 1.25) - 0.05 && S.headScaleOf(sYou) > 1.2, `heads ${S.headScaleOf(sRole).toFixed(2)} on the wall, ${S.headScaleOf(sYou).toFixed(2)} at you`);
+    // (0.8: orbited up over the opening, every role sits low on the wall, none far up the back)
+    assert.ok(S.headScaleOf(sRole) < 0.8 && S.headScaleOf(sRole) < Math.sqrt(sRole / 1.25) - 0.05 && S.headScaleOf(sYou) > 1.2, `heads ${S.headScaleOf(sRole).toFixed(2)} on the wall, ${S.headScaleOf(sYou).toFixed(2)} at you`);
   }
   // the taper itself: from near to far, narrower and dimmer
   const t = S.taperOf(1.9, 0.8);
@@ -2138,12 +2144,13 @@ test("2026-11-13: the bowl's one light: fixed to the bowl, and your shadow, an e
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
     const es = sc.items.find((it) => it.id === "edge-shadow");
     assert.ok(es && sc.items.indexOf(es) > sc.items.findIndex((it) => it.id.startsWith("bowl-deep-")) && sc.items.indexOf(es) < sc.items.findIndex((it) => it.id.startsWith("ec-") || it.id.startsWith("et-")), `${at}: edge shadows on the inside`);
-    for (const { id, c } of sc.edgeHits) {
-      const e = alpha.edges.find((x) => x.id === id), a = pa.shadowOf.get(e.src), b = pa.shadowOf.get(e.dst);
-      if (!a || !b || e.cls === "alias") continue;
-      const m = S.shadowCurve(c, { x: a.dx, y: a.dy }, { x: b.dx, y: b.dy });
-      assert.ok(es.cmds.some((k) => k[0] === "M" && Math.hypot(k[1] - m.p0.x, k[2] - m.p0.y) < 1e-6), `${at}: ${id}'s shadow drawn`);
+    // every edge whose arrow casts onto the inside seen through the opening has its shadow drawn there
+    for (const { id } of sc.edgeHits) {
+      const e = alpha.edges.find((x) => x.id === id), cast = sc.edgeShadows.find((x) => x.id === id);
+      if (e.cls === "alias" || !cast?.samples.length) continue;
+      assert.ok(es.cmds.some((k) => k[0] === "M" && Math.hypot(k[1] - cast.samples[0].p.x, k[2] - cast.samples[0].p.y) < 1e-6), `${at}: ${id}'s shadow drawn`);
     }
+    assert.ok(sc.edgeShadows.length > 0, `${at}: edges cast shadows on the inside`);
     // a role's contact shadow is offset the way its shadow falls
     const role = alpha.nodes.find((n) => n.kind === "role" && pa.shadowOf.get(n.id) && sc.items.some((it) => it.id === `contact-${n.id}-1`));
     const ct = sc.items.find((it) => it.id === `contact-${role.id}-1`), p = pa.pos.get(role.id), rsh = pa.shadowOf.get(role.id);
@@ -2321,6 +2328,211 @@ test("2026-11-13: the whole scene, global and per shoal, at the canvas fit and z
           assert.ok(n <= RENDER_CEILING, `${vm.view} ${cam.name} ${size.width}px at zoom ${tf.k.toFixed(2)}: ${n} path commands (at most ${RENDER_CEILING})`);
         }
       }
+    }
+  }
+});
+
+// 2026-11-13: the edges' shadows are physical. An edge's 3D path is its arrow's curve lifted onto each point's line of
+// sight at a depth between its ends' (depth.js shade); each point casts where the one light's ray through it meets the
+// surface (the floor; the bowl's inner wall), and the shadow is drawn through those points, clipped where the surface is
+// not seen. (Before, the arrow's screen curve was carried by its ends' shadow offsets: an edge to you, whose end floats
+// far off the wall, threw a distorted copy that matched no arrow.)
+const shadowScenes = () => {
+  const DEG = Math.PI / 180, out = [];
+  const lg = L.layoutGraph(global);
+  for (const cam of [D.camera("iso"), D.camera("tilt"), D.camera("iso", 0.6, { x: 0.7, y: 0.3 })]) out.push([global, D.projectLayout(global, lg, cam), cam.name]);
+  for (const vm of [alpha, M.buildModel(doc, B)]) {
+    const la = L.layoutGraph(vm);
+    for (const [ox, oy] of [[0, 0], [-24, -8], [40, 30], [120, 60], [0, -30]]) out.push([vm, D.projectLayout(vm, la, D.camera("iso", 0, D.orbitBy("iso", null, ox * DEG, oy * DEG, true))), `${ox},${oy}`]);
+  }
+  return out.map(([vm, pl, at]) => {
+    const size = { width: 1400, height: 860 }, tf = S.fitScene(vm, pl, size, { pad: 24, top: 48, kMax: 1.6 });
+    return { vm, pl, at: `${vm.view} ${at}`, tf, sc: S.buildScene(vm, pl, { ...size, tf, motion: "off" }) };
+  });
+};
+const sub3 = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z }), dot3 = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+const onRay3 = (Lp, q, w, tol = 1e-6) => {
+  const u = sub3(q, Lp), v = sub3(w, Lp), cr = { x: u.y * v.z - u.z * v.y, y: u.z * v.x - u.x * v.z, z: u.x * v.y - u.y * v.x };
+  return Math.hypot(cr.x, cr.y, cr.z) / (Math.hypot(u.x, u.y, u.z) * Math.hypot(v.x, v.y, v.z)) < tol && dot3(u, v) >= dot3(u, u) - 1e-9;
+};
+
+test("2026-11-13: an edge's shadow is its arrow cast by the one light: each point where the ray through the arrow's 3D path meets the surface", () => {
+  let checked = 0;
+  for (const { vm, pl, at, tf, sc } of shadowScenes()) {
+    const sh = pl.shade, Lp = sh.light, k = tf.k, Sc = (p) => G.toScreen(tf, p), toLay = (q) => ({ x: (q.x - tf.tx) / k, y: (q.y - tf.ty) / k });
+    const mid = vm.global ? pl.planes.at(-1).z / 2 : 0;
+    const es = sc.items.find((it) => it.id === "edge-shadow"), drawn = es ? es.cmds : [];
+    for (const cast of sc.edgeShadows) {
+      const e = vm.edges.find((x) => x.id === cast.id), c = sc.edgeHits.find((h) => h.id === cast.id).c;
+      const d0 = sh.depthOf.get(e.src), d1 = sh.depthOf.get(e.dst);
+      // the scene's commands are castCurve's for this edge, in lockstep with its samples (a move per run, a cubic per knot)
+      const run = S.castCurve(sh, c, d0, d1, toLay, Sc);
+      assert.equal(run.samples.length, cast.samples.length, `${at}: ${e.id}: the scene's samples`);
+      assert.equal(run.cmds.length, run.samples.length, `${at}: a command per knot`);
+      if (!run.cmds.length) continue;
+      const startAt = drawn.findIndex((m) => m[0] === "M" && Math.hypot(m[1] - run.cmds[0][1], m[2] - run.cmds[0][2]) < 1e-9);
+      assert.ok(startAt >= 0 && run.cmds.every((m, i) => m.every((v, j) => (typeof v === "number" ? Math.abs(v - drawn[startAt + i][j]) < 1e-9 : v === drawn[startAt + i][j]))), `${at}: ${e.id}: drawn as cast`);
+      for (const [i, s] of run.samples.entries()) {
+        // the 3D path's point at t: seen at the arrow's point t on screen, at the depth between its ends' (in the bowl,
+        // held in front of the wall where the arrow would pass behind it)
+        const onArrow = G.pointAt(c, s.t), seenAt = Sc(sh.screen(s.X));
+        assert.ok(Math.hypot(seenAt.x - onArrow.x, seenAt.y - onArrow.y) < 1e-6, `${at}: ${e.id} t=${s.t.toFixed(3)}: the path is the arrow's`);
+        const want = d0 + (d1 - d0) * s.t;
+        if (vm.global) assert.ok(Math.abs(D.project(pl.cam, s.X, s.X.z - mid).depth - want) < 1e-6, `${at}: at the depth between its ends`);
+        else {
+          assert.ok(s.X.z >= want - 1e-9 && Math.hypot(s.X.x, s.X.y, s.X.z) < 1, `${at}: inside the sphere, at its depth or in front of the wall`);
+          if (s.X.z > want + 1e-9) assert.ok(Math.hypot(s.X.x, s.X.y, s.X.z) > 1 - 2 * SP.BOWL_LIFT_CLEAR, `${at}: held only at the wall`);
+        }
+        // its shadow: on the surface, on the light's ray through it, past it, seen, and drawn where it projects
+        if (vm.global) assert.ok(Math.abs(s.W.z - pl.floorZ) < 1e-9, `${at}: on the floor`);
+        else assert.ok(Math.abs(Math.hypot(s.W.x, s.W.y, s.W.z) - 1) < 1e-9 && SP.bowlKept(pl.bowl.frame, s.W) && SP.bowlSeen(pl.bowl.frame, s.W) <= 1 + 1e-9, `${at}: on the inside, seen through the opening`);
+        assert.ok(onRay3(Lp, s.X, s.W), `${at}: ${e.id}: on the light's ray through the path`);
+        const p = Sc(sh.screen(s.W));
+        assert.ok(Math.hypot(p.x - s.p.x, p.y - s.p.y) < 1e-9 && Math.hypot(run.cmds[i].at(-2) - p.x, run.cmds[i].at(-1) - p.y) < 1e-9, `${at}: drawn through it`);
+        checked++;
+      }
+      // between two knots the drawn cubic stays on the cast curve, and nothing is drawn where the surface is not seen
+      for (let i = 1; i < run.cmds.length; i++) {
+        if (run.cmds[i][0] !== "C") continue;
+        const a = run.samples[i - 1], b = run.samples[i], m = run.cmds[i];
+        const cv = { p0: a.p, c1: { x: m[1], y: m[2] }, c2: { x: m[3], y: m[4] }, p3: b.p };
+        for (let j = 1; j < 10; j++) {
+          const t = a.t + ((b.t - a.t) * j) / 10, X = sh.lift(toLay(G.pointAt(c, t)), d0 + (d1 - d0) * t), W = sh.cast(X);
+          assert.ok(W && sh.seen(W), `${at}: ${e.id}: only what is seen is drawn`);
+          const q = Sc(sh.screen(W)), d = G.pointAt(cv, j / 10);
+          assert.ok(Math.hypot(q.x - d.x, q.y - d.y) < 2.5 * S.EDGE_SHADOW_TOL, `${at}: ${e.id}: on the cast curve between its knots (${Math.hypot(q.x - d.x, q.y - d.y).toFixed(2)} px)`);
+        }
+      }
+      // an arrowhead's shadow: its corners cast from the end's depth
+      for (const h of cast.heads) assert.ok(h.length === 3 && h.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)), `${at}: a head's shadow`);
+    }
+  }
+  assert.ok(checked > 200, `cast points checked: ${checked}`);
+});
+
+test("2026-11-13: an edge to you casts its own shadow, from its role's to yours, not a copy of the arrow moved aside", () => {
+  const user = alpha.nodes.find((n) => n.kind === "user");
+  const pa = D.projectLayout(alpha, L.layoutGraph(alpha), D.camera("iso")), fr = pa.bowl.frame, Rs = pa.bowl.R;
+  const sc = S.buildScene(alpha, pa, { width: 1400, height: 860, tf: G.identity(), motion: "off" });
+  const yours = sc.edgeShadows.filter((x) => { const e = alpha.edges.find((y) => y.id === x.id); return e.src === user.id || e.dst === user.id; });
+  assert.ok(yours.length >= 2, "edges at you cast shadows");
+  const ys = SP.bowlProject(fr, SP.bowlCast(fr, pa.bowl.you)), youAt = { x: Rs * ys.x, y: Rs * ys.y }, yr = sc.nodeScreen.get(user.id).r;
+  for (const x of yours) {
+    const e = alpha.edges.find((y) => y.id === x.id), atYou = e.dst === user.id ? x.samples.at(-1) : x.samples[0];
+    // its end at you (the arrow ends at your edge) casts by your shadow: within your shadow's size of its middle
+    if ((e.dst === user.id ? atYou.t : 1 - atYou.t) > 0.999) assert.ok(Math.hypot(atYou.p.x - youAt.x, atYou.p.y - youAt.y) < 3 * yr, `${e.id}: ends by your shadow`);
+    // and the shadow is not the arrow translated: its points do not sit at one fixed offset from the arrow's
+    const c = sc.edgeHits.find((h) => h.id === x.id).c, offs = x.samples.map((s) => { const q = G.pointAt(c, s.t); return { x: s.p.x - q.x, y: s.p.y - q.y }; });
+    if (offs.length >= 2) assert.ok(Math.hypot(offs[0].x - offs.at(-1).x, offs[0].y - offs.at(-1).y) > 5, `${e.id}: not a shifted copy`);
+  }
+});
+
+// every shadow drawn belongs to something drawn: an edge drawn, a node drawn, a globe or the bowl
+const shadowIds = (it) => it.t === "path" && /^(edge-shadow|shadow-|contact-|bowl-shadow-|stem-shadows)/.test(it.id);
+test("2026-11-13: every shadow drawn has its caster drawn: no shadow of a hidden, faded or filtered-out edge, role or seat", () => {
+  const scenes = shadowScenes().map((s) => ({ ...s, label: s.at }));
+  // a hover fades every edge not at the hovered node (faded edges cast none), and a hidden role and its edges are gone
+  const role = `${A}:core`, hid = M.buildModel(doc, A, { hidden: [role] }), hg = M.buildModel(doc, "global", { hidden: [role] });
+  const isHidden = (vm) => vm === hid || vm === hg;
+  for (const vm of [hid, hg]) {
+    const pl = D.projectLayout(vm, L.layoutGraph(vm), D.camera("iso"));
+    scenes.push({ vm, pl, label: `${vm.view} hidden`, sc: S.buildScene(vm, pl, { width: 1400, height: 860, tf: G.identity(), motion: "off" }) });
+  }
+  for (const vm of [alpha, global]) {
+    const pl = D.projectLayout(vm, L.layoutGraph(vm), D.camera("iso")), hover = vm.nodes.find((n) => n.kind === "role" && (vm.neighbors.get(n.id)?.size ?? 0) > 0).id;
+    scenes.push({ vm, pl, label: `${vm.view} hover`, hover, sc: S.buildScene(vm, pl, { width: 1400, height: 860, tf: G.identity(), motion: "off", hover }) });
+  }
+  for (const { vm, sc, label, hover } of scenes) {
+    const ids = new Set(sc.items.map((it) => it.id)), drawnNode = (id) => sc.nodeScreen.has(id) && vm.byId.has(id);
+    for (const cast of sc.edgeShadows) {
+      const e = vm.edges.find((x) => x.id === cast.id), hit = sc.edgeHits.find((h) => h.id === cast.id);
+      assert.ok(e && hit && drawnNode(e.src) && drawnNode(e.dst), `${label}: ${cast.id}: its edge and both ends drawn`);
+      if (hover) assert.ok(e.src === hover || e.dst === hover, `${label}: ${cast.id}: a faded edge casts none`);
+      // the edge itself is drawn: its line from its start (a plain stroke) or its ribbon (an edge at you, in the bowl)
+      const line = sc.items.some((it) => it.id === `et-${e.id}` || (/^ec-/.test(it.id) && it.cmds.some((m) => m[0] === "M" && Math.hypot(m[1] - hit.c.p0.x, m[2] - hit.c.p0.y) < 1e-9)));
+      assert.ok(line, `${label}: ${cast.id}: the edge is drawn`);
+    }
+    if (isHidden(vm)) assert.ok(!vm.byId.has(role) && !sc.edgeShadows.some((x) => x.id.includes(role)), `${label}: the hidden role's edges cast none`);
+    for (const it of sc.items.filter(shadowIds)) {
+      const id = it.id;
+      let m;
+      if (id.startsWith("edge-shadow") || id === "stem-shadows") continue; // the edges, above; the stems' poles end at their stems
+      if ((m = id.match(/^shadow-c-(.+)-\d+$/))) assert.ok(ids.has(`sphere-body-${m[1]}`) || ids.has("bowl-in"), `${label}: ${id}: its globe or bowl drawn`);
+      else if ((m = id.match(/^shadow-[nr]-(.+)-\d+$/))) assert.ok(drawnNode(m[1]), `${label}: ${id}: its node drawn`);
+      else if ((m = id.match(/^contact-(.+)-\d+$/))) assert.ok(drawnNode(m[1]) && ids.has(`body-${m[1]}`), `${label}: ${id}: its role drawn`);
+      else if (id.startsWith("bowl-shadow-")) assert.ok(sc.items.some((x) => x.id.startsWith("you-glass-body-")), `${label}: ${id}: you drawn`);
+      else assert.fail(`${label}: ${id}: a shadow with no known caster`);
+    }
+  }
+});
+
+// node items: what draws a node, its label and its badges (depth mode adds `under-`, the disc that keeps shadows off it)
+const NODE_ITEM = /^(under-|halo-|halo-in-|ring-|pulse-|role-shade-|body-|core-|poly-|polyline-|hatch-|dash-|spin-|you-glass-|label-|hosttag-|grant-|badge-)/;
+const EDGE_ITEM = /^(ek-|eg-|ec-|etk-|etg-|et-|eak-|ea-)/;
+test("2026-11-13: every shadow paints under every node, edge and label, in the global view and in the bowl", () => {
+  for (const { sc, at } of shadowScenes()) {
+    const shadows = sc.items.map((it, i) => (shadowIds(it) ? i : -1)).filter((i) => i >= 0);
+    const over = sc.items.map((it, i) => (NODE_ITEM.test(it.id) || EDGE_ITEM.test(it.id) ? i : -1)).filter((i) => i >= 0);
+    assert.ok(shadows.length && over.length, `${at}: shadows and nodes drawn`);
+    assert.ok(Math.max(...shadows) < Math.min(...over), `${at}: the last shadow (${sc.items[Math.max(...shadows)].id}) before the first node or edge (${sc.items[Math.min(...over)].id})`);
+  }
+});
+
+test("2026-11-13: a faint role never shows a shadow through it: an opaque disc of the surface under it, no shadow on it", () => {
+  // beta's archived role: parked, a faint body (a veil of the void at 60 percent of its opacity) over its contact shadow
+  const beta = M.buildModel(doc, B), id = `${B}:archive`;
+  assert.ok(vis(beta, id).fill === 0 && vis(beta, id).opacity < 0.6, "the fixture's parked role is faint");
+  for (const cam of [D.camera("iso"), D.camera("tilt")]) {
+    const pa = D.projectLayout(beta, L.layoutGraph(beta), cam), sc = S.buildScene(beta, pa, { width: 1400, height: 860, tf: G.identity(), motion: "off" });
+    const under = sc.items.findIndex((it) => it.id === `under-${id}`), body = sc.items.findIndex((it) => it.id === `body-${id}`);
+    const contact = sc.items.filter((it) => it.id.startsWith(`contact-${id}-`));
+    assert.ok(contact.length > 0, `${cam.name}: it casts its contact shadow`);
+    assert.ok(under >= 0 && under < body && sc.items[under].t === "box", `${cam.name}: a disc under its body`);
+    const u = sc.items[under], s = sc.nodeScreen.get(id);
+    assert.ok(Math.abs(u.w / 2 - s.r) < 1e-9 && Math.abs(u.x + u.w / 2 - s.x) < 1e-9 && Math.abs(u.y + u.h / 2 - s.y) < 1e-9 && u.radius === u.w / 2, `${cam.name}: the size of its body`);
+    assert.ok(alphaOf(u.bg) === 1, `${cam.name}: opaque`);
+    // the color of the inside there with no shadow on it
+    const fr = pa.bowl.frame, Rs = pa.bowl.R, b = S.bowlHostAt(fr, pa.bands, s.x / Rs, s.y / Rs);
+    const surf = SP.bowlColorAt(fr, s.x / Rs, s.y / Rs, b ? b.color ?? M.PASTELS[(b.index + 2) % M.PASTELS.length] : null);
+    assert.equal(u.bg.slice(0, 7), surf, `${cam.name}: the inside's own color there`);
+  }
+  // a node no shadow reaches stands on nothing more: the flat view has no discs at all
+  const flat = S.buildScene(alpha, L.layoutGraph(alpha), { width: 1400, height: 860, tf: G.identity(), motion: "off" });
+  assert.ok(!flat.items.some((it) => it.id.startsWith("under-")), "flat: no discs");
+  assert.ok(S.shadowReaches([{ kind: "ellipse", c: { x: 0, y: 0 }, a: { x: 10, y: 0 }, b: { x: 0, y: 5 } }], { x: 12, y: 0 }, 3), "a disc an ellipse reaches");
+  assert.ok(!S.shadowReaches([{ kind: "line", pts: [{ x: 0, y: 0 }, { x: 100, y: 0 }], w: 3 }], { x: 50, y: 10 }, 5), "and one a stroke misses");
+});
+
+test("2026-11-13: more of the bowl's outside from the side: the near wall cut up to 26 degrees past the last cut, the far wall 29 past the equator", () => {
+  const DEG = Math.PI / 180;
+  assert.ok(Math.abs(SP.CUT_MARGIN_MAX - 26 * DEG) < 1e-12 && Math.abs(SP.BOWL_FAR_EXTRA - 29 * DEG) < 1e-12 && Math.abs(SP.CUT_MARGIN_FRONT - 17 * DEG) < 1e-12);
+  // the opening view is unchanged, and there the outer wall shows about 25 degrees (17 before)
+  const home = D.camera("iso");
+  assert.ok(D.bowlTilt(home) === D.BOWL_HOME_TILT && D.bowlTurn(home) === D.BOWL_HOME_TURN, "the opening view");
+  const fr = SP.bowlFrame(D.bowlTilt(home), SP.BOWL_DIST, D.bowlTurn(home));
+  assert.ok(fr.cutMargin > 24 * DEG && fr.cutMargin <= 26 * DEG, `at the opening view: ${(fr.cutMargin / DEG).toFixed(1)} degrees`);
+  for (const [ox, oy] of [[0, 0], [-20, 0], [20, 0], [0, 30], [0, -30], [120, 60], [40, 30], [-120, -60]]) {
+    const cam = D.camera("iso", 0, D.orbitBy("iso", null, ox * DEG, oy * DEG, true)), f = SP.bowlFrame(D.bowlTilt(cam), SP.BOWL_DIST, D.bowlTurn(cam));
+    // never past the most, eased in from the front, and held so the bottom stays well inside the opening
+    const off = Math.acos(-f.pole.z), most = SP.CUT_MARGIN_FRONT + (SP.CUT_MARGIN_MAX - SP.CUT_MARGIN_FRONT) * SP.sideOf(off);
+    assert.ok(f.cutMargin <= most + 1e-9 && f.cutMargin >= SP.CUT_MARGIN_MIN, `${ox},${oy}: ${(f.cutMargin / DEG).toFixed(1)} degrees`);
+    assert.ok(SP.bowlSeen(f, f.pole) <= SP.BOWL_POLE_SEEN + 1e-6, `${ox},${oy}: the bottom inside the opening`);
+    if (f.cutMargin < most - 1e-6) assert.ok(Math.abs(SP.bowlSeen(f, f.pole) - SP.BOWL_POLE_SEEN) < 1e-3, `${ox},${oy}: held only where the bottom would come near the rim`);
+    // the far wall rises to 29 degrees past the equator
+    const rims = Array.from({ length: 72 }, (_, j) => SP.rimTheta(f, (2 * Math.PI * j) / 72));
+    assert.ok(Math.abs(Math.max(...rims) - (Math.PI / 2 + SP.BOWL_FAR_EXTRA)) < 0.01, `${ox},${oy}: the far rim`);
+  }
+  // and every role is placed where the inside is seen, clear of the others and of you, at the opening view
+  for (const vm of [alpha, M.buildModel(doc, B)]) {
+    const pa = D.projectLayout(vm, L.layoutGraph(vm), home), f = pa.bowl.frame, sc = S.buildScene(vm, pa, { width: 1400, height: 860, tf: G.identity(), motion: "off" });
+    const ns = vm.nodes.filter((n) => n.kind === "role" || n.kind === "user").map((n) => [n, sc.nodeScreen.get(n.id)]);
+    for (const [n] of ns.filter(([x]) => x.kind === "role")) {
+      const s = pa.surfaceOf.get(n.id), u = SP.bowlPoint(f, s.theta, s.phi);
+      assert.ok(SP.bowlSeen(f, u) <= 0.86 + 1e-6 && SP.bowlKept(f, u), `${vm.view}: ${n.label} seen through the opening`);
+    }
+    for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+      const [a, p] = ns[i], [b, q] = ns[j];
+      assert.ok(Math.hypot(p.x - q.x, p.y - q.y) > p.r + q.r, `${vm.view}: ${a.label ?? "you"} and ${b.label ?? "you"} apart`);
     }
   }
 });

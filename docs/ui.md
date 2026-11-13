@@ -344,12 +344,17 @@ shows each provider's used percent for 5h, week and month, for example
 `codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`, with `-` for a window the provider does not report and no reset times. Use `shoal ui usage` for the
 same snapshot outside Herdr. `--providers` temporarily chooses a comma-separated
 list; an empty `usage_providers` setting disables background collection. A subscription that reports nothing until
-its first use in a window (Muse, `idle`) keeps showing its next weekly reset: the last one a reading reported, rolled
-forward by whole weeks, shown at 0% and "unused since its last reset" (until it has been used once, there is none to
-show). `shoal ui set ecosystems claude,codex,opencode` names the agent ecosystems in use on a host (default all four):
-one set aside drops out of Add session's discovery and New role's and Handoff's providers at once, and out of usage
-(the Usage tab, `ui status` and the status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
-and `ui set` names those roles, until they are handed off to an ecosystem in use.
+its first use in a short window (Muse, `idle`) keeps its week: while the week's last reported reset is still ahead, the
+use last read in it stays shown (`carried`: an idle reading says only that the new 5h window is unused, so the week
+cannot have dropped); once that reset has passed it shows at 0% and "unused since its last reset", the reset rolled
+forward by whole weeks (until it has been used once, there is none to show). `shoal ui set ecosystems
+claude,codex,opencode` names the agent ecosystems in use on a host (default all four): one set aside drops out of Add
+session's discovery and New role's and Handoff's providers at once, `shoal handoff` and `shoal add-role` refuse it, and
+it drops out of usage (the Usage tab, `ui status` and the status bar) once no role on it is left: a role still running
+on it keeps spending it, so its meter stays, and `ui set` names those roles, until they are handed off to an ecosystem
+in use. `--from <UTC>` schedules the change (for a subscription that ends at its quota reset:
+`shoal ui set ecosystems claude,codex,opencode --from 2026-11-16T00:00:00Z`): the setting takes over at that time with
+nothing to run then, and a later plain `ui set ecosystems` replaces it (adding an ecosystem back re-enables it).
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without
@@ -727,20 +732,24 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   over the scene, up and to the left at the opening views, lights every globe and casts every shadow, each where the
   light's ray through its caster meets the floor below: each globe's, yours and each outside seat's (you float highest,
   so yours lands furthest, down and to the right of the foot of your stem), each role's on a globe (the glass catches
-  none, so a role's shadow is on the floor, inside its globe's) and each arrow's, which runs between its ends' shadows.
+  none, so a role's shadow is on the floor, inside its globe's) and each arrow's, the shadow of the arrow itself: every
+  point of it casts where the light's ray through it meets the floor, so it bends as a real arrow's shadow would.
   Each stem casts a faint shadow too, from its foot to its caster's shadow, so every shadow on the floor is tied to
-  what casts it. Every shadow falls off smoothly from a dark middle to nothing at its edge, with no rings. The lamp
+  what casts it, and no shadow is drawn for anything not on screen. Every shadow falls off smoothly from a dark middle
+  to nothing at its edge, with no rings, and lies under every role, arrow and label, never over them. The lamp
   stays put as you orbit, so the lit sides and the shadows turn with the scene. Drilled into one shoal, depth mode
   shows a bowl turned far round to the side, its opening to your left and its bottom to the right, a little below
   level, with you floating out in front of the opening, nearest and largest, and a dashed plumb line from you to the
-  bottom: the opening has a lit lip, the sphere's outer wall shows beside it as a shell from its top round to its
-  bottom, and the far wall rises past the rim of a hemisphere, so you see more of the back. The bowl has its own lamp,
-  fixed to the bowl above and behind the opening, so it shines in through the opening onto the bottom and the bowl's
-  shadow falls on the floor to its right; the inside darkens smoothly toward the bottom (no rings of shading; faint
-  rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow and each arrow's
-  small shadow fall on the wall where its rays put them, so the arrows from you start at your shadow and you read as
-  floating in front of the wall. The hosts' regions share the whole inside of the bowl in clearly different colors
-  (azure, then amber, green, rose and on), each host's roles sit on its region behind you, and the arrows, light cores
+  bottom: the opening has a lit lip, the sphere's outer wall shows beside it as a broad shell from its top round to its
+  bottom, and the far wall rises well past the rim of a hemisphere, so you see more of the back and the outside. The
+  bowl has its own lamp, fixed to the bowl above and behind the opening, so it shines in through the opening onto the
+  bottom and the bowl's shadow falls on the floor to its right; the inside darkens smoothly toward the bottom (no rings
+  of shading; faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow
+  and each arrow's shadow fall on the wall where its rays put them (an arrow's shadow is cast point by point, clipped
+  where the wall is hidden), so the arrows from you start at your shadow and you read as floating in front of the
+  wall. The hosts' regions share the whole inside of the bowl in clearly different colors (azure, then amber, green,
+  rose and on), each host's roles sit on its region behind you, where the inside is seen and clear of one another, and
+  the arrows, light cores
   over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far wall, with smaller
   heads there, so they run away from you into the bowl. A role that needs you or asks you pulses in depth as in flat
   (breathing at `full`, blinking at `balanced`, still at `low` and `off`).

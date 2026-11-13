@@ -106,7 +106,8 @@ const rgba = (hex) => {
   const s = String(hex).replace("#", "");
   return { c: [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16)), a: s.length >= 8 ? parseInt(s.slice(6, 8), 16) / 255 : 1 };
 };
-const over = (under, color) => {
+/** `color` (with its alpha) blended over the opaque color `under`. */
+export const over = (under, color) => {
   const { c, a } = rgba(color), u = rgba(under).c;
   return "#" + u.map((v, i) => Math.round(v + (c[i] - v) * a).toString(16).padStart(2, "0")).join("");
 };
@@ -221,17 +222,34 @@ export function shadowLayers(peak, soft, n = shadowSteps(peak, soft), under = SH
 export const BOWL_DIST = 2.4;
 /** The bowl's turn about the screen's vertical, so the camera sees into it from the side as well as from above. */
 export const BOWL_TURN = (30 * Math.PI) / 180;
-// How far past the last cut that would keep no point of the inner sphere facing the camera the cut is made: below
-// zero the near wall's top shows from outside, as a crescent under the lip. 17 degrees (9 before, 2026-11-13): at the
-// opening view, turned far round to the side, the sphere's outer wall shows as a shell beside the opening, from its top
-// round to its bottom, so the bowl reads as a sphere seen from behind and to the side; past about 20 the near wall rose
-// far enough to crowd the roles on the bottom's side of the inside.
-const CUT_MARGIN = (-17 * Math.PI) / 180;
+/** How far past the last cut that would keep no point of the inner sphere facing the camera the cut is made: past it
+ * the near wall's top shows from outside, as a crescent under the lip, and turned far round to the side the sphere's
+ * outer wall shows as a shell beside the opening, from its top round to its bottom, so the bowl reads as a sphere seen
+ * from behind and to the side. 9 degrees, then 17, then (maintainer, 2026-11-13: more of the outside, for depth) up to
+ * CUT_MARGIN_MAX round the side (CUT_MARGIN_FRONT in front), held at each view to what keeps the bowl's bottom
+ * BOWL_POLE_SEEN or less of the way out to the rim on
+ * screen: the near wall rises as the cut does, and seen from the side it comes up over the bottom, where the roles of
+ * the lunes on the camera's side sit (at 26 degrees from the opening view the bottom was 0.86 of the way out, and from
+ * the furthest orbit 0.95, under the lip). The view's margin is the frame's `cutMargin`. */
+export const CUT_MARGIN_MAX = (26 * Math.PI) / 180;
+export const CUT_MARGIN_MIN = (9 * Math.PI) / 180;
+export const BOWL_POLE_SEEN = 0.84;
+/** The cut's margin seen from in front (the axis up to 55 degrees off the line of sight): 17 degrees, as before, where
+ * the outer wall shows little whatever the cut and a taller near wall only hides the inside; it eases up to
+ * CUT_MARGIN_MAX as the view goes round the side (sideOf), where the outer wall is what shows. */
+export const CUT_MARGIN_FRONT = (17 * Math.PI) / 180;
+/** How far round the side a view is, for the axis `off` radians off the line of sight: 0 up to 55 degrees, easing to 1
+ * at 72 (depth.js bowlSide). */
+export const SIDE_FROM = (55 * Math.PI) / 180, SIDE_FULL = (72 * Math.PI) / 180;
+export function sideOf(off) {
+  const t = Math.min(1, Math.max(0, (off - SIDE_FROM) / (SIDE_FULL - SIDE_FROM)));
+  return t * t * (3 - 2 * t);
+}
 /** How far past the equator the far wall rises (polar angle from the bottom, above a hemisphere's): more of the back
  * shows over the inside, so it reads as more than a hemisphere, not a dish (maintainer, 2026-11-13: 14 degrees, then
- * 22 with the opening view turned to the side, so more of the far wall stands behind the opening). The near wall's cut
- * does not move with it, so nothing more of the inside is hidden. */
-export const BOWL_FAR_EXTRA = (22 * Math.PI) / 180;
+ * 22 with the opening view turned to the side, so more of the far wall stands behind the opening, then 29 for more of
+ * the back). The near wall's cut does not move with it, so nothing more of the inside is hidden. */
+export const BOWL_FAR_EXTRA = (29 * Math.PI) / 180;
 /** The wall's thickness, in sphere radii: the lip's width. */
 export const BOWL_LIP = 0.035;
 
@@ -274,21 +292,40 @@ function bowlAxes(alpha, beta) {
 export function bowlFrame(alpha, d = BOWL_DIST, beta = BOWL_TURN) {
   const { pole, e1, e2 } = bowlAxes(alpha, beta);
   // The cut. A point of the unit sphere faces the camera when u.z > 1 / d, and a cut whose normal is `toward` off the
-  // line of sight keeps none when acos(h) >= toward + acos(1 / d) (kappa, less a little: CUT_MARGIN). Its normal leans
+  // line of sight keeps none when acos(h) >= toward + acos(1 / d) (kappa, less the margin). Its normal leans
   // `lean` from the bowl's up toward the camera, so the rim's polar angle runs from pi - tilt - kappa on the near side to
   // that plus 2 lean on the far side: the lean that keeps the far wall up to BOWL_FAR_EXTRA past the equator (a little
   // over a hemisphere's rim) cuts away only the near wall. A camera that already sees all of that inside keeps it whole.
-  const tilt = Math.acos(Math.max(-1, Math.min(1, -pole.z))), kappa = Math.acos(1 / d) + CUT_MARGIN;
-  const lean = Math.max(0, (tilt + kappa - Math.PI / 2 + BOWL_FAR_EXTRA) / 2), toward = tilt - lean;
+  const tilt = Math.acos(Math.max(-1, Math.min(1, -pole.z)));
   const side = Math.hypot(pole.x, pole.y) > 1e-9 ? unit({ x: -pole.x, y: -pole.y, z: 0 }) : { x: 0, y: -1, z: 0 };
-  const n = comb(Math.cos(toward), { x: 0, y: 0, z: 1 }, Math.sin(toward), side);
-  const h = lean > 0 ? Math.cos(toward + kappa) : 0;
-  const f1 = unit(comb(1, e1, -dot(e1, n), n));
-  const f2 = unit(comb(1, e2, -dot(e2, n), n, -dot(e2, f1), f1));
-  const rho = Math.sqrt(1 - h * h), c = comb(h, n);
+  const cutAt = (margin) => {
+    const kappa = Math.acos(1 / d) - margin;
+    const lean = Math.max(0, (tilt + kappa - Math.PI / 2 + BOWL_FAR_EXTRA) / 2), toward = tilt - lean;
+    const n = comb(Math.cos(toward), { x: 0, y: 0, z: 1 }, Math.sin(toward), side);
+    const h = lean > 0 ? Math.cos(toward + kappa) : 0;
+    const f1 = unit(comb(1, e1, -dot(e1, n), n));
+    const f2 = unit(comb(1, e2, -dot(e2, n), n, -dot(e2, f1), f1));
+    const rho = Math.sqrt(1 - h * h), c = comb(h, n);
+    return { n, h, c, rho, f1, f2, rim: projectedCircle(d, c, f1, f2, rho) };
+  };
+  // the most outer wall that keeps the bottom BOWL_POLE_SEEN of the way out to the rim, or less (bisection: the bottom
+  // comes nearer the rim as the cut rises)
+  const pf = d / (d - pole.z), poleSeen = (k) => {
+    const { cx, cy, m } = k.rim, x = pole.x * pf - cx, y = pole.y * pf - cy;
+    return Math.sqrt(Math.max(0, m[0] * x * x + 2 * m[1] * x * y + m[2] * y * y));
+  };
+  const most = CUT_MARGIN_FRONT + (CUT_MARGIN_MAX - CUT_MARGIN_FRONT) * sideOf(tilt);
+  let margin = most, k = cutAt(margin);
+  if (poleSeen(k) > BOWL_POLE_SEEN) {
+    let lo = CUT_MARGIN_MIN, hi = most;
+    for (let i = 0; i < 24; i++) { const mid = (lo + hi) / 2; if (poleSeen(cutAt(mid)) <= BOWL_POLE_SEEN) lo = mid; else hi = mid; }
+    margin = lo;
+    k = cutAt(margin);
+  }
+  const { n, h, c, rho, f1, f2, rim } = k;
   const cut = { n, h, c, rho, f1, f2, pn: dot(pole, n), e1n: dot(e1, n), e2n: dot(e2, n) };
   const outer = 1 + BOWL_LIP;
-  return { alpha, beta, d, pole, e1, e2, cut, outer, rim: projectedCircle(d, c, f1, f2, rho),
+  return { alpha, beta, d, pole, e1, e2, cut, outer, cutMargin: margin, rim,
     lip: projectedCircle(d, c, f1, f2, Math.sqrt(outer * outer - h * h)) };
 }
 
@@ -345,6 +382,18 @@ export function bowlSurfaceAt(fr, sx, sy) {
   if (disc < 0) return null;
   const t = (d * d + Math.sqrt(disc)) / dd;
   return { x: t * sx, y: t * sy, z: d - t * d };
+}
+
+/** The point of the camera's frame seen at screen point s (radii from the middle) at depth z, as bowlProject places it:
+ * on the line of sight through s, held BOWL_LIFT_CLEAR in front of the inner wall seen there (a point the line would put
+ * behind the wall is just off it), so its shadow is never cast from beyond the surface. Outside the sphere's outline it
+ * is returned as is. */
+export const BOWL_LIFT_CLEAR = 0.02;
+export function bowlLift(fr, s, z) {
+  const d = fr.d, dd = s.x * s.x + s.y * s.y + d * d, disc = d ** 4 - dd * (d * d - 1);
+  let t = (d - z) / d;
+  if (disc >= 0) t = Math.min(t, (d * d + Math.sqrt(disc)) / dd - BOWL_LIFT_CLEAR / Math.sqrt(dd));
+  return { x: t * s.x, y: t * s.y, z: d - t * d };
 }
 
 /** The largest polar angle at azimuth phi whose point is still `margin` inside the rim on screen and no nearer the
