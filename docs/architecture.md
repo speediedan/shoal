@@ -1123,6 +1123,40 @@ depth mode, though the legend promised it; and your halo still breathes behind t
 two-host bowl takes at most about 1,190 path commands (1,020 before) and the global depth scene about 1,910 (1,750);
 the tests hold them to 1,300 and 2,400.
 
+The lattice opens in depth (`depth.js` `DEFAULT_DEPTH`, iso; the `depth` prop still takes `flat`, `tilt` or `iso`), and
+`d` cycles iso, flat, tilt (`DEPTH_CYCLE`), so one press from the opening view is flat; the legend's hint lists the
+cycle. The bowl opens turned far round to the side, at -14 degrees tilt and -70 turn (`BOWL_HOME_TILT`,
+`BOWL_HOME_TURN`; the view the maintainer orbited to from the old opening, 10 and -40, matched on the rim's aspect and
+lean and where you and the bottom sit), with room to orbit on past it: the tilt runs -30 to 64, the turn -78 to 78, and
+the two together at most 78 degrees off the line of sight (`BOWL_OFF_AXIS_MAX`). Your lean toward the camera far round
+the side (`bowlSide`) is still whole at 72 degrees (`BOWL_SIDE_FULL`), so the opening view places you as the
+maintainer saw it. The bowl's light stays where it was in the bowl's world (`sphere.js` `BOWL_LIGHT`, placed from the
+old opening view), so the opening view is lit as it was when picked: above and behind the opening, shining in onto the
+bottom, the bowl's shadow on the floor to its right. More of the sphere's back shows: the cut is made 17 degrees past
+the last that keeps no camera-facing point (`CUT_MARGIN`, from 9), so the outer wall shows as a shell beside the
+opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, from 14); roles still sit only where the
+inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
+inside the rim instead (`rimShade`), so the shade never spills over the shell.
+
+Every shadow is the one light's, and a role on a globe now casts one too (`projectLayout`'s `casts`, by `castShadow`
+from the role's place in the world): the glass catches none, so a role's contact shadow is drawn only in the bowl, and
+in the global view its shadow is on the floor, inside its globe's, where its edges' shadows already ended (2026-11-13:
+the shadows of two outside seats, joined by their edge's, fell under a globe and read as its roles', cast the wrong
+way; they were cast correctly, but the roles had none of their own). Each stem casts a faint dashed shadow from its foot
+to its caster's (`stem-shadows`). A shadow is no longer a few visible rings: `sphere.js` `shadowLayers` cuts it into
+equal steps of darkness as drawn (`SHADOW_STEP`, 2.2 percent), each layer's edge where the falloff (`shadowAt`) crosses
+the middle of its step, so layers crowd in the penumbra and spread in the core. A finer step does not help: GPUI
+blends each layer into an 8-bit target and rounds every channel, so a layer that would move a channel by under half a
+level moves it not at all, and a stack of 1 percent layers stalls part way, pale. Each layer's 8-bit alpha is solved
+by blending the rounded layers outside it over what is under the shadow's middle (`blend8`: the canvas, the floor
+shadows already drawn there, or the bowl's wall), so the drawn color steps evenly by one or two levels to the
+shadow's darkest. A small shadow takes fewer layers (`shadowSteps`: none narrower than `SHADOW_BAND_PX`, 3 px), each
+layer is two arcs turned to the ellipse's axes (`geom.js` `ellipseArcCmds`, four commands; GPUI's arc rotation is in
+degrees, as SVG's), and the bowl's floor shadow drops the layers its opaque inside covers whole (`bowlCovers`). An edge's
+shadow is four strokes, 7 px down to 1.6, stepping up evenly (`edgeShadowStrokes`). In the fixture the global depth
+scene takes 2,054 path commands (1,724 before) and the bowls at most 1,358 and 967 (1,161 and 830); the tests hold
+them to 2,300 and 1,450, and every scene at the canvas fit and at the fit's largest zoom to 2,800 (`RENDER_CEILING`).
+
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,
 freshness, and warning thresholds. The UI status contract adds `usage`; overview

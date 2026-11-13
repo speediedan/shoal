@@ -1162,6 +1162,12 @@ test("depth: planes stacked under a tilted camera; flat is the layout as is", ()
   assert.equal(D.depthFor("tilt", "off", "cpu"), "flat", "a CPU renderer at off stays flat");
   assert.equal(D.depthFor("tilt", "full", "gpu"), "tilt");
   assert.equal(D.nextDepth("iso"), "flat");
+  // 2026-11-13: the lattice opens in depth (iso: the globes, and the bowl drilled into a shoal); one `d` is flat, the next
+  // tilt, the next back to iso
+  assert.equal(D.DEFAULT_DEPTH, "iso");
+  assert.deepEqual([1, 2, 3].reduce((seq) => [...seq, D.nextDepth(seq.at(-1))], [D.DEFAULT_DEPTH]), ["iso", "flat", "tilt", "iso"]);
+  const main = readFileSync(join(MOD, "main.js"), "utf8");
+  assert.ok(main.includes(": DEFAULT_DEPTH;") && main.includes("d: depth (${DEPTH_CYCLE.join(\", \")}"), "the mod opens in it, and its hint lists the cycle in order");
 });
 
 test("a change on a board redraws the rail", () => {
@@ -1266,7 +1272,9 @@ test("turning a globe reveals other roles without detaching them or their grid",
       assert.ok(Math.hypot(p.x - c.x, p.y - c.y) <= c.r * (1 + 1e-3), "the grid shares the silhouette");
   }
   const sc = S.buildScene(global, a, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
-  assert.ok(sc.items.some((x) => x.id.startsWith("contact-")), "front roles cast contact shadows");
+  // 2026-11-13: a globe is glass and catches no shadow; every role on one casts its shadow on the floor instead
+  assert.ok(!sc.items.some((x) => x.id.startsWith("contact-")), "no contact shadows on the glass");
+  for (const id of a.surfaceOf.keys()) assert.ok(sc.items.some((x) => x.id.startsWith(`shadow-r-${id}-`)), `${id}: its shadow on the floor`);
   assert.equal(sc.animated, 0, "depth cues do not introduce animation at off");
 });
 
@@ -1392,9 +1400,12 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
       assert.ok(s.phi >= b.a0 - 1e-9 && s.phi <= b.a1 + 1e-9, `${n.label} inside its lune's azimuths`);
       const u = SP.bowlPoint(fr, s.theta, s.phi);
       const q = SP.bowlProject(fr, u);
-      assert.ok(Math.hypot(p.x - Rs * q.x, p.y - Rs * q.y) < 1e-9 && s.theta < Math.PI / 2, "on the inner surface, in perspective");
+      // (below the rim: the far wall rises past the equator, BOWL_FAR_EXTRA, and a role may sit up it)
+      assert.ok(Math.hypot(p.x - Rs * q.x, p.y - Rs * q.y) < 1e-9 && s.theta < SP.rimTheta(fr, s.phi), "on the inner surface, in perspective");
       assert.ok(SP.bowlSeen(fr, u) <= 0.86 + 1e-6 && SP.bowlKept(fr, u), "on the inside, seen through the rim");
-      assert.ok(u.z <= -0.2 + 1e-9, `${n.label} sits behind you`);
+      // behind the middle by BOWL_BEHIND, or seen far round the side (the opening view since 2026-11-13) no further forward
+      // than bowlBehind lets it, and well behind you
+      assert.ok(u.z <= D.bowlBehind(fr) + 1e-9 && u.z <= pa.bowl.you.z - 0.2, `${n.label} sits behind you`);
       assert.equal(S.bowlHostAt(fr, pa.bands, p.x / Rs, p.y / Rs)?.host, n.host, "the lune drawn under it is its host's");
       assert.ok(pa.order.indexOf(n) < pa.order.indexOf(user), "you are drawn nearer than every role");
     }
@@ -1424,7 +1435,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
       }
     }
     // the bowl (48 faint glow layers, the most of it) stays under half of one globe's 970 or so
-    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 500, "the bowl costs a fraction of one globe");
+    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-") && !it.id.startsWith("bowl-shadow-"))) <= 500, "the bowl costs a fraction of one globe");
   }
   // a lune's outline is exact: the rim, where each meridian meets the cut, projects to the rim ellipse
   const fr = SP.bowlFrame(0.4);
@@ -1546,26 +1557,78 @@ test("2026-11-13: the globes', your and the edges' shadows point the same way fr
   }
 });
 
-test("2026-11-11: a shadow's falloff is smooth: many fine steps, darkest in the middle, within the render budget", () => {
-  const layers = SP.shadowLayers(0.6, 0.3);
-  assert.ok(layers.length >= 14 && layers.length <= SP.SHADOW_STEPS, "many layers");
-  assert.ok(layers[0].s <= 1.3 + 1e-9 && layers[0].s > 1.25 && layers.every((l, i) => i === 0 || l.s < layers[i - 1].s), "nested, from the soft edge in");
-  let prev = 0;
-  for (const l of layers) {
-    const total = 1 - (1 - prev) * (1 - l.alpha);
-    assert.ok(total - prev <= 0.075, "no step adds more than 7.5 percent: no coarse bands");
-    prev = total;
+test("2026-11-13: a shadow's falloff is smooth as drawn in 8 bits: even steps, no ring, darkest in the middle", () => {
+  const ink = SP.rgb8(SP.SHADOW_INK), under = SP.rgb8(SP.SHADOW_UNDER);
+  const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  for (const [peak, soft] of [[0.6, 0.3], [0.5, 0.45], [0.34, 0.3], [0.62, 0.4]]) {
+    const layers = SP.shadowLayers(peak, soft), n = SP.shadowSteps(peak, soft);
+    assert.ok(n === Math.ceil(peak / SP.SHADOW_STEP - 1e-9) && layers.length >= n - 3 && layers.length <= n, `${peak}: a layer per step (${layers.length})`);
+    assert.ok(layers[0].s <= 1 + soft && layers[0].s > 1 + soft * 0.7 && layers.every((l, i) => i === 0 || l.s < layers[i - 1].s), "nested, from the soft edge in");
+    // drawn as GPUI's 8-bit target stores it, every layer moves the color (none stalls), each by about the same step, and
+    // the middle comes out at the shadow's darkest
+    let c = under;
+    const steps = [];
+    for (const l of layers) {
+      const A = Math.round(l.alpha * 255), d = SP.blend8(c, ink, A);
+      assert.ok(Math.abs(A - l.alpha * 255) < 1e-9 && d.some((v, i) => v !== c[i]), "8-bit alphas, each one changing the color");
+      steps.push(luma(c) - luma(d));
+      c = d;
+    }
+    const range = luma(under) - luma(ink), ideal = luma(under) - range * SP.shadowAt(0, peak, soft);
+    assert.ok(Math.max(...steps) <= 0.04 * range, `${peak}: no step over 4 percent of the way to the ink (${Math.max(...steps).toFixed(2)} of ${range.toFixed(0)})`);
+    assert.ok(Math.abs(luma(c) - ideal) <= 0.6, `${peak}: the middle at its darkest (${luma(c).toFixed(1)}, ${ideal.toFixed(1)})`);
   }
-  assert.ok(Math.abs(prev - SP.shadowAt(0, 0.6, 0.3)) < 0.03, "the middle adds up to the shadow's darkest");
   assert.ok(SP.shadowAt(1.3, 0.6, 0.3) === 0 && SP.shadowAt(0.5, 0.6, 0.3) > SP.shadowAt(1, 0.6, 0.3), "it fades out by the soft edge");
+  // a small shadow takes fewer layers: no band under SHADOW_BAND_PX wide
+  assert.ok(SP.shadowSteps(0.6, 0.3, 10) === Math.ceil((1.3 * 10) / SP.SHADOW_BAND_PX) && SP.shadowSteps(0.6, 0.3, 1) === 3 && SP.shadowSteps(0.6, 0.3, 500) === SP.shadowSteps(0.6, 0.3));
+  // over a darker floor (a role's shadow in its globe's) the alphas are solved for that, and still none stalls
+  const dark = SP.shadowLayers(0.5, 0.4, 12, "#131b29");
+  let c = SP.rgb8("#131b29");
+  for (const l of dark) { const d = SP.blend8(c, ink, Math.round(l.alpha * 255)); assert.ok(d.some((v, i) => v !== c[i])); c = d; }
+  // in the scene: each globe's shadow a full stack of two-arc ellipses (four commands each), on the floor under its globe
   const pl = D.projectLayout(global, L.layoutGraph(global), D.camera("iso"));
   const sc = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
   for (const c of pl.clusters) {
-    const sh = sc.items.filter((it) => it.id.startsWith(`shadow-c-${c.id}-`));
-    assert.ok(sh.length >= 14 && cmdCount(sh) <= SP.SHADOW_STEPS * 6, "a globe's shadow: fine steps, a few cubics each");
+    const sh = sc.items.filter((it) => it.id.startsWith(`shadow-c-${c.id}-`)), st = pl.stems.find((s) => s.id === `c-${c.id}`).shadow;
+    assert.ok(sh.length >= SP.shadowSteps(st.peak, st.soft) - 3 && sh.every((it) => it.cmds.length === 4 && it.cmds.filter((k) => k[0] === "A").length === 2), "a globe's shadow: fine steps, two arcs each");
     assert.ok(sc.items.indexOf(sh.at(-1)) < sc.items.findIndex((it) => it.id === `sphere-body-${c.id}`), "on the floor, under the globe");
   }
-  assert.ok(cmdCount(sc.items.filter((it) => it.id.startsWith("shadow-"))) <= 300, "every shadow together under a sixth of what the globes take");
+  // an arc ellipse is the conjugate one it stands for: its ends on it, its radii its principal semi-axes
+  const a = { x: 30, y: 12 }, b = { x: -8, y: 20 }, e = G.ellipseArcCmds(5, 7, a, b), [, rx, ry, rot] = e[1];
+  const norm = (x, y) => ellipseNorm(a, b, { x: x - 5, y: y - 7 });
+  assert.ok(Math.abs(norm(e[0][1], e[0][2]) - 1) < 1e-9 && Math.abs(norm(e[1][6], e[1][7]) - 1) < 1e-9 && Math.abs(rx * ry - Math.abs(a.x * b.y - a.y * b.x)) < 1e-6);
+  const t = (rot * Math.PI) / 180, side = { x: 5 - ry * Math.sin(t), y: 7 + ry * Math.cos(t) };
+  assert.ok(Math.abs(norm(side.x, side.y) - 1) < 1e-9, "turned by its rotation, in degrees");
+});
+
+test("2026-11-13: every shadow is the one light's: a globe's, a seat's, a role's and an edge end's fall the same way", () => {
+  const base = L.layoutGraph(global);
+  for (const cam of [D.camera("iso"), D.camera("tilt")]) {
+    const pl = D.projectLayout(global, base, cam);
+    const sc = S.buildScene(global, pl, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    // the screen offset from each caster, as drawn, to its shadow's middle
+    const ways = [];
+    const way = (what, from, to) => { const dx = to.x - from.x, dy = to.y - from.y; assert.ok(Math.hypot(dx, dy) > 5, `${what}: cast aside`); ways.push([what, Math.atan2(dy, dx)]); };
+    const g = pl.clusters[0], gs = pl.stems.find((s) => s.id === `c-${g.id}`).shadow;
+    way("a globe", g, gs);
+    const seat = global.nodes.find((n) => n.kind === "external" && pl.stems.some((s) => s.id === `n-${n.id}`));
+    way("a seat", pl.pos.get(seat.id), pl.stems.find((s) => s.id === `n-${seat.id}`).shadow);
+    const role = global.nodes.find((n) => n.kind === "role" && n.shoal === g.id), rs = pl.casts.find((c) => c.id === `r-${role.id}`).shadow;
+    way("a role", pl.pos.get(role.id), rs);
+    // the role's shadow is drawn, and its edges' shadows end in it
+    assert.ok(sc.items.some((it) => it.id.startsWith(`shadow-r-${role.id}-`)), "a role's shadow is drawn");
+    const so = pl.shadowOf.get(role.id);
+    assert.ok(Math.hypot(so.x - rs.x, so.y - rs.y) < 1e-6, "its edges' shadows end where its own shadow is");
+    const e = global.edges.find((x) => pl.surfaceOf.has(x.dst) && pl.pos.has(x.src)), end = pl.shadowOf.get(e.dst);
+    way("an edge end", pl.pos.get(e.dst), { x: pl.pos.get(e.dst).x + end.dx, y: pl.pos.get(e.dst).y + end.dy });
+    // all within 35 degrees of each other (a point light, and perspective, spread them a little), down and to the right
+    for (const [w0, a0] of ways) for (const [w1, a1] of ways) assert.ok(Math.cos(a0 - a1) > Math.cos((35 * Math.PI) / 180), `${cam.name}: ${w0} and ${w1} agree`);
+    for (const [w, a] of ways) assert.ok(Math.cos(a) > 0 && Math.sin(a) > 0, `${cam.name}: ${w}'s shadow down and to the right`);
+    // and each stem's own shadow runs from its foot to its caster's shadow
+    const poles = sc.items.find((it) => it.id === "stem-shadows");
+    for (const st of pl.stems) assert.ok(poles.cmds.some((k, i) => k[0] === "M" && Math.hypot(k[1] - st.x1, k[2] - st.y1) < 1e-6
+      && Math.hypot(poles.cmds[i + 1][1] - st.shadow.x, poles.cmds[i + 1][2] - st.shadow.y) < 1e-6), `${st.id}: its stem's shadow`);
+  }
 });
 
 test("2026-11-11: a globe's name is larger and clear above its globe and the roles on its top", () => {
@@ -1603,17 +1666,18 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
   const la = L.layoutGraph(alpha);
   for (const cam of [D.camera("tilt"), D.camera("iso"), D.camera("iso", Math.PI / 3)]) {
     const pa = D.projectLayout(alpha, la, cam), fr = pa.bowl.frame;
-    // the cut is just past where the camera sees over the near wall (a point of the unit sphere faces it when
-    // u.z > 1 / d): nearly all of the inside is seen through the opening, and what is not is a sliver under the near lip
+    // the cut is past where the camera sees over the near wall (a point of the unit sphere faces it when u.z > 1 / d),
+    // by enough that the outer wall shows beside the opening (2026-11-13): most of the inside is seen through the
+    // opening, and what is not is the near wall's upper part, on the camera's side of the middle, under the shell
     let seen = 0, all = 0;
     for (let i = 1; i <= 24; i++) for (let j = 0; j < 48; j++) {
       const phi = (2 * Math.PI * j) / 48, u = SP.bowlPoint(fr, SP.rimTheta(fr, phi) * (i / 24), phi);
       all++;
       assert.ok(SP.bowlKept(fr, u));
       if (SP.bowlSeen(fr, u) <= 1 + 1e-9) seen++;
-      else assert.ok(i >= 18 && u.z > 0.25, "only the top of the near wall, under the lip, is hidden");
+      else assert.ok(i >= 9 && u.z > 0.05, "only the upper near wall, on the camera's side, is hidden");
     }
-    assert.ok(seen / all >= 0.96, `the inner surface is seen: ${seen}/${all}`);
+    assert.ok(seen / all >= 0.82, `the inner surface is seen: ${seen}/${all}`);
     const user = alpha.nodes.find((n) => n.kind === "user"), roles = alpha.nodes.filter((n) => n.kind === "role");
     assert.ok(pa.scaleOf.get(user.id) >= 1.2, "you read larger than in #153 (1)");
     for (const n of roles) assert.ok(pa.scaleOf.get(user.id) >= 1.12 * pa.scaleOf.get(n.id), `you, nearer, larger than ${n.label}`);
@@ -1621,21 +1685,25 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
     // seen from above and from the side: the bottom lands below and beside you, the rim is a turned ellipse, the far
     // wall rises a little past a hemisphere's rim (2026-11-13: more of the back shows) and only the near wall is cut lower
     const pole = SP.bowlProject(fr, fr.pole);
-    // the opening view (2026-11-12) is turned well to the side and tipped a little, so the bottom lands mostly beside you
-    assert.ok(Math.abs(pole.x) > 0.3 && pole.y > 0.05, `the pole off the middle, to the side: ${pole.x.toFixed(2)}, ${pole.y.toFixed(2)}`);
+    // the opening view (2026-11-13, the maintainer's) is turned far round to the side and tipped a little below level, so
+    // the bottom lands well to the right, a little above the middle, and you out to the left of it, over the opening
+    const yp = SP.bowlProject(fr, pa.bowl.you);
+    assert.ok(pole.x > 0.6 && pole.y < 0 && pole.y > -0.4, `the pole off the middle, to the side: ${pole.x.toFixed(2)}, ${pole.y.toFixed(2)}`);
+    assert.ok(pole.x - yp.x > 0.8, `you well left of the bottom: ${(pole.x - yp.x).toFixed(2)}`);
     assert.ok(Math.abs(fr.rim.m[1]) > 0.05 * Math.max(fr.rim.m[0], fr.rim.m[2]), "the rim's ellipse is turned, not square to the screen");
     const rims = Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72));
     const far = Math.PI / 2 + SP.BOWL_FAR_EXTRA;
     assert.ok(SP.BOWL_FAR_EXTRA >= (8 * Math.PI) / 180 && Math.max(...rims) <= far + 1e-9 && Math.max(...rims) > far - 0.01 && Math.min(...rims) < Math.PI / 2 - 0.1, "far rim past the equator, near rim lower");
-    assert.ok(Math.min(...rims) > Math.PI / 3 + 0.05, "both circles of latitude are whole");
+    assert.ok(Math.min(...rims) > Math.PI / 4 + 0.05 && SP.bowlRings(fr).length >= 3, "three circles of latitude are whole (seen from the side, the near rim is low)");
     // 2026-11-13: your shadow falls from the bowl's one light (the light of the inside's shading and the edges' shadows),
     // where its ray through you meets the wall behind you: below you and clear of you at the opening views, so it reads
     // as yours, floating in front; dark enough to be seen, about your size or larger (a point light's shadow spreads)
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
     const shadow = sc.items.filter((it) => it.id.startsWith("bowl-shadow-"));
-    assert.equal(shadow.length, SP.BOWL_SHADOW_STEPS);
     const Rs = pa.bowl.R, you = pa.pos.get(user.id), youR = sc.nodeScreen.get(user.id).r / Rs;
-    const layers = SP.bowlShadow(fr, 0, 0, 1, youR, pa.bowl.you), sh = layers.at(-1);
+    // (drawn at the bowl's size: how many layers it takes goes by its size on screen)
+    const layers = SP.bowlShadow(fr, 0, 0, Rs, youR, pa.bowl.you).map((l) => ({ ...l, x: l.x / Rs, y: l.y / Rs, a: { x: l.a.x / Rs, y: l.a.y / Rs } })), sh = layers.at(-1);
+    assert.ok(shadow.length === layers.length && shadow.every((it) => it.cmds.length === 4), "drawn, layer for layer, in two arcs each");
     const c = SP.bowlProject(fr, SP.bowlCast(fr, pa.bowl.you));
     assert.ok(Math.hypot(sh.x - c.x, sh.y - c.y) < 0.02 * youR, "its middle where the ray meets the wall");
     const off = { x: sh.x - you.x / Rs, y: sh.y - you.y / Rs }, apart = Math.hypot(off.x, off.y) / youR;
@@ -1738,30 +1806,40 @@ test("2026-11-12: the bowl reads as a bowl: a lip round the opening, the near wa
     const a = { x: shade.cmds[0][1], y: shade.cmds[0][2] };
     assert.ok(Math.abs(SP.rimNorm(fr, a) - 1) < 1e-6, "it starts on the rim");
     // 2026-11-13: from the bowl's one light: dark just under the rim on the light's side, lit at the lit spot
-    const sl = SP.bowlLightDir(fr), rc = { x: fr.rim.cx, y: fr.rim.cy };
-    let q = null;
-    for (let j = 0; j < 360; j++) {
-      const t = (2 * Math.PI * j) / 360, e = { x: rc.x + fr.rim.a.x * Math.cos(t) + fr.rim.b.x * Math.sin(t), y: rc.y + fr.rim.a.y * Math.cos(t) + fr.rim.b.y * Math.sin(t) };
-      if (!q || (e.x - rc.x) * sl.x + (e.y - rc.y) * sl.y > (q.x - rc.x) * sl.x + (q.y - rc.y) * sl.y) q = e;
+    // (from where the light was placed, the bowl's old opening view, where it comes in at a slant; from the opening view
+    // since 2026-11-13 it comes in nearly square through the opening and the shade is a sliver under the top of the rim)
+    for (const f of [SP.bowlFrame(SP.BOWL_LIGHT.tilt, SP.BOWL_DIST, SP.BOWL_LIGHT.turn), fr]) {
+      const sl = SP.bowlLightDir(f), rc = { x: f.rim.cx, y: f.rim.cy };
+      let q = null;
+      for (let j = 0; j < 360; j++) {
+        const t = (2 * Math.PI * j) / 360, e = { x: rc.x + f.rim.a.x * Math.cos(t) + f.rim.b.x * Math.sin(t), y: rc.y + f.rim.a.y * Math.cos(t) + f.rim.b.y * Math.sin(t) };
+        if (!q || (e.x - rc.x) * sl.x + (e.y - rc.y) * sl.y > (q.x - rc.x) * sl.x + (q.y - rc.y) * sl.y) q = e;
+      }
+      const dark = SP.bowlSurfaceAt(f, rc.x + 0.96 * (q.x - rc.x), rc.y + 0.96 * (q.y - rc.y)), lit = SP.bowlSpot(f).u;
+      assert.ok(f === fr || (dark && SP.inRimShade(f, dark)), "dark under the lip on the light's side");
+      assert.ok(!SP.inRimShade(f, lit) && SP.bowlLitAt(f, lit) > 0.25, "lit at the lit spot");
     }
-    const dark = SP.bowlSurfaceAt(fr, rc.x + 0.96 * (q.x - rc.x), rc.y + 0.96 * (q.y - rc.y)), lit = SP.bowlSpot(fr).u;
-    assert.ok(dark && SP.inRimShade(fr, dark) && !SP.inRimShade(fr, lit) && SP.bowlLitAt(fr, lit) > 0.25, "dark under the lip on the light's side, lit at the lit spot");
+    const sl = SP.bowlLightDir(fr);
     // the lip's shadow edge stays on the inside: where the light's ray past the rim meets the wall
     for (const c of shade.cmds) if (c[0] !== "Z") assert.ok(SP.rimNorm(fr, { x: c.at(-2), y: c.at(-1) }) <= 1 + 1e-6, "the shade inside the rim");
     assert.ok(sl.x * fr.cut.n.x + sl.y * fr.cut.n.y + sl.z * fr.cut.n.z > 0.5, "the light comes in through the opening");
     // depth: fine caps round the bottom (the smoothness test has them), and four faint guide rings, every one whole
+    // (seen from the old opening view, where the light comes in at a slant; from the side, the opening view since
+    // 2026-11-13, the near rim is lower, so the top ring is left out, and the light falls straight in onto the bottom)
     assert.equal(SP.BOWL_RINGS.length, 4);
-    assert.ok(Math.max(...SP.BOWL_RINGS) < Math.min(...Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72))), "every ring whole, below the rim");
+    const fo = SP.bowlFrame(SP.BOWL_LIGHT.tilt, SP.BOWL_DIST, SP.BOWL_LIGHT.turn), lowest = (f) => Math.min(...Array.from({ length: 72 }, (_, j) => SP.rimTheta(f, (2 * Math.PI * j) / 72)));
+    assert.ok(Math.max(...SP.BOWL_RINGS) < lowest(fo) && SP.bowlRings(fo).length === 4, "every ring whole, below the rim");
+    assert.ok(SP.bowlRings(fr).length >= 3 && SP.bowlRings(fr).every((t) => t < lowest(fr)), "and from the side, every ring drawn whole");
     assert.equal(SP.bowlDepthAt(fr, fr.pole), SP.BOWL_DEPTH);
     const lum = (h) => [1, 3, 5].reduce((t, i) => t + parseInt(h.slice(i, i + 2), 16), 0);
-    const ring = (t, phi) => SP.bowlProject(fr, SP.bowlPoint(fr, t, phi));
+    const ring = (t, phi) => SP.bowlProject(fo, SP.bowlPoint(fo, t, phi));
     for (const phi of [0, 2, 4]) {
       const inner = ring(0.1, phi), outer = ring(0.95, phi);
-      assert.ok(lum(SP.bowlColorAt(fr, inner.x, inner.y, null)) < lum(SP.bowlColorAt(fr, outer.x, outer.y, null)) + 40, "the bottom no lighter than the wall above it");
+      assert.ok(lum(SP.bowlColorAt(fo, inner.x, inner.y, null)) < lum(SP.bowlColorAt(fo, outer.x, outer.y, null)) + 40, "the bottom no lighter than the wall above it");
     }
     const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
     assert.equal(sc.items.filter((it) => it.id.startsWith("bowl-deep-")).length, SP.BOWL_DEPTH);
-    assert.equal(sc.items.find((it) => it.id === "bowl-rings").cmds.filter((c) => c[0] === "M").length, 4);
+    assert.equal(sc.items.find((it) => it.id === "bowl-rings").cmds.filter((c) => c[0] === "M").length, SP.bowlRings(fr).length);
   }
 });
 
@@ -1806,14 +1884,19 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
     assert.ok(c.pitch === p.pitch && c.yaw === p.yaw && c.spin === p.yaw && c.orbit.x === 0 && c.orbit.y === 0);
     assert.equal(D.bowlTurn(c), D.BOWL_HOME_TURN);
   }
-  // the bowl opens at 10 degrees tilt and -40 turn (the maintainer's pick); 2026-11-12, later: each axis reaches well past
-  // where it stopped (4.6 to 50 tilt, -61 to 43 turn), and the two together keep the axis at most 70 to 75 degrees off
-  // the line of sight, so the bowl never goes edge-on
+  // the bowl opens turned far round to the side, at -14 degrees tilt and -70 turn (2026-11-13: the view the maintainer
+  // orbited to from the old opening, 10 and -40, and picked); each axis reaches past it, down to -30 tilt and to 78 turn
+  // either way, and the two together keep the axis at most 75 to 80 degrees off the line of sight, so the bowl never goes
+  // edge-on; the opening view is inside every limit, with room to orbit on past it
   const near = (a, b) => Math.abs(a - b) < 1e-9;
-  assert.ok(near(D.BOWL_HOME_TILT, 10 * DEG) && near(D.BOWL_HOME_TURN, -40 * DEG));
-  assert.ok(D.BOWL_ALPHA_RANGE[0] <= -10 * DEG && D.BOWL_ALPHA_RANGE[1] >= 60 * DEG, "further down and up");
-  assert.ok(D.BOWL_BETA_RANGE[0] <= -70 * DEG && D.BOWL_BETA_RANGE[1] >= 70 * DEG, "further left and right");
-  assert.ok(D.BOWL_OFF_AXIS_MAX >= 70 * DEG && D.BOWL_OFF_AXIS_MAX <= 75 * DEG && Math.cos(D.BOWL_ALPHA_RANGE[1]) > Math.cos(D.BOWL_OFF_AXIS_MAX), "the tilt alone never reaches it");
+  assert.ok(near(D.BOWL_HOME_TILT, -14 * DEG) && near(D.BOWL_HOME_TURN, -70 * DEG));
+  assert.ok(D.BOWL_ALPHA_RANGE[0] <= D.BOWL_HOME_TILT - D.ORBIT_STEP && D.BOWL_ALPHA_RANGE[1] >= 60 * DEG, "further down and up");
+  assert.ok(D.BOWL_BETA_RANGE[0] <= D.BOWL_HOME_TURN - 6 * DEG && D.BOWL_BETA_RANGE[1] >= 70 * DEG, "further left and right");
+  assert.ok(D.BOWL_OFF_AXIS_MAX >= 75 * DEG && D.BOWL_OFF_AXIS_MAX <= 80 * DEG && Math.cos(D.BOWL_ALPHA_RANGE[1]) > Math.cos(D.BOWL_OFF_AXIS_MAX), "the tilt alone never reaches it");
+  assert.ok(Math.cos(D.BOWL_HOME_TILT) * Math.cos(D.BOWL_HOME_TURN) > Math.cos(D.BOWL_OFF_AXIS_MAX - 6 * DEG), "the opening view well inside the combined limit");
+  // the opening view (orbit 0) is where it was asked to be
+  const a0 = D.bowlAngles({ x: 0, y: 0 });
+  assert.ok(near(a0.alpha, D.BOWL_HOME_TILT) && near(a0.beta, D.BOWL_HOME_TURN), "not held back by any limit");
   const floor = Math.cos(D.BOWL_OFF_AXIS_MAX), offAxis = (o) => { const a = D.bowlAngles(o); return Math.cos(a.alpha) * Math.cos(a.beta); };
   assert.deepEqual(D.orbitBy("flat", { x: 1, y: 1 }, 0.1, 0.1, true), { x: 0, y: 0 }, "flat has no orbit");
   for (const name of ["tilt", "iso"]) {
@@ -1825,6 +1908,11 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
     const alpha0 = D.bowlTilt(D.camera(name));
     o = press(o, 0, 1);
     assert.ok(D.bowlTilt(D.camera(name, 0, o)) > alpha0, "up: tipped further");
+    // from the opening view, turned far round, the combined limit stops the tilt short of its range: the rest of the
+    // walk starts square on (turn 0), where each axis reaches its own limit first
+    for (let i = 0; i < 20; i++) o = press(o, 0, 1);
+    assert.ok(D.bowlTilt(D.camera(name, 0, o)) < D.BOWL_ALPHA_RANGE[1] && Math.abs(offAxis(o) - floor) < 1e-9, "up, turned far round: held at the combined limit");
+    o = D.orbitBy(name, { x: -D.BOWL_HOME_TURN, y: 0 }, 0, 0, true);
     const seen = [];
     for (let i = 0; i < 20; i++) seen.push(o = press(o, 0, 1));
     assert.ok(near(D.bowlTilt(D.camera(name, 0, o)), D.BOWL_ALPHA_RANGE[1]), "held at the top limit");
@@ -1912,12 +2000,14 @@ test("2026-11-12: you float in front of the inside: nearer than the surface behi
     assert.ok(Math.abs(Math.hypot(sh.x, sh.y, sh.z) - 1) < 1e-9 && cr < 1e-9 && Math.hypot(w.x, w.y, w.z) > Math.hypot(u.x, u.y, u.z) + 0.3, `${at}: your shadow is the light's ray through you, on the wall past you`);
     if (SP.bowlShadowSeen(fr, you)) assert.ok(sh.z < you.z, `${at}: seen, it is behind you`);
     // drawn where it lands on the inside, seen through the opening (at the opening view and near it, always)
-    assert.equal(shadow.length, SP.bowlShadowSeen(fr, you) ? SP.BOWL_SHADOW_STEPS : 0, `${at}: drawn where it is seen`);
-    if (Math.abs(ox) <= 40 && Math.abs(oy) <= 30) assert.equal(shadow.length, SP.BOWL_SHADOW_STEPS, `${at}: your shadow is seen`);
+    const youR = sc.nodeScreen.get(user.id).r / Rs, want = SP.bowlShadow(fr, 0, 0, Rs, youR, you).length;
+    assert.ok(shadow.length === (SP.bowlShadowSeen(fr, you) ? want : 0), `${at}: drawn where it is seen`);
+    if (Math.abs(ox) <= 40 && Math.abs(oy) <= 30) assert.ok(shadow.length >= 8, `${at}: your shadow is seen, in fine steps`);
     const low = Math.min(...Array.from({ length: 72 }, (_, j) => SP.rimTheta(fr, (2 * Math.PI * j) / 72)));
     assert.ok(SP.bowlRings(fr).length >= 2 && SP.bowlRings(fr).every((t) => t < low), `${at}: the rings drawn are whole`);
     assert.equal(sc.items.find((it) => it.id === "bowl-rings").cmds.filter((c) => c[0] === "M").length, SP.bowlRings(fr).length);
-    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-"))) <= 500, `${at}: the bowl's budget holds`);
+    // (the bowl itself; your shadow on it is in the scene's budget)
+    assert.ok(cmdCount(sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-") && !it.id.startsWith("bowl-shadow-"))) <= 500, `${at}: the bowl's budget holds`);
   }
   // at the middle (no lift) the shadow is the point opposite its light
   // at the middle (no lift) the shadow is the far end of the light's ray through the middle
@@ -1951,7 +2041,7 @@ test("2026-11-12: in the bowl you are a small glass ball, finely graded, lit fro
   const Ly = SP.bowlLightDir(pa.bowl.frame, pa.bowl.you), lc = SP.lightOf(Ly);
   assert.ok(Math.hypot(pa.bowl.youLight.x - Ly.x, pa.bowl.youLight.y - Ly.y, pa.bowl.youLight.z - Ly.z) < 1e-12, "the light from you");
   const spec = glass.filter((it) => it.id.includes("-spec")).at(-1), sx = (spec.cmds[0][1] + spec.cmds[1][6]) / 2, sy = spec.cmds[0][2];
-  assert.ok(Math.hypot(sx - (at.x + 0.52 * at.r * lc.x), sy - (at.y + 0.52 * at.r * lc.y)) < 1e-6 && sy < at.y - 0.1 * at.r && alphaOf(spec.bg.color) > 0.5, "a bright highlight toward the light");
+  assert.ok(Math.hypot(sx - (at.x + 0.52 * at.r * lc.x), sy - (at.y + 0.52 * at.r * lc.y)) < 1e-6 && (sx - at.x) * lc.x + (sy - at.y) * lc.y > 0.1 * at.r * Math.hypot(lc.x, lc.y) && alphaOf(spec.bg.color) > 0.5, "a bright highlight toward the light");
   const body = glass[0];
   assert.ok(body.bg.kind === "linear" && alphaOf(body.bg.from) < 0.2 && alphaOf(body.bg.to) > 0.5, "clear on the lit side, deep at the far limb");
   assert.ok(Math.cos(((body.bg.angle - 90) * Math.PI) / 180 - Math.atan2(-lc.y, -lc.x)) > 0.99, "graded along the light");
@@ -1997,7 +2087,11 @@ test("2026-11-12: an edge from you tapers into the bowl: wide and bright at you,
 
 test("2026-11-13: the bowl's one light: fixed to the bowl, and your shadow, an edge's and the lip's all fall from it, the same way", () => {
   const DEG = Math.PI / 180, la = L.layoutGraph(alpha), user = alpha.nodes.find((n) => n.kind === "user");
-  assert.ok(Math.abs(SP.BOWL_LIGHT.tilt - D.BOWL_HOME_TILT) < 1e-12 && Math.abs(SP.BOWL_LIGHT.turn - D.BOWL_HOME_TURN) < 1e-12, "placed for the opening view");
+  // placed from the old opening view (10 tilt, -40 turn), and left there in the bowl's world when the opening view moved
+  // round to the side (2026-11-13), so the new one is lit as the maintainer saw it when they picked it
+  assert.ok(Math.abs(SP.BOWL_LIGHT.tilt - 10 * DEG) < 1e-12 && Math.abs(SP.BOWL_LIGHT.turn + 40 * DEG) < 1e-12, "placed from the old opening view");
+  const placed = SP.bowlLightDir(SP.bowlFrame(SP.BOWL_LIGHT.tilt, SP.BOWL_DIST, SP.BOWL_LIGHT.turn));
+  assert.ok(Math.hypot(placed.x - SP.BOWL_LIGHT.home.x, placed.y - SP.BOWL_LIGHT.home.y, placed.z - SP.BOWL_LIGHT.home.z) < 1e-9, "there: up and in front");
   const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z, sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
   const onRay = (Lp, q, w) => {
     const u = sub(q, Lp), v = sub(w, Lp), cr = { x: u.y * v.z - u.z * v.y, y: u.z * v.x - u.x * v.z, z: u.x * v.y - u.y * v.x };
@@ -2014,7 +2108,7 @@ test("2026-11-13: the bowl's one light: fixed to the bowl, and your shadow, an e
     assert.ok(inFrame[0] < -2 && Math.abs(Math.hypot(Lp.x, Lp.y, Lp.z) - SP.BOWL_LIGHT.dist) < 1e-9, `${at}: above the opening, ${SP.BOWL_LIGHT.dist} radii out`);
     if (!ox && !oy) {
       const h = SP.bowlLightDir(fr);
-      assert.ok(Math.hypot(h.x - SP.BOWL_LIGHT.home.x, h.y - SP.BOWL_LIGHT.home.y, h.z - SP.BOWL_LIGHT.home.z) < 1e-9 && h.y < -0.2 && h.z > 0.8, "at the opening view: up and in front");
+      assert.ok(h.x < -0.3 && h.z > 0.6, "at the opening view: to the left, in front, shining in through the opening");
     }
     // your shadow, and each role's (an edge's end, just off the wall): on the sphere, where the ray from the light through
     // the caster leaves it
@@ -2174,16 +2268,20 @@ test("2026-11-13: depth: a brighter canvas than before, so the shadows read, and
   }
 });
 
-// The app interrupts a render past a wall-clock budget: about 2,800 path commands never failed, 3,500 sometimes did.
-// 2026-11-13 (one light, fine depth caps, the edges' shadows): the fixture's per-shoal scenes at most 1,161 (alpha) and
-// 830 (beta), its global depth scene 1,724; a live two-host group's bowl at most about 1,190 and its global scene about
-// 1,910. Each is held well under that line: a bowl to 1,300, the global scene to 2,400.
-const BUDGET = { shoal: 1300, global: 2400 };
-test("2026-11-13: the render budget: the per-shoal scene at most 1,300 path commands, the global depth scene at most 2,400", () => {
+// The app interrupts a render past a wall-clock budget: about 2,800 path commands never failed, 3,500 sometimes did
+// ("This view could not be re-rendered", interrupted at paintPath). 2026-11-13 (one light, fine depth caps, the edges'
+// shadows): the fixture's per-shoal scenes at most 1,161 (alpha) and 830 (beta), its global depth scene 1,724; a live
+// group's bowl about 30 more and its global scene about 280 more. Later that day (every shadow a smooth stack, a shadow
+// for every role on a globe): the fixture's bowls at most 1,358 and 967, its global scene 2,054 (2,108 at the canvas
+// fit, zoomed in). Each is held under that line with room for a live group's extra: a bowl to 1,450, the global scene
+// to 2,300, and every scene, at any zoom the fit can pick, to RENDER_CEILING.
+const BUDGET = { shoal: 1450, global: 2300 };
+const RENDER_CEILING = 2800;
+test("2026-11-13: the render budget: the per-shoal scene at most 1,450 path commands, the global depth scene at most 2,300", () => {
   const DEG = Math.PI / 180, total = (sc) => cmdCount(sc.items.filter((it) => it.t === "path"));
   for (const [vm, before] of [[alpha, BUDGET.shoal], [M.buildModel(doc, B), BUDGET.shoal]]) {
     const la = L.layoutGraph(vm);
-    for (const [ox, oy] of [[0, 0], [-24, -8], [80, 40], [-40, 0], [120, 0], [0, 60], [0, -30], [120, 60], [-40, -30]]) {
+    for (const [ox, oy] of [[0, 0], [-24, -8], [80, 40], [-40, 0], [120, 0], [0, 60], [0, -30], [120, 60], [-40, -30], [30, 24], [8, 16], [-8, -16]]) {
       for (const name of ["tilt", "iso"]) {
         const pa = D.projectLayout(vm, la, D.camera(name, 0, D.orbitBy(name, null, ox * DEG, oy * DEG, true)));
         const n = total(S.buildScene(vm, pa, { width: 1400, height: 860, tf: G.identity(), motion: "full" }));
@@ -2205,5 +2303,24 @@ test("2026-11-13: the render budget: the per-shoal scene at most 1,300 path comm
       }
     }
     assert.ok(total(sc) <= BUDGET.global, `the global depth scene: ${total(sc)} path commands`);
+  }
+});
+
+test("2026-11-13: the whole scene, global and per shoal, at the canvas fit and zoomed in, stays under the render ceiling", () => {
+  // a shadow's layer count grows with its size on screen, so the ceiling is checked at the zoom the fit picks for a
+  // small and a large canvas, and at the fit's largest zoom (1.6), with every motion element on
+  const total = (sc) => cmdCount(sc.items.filter((it) => it.t === "path"));
+  for (const vm of [global, alpha, M.buildModel(doc, B)]) {
+    const la = L.layoutGraph(vm);
+    for (const cam of [D.camera("iso"), D.camera("tilt"), D.camera("iso", 0.6, D.orbitBy("iso", null, 0.7, 0.3, !vm.global))]) {
+      const pl = D.projectLayout(vm, la, cam);
+      for (const size of [{ width: 900, height: 640 }, { width: 1800, height: 1100 }]) {
+        const fit = S.fitScene(vm, pl, size, { pad: 24, top: 48, kMax: 1.6 });
+        for (const tf of [fit, { ...fit, k: 1.6 }]) {
+          const n = total(S.buildScene(vm, pl, { ...size, tf, motion: "full" }));
+          assert.ok(n <= RENDER_CEILING, `${vm.view} ${cam.name} ${size.width}px at zoom ${tf.k.toFixed(2)}: ${n} path commands (at most ${RENDER_CEILING})`);
+        }
+      }
+    }
   }
 });

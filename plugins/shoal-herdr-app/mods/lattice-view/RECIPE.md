@@ -53,23 +53,27 @@ you, per-shoal throughput and per-host load.
   subtle dash. Width and brightness also step with the rate (under 1/h, under 4/h, above). A role
   whose CI job runs on another host has a dotted tether to that host's band (per shoal) or a chip
   at the node (global), labeled `remote-ci -> host-b`.
-- **Depth:** `d` cycles the camera: flat, tilt (52 degrees) and iso (an isometric turn), seen in perspective. In the
+- **Depth:** the lattice opens in depth, iso (an isometric turn), and `d` cycles the camera: iso, flat, tilt (52
+  degrees), seen in perspective, so one press from the opening view is flat. In the
   global view each shoal is on its own plane, stacked in depth, the operator and outside seats on a plane above, so
   traffic between planes visibly crosses them. A floor grid lies below every globe,
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. The canvas
   is a lighter slate in depth, so the shadows read. One light, a point high over the scene (`depth.js` `lightPoint`, up,
   to the left and a little toward the far side, fixed in the world so it stays put as the camera orbits), shades each
-  globe from the way to it from that globe and casts every shadow: each globe and lifted node's on the floor, where the
-  ray from the light through its middle meets the floor (`castShadow`), so the shadows fall down and to the right of
-  their casters at the presets, further the higher the caster (yours furthest); it is a stack of 16 fine alpha layers
-  (4 for a seat), a dark core and a soft penumbra that widens as the caster rises. Each edge casts a faint shadow there
-  too: its ends' shadows are the rays' through them, and its curve is carried between them, arrowheads included. Far things are smaller and fade, near ones larger and drawn last. In the
+  globe from the way to it from that globe and casts every shadow: each globe's, each lifted node's and each role's on
+  a globe (the glass catches none, so a role's falls on the floor, inside its globe's), where the ray from the light
+  through its middle meets the floor (`castShadow`), so the shadows fall down and to the right of their casters at the
+  presets, further the higher the caster (yours furthest). A shadow is a stack of fine alpha layers cut into equal
+  steps of darkness as drawn in 8 bits (about two color levels each, `sphere.js` `shadowLayers`), fewer for a small
+  one, so it falls off smoothly from a dark core through a soft penumbra that widens as the caster rises, with no ring
+  showing. Each stem casts a faint shadow from its foot to its caster's, and each edge a faint one too: its ends'
+  shadows are the rays' through them, and its curve is carried between them, arrowheads included. Far things are smaller and fade, near ones larger and drawn last. In the
   global view each shoal is a
   glass sphere: 48 directional light contours, each adding a little alpha, so the shadow side is nearly clear (5
   percent) and the lit side a tinted veil (27 percent), the floor and the far side's grid showing through; with the
   pointer on it (anywhere on the globe, its name, a role, an item or an edge of it) it goes a little more opaque (16
   and 56 percent). Its name is 14 px, 12 px clear above the globe and any role on its top, the needs-you count
-  between. A soft highlight and curved surface grid lines finish it. Front roles cast contact shadows. A label
+  between. A soft highlight and curved surface grid lines finish it. A label
   on a globe takes white or near-black ink, whichever reads better (WCAG contrast) against the glass under it as
   drawn; a needs-you label keeps its hue. In depth, every edge has a dark casing under its core, and its core a little
   more alpha and a lighter ink (its color toward white), so it reads over a pale surface and a dark one. Where a role sits on its globe says how much it matters now: the initial point facing you holds what needs you most
@@ -82,13 +86,14 @@ you, per-shoal throughput and per-host load.
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.
 - **Depth, per shoal: the cutout sphere.** `you` float 0.5 radii from the middle of a sphere whose near part is cut
   away, leaning from its axis toward the camera, out past the cut in front of the opening, and the camera looks into
-  the bowl that is left from the side, in perspective: it hangs 2.4 radii from the middle, and the bowl opens with its
-  axis turned off the line of sight 10 degrees vertically and -40 horizontally (tilt and iso alike), so its bottom lies
-  beside you. The arrow keys orbit the camera round the bowl, 8 degrees a press: up and down tip its axis further or
-  less down the screen (-14 to 64 degrees), left and right turn it round the screen's vertical (-72 to 72 degrees), the
-  two together held to at most 72 degrees off the line of sight (cos tilt cos turn above its floor; a press past a limit
-  goes to it and the rest is dropped), so the bowl never goes edge-on or flips. The bowl has one light, a point 4 radii
-  out fixed to the bowl (`sphere.js` `BOWL_LIGHT`), just above the camera at the opening view, so as the camera orbits
+  the bowl that is left from the side, in perspective: it hangs 2.4 radii from the middle, and the bowl opens turned
+  far round, its axis off the line of sight -14 degrees vertically and -70 horizontally (tilt and iso alike), so its
+  opening faces your left and its bottom lies to the right of you. The arrow keys orbit the camera round the bowl, 8
+  degrees a press: up and down tip its axis further or less down the screen (-30 to 64 degrees), left and right turn it
+  round the screen's vertical (-78 to 78 degrees), the two together held to at most 78 degrees off the line of sight
+  (cos tilt cos turn above its floor; a press past a limit goes to it and the rest is dropped), so the bowl never goes
+  edge-on or flips. The bowl has one light, a point 4 radii out fixed to the bowl (`sphere.js` `BOWL_LIGHT`), placed
+  just above the camera at the old opening view (10 and -40), above and behind the opening now, so as the camera orbits
   the light and the shadows turn with the bowl; every shadow in the bowl is the ray from it through the caster, meeting
   the wall (`bowlCast`). You are nearer the camera than the middle (orbited far round the side, leaning further toward
   it), so from an oblique angle you stand visibly off the wall behind you: you are a small glass ball (about 90 path
@@ -102,8 +107,9 @@ you, per-shoal throughput and per-host load.
   perspective, and an arrowhead is sized with the node it is at, so the edge reads as running away, into the bowl. A
   role keeps its place on the surface as the camera orbits (where the preset puts it), moved down the wall only to stay
   in view, clear of you, or clear of a role placed before it. The cut is a slanted
-  plane: the far wall rises 14 degrees past a hemisphere's rim (so more of the back shows), the near wall is cut lower, to
-  just short of where the camera would see over it, so the near wall's outside shows as a thin crescent under the lip. The wall has a thickness, so the
+  plane: the far wall rises 22 degrees past a hemisphere's rim (so more of the back shows), the near wall is cut lower, but
+  short of where the camera would see over it by 17 degrees, so the sphere's outer wall shows as a shell beside the
+  opening, from its top round to its bottom. The wall has a thickness, so the
   opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
   the inner surface, opaque (it hides its own floor behind it) and lit as a hollow is: the light pools where it falls
   brightest (16 faint layers over a smooth linear sweep, so no band shows), the wall under the lip on the light's side
@@ -115,7 +121,7 @@ you, per-shoal throughput and per-host load.
   side, so together they make a whole turn, washed (17 percent) and outlined in the host color, the host colors clearly
   apart (azure, amber, green, rose, violet, cyan, olive: every pair at least 30 apart in Lab; the home host first, from
   the top), its name just outside the rim. A host's roles sit on its lune, spread across its sector in label order (two
-  rows from four roles), each kept inside the rim and at least 0.2 radii behind you; they shrink and fade with their
+  rows from four roles), each kept inside the rim and behind you; they shrink and fade with their
   depth, and you are drawn nearest and largest (1.25 times flat, times your perspective). Outside seats ring the rim, in the cut's plane,
   outside it; a CI tether ends in the middle of its host's lune. Edges and arrows are drawn over the
   bowl, with the depth casing. Labels in the bowl get the same readable ink against its inside. `,` and `.` turn the
@@ -251,11 +257,14 @@ you, per-shoal throughput and per-host load.
   per-shoal scene stays at or under its count before the glass you and the tapered edges (the fixture's first shoal
   1,085 at the opening view, now about 1,040): the glow gave 168 commands for them. With one light, the fine depth caps
   and the edges' shadows (2026-11-13) the fixture's bowl is at most about 1,160 and its global scene about 1,720; a
-  live two-host bowl about 1,190 and its global scene about 1,910. The tests hold a bowl to 1,300 and the global scene
-  to 2,400: about 2,800 never failed a native render and 3,500 sometimes did.
-- A shadow on the dark floor cannot show more than about 15 to 20 distinct 8-bit levels, so more
-  layers buy nothing; each layer's alpha is solved against the rounded layers outside it, and one
-  that rounds to 0 is dropped.
+  live two-host bowl about 1,190 and its global scene about 1,910. With smooth shadows, one for every role on a globe
+  (2026-11-13), the fixture's bowls are at most 1,358 and 967 and its global scene 2,054. The tests hold a bowl to 1,450,
+  the global scene to 2,300 and every scene, at the fit and zoomed in, to 2,800: about 2,800 never failed a native
+  render and 3,500 sometimes did.
+- A shadow on the dark floor cannot show more than about 30 to 50 distinct 8-bit levels, so layers finer than one or two
+  levels apart buy nothing, and finer than half a level they stall: GPUI rounds every channel per layer, so a 1 percent
+  layer over a dark floor changes nothing. Each layer's alpha is solved by blending the rounded layers outside it over
+  the color under the shadow (`blend8`), and one that would change nothing is dropped.
 - The bowl's circles are circles on a sphere seen in perspective, so each projects to an ellipse,
   but not at an even pace: eighth-turn cubics fitted to the projection stay within a pixel. The
   rim's ellipse is exact (`bowlFrame` `rim`, the conic image of the cut circle, turned), the

@@ -15,16 +15,15 @@ import { motionPolicy, flowEdges } from "./motion.js";
 import {
   sphereShade, glassColorAt, LIGHT, lightOf, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
   BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlCaps, bowlPlumb, lipCmds, crescentCmds, rimShade,
-  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS, bowlSweep, glassBall,
+  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, shadowSteps, bowlCovers, blend8, rgb8, SHADOW_INK, SHADOW_UNDER,
+  bowlSweep, glassBall,
 } from "./sphere.js";
 import {
-  edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, annularSectorCmds,
+  edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, ellipseArcCmds, annularSectorCmds,
   samplesBySpacing, pointAt, tangentAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp, readableInk,
 } from "./geom.js";
 
 const P = PALETTE;
-/** The layers of the bowl's shadow on its floor: the bowl stands in front of most of it, so fewer than a globe's. */
-export const BOWL_FLOOR_SHADOW_STEPS = 8;
 const solid = (color) => ({ kind: "solid", color });
 // The depth canvas: a slate gradient, brighter than the flat view's near-black (2026-11-13: so the dark shadows of the
 // globes, the bowl, you and the edges read against it), and what a depth-mode surface sits on, its middle.
@@ -77,15 +76,34 @@ export function edgeCasing(bk) {
 /**
  * The edges' shadows, cast by the view's one light: on the floor in the global view, on the bowl's inner wall per shoal.
  * Each end's shadow is where the light's ray through that end meets the surface (depth.js shadowOf); the edge's shadow
- * is its curve carried there, each point moved as its ends' shadows are, between them. A soft wide stroke under a core
- * one, and the arrowheads' shadows filled. Fainter on the far floor than on the bowl's wall, just behind the edges.
+ * is its curve carried there, each point moved as its ends' shadows are, between them. EDGE_SHADOW_STROKES strokes, from
+ * `outW` wide down to the core's `coreW`, each adding an equal step of darkness, so it is darkest along the middle and
+ * fades out to its edges with no step showing (two strokes, a soft one and a core, read as a dark line in a pale band);
+ * `peak` is its darkness along the middle. The arrowheads' shadows filled. Fainter on the far floor than on the bowl's
+ * wall, just behind the edges.
  */
-export const EDGE_SHADOW = { floor: { softW: 5, soft: 0.07, coreW: 2, core: 0.14, heads: 0.16 }, bowl: { softW: 4.5, soft: 0.12, coreW: 1.8, core: 0.3, heads: 0.32 } };
+export const EDGE_SHADOW = { floor: { outW: 7, coreW: 1.6, peak: 0.2, heads: 0.16 }, bowl: { outW: 6.5, coreW: 1.5, peak: 0.38, heads: 0.32 } };
+export const EDGE_SHADOW_STROKES = 4;
+/** An edge shadow's strokes, widest first: {width, alpha}, each alpha solved so the darkness steps up evenly. */
+export function edgeShadowStrokes(tone, n = EDGE_SHADOW_STROKES) {
+  const out = [];
+  let below = 0;
+  for (let i = 0; i < n; i++) {
+    const total = (tone.peak * (i + 1)) / n, alpha = 1 - (1 - total) / (1 - below);
+    out.push({ width: tone.outW + ((tone.coreW - tone.outW) * i) / (n - 1), alpha });
+    below = total;
+  }
+  return out;
+}
 /** An edge's curve c carried by its ends' shadow offsets d0 (at its start) and d1 (at its end), screen px. */
 export function shadowCurve(c, d0, d1) {
   const at = (p, t) => ({ x: p.x + d0.x + (d1.x - d0.x) * t, y: p.y + d0.y + (d1.y - d0.y) * t });
   return { p0: at(c.p0, 0), c1: at(c.c1, 1 / 3), c2: at(c.c2, 2 / 3), p3: at(c.p3, 1) };
 }
+
+/** A role's contact shadow on the bowl's wall: its geometric shadow `rx` by `ry` of the role's radius, `off` of it toward
+ * where its shadow falls, its darkest `peak` (what the three 13 percent layers it was added up to) and penumbra `soft`. */
+export const CONTACT = { rx: 1.15, ry: 0.8, off: 0.7, peak: 0.34, soft: 0.3 };
 
 /** The glyph a marching dot shows at frame j: bright head, a short tail behind it. */
 export const DOT_GLYPHS = ["●", "•", "·", " ", " "];
@@ -224,10 +242,13 @@ export function buildScene(vm, lay, opts) {
   const edgeShadowsHere = () => {
     if (!lay.shadowOf || edgeShadow.core) return;
     const tone = lay.bowl ? EDGE_SHADOW.bowl : EDGE_SHADOW.floor, ink = (a) => solid(withAlpha("#01040a", a));
-    edgeShadow.soft = { t: "path", id: "edge-shadow-soft", fill: false, width: tone.softW, cmds: [], bg: ink(tone.soft) };
-    edgeShadow.core = { t: "path", id: "edge-shadow", fill: false, width: tone.coreW, cmds: [], bg: ink(tone.core) };
+    // the strokes share one list of commands: the edges' shadow curves, filled in below
+    const cmds = [], strokes = edgeShadowStrokes(tone);
+    edgeShadow.cmds = cmds;
+    edgeShadow.strokes = strokes.map((st, i) => ({ t: "path", id: i === strokes.length - 1 ? "edge-shadow" : `edge-shadow-soft-${i}`, fill: false, width: st.width, cmds, bg: ink(st.alpha) }));
+    edgeShadow.core = edgeShadow.strokes.at(-1);
     edgeShadow.heads = { t: "path", id: "edge-shadow-heads", fill: true, cmds: [], bg: ink(tone.heads) };
-    items.push(edgeShadow.soft, edgeShadow.core, edgeShadow.heads);
+    items.push(...edgeShadow.strokes, edgeShadow.heads);
   };
 
   // 1b. depth mode: the floor grid, and stems from each plane and lifted node down to it, with their shadows
@@ -240,18 +261,42 @@ export function buildScene(vm, lay, opts) {
     if (lines.length) items.push({ t: "path", id: "floor-grid", fill: false, width: 1, cmds: lines, bg: solid(withAlpha(P.steel2, 0.11)) });
     if (rim.length) items.push({ t: "path", id: "floor-rim", fill: false, width: 1.2, cmds: rim, bg: solid(withAlpha(P.steel2, 0.2)) });
   }
-  // A shadow is where the one light (depth.js castShadow) puts it, a stack of fine alpha layers so its edge is soft;
-  // a globe's gets the full stack, the bowl's half of it (the opaque bowl hides most of it), a lifted seat's a short one.
-  for (const st of lay.stems ?? []) {
-    const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 }), sh = st.shadow;
-    if (sh) {
-      const c = S(sh), ax = { x: sh.a.x * k, y: sh.a.y * k }, bx = { x: sh.b.x * k, y: sh.b.y * k };
-      shadowLayers(sh.peak, sh.soft, !st.id.startsWith("c-") ? 4 : lay.bowl ? BOWL_FLOOR_SHADOW_STEPS : SHADOW_STEPS).forEach((l, i) => items.push({
-        t: "path", id: `shadow-${st.id}-${i}`, fill: true,
-        cmds: conjugateEllipseCmds(c.x, c.y, { x: ax.x * l.s, y: ax.y * l.s }, { x: bx.x * l.s, y: bx.y * l.s }),
-        bg: solid(withAlpha("#01040a", l.alpha)),
-      }));
+  // A shadow is where the one light (depth.js castShadow) puts it: a globe's, a lifted seat's and yours under your stems,
+  // each role's on a globe (depth.js casts) and the bowl's on its floor. Each is a stack of fine alpha layers (sphere.js
+  // shadowLayers), as many as its size on screen asks for, so it falls off smoothly with no ring showing, each layer's
+  // alpha solved over what is under its middle: the canvas and the shadows drawn before it there (a role's falls in its
+  // globe's). The bowl's inner layers that its opaque inside covers whole are left out.
+  const drawn = []; // the floor's shadow layers so far: {c, a, b, A}
+  const floorUnder = (q) => {
+    let col = rgb8(SHADOW_UNDER);
+    for (const d of drawn) {
+      const det = d.a.x * d.b.y - d.a.y * d.b.x, x = q.x - d.c.x, y = q.y - d.c.y;
+      const u = (x * d.b.y - y * d.b.x) / det, v = (d.a.x * y - d.a.y * x) / det;
+      if (u * u + v * v <= 1) col = blend8(col, rgb8(SHADOW_INK), d.A);
     }
+    return "#" + col.map((v) => v.toString(16).padStart(2, "0")).join("");
+  };
+  const shadowStack = (id, sh) => {
+    const c = S(sh), ax = { x: sh.a.x * k, y: sh.a.y * k }, bx = { x: sh.b.x * k, y: sh.b.y * k };
+    const px = Math.sqrt(Math.hypot(ax.x, ax.y) * Math.hypot(bx.x, bx.y));
+    const hidden = lay.bowl && lay.clusters[0] ? bowlCovers(lay.bowl.frame, S(lay.clusters[0]), lay.clusters[0].r * k) : null;
+    const layers = shadowLayers(sh.peak, sh.soft, shadowSteps(sh.peak, sh.soft, px), floorUnder(c)), mine = [];
+    for (const [i, l] of layers.entries()) {
+      const a = { x: ax.x * l.s, y: ax.y * l.s }, b = { x: bx.x * l.s, y: bx.y * l.s };
+      if (hidden && hidden(c, a, b)) break; // nested: every layer inside this one is covered too
+      items.push({ t: "path", id: `shadow-${id}-${i}`, fill: true, cmds: ellipseArcCmds(c.x, c.y, a, b), bg: solid(withAlpha(SHADOW_INK, l.alpha)) });
+      mine.push({ c, a, b, A: Math.round(l.alpha * 255) });
+    }
+    drawn.push(...mine);
+  };
+  for (const st of lay.stems ?? []) if (st.shadow) shadowStack(st.id, st.shadow);
+  for (const cs of lay.casts ?? []) shadowStack(cs.id, cs.shadow);
+  // each stem's own shadow, a thin pole's: from its foot, where it meets the floor, to its top's shadow (the caster's), so
+  // every shadow on the floor is tied to what casts it (global view; the bowl's stem stands in front of its shadow)
+  const poles = lay.bowl ? [] : (lay.stems ?? []).filter((st) => st.shadow).flatMap((st) => { const a = S({ x: st.x1, y: st.y1 }), b = S(st.shadow); return [["M", a.x, a.y], ["L", b.x, b.y]]; });
+  if (poles.length) items.push({ t: "path", id: "stem-shadows", fill: false, width: 1.2, dash: [3, 4], cmds: poles, bg: solid(withAlpha("#01040a", 0.22)) });
+  for (const st of lay.stems ?? []) {
+    const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 });
     items.push({ t: "path", id: `stem-${st.id}`, fill: false, width: 1, dash: [3, 4], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(P.steel2, 0.32)) });
   }
   if (!lay.bowl) edgeShadowsHere();
@@ -359,7 +404,7 @@ export function buildScene(vm, lay, opts) {
     const youAt = lay.bowl.you ?? { x: 0, y: 0, z: 0 };
     if (hub && nodeR.has(hub.id)) {
       bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R, youAt).forEach((e, i) => items.push({
-        t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)),
+        t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: ellipseArcCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)),
       }));
     }
     edgeShadowsHere();
@@ -498,8 +543,7 @@ export function buildScene(vm, lay, opts) {
         const a = lay.shadowOf.get(e.src), b = lay.shadowOf.get(e.dst);
         if (!a || !b) continue;
         const sc = shadowCurve(curves.get(e.id), { x: a.dx * k, y: a.dy * k }, { x: b.dx * k, y: b.dy * k }), cc = curveCmds(sc);
-        edgeShadow.soft.cmds.push(...cc);
-        edgeShadow.core.cmds.push(...cc);
+        edgeShadow.cmds.push(...cc);
         edgeShadow.heads.cmds.push(...headsAt(e, sc, bk.arrow, headScale).flatMap((h) => polygonCmds(h)));
       }
     }
@@ -657,13 +701,17 @@ export function buildScene(vm, lay, opts) {
     }
     const bodyColor = v.fill > 0 ? withAlpha(v.color, v.fill * op) : withAlpha(P.void, 0.6 * op);
     const surface = lay.surfaceOf?.get(n.id);
-    if (surface?.facing > 0.18) {
-      // a role's contact shadow on its surface, offset away from the light (the way its shadow falls, depth.js shadowOf)
+    if (lay.bowl && surface?.facing > 0.18) {
+      // in the bowl, a role's contact shadow on the wall it sits on, offset away from the light (the way its shadow falls,
+      // depth.js shadowOf), a smooth stack as every shadow is (sphere.js shadowLayers). A globe is glass and catches none:
+      // there a role's shadow is on the floor (depth.js casts)
       const sh = lay.shadowOf?.get(n.id), sl = sh ? Math.hypot(sh.dx, sh.dy) : 0;
       const [ux, uy] = sl > 1e-6 ? [sh.dx / sl, sh.dy / sl] : [0.57, 0.82];
-      for (let i = 3; i >= 1; i--) items.push({ t: "path", id: `contact-${n.id}-${i}`, fill: true,
-        cmds: ellipseCmds(p.x + r * 0.7 * ux, p.y + r * 0.7 * uy, r * (1 + i * 0.15), r * (0.7 + i * 0.1)),
-        bg: solid(withAlpha("#01040a", 0.13 * dim)) });
+      const T = CONTACT, cx = p.x + r * T.off * ux, cy = p.y + r * T.off * uy;
+      const wall = surfaceUnder(surfaces, cx, cy) ?? SHADOW_UNDER;
+      for (const [i, l] of shadowLayers(T.peak * dim, T.soft, shadowSteps(T.peak * dim, T.soft, r * Math.sqrt(T.rx * T.ry)), wall).entries()) {
+        items.push({ t: "path", id: `contact-${n.id}-${i + 1}`, fill: true, cmds: ellipseCmds(cx, cy, r * T.rx * l.s, r * T.ry * l.s), bg: solid(withAlpha(SHADOW_INK, l.alpha)) });
+      }
     }
     if (v.shape === "circle") {
       const solidBorder = v.border === "solid" || (v.kind === "user");
@@ -822,7 +870,7 @@ export function buildScene(vm, lay, opts) {
   }
 
   if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
-  for (const it of [edgeShadow.soft, edgeShadow.core, edgeShadow.heads]) if (it && !it.cmds.length) items.splice(items.indexOf(it), 1);
+  for (const it of [...(edgeShadow.strokes ?? []), edgeShadow.heads]) if (it && !it.cmds.length) items.splice(items.indexOf(it), 1);
   return { items, hits, satHits, edgeHits, discs, nodeScreen, satScreen, edgeScreen, animated, extent };
 }
 

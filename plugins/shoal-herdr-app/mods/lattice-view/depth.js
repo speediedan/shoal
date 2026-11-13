@@ -56,7 +56,10 @@ export const CAMERAS = {
   tilt: { pitch: 52 * DEG, yaw: 0 },
   iso: { pitch: 58 * DEG, yaw: 45 * DEG },
 };
-export const DEPTH_CYCLE = ["flat", "tilt", "iso"];
+/** The lattice opens in depth, iso: the globes and the bowl (2026-11-13: the maintainer's default). One press of `d` is
+ * flat, the next tilt, then back to iso. */
+export const DEFAULT_DEPTH = "iso";
+export const DEPTH_CYCLE = ["iso", "flat", "tilt"];
 export const PLANE_GAP = 190; // world units between planes, before the tilt
 export const YAW_STEP = 15 * DEG;
 const DIST = 2.6; // the camera's distance, in layout radii: smaller is stronger perspective
@@ -114,17 +117,18 @@ export function castShadow(P, Lp, p, z, r, floorZ) {
 // the global view x adds to the yaw (round the planes' up, as `,` and `.` do) and y to the pitch, kept in PITCH_RANGE.
 // Per shoal, x turns the bowl's axis round the screen's vertical (BOWL_HOME_TURN plus x, kept in BOWL_BETA_RANGE) and y
 // tips it further down the screen (BOWL_HOME_TILT plus y, kept in BOWL_ALPHA_RANGE); `,` and `.` still spin it round its
-// own axis. The bowl opens at 10 degrees tilt and -40 turn (the maintainer's pick, 2026-11-12). Each axis reaches well
-// past where it stopped before (4.6 to 50 tilt, -61 to 43 turn), and the two together are held so the axis is never
-// more than BOWL_OFF_AXIS_MAX off the line of sight (cos tilt cos turn, the cosine of that angle, kept above its floor):
-// further round, the bowl goes edge-on and its inside closes up.
+// own axis. The bowl opens turned far round, its opening to the left and its bottom to the right, a little below level:
+// -14 degrees tilt and -70 turn, the view the maintainer orbited to from the old opening (10 and -40) and asked for as
+// the opening one (2026-11-13). Each axis reaches past it (to -30 tilt, to 78 turn either way), and the two together
+// are held so the axis is never more than BOWL_OFF_AXIS_MAX off the line of sight (cos tilt cos turn, the cosine of
+// that angle, kept above its floor): further round, the bowl goes edge-on and its inside closes up.
 export const ORBIT_STEP = 8 * DEG;
 export const PITCH_RANGE = [24 * DEG, 80 * DEG];
-export const BOWL_HOME_TILT = 10 * DEG;
-export const BOWL_HOME_TURN = -40 * DEG;
-export const BOWL_ALPHA_RANGE = [-14 * DEG, 64 * DEG];
-export const BOWL_BETA_RANGE = [-72 * DEG, 72 * DEG];
-export const BOWL_OFF_AXIS_MAX = 72 * DEG;
+export const BOWL_HOME_TILT = -14 * DEG;
+export const BOWL_HOME_TURN = -70 * DEG;
+export const BOWL_ALPHA_RANGE = [-30 * DEG, 64 * DEG];
+export const BOWL_BETA_RANGE = [-78 * DEG, 78 * DEG];
+export const BOWL_OFF_AXIS_MAX = 78 * DEG;
 const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /**
@@ -339,6 +343,14 @@ export function projectLayout(vm, lay, cam0) {
   if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * SPHERE_R);
   else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
   for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
+  // and each role on a globe: the globe is glass and catches no shadow, so a role's falls on the floor too, cast the same
+  // way from where the role is in the world (2026-11-13: without one, a seat's shadow that fell under a globe read as its
+  // roles', and their edges' shadows ended in nothing)
+  const casts = [];
+  for (const n of vm.nodes) {
+    const w = placed.get(n.id);
+    if (w) casts.push({ id: `r-${n.id}`, shadow: castShadow(P, Lp, w, w.z, Math.max(4, n.visual?.r ?? 8), floorZ) });
+  }
   // where each node's shadow falls on the floor (the ray from the light through it), for its edges' shadows: {x, y} on
   // screen and {dx, dy} from the node as drawn
   const shadowOf = new Map();
@@ -347,7 +359,7 @@ export function projectLayout(vm, lay, cam0) {
     shadowOf.set(id, { x: sp.x, y: sp.y, dx: sp.x - at.x, dy: sp.y - at.y });
   }
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, floorZ, light: Lp, shadowOf };
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, shadowOf };
 }
 
 /**
@@ -430,13 +442,16 @@ export const bowlTurn = (cam) => bowlAngles(cam.orbit).beta;
  * the opening and the line toward the camera (YOU_TOWARD of the latter to one of the former). Straight up the axis, a
  * camera far round the side saw you over the near wall, just in front of it; leaning toward the camera, the wall behind
  * you stays the far one at every orbit, and you still sit off the axis, so the plumb line to the bottom shows how far
- * out you float. Orbited far round the side (the axis more than 55 degrees off the line of sight, up to
- * BOWL_OFF_AXIS_MAX), you lean further toward the camera (to 3.5 to 1), so you stay over the opening, not over its rim. */
+ * out you float. Orbited far round the side (the axis more than 55 degrees off the line of sight, up to BOWL_SIDE_FULL),
+ * you lean further toward the camera (to 3.5 to 1), so you stay over the opening, not over its rim. */
 const YOU_TOWARD = 2, YOU_TOWARD_SIDE = 3.5;
-/** How far round the side a frame is seen: 0 with the axis up to 55 degrees off the line of sight (the opening view is
- * 41), easing to 1 at BOWL_OFF_AXIS_MAX. */
+/** Where the lean toward the side is whole: 72 degrees off the line of sight (the old combined limit, so the opening
+ * view, 70.6 off, places you as the maintainer saw it there), held on to BOWL_OFF_AXIS_MAX. */
+const BOWL_SIDE_FULL = 72 * DEG;
+/** How far round the side a frame is seen: 0 with the axis up to 55 degrees off the line of sight, easing to 1 at
+ * BOWL_SIDE_FULL. */
 export function bowlSide(fr) {
-  const off = Math.acos(Math.max(-1, Math.min(1, -fr.pole.z))), t = clampTo((off - 55 * DEG) / (BOWL_OFF_AXIS_MAX - 55 * DEG), 0, 1);
+  const off = Math.acos(Math.max(-1, Math.min(1, -fr.pole.z))), t = clampTo((off - 55 * DEG) / (BOWL_SIDE_FULL - 55 * DEG), 0, 1);
   return t * t * (3 - 2 * t);
 }
 export const bowlYou = (fr) => {
