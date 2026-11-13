@@ -2429,6 +2429,7 @@ echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only)
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
 python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.py)"
 python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
+python3 "$TESTD/test_umbrella.py" || fail "umbrella rows (tests/test_umbrella.py)"
 check "name a start doc" $H doc-head
 
 echo "== 40 archive: reference-aware warm archive, restore and cold, one commit of exactly its paths, undone on a refused hook"

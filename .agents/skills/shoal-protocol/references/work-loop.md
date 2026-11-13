@@ -40,6 +40,9 @@
 | `OFFER` | an item offered to you, with its priority and note |
 | `TAKEN` / `GONE` | someone else claimed or finished an item in your queue: drop it (or `lost-race` on your active item) |
 | `HELD-UNSCHEDULED` | schedule the claim, or release it with `--kind handoff` |
+| `UMBRELLA` | your item has open rows (sub-issues): the umbrella licenses no work on them. Claim the row you work first (`queue --claim <row>`, then `--active <row>`); a row another lane holds is theirs |
+| `UNDER UMBRELLA` | you hold a row of another lane's active umbrella; that lane was mailed, so keep to your row |
+| `PR OPEN` | an open PR already closes the item: if it is not your branch, run `shoal claimed --shoal <id> <item>` and stop before writing code |
 | `BLOCKING` | another role waits on your item: schedule it or pass it with a reason |
 | `RESCAN EXPIRED` | your wait is unproven: re-verify it, re-raise the ask, or pivot to the next unblocked item |
 | `AUX` | you are the residual lane: stay out of the named lanes' work |

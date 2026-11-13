@@ -81,8 +81,9 @@ query($login:String!, $number:Int!, $after:String) {
               assignees(first:5) { nodes { login } }
               parent { number repository { nameWithOwner } }
               subIssuesSummary { total completed }
+              subIssues(first:30) { nodes { number state repository { nameWithOwner } } }
               blockedBy(first:10) { nodes { number state repository { nameWithOwner } } }
-              closedByPullRequestsReferences(first:5) { nodes { number state } } }
+              closedByPullRequestsReferences(first:5) { nodes { number state headRefName } } }
             ... on PullRequest { number title state isDraft url bodyText updatedAt
               repository { nameWithOwner }
               labels(first:20) { nodes { name } } }
@@ -157,8 +158,13 @@ def fetch_board(owner: str, number: int) -> list[dict]:
                 "parent": (f"{_short((parent.get('repository') or {}).get('nameWithOwner', repo))}"
                            f"#{parent['number']}") if parent else "",
                 "sub_issues": (c.get("subIssuesSummary") or {}).get("total", 0),
+                # an umbrella's open rows, so a lane told its active item is an umbrella sees who holds each (umbrella.py)
+                "rows": [f"{_short((r.get('repository') or {}).get('nameWithOwner', repo))}#{r['number']}"
+                         for r in ((c.get("subIssues") or {}).get("nodes") or []) if r.get("state") == "OPEN"],
                 "linked_prs": [p["number"] for p in ((c.get("closedByPullRequestsReferences") or {})
                                                      .get("nodes") or [])],
+                "prs": [{"number": p["number"], "state": p.get("state", ""), "branch": p.get("headRefName", "")}
+                        for p in ((c.get("closedByPullRequestsReferences") or {}).get("nodes") or [])],
             })
         pi = data["items"]["pageInfo"]
         if not pi.get("hasNextPage"):

@@ -41,7 +41,11 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    or the maintainer's offer is in the ledger. `queue` refuses a blocker on a role that cannot
    take the item. Never drive another session's terminal (no multiplexer command that types into a
    pane or prompts an agent, such as `herdr pane send-text` or `herdr agent prompt`): every wake goes
-   through shoal, or the health quorum and the failure-mode metrics never see it.
+   through shoal, or the health quorum and the failure-mode metrics never see it. **Claim what you
+   build:** an umbrella (an issue with sub-issues) licenses no work on its rows, so claim the row
+   before you work it (`next` prints `UMBRELLA` with each row's holder), and before your first push or
+   PR for an issue run `shoal claimed --shoal <id> <item> --slug <you>`: exit 3 means another lane
+   holds it, so stop and ask rather than build it twice.
 4. **The session that needs an authorization asks for it, first-person, as a prompted question.**
    Build the question sets with `shoal asks --question-json` (live PR labels, at most four questions
    per set), record the ask and a user-auth wait BEFORE the question tool (it blocks your turn), and

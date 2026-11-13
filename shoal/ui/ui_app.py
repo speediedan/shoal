@@ -1078,6 +1078,8 @@ def cmd_app_sync(_a) -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             return 0
+        for line in refresh_app_mods():
+            print(f"local: {line}")
         for choice in ["local"] + machines():
             _rc, lines = open_app(choice, focus=False, sync=True)
             for line in lines:
@@ -1415,6 +1417,27 @@ def link_state(name: str) -> tuple[bool, str]:
         return same, f"{link} copied from {want}" + ("" if same else ": stale (rerun `shoal ui app-install`)")
     real = os.path.realpath(link)
     return real == os.path.realpath(want), f"{link} -> {real}"
+
+
+def refresh_app_mods() -> list[str]:
+    """Bring this computer's copied mods and patched clones up to its checkout, as `ui app-install` does for them: a
+    pull updates the linked mods at once, but a copy (a mod with pictures) and a clone (a patched copy of a shipped mod)
+    kept the code of the last install (measured 2026-11-13: the laptop's tab strip ran a three-day-old `shoal-tabs`, so
+    #162's home-tab filter never showed). Each step is a no-op while current. Not from a worktree, not without the app."""
+    import ui_herdr
+    if ui_herdr.from_worktree() or not os.path.exists(app_bin()):
+        return []
+    out = []
+    try:
+        for name in MODS:
+            if copied(name) and os.path.isdir(os.path.join(MOD_DIR, name)):
+                line = install_mod(name)
+                if line:
+                    out.append(line)
+        out += install_layout()
+    except OSError as exc:  # a sync pass reports and goes on
+        out.append(f"mods: {exc}")
+    return out
 
 
 def install_mod(name: str, dry_run: bool = False) -> str:

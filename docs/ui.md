@@ -658,7 +658,7 @@ shoal ui app-install [--check] [--dry-run]         # the graph feed unit here; t
 shoal ui launch --list [--json] [--summary]        # the hosts the chooser offers, as data
 shoal ui act-plan VERB --shoal ID [...] [--json]   # an action's preview and one-time token, or a view
 shoal ui act-plan offline|freeze --scope all|host:NAME --state on|off [...]  # the same across shoals
-shoal ui app-sync                                  # roles tabs follow the roles, everywhere; nothing else changes
+shoal ui app-sync                                  # copied mods and clones refreshed here, roles tabs follow the roles everywhere
 shoal ui app-lattice                               # show this space's lattice, or the global one
 shoal ui app-home                                  # show the SHOAL-home space on this machine
 shoal ui app-usage                                 # show the usage dashboard (SHOAL-home's usage tab)

@@ -3537,6 +3537,20 @@ assert ui_app.install_mod("pics").startswith("copy ") and open(os.path.join(dest
 mine = os.path.join(S, "apphome-mods", "mods", "plain")
 os.remove(mine); os.makedirs(mine); open(os.path.join(mine, "main.js"), "w").write("operator's own")
 assert "left as it is" in ui_app.install_mod("plain") and open(os.path.join(mine, "main.js")).read() == "operator's own"
+# the timed sync refreshes copies and clones from this checkout (a pull alone left them on the last install's code);
+# linked mods are the pull's, and nothing happens without the app or from a worktree
+import ui_herdr
+ui_app.MODS = ("plain", "pics")
+bin_ = os.path.join(S, "appbin-refresh"); open(bin_, "w").write("")
+real = (ui_app.app_bin, ui_app.install_layout, ui_herdr.from_worktree)
+ui_app.app_bin, ui_app.install_layout, ui_herdr.from_worktree = (lambda: bin_), (lambda dry_run=False: ["mod shoal-tabs: patched copy of tabs"]), (lambda: False)
+open(os.path.join(src, "pics", "main.js"), "w").write("y3")
+got = ui_app.refresh_app_mods()
+assert got[0].startswith("copy ") and open(os.path.join(dest, "main.js")).read() == "y3" and got[1:] == ["mod shoal-tabs: patched copy of tabs"], got
+assert open(os.path.join(mine, "main.js")).read() == "operator's own", "a linked mod's folder is not the sync's"
+ui_herdr.from_worktree = lambda: True
+assert ui_app.refresh_app_mods() == [], "never from a worktree"
+ui_app.app_bin, ui_app.install_layout, ui_herdr.from_worktree = real
 print("mod install ok")
 # the 0.9.3 paste keys: the app's defaults are swapped, other keys kept, a binding the person chose is left
 import json

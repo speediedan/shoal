@@ -298,6 +298,16 @@ with its reasons and a rank that lets board order break ties. A pass with `sugge
 the item for that role; a role never sees an item it passed on; items every self-filling role
 passed are listed once as unowned. Watchers and `next` read the digest, never GitHub.
 
+**Umbrellas** (`shoal/umbrella.py`). A claim protects one item id, so working a row (a sub-issue) under an
+umbrella held as the active item never checked who held the row: two lanes built the same row for two hours
+(measured 2026-11-12). The digest also keeps each issue's open rows (`rows`) and the open pull requests that close it
+(`prs`, with their branches). `next` prints `UMBRELLA <item>` with every row and its holder for an active or next
+umbrella (an umbrella licenses no work on its rows: claim the row first), `UNDER UMBRELLA` for a row its lane holds
+under another lane's active umbrella, and `PR OPEN` for an open PR that already closes a queued item. A `queue` claim of
+a row under another lane's active umbrella mails that lane. `shoal claimed --shoal <id> <item> [--slug <you>]` prints
+the holder, any open offer, the umbrella and whose active item it is, the rows, and the open PRs, and exits 3 when
+another lane holds the item or it is done; the protocol skill runs it before a lane's first push or PR for an issue.
+
 **Working context.** Each role's spec `context` holds a `brief` (two to four sentences, the input
 to the semantic matcher), optional `affinity` weights, and `never`, the only hard exclusion.
 Contexts are edited as files in `<data_root>/<id>/contexts/<slug>.json` and loaded with
@@ -1391,7 +1401,8 @@ report and registry entry: a Claude seat's job state with its background tasks a
 status line (`native_report`), the wait it declared with `ui wait`, and a reply dismissed with `dismiss --session`,
 [`ui.md`](ui.md)), with Herdr's status on the same scale for a row that has none;
 `shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage (its hover gives each window's time to reset, not the percentages the bars show), and runs `ui app-sync` on a
-slow timer so roles tabs follow the roles. A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
+slow timer so roles tabs follow the roles, and this computer's copied mods and patched clones follow its checkout
+(`refresh_app_mods`: a pull updates the linked mods but left the copies on the last install's code). A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone
 session, with its `session` tab; the top bar's Lattice opens the global lattice, drilled into the shoal in view). `ui app-open` runs where the app runs: it reads the plan (in process, or over the
 route for another host, which it first adds as a herdr-core machine named after the route), compares it with
