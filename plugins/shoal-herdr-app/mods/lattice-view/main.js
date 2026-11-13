@@ -20,9 +20,10 @@
 //   view: a shoal id to open drilled into once (Escape then goes to the home view)
 //   pin: a node id whose card opens pinned
 //   replay: true starts the 24 h replay once the first doc is in (as `r` does)
-//   depth: "flat" (default), "tilt" or "iso": the depth camera (`d` cycles it). In tilt and iso the arrow keys
-//          orbit it, left and right round the screen's vertical and up and down round its horizontal (up raises the
-//          camera to look down from higher), kept in range so the bowl never flips; shift with an arrow pans, as a
+//   depth: "iso" (default), "flat" or "tilt": the depth camera (`d` cycles it: iso, flat, tilt, so one press from the
+//          opening view is flat). In tilt and iso the arrow keys orbit it, left and right round the screen's vertical
+//          and up and down round its horizontal (up raises the camera to look down from higher), kept in range so the
+//          bowl never flips; shift with an arrow pans, as a
 //          plain arrow does in flat; `,` and `.` turn it (the global view's planes round their up, the per-shoal bowl
 //          round its own axis)
 //   motion: "auto" (default) | "full" | "balanced" | "low" | "off" (motion.js; `m` cycles)
@@ -46,7 +47,7 @@ import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CY
 import { buildScene, fitScene, fitText, headerText, GLOBE } from "./scene.js";
 import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, hitGlobe, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS, REPLAY_SPEEDS, REPLAY_DAY_S } from "./replay.js";
-import { camera, projectLayout, nextDepth, depthFor, orbitBy, YAW_STEP, ORBIT_STEP } from "./depth.js";
+import { camera, projectLayout, nextDepth, depthFor, orbitBy, YAW_STEP, ORBIT_STEP, DEFAULT_DEPTH, DEPTH_CYCLE } from "./depth.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -188,7 +189,7 @@ export default class Lattice extends View {
     try { this.focusSeen = focusKeyOf(shared(FOCUS_KEY)); } catch (_e) { this.focusSeen = null; }
     this.pinned = typeof p.pin === "string" ? p.pin : null;
     this.replayAtStart = p.replay === true;
-    this.depth = ["tilt", "iso"].includes(p.depth) ? p.depth : "flat";
+    this.depth = ["flat", "tilt", "iso"].includes(p.depth) ? p.depth : DEFAULT_DEPTH;
     this.yawTurn = 0;
     this.orbit = { x: 0, y: 0 }; // the arrows' orbit in depth mode (depth.js camera, orbitBy)
     this.handle = cx.focus_handle();
@@ -978,7 +979,7 @@ export default class Lattice extends View {
       .child(div().text_color(P.dim).child(`motion: ${this.tier.tier}${this.tier.auto ? ` (auto: ${this.tier.why})` : ""} \u00b7 m cycles`))
       // the one exception to the tier: a replay asked for with `r` draws its packets at any tier, `off` included
       .child(div().text_color(P.dim).child("r: replay 24 h (its packets move at any motion tier)"))
-      .child(div().text_color(P.dim).child(`d: depth (flat, tilt, iso; now ${this.depthNow ?? "flat"}) \u00b7 arrows: orbit it \u00b7 shift+arrows: pan \u00b7 , and .: turn it`))
+      .child(div().text_color(P.dim).child(`d: depth (${DEPTH_CYCLE.join(", ")}; now ${this.depthNow ?? "flat"}) \u00b7 arrows: orbit it \u00b7 shift+arrows: pan \u00b7 , and .: turn it`))
       .child(h_flex().gap(14).items_start().child(col).child(right));
   }
 

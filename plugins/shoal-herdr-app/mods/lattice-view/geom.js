@@ -201,6 +201,19 @@ export function conjugateEllipseCmds(cx, cy, a, b) {
   return cmds;
 }
 
+/**
+ * The same ellipse as two half arcs, turned to its principal axes (an arc's rotation is in degrees, in GPUI as in SVG):
+ * a move, two arcs and a close, four commands where the cubics take six. What a shadow's many layers are drawn with.
+ */
+export function ellipseArcCmds(cx, cy, a, b) {
+  // the principal semi-axes: the square roots of the eigenvalues of a a' + b b', the first along angle th
+  const sxx = a.x * a.x + b.x * b.x, sxy = a.x * a.y + b.x * b.y, syy = a.y * a.y + b.y * b.y;
+  const mid = (sxx + syy) / 2, rad = Math.hypot((sxx - syy) / 2, sxy), th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const rx = Math.sqrt(mid + rad), ry = Math.sqrt(Math.max(0, mid - rad)), ux = rx * Math.cos(th), uy = rx * Math.sin(th);
+  const rot = (th * 180) / Math.PI;
+  return [["M", cx + ux, cy + uy], ["A", rx, ry, rot, false, true, cx - ux, cy - uy], ["A", rx, ry, rot, false, true, cx + ux, cy + uy], ["Z"]];
+}
+
 /** Node outline commands for a shape kind ("circle" uses arcs, the rest polygons). */
 export function shapeCmds(kind, cx, cy, r) {
   return kind === "circle" || !kind ? circleCmds(cx, cy, r) : polygonCmds(shapePoints(kind, cx, cy, r));

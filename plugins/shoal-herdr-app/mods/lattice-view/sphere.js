@@ -128,10 +128,25 @@ export function glassColorAt(tint, nx, ny, { fog = 1, focused = false, under = "
 //
 // Every globe and every lifted seat casts its shadow on the floor from the one light, a point above the scene (depth.js
 // lightPoint and castShadow find where the ray through each lands), and the bowl on its own floor from its light
-// (bowlFloor). A shadow is a stack of concentric ellipses, each adding a little
-// alpha, so its edge falls off smoothly: a dark core where the floor is in full shadow, then a soft penumbra, wider the
-// higher the caster floats. Like the glass, each layer's alpha is solved from the total wanted at its radius.
-export const SHADOW_STEPS = 16;
+// (bowlFloor). GPUI has no blur and no radial gradient, so a shadow is a stack of nested ellipses, each adding a little
+// alpha: a dark core where the floor is in full shadow, then a soft penumbra, wider the higher the caster floats. The
+// stack is cut so every step between two layers is the same small step in how dark the shadow is as drawn,
+// SHADOW_STEP: so the layers crowd where the falloff is steep, the penumbra, and spread where it is flat, the core, and
+// no ring shows (2026-11-13: 16 layers, three in four of them in the penumbra, stepped up to 5 percent at a time and
+// read as concentric rings). The step cannot be made as fine as one likes: GPUI blends each layer into an 8-bit
+// target, rounding every channel, so a layer that would move a channel by under half a level moves it not at all (a
+// stack of 1 percent layers stalls part way and leaves the shadow pale). SHADOW_STEP is about two of the 8-bit levels
+// between the depth canvas and the shadow's ink, and each layer's alpha is solved by blending the rounded layers
+// outside it over that canvas color as the renderer does (shadowLayers), so the shadow as drawn darkens evenly to its
+// darkest. A small shadow needs fewer: a band under SHADOW_BAND_PX wide does not read as a band, so its count is held
+// to one per that much of its radius, which keeps the many small ones (roles, seats) within the render budget. Each
+// layer is two arcs (geom.js ellipseArcCmds), four path commands.
+export const SHADOW_STEP = 0.022;
+export const SHADOW_BAND_PX = 3;
+export const SHADOW_MAX = 48;
+export const SHADOW_INK = "#01040a";
+/** The color a shadow's alphas are solved over: the depth canvas's middle (scene.js DEPTH_UNDER). */
+export const SHADOW_UNDER = "#2e3f57";
 
 /** How dark a shadow is at rho (1: the edge of the geometric shadow), for its darkest `peak` and penumbra `soft`. */
 export function shadowAt(rho, peak, soft) {
@@ -139,22 +154,52 @@ export function shadowAt(rho, peak, soft) {
   return peak * (1 - t * t * (3 - 2 * t)) * (1 - 0.25 * Math.min(1, rho) ** 2);
 }
 
-/** A shadow's layers, outermost first: {s, alpha}, s the layer's scale of the geometric shadow. Alpha is 8-bit, so
- * each layer is solved against what the rounded layers outside it already add up to; a layer that rounds to nothing
- * is left out. Three in four layers go to the penumbra, where the shadow changes fastest, the rest to the core. */
-export function shadowLayers(peak, soft, n = SHADOW_STEPS) {
-  const pen = Math.max(1, Math.round(n * 0.75)), core = n - pen;
-  const radii = [...Array.from({ length: pen }, (_, i) => 1 + soft - (2 * soft * i) / pen),
-    ...Array.from({ length: core }, (_, i) => (1 - soft) * (1 - i / core)), 0];
+/** How many layers a shadow of on-screen radius `px` (its geometric shadow's, the mean of its two semi-axes) is drawn
+ * with: one per SHADOW_STEP of its darkest, or one per SHADOW_BAND_PX of its outer radius if that is fewer; 3 at least. */
+export function shadowSteps(peak, soft, px = Infinity) {
+  const byTone = Math.ceil(peak / SHADOW_STEP - 1e-9), byPx = Math.ceil(((1 + soft) * px) / SHADOW_BAND_PX);
+  return Math.max(3, Math.min(SHADOW_MAX, byTone, byPx));
+}
+
+/** An #rrggbb color's 8-bit channels. */
+export const rgb8 = (hex) => [1, 3, 5].map((i) => parseInt(String(hex).slice(i, i + 2), 16));
+const luma = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+/** One layer of `ink` at 8-bit alpha A over the 8-bit color c, as an 8-bit target stores it (each channel rounded). */
+export const blend8 = (c, ink, A) => c.map((v, i) => Math.round(v + ((ink[i] - v) * A) / 255));
+
+const layerCache = new Map();
+/** A shadow's layers, outermost first: {s, alpha}, s the layer's scale of the geometric shadow. The n layers step the
+ * shadow's darkness up from nothing at its soft edge to its darkest in n equal steps: layer j holds the j-th, and its
+ * edge is where the falloff (shadowAt) crosses the middle of that step, so the band between two edges is drawn at the
+ * falloff's own darkness there, within half a step. Each layer's alpha is the 8-bit one that brings the color as
+ * drawn (the rounded layers outside it blended over `under`, blend8) nearest the falloff's color at its step; a layer
+ * that would change nothing, or take the color further from it, is left out, and the next one catches up. */
+export function shadowLayers(peak, soft, n = shadowSteps(peak, soft), under = SHADOW_UNDER) {
+  const key = `${peak.toFixed(4)} ${soft.toFixed(4)} ${n} ${under}`;
+  if (layerCache.has(key)) return layerCache.get(key);
+  const top = shadowAt(0, peak, soft), ink = rgb8(SHADOW_INK), base = rgb8(under), yInk = luma(ink);
+  // the falloff only falls, so the radius where it is `level` is found by bisection
+  const rhoAt = (level) => {
+    let lo = 0, hi = 1 + soft;
+    for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (shadowAt(mid, peak, soft) > level) lo = mid; else hi = mid; }
+    return (lo + hi) / 2;
+  };
   const out = [];
-  let below = 0;
-  for (let i = 0; i < n; i++) {
-    const s = radii[i], total = shadowAt((s + radii[i + 1]) / 2, peak, soft);
-    const alpha = Math.round(Math.max(0, 1 - (1 - total) / (1 - below)) * 255) / 255;
-    if (alpha <= 0) continue;
-    out.push({ s, alpha });
-    below = 1 - (1 - below) * (1 - alpha);
+  let c = base;
+  for (let j = 1; j <= n; j++) {
+    const want = luma(base) + (yInk - luma(base)) * ((top * j) / n), now = luma(c);
+    const guess = Math.round(255 * (1 - (want - yInk) / Math.max(1e-9, now - yInk)));
+    let best = null;
+    for (let A = Math.max(1, guess - 3); A <= Math.min(255, guess + 3); A++) {
+      const d = blend8(c, ink, A), err = Math.abs(luma(d) - want);
+      if (d.some((v, i) => v !== c[i]) && (!best || err < best.err)) best = { A, d, err };
+    }
+    if (!best || best.err >= Math.abs(now - want)) continue;
+    out.push({ s: rhoAt((top * (j - 0.5)) / n), alpha: best.A / 255 });
+    c = best.d;
   }
+  if (layerCache.size >= 256) layerCache.clear();
+  layerCache.set(key, out);
   return out;
 }
 
@@ -177,12 +222,16 @@ export const BOWL_DIST = 2.4;
 /** The bowl's turn about the screen's vertical, so the camera sees into it from the side as well as from above. */
 export const BOWL_TURN = (30 * Math.PI) / 180;
 // How far past the last cut that would keep no point of the inner sphere facing the camera the cut is made: below
-// zero the near wall's top shows from outside, as a thin crescent under the lip.
-const CUT_MARGIN = (-9 * Math.PI) / 180;
-/** How far past the equator the far wall rises (polar angle from the bottom, above a hemisphere's): a little more of the
- * back shows over the inside, so it reads as a hemisphere, not a dish (maintainer, 2026-11-13). The near wall's cut
- * stays where it was, so nothing more of the inside is hidden. */
-export const BOWL_FAR_EXTRA = (14 * Math.PI) / 180;
+// zero the near wall's top shows from outside, as a crescent under the lip. 17 degrees (9 before, 2026-11-13): at the
+// opening view, turned far round to the side, the sphere's outer wall shows as a shell beside the opening, from its top
+// round to its bottom, so the bowl reads as a sphere seen from behind and to the side; past about 20 the near wall rose
+// far enough to crowd the roles on the bottom's side of the inside.
+const CUT_MARGIN = (-17 * Math.PI) / 180;
+/** How far past the equator the far wall rises (polar angle from the bottom, above a hemisphere's): more of the back
+ * shows over the inside, so it reads as more than a hemisphere, not a dish (maintainer, 2026-11-13: 14 degrees, then
+ * 22 with the opening view turned to the side, so more of the far wall stands behind the opening). The near wall's cut
+ * does not move with it, so nothing more of the inside is hidden. */
+export const BOWL_FAR_EXTRA = (22 * Math.PI) / 180;
 /** The wall's thickness, in sphere radii: the lip's width. */
 export const BOWL_LIP = 0.035;
 
@@ -273,6 +322,15 @@ export function rimNorm(fr, s) {
   const { cx, cy, m } = fr.rim, x = s.x - cx, y = s.y - cy;
   return Math.sqrt(Math.max(0, m[0] * x * x + 2 * m[1] * x * y + m[2] * y * y));
 }
+/** For the bowl drawn at screen point o, radius R: whether an ellipse on screen (middle c, conjugate semi-axes a and b)
+ * lies whole inside the rim, where the bowl's opaque inside covers it (24 points round it, a little inside the rim). */
+export const bowlCovers = (fr, o, R) => (c, a, b) => {
+  for (let i = 0; i < 24; i++) {
+    const t = (i * Math.PI) / 12, x = c.x + a.x * Math.cos(t) + b.x * Math.sin(t), y = c.y + a.y * Math.cos(t) + b.y * Math.sin(t);
+    if (rimNorm(fr, { x: (x - o.x) / R, y: (y - o.y) / R }) > 0.98) return false;
+  }
+  return true;
+};
 /** The same for a point of the bowl: 1 on the rim, under 1 inside it. */
 export const bowlSeen = (fr, u) => rimNorm(fr, bowlProject(fr, u));
 /** A point's azimuth about the bowl's axis. */
@@ -431,9 +489,12 @@ export function crescentCmds(fr, cx, cy, R) {
 // ---- the bowl's one light
 //
 // The bowl's world is its own frame (its bottom down the axis, e1 and e2 across it), so the light, a point in that world,
-// stays put on the bowl as the camera orbits round it, as a lamp over a real bowl would. It is placed for the opening view
-// (BOWL_LIGHT.tilt and .turn: depth.js's BOWL_HOME_TILT and BOWL_HOME_TURN), where it hangs BOWL_LIGHT.dist radii from
-// the middle in the camera direction BOWL_LIGHT.home: above the opening, up and a little left of the camera. Everything
+// stays put on the bowl as the camera orbits round it, as a lamp over a real bowl would. It is placed from the view
+// BOWL_LIGHT.tilt and .turn (10 and -40: the bowl's old opening view), where it hangs BOWL_LIGHT.dist radii from the
+// middle in the camera direction BOWL_LIGHT.home: above the opening, up and a little left of the camera there. It stayed
+// there when the opening view moved round to the side (depth.js BOWL_HOME_TILT and BOWL_HOME_TURN, 2026-11-13), so the
+// opening view is lit as the maintainer saw it when they orbited there and picked it: the light above and behind the
+// opening, your shadow on the bottom's wall and the bowl's shadow on the floor to its right. Everything
 // in the bowl is lit and shadowed from it by following the ray from it: the inside's light and its falloff, the lip's
 // shade, your shadow and the edges' on the wall, the glass you's highlight, the bowl's shadow on its floor.
 export const BOWL_LIGHT = { tilt: (10 * Math.PI) / 180, turn: (-40 * Math.PI) / 180, home: unit({ x: 0.03, y: -0.36, z: 0.93 }), dist: 4 };
@@ -494,7 +555,15 @@ export function rimShade(fr, cx, cy, R) {
   };
   const a0 = reach(-1), a1 = reach(1), mid = psi0 + (a1 - a0) / 2, del = (a0 + a1) / 2;
   const fold = (u) => { const l = bowlLightDir(fr, u); return comb(1, u, -2 * Math.max(0, dot(u, l)), l); };
-  const edge = (p) => fold(cut(p)), edgeT = (p) => comb(5e3, edge(p + 1e-4), -5e3, edge(p - 1e-4));
+  // where the fold lands on wall the near wall hides (orbited round the side, a low cut), the edge runs along the rim
+  // instead, on the wall seen just inside it, so the shade never spills over the outside
+  const { cx: rx, cy: ry } = fr.rim;
+  const edge = (p) => {
+    const w = fold(cut(p)), s = bowlProject(fr, w), rn = rimNorm(fr, s);
+    if (rn <= 0.999) return w;
+    return bowlSurfaceAt(fr, rx + ((s.x - rx) * 0.999) / rn, ry + ((s.y - ry) * 0.999) / rn) ?? w;
+  };
+  const edgeT = (p) => comb(5e3, edge(p + 1e-4), -5e3, edge(p - 1e-4));
   const cmds = [startAt(fr, cx, cy, R, cut(mid - del))];
   bowlArc(cmds, fr, cx, cy, R, cut, ct, mid - del, mid + del);
   bowlArc(cmds, fr, cx, cy, R, edge, edgeT, mid + del, mid - del);
@@ -607,9 +676,9 @@ export function bowlGlow(fr, cx, cy, R) {
 /** The shadow you (a ball of radius rb, in sphere radii, at `at`: depth.js bowlYou, out from the middle toward the
  * opening; the middle by default) cast on the inner surface, from the one light: where its ray through you leaves the
  * sphere (bowlCast), a soft ellipse there (ballShadow: YOU_SHADOW.size times your radius, grown with the distance and
- * longer where the light comes in low), seen in perspective. Its layers, outermost first: {x, y, a, b, alpha}, a
- * conjugate ellipse each; none where the ray leaves the sphere outside the opening. */
-export const BOWL_SHADOW_STEPS = 10;
+ * longer where the light comes in low), seen in perspective, in as many layers as its size on screen asks for
+ * (shadowSteps). Its layers, outermost first: {x, y, a, b, alpha}, a conjugate ellipse each; none where the ray leaves
+ * the sphere outside the opening. */
 /** Your shadow's darkest (in its core), penumbra and size (of your radius): dark and large enough to be seen on the lit
  * wall, the clearest sign that you float in front of it. */
 export const YOU_SHADOW = { peak: 0.55, soft: 0.5, size: 1 };
@@ -620,7 +689,10 @@ export const bowlShadowSeen = (fr, at) => { const u = bowlCast(fr, at); return b
 export function bowlShadow(fr, cx, cy, R, rb, at) {
   if (!bowlShadowSeen(fr, at)) return [];
   const c = bowlCast(fr, at), { A, B } = ballShadow(bowlLightAt(fr), at, YOU_SHADOW.size * rb, c, c);
-  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, BOWL_SHADOW_STEPS).map((l) => {
+  const e1 = projectedCircle(fr.d, c, A, B, 1), px = R * Math.sqrt(Math.hypot(e1.a.x, e1.a.y) * Math.hypot(e1.b.x, e1.b.y));
+  // solved over the wall where it falls (its light and depth, no host's wash)
+  const wall = bowlColorAt(fr, e1.cx, e1.cy, null);
+  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, shadowSteps(YOU_SHADOW.peak, YOU_SHADOW.soft, px), wall).map((l) => {
     const e = projectedCircle(fr.d, c, comb(l.s, A), comb(l.s, B), 1);
     return { x: cx + R * e.cx, y: cy + R * e.cy, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
   });

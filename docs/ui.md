@@ -720,33 +720,38 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
 - **Leaving an attach.** A card restores the terminal's modes after every attach, since a client that dies with its link cannot, and a Ctrl-C
   returns to the card: `q` is what leaves one.
-- **The lattice in depth (`d`).** The shoal globes are see-through glass, fainter until you point at one, with their
+- **The lattice in depth (`d`).** The lattice opens in depth (iso): one press of `d` gives the flat view, the next
+  tilt and the next iso again. The shoal globes are see-through glass, fainter until you point at one, with their
   names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
   globe. The canvas behind them is a lighter slate than the flat view's, so shadows read on it. One light, a lamp high
-  over the scene, up and to the left at the opening views, lights every globe and casts every shadow: each globe's,
-  yours (you float highest, so yours lands furthest, down and to the right of the foot of your stem) and each arrow's,
-  on the floor below, where the light's ray through it meets the floor. The lamp stays put as you orbit, so the lit
-  sides and the shadows turn with the scene. Drilled into one shoal, depth mode looks down into a bowl from above and
-  from the side, with you floating above its middle toward the opening, nearest and largest, its bottom below and beside
-  you, and a dashed plumb line from you down to the bottom: the opening has a lit lip, the near wall's outside shows as a
-  thin crescent under it, and the far wall rises a little past the rim of a hemisphere, so you see more of the back.
-  The bowl has its own lamp, fixed to the bowl just above the camera at the opening view: the wall under the lip on its
-  side is in shade, the wall it faces is lit, and the inside darkens smoothly toward the bottom (no rings of shading;
-  four faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow and
-  each arrow's small shadow fall on the wall where its rays put them, so the arrows from you start at your shadow and
-  you read as floating in front of the wall. The hosts' regions share the whole inside of the bowl in clearly
-  different colors (azure, then amber, green, rose and on), each host's roles sit on its region behind you, and the
-  arrows, light cores over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far
-  wall, with smaller heads there, so they run away from you into the bowl. A role that needs you or asks you pulses in
-  depth as in flat (breathing at `full`, blinking at `balanced`, still at `low` and `off`).
-  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). The bowl opens low and well round to the
-    side (10 degrees tilt, -40 turn), with you floating out in front of its opening. Up and down raise and lower the
-    camera (-14 to 64 degrees), and left and right take it round the bowl's side (-72 to 72 degrees), together never
-    more than 72 degrees off the bowl's axis: a press that would pass a limit goes to it and no further, so the bowl
+  over the scene, up and to the left at the opening views, lights every globe and casts every shadow, each where the
+  light's ray through its caster meets the floor below: each globe's, yours and each outside seat's (you float highest,
+  so yours lands furthest, down and to the right of the foot of your stem), each role's on a globe (the glass catches
+  none, so a role's shadow is on the floor, inside its globe's) and each arrow's, which runs between its ends' shadows.
+  Each stem casts a faint shadow too, from its foot to its caster's shadow, so every shadow on the floor is tied to
+  what casts it. Every shadow falls off smoothly from a dark middle to nothing at its edge, with no rings. The lamp
+  stays put as you orbit, so the lit sides and the shadows turn with the scene. Drilled into one shoal, depth mode
+  shows a bowl turned far round to the side, its opening to your left and its bottom to the right, a little below
+  level, with you floating out in front of the opening, nearest and largest, and a dashed plumb line from you to the
+  bottom: the opening has a lit lip, the sphere's outer wall shows beside it as a shell from its top round to its
+  bottom, and the far wall rises past the rim of a hemisphere, so you see more of the back. The bowl has its own lamp,
+  fixed to the bowl above and behind the opening, so it shines in through the opening onto the bottom and the bowl's
+  shadow falls on the floor to its right; the inside darkens smoothly toward the bottom (no rings of shading; faint
+  rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow and each arrow's
+  small shadow fall on the wall where its rays put them, so the arrows from you start at your shadow and you read as
+  floating in front of the wall. The hosts' regions share the whole inside of the bowl in clearly different colors
+  (azure, then amber, green, rose and on), each host's roles sit on its region behind you, and the arrows, light cores
+  over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far wall, with smaller
+  heads there, so they run away from you into the bowl. A role that needs you or asks you pulses in depth as in flat
+  (breathing at `full`, blinking at `balanced`, still at `low` and `off`).
+  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). The bowl opens turned far round to the side
+    (-14 degrees tilt, -70 turn), with you floating out in front of its opening. Up and down raise and lower the
+    camera (-30 to 64 degrees), and left and right take it round the bowl's side (-78 to 78 degrees), together never
+    more than 78 degrees off the bowl's axis: a press that would pass a limit goes to it and no further, so the bowl
     never goes edge-on or flips and the way back answers at once, from a corner too. From every angle you are seen to
     stand off the wall behind you. In the global view left and right turn the shoals' planes and up and down raise and
     lower the camera. Shift with an arrow pans (a plain arrow pans in the flat view), drag pans in any view, and `,` and `.`
-    turn the view 15 degrees: the planes in the global view, the bowl round its own axis per shoal. Going back to flat
+    turn the view 15 degrees: the planes in the global view, the bowl round its own axis per shoal. Going to flat
     (`d`) resets the orbit and the turn.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
   as a dependency graph, read from the board digest on the shoal's home host and the roles' queues.
