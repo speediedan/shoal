@@ -430,6 +430,10 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         print(f"handoff: unknown provider {ecosystem} ({', '.join(ECOSYSTEMS)})")
         return 2
     new_eco = ecosystem if ecosystem != role.ecosystem else ""
+    refusal = _ecosystem_refusal(new_eco)
+    if refusal:
+        print(f"REFUSED: {refusal}")
+        return 1
     if session_held(role, spec.dir):
         print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing "
               f"here can stop it; --force does not change that. Detach it or let the turn end, then try again")
@@ -486,6 +490,13 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     out = health.context_restart(spec, spec_path, role, dry_run, tuple(extra))
     print(out)
     return 1 if out.startswith("FAILED") else 0
+
+
+def _ecosystem_refusal(ecosystem: str) -> str:
+    """Why this host will not start or move a role to `ecosystem` (`shoal ui set ecosystems`), "" when it will."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+    import ui_status
+    return ui_status.ecosystem_refusal(ecosystem)
 
 
 def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: bool = False) -> int:

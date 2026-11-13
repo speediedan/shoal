@@ -1198,7 +1198,11 @@ Not every provider returns every window. Missing monthly meters are marked as
 not reported, authentication failures are visible, and a Muse response with an active
 subscription but no usage block is the server reporting no use in the current windows (the Muse
 CLI's own `server_sent_no_usage`), shown as unused since reset: never a fabricated zero, and not a
-read failure, so polling does not back off. A malformed usage block stays an error. CLI account APIs
+read failure, so polling does not back off. Its week keeps the use last read in it until the week's own reset passes
+(`known_resets` records each fixed window's last percent; `projected` carries it), since an idle reading speaks only
+for the new short window. The ecosystems in use on a host (`ui set ecosystems`, `ui_status.active_ecosystems`, with
+a scheduled `ecosystems_from` taking over at its time) bound usage, standalone discovery, the actions dialog's
+providers and the CLI's `handoff` and `add-role` (`ui_status.ecosystem_refusal`). A malformed usage block stays an error. CLI account APIs
 and local credential layouts are version-sensitive; hermetic fixtures exercise
 their boundaries and live read-only verification establishes actual coverage.
 OpenCode Go's current `percent` wire field maps to the same internal percentage

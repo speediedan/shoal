@@ -1029,6 +1029,10 @@ def cmd_add_role(a: argparse.Namespace) -> int:
     if dupes:
         print(f"slugs already in spec (use restart --only to relaunch): {dupes}")
         return 1
+    refusals = [f"{r.slug}: {why}" for r in new_roles for why in [_park._ecosystem_refusal(r.ecosystem)] if why]
+    if refusals:
+        print("REFUSED:", *refusals, sep="\n  ")
+        return 1
     spec.roles.extend(new_roles)
     errs = spec.validate()
     if errs:

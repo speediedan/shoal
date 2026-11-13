@@ -344,12 +344,17 @@ shows each provider's used percent for 5h, week and month, for example
 `codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`, with `-` for a window the provider does not report and no reset times. Use `shoal ui usage` for the
 same snapshot outside Herdr. `--providers` temporarily chooses a comma-separated
 list; an empty `usage_providers` setting disables background collection. A subscription that reports nothing until
-its first use in a window (Muse, `idle`) keeps showing its next weekly reset: the last one a reading reported, rolled
-forward by whole weeks, shown at 0% and "unused since its last reset" (until it has been used once, there is none to
-show). `shoal ui set ecosystems claude,codex,opencode` names the agent ecosystems in use on a host (default all four):
-one set aside drops out of Add session's discovery and New role's and Handoff's providers at once, and out of usage
-(the Usage tab, `ui status` and the status bar) once no role on it is left: a role still running on it keeps spending it, so its meter stays,
-and `ui set` names those roles, until they are handed off to an ecosystem in use.
+its first use in a short window (Muse, `idle`) keeps its week: while the week's last reported reset is still ahead, the
+use last read in it stays shown (`carried`: an idle reading says only that the new 5h window is unused, so the week
+cannot have dropped); once that reset has passed it shows at 0% and "unused since its last reset", the reset rolled
+forward by whole weeks (until it has been used once, there is none to show). `shoal ui set ecosystems
+claude,codex,opencode` names the agent ecosystems in use on a host (default all four): one set aside drops out of Add
+session's discovery and New role's and Handoff's providers at once, `shoal handoff` and `shoal add-role` refuse it, and
+it drops out of usage (the Usage tab, `ui status` and the status bar) once no role on it is left: a role still running
+on it keeps spending it, so its meter stays, and `ui set` names those roles, until they are handed off to an ecosystem
+in use. `--from <UTC>` schedules the change (for a subscription that ends at its quota reset:
+`shoal ui set ecosystems claude,codex,opencode --from 2026-11-16T00:00:00Z`): the setting takes over at that time with
+nothing to run then, and a later plain `ui set ecosystems` replaces it (adding an ecosystem back re-enables it).
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without

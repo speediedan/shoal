@@ -109,6 +109,7 @@ def add_parsers(sub) -> None:
     q = u.add_parser("set", help="viewer setting: roles_per_tab, sidebar_max_width, role_order.<shoal> ('' resets)")
     q.add_argument("key")
     q.add_argument("value")
+    q.add_argument("--from", dest="from_utc", default="", help="ecosystems only: the UTC time the change takes over")
     q.set_defaults(func=ui_herdr.cmd_set)
 
     q = u.add_parser("feed", help="herdr: push role state and tokens (read-only to shoal)")

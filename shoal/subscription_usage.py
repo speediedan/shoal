@@ -399,13 +399,17 @@ def known_resets(prev, rows):
     for r in rows or []:
         for w in r.get("windows") or []:
             if w.get("name") in FIXED_WINDOWS and w.get("resets_at") is not None:
-                known[f"{r.get('bucket')}/{w['name']}"] = {"resets_at": w["resets_at"], "minutes": w.get("minutes") or FIXED_WINDOWS[w["name"]]}
+                known[f"{r.get('bucket')}/{w['name']}"] = {"resets_at": w["resets_at"], "minutes": w.get("minutes") or FIXED_WINDOWS[w["name"]],
+                                                          "used_percent": w.get("used_percent")}
     return known
 
 
 def projected(row, now):
-    """The account row with each idle bucket's fixed windows filled in from its known schedule: unused (0%), the
-    reset rolled forward past `now` by whole periods, marked `projected`."""
+    """The account row with each idle bucket's fixed windows filled in from its known schedule. An idle reading says
+    only that nothing was used since the short window began (Muse omits its usage block then), so a fixed window whose
+    known reset is still ahead keeps the use last read in it, marked `carried` (2026-11-13: a week at 79% read 0% between
+    readings); one whose reset has passed is unused (0%), its reset rolled forward past `now` by whole periods, marked
+    `projected`."""
     known = row.get("known_resets") or {}
     out = []
     for r in row.get("rows") or []:
@@ -417,6 +421,10 @@ def projected(row, now):
                     continue
                 step = float(k["minutes"]) * 60
                 t = float(k["resets_at"])
+                last = number(k.get("used_percent"))
+                if t > now and last is not None:
+                    ws.append({"name": name, "used_percent": last, "resets_at": t, "minutes": k["minutes"], "carried": True})
+                    continue
                 if t <= now:
                     t += step * (math.floor((now - t) / step) + 1)
                 ws.append({"name": name, "used_percent": 0, "resets_at": t, "minutes": k["minutes"], "projected": True})
@@ -502,7 +510,8 @@ def render_lines(doc, *, color=False):
             state = severity(a, r)
             body = f"  {label}: " + ("  ".join(cells) if cells else IDLE_TEXT if r.get("idle") else "? unavailable")
             if cells and r.get("idle"):
-                body += "  (unused since its last reset)"
+                body += ("  (no use in its current short window; the week as last read)" if any(w.get("carried") for w in r["windows"])
+                         else "  (unused since its last reset)")
             missing = [n for n in ("5h", "week", "month") if n not in {w["name"] for w in r["windows"]}]
             if cells and missing:
                 body += "  " + "/".join(missing) + " --"
