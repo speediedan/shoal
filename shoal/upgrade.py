@@ -19,9 +19,10 @@ Every change has one rollout class, and this command says which apply:
            rule changes now);
   restart  a spec change a live session depends on (a model change, a role's ecosystem):
            never done here; the command names it and stops short;
-  ui       the operator UI's long-running feeder (`shoal-ui-feed`, docs/ui.md) keeps the code it
-           loaded (ledger, health, blockers, roles, backends, ui): on any module change it is
-           restarted, which wakes no session (it only reads).
+  ui       the operator UI's long-running feeds (`shoal-ui-feed` and the lattice's `shoal-graph-feed`,
+           docs/ui.md) keep the code they loaded (ledger, health, blockers, roles, backends, ui): on any
+           module change each one running here is restarted, which wakes no session (they only read);
+           `--pull` restarts them on each host whose checkout moved, too.
 
 Order: refuse a dirty shoal/ tree, run the selftests, diff shoal/ since the spec's recorded
 `tooling.sha`, classify, apply feature edits, record the new sha with a ledger `system`
@@ -93,16 +94,18 @@ def usable_sha(tooling: dict) -> tuple[str, str]:
     return prev, ""
 
 
-UI_FEED_UNIT = "shoal-ui-feed.service"
+# the long-running read-only feeds: the status feeder and the lattice's graph feed (measured 2026-11-12: only the first
+# was restarted, so the graph feed ran a day-old ui_graph through three upgrades that changed it)
+UI_FEED_UNITS = ("shoal-ui-feed.service", "shoal-graph-feed.service")
+UI_KEY = "ui (restart the UI feeds)"
 
 
 def classify(files: list[str]) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {"live": [], "re-arm (ledger-watch)": [], "brief": [],
-                                 "ui (restart shoal-ui-feed)": []}
+    out: dict[str, list[str]] = {"live": [], "re-arm (ledger-watch)": [], "brief": [], UI_KEY: []}
     for f in files:
         b = os.path.basename(f)
-        if b.endswith(".py"):  # the feeder keeps ledger, health, blockers, roles and backends loaded
-            out["ui (restart shoal-ui-feed)"].append(b)
+        if b.endswith(".py"):  # the feeds keep ledger, health, blockers, roles, backends and ui loaded
+            out[UI_KEY].append(b)
         if b in BRIEF:
             out["brief"].append(b)
         if b in REARM_LEDGER:
@@ -167,18 +170,23 @@ def stale_watchers(spec: ShoalSpec, since_iso: str) -> list[tuple[str, str]]:
     return out
 
 
-def ui_feed_active() -> bool:
-    try:
-        r = subprocess.run(["systemctl", "--user", "is-active", UI_FEED_UNIT], capture_output=True, text=True, timeout=10)
-        return r.stdout.strip() == "active"
-    except (OSError, subprocess.SubprocessError):
-        return False
+def ui_feeds_active() -> list[str]:
+    """The UI feed units running on this host."""
+    out = []
+    for unit in UI_FEED_UNITS:
+        try:
+            r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.stdout.strip() == "active":
+            out.append(unit)
+    return out
 
 
-def restart_ui_feed() -> str:
-    """The feeder is read-only to shoal and wakes nobody: a restart costs no tokens."""
+def restart_ui_feed(unit: str) -> str:
+    """A feed is read-only to shoal and wakes nobody: a restart costs no tokens."""
     try:
-        r = subprocess.run(["systemctl", "--user", "restart", UI_FEED_UNIT], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["systemctl", "--user", "restart", unit], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"restart FAILED: {exc}"
     return "restarted" if r.returncode == 0 else f"restart FAILED: {(r.stderr or r.stdout).strip()[-120:]}"
@@ -246,8 +254,11 @@ def pull_hosts(spec, dry_run: bool = False) -> int:
 
 def cmd_upgrade(a) -> int:
     if getattr(a, "pull_only", False):
-        rc, what, _ = pull_here(a.dry_run)
+        rc, what, moved = pull_here(a.dry_run)
         print(what)
+        if moved and not a.dry_run:  # a host the upgrade does not run on: its feeds load the pulled code here
+            for unit in ui_feeds_active():
+                print(f"ui: {unit} {restart_ui_feed(unit)}")
         return rc
     path = a.spec or find_spec(a.sid)
     spec = ShoalSpec.load(path)
@@ -306,10 +317,10 @@ def cmd_upgrade(a) -> int:
                  else " -> one wake each now"))
     elif cls["re-arm (ledger-watch)"]:
         print("re-arm: no running ledger-watch predates the change")
-    ui_restart = bool(cls["ui (restart shoal-ui-feed)"]) and ui_feed_active()
-    if cls["ui (restart shoal-ui-feed)"]:
-        print(f"ui: {UI_FEED_UNIT} " + ("is restarted after the upgrade (reads only; wakes no session)" if ui_restart
-                                         else "is not running here; nothing to restart"))
+    ui_restart = ui_feeds_active() if cls[UI_KEY] else []
+    if cls[UI_KEY]:
+        print("ui: " + (f"{', '.join(ui_restart)} restarted after the upgrade (they read only; wake no session)"
+                        if ui_restart else "no UI feed runs here; nothing to restart"))
     if cls["brief"]:
         print("brief: brief text changed; lanes read it at their next restart (`next`/`queue` carry rules now)")
     if a.restart_note:
@@ -366,8 +377,8 @@ def cmd_upgrade(a) -> int:
                                                  f"pre-upgrade code; after this boundary re-arm it with the same "
                                                  f"command", condition="upgrade-rearm")
             print(f"woke {slug} to re-arm -> {ch}")
-    if ui_restart:
-        print(f"ui: {UI_FEED_UNIT} {restart_ui_feed()}")
+    for unit in ui_restart:
+        print(f"ui: {unit} {restart_ui_feed(unit)}")
     print(f"{'local upgrade on ' + config.server() + ' of' if recorded_local else 'upgraded'} {spec.sid} "
           f"{'(home records the tooling)' if recorded_local else 'to tooling ' + sha}")
     if any(c.startswith("matcher") for c in changes):

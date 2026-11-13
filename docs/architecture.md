@@ -893,7 +893,7 @@ predates `--pull-only` is pulled by hand once.
 | re-arm | code a running watcher executes (`ledger-watch`) | `--rearm lazy` (default): at each role's next wake (a detached watcher reloads itself in place when the code changes); `--rearm now`: one wake per stale `ledger-watch` |
 | brief | `briefs.py` text | the next restart; `next` and `queue` output carry rule changes now |
 | restart | a spec change a live session depends on (model, harness) | never done by `upgrade`; `restart --only` does it |
-| ui | the operator UI's feeder (`shoal-ui-feed`) | restarted on any module change (it keeps the protocol modules loaded); it only reads, so no session is woken |
+| ui | the operator UI's feeds (`shoal-ui-feed`, and the lattice's `shoal-graph-feed`) | each one running is restarted on any module change (they keep the protocol modules loaded); with `--pull`, on every host whose checkout moved too; they only read, so no session is woken |
 
 The command refuses a dirty package tree, runs the four selftests, diffs the package against the
 spec's recorded `tooling.sha`, applies `--enable`, `--disable` and `--set` feature edits, records
@@ -1034,9 +1034,9 @@ top of the preset, 8 degrees a press (`ORBIT_STEP`), and `orbitBy` keeps it to w
 past a limit so the way back answers at once. In the global view x adds to the yaw (the turn `,` and `.` make, round
 the planes' up) and y to the pitch, held between 24 and 80 degrees (`PITCH_RANGE`); with no orbit the global scene is
 unchanged. Per shoal the orbit turns the bowl, not about its own axis (that stays `,` and `.`, the camera's `spin`)
-but round the screen's two axes: y adds to the bowl's tilt (`bowlTilt`, `BOWL_HOME_TILT` plus y, 4.6 to 50 degrees,
-`BOWL_ALPHA_RANGE`) and x to its turn (`bowlTurn`, `BOWL_HOME_TURN` plus x, -61 to 43 degrees, `BOWL_BETA_RANGE`), so
-its bottom always faces away. The bowl opens (in tilt and iso alike) at the view the arrows first reached at their down
+but round the screen's two axes: y adds to the bowl's tilt (`bowlTilt`, `BOWL_HOME_TILT` plus y, `BOWL_ALPHA_RANGE`)
+and x to its turn (`bowlTurn`, `BOWL_HOME_TURN` plus x, `BOWL_BETA_RANGE`), so its bottom always faces away (the
+ranges, first 4.6 to 50 and -61 to 43 degrees, are now wider, below). The bowl opens (in tilt and iso alike) at the view the arrows first reached at their down
 and left limits, 10 degrees tilt and -40 turn (the maintainer's pick, 2026-11-12), and the limits reach 30% further out
 than they did from the earlier opening view (28 tilt, 30 turn). The inside's lit spot follows the bowl (`sphere.js`
 `bowlLight`: the light in the bowl's own frame as it fell in that earlier view), so the bottom stays darkest as it
@@ -1053,6 +1053,31 @@ frame shows, and moved down the wall while you would cover it on screen. A camer
 wall low, so only the rings of latitude still whole are drawn (`bowlRings`). The SVG preview and `check_depth.mjs`
 take `--orbit h,v` in degrees; `check_depth.mjs` passes 12 of 12 per shoal orbited in tilt and iso (to the limits), on
 a live feed snapshot, and in the global scene orbited.
+
+The bowl orbits further, and you read as floating in front of it. The tilt now runs -14 to 64 degrees and the turn -72
+to 72 (`BOWL_ALPHA_RANGE`, `BOWL_BETA_RANGE`), and the two together keep the bowl's axis at most 72 degrees off the
+line of sight (`BOWL_OFF_AXIS_MAX`: cos tilt cos turn kept above its cosine), past which the bowl goes edge-on and its
+inside closes up. `depth.js` `bowlAngles` holds any orbit to that (the turn shortened to what the tilt leaves), and
+`orbitBy` moves a press as far as the limit along it (bisection) and drops the rest, so the way back from a corner
+answers at once. Orbited far round the side (`bowlSide`, easing in from 55 degrees off axis), you lean further toward
+the camera (to 3.5 to 1) so you stay over the opening, a role near the bottom may sit up to 0.05 radii in front of the
+middle rather than 0.2 behind it (`bowlBehind`; you are still well in front), and a role is moved down the wall until
+it is clear of every role placed before it as well as of you. In the bowl you are a small glass ball (`sphere.js`
+`glassBall`, 92 path commands): a clear body graded along the light to a deep limb, three soft limb strokes, twelve
+layers each adding under 2 percent toward the lit point, a specular highlight, a crescent of gathered light inside the
+far limb, a lit rim and a dark hairline; the halo and flat ring are kept for the flat and global views. Your shadow
+falls from a key light by the camera (`youShadowLight`: the one light leaned toward you 2.2 to 1), so it lands on the
+wall just down and right of you, offset by how far in front you float, larger and darker than before (`YOU_SHADOW`),
+and it is drawn only where it lands inside the opening (`bowlShadowSeen`); lit from the opening it had fallen near the
+bottom and read as the bowl's. An edge from you is a filled ribbon (`scene.js` `ribbonCmds`, five commands, with a
+casing ribbon under it), its width and alpha tapered from you to the far wall by the two ends' perspective scales
+(`taperOf`), its color a linear gradient along it; an arrowhead is sized by `headScaleOf` (the scale to the 0.9, 0.55
+to 1.35). The glow is 16 layers (from 44) over one linear sweep toward the lit spot (`bowlSweep`, no steps), about the
+same light, 168 commands fewer: the per-shoal scene is about 1,040 in the fixture (1,085 before) and 990 to 1,050 on a
+live feed (1,015 to 1,060 before). The global view is as it was, but each globe's grid, six 96-point polylines (about
+600 commands a globe), is now its six circles as cubic arcs (`globeCircle`, a cubic per quarter turn, split where each
+crosses the outline): the global depth scene is about 1,620 in the fixture (2,750 before) and 2,000 on a two-shoal
+live feed (3,130 before), under the 2,800 that never failed a native render.
 
 Subscription meters are account observations, not per-role token estimates.
 `subscription_usage.py` owns provider reads, normalization, one host-wide cache,

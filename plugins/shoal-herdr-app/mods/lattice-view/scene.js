@@ -15,11 +15,11 @@ import { motionPolicy, flowEdges } from "./motion.js";
 import {
   sphereShade, glassColorAt, LIGHT, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
   BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlPlumb, lipCmds, crescentCmds, rimShade,
-  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS,
+  rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, SHADOW_STEPS, bowlSweep, glassBall,
 } from "./sphere.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, annularSectorCmds,
-  samplesBySpacing, pointAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp, readableInk,
+  samplesBySpacing, pointAt, tangentAt, toScreen, boundsOf, fitTransform, withAlpha, mix, clamp, readableInk,
 } from "./geom.js";
 
 const P = PALETTE;
@@ -118,6 +118,36 @@ export function surfaceUnder(surfaces, x, y) {
     }
   }
   return null;
+}
+
+// In the bowl a node's perspective scale is about BOWL_UNIT where a role sits mid-wall (depth.js BOWL_GAIN), more at
+// you (about 1.9) and less on the far wall (about 0.75).
+const BOWL_UNIT = 1.25;
+/** An arrowhead's size in the bowl, of its bucket's, at a node of perspective scale s: in step with how near it is (a
+ * square root undersold it: the far wall's heads were still nearly full size). */
+export const headScaleOf = (s) => clamp((s / BOWL_UNIT) ** 0.9, 0.55, 1.35);
+/**
+ * How an edge from you tapers with depth, from its source (scale s0) to its destination (s1): {w0, w1} its width at each
+ * end (of its bucket's core) and {a0, a1} its alpha (of its core's): wide and bright at its near end (at you,
+ * TAPER.near times its core), and at its far end (on the wall) narrower and dimmer by the two ends' perspective scales,
+ * more steeply than perspective alone (TAPER.w and TAPER.a), so it reads as running away from you, into the bowl.
+ */
+export const TAPER = { near: 2.2, w: 1.8, a: 1.2, alphaNear: 1.15, minW: 0.45, minA: 0.45 };
+export function taperOf(s0, s1) {
+  const near = Math.max(s0, s1, 1e-6), k = (s) => s / near;
+  const w = (s) => Math.max(TAPER.minW, TAPER.near * k(s) ** TAPER.w), a = (s) => Math.max(TAPER.minA, TAPER.alphaNear * k(s) ** TAPER.a);
+  return { w0: w(s0), w1: w(s1), a0: a(s0), a1: a(s1) };
+}
+/** A filled ribbon along cubic c, w0 wide at its start and w1 at its end: each side the curve's control points moved
+ * out along the normals at its ends (a good offset for a gently bent edge), out on one side and back on the other. */
+export function ribbonCmds(c, w0, w1) {
+  const t0 = tangentAt(c, 0), t1 = tangentAt(c, 1), n0 = { x: -t0.y, y: t0.x }, n1 = { x: -t1.y, y: t1.x };
+  const side = (k) => {
+    const off = (p, n, w) => ({ x: p.x + (k * n.x * w) / 2, y: p.y + (k * n.y * w) / 2 });
+    return [off(c.p0, n0, w0), off(c.c1, n0, w0 + (w1 - w0) / 3), off(c.c2, n1, w0 + (2 * (w1 - w0)) / 3), off(c.p3, n1, w1)];
+  };
+  const [a0, a1, a2, a3] = side(1), [b0, b1, b2, b3] = side(-1);
+  return [["M", a0.x, a0.y], ["C", a1.x, a1.y, a2.x, a2.y, a3.x, a3.y], ["L", b3.x, b3.y], ["C", b2.x, b2.y, b1.x, b1.y, b0.x, b0.y], ["Z"]];
 }
 
 /** Pulse glyphs for stepped (frames) pulses: a blink for needs-you, a slow half-blink for work. */
@@ -224,7 +254,7 @@ export function buildScene(vm, lay, opts) {
         }
         // the far side's grid shows through the glass
         for (const front of [false, true]) {
-          const cmds = (c.globeGrid ?? []).filter((g) => g.front === front).flatMap((g) => g.points.map((q, i) => { const v = S(q); return [i ? "L" : "M", v.x, v.y]; }));
+          const cmds = (c.globeGrid ?? []).filter((g) => g.front === front).flatMap((g) => g.cmds.map(([op, ...xy]) => [op, ...xy.map((v, i) => (i % 2 ? v * k + tf.ty : v * k + tf.tx))]));
           items.push({ t: "path", id: `sphere-grid-${c.id}-${front}`, fill: false, width: front ? 0.9 : 0.6, dash: front ? null : [2, 5], cmds, bg: solid(withAlpha(front ? "#e4edf4" : c.tint, (front ? 0.19 : 0.12) * fog)) });
         }
         items.push({ t: "path", id: `sphere-limb-${c.id}`, fill: false, width: 1.5, cmds: circleCmds(p.x, p.y, r * 0.993), bg: { kind: "linear", angle: 135, from: withAlpha("#ffffff", 0.4 * fog), to: withAlpha("#020814", focused ? 0.7 : 0.5) } });
@@ -268,6 +298,8 @@ export function buildScene(vm, lay, opts) {
     // the inside: a dark base, then light pooling where a hollow faces the light (lower right, opposite a ball's)
     items.push({ t: "path", id: "bowl-in", fill: true, cmds: rimCmds, bg: solid(withAlpha(BOWL_BASE, BOWL.base)) });
     bowlGlow(fr, o.x, o.y, R).forEach((e, i) => items.push({ t: "path", id: `bowl-glow-${i}`, fill: true, cmds: conjugateEllipseCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha(BOWL_LIT, BOWL.glow)) }));
+    // and a smooth sweep of light toward the lit spot over the whole inside, no steps at all
+    items.push({ t: "path", id: "bowl-sweep", fill: true, cmds: rimCmds, bg: { kind: "linear", angle: bowlSweep(fr).angle, from: withAlpha(BOWL_LIT, 0), to: withAlpha(BOWL_LIT, BOWL.sweep) } });
     const tintOf = (b) => b.color ?? PASTELS[(b.index + 2) % PASTELS.length];
     for (const b of lay.bands) {
       // a light wash, so an edge or an arrow over it still reads; the outline carries the host's color
@@ -415,14 +447,28 @@ export function buildScene(vm, lay, opts) {
   const keep = hover ? incidentEdges(vm, hover) : hoverEdge ? new Set([hoverEdge.id]) : null;
   // in the bowl an arrowhead is sized in perspective with the node it is at: small on the far wall, large at you, so an
   // edge from you reads as pointing away, into the bowl
-  const headScale = lay.bowl ? (id) => clamp(Math.sqrt((lay.scaleOf?.get(id) ?? 1.25) / 1.25), 0.75, 1.2) : null;
+  const headScale = lay.bowl ? (id) => headScaleOf(lay.scaleOf?.get(id) ?? BOWL_UNIT) : null;
+  // and an edge from you tapers with depth (taperOf): a ribbon wide and bright at you, thin and dim at the far wall
+  const tapers = lay.bowl && hub ? (e) => (e.src === hub.id || e.dst === hub.id) && e.src !== e.dst : () => false;
   for (const bk of edgeBuckets(vm.edges.filter((e) => curves.has(e.id)), keep)) {
-    const cmds = bk.edges.flatMap((e) => curveCmds(curves.get(e.id)));
+    const tapered = bk.dash ? [] : bk.edges.filter(tapers), plain = tapered.length ? bk.edges.filter((e) => !tapered.includes(e)) : bk.edges;
+    const cmds = plain.flatMap((e) => curveCmds(curves.get(e.id)));
     const casing = lay.cam ? edgeCasing(bk) : null; // depth mode: a dark casing so the line reads over a surface
     const coreAlpha = casing ? casing.coreAlpha : bk.coreAlpha;
-    if (casing) items.push({ t: "path", id: `ek-${bk.key}`, fill: false, width: casing.width, dash: bk.dash, cmds, bg: solid(withAlpha(P.void, casing.alpha)) });
-    if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
-    items.push({ t: "path", id: `ec-${bk.key}`, fill: false, width: bk.core, dash: bk.dash, cmds, bg: solid(withAlpha(bk.color, coreAlpha)) });
+    if (cmds.length) {
+      if (casing) items.push({ t: "path", id: `ek-${bk.key}`, fill: false, width: casing.width, dash: bk.dash, cmds, bg: solid(withAlpha(P.void, casing.alpha)) });
+      if (bk.glow > 0) items.push({ t: "path", id: `eg-${bk.key}`, fill: false, width: bk.glow, cmds, bg: solid(withAlpha(bk.color, bk.glowAlpha)) });
+      items.push({ t: "path", id: `ec-${bk.key}`, fill: false, width: bk.core, dash: bk.dash, cmds, bg: solid(withAlpha(bk.color, coreAlpha)) });
+    }
+    for (const e of tapered) {
+      const c = curves.get(e.id), t = taperOf(lay.scaleOf?.get(e.src) ?? BOWL_UNIT, lay.scaleOf?.get(e.dst) ?? BOWL_UNIT);
+      const angle = (Math.atan2(c.p3.x - c.p0.x, -(c.p3.y - c.p0.y)) * 180) / Math.PI;
+      if (casing) items.push({ t: "path", id: `etk-${e.id}`, fill: true, cmds: ribbonCmds(c, bk.core * t.w0 + 2.4, bk.core * t.w1 + 1.6), bg: solid(withAlpha(P.void, casing.alpha)) });
+      if (bk.glow > 0) items.push({ t: "path", id: `etg-${e.id}`, fill: true, cmds: ribbonCmds(c, bk.glow * t.w0, bk.glow * t.w1),
+        bg: { kind: "linear", angle, from: withAlpha(bk.color, bk.glowAlpha * t.a0), to: withAlpha(bk.color, bk.glowAlpha * t.a1) } });
+      items.push({ t: "path", id: `et-${e.id}`, fill: true, cmds: ribbonCmds(c, bk.core * t.w0, bk.core * t.w1),
+        bg: { kind: "linear", angle, from: withAlpha(bk.color, Math.min(1, coreAlpha * t.a0)), to: withAlpha(bk.color, Math.min(1, coreAlpha * t.a1)) } });
+    }
     if (bk.cls !== "alias") {
       const heads = bk.edges.flatMap((e) => headsAt(e, curves.get(e.id), bk.arrow, headScale).flatMap((h) => polygonCmds(h)));
       if (casing) items.push({ t: "path", id: `eak-${bk.key}`, fill: false, width: 1.6, cmds: heads, bg: solid(withAlpha(P.void, casing.alpha)) });
@@ -516,6 +562,12 @@ export function buildScene(vm, lay, opts) {
     const op = v.opacity * dim;
     hits.push({ id: n.id, x: p.x, y: p.y, r: Math.max(r, 7) });
     nodeScreen.set(n.id, { x: p.x, y: p.y, r });
+    if (lay.bowl && n.kind === "user") {
+      // in the bowl you are a small glass ball in front of the inside (sphere.js glassBall), not a ring with a halo
+      items.push(...glassBall(n.id, p.x, p.y, r, v.color, op));
+      grow(p.x - r - 2, p.y - r - 2, p.x + r + 2, p.y + r + 2);
+      continue;
+    }
     const hs = v.halo?.scale ?? 2.4;
     const outer = v.halo ? r * hs : v.ring ? r + 7 : r + 2;
     grow(p.x - outer, p.y - outer, p.x + outer, p.y + outer);

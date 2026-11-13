@@ -726,15 +726,18 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   one shoal, depth mode looks down into a bowl from above and from the side, with you floating above its middle toward
   the opening, nearest and largest, its bottom below and beside you, and a dashed plumb line from you down to the
   bottom: the opening has a lit lip, the near wall's outside shows as a thin crescent under it, the wall under the
-  upper-left lip is in shade while the lower-right wall is lit, rings round the bottom darken toward it, and your small
-  soft shadow falls near the bottom. The hosts' colored regions share the whole inside of the bowl, each host's roles
-  sit on its region behind you, and the arrows from you to them are drawn over it, their heads smaller on the far wall,
-  so they point away from you into the bowl.
+  upper-left lip is in shade while the lower-right wall is lit, and rings round the bottom darken toward it. You are a
+  small glass ball, lit from the upper left like the globes, and your soft shadow falls on the wall just behind you,
+  down and to the right, so you read as floating in front of it. The hosts' colored regions share the whole inside of
+  the bowl, each host's roles sit on its region behind you, and the arrows from you to them taper as they go: wide and
+  bright at you, thin and dimmer at the far wall, with smaller heads there, so they run away from you into the bowl.
   - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). The bowl opens low and well round to the
     side (10 degrees tilt, -40 turn), with you floating out in front of its opening. Up and down raise and lower the
-    camera (4.6 to 50 degrees), and left and right take it round the bowl's side (-61 to 43 degrees); each stops at its
-    limit, so the bowl never flips, and from every angle you are seen to stand off the wall behind you. In the global view left and right turn the shoals' planes and up and down raise and lower
-    the camera. Shift with an arrow pans (a plain arrow pans in the flat view), drag pans in any view, and `,` and `.`
+    camera (-14 to 64 degrees), and left and right take it round the bowl's side (-72 to 72 degrees), together never
+    more than 72 degrees off the bowl's axis: a press that would pass a limit goes to it and no further, so the bowl
+    never goes edge-on or flips and the way back answers at once, from a corner too. From every angle you are seen to
+    stand off the wall behind you. In the global view left and right turn the shoals' planes and up and down raise and
+    lower the camera. Shift with an arrow pans (a plain arrow pans in the flat view), drag pans in any view, and `,` and `.`
     turn the view 15 degrees: the planes in the global view, the bowl round its own axis per shoal. Going back to flat
     (`d`) resets the orbit and the turn.
 - **The Board tab** (`shoal-board`, the top bar's Board, on the shoal of the space in view): a shoal's priority board
