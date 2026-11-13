@@ -7,7 +7,7 @@ provider live (`blockers.check(..., live=False)`: age-only evidence, labelled as
 points:
 
 - `shoal role-time native-status --spec S [--watch S]`: probe the sessions that run on THIS host
-  and write a small JSON cache (also run from `shoal resources watch --role-time-spec S`). Native
+  and write a small JSON cache (also run from `shoal resources watch` for every live group with a role on its host). Native
   turn state must be observed where the session runs; another host's cache file is only ever read,
   with its own write timestamp, so a stale or absent cache becomes unknown time, never work.
 - `shoal role-time observe --spec S [...] [--watch S] [--prom-dir DIR]`: the home-side integrator.
@@ -454,6 +454,26 @@ def write_native_cache(spec, path=None, now=None):
            "errors": errs}
     _atomic_write(path, json.dumps(doc, indent=1, sort_keys=True) + "\n")
     return doc
+
+
+def live_local_specs(root=None):
+    """Spec paths of every live group in the ledger clone (not retired) with a foreground role on this host: the shoals
+    whose native status this host's sampler refreshes (`resources watch`, unless `--no-role-time-live`). A spec that does
+    not load contributes nothing, so a group added, moved to this host or retired is followed at the next sample."""
+    import glob
+    import config
+    from layout import GROUPS_DIR, SPEC_FILE
+    from roles import ShoalSpec, is_local
+    out = []
+    for path in sorted(glob.glob(os.path.join(root or config.ledger_dir(), GROUPS_DIR, "*", SPEC_FILE))):
+        try:
+            spec = ShoalSpec.load(path)
+        except Exception:  # noqa: BLE001 - one unreadable spec never hides the others
+            continue
+        if getattr(spec, "retired_utc", "") or not any(is_local(r, spec) for r in foreground_roles(spec)[0]):
+            continue
+        out.append(path)
+    return out
 
 
 REMOTE_FETCH_TIMEOUT_S = 10

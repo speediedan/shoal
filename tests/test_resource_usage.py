@@ -152,8 +152,13 @@ class Resources(unittest.TestCase):
         self.assertEqual(calls, [["systemctl", "--user", "daemon-reload"],
                                  ["systemctl", "--user", "enable", "shoal-resources.service"],
                                  ["systemctl", "--user", "restart", "shoal-resources.service"]])
-        self.assertIn("ExecStart=", (self.root / ".config/systemd/user/shoal-resources.service").read_text())
-        a.enable = False
+        unit = (self.root / ".config/systemd/user/shoal-resources.service").read_text()
+        self.assertIn("ExecStart=", unit)
+        self.assertNotIn("--no-role-time-live", unit, "the caches follow the live specs unless opted out")
+        a.no_role_time_live, a.enable = True, False
+        with patch.object(r.Path, "home", return_value=self.root), patch.object(r.subprocess, "run"):
+            r.execute(a)
+        self.assertIn('"--no-role-time-live"', (self.root / ".config/systemd/user/shoal-resources.service").read_text())
         with patch.object(r.Path, "home", return_value=self.root), patch.object(r.subprocess, "run") as run:
             r.execute(a)
         self.assertEqual([c.args[0] for c in run.call_args_list], [["systemctl", "--user", "daemon-reload"]])
