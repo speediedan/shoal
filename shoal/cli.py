@@ -1047,7 +1047,44 @@ def cmd_add_role(a: argparse.Namespace) -> int:
 
 
 def cmd_retire(a: argparse.Namespace) -> int:
+    import contextlib
+    import retire_hooks as rh
     spec = ShoalSpec.load(a.spec)
+    try:
+        with contextlib.ExitStack() as stack:
+            operations = [rh.Operation(rh.role_target(spec, r), rh.ledger_for(spec), stack,
+                                       getattr(a, "no_archive", False)) for r in sorted(spec.roles, key=lambda r: r.slug)]
+            live = [r for r in spec.roles if r.session]
+            if any(op.enabled for op in operations) and live:
+                commands = []
+                from roles import host_of
+                import shlex
+                for role in live:
+                    cmd = "shoal park --spec " + shlex.quote(a.spec) + " --only " + shlex.quote(role.slug)
+                    if host_of(role, spec) and host_of(role, spec) != config.server():
+                        import routes
+                        route = routes.route(host_of(role, spec))
+                        ssh = routes.ssh_argv(route) if route else ["ssh", host_of(role, spec)]
+                        cmd = shlex.join(ssh) + " " + shlex.quote(cmd)
+                    commands.append(cmd)
+                raise rh.Refused("archive hooks require parked/no-session roles; park these first:\n  " + "\n  ".join(commands))
+            for op in operations:
+                op.preview()
+            if not a.dry_run:
+                for op in operations:
+                    op.prepare()
+            rc = _retire(a, spec)
+            if rc or a.dry_run:
+                return rc
+            print(f"retirement {spec.sid}: complete")
+            results = [op.finish() for op in operations]
+            return int(any(results))
+    except (rh.Refused, OSError, RuntimeError) as exc:
+        print(f"REFUSED: {exc}")
+        return 1
+
+
+def _retire(a, spec) -> int:
     g = spec.close_generation()
     if a.dry_run:
         print(f"[dry-run] close generation {spec.display_gen} ({'open' if g else 'already closed/absent'}), "
@@ -1139,6 +1176,8 @@ def cmd_status(spec: ShoalSpec) -> int:
         from ledger import Ledger, View, unpushed
         led = Ledger(spec.sid, root=spec.ledger_dir)
         v = View(led, spec)
+        import retire_hooks
+        retire_hooks.print_warnings(led)
         print(f"  ledger: {led.ldir} events={len(led.events())} contested={len(v.contested)} "
               f"violations={len(v.violations)} unpushed={unpushed(led.root)} "
               f"(`shoal show --shoal {spec.sid}` for the table)")
@@ -1257,6 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=lambda a: cmd_add_role(a))
 
     p = sub.add_parser("retire", help="close the generation, mark the spec retired")
+    p.add_argument("--no-archive", action="store_true", help="skip retirement hooks and record the opt-out")
     p.add_argument("--spec", required=True)
     p.add_argument("--uninstall-units", action="store_true")
     p.add_argument("--note", default="")
