@@ -66,8 +66,13 @@ you, per-shoal throughput and per-host load.
   presets, further the higher the caster (yours furthest). A shadow is a stack of fine alpha layers cut into equal
   steps of darkness as drawn in 8 bits (about two color levels each, `sphere.js` `shadowLayers`), fewer for a small
   one, so it falls off smoothly from a dark core through a soft penumbra that widens as the caster rises, with no ring
-  showing. Each stem casts a faint shadow from its foot to its caster's, and each edge a faint one too: its ends'
-  shadows are the rays' through them, and its curve is carried between them, arrowheads included. Far things are smaller and fade, near ones larger and drawn last. In the
+  showing. Each stem casts a faint shadow from its foot to its caster's, and each edge a faint one too, cast as a thing
+  in the world: every point of the curve its arrow is drawn along is lifted onto its line of sight at a depth between
+  its ends' (`projectLayout`'s `shade`), and the shadow is drawn through where the light's ray through each point meets
+  the floor (`scene.js` `castCurve`: cubics through cast points, within a pixel of the cast curve, so a short or straight
+  one is a single cubic), arrowheads included, and clipped off the floor's grid. Every shadow paints before every edge
+  and node, and a node a shadow reaches stands on an opaque disc of what is under it without the shadow (a box, no path
+  commands), so no shadow shows through a faint body. Far things are smaller and fade, near ones larger and drawn last. In the
   global view each shoal is a
   glass sphere: 48 directional light contours, each adding a little alpha, so the shadow side is nearly clear (5
   percent) and the lit side a tinted veil (27 percent), the floor and the far side's grid showing through; with the
@@ -101,15 +106,20 @@ you, per-shoal throughput and per-host load.
   the light, a crescent of gathered light inside the far limb, a lit rim and a dark hairline; at `full` your halo
   breathes behind it), your soft shadow falls on the wall where the light's ray through you meets it (below you at the
   opening view, further off as the camera orbits round, and not drawn where it would land outside the opening), each
-  edge's small shadow runs from its ends' shadows (yours, and a role's just beside it), and a dashed plumb line drops
+  edge's small shadow is cast as on the floor, onto the wall where the ray through each point of its lifted arrow
+  leaves the sphere (a point held just in front of the wall, so nothing casts from beyond it; clipped where the wall is
+  behind the near wall or outside the opening; an edge to a seat on the ring, outside the sphere, casts none), so an
+  arrow from you runs from your shadow to its role's, and a dashed plumb line drops
   from you down the axis to a small ring at the bottom. An edge from you
   is a tapered ribbon (five commands), wide and bright at you and thinner and dimmer at the far wall by the two ends'
   perspective, and an arrowhead is sized with the node it is at, so the edge reads as running away, into the bowl. A
-  role keeps its place on the surface as the camera orbits (where the preset puts it), moved down the wall only to stay
-  in view, clear of you, or clear of a role placed before it. The cut is a slanted
-  plane: the far wall rises 22 degrees past a hemisphere's rim (so more of the back shows), the near wall is cut lower, but
-  short of where the camera would see over it by 17 degrees, so the sphere's outer wall shows as a shell beside the
-  opening, from its top round to its bottom. The wall has a thickness, so the
+  role keeps its place on the surface as the camera orbits (where the preset puts it), moved along its meridian only to
+  stay in view, clear of you, or clear of a role placed before it (at the preset's view, if no place on its meridian is
+  clear, to the nearest clear place on its lune). The cut is a slanted
+  plane: the far wall rises 29 degrees past a hemisphere's rim (so more of the back shows), the near wall is cut lower, but
+  short of where the camera would see over it by up to 26 degrees seen from the side (17 from in front, held where the
+  bottom would come within 0.84 of the rim: about 25 at the opening view), so the sphere's outer wall shows as a shell
+  beside the opening, from its top round to its bottom. The wall has a thickness, so the
   opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
   the inner surface, opaque (it hides its own floor behind it) and lit as a hollow is: the light pools where it falls
   brightest (16 faint layers over a smooth linear sweep, so no band shows), the wall under the lip on the light's side
@@ -258,7 +268,9 @@ you, per-shoal throughput and per-host load.
   1,085 at the opening view, now about 1,040): the glow gave 168 commands for them. With one light, the fine depth caps
   and the edges' shadows (2026-11-13) the fixture's bowl is at most about 1,160 and its global scene about 1,720; a
   live two-host bowl about 1,190 and its global scene about 1,910. With smooth shadows, one for every role on a globe
-  (2026-11-13), the fixture's bowls are at most 1,358 and 967 and its global scene 2,054. The tests hold a bowl to 1,450,
+  (2026-11-13), the fixture's bowls are at most 1,358 and 967 and its global scene 2,054; with physical edge shadows and
+  the taller near wall, the worst at the canvas fit and 1.6x zoom is 1,428 and 1,005 for the bowls (1,365 and 969
+  before) and 2,284 for the global scene (2,278). The tests hold a bowl to 1,450,
   the global scene to 2,300 and every scene, at the fit and zoomed in, to 2,800: about 2,800 never failed a native
   render and 3,500 sometimes did.
 - A shadow on the dark floor cannot show more than about 30 to 50 distinct 8-bit levels, so layers finer than one or two

@@ -16,7 +16,7 @@ import {
   sphereShade, glassColorAt, LIGHT, lightOf, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
   BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlCaps, bowlPlumb, lipCmds, crescentCmds, rimShade,
   rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, shadowSteps, bowlCovers, blend8, rgb8, SHADOW_INK, SHADOW_UNDER,
-  bowlSweep, glassBall,
+  bowlSweep, glassBall, gradientAt, over,
 } from "./sphere.js";
 import {
   edgeCurve, curveCmds, arrowHead, polygonCmds, shapeCmds, circleCmds, ellipseCmds, conjugateEllipseCmds, ellipseArcCmds, annularSectorCmds,
@@ -75,8 +75,12 @@ export function edgeCasing(bk) {
 
 /**
  * The edges' shadows, cast by the view's one light: on the floor in the global view, on the bowl's inner wall per shoal.
- * Each end's shadow is where the light's ray through that end meets the surface (depth.js shadowOf); the edge's shadow
- * is its curve carried there, each point moved as its ends' shadows are, between them. EDGE_SHADOW_STROKES strokes, from
+ * Each edge has a path in the world: the curve its arrow is drawn along, each point lifted onto its line of sight at a
+ * depth between its two ends' (depth.js shade). Each point of that path casts where the light's ray through it meets the
+ * surface, and the shadow is drawn through those points (castCurve), clipped where the surface is not seen (behind the
+ * near wall, outside the opening, off the floor). 2026-11-13: the curve carried by its ends' shadow offsets, as before,
+ * was a translated copy of the arrow, and an edge to you, whose end floats far off the wall, threw one that matched no
+ * arrow. EDGE_SHADOW_STROKES strokes, from
  * `outW` wide down to the core's `coreW`, each adding an equal step of darkness, so it is darkest along the middle and
  * fades out to its edges with no step showing (two strokes, a soft one and a core, read as a dark line in a pale band);
  * `peak` is its darkness along the middle. The arrowheads' shadows filled. Fainter on the far floor than on the bowl's
@@ -95,10 +99,79 @@ export function edgeShadowStrokes(tone, n = EDGE_SHADOW_STROKES) {
   }
   return out;
 }
-/** An edge's curve c carried by its ends' shadow offsets d0 (at its start) and d1 (at its end), screen px. */
-export function shadowCurve(c, d0, d1) {
-  const at = (p, t) => ({ x: p.x + d0.x + (d1.x - d0.x) * t, y: p.y + d0.y + (d1.y - d0.y) * t });
-  return { p0: at(c.p0, 0), c1: at(c.c1, 1 / 3), c2: at(c.c2, 2 / 3), p3: at(c.p3, 1) };
+/** How far, in screen px, an edge shadow's cubic may stray from the cast curve between two of its knots: a short or
+ * nearly straight shadow is one cubic, a long bent one a few. */
+export const EDGE_SHADOW_TOL = 1;
+const EDGE_SHADOW_PROBE = 12; // samples along an edge that find where its shadow is seen
+/**
+ * The shadow of the edge drawn along screen cubic c, its ends at depths d0 and d1 (`shade`: depth.js), `toLay` and
+ * `toScr` the view transform's inverse and itself. Point t of the arrow is lifted into the world at the depth between its
+ * ends' (lift), cast from the light onto the surface (cast) and seen there or not (seen); each run of t whose shadow is
+ * seen (its ends found by bisection) is fitted with cubics through cast points, each matching the cast curve's direction
+ * at its knots and split until it is within `tol` of the curve between them. {cmds: a move and cubics per run, samples:
+ * every knot {t, X: the path's point, W: its shadow in the world, p: on screen}, pts: each run's screen points, in order}.
+ */
+export function castCurve(shade, c, d0, d1, toLay, toScr, tol = EDGE_SHADOW_TOL) {
+  const at = (t) => {
+    const X = shade.lift(toLay(pointAt(c, t)), d0 + (d1 - d0) * t), W = X ? shade.cast(X) : null;
+    return { t, X, W, ok: !!W && shade.seen(W), p: W ? toScr(shade.screen(W)) : null };
+  };
+  const probe = Array.from({ length: EDGE_SHADOW_PROBE + 1 }, (_, i) => at(i / EDGE_SHADOW_PROBE));
+  const edgeOf = (a, b) => { // a seen, b not (either order): the last seen t between them
+    let lo = a.t, hi = b.t;
+    for (let i = 0; i < 14; i++) { const m = (lo + hi) / 2; if (at(m).ok) lo = m; else hi = m; }
+    return at(lo);
+  };
+  const runs = [];
+  for (let i = 0; i < probe.length; i++) {
+    const q = probe[i], prev = probe[i - 1];
+    if (q.ok && (!prev || !prev.ok)) runs.push([prev ? edgeOf(q, prev) : q, q]);
+    else if (q.ok) runs.at(-1)[1] = q;
+    else if (prev?.ok) runs.at(-1)[1] = edgeOf(prev, q);
+  }
+  const cmds = [], samples = [], pts = [];
+  const pt = (t) => at(t).p;
+  // the cast curve's speed on screen at t, within [lo, hi] (one-sided at a run's ends)
+  const speed = (t, lo, hi) => {
+    const h = Math.min(1e-3, (hi - lo) / 4), a = pt(Math.max(lo, t - h)), b = pt(Math.min(hi, t + h)), dt = Math.min(hi, t + h) - Math.max(lo, t - h);
+    return { x: (b.x - a.x) / dt, y: (b.y - a.y) / dt };
+  };
+  for (const [A, B] of runs) {
+    if (B.t - A.t < 1e-4 || Math.hypot(B.p.x - A.p.x, B.p.y - A.p.y) < 0.5) continue;
+    const line = [A.p];
+    cmds.push(["M", A.p.x, A.p.y]);
+    samples.push(A);
+    pts.push(line);
+    const seg = (a, b, depth) => {
+      const k = (b.t - a.t) / 3, va = speed(a.t, A.t, B.t), vb = speed(b.t, A.t, B.t);
+      const cv = { p0: a.p, c1: { x: a.p.x + k * va.x, y: a.p.y + k * va.y }, c2: { x: b.p.x - k * vb.x, y: b.p.y - k * vb.y }, p3: b.p };
+      const err = Math.max(...[0.25, 0.5, 0.75].map((u) => { const q = pt(a.t + u * (b.t - a.t)), m = pointAt(cv, u); return Math.hypot(q.x - m.x, q.y - m.y); }));
+      if (err > tol && depth < 5) {
+        const mid = at((a.t + b.t) / 2);
+        seg(a, mid, depth + 1);
+        seg(mid, b, depth + 1);
+        return;
+      }
+      for (const u of [0.25, 0.5, 0.75]) line.push(pointAt(cv, u));
+      cmds.push(["C", cv.c1.x, cv.c1.y, cv.c2.x, cv.c2.y, b.p.x, b.p.y]);
+      samples.push(b);
+      line.push(b.p);
+    };
+    seg(A, B, 0);
+  }
+  return { cmds, samples, pts };
+}
+/** An arrowhead's shadow: each corner (screen [x, y]) lifted at its end's depth z and cast as castCurve casts; none
+ * unless every corner's shadow is seen. */
+export function castHead(shade, head, z, toLay, toScr) {
+  const out = [];
+  for (const [x, y] of head) {
+    const X = shade.lift(toLay({ x, y }), z), W = X ? shade.cast(X) : null;
+    if (!W || !shade.seen(W)) return null;
+    const p = toScr(shade.screen(W));
+    out.push([p.x, p.y]);
+  }
+  return out;
 }
 
 /** A role's contact shadow on the bowl's wall: its geometric shadow `rx` by `ry` of the role's radius, `off` of it toward
@@ -126,10 +199,39 @@ const textW = (s, size) => String(s).length * size * 0.6;
  * traffic both ways), or none. */
 function headsAt(e, c, size, sizeAt = null) {
   const back = { p0: c.p3, c1: c.c2, c2: c.c1, p3: c.p0 };
-  const at = e.heads ?? "dst";
   const dst = sizeAt ? size * sizeAt(e.dst) : size, src = sizeAt ? size * sizeAt(e.src) : size;
-  return at === "both" ? [arrowHead(c, dst), arrowHead(back, src)] : at === "src" ? [arrowHead(back, src)]
-    : at === "none" ? [] : [arrowHead(c, dst)];
+  return headEnds(e).map((end) => (end === "src" ? arrowHead(back, src) : arrowHead(c, dst)));
+}
+/** Which end each of an edge's arrowheads is at, in headsAt's order. */
+function headEnds(e) {
+  const at = e.heads ?? "dst";
+  return at === "both" ? ["dst", "src"] : at === "src" ? ["src"] : at === "none" ? [] : ["dst"];
+}
+/** Whether a shadow drawn (a footprint: an ellipse {c, a, b}, a stroke {pts, w: its half width} or a polygon {pts})
+ * reaches the disc at p, radius r: its middle or a point round its edge inside one. */
+export function shadowReaches(footprints, p, r) {
+  const probes = [p, ...Array.from({ length: 8 }, (_, i) => ({ x: p.x + 0.95 * r * Math.cos((i * Math.PI) / 4), y: p.y + 0.95 * r * Math.sin((i * Math.PI) / 4) }))];
+  const inEllipse = (f, q) => {
+    const det = f.a.x * f.b.y - f.a.y * f.b.x;
+    if (Math.abs(det) < 1e-9) return false;
+    const x = q.x - f.c.x, y = q.y - f.c.y, u = (x * f.b.y - y * f.b.x) / det, v = (f.a.x * y - f.a.y * x) / det;
+    return u * u + v * v <= 1;
+  };
+  const nearLine = (f, q) => f.pts.some((a, i) => {
+    const b = f.pts[i + 1];
+    if (!b) return Math.hypot(q.x - a.x, q.y - a.y) <= f.w;
+    const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy, t = l2 > 0 ? clamp(((q.x - a.x) * dx + (q.y - a.y) * dy) / l2, 0, 1) : 0;
+    return Math.hypot(q.x - a.x - t * dx, q.y - a.y - t * dy) <= f.w;
+  });
+  const inPoly = (f, q) => {
+    let inside = false;
+    for (let i = 0, j = f.pts.length - 1; i < f.pts.length; j = i++) {
+      const [xi, yi] = f.pts[i], [xj, yj] = f.pts[j];
+      if ((yi > q.y) !== (yj > q.y) && q.x < ((xj - xi) * (q.y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+  return footprints.some((f) => probes.some((q) => (f.kind === "ellipse" ? inEllipse(f, q) : f.kind === "line" ? nearLine(f, q) : inPoly(f, q))));
 }
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
@@ -147,13 +249,13 @@ export function bowlHostAt(fr, bands, nx, ny) {
  * The color under a screen point in depth mode, or null off every surface: the nearest globe's glass there (as
  * sphere.js blends it), or the bowl's inside in that host's tint. `surfaces` is what buildScene collected.
  */
-export function surfaceUnder(surfaces, x, y) {
+export function surfaceUnder(surfaces, x, y, under = DEPTH_UNDER) {
   for (let i = surfaces.length - 1; i >= 0; i--) {
     const s = surfaces[i], nx = (x - s.x) / s.r, ny = (y - s.y) / s.r;
-    if (s.kind === "globe" && Math.hypot(nx, ny) <= 1) return glassColorAt(s.tint, nx, ny, { fog: s.fog, focused: s.focused, under: DEPTH_UNDER, light: s.light });
+    if (s.kind === "globe" && Math.hypot(nx, ny) <= 1) return glassColorAt(s.tint, nx, ny, { fog: s.fog, focused: s.focused, under, light: s.light });
     if (s.kind === "bowl" && rimNorm(s.frame, { x: nx, y: ny }) <= 1) {
       const b = bowlHostAt(s.frame, s.bands, nx, ny);
-      return bowlColorAt(s.frame, nx, ny, b ? b.color ?? PASTELS[(b.index + 2) % PASTELS.length] : null, DEPTH_UNDER);
+      return bowlColorAt(s.frame, nx, ny, b ? b.color ?? PASTELS[(b.index + 2) % PASTELS.length] : null, under);
     }
   }
   return null;
@@ -209,6 +311,10 @@ export function buildScene(vm, lay, opts) {
   const items = [];
   const k = tf.k;
   const S = (p) => toScreen(tf, p);
+  const toLay = (q) => ({ x: (q.x - tf.tx) / k, y: (q.y - tf.ty) / k });
+  // depth mode: where every shadow drawn lies on screen (its outermost layer, or its stroke), so a node it reaches can be
+  // kept clear of it (6.)
+  const footprints = [];
   const posOf = (id) => lay.pos.get(id);
   const hover = opts.hover && vm.byId.has(opts.hover) ? opts.hover : null;
   // a hovered edge keeps itself and its two ends bright, as a hovered node keeps its neighbors
@@ -240,7 +346,7 @@ export function buildScene(vm, lay, opts) {
   // and filled in with the edges themselves (3.)
   const edgeShadow = {};
   const edgeShadowsHere = () => {
-    if (!lay.shadowOf || edgeShadow.core) return;
+    if (!lay.shade || edgeShadow.core) return;
     const tone = lay.bowl ? EDGE_SHADOW.bowl : EDGE_SHADOW.floor, ink = (a) => solid(withAlpha("#01040a", a));
     // the strokes share one list of commands: the edges' shadow curves, filled in below
     const cmds = [], strokes = edgeShadowStrokes(tone);
@@ -248,6 +354,7 @@ export function buildScene(vm, lay, opts) {
     edgeShadow.strokes = strokes.map((st, i) => ({ t: "path", id: i === strokes.length - 1 ? "edge-shadow" : `edge-shadow-soft-${i}`, fill: false, width: st.width, cmds, bg: ink(st.alpha) }));
     edgeShadow.core = edgeShadow.strokes.at(-1);
     edgeShadow.heads = { t: "path", id: "edge-shadow-heads", fill: true, cmds: [], bg: ink(tone.heads) };
+    edgeShadow.cast = [];
     items.push(...edgeShadow.strokes, edgeShadow.heads);
   };
 
@@ -287,6 +394,7 @@ export function buildScene(vm, lay, opts) {
       items.push({ t: "path", id: `shadow-${id}-${i}`, fill: true, cmds: ellipseArcCmds(c.x, c.y, a, b), bg: solid(withAlpha(SHADOW_INK, l.alpha)) });
       mine.push({ c, a, b, A: Math.round(l.alpha * 255) });
     }
+    if (mine.length) footprints.push({ kind: "ellipse", c, a: mine[0].a, b: mine[0].b });
     drawn.push(...mine);
   };
   for (const st of lay.stems ?? []) if (st.shadow) shadowStack(st.id, st.shadow);
@@ -295,6 +403,7 @@ export function buildScene(vm, lay, opts) {
   // every shadow on the floor is tied to what casts it (global view; the bowl's stem stands in front of its shadow)
   const poles = lay.bowl ? [] : (lay.stems ?? []).filter((st) => st.shadow).flatMap((st) => { const a = S({ x: st.x1, y: st.y1 }), b = S(st.shadow); return [["M", a.x, a.y], ["L", b.x, b.y]]; });
   if (poles.length) items.push({ t: "path", id: "stem-shadows", fill: false, width: 1.2, dash: [3, 4], cmds: poles, bg: solid(withAlpha("#01040a", 0.22)) });
+  for (let i = 0; i + 1 < poles.length; i += 2) footprints.push({ kind: "line", pts: [{ x: poles[i][1], y: poles[i][2] }, { x: poles[i + 1][1], y: poles[i + 1][2] }], w: 0.6 });
   for (const st of lay.stems ?? []) {
     const a = S({ x: st.x0, y: st.y0 }), b = S({ x: st.x1, y: st.y1 });
     items.push({ t: "path", id: `stem-${st.id}`, fill: false, width: 1, dash: [3, 4], cmds: [["M", a.x, a.y], ["L", b.x, b.y]], bg: solid(withAlpha(P.steel2, 0.32)) });
@@ -403,11 +512,30 @@ export function buildScene(vm, lay, opts) {
     // in with the edges, below): on the surface, so over its shading and its guides
     const youAt = lay.bowl.you ?? { x: 0, y: 0, z: 0 };
     if (hub && nodeR.has(hub.id)) {
-      bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R, youAt).forEach((e, i) => items.push({
-        t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: ellipseArcCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)),
-      }));
+      bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R, youAt).forEach((e, i) => {
+        items.push({ t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: ellipseArcCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)) });
+        if (!i) footprints.push({ kind: "ellipse", c: { x: e.x, y: e.y }, a: e.a, b: e.b });
+      });
     }
     edgeShadowsHere();
+    // each role's contact shadow on the wall it sits on, offset away from the light (the way its shadow falls, depth.js
+    // shadowOf), a smooth stack as every shadow is (sphere.js shadowLayers). Drawn here, with the other shadows, before
+    // any edge or node (2026-11-13: drawn with its role, far to near, a nearer role's lay over the roles behind it). A
+    // globe is glass and catches none: there a role's shadow is on the floor (depth.js casts)
+    for (const n of lay.order ?? vm.nodes) {
+      const p0 = posOf(n.id), surface = lay.surfaceOf?.get(n.id);
+      if (!p0 || !(surface?.facing > 0.18)) continue;
+      const p = S(p0), r = nodeR.get(n.id), dim = dimOf(n.id) * (lay.fogOf?.get(n.id) ?? 1);
+      const sh = lay.shadowOf?.get(n.id), sl = sh ? Math.hypot(sh.dx, sh.dy) : 0;
+      const [ux, uy] = sl > 1e-6 ? [sh.dx / sl, sh.dy / sl] : [0.57, 0.82];
+      const T = CONTACT, cx = p.x + r * T.off * ux, cy = p.y + r * T.off * uy;
+      const wall = surfaceUnder(surfaces, cx, cy) ?? SHADOW_UNDER;
+      const layers = shadowLayers(T.peak * dim, T.soft, shadowSteps(T.peak * dim, T.soft, r * Math.sqrt(T.rx * T.ry)), wall);
+      for (const [i, l] of layers.entries()) {
+        items.push({ t: "path", id: `contact-${n.id}-${i + 1}`, fill: true, cmds: ellipseCmds(cx, cy, r * T.rx * l.s, r * T.ry * l.s), bg: solid(withAlpha(SHADOW_INK, l.alpha)) });
+      }
+      if (layers.length) footprints.push({ kind: "ellipse", c: { x: cx, y: cy }, a: { x: r * T.rx * layers[0].s, y: 0 }, b: { x: 0, y: r * T.ry * layers[0].s } });
+    }
     // the plumb line: from you down the axis to the bottom, where it stands in a small ring, so you read as floating in
     // front of the inside, not drawn on it (your body, drawn last, covers its top)
     if (hub && posOf(hub.id)) {
@@ -537,14 +665,19 @@ export function buildScene(vm, lay, opts) {
     const cmds = plain.flatMap((e) => curveCmds(curves.get(e.id)));
     const casing = lay.cam ? edgeCasing(bk) : null; // depth mode: a dark casing so the line reads over a surface
     const coreAlpha = casing ? casing.coreAlpha : bk.coreAlpha, ink = casing?.color ?? bk.color;
-    // and its shadow, where the light puts it (not for faded edges, nor an alias's line)
+    // and its shadow, where the light puts it (not for faded edges, nor an alias's line): every point of the arrow, lifted
+    // into the world between its ends, cast onto the surface, and clipped where the surface is not seen
     if (edgeShadow.core && bk.tier !== "fade" && bk.cls !== "alias") {
       for (const e of bk.edges) {
-        const a = lay.shadowOf.get(e.src), b = lay.shadowOf.get(e.dst);
-        if (!a || !b) continue;
-        const sc = shadowCurve(curves.get(e.id), { x: a.dx * k, y: a.dy * k }, { x: b.dx * k, y: b.dy * k }), cc = curveCmds(sc);
-        edgeShadow.cmds.push(...cc);
-        edgeShadow.heads.cmds.push(...headsAt(e, sc, bk.arrow, headScale).flatMap((h) => polygonCmds(h)));
+        const d0 = lay.shade.depthOf.get(e.src), d1 = lay.shade.depthOf.get(e.dst);
+        if (!Number.isFinite(d0) || !Number.isFinite(d1)) continue;
+        const c = curves.get(e.id), run = castCurve(lay.shade, c, d0, d1, toLay, S);
+        const heads = headsAt(e, c, bk.arrow, headScale).map((h, i) => castHead(lay.shade, h, headEnds(e)[i] === "src" ? d0 : d1, toLay, S)).filter(Boolean);
+        if (!run.cmds.length && !heads.length) continue;
+        edgeShadow.cmds.push(...run.cmds);
+        edgeShadow.heads.cmds.push(...heads.flatMap((h) => polygonCmds(h)));
+        edgeShadow.cast.push({ id: e.id, samples: run.samples, heads });
+        footprints.push(...run.pts.map((pts) => ({ kind: "line", pts, w: edgeShadow.strokes[0].width / 2 })), ...heads.map((h) => ({ kind: "poly", pts: h })));
       }
     }
     if (cmds.length) {
@@ -629,6 +762,16 @@ export function buildScene(vm, lay, opts) {
     }
   }
 
+  // what is under a screen point with no shadow on it: the surface there (a globe's glass, the bowl's inside) or the
+  // depth canvas (its gradient, wash and bloom, as drawn in 1.)
+  const canvasAt = (x, y) => {
+    const g = gradientAt(rect, 165, x, y), wash = gradientAt(rect, 35, x, y);
+    let col = over(mix(DEPTH_BG.from, DEPTH_BG.to, g), withAlpha(P.navy, 0.18 * (1 - wash)));
+    [1, 0.72, 0.48, 0.28].forEach((f, i) => { if (Math.hypot(x - bloomAt.x, y - bloomAt.y) <= bloomR * f) col = over(col, withAlpha("#2a2148", 0.05 + i * 0.012)); });
+    return col;
+  };
+  const clearColorAt = (x, y) => { const c = canvasAt(x, y); return surfaceUnder(surfaces, x, y, c) ?? c; };
+
   // 6. nodes: halos and rings (native loops), bodies, hatch, dashed outlines, spinners
   const polyFill = new Map();
   const polyStroke = new Map();
@@ -657,6 +800,12 @@ export function buildScene(vm, lay, opts) {
     hits.push({ id: n.id, x: p.x, y: p.y, r: Math.max(r, 7) });
     nodeScreen.set(n.id, { x: p.x, y: p.y, r });
     const hs = v.halo?.scale ?? 2.4;
+    // depth mode: a node a shadow reaches stands on an opaque disc of what is under it without the shadow, so no shadow
+    // shows through a faint body (2026-11-13: a parked role, its body a 22 percent veil, read as darkened by its own
+    // contact shadow under it). A box: no path commands
+    if (footprints.length && shadowReaches(footprints, p, r)) {
+      items.push({ t: "box", id: `under-${n.id}`, x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r, radius: r, bg: clearColorAt(p.x, p.y), opacity: 1 });
+    }
     const pulse = pulsing.has(n.id) && dimOf(n.id) === 1;
     const loopPulse = pulse && policy.pulseMode === "loop";
     if (lay.bowl && n.kind === "user") {
@@ -701,18 +850,6 @@ export function buildScene(vm, lay, opts) {
     }
     const bodyColor = v.fill > 0 ? withAlpha(v.color, v.fill * op) : withAlpha(P.void, 0.6 * op);
     const surface = lay.surfaceOf?.get(n.id);
-    if (lay.bowl && surface?.facing > 0.18) {
-      // in the bowl, a role's contact shadow on the wall it sits on, offset away from the light (the way its shadow falls,
-      // depth.js shadowOf), a smooth stack as every shadow is (sphere.js shadowLayers). A globe is glass and catches none:
-      // there a role's shadow is on the floor (depth.js casts)
-      const sh = lay.shadowOf?.get(n.id), sl = sh ? Math.hypot(sh.dx, sh.dy) : 0;
-      const [ux, uy] = sl > 1e-6 ? [sh.dx / sl, sh.dy / sl] : [0.57, 0.82];
-      const T = CONTACT, cx = p.x + r * T.off * ux, cy = p.y + r * T.off * uy;
-      const wall = surfaceUnder(surfaces, cx, cy) ?? SHADOW_UNDER;
-      for (const [i, l] of shadowLayers(T.peak * dim, T.soft, shadowSteps(T.peak * dim, T.soft, r * Math.sqrt(T.rx * T.ry)), wall).entries()) {
-        items.push({ t: "path", id: `contact-${n.id}-${i + 1}`, fill: true, cmds: ellipseCmds(cx, cy, r * T.rx * l.s, r * T.ry * l.s), bg: solid(withAlpha(SHADOW_INK, l.alpha)) });
-      }
-    }
     if (v.shape === "circle") {
       const solidBorder = v.border === "solid" || (v.kind === "user");
       if (surface && v.fill > 0) items.push({ t: "path", id: `role-shade-${n.id}`, fill: true,
@@ -871,7 +1008,7 @@ export function buildScene(vm, lay, opts) {
 
   if (!Number.isFinite(extent.x0)) Object.assign(extent, { x0: 0, y0: 0, x1: width, y1: height });
   for (const it of [...(edgeShadow.strokes ?? []), edgeShadow.heads]) if (it && !it.cmds.length) items.splice(items.indexOf(it), 1);
-  return { items, hits, satHits, edgeHits, discs, nodeScreen, satScreen, edgeScreen, animated, extent };
+  return { items, hits, satHits, edgeHits, discs, nodeScreen, satScreen, edgeScreen, animated, extent, edgeShadows: edgeShadow.cast ?? [] };
 }
 
 /** The world box of what scales with zoom: node centers, satellites and the cluster regions. */
