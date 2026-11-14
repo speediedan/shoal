@@ -35,7 +35,7 @@ import {
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
-  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, verbGroups, pickKey,
+  draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, handoffLatencyNote, verbGroups, pickKey,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -919,6 +919,8 @@ export default class Actions extends View {
     const roleDoc = this.roles?.shoals?.find((s) => s.id === this.sel.shoal)?.roles?.find((r) => r.slug === this.sel.role)?.doc ?? null;
     const docNote = handoffDocNote(this.form, roleDoc);
     if (docNote) col.child(div().text_size(11.5).text_color(c.muted).child(docNote));
+    const latency = handoffLatencyNote(this.form);
+    if (latency) col.child(div().text_size(11.5).text_color(c.muted).child(latency));
     for (const f of visibleFields(this.form)) {
       const v = this.form.values[f.key];
       if (f.kind === "text") {
@@ -1023,6 +1025,8 @@ export default class Actions extends View {
       .child(div().text_size(13.5).font_semibold().child(`${verbInfo(this.verb)?.label ?? "Action"}: ${resultLine(r)}`))
       .child(div().text_size(11.5).text_color(c.muted).child(this.target(c))));
     if (r.open) col.child(div().text_size(12).text_color(r.open === "its space is open" ? c.green : c.muted).child(r.open));
+    const latency = r.ok ? handoffLatencyNote(this.form) : null;
+    if (latency) col.child(div().text_size(11.5).text_color(c.muted).child(latency));
     col.child(this.label("command", c));
     col.child(this.mono("res-cmd", commandLines(r.command || r.plan?.command || ""), c));
     if (r.plan?.cost) col.child(div().text_size(11.5).text_color(c.amber).child(`⚠ ${r.plan.cost}`));

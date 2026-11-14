@@ -95,7 +95,7 @@ Standalone seats (`ui_app.standalone_agent`) take the same groups from their ses
 |---|---|---|
 | `needs-you` | `question` | an open question prompt |
 | `working` | `working` | a turn running |
-| `waiting` | `background` | between turns with its own background tasks running (Claude's `inFlight`): they re-invoke it |
+| `working` | `background` | between turns with its own background tasks running (Claude's `inFlight`: subagents, shells, monitors): they re-invoke it, so it is still at work (2026-11-14) |
 | `blocked` | `session-blocked` | it declared a wait on another session or role (`shoal ui wait <seat> --on <who>`) |
 | `waiting` | its substate | it declared a wait on a target only (`shoal ui wait <seat> --target <kind:ref>`) |
 | `needs-you` | `your-turn` | its reply ended (the listing reads blocked) with no prompt open |
@@ -108,7 +108,10 @@ A finished reply needs you until you dismiss it (maintainer, 2026-11-11, replaci
 reply as held). A declared wait covers the turn that declared it: a later turn's end lapses it unless the seat declares it
 again, as a role writes a fresh sleep status each turn. Muse and Codex seats report from their harness's status line
 (`ui_app.native_report`): working while a turn runs, else what they declared, else held. A seat with an attached client
-reads as its session does.
+reads as its session does: its card keeps the labels current through an attach whatever the harness (2026-11-14:
+an attached Muse seat had kept a cleared `session-blocked` for an hour), and a Muse or Codex seat's declared wait
+lapses at a turn end its card saw, since those harnesses report none. A Muse turn waiting on its subagents counts
+their records as activity.
 
 **Sources.** Each field is derived once, from the code that already owns it:
 
@@ -349,12 +352,17 @@ use last read in it stays shown (`carried`: an idle reading says only that the n
 cannot have dropped); once that reset has passed it shows at 0% and "unused since its last reset", the reset rolled
 forward by whole weeks (until it has been used once, there is none to show). `shoal ui set ecosystems
 claude,codex,opencode` names the agent ecosystems in use on a host (default all four): one set aside drops out of Add
-session's discovery and New role's and Handoff's providers at once, `shoal handoff` and `shoal add-role` refuse it, and
+session's discovery and New role's and Handoff's providers at once, `shoal handoff` (a role's or a standalone seat's),
+`shoal add-role` and Add session refuse it, and
 it drops out of usage (the Usage tab, `ui status` and the status bar) once no role on it is left: a role still running
 on it keeps spending it, so its meter stays, and `ui set` names those roles, until they are handed off to an ecosystem
 in use. `--from <UTC>` schedules the change (for a subscription that ends at its quota reset:
 `shoal ui set ecosystems claude,codex,opencode --from 2026-11-16T00:00:00Z`): the setting takes over at that time with
 nothing to run then, and a later plain `ui set ecosystems` replaces it (adding an ecosystem back re-enables it).
+The setting is per user and per host (`~/.config/shoal/ui.json`), so set it on each host; removing a provider this
+way leaves its support in shoal untouched. Two things still read a provider set aside, locally and without spending
+it: pruning old incarnations lists its sessions (so roles that moved off it are still cleaned up), and `shoal
+resources` reports its tool when it is installed.
 
 Color is green below 70 percent, yellow at 70 percent, and red at 90 percent or
 when the service explicitly denies included usage. Text remains useful without
@@ -916,11 +924,23 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   the start doc and finishes its turn before replacement. Supply its start-doc path when none is saved.
   Turn off the checkpoint toggle to use an existing standalone checkpoint: its doc must validate, have no live
   job-folder references, and the source must already be idle.
-  With the same provider, recorded model and effort stay the same; changing provider uses that provider's defaults unless
-  explicit values are entered. A stale preview cannot hand off a different session that took the seat meanwhile.
+  With the same provider, recorded model and effort stay the same; changing provider uses this host's default for that
+  provider (`[provider_defaults.<provider>]` in `config/host.toml`, recorded on the role so a later handoff keeps it)
+  unless explicit values are entered, and with none configured, the provider's own. Its own can be whatever its client
+  last saved (2026-11-14: Codex keeps a model picked in its interactive client as its default, so a seat moved to Codex
+  ran that one), and moving back to a provider gets the configured default again, not an earlier session's choice.
+  Moving a role whose session stopped on its provider's usage limit needs no checkpoint and no Force: it can never
+  write one, so the handoff detects the stop, sends no checkpoint request, and hands the new session a reconciliation
+  brief in its first prompt (the start doc's stamp, the predecessor's transcript and how many tool calls it made after
+  that stamp), to read and record in a "Handoff reconciliation" section of its start doc before new work. The result
+  shows the same lines. A stale preview cannot hand off a different session that took the seat meanwhile.
   The dialog streams progress; **Continue in background** closes it without cancelling the operation. Reopen
   Handoff on the same target to reconnect, including after completion. A failed checkpoint or disappeared worker
   is reported in the retained log. Role handoffs follow the restart log until the new session is recorded.
+  The form and the result say how long to expect, so the dialog can be closed rather than watched (measured
+  2026-11-14): a standalone seat's new session starts about 2 s after Apply; a role's restart records the new session
+  in about 40 s and proves its watcher within a minute; either card shows in the lattice within about 10 s after (the
+  graph is written every 5 s, and the view polls every 4 s). A checkpoint first adds the wait for the current turn.
   Detach a held native client before Handoff so the checkpoint can run and the source session can be retired: a role
   whose Claude session has a client attached is refused, and says so. The form says which start doc the new session
   resumes from (a role's path, or the seat's saved one when none is typed), and its optional **Restart note** goes

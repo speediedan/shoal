@@ -2434,7 +2434,7 @@ assert ui_app.role_agent(dict(row, dismissed=True)) == ("dismissed", "remote-ci"
 assert ui_app.role_agent({}) == ("", "", "") and ui_app.role_agent({"agent": {"group": "odd"}}) == ("", "", "")
 assert len(ui_app.role_agent({"agent": {"group": "held", "state": "held", "detail": "x" * 500}})[2]) == ui_app.DETAIL_MAX
 # a standalone seat: working; needs you at a question and after a reply until dismissed (the dismissal lapses at the next
-# reply); waiting while its own background tasks run; blocked or waiting on what it declared, for the turn that declared it
+# reply); working while its own background tasks run (2026-11-14); blocked or waiting on what it declared, for the turn that declared it
 seat = lambda **k: dict({"state": "idle", "kind": "", "turn": "idle", "msg": "alive, between turns"}, **k)
 agent2 = lambda *a, **k: ui_app.standalone_agent(*a, **k)[:2]
 assert agent2(seat(state="working", turn="working")) == ("working", "working")
@@ -2446,7 +2446,7 @@ assert agent2(seat(turn="blocked", ended="2026-11-11T21:00:00.000Z"), entry=seen
     "a dismissal lapses at the next reply"
 assert agent2(seat()) == ("held", "idle") and agent2(seat(turn="dead")) == ("held", "stopped")
 assert agent2(seat(turn="blocked"), dismissed=True) == ("dismissed", "your-turn")
-assert agent2(seat(bg=2, msg="between turns: 2 background tasks running")) == ("waiting", "background")
+assert agent2(seat(bg=2, msg="between turns: 2 background tasks running")) == ("working", "background")
 review = {"wait": {"on": "ext:reviewer", "target": "gh-pr:acme/app#9", "since": "2026-11-11T20:00:00Z", "sub": "session-blocked"}}
 g = ui_app.standalone_agent(seat(turn="blocked", ended="2026-11-11T20:00:05.000Z"), entry=review)
 assert g[:2] == ("blocked", "session-blocked") and "on ext:reviewer" in g[2] and "acme/app#9" in g[2], g
@@ -2610,6 +2610,18 @@ ui_status.save_ui_config({"ecosystems": ["claude", "codex", "opencode"]})
 assert "set aside on this host" in ui_status.ecosystem_refusal("muse") and ui_status.ecosystem_refusal("codex") == ""
 import park
 assert "set aside" in park._ecosystem_refusal("muse"), "handoff and add-role refuse one set aside"
+# 2026-11-14: so do a standalone seat's handoff from the CLI and Add session (each had checked only the name)
+import handoff_flow
+try:
+    handoff_flow.preflight("/nonexistent.md", "muse")
+    raise SystemExit("a standalone handoff to a provider set aside was accepted")
+except handoff_flow.HandoffError as exc:
+    assert "set aside on this host" in str(exc), exc
+try:
+    ui_actions.build("add-session", types.SimpleNamespace(harness="muse", session_id="s-1", label="seat"))
+    raise SystemExit("a seat on a provider set aside was accepted")
+except ui_actions.ActError as exc:
+    assert "set aside on this host" in str(exc), exc
 import ui_herdr
 assert ui_herdr.cmd_set(types.SimpleNamespace(key="ecosystems", value="claude,codex,opencode", from_utc="2026-11-16T00:00:00Z")) == 0
 d = ui_status.ui_config()
@@ -2687,6 +2699,19 @@ try:
     assert "state=working" in seat.text("abcd1234-0000", "abcd1234")
     seat.looked()
     assert "state=idle" in seat.text("abcd1234-0000", "abcd1234"), "seen after an attach: no done"
+    # 2026-11-14: a Muse or Codex seat reports no turn end, so its declared wait lapses at one its card saw
+    import ui_view as uv
+    native = iter([{"state": "working"}, {"state": "idle"}])
+    ui_app.native_report = lambda h, s, l: dict({"kind": "", "turn": "idle", "msg": "", "bg": 0, "ended": "", "title": "",
+                                                 "app": l}, **next(native))
+    waited = {"wait": {"on": "ext:rev", "since": "2026-01-01T00:00:00Z", "sub": "session-blocked"}}
+    uv._seat_entry = lambda label: waited
+    marks = []
+    uv._marks = lambda app, labels: marks.append(labels)
+    mseat = uv._SeatReport(ui_app, "mseat")
+    mseat.text("s-muse", "", harness="muse")
+    mseat.text("s-muse", "", harness="muse")
+    assert marks[-1][ui_app.STATE_LABEL] != "session-blocked", marks
 finally:
     ui_status.claude_turn, ui_status.pending_question = orig
 PY2
@@ -3527,6 +3552,28 @@ print("launch list ok")
 PY7
 OUT=$(env $AENV $H ui app-install --dry-run) || fail "app-install dry-run :: $OUT"
 grep -q "shoal-graph-feed.service" <<<"$OUT" || fail "app-install plan :: $OUT"
+# 2026-11-14: a card reports its role's name as its app, which no program in the app's table matches, so every card
+# drew the generic agent robot; the sync gives each card an entry with its provider's icon, and leaves others' alone
+python3 - "$SHOALD" "$S" <<'PY_PROGRAMS' || fail "card program icons"
+import json, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+home = os.path.join(sys.argv[2], "apphome-programs"); os.makedirs(home)
+os.environ["HERDR_APP_HOME"] = home
+import ui_app
+mine = {"programs": {"lazygit": {"name": "Git"}, "core": {"name": "my own core"}}, "shells": ["xonsh"]}
+json.dump(mine, open(os.path.join(home, "programs.json"), "w"))
+assert ui_app.install_programs({"up": "codex", "seat": "claude", "core": "claude", "x": "nope"}, dry_run=True) == [
+    "[dry-run] card icon seat: claude", "[dry-run] card icon up: codex"]
+assert json.load(open(os.path.join(home, "programs.json"))) == mine, "a dry run writes nothing"
+assert ui_app.install_programs({"up": "codex", "seat": "claude", "core": "claude"}) == ["card icon seat: claude", "card icon up: codex"]
+d = json.load(open(os.path.join(home, "programs.json")))
+assert d["programs"]["up"] == {"name": "up", "icon": "icons/codex.svg", "tint": False, "tile": "#1c1d21", "color": "#ffffff"}, d
+assert d["programs"]["core"] == {"name": "my own core"} and d["programs"]["lazygit"] == {"name": "Git"} and d["shells"] == ["xonsh"], d
+assert ui_app.install_programs({"up": "codex"}) == [], "unchanged: nothing written"
+assert ui_app.install_programs({"up": "claude"}) == ["card icon up: claude"], "a handoff to another provider follows"
+assert json.load(open(os.path.join(home, "programs.json")))["programs"]["up"]["icon"] == "icons/claude.svg"
+open(os.path.join(home, "programs.json"), "w").write("{not json")
+assert ui_app.install_programs({"up": "codex"}) == ["programs.json does not read as JSON: card icons left as they are"]
+PY_PROGRAMS
 # mods go into the app home: a link, or a marked copy for one with pictures (the app loads no PNG through a link);
 # a stale copy is refreshed, a folder shoal did not make is left alone
 python3 - "$SHOALD" "$S" <<'PY9' || fail "mod install"

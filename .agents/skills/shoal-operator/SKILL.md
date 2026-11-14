@@ -93,8 +93,8 @@ attached never auto-parks.
 A standalone seat (an operator seat, or a lane in no shoal) has no ledger status, so the agents list reads it from its
 session and from what it declares in its registry entry:
 
-- **working** while a turn runs; **waiting: background** between turns while its own background tasks run (a suite, a
-  CI watch), since they re-invoke it.
+- **working** while a turn runs, and (**working: background**) between turns while its own background tasks run (a
+  suite, a CI watch, subagents), since they re-invoke it.
 - **blocked: session-blocked** or **waiting** when it declares a wait. End a turn that waits on another session (a
   review, a lock) or on a target with `shoal ui wait <your label> --on <session or role> [--target gh-pr:<owner/repo>#<n>]
   [--why "<a few words>"]`, or `--target` alone for a PR or run. It covers the turn that declares it: declare it again at

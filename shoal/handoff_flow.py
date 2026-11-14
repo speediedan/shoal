@@ -145,6 +145,11 @@ def preflight(doc: str, ecosystem: str) -> None:
     from doctor import ECOSYSTEM_TOOLS
     if ecosystem not in backends.ecosystems():
         raise HandoffError(f"unknown provider {ecosystem}")
+    sys.path.insert(0, os.path.join(HERE, "ui"))
+    import ui_status
+    refusal = ui_status.ecosystem_refusal(ecosystem)  # the dialog refused it, the CLI did not (2026-11-14)
+    if refusal:
+        raise HandoffError(refusal)
     tool = ECOSYSTEM_TOOLS.get(ecosystem)
     if tool and not backends.tool_which(tool):
         raise HandoffError(f"{tool} is not on this host's tool path")
@@ -252,7 +257,11 @@ def run(a) -> int:
             if fresh.role(label) is None or fresh.role(label).session != old:
                 raise HandoffError("the role changed sessions while waiting; this handoff was stopped")
             return role_ready(fresh, label, previous_queue) and startdoc.check(doc, requested_at)["ok"]
-        if not ready():
+        import reconcile
+        if not ready() and reconcile.limit_stop(role.ecosystem, old) is not None:
+            # it would answer no request: the handoff gate sees the same stop and hands off with a reconciliation brief
+            note(f"1/3 {label}'s session stopped on its usage limit, so it cannot checkpoint: no request sent")
+        elif not ready():
             import datetime
             from ledger import Ledger, View
             if question_open(role.ecosystem, old):
@@ -315,7 +324,17 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prep
         return current
     unchanged()
     through = bool(getattr(a, "through_question", False)) and question_open(entry["harness"], old)
-    if prepare:
+    import reconcile
+    stop = reconcile.limit_stop(entry["harness"], old) if between(entry) else None
+    if stop is not None:  # it would answer no checkpoint request: the new session reconciles from its transcript instead
+        lines, brief = reconcile.brief(entry["harness"], old, doc, stop)
+        for line in lines:
+            note(line)
+        a.note = f"{brief}\n\n{a.note.strip()}" if str(getattr(a, "note", "") or "").strip() else brief
+        if not startdoc.check(doc)["ok"]:
+            raise HandoffError("the start doc would not carry the new session: " + "; ".join(startdoc.check(doc)["problems"]))
+        note(f"1/3 {label}'s session stopped on its usage limit: no checkpoint request, its start doc as it stands")
+    elif prepare:
         stamp = handover.now_iso()
         before = fingerprint(doc)
         if through:
@@ -360,8 +379,10 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prep
     note(stopped)
     if "STILL LIVE" in stopped:
         raise HandoffError("the old session did not stop; no replacement started")
-    model = a.model or (entry.get("model", "") if eco == entry["harness"] else "")
-    effort = a.effort or (entry.get("effort", "") if eco == entry["harness"] else "")
+    import config
+    dmodel, deffort = config.provider_default(eco) if eco != entry["harness"] else ("", "")
+    model = a.model or (entry.get("model", "") if eco == entry["harness"] else dmodel)
+    effort = a.effort or (entry.get("effort", "") if eco == entry["harness"] else deffort)
     note(f"3/3 Starting the new {eco} session from {doc}")
     new = backends.get(eco).create(label, entry.get("cwd") or os.getcwd(),
                                    brief=resume_brief(doc, getattr(a, "note", "")), name=label, model=model, effort=effort)

@@ -149,8 +149,8 @@ def seat_wait(entry: dict | None, rep: dict | None) -> dict | None:
 
 def standalone_agent(rep: dict | None, dismissed: bool = False, entry: dict | None = None) -> tuple[str, str, str]:
     """(group, state, detail) of a standalone seat's row, from its card's report (`standalone_report`, or `native_report`
-    for Muse and Codex) and its registry `entry`. Working for a turn; needs you at an open question; waiting while its own
-    background tasks run (they re-invoke it); blocked or waiting on what it declared (`shoal ui wait`: another session's
+    for Muse and Codex) and its registry `entry`. Working for a turn, and while its own background tasks run (they
+    re-invoke it); needs you at an open question; blocked or waiting on what it declared (`shoal ui wait`: another session's
     review, a PR); after a reply, needs you (`your-turn`) until you dismiss it (`shoal dismiss --session`), which lapses
     at its next reply (maintainer, 2026-11-11); held when idle or stopped. `dismissed`: closed in the viewer."""
     if rep is None:
@@ -162,8 +162,8 @@ def standalone_agent(rep: dict | None, dismissed: bool = False, entry: dict | No
         group, state = "working", "working"
     elif rep.get("kind") == "question":
         group, state = "needs-you", "question"
-    elif rep.get("bg"):
-        group, state = "waiting", "background"
+    elif rep.get("bg"):  # its own subagents and shells are its work (maintainer, 2026-11-14: working, not waiting)
+        group, state = "working", "background"
     elif w is not None:
         group, state = ("blocked", "session-blocked") if w.get("on") else ("waiting", str(w.get("sub") or "waiting"))
         msg = " ".join(x for x in (f"on {w['on']}" if w.get("on") else "", str(w.get("target") or ""),
@@ -518,7 +518,7 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
     from roles import ShoalSpec
     feed = feed_state()
     hidden = set() if ids else ui_status.hidden_shoals()
-    spaces, notes = [], []
+    spaces, notes, programs = [], [], {}
     for p in ui_status.discover_all(ledger_root, ids or None):
         try:
             spec = ShoalSpec.load(p)
@@ -529,15 +529,65 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
                 notes.append(f"{spec.sid}: its home is {spec.home} (open it there, or name it with --shoal)")
                 continue
             spaces.append(shoal_space(spec, feed))
+            programs.update({r.slug: r.ecosystem for r in spec.roles if r.session})
         except Exception as exc:  # noqa: BLE001 - one broken spec never hides the others
             notes.append(f"{p}: {exc}")
     if standalone and not ids:
-        spaces += [standalone_space(e) for e in ui_herdr.local_standalone()]
+        for e in ui_herdr.local_standalone():
+            spaces.append(standalone_space(e))
+            programs[e.get("label") or e["session"][:12]] = e.get("harness") or ""
     if not feed["fresh"]:
         notes.append(f"graph feed not running here: lattice tabs poll `ui graph` slowly (`shoal ui app-install` "
                      f"starts {FEED_UNIT})")
     return {"v": PLAN_V, "kind": "shoal-app-plan", "host": ui_launch.this_server(), "feed": feed,
-            "spaces": spaces, "notes": notes}
+            "spaces": spaces, "notes": notes, "programs": programs}
+
+
+# The app draws a pane's icon from its program table, found by the agent's reported `app`. A card reports its role's or
+# seat's name there, so the pane is headed by it, and no built-in program matches that: every card drew the generic
+# agent robot whatever its provider (2026-11-14). So each plan names its cards' providers (`programs`), and the sync
+# gives each card an entry of its own (headed by its name, with its provider's icon) in the app's `programs.json`.
+# Entries someone else wrote are never changed; the ones shoal wrote are listed in a hidden file beside it.
+PROGRAM_ICONS = {"claude": ("icons/claude.svg", False), "codex": ("icons/codex.svg", False),
+                 "opencode": ("icons/opencode.svg", True), "muse": ("icons/muse.svg", True)}
+PROGRAMS_OWNED = ".shoal-programs.json"
+
+
+def install_programs(programs: dict, dry_run: bool = False) -> list[str]:
+    path, own_path = os.path.join(app_home(), "programs.json"), os.path.join(app_home(), PROGRAMS_OWNED)
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except FileNotFoundError:
+        doc = {}
+    except (OSError, ValueError):
+        return ["programs.json does not read as JSON: card icons left as they are"]
+    try:
+        with open(own_path) as fh:
+            owned = set(json.load(fh))
+    except (OSError, ValueError, TypeError):
+        owned = set()
+    if not isinstance(doc, dict) or not isinstance(doc.setdefault("programs", {}), dict):
+        return ["programs.json has no programs table: card icons left as they are"]
+    table, changed = doc["programs"], []
+    for app, eco in sorted((programs or {}).items()):
+        if eco not in PROGRAM_ICONS or app in PROGRAM_ICONS or (app in table and app not in owned):
+            continue
+        icon, tint = PROGRAM_ICONS[eco]
+        want = {"name": app, "icon": icon, "tint": tint, "tile": "#1c1d21", "color": "#ffffff"}
+        if table.get(app) != want:
+            table[app] = want
+            owned.add(app)
+            changed.append(f"card icon {app}: {eco}")
+    if not changed or dry_run:
+        return [f"[dry-run] {c}" for c in changed]
+    for target, data in ((path, doc), (own_path, sorted(owned))):
+        tmp = f"{target}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, target)
+    return changed
 
 
 def cmd_app_plan(a) -> int:
@@ -1049,6 +1099,7 @@ def open_app(choice: str, ids: list[str] | None = None, dry_run: bool = False, f
             out += [f"[dry-run] space {s['name']}: " + ", ".join(t["name"] for t in s["tabs"]) for s in doc["spaces"]]
             return 0, out
         out += Reconciler(machine, dry_run).apply(doc, focus, show, sync)
+        out += install_programs(doc.get("programs") or {}, dry_run)
     except AppError as exc:
         return 2, out + [str(exc)]
     if not dry_run and not sync:
