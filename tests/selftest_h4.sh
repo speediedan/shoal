@@ -1935,13 +1935,78 @@ role.restart_note = "check CI first"
 assert briefs.note_block(role).rstrip().endswith("check CI first") and "note from the operator" in briefs.note_block(role)
 role.restart_note = ""
 assert briefs.note_block(role) == ""
+# 2026-11-14: a move to another provider records this host's default for it, not an empty model that the provider's own
+# client fills with whatever it last saved; a named model or effort still wins, and with none configured both stay empty
+import config, tempfile
+cfg = tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False)
+cfg.write('[provider_defaults.codex]\nmodel = "gpt-x"\neffort = "xhigh"\n')
+cfg.close()
+os.environ["SHOAL_CONFIG"] = cfg.name
+config._CACHE.clear()
+role.ecosystem = "claude"
+assert park.handoff(spec, spec_path, "up", "", "codex", True, True) == 0
+assert "--set-model=up:gpt-x" in got[-1] and "--set-effort=up:xhigh" in got[-1], got[-1]
+assert park.handoff(spec, spec_path, "up", "gpt-y", "codex", True, True, "low") == 0
+assert "--set-model=up:gpt-y" in got[-1] and "--set-effort=up:low" in got[-1], got[-1]
+assert park.handoff(spec, spec_path, "up", "", "opencode", True, True) == 0
+assert "--set-model=up:" in got[-1] and not any(x.startswith("--set-effort") for x in got[-1]), got[-1]
+# a session stopped on its usage limit can never mark itself restart-ready: no Force needed, and the new session gets a
+# reconciliation brief; one that is not stopped is still refused
+import reconcile
+class NotReady(V):
+    def current_queue(self, s): return {"restart_ready": False}
+    def role_state(self, s): return {"state": "active"}
+ledger.View = NotReady
+reconcile.limit_stop = lambda e, s: None
+rc, t = run(dry_run=True)
+assert rc == 1 and "has not said it is restart-ready" in t, (rc, t)
+reconcile.limit_stop = lambda e, s: {"at": "2026-11-14T16:59:54Z", "why": "usage limit"}
+reconcile.transcript = lambda e, s: ""
+out.clear()
+assert park.handoff(spec, spec_path, "up", "", "", False, True) == 0
+t = "\n".join(out)
+assert "stopped on its usage limit at 2026-11-14T16:59:54Z" in t and "no transcript on this host" in t, t
+assert "(not restart-ready: stopped on its usage limit)" in t, t
+assert any(x.startswith("--note=up:Your predecessor") and "Handoff reconciliation" in x for x in got[-1]), got[-1]
+health.session_between_turns = lambda r, c, d: False  # mid-turn is still refused, stopped or not
+rc, t = run(dry_run=True)
+assert rc == 1 and "not known to be between turns" in t, (rc, t)
+health.session_between_turns = lambda r, c, d: True
+ledger.View = V
+# the detectors read each harness's own record of the last turn
+import importlib, json as _json
+importlib.reload(reconcile)
+d = tempfile.mkdtemp()
+cx = os.path.join(d, "codex.jsonl")
+with open(cx, "w") as fh:
+    for row in ({"timestamp": "2026-11-14T14:57:00.000Z", "payload": {"type": "function_call"}},
+                {"timestamp": "2026-11-14T14:58:00.000Z", "payload": {"type": "function_call"}},
+                {"timestamp": "2026-11-14T16:59:54.342Z", "payload": {"type": "task_complete", "error": {
+                    "message": "You've hit your usage limit.", "codex_error_info": "usage_limit_exceeded"}}}):
+        fh.write(_json.dumps(row) + "\n")
+assert reconcile._codex_stop(cx) == {"at": "2026-11-14T16:59:54Z", "why": "You've hit your usage limit."}
+import datetime
+stamp = datetime.datetime(2026, 11, 14, 14, 52, 39, tzinfo=datetime.timezone.utc)
+assert reconcile.tool_calls_since("codex", cx, stamp) == 2
+with open(cx, "a") as fh:
+    fh.write(_json.dumps({"timestamp": "2026-11-14T17:00:00.000Z", "payload": {"type": "task_complete"}}) + "\n")
+assert reconcile._codex_stop(cx) is None, "a later turn that ended well clears it"
+cl = os.path.join(d, "claude.jsonl")
+with open(cl, "w") as fh:
+    fh.write(_json.dumps({"type": "assistant", "timestamp": "2026-11-14T10:00:00Z", "message": {"content": "ok"}}) + "\n")
+    fh.write(_json.dumps({"type": "assistant", "timestamp": "2026-11-14T10:05:00Z", "error": "rate_limit"}) + "\n")
+assert reconcile._claude_stop(cl) == {"at": "2026-11-14T10:05:00Z", "why": "the Claude usage limit"}
+with open(cl, "a") as fh:
+    fh.write(_json.dumps({"type": "assistant", "timestamp": "2026-11-14T15:00:00Z", "message": {"content": "back"}}) + "\n")
+assert reconcile._claude_stop(cl) is None
 PY_HANDOFF
 FS0='{"claude": [], "opencode": {}}'
 # handoff: refused until the role says it is restart-ready; forced, it names the old session and the new provider
 check "has not said it is restart-ready" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --dry-run
 [ "$(rc_of env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --dry-run)" = 1 ] || fail "handoff without restart-ready"
-check "set-ecosystem=up:claude --set-model=up:m2" env SHOAL_FAKE_SESSIONS="$FS0" python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" dry
-python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" guards || fail "handoff guards"
+# an empty config of its own: the person's `ui set ecosystems` would turn "not on this host" into "set aside" (2026-11-14)
+check "set-ecosystem=up:claude --set-model=up:m2" env SHOAL_FAKE_SESSIONS="$FS0" XDG_CONFIG_HOME="$S/xdg-handoff" python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" dry
+XDG_CONFIG_HOME="$S/xdg-handoff" python3 "$S/handoff_tool.py" "$SHOALD" "$SPEC" guards || fail "handoff guards"
 check "unknown provider" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only up --force --dry-run --ecosystem nope
 check "no role nope" env SHOAL_FAKE_SESSIONS="$FS0" $H handoff --spec "$SPEC" --only nope --force --dry-run
 check "status=active" $Q --slug up --active app#9701:fix --next app#9702

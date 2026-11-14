@@ -411,6 +411,7 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     held (`force` never overrides that), and the new provider's tool and the start doc are in order. A login on the new
     provider is not checked (no harness has a uniform probe), and the restart itself runs detached: its log tells."""
     import health
+    import reconcile
     import startdoc
     from backends import tool_which
     from doctor import ECOSYSTEM_TOOLS
@@ -454,7 +455,15 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     st = view.role_state(slug) or {}
     role_status = st.get("state") or ("idle" if view.is_idle(slug) else "active")
     between = health.session_between_turns(role, health.claude_busy(), spec.dir)
-    if not (q.get("restart_ready") and role_status in ("idle", "waiting") and between) and not force:
+    ready = bool(q.get("restart_ready") and role_status in ("idle", "waiting"))
+    # a session stopped on its usage limit can never mark itself ready: hand off without it, with a reconciliation brief
+    stop = None if ready or force else reconcile.limit_stop(role.ecosystem, role.session)
+    if stop is not None and between:
+        lines, brief = reconcile.brief(role.ecosystem, role.session, role.doc, stop)
+        for line in lines:
+            print(line)
+        note = f"{brief}\n\n{note.strip()}" if note.strip() else brief
+    elif not (ready and between) and not force:
         why = [] if q.get("restart_ready") else ["it has not said it is restart-ready (`queue --restart-ready` refreshes its doc first)"]
         if role_status not in ("idle", "waiting"):
             why.append(f"its status is {role_status}")
@@ -476,7 +485,10 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     extra: list[str] = []
     if new_eco:
         extra.append(f"--set-ecosystem={slug}:{new_eco}")
-    if model or new_eco:  # another provider never inherits the old model name: empty is the provider's default
+        # another provider never inherits the old model or effort: this host's default for it (empty: the provider's own)
+        dmodel, deffort = config.provider_default(new_eco)
+        model, effort = model or dmodel, effort or deffort
+    if model or new_eco:
         extra.append(f"--set-model={slug}:{model}")
     if effort:
         extra.append(f"--set-effort={slug}:{effort}")
@@ -484,7 +496,8 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         extra.append(f"--note={slug}:{note.strip()}")
     to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model), effort) if x)
     print(f"{slug}: {role.ecosystem} session {role.session[:8]} hands off to a new {to} session from "
-          f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else " (not restart-ready: forced)"))
+          f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else
+          " (not restart-ready: stopped on its usage limit)" if stop is not None else " (not restart-ready: forced)"))
     if new_eco:
         print(f"not checked: {tool}'s login on this host, which the new session needs")
     out = health.context_restart(spec, spec_path, role, dry_run, tuple(extra))

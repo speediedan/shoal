@@ -120,6 +120,9 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         import backends
         if a.harness not in backends.ecosystems():
             raise ActError(f"add-session needs --harness ({'|'.join(backends.ecosystems())})")
+        import ui_status
+        if ui_status.ecosystem_refusal(a.harness):  # a seat there would spend a subscription set aside on this host
+            raise ActError(ui_status.ecosystem_refusal(a.harness))
         if not (a.session_id or "").strip():
             raise ActError("add-session needs --id (the session)")
         if not (a.label or "").strip():
