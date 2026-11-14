@@ -241,6 +241,21 @@ def candidates(token: str, here: str, repo: Repo) -> set[str]:
 def edges_to(repo: "Repo", targets: list[str], referrers: list[str], tier) -> dict[str, list[dict]]:
     """{target: [{file, line, tier}]}: where each target path is named, by the extraction contract (module docstring),
     among the `referrers` (text files) and every tracked symlink that is not excluded. `tier(path)` classes a referrer."""
+    edges: dict[str, list[dict]] = {p: [] for p in targets}
+    for s in reference_spans(repo, targets, referrers, tier):
+        edges[s["target"]].append({"file": s["file"], "line": s["line"], "tier": s["tier"]})
+    return edges
+
+
+def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier):
+    """Every reference to a target, one dict each: `file`, `line`, `tier`, `target`, `form`, `written`, `ambiguous`.
+
+    A text reference also has `start` and `end`, character offsets into the file's text of the token's path part (the
+    token without an `#anchor` or trailing `.,:;`, which is what resolves), and `written` is that text; `form` is how it
+    names the target: `relative` to the naming file, `repo` (relative to the repository root), `absolute`, `home` (`~/`)
+    or `suffix` (a unique partial path). A tracked symlink has `form` `symlink`, `line` 0 and its link text as `written`.
+    `ambiguous` marks a token that resolves to more than one target. `edges_to` and `shoal archive --cross-owner
+    rewrite` share this one extraction, so what counts as a reference and what gets rewritten cannot disagree."""
     # every way of naming a target contains its basename, so one search skips the files, lines and tokens that cannot
     # hold a reference before any path is resolved (substring tests, not one regex alternation: Python's re tries every
     # alternative at every position, which cost 10 s on a 55-file directory against a 28 MB repository; `in` takes 1)
@@ -253,7 +268,6 @@ def edges_to(repo: "Repo", targets: list[str], referrers: list[str], tier) -> di
             tails[t] = tails.get(t, 0) + 1
     suffixes = {"/".join(p.split("/")[-k:]): p for p in targets for k in range(2, len(p.split("/")))
                 if tails.get("/".join(p.split("/")[-k:])) == 1}
-    edges: dict[str, list[dict]] = {p: [] for p in targets}
     wanted = set(targets)
     for src in referrers:
         text = repo.read(src)
@@ -261,7 +275,9 @@ def edges_to(repo: "Repo", targets: list[str], referrers: list[str], tier) -> di
         if not present:
             continue
         here = posixpath.dirname(src)
-        for n, line in enumerate(text.splitlines(), 1):
+        offset = 0
+        for n, line in enumerate(text.splitlines(True), 1):
+            at, offset = offset, offset + len(line)
             if not any(x in line for x in present):
                 continue
             for m in TOKEN.finditer(line):
@@ -270,17 +286,31 @@ def edges_to(repo: "Repo", targets: list[str], referrers: list[str], tier) -> di
                 tok = m.group(0)
                 if not any(x in tok for x in present):
                     continue
-                named = candidates(tok, here, repo) & wanted
+                written = tok.split("#", 1)[0].rstrip(".,:;")
+                named, form = candidates(tok, here, repo) & wanted, ""
                 if not named and tok.rstrip("/.,:;") in suffixes:
-                    named = {suffixes[tok.rstrip("/.,:;")]}
-                for t in named - {src}:
-                    edges[t].append({"file": src, "line": n, "tier": tier(src)})
+                    named, form, written = {suffixes[tok.rstrip("/.,:;")]}, "suffix", tok.rstrip("/.,:;")
+                named -= {src}
+                for t in sorted(named):
+                    yield {"file": src, "line": n, "tier": tier(src), "target": t, "start": at + m.start(),
+                           "end": at + m.start() + len(written), "written": written,
+                           "form": form or _form(written, here, t), "ambiguous": len(named) > 1}
     for p, mode in repo.mode.items():
         if mode == "120000" and tier(p) != "excluded":
-            t = posixpath.normpath(posixpath.join(posixpath.dirname(p), os.readlink(os.path.join(repo.root, p))))
-            if t in edges and t != p:
-                edges[t].append({"file": p, "line": 0, "tier": "symlink"})
-    return edges
+            link = os.readlink(os.path.join(repo.root, p))
+            t = posixpath.normpath(posixpath.join(posixpath.dirname(p), link))
+            if t in wanted and t != p:
+                yield {"file": p, "line": 0, "tier": "symlink", "target": t, "written": link, "form": "symlink",
+                       "ambiguous": False}
+
+
+def _form(written: str, here: str, target: str) -> str:
+    """How a token that `candidates` resolved to `target` names it, from a file in directory `here`."""
+    if written.startswith("/"):
+        return "absolute"
+    if written.startswith("~"):
+        return "home"
+    return "relative" if posixpath.normpath(posixpath.join(here, written)) == target else "repo"
 
 
 COMPANION = re.compile(r"^(?P<stem>.+?)_(?:start(?:_[^/]*)?|plan_state)\.md$")

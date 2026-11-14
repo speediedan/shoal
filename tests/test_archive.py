@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import site
 import subprocess
 import sys
 import tempfile
@@ -239,6 +240,111 @@ git("commit", "-q", "-am", "simulate an orphaned restore_from")
 rc, out = archive("--restore", "proj/design/lane/blob.bin")
 assert rc == 0 and open(os.path.join(LANE, "blob.bin"), "rb").read() == BINARY, out
 print("restore by blob ok")
+
+# --cross-owner rewrite: another owner's live documents and symlinks are pointed at the archive paths in the same
+# commit, each reference in the form it was written in; history keeps its references and is counted
+RW = "proj/design/rw"
+# a `~/` reference needs the repository under HOME; keep the user site (tomli) where it was
+ENV["PYTHONUSERBASE"] = site.getuserbase()
+ENV["HOME"] = T
+for name in "abcdefg":
+    write(f"{RW}/{name}.md", f"{name}\n")
+OTHER = (f"# other\n\nSee [a](../design/rw/a.md#sec), and `{RW}/b.md`.\n"
+         f"Abs: {REPO}/{RW}/c.md; twice: ../design/rw/a.md ../design/rw/a.md.\n"
+         "Suffix: rw/d.md is here. Home: ~/repo/proj/design/rw/e.md\nUnrelated: proj/README.md\n")
+write("proj/other/other_start.md", OTHER)
+write("proj/other/other_log.md", "C1: read ../design/rw/a.md\n")
+os.symlink("../design/rw/f.md", os.path.join(REPO, "proj/other/f_link.md"))
+os.makedirs(os.path.join(REPO, "proj/third"))
+os.symlink("../design/rw/g.md", os.path.join(REPO, "proj/third/third_start.md"))
+git("add", "-A")
+git("commit", "-q", "-m", "rewrite base")
+json.dump({"shoal": "g1", "dir": REPO, "roles": [{"slug": "lane", "doc": os.path.join(LANE, "lane_start.md")},
+                                                 {"slug": "other", "doc": os.path.join(REPO, "proj/other/other_start.md")},
+                                                 {"slug": "third", "doc": os.path.join(REPO, "proj/third/third_start.md")}]},
+          open(spec, "w"))
+TARGETS = [f"{RW}/{x}.md" for x in "abcdef"]
+before = state()
+rc, out = archive(*TARGETS)
+assert rc == 1 and "named by live documents" in out["refused"] and "--cross-owner rewrite" in out["refused"], out
+rc, out = archive(*TARGETS, "--cross-owner", "keep")
+assert rc == 1 and "not defined yet" in out["refused"], out
+rc, out = archive("--cold", f"{RW}/a.md", "--cross-owner", "rewrite")
+assert rc == 1 and "archiving only" in out["refused"], out
+rc, out = archive(f"{RW}/g.md", "--cross-owner", "rewrite")
+assert rc == 1 and "proj/third/third_start.md is a start doc" in out["refused"] and "move that role first" in out["refused"], out
+rc, out = archive(*TARGETS, "--cross-owner", "rewrite", "--dry-run")
+assert rc == 0 and f"rewrite proj/other/other_start.md:3 `../design/rw/a.md` -> `../../archive/{RW}/a.md`" in out["steps"], out
+assert f"repoint symlink proj/other/f_link.md: ../design/rw/f.md -> ../../archive/{RW}/f.md" in out["steps"], out
+write("proj/other/other_start.md", OTHER + "an edit in progress\n")
+rc, out = archive(*TARGETS, "--cross-owner", "rewrite")
+assert rc == 1 and "proj/other/other_start.md has uncommitted changes" in out["refused"], out
+write("proj/other/other_start.md", OTHER)
+assert state() == before, "a refused or dry rewrite changed something"
+print("rewrite refusals and dry run ok")
+
+# a refusing hook puts every referrer back byte for byte; an edit made after the rewrite is left in place and named
+write("hook.sh", "exit 1\n")
+git("commit", "-q", "-am", "hook refuses")
+open(HOST, "w").write(f'[lifecycle]\ntrusted_repos = ["{REPO}"]\n')
+before = state()
+rc, out = archive(*TARGETS, "--cross-owner", "rewrite")
+assert rc == 1 and "hook exited 1" in out["refused"], out
+assert state() == before and open(os.path.join(REPO, "proj/other/other_start.md")).read() == OTHER
+assert os.readlink(os.path.join(REPO, "proj/other/f_link.md")) == "../design/rw/f.md"
+write("hook.sh", "echo concurrent >> proj/other/other_start.md\nexit 1\n")
+git("commit", "-q", "-am", "hook edits a referrer, then refuses")
+rc, out = archive(*TARGETS, "--cross-owner", "rewrite")
+assert rc == 1 and "left proj/other/other_start.md as found" in out["refused"], out
+assert open(os.path.join(REPO, "proj/other/other_start.md")).read().endswith("concurrent\n"), "the later edit stays"
+assert not os.path.exists(os.path.join(REPO, "archive", RW, "a.md")), "the moves are undone"
+git("reset", "-q", "HEAD", "--", "proj/other/other_start.md")
+git("checkout", "--", "proj/other/other_start.md")
+open(HOST, "w").write("")
+assert state()[1] == "", state()
+print("rewrite undo ok")
+
+# the verifier catches a writer that is not a pure path substitution, before anything is committed
+os.environ.update(ENV)
+sys.path.insert(0, SHOALD)
+import archive as archive_mod  # noqa: E402
+os.chdir(REPO)
+plan = archive_mod.plan_archive([os.path.join(REPO, p) for p in TARGETS], "", "t", cross_owner="rewrite")
+pure = archive_mod._substitute
+archive_mod._substitute = lambda text, subs: pure(text, subs) + "extra\n"
+before = state()
+try:
+    archive_mod.apply(plan, "should not land")
+    raise AssertionError("an impure rewrite was committed")
+except archive_mod.Refused as exc:
+    assert "changed text after its last substitution" in str(exc), exc
+archive_mod._substitute = pure
+assert state() == before, "a caught rewrite leaves nothing behind"
+print("rewrite verifier ok")
+
+# the rewrite itself: one commit with the moves, the referrers and the manifest; forms, anchors and punctuation kept
+rc, out = archive(*TARGETS, "--cross-owner", "rewrite", "--reason", "concluded")
+assert rc == 0 and out["ok"], out
+A = f"archive/{RW}"
+assert open(os.path.join(REPO, "proj/other/other_start.md")).read() == (
+    f"# other\n\nSee [a](../../{A}/a.md#sec), and `{A}/b.md`.\n"
+    f"Abs: {REPO}/{A}/c.md; twice: ../../{A}/a.md ../../{A}/a.md.\n"
+    f"Suffix: {A}/d.md is here. Home: ~/repo/{A}/e.md\nUnrelated: proj/README.md\n"), "every form keeps its form"
+assert open(os.path.join(REPO, "proj/other/other_log.md")).read() == "C1: read ../design/rw/a.md\n", "history untouched"
+link = os.path.join(REPO, "proj/other/f_link.md")
+assert os.readlink(link) == f"../../{A}/f.md" and open(link).read() == "f\n"
+files = git("show", "--no-renames", "--name-only", "--format=", "HEAD").split()
+assert sorted(files) == sorted(TARGETS + [f"{A}/{x}.md" for x in "abcdef"]
+                               + [f"{A}/MANIFEST.jsonl", "proj/other/other_start.md", "proj/other/f_link.md"]), files
+assert "rewrote 8 reference(s) in 2 file(s)" in git("log", "-1", "--format=%s"), git("log", "-1", "--format=%s")
+ev = {e["path"]: e for e in (json.loads(x) for x in open(os.path.join(REPO, A, "MANIFEST.jsonl")))}
+assert ev[f"{RW}/a.md"]["refs"] == {"history": 1, "rewritten": [
+    {"file": "proj/other/other_start.md", "line": n, "from": "../design/rw/a.md", "to": f"../../{A}/a.md"}
+    for n in (3, 4, 4)]}, ev[f"{RW}/a.md"]
+assert ev[f"{RW}/f.md"]["refs"]["rewritten"] == [{"file": "proj/other/f_link.md", "line": 0, "from": "../design/rw/f.md",
+                                                  "to": f"../../{A}/f.md"}], ev[f"{RW}/f.md"]
+assert git("status", "--porcelain") == ""
+print("rewrite ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_archive OK")

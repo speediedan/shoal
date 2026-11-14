@@ -5,7 +5,8 @@ warm archive in the same repository, without breaking anything that still reads 
 it is deleted from the tree, and git history keeps it. Every step is one command, and every step is undone by one.
 
 ```bash
-shoal archive <path> [<path> ...] [--reason R] [--by WHO] [--dry-run] [--json]   # move to the warm archive
+shoal archive <path> [<path> ...] [--reason R] [--by WHO] [--cross-owner notify|rewrite] [--dry-run] [--json]
+                                                                                 # move to the warm archive
 shoal archive --restore <original path> [--dry-run] [--json]                    # back to where it was
 shoal archive --cold <original path> [...] [--force] [--dry-run] [--json]        # warm -> cold
 ```
@@ -23,14 +24,39 @@ Nothing is moved when any path in the run is:
   `--roots --all-hosts`). When a routed host cannot answer, the run is refused: a file here could be a start doc there.
   `--force` archives anyway and records that it did;
 - named by a live document anywhere in the repository, or by a tracked symlink: that reader would break. Point those
-  references elsewhere first, or keep the file. History documents (the repository's history tiers) keep their
-  references as written: the manifest is what resolves them.
+  references elsewhere first, keep the file, or archive with `--cross-owner rewrite` (below). History documents (the
+  repository's history tiers) keep their references as written: the manifest is what resolves them.
 
 Files archived in the same run may name each other: a symlink archived together with its target stays paired, and a
 moved relative symlink is re-aimed from its new place.
 
 `--cold` refuses a file archived fewer than `[cold] warm_days` ago unless `--force` (the deep pass is what decides when
 files go cold), and a file whose archive path a live document still names.
+
+## Rewriting live references (`--cross-owner rewrite`)
+
+With `--cross-owner rewrite`, a live reference no longer refuses the run: the same run points it at the archive path.
+This is the one write a role may make outside its own directory, so it is a path substitution and nothing else.
+
+- **Each reference keeps its form.** A path relative to the naming file stays relative (`../design/x/a.md` becomes
+  `../../archive/proj/design/x/a.md`), a repository-relative one stays repository-relative, and an absolute or `~/` path
+  keeps its prefix. A `#anchor` and trailing punctuation are kept. A unique partial path (`x/a.md`) becomes the full
+  archive path: after the move it would still resolve, to the archived copy, and hide that the file was archived.
+- **A tracked symlink is repointed**, relative as before. A symlink that is a start doc refuses the run: that role moves
+  first.
+- **A referrer must be tracked, clean and UTF-8 text with `\n` line endings.** History and excluded documents are never
+  written; history references are counted in the manifest.
+- **Verified before it commits.** Every rewritten file must equal its `HEAD` copy with exactly the planned substitutions,
+  each new text must name the archive path, and a rescan of the written tree must find no live reference left to an
+  old path. Any failure undoes the run.
+- **One commit.** The rewritten files and repointed symlinks are committed with the moves and the manifest. When the
+  commit does not land, each referrer is put back, but only while it still holds what the run wrote: an edit someone
+  made after the rewrite is left in place and named in the refusal.
+
+The default, `notify`, is the refusal. `keep` is reserved. The command never reads `[checkpoint] cross_owner`: a
+repository's configuration does not widen what a manual run writes, so a caller with a policy (a retirement hook, say)
+passes the flag itself. Run with `--dry-run` first: it prints every substitution, one
+`rewrite <file>:<line> <old> -> <new>` line each.
 
 ## The manifest
 
@@ -42,14 +68,16 @@ One JSON object per line, appended, never rewritten:
 | `event` | `archive`, `restore` or `cold` (`migrate`, for files arriving from a legacy archive folder, is reserved) |
 | `path`, `archive_path` | the original path, and where the file went |
 | `reason` | `--reason`, for `archive` |
+| `refs` | `archive` only: `history`, the number of history references left as written, and `rewritten`, one `{file, line, from, to}` per reference `--cross-owner rewrite` changed (`line` 0 for a symlink) |
 | `blob`, `mode` | `cold` only: the file's blob id and git mode; `--restore` reads the blob first, so a binary comes back byte for byte and an executable keeps its bit |
 | `restore_from` | `cold` only: a commit that holds `archive_path`: the merge base with the upstream when that holds the file (already published), else HEAD. A shared checkout's HEAD may be a local commit that a commit hook rebases before pushing, which orphans it; the blob survives that rebase, so it is read first |
 
 ## One commit, or nothing
 
-A run commits exactly its own paths: the moved files at both ends, deletions, and the manifests. It uses the repository's
-`[hooks] commit` when this host trusts the repository (`[lifecycle] trusted_repos`), else `git commit -- <paths>`. It
-never stages anything else, so a change another session has staged in the same checkout stays staged and stays out.
+A run commits exactly its own paths: the moved files at both ends, deletions, rewritten referrers, and the manifests.
+It uses the repository's `[hooks] commit` when this host trusts the repository (`[lifecycle] trusted_repos`), else
+`git commit -- <paths>`. It never stages anything else, so a change another session has staged in the same checkout
+stays staged and stays out.
 
 Whether the run landed is decided by content: HEAD must hold every manifest exactly as the run wrote it. That holds
 when another session commits meanwhile, and it tells a hook that refused (nothing landed) from one that committed and
