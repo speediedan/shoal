@@ -68,11 +68,16 @@ def _entry_docs(e: dict) -> list[str]:
     return [v for k, v in e.items() if (k == "doc" or k.endswith("_doc")) and isinstance(v, str) and v.strip()]
 
 
-def roots(all_hosts: bool = False) -> dict:
+def roots(all_hosts: bool = False, refresh: bool = False) -> dict:
     """{v, hosts, unreachable, specs_from, specs_live, notes, roots: {abs path: [who, ...]}}. `who` is a dict: kind
     `role` (shoal, slug, parked) or kind `standalone` (label, host). The registry is per host, so without `all_hosts`
     other hosts' standalone seats are not seen; `hosts` says which were. With it, each routed host answers for itself
     (`_remote_roots`), and one that cannot is in `unreachable` with the reason."""
+    if refresh:
+        from ledger import Ledger
+        led = Ledger("roots", root=config.ledger_dir())
+        if os.path.exists(os.path.join(led.root, ".git")) and not led.pull():
+            raise RuntimeError("cannot refresh the ledger's live roots")
     here = config.server()
     out: dict = {"v": ROOTS_V, "hosts": [here], "unreachable": [], "specs_from": "", "specs_live": 0, "notes": [],
                  "roots": {}}
@@ -113,7 +118,7 @@ def roots(all_hosts: bool = False) -> dict:
         for server in sorted(routes.routes()):
             if server == here:
                 continue
-            got, why = _remote_roots(server)
+            got, why = _remote_roots(server, True) if refresh else _remote_roots(server)
             if got is None:
                 out["unreachable"].append({"host": server, "reason": why})
                 continue
@@ -128,7 +133,7 @@ def roots(all_hosts: bool = False) -> dict:
 ROOTS_CACHE_S = 120
 
 
-def _remote_roots(server: str) -> tuple[dict | None, str]:
+def _remote_roots(server: str, refresh: bool = False) -> tuple[dict | None, str]:
     """(the routed host's own `refs --roots --json`, "") or (None, why not). Its standalone listing carries no docs,
     so the host is asked for its roots directly: its registry and its specs, from its own clone. Cached briefly, so a
     commit hook run in a burst asks once."""
@@ -137,11 +142,12 @@ def _remote_roots(server: str) -> tuple[dict | None, str]:
     if r is None:
         return None, "no route"
     key = f"refs-roots-{server}"
-    c = routes._cached(key, ROOTS_CACHE_S)
+    c = None if refresh else routes._cached(key, ROOTS_CACHE_S)
     if c is not None and isinstance(c.get("got"), dict):
         return c["got"], ""
     try:
-        res = subprocess.run(routes.ssh_argv(r) + [routes.remote_cmd(r, "refs", "--roots", "--json")],
+        args = ["refs", "--roots", "--json"] + (["--refresh"] if refresh else [])
+        res = subprocess.run(routes.ssh_argv(r) + [routes.remote_cmd(r, *args)],
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, f"no answer ({exc.__class__.__name__})"
@@ -446,7 +452,7 @@ def _first_commit_times(repo: Repo, d: str) -> dict[str, float]:
 
 def cmd_refs(a) -> int:
     if a.roots:
-        r = roots(a.all_hosts)
+        r = roots(a.all_hosts, a.refresh)
         if a.json:
             print(json.dumps(r, indent=1))
             return 0
@@ -522,6 +528,7 @@ def add_parser(sub) -> None:
     p.add_argument("dir", nargs="?", default="")
     p.add_argument("--roots", action="store_true", help="list the start-doc paths live specs and standalone sessions name")
     p.add_argument("--all-hosts", action="store_true", help="with --roots: also read each routed host's standalone sessions")
+    p.add_argument("--refresh", action="store_true", help="with --roots: refresh ledger snapshots and bypass routed-root caches")
     p.add_argument("--doc", action="append", default=[], help="a start doc of the directory (repeatable)")
     p.add_argument("--shoal", dest="sid", default="", help="with --slug: take the role's start doc and brief")
     p.add_argument("--spec", default="")

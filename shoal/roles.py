@@ -112,6 +112,7 @@ class Role:
     doc: str = ""                # absolute path to THE start document (plan_state.md;
         # mission + current state + grants-needed + next). One doc per role;
         # handoffs/ dirs hold the immutable restart record, never the start doc.
+    dir: str = ""                # role-document directory override; default: the start doc's directory
     session: str = ""            # live session id once started
     model: str = ""              # native model id ("" = harness default)
     effort: str = ""             # agent-neutral pace/depth knob ("" = default);

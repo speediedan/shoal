@@ -515,6 +515,7 @@ def cmd_show(a) -> int:
         led.pull()
     view = View(led, spec)
     from heartbeat import age_min, hb_path
+    import retire_hooks
     if a.json:
         out = {"shoal": a.sid, "roles": {}}
         for r in (spec.roles if spec else []):
@@ -522,8 +523,12 @@ def cmd_show(a) -> int:
                                     "queue": view.queue(r.slug), "last_done": view.last_done(r.slug)}
         out["contested"] = view.contested
         out["violations"] = [(e, w) for e, w in view.violations]
+        failed_hooks = retire_hooks.operator_failures(led)
+        if failed_hooks:
+            out["retire_hooks"] = failed_hooks
         print(json.dumps(out, default=str, indent=1))
         return 0
+    retire_hooks.print_warnings(led)
     if a.slug:
         cands = None
         if a.board:

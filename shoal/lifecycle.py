@@ -170,6 +170,8 @@ def add_parser(sub) -> None:
     q.add_argument("path")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=checkpoint.cmd_checkpoint)
+    import retire_hooks
+    retire_hooks.add_parser(s)
 
 
 if __name__ == "__main__":
