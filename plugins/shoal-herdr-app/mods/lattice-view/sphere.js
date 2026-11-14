@@ -174,11 +174,12 @@ const layerCache = new Map();
  * edge is where the falloff (shadowAt) crosses the middle of that step, so the band between two edges is drawn at the
  * falloff's own darkness there, within half a step. Each layer's alpha is the 8-bit one that brings the color as
  * drawn (the rounded layers outside it blended over `under`, blend8) nearest the falloff's color at its step; a layer
- * that would change nothing, or take the color further from it, is left out, and the next one catches up. */
-export function shadowLayers(peak, soft, n = shadowSteps(peak, soft), under = SHADOW_UNDER) {
-  const key = `${peak.toFixed(4)} ${soft.toFixed(4)} ${n} ${under}`;
+ * that would change nothing, or take the color further from it, is left out, and the next one catches up.
+ * An optional ink color uses the same falloff for a bloom, including ink brighter than its background. */
+export function shadowLayers(peak, soft, n = shadowSteps(peak, soft), under = SHADOW_UNDER, color = SHADOW_INK) {
+  const key = `${peak.toFixed(4)} ${soft.toFixed(4)} ${n} ${under} ${color}`;
   if (layerCache.has(key)) return layerCache.get(key);
-  const top = shadowAt(0, peak, soft), ink = rgb8(SHADOW_INK), base = rgb8(under), yInk = luma(ink);
+  const top = shadowAt(0, peak, soft), ink = rgb8(color), base = rgb8(under), yInk = luma(ink);
   // the falloff only falls, so the radius where it is `level` is found by bisection
   const rhoAt = (level) => {
     let lo = 0, hi = 1 + soft;
@@ -189,7 +190,8 @@ export function shadowLayers(peak, soft, n = shadowSteps(peak, soft), under = SH
   let c = base;
   for (let j = 1; j <= n; j++) {
     const want = luma(base) + (yInk - luma(base)) * ((top * j) / n), now = luma(c);
-    const guess = Math.round(255 * (1 - (want - yInk) / Math.max(1e-9, now - yInk)));
+    const gap = yInk - now;
+    const guess = Math.abs(gap) > 1e-9 ? Math.round(255 * (want - now) / gap) : 0;
     let best = null;
     for (let A = Math.max(1, guess - 3); A <= Math.min(255, guess + 3); A++) {
       const d = blend8(c, ink, A), err = Math.abs(luma(d) - want);

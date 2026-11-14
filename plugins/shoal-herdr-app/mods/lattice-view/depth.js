@@ -1,6 +1,6 @@
 // depth.js: the lattice's depth mode (P3b), pure (no Herdr imports, so it tests under Node). GPUI has no 3D, but every
 // position is the mod's own: in the global view each node gets a plane (its shoal's; the operator and outside seats on
-// a plane above), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
+// an anchor plane above; the operator is lowered along the home sightline), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
 // back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon and near ones grow.
 // Per shoal, the view is a cutout sphere instead (projectBowl): you at its middle, each host a lune of its inner surface.
 // Every node has one point in the view's world (`world`): it is drawn where that point projects, its edges are lifted
@@ -76,7 +76,7 @@ export const YAW_STEP = 15 * DEG;
 const DIST = 2.6; // the camera's distance, in layout radii: smaller is stronger perspective
 const SCALE_MIN = 0.55, SCALE_MAX = 1.6; // what perspective may do to a size
 const FLOOR_BELOW = 0.55; // the floor, below the lowest plane, in plane gaps
-const FLOOR_CLEAR = 0.45; // and below the lowest globe's bottom, in plane gaps, so every globe floats above it
+const FLOOR_CLEAR = 1.0; // and below the lowest globe's bottom, in plane gaps, so every globe floats above it
 const GRID = 10; // floor grid lines each way
 
 // The one light of the global view: a point in the world (x and y the layout's plane, z up, as planesOf stacks it), high
@@ -86,7 +86,7 @@ const GRID = 10; // floor grid lines each way
 // right of what casts them, each where the ray from the light through it meets the floor.
 const unit3 = (x, y, z) => { const l = Math.hypot(x, y, z); return { x: x / l, y: y / l, z: z / l }; };
 export const LIGHT_WORLD = unit3(-0.37, -0.07, 0.926);
-export const LIGHT_DIST = 7;
+export const LIGHT_DIST = 18;
 /** The light's place for a scene whose middle is o (on the plane), `mid` its middle height and `size` its radius. */
 export const lightPoint = (o, size, mid) => ({ x: o.x + LIGHT_DIST * size * LIGHT_WORLD.x, y: o.y + LIGHT_DIST * size * LIGHT_WORLD.y, z: mid + LIGHT_DIST * size * LIGHT_WORLD.z });
 /** A world direction as `cam` sees it: x right, y down the screen, z toward you (sphere.js's camera space). */
@@ -240,7 +240,7 @@ export function unproject(cam, s, depth) {
 /**
  * Each node's plane height and the planes themselves, far to near: {zOf: Map id -> z, planes: [{id, z, kind}]}. Global:
  * one plane per shoal, in the layout's cluster order; per shoal: one per host band. The operator and outside seats go on
- * a plane of their own above them all.
+ * an anchor plane above them all; projectLayout lowers the operator along the home sightline.
  */
 export function planesOf(vm, lay) {
   const zOf = new Map();
@@ -277,6 +277,9 @@ export function projectLayout(vm, lay, cam0) {
   const o = pts.length ? { x: pts.reduce((t, p) => t + p.x, 0) / pts.length, y: pts.reduce((t, p) => t + p.y, 0) / pts.length } : { x: 0, y: 0 };
   const radius = Math.max(200, ...pts.map((p) => Math.hypot(p.x - o.x, p.y - o.y)), ...(lay.clusters ?? []).map((c) => Math.hypot(c.x - o.x, c.y - o.y) + c.r));
   const top = planes.at(-1).z;
+  const planeZ = new Map(planes.map((p) => [p.id, p.z]));
+  const floorZ = Math.min(-FLOOR_BELOW * PLANE_GAP,
+    ...(lay.clusters ?? []).map((c) => (planeZ.get(c.id) ?? 0) - c.r * SPHERE_R)) - FLOOR_CLEAR * PLANE_GAP;
   // the eye looks at the middle of the stack, from DIST radii away
   const cam = { ...cam0, o, d: DIST * Math.max(radius, top) };
   const mid = top / 2;
@@ -311,6 +314,20 @@ export function projectLayout(vm, lay, cam0) {
     }
   }
   for (const [id, p] of lay.pos) if (!world.has(id)) world.set(id, { x: p.x, y: p.y, z: z(id) });
+  // You hover close to the floor. Keep your opening position by moving along the home camera's
+  // sightline, once in world space: the same point then draws you, your stem and your shadow on every orbit.
+  const userScale = new Map();
+  for (const n of vm.nodes) if (n.kind === "user" && world.has(n.id)) {
+    const w = world.get(n.id), at = project(homeCam, w, w.z - mid), height = floorZ + 0.35 * PLANE_GAP;
+    let lo = -4 * cam.d, hi = 0.8 * cam.d;
+    for (let i = 0; i < 48; i++) {
+      const dd = (lo + hi) / 2;
+      if (unproject(homeCam, at, dd).z + mid < height) lo = dd; else hi = dd;
+    }
+    const q = unproject(homeCam, at, (lo + hi) / 2);
+    world.set(n.id, { x: q.x, y: q.y, z: q.z + mid });
+    userScale.set(n.id, at.f / project(homeCam, q, q.z).f);
+  }
   const pos = new Map(), depth = new Map(), scaleOf = new Map(), fOf = new Map();
   for (const [id, w] of world) {
     const q = P(w, w.z);
@@ -318,7 +335,7 @@ export function projectLayout(vm, lay, cam0) {
     depth.set(id, q.depth);
     fOf.set(id, q.f);
     // on a sphere, the front grows and the back shrinks, beyond what perspective alone does
-    scaleOf.set(id, q.f * (behind.has(id) ? 1.28 - 0.62 * behind.get(id) : 1));
+    scaleOf.set(id, q.f * (behind.has(id) ? 1.28 - 0.62 * behind.get(id) : userScale.get(id) ?? 1));
   }
   const ds = [...depth.values()];
   const d0 = Math.min(...ds), d1 = Math.max(...ds);
@@ -332,7 +349,6 @@ export function projectLayout(vm, lay, cam0) {
     const a = at(s.x, s.y), b = at(s.ax, s.ay);
     return { ...s, x: a.x, y: a.y, ax: b.x, ay: b.y };
   });
-  const planeZ = new Map(planes.map((p) => [p.id, p.z]));
   const clusters = (lay.clusters ?? []).map((c) => {
     const zc = vm.global ? planeZ.get(c.id) ?? 0 : 0;
     const q = P(c, zc);
@@ -376,9 +392,8 @@ export function projectLayout(vm, lay, cam0) {
     to: t.to ? (() => { const q = P(t.to, planeZ.get(t.host) ?? 0); return { x: q.x, y: q.y }; })() : null,
   }));
   // the floor: a grid below the lowest plane and below every globe, its lines converging with distance
-  const floorZ = Math.min(-FLOOR_BELOW * PLANE_GAP,
-    ...(vm.global ? (lay.clusters ?? []).map((c) => (planeZ.get(c.id) ?? 0) - c.r * SPHERE_R) : [])) - (vm.global ? FLOOR_CLEAR * PLANE_GAP : 0);
-  const grid = floorGrid(P, o, radius * 1.15, floorZ);
+  const floorR = Math.max(radius * 1.15, ...[...world.values()].map((w) => Math.max(Math.abs(w.x - o.x), Math.abs(w.y - o.y)) + PLANE_GAP));
+  const grid = floorGrid(P, o, floorR, floorZ);
   // The one shadow caster: a ball of radius r (world units) whose middle is the world point w, on the floor, from the
   // one light (castShadow). Every shadow in the view comes from it: the globes', the nodes' (scene.js, at the radius
   // each is drawn with) and, point by point, the edges' (shade.cast, the same ray to the same floor).
@@ -393,7 +408,10 @@ export function projectLayout(vm, lay, cam0) {
   };
   if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * SPHERE_R);
   else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
-  for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.visual?.r ?? 8, n);
+  for (const n of vm.nodes) if (n.kind !== "role" && world.has(n.id)) {
+    const w = world.get(n.id);
+    stem(`n-${n.id}`, w, w.z, n.visual?.r ?? 8, n);
+  }
   // and each role on a globe: the globe is glass and catches no shadow, so a role's falls on the floor too, cast the same
   // way from its world point (2026-11-13: without one, a seat's shadow that fell under a globe read as its roles', and
   // their edges' shadows ended in nothing). `r0` is its radius as drawn at zoom 1: a ball on the front of its globe is
@@ -414,7 +432,6 @@ export function projectLayout(vm, lay, cam0) {
   // the world seen at a layout point at a depth (the edge's 3D path is its curve on screen, lifted between its ends'
   // depths: at each end, exactly the node's world point, as the node is drawn where that point projects), where the
   // light's ray through it meets the floor, whether the floor is there, and where that is on screen
-  const floorR = radius * 1.15;
   const shade = {
     surface: "floor", light: Lp, floorZ, depthOf: depth, ball,
     lift: (s, dd) => { const q = unproject(cam, s, dd); return { x: q.x, y: q.y, z: q.z + mid }; },

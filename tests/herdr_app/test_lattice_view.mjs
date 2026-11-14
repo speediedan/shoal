@@ -1531,8 +1531,8 @@ test("2026-11-13: the globes', your and the edges' shadows point the same way fr
       if (cam.yaw === D.CAMERAS[cam.name].yaw) assert.ok(rho > 1 + sh.soft, `${c.id}: and clear of its soft edge`);
       casts.push([{ x: c.x, y: c.y, z: zc }, g]);
     }
-    // you: on the plane above them all; your stem's shadow is the ray's through you
-    const you = base.pos.get(user.id), yz = top, ysh = pl.stems.find((s) => s.id === `n-${user.id}`).shadow;
+    // you: hovering near the floor; your stem's shadow is the ray's through your world point
+    const you = pl.world.get(user.id), yz = you.z, ysh = pl.stems.find((s) => s.id === `n-${user.id}`).shadow;
     const yg = D.floorCast(Lp, { x: you.x, y: you.y, z: yz }, pl.floorZ), ysp = P(yg, pl.floorZ);
     assert.ok(Math.hypot(ysp.x - ysh.x, ysp.y - ysh.y) < 1e-6, "your shadow is the ray's through you");
     assert.ok(Math.hypot(pl.shadowOf.get(user.id).x - ysh.x, pl.shadowOf.get(user.id).y - ysh.y) < 1e-6, "and your edges' shadows start there");
@@ -2584,5 +2584,34 @@ test("2026-11-14: no edge, role or seat casts a shadow; the globes', the bowl's 
     const bids = sb.items.map((it) => it.id);
     assert.ok(!bids.some((id) => id.startsWith("edge-shadow") || id.startsWith("shadow-r-")), `${cam.name} bowl: no edge or role shadow`);
     assert.ok(bids.some((id) => id.startsWith("bowl-shadow-")), `${cam.name} bowl: your shadow on the inside`);
+  }
+});
+
+
+test("2026-11-14: the global hub hovers over its shadow, the lowest globe clears the floor, and the bloom has no coarse bands", () => {
+  const base = L.layoutGraph(global), user = global.nodes.find((n) => n.kind === "user");
+  for (const name of ["iso", "tilt"]) {
+    const pl = D.projectLayout(global, base, D.camera(name)), w = pl.world.get(user.id), p = pl.pos.get(user.id);
+    const sh = pl.stems.find((s) => s.id === `n-${user.id}`).shadow;
+    assert.ok(w.z - pl.floorZ < D.PLANE_GAP / 2, "you hover close to the receiving floor");
+    assert.ok(sh.x > p.x && sh.y > p.y && Math.hypot(sh.x - p.x, sh.y - p.y) < 65, "your shadow is close below and right");
+    const orbited = D.projectLayout(global, base, D.camera(name, 0.4, { x: 0.3, y: 0.2 }));
+    assert.deepEqual(orbited.world.get(user.id), w, "orbiting cannot move the caster in the world");
+    const old = D.project(pl.cam, base.pos.get(user.id), pl.planes.at(-1).z / 2);
+    assert.ok(Math.hypot(old.x - p.x, old.y - p.y) < 1e-6, "opening position preserved");
+    assert.ok(Math.abs(old.f - pl.scaleOf.get(user.id)) < 1e-6, "opening size preserved");
+    for (const c of base.clusters) {
+      const z = pl.planes.find((p) => p.id === c.id).z;
+      assert.ok(z - c.r * 0.92 - pl.floorZ >= D.PLANE_GAP - 1e-6, "a full gap below each globe");
+    }
+    const sc = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "off" });
+    const bloom = sc.items.filter((it) => it.id.startsWith("bloom-"));
+    assert.ok(bloom.length > 8, "many fine bloom layers replace four bands");
+    let c = SP.rgb8(SP.SHADOW_UNDER);
+    for (const it of bloom) {
+      const next = SP.blend8(c, SP.rgb8(it.bg.color), Math.round(alphaOf(it.bg.color) * 255));
+      assert.ok(Math.max(...next.map((v, i) => Math.abs(v - c[i]))) <= 2, "no coarse 8-bit color jump");
+      c = next;
+    }
   }
 });
