@@ -1161,6 +1161,14 @@ edge shadow's end inside, or within 2 px of, its end nodes' drawn shadows (the w
 shadow middle at the cast of its world point, and every arrow on the projection of its 3D path; the fixture's bowls take
 at most 1,376 path commands and its global scene 2,004 (2,110 at the fit and 1.6x zoom).
 
+**Roles, outside seats and edges cast no shadow (2026-11-14).** After the passes below and above, arrow shadows still
+dropped off short of the roles they joined on the far side of a globe, so the maintainer dropped them for simplicity:
+`scene.js` draws only the globes' floor shadows (`shadow-c-`), the bowl's floor shadow, yours (`shadow-n-<you>` on the
+floor, `bowl-shadow-` on the bowl's wall) and the stems' shadows of those casters; no `shadow-r-`, no seat shadow, no
+`edge-shadow` strokes or heads (`castCurve`, `castHead`, `edgeShadowStrokes` and `EDGE_SHADOW` are gone, and
+`buildScene`'s `edgeShadows` is empty). `projectLayout` still gives every node its one world point, `casts` and
+`shadowOf`, so the arrows stay the projections of their 3D paths. What follows records how those shadows were built.
+
 Every shadow is the one light's, and a role on a globe now casts one too (`projectLayout`'s `casts`, by `castShadow`
 from the role's place in the world): the glass catches none, so a role's contact shadow is drawn only in the bowl, and
 in the global view its shadow is on the floor, inside its globe's, where its edges' shadows already ended (2026-11-13:

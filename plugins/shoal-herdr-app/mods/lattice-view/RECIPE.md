@@ -60,25 +60,19 @@ you, per-shoal throughput and per-host load.
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. The canvas
   is a lighter slate in depth, so the shadows read. One light, a point high over the scene (`depth.js` `lightPoint`, up,
   to the left and a little toward the far side, fixed in the world so it stays put as the camera orbits), shades each
-  globe from the way to it from that globe and casts every shadow: each globe's, each lifted node's and each role's on
-  a globe (the glass catches none, so a role's falls on the floor, inside its globe's), where the ray from the light
-  through its middle meets the floor (`castShadow`), so the shadows fall down and to the right of their casters at the
-  presets, further the higher the caster (yours furthest). A shadow is a stack of fine alpha layers cut into equal
+  globe from the way to it from that globe and casts the shadows: each globe's and yours (roles, outside seats and
+  edges cast none, 2026-11-14), where the ray from the light through its middle meets the floor (`castShadow`), so the
+  shadows fall down and to the right of their casters at the presets, further the higher the caster (yours furthest). A shadow is a stack of fine alpha layers cut into equal
   steps of darkness as drawn in 8 bits (about two color levels each, `sphere.js` `shadowLayers`), fewer for a small
   one, so it falls off smoothly from a dark core through a soft penumbra that widens as the caster rises, with no ring
   showing. Every node has one point in the world (`projectLayout`'s `world`: a role's on its globe's sphere, rank 0
   facing the preset's eye from the globe's middle, `spherePoint` with `towardEye`): it is drawn where that point
-  projects (`pos`), its shadow is cast from it (`shade.ball`, by `scene.js` at the radius the node is drawn with, so
-  an edge drawn to its rim is lifted to the ball's surface), and a globe is drawn as the circle of its perspective
-  silhouette (`globeOutline`: a little larger than its middle's scale gives and shifted outward, so a role at the limb
-  stays inside it). Each stem casts a faint shadow from its foot to its caster's, and each edge a faint one too, cast
-  as a thing in the world: every point of the curve its arrow is drawn along is lifted onto its line of sight at a
-  depth between its ends' (`shade.lift`; at an end, exactly its node's world point, so the arrow's shadow ends in the
-  node's), and the shadow is drawn through where the light's ray through each point meets the floor (`scene.js`
-  `castCurve`: cubics through cast points, within a pixel of the cast curve, so a short or straight one is a single
-  cubic), arrowheads included, and clipped off the floor's grid. In depth an edge starts at its source's rim and stops
-  1.5 px short of its destination's (`EDGE_STANDOFF`; 2 and 3 px flat), so the gap between an arrowhead's shadow and
-  its node's is under a pixel. Every shadow paints before every edge
+  projects (`pos`), your shadow is cast from it (`shade.ball`, at the radius you are drawn with), its arrows are the
+  projections of 3D paths between their nodes' points (`shade.lift`), and a globe is drawn as the circle of its
+  perspective silhouette (`globeOutline`: a little larger than its middle's scale gives and shifted outward, so a role
+  at the limb stays inside it). The globes' stems and yours cast a faint shadow from the foot to the caster's. In depth
+  an edge starts at its source's rim and stops 1.5 px short of its destination's (`EDGE_STANDOFF`; 2 and 3 px flat).
+  Every shadow paints before every edge
   and node, and a node a shadow reaches stands on an opaque disc of what is under it without the shadow (a box, no path
   commands), so no shadow shows through a faint body. Far things are smaller and fade, near ones larger and drawn last. In the
   global view each shoal is a
@@ -113,15 +107,9 @@ you, per-shoal throughput and per-host load.
   commands: a clear body graded to a deep limb, twelve faint layers rounding it toward the light, a highlight toward
   the light, a crescent of gathered light inside the far limb, a lit rim and a dark hairline; at `full` your halo
   breathes behind it), your soft shadow falls on the wall where the light's ray through you meets it (below you at the
-  opening view, further off as the camera orbits round, and not drawn where it would land outside the opening), each
-  role is a ball sitting on the wall (its one world point its middle, its drawn radius in from its place on the
-  surface; `casts`) whose shadow is cast from that middle (`sphere.js` `wallShadow`: `bowlCast` and `ballShadow`, in
-  perspective; dark and sharp under a ball on the wall, paler and softer the higher the caster, `wallShadowTone`), each
-  edge's small shadow is cast as on the floor, onto the wall where the ray through each point of its lifted arrow
-  leaves the sphere (a point held just in front of the wall, so nothing casts from beyond it; clipped where the wall is
-  behind the near wall or outside the opening; nothing casts from under the lip on the light's side, where the wall
-  itself shades it, `bowlLit`; an edge to a seat on the ring, outside the sphere, casts none), so an
-  arrow from you runs from your shadow to its role's, and a dashed plumb line drops
+  opening view, further off as the camera orbits round, and not drawn where it would land outside the opening; roles
+  and edges cast none, 2026-11-14), each role is a ball sitting on the wall (its one world point its middle, its drawn
+  radius in from its place on the surface; `casts`), and a dashed plumb line drops
   from you down the axis to a small ring at the bottom. An edge from you
   is a tapered ribbon (five commands), wide and bright at you and thinner and dimmer at the far wall by the two ends'
   perspective, and an arrowhead is sized with the node it is at, so the edge reads as running away, into the bowl. A
@@ -315,7 +303,9 @@ you, per-shoal throughput and per-host load.
   projects, so its edges were lifted into the world that far from it, and in the bowl a role's shadow was a contact
   mark at the role while its edges were lifted to a depth off the wall its cast was not made from. Two positions per
   node can never agree under one light: a caster has one world point, drawn where it projects, lifted to and cast
-  from. A filled ribbon tapers smoothly for five
+  from. Even so, arrow shadows still dropped off short of the roles on a globe's far side, and on 2026-11-14 the
+  maintainer dropped role, seat and edge shadows for simplicity, keeping the globes', the bowl's and yours. A filled
+  ribbon tapers smoothly for five
   commands, where a stroke can only step its width per segment. Four depth caps of 14 of 255 under the
   rings still read as topographic rings: 18 caps of 6 of 255 step under three color levels, which no eye
   sees, and leave the rings as faint guides.
