@@ -1138,6 +1138,29 @@ opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, f
 inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
 inside the rim instead (`rimShade`), so the shade never spills over the shell.
 
+Every caster in depth has one point in the world, and it is drawn where that point projects (the maintainer's
+screenshot, 2026-11-13: arrow shadows ending in empty floor beside the shadows of the roles they join, which no one light
+can give). A role on a globe had been drawn at an orthographic offset from its globe's projected middle, at the middle's
+perspective scale, up to 70 layout px from where its world point projects, while its shadow was cast from that point and
+its edges, drawn from the offset, were lifted into the world that far from it; in the bowl a role was drawn at its surface
+point, its edges lifted to a depth 7 percent off the wall on the line of sight through that point (not a point its own
+cast used), and its "shadow" was a contact mark placed at the role. Now `projectLayout` keeps `world` (a point per node:
+a role's on its globe's sphere, with rank 0 facing the preset's eye from the globe's middle, `spherePoint` with
+`towardEye`, so it is drawn at the middle of its globe in perspective; in the bowl the middle of a ball sitting on the
+wall, its drawn radius in from its place, `casts`), `pos` is that point's projection, `shade.depthOf` its depth (so an
+edge's end, lifted, is the point again), and `shade.ball(w, r)` is the one caster of a ball's shadow (`castShadow` on
+the floor; `sphere.js` `wallShadow`, `bowlCast` with `ballShadow` in perspective, on the inner wall), which `scene.js`
+calls for every node at the radius it draws it (`nodeR`, in world units at its depth), so an edge drawn to a node's rim
+is lifted to the ball's surface and its shadow ends in the node's (in depth an edge starts at its source's rim and stops
+1.5 px short of its destination's, `EDGE_STANDOFF`). A globe is drawn as the circle of its perspective silhouette
+(`globeOutline`: shifted outward and a little larger than its middle's scale gives, up to 5 percent, so a role at the
+limb stays inside it). A ball on the wall throws a dark, sharp-edged shadow, you a paler, softer one (`wallShadowTone`,
+by the caster's height, as `castShadow` already did on the floor), and nothing casts from under the lip on the light's
+side, where the wall itself shades it (`bowlLit`; before, the far root gave a mark across the bowl). The tests hold every
+edge shadow's end inside, or within 2 px of, its end nodes' drawn shadows (the worst is under a pixel), every node's
+shadow middle at the cast of its world point, and every arrow on the projection of its 3D path; the fixture's bowls take
+at most 1,376 path commands and its global scene 2,004 (2,110 at the fit and 1.6x zoom).
+
 Every shadow is the one light's, and a role on a globe now casts one too (`projectLayout`'s `casts`, by `castShadow`
 from the role's place in the world): the glass catches none, so a role's contact shadow is drawn only in the bowl, and
 in the global view its shadow is on the floor, inside its globe's, where its edges' shadows already ended (2026-11-13:

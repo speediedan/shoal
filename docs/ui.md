@@ -734,8 +734,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   so yours lands furthest, down and to the right of the foot of your stem), each role's on a globe (the glass catches
   none, so a role's shadow is on the floor, inside its globe's) and each arrow's, the shadow of the arrow itself: every
   point of it casts where the light's ray through it meets the floor, so it bends as a real arrow's shadow would.
-  Each stem casts a faint shadow too, from its foot to its caster's shadow, so every shadow on the floor is tied to
-  what casts it, and no shadow is drawn for anything not on screen. Every shadow falls off smoothly from a dark middle
+  Everything has one place in the world: a role is drawn where that place projects, its arrows run to it, and its
+  shadow is cast from it, so each arrow's shadow ends in the shadows of the two it joins (as an arrow touching a role
+  must), and a globe is drawn as the outline a camera would see. Each stem casts a faint shadow too, from its foot to
+  its caster's shadow, so every shadow on the floor is tied to what casts it, and no shadow is drawn for anything not
+  on screen. Every shadow falls off smoothly from a dark middle
   to nothing at its edge, with no rings, and lies under every role, arrow and label, never over them. The lamp
   stays put as you orbit, so the lit sides and the shadows turn with the scene. Drilled into one shoal, depth mode
   shows a bowl turned far round to the side, its opening to your left and its bottom to the right, a little below
@@ -744,10 +747,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   bottom, and the far wall rises well past the rim of a hemisphere, so you see more of the back and the outside. The
   bowl has its own lamp, fixed to the bowl above and behind the opening, so it shines in through the opening onto the
   bottom and the bowl's shadow falls on the floor to its right; the inside darkens smoothly toward the bottom (no rings
-  of shading; faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow
-  and each arrow's shadow fall on the wall where its rays put them (an arrow's shadow is cast point by point, clipped
-  where the wall is hidden), so the arrows from you start at your shadow and you read as floating in front of the
-  wall. The hosts' regions share the whole inside of the bowl in clearly different colors (azure, then amber, green,
+  of shading; faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow,
+  each role's (a ball sitting on the wall, its shadow cast from it, dark and sharp-edged under it, peeking out on the
+  side away from the lamp) and each arrow's shadow fall on the wall where its rays put them (an arrow's shadow is cast
+  point by point, clipped where the wall is hidden or shaded by the lip), so the arrows from you run from your shadow to
+  their roles' and you read as floating in front of the wall. The hosts' regions share the whole inside of the bowl in clearly different colors (azure, then amber, green,
   rose and on), each host's roles sit on its region behind you, where the inside is seen and clear of one another, and
   the arrows, light cores
   over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far wall, with smaller

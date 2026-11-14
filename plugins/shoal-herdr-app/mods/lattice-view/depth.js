@@ -3,11 +3,13 @@
 // a plane above), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
 // back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon and near ones grow.
 // Per shoal, the view is a cutout sphere instead (projectBowl): you at its middle, each host a lune of its inner surface.
-// The scene adds what makes it read as space: a floor grid below everything, stems down to it, a shadow on it for each
-// globe, lifted seat and edge (all cast by the one light, a point above the scene that also shades the globes), and fog
-// on what is far.
+// Every node has one point in the view's world (`world`): it is drawn where that point projects, its edges are lifted
+// to it, and its shadow is cast from it, so an arrow's shadow meets the shadows of the nodes it joins. The scene adds
+// what makes it read as space: a floor grid below everything, stems down to it, a shadow on it for each globe, node
+// and edge (all cast by the one light, a point above the scene that also shades the globes; `shade.ball` is the one
+// caster of a ball's shadow, `shade.cast` the same ray for a point of an edge), and fog on what is far.
 
-import { BOWL_DIST, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing, bowlCast, bowlKept, bowlSeen, bowlFloor, bowlLightDir, bowlLightAt, bowlLift, sideOf } from "./sphere.js";
+import { BOWL_DIST, BOWL_LIFT_CLEAR, bowlFrame, bowlPoint, bowlProject, bowlReach, bowlRing, bowlCast, bowlKept, bowlSeen, bowlLit, bowlFloor, bowlLightDir, bowlLightAt, bowlLift, wallShadow, wallShadowTone, projectedCircle, sideOf } from "./sphere.js";
 
 const DEG = Math.PI / 180;
 
@@ -37,18 +39,27 @@ const byRank = (a, b) => {
 
 /**
  * The i-th of n points on a unit sphere, as a world offset {x, y, z} for `cam`: i = 0 faces the camera, and the rest
- * spiral back from it (a Fibonacci spiral over the front CAP of the sphere).
+ * spiral back from it (a Fibonacci spiral over the front CAP of the sphere). `toward` is the unit world direction rank 0
+ * faces: the camera's line of sight by default; the way to its eye from the sphere's middle (eyeOf) puts rank 0 at the
+ * middle of the globe as drawn in perspective, where the line of sight (the same for the whole scene) puts it off it.
  */
-export function spherePoint(cam, i, n) {
+export function spherePoint(cam, i, n, toward = null) {
   const cos = 1 - (2 * CAP * i) / Math.max(1, n);
   const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
   const phi = i * GOLDEN;
   // in the camera's turned frame: toward it is (0, s, c); across is (1, 0, 0); up the screen is (0, c, -s)
-  const xr = sin * Math.cos(phi);
-  const yr = cos * cam.s + sin * Math.sin(phi) * cam.c;
-  const z = cos * cam.c - sin * Math.sin(phi) * cam.s;
-  return { x: xr * cam.cyaw + yr * cam.syaw, y: -xr * cam.syaw + yr * cam.cyaw, z };
+  const fwd = toward ?? viewOf(cam), up0 = { x: cam.c * cam.syaw, y: cam.c * cam.cyaw, z: -cam.s };
+  const across = unit3(up0.y * fwd.z - up0.z * fwd.y, up0.z * fwd.x - up0.x * fwd.z, up0.x * fwd.y - up0.y * fwd.x);
+  const up = { x: fwd.y * across.z - fwd.z * across.y, y: fwd.z * across.x - fwd.x * across.z, z: fwd.x * across.y - fwd.y * across.x };
+  const a = sin * Math.cos(phi), b = sin * Math.sin(phi);
+  return { x: cos * fwd.x + a * across.x + b * up.x, y: cos * fwd.y + a * across.y + b * up.y, z: cos * fwd.z + a * across.z + b * up.z };
 }
+/** The camera's line of sight as a unit world direction, toward the camera. */
+export const viewOf = (cam) => ({ x: cam.s * cam.syaw, y: cam.s * cam.cyaw, z: cam.c });
+/** Where the camera's eye is in the world: cam.d along its line of sight from the point it looks at (cam.o, at height
+ * `mid`). The unit way to it from a world point w is what faces it there. */
+export const eyeOf = (cam, mid = 0) => { const v = viewOf(cam); return { x: cam.o.x + cam.d * v.x, y: cam.o.y + cam.d * v.y, z: mid + cam.d * v.z }; };
+export const towardEye = (cam, mid, w) => { const e = eyeOf(cam, mid); return unit3(e.x - w.x, e.y - w.y, e.z - w.z); };
 
 /** The camera presets `d` cycles through; flat is the 2D view, untouched. */
 export const CAMERAS = {
@@ -85,6 +96,26 @@ export function toCamera(cam, w) {
 }
 /** The unit way to the light Lp from a world point q, as `cam` sees it: what a globe there is shaded from. */
 export function lightFrom(cam, Lp, q) { const v = toCamera(cam, { x: Lp.x - q.x, y: Lp.y - q.y, z: Lp.z - q.z }); return unit3(v.x, v.y, v.z); }
+/**
+ * A globe's outline as the camera sees it: in perspective an off-axis sphere's silhouette (the circle its limb makes,
+ * where the eye's tangent rays touch it) is a little larger than R times the scale at its middle and shifted outward
+ * from its middle's image, up to about 5 percent of R here. {x, y, r}: a circle at the silhouette's middle of its mean
+ * radius, in layout space (the silhouette is an ellipse about a percent longer outward). C is the globe's middle in the
+ * world, its z as `project` takes it (from the height the camera looks at); null with no distance set (orthographic).
+ */
+export function globeOutline(cam, C, R) {
+  if (!(cam.d > 0)) return null;
+  const c = toCamera(cam, { x: C.x - cam.o.x, y: C.y - cam.o.y, z: C.z });
+  const v = { x: -c.x, y: -c.y, z: cam.d - c.z }, Dd = Math.hypot(v.x, v.y, v.z);
+  if (Dd <= R) return null;
+  const e = { x: v.x / Dd, y: v.y / Dd, z: v.z / Dd }, k = (R * R) / Dd;
+  const m = { x: c.x + k * e.x, y: c.y + k * e.y, z: c.z + k * e.z }, rho = R * Math.sqrt(1 - (R / Dd) ** 2);
+  const t = Math.abs(e.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
+  const f1 = unit3(e.y * t.z - e.z * t.y, e.z * t.x - e.x * t.z, e.x * t.y - e.y * t.x);
+  const f2 = { x: e.y * f1.z - e.z * f1.y, y: e.z * f1.x - e.x * f1.z, z: e.x * f1.y - e.y * f1.x };
+  const el = projectedCircle(cam.d, m, f1, f2, rho);
+  return { x: cam.o.x + el.cx, y: cam.o.y + el.cy, r: Math.sqrt(Math.hypot(el.a.x, el.a.y) * Math.hypot(el.b.x, el.b.y)) };
+}
 /** Where the ray from the light Lp through a world point q meets the floor at floorZ (a plane point): q's shadow. */
 export function floorCast(Lp, q, floorZ) {
   const s = (Lp.z - floorZ) / Math.max(1e-6, Lp.z - q.z);
@@ -251,34 +282,41 @@ export function projectLayout(vm, lay, cam0) {
   const mid = top / 2;
   const P = (p, zz) => project(cam, p, zz - mid);
   const Lp = lightPoint(o, Math.max(radius, top), mid);
-  // global view: each shoal's roles on its sphere, by rank; a role keeps its satellites' offsets
-  const placed = new Map(); // role id -> {x, y, z} in the world
+  // global view: each shoal's roles on its sphere, by rank; a role keeps its satellites' offsets. Every node has one
+  // point in the world (`world`), and is drawn where that point projects (2026-11-13: a role was drawn at an
+  // orthographic offset from its globe's projected middle, up to 70 layout px from where its world point projects, so
+  // its edges, drawn from there, were lifted into the world up to 70 units from the role whose shadow they should meet)
+  const world = new Map(); // id -> {x, y, z} in the world
   const behind = new Map(); // recomputed from the turned camera, not from the role's rank
   const surfaceOf = new Map();
+  const home = camera(cam.name); // the preset: a role keeps its place on the globe as the camera orbits
+  const homeCam = { ...home, o, d: cam.d };
   if (vm.global) {
     const planeZ0 = new Map(planes.map((p) => [p.id, p.z]));
     for (const c of lay.clusters ?? []) {
       const roles = vm.nodes.filter((n) => n.kind === "role" && n.shoal === c.id && lay.pos.has(n.id)).sort(byRank);
-      const R = c.r * SPHERE_R;
-      const center = P(c, planeZ0.get(c.id) ?? 0);
+      const R = c.r * SPHERE_R, zc = planeZ0.get(c.id) ?? 0;
+      // rank 0 faces the preset's eye from the globe's middle, so it is drawn at the middle of its globe there
+      const toward = towardEye(homeCam, mid, { x: c.x, y: c.y, z: zc });
       roles.forEach((n, i) => {
-        // Anchor coordinates to the preset, so turning the camera actually reveals the globe's other side.
-        const u = spherePoint(camera(cam.name), i, roles.length);
-        placed.set(n.id, { x: c.x + R * u.x, y: c.y + R * u.y, z: (planeZ0.get(c.id) ?? 0) + R * u.z,
-          screen: { x: center.x + R * center.f * (u.x * cam.cyaw - u.y * cam.syaw),
-            y: center.y + R * center.f * ((u.x * cam.syaw + u.y * cam.cyaw) * cam.c - u.z * cam.s) } });
-        const facing = (u.x * cam.syaw + u.y * cam.cyaw) * cam.s + u.z * cam.c;
+        const u = spherePoint(home, i, roles.length, toward);
+        const w = { x: c.x + R * u.x, y: c.y + R * u.y, z: zc + R * u.z };
+        world.set(n.id, w);
+        // how squarely this camera's eye sees the role's point of the sphere: 1 at the middle of the globe as drawn,
+        // 0 at its limb, under 0 round the back
+        const e = towardEye(cam, mid, w), facing = u.x * e.x + u.y * e.y + u.z * e.z;
         behind.set(n.id, (1 - facing) / 2);
         surfaceOf.set(n.id, { shoal: c.id, facing });
       });
     }
   }
-  const pos = new Map(), depth = new Map(), scaleOf = new Map();
-  for (const [id, p] of lay.pos) {
-    const w = placed.get(id);
-    const q = w ? P(w, w.z) : P(p, z(id));
-    pos.set(id, w?.screen ?? { x: q.x, y: q.y });
+  for (const [id, p] of lay.pos) if (!world.has(id)) world.set(id, { x: p.x, y: p.y, z: z(id) });
+  const pos = new Map(), depth = new Map(), scaleOf = new Map(), fOf = new Map();
+  for (const [id, w] of world) {
+    const q = P(w, w.z);
+    pos.set(id, { x: q.x, y: q.y });
     depth.set(id, q.depth);
+    fOf.set(id, q.f);
     // on a sphere, the front grows and the back shrinks, beyond what perspective alone does
     scaleOf.set(id, q.f * (behind.has(id) ? 1.28 - 0.62 * behind.get(id) : 1));
   }
@@ -287,13 +325,10 @@ export function projectLayout(vm, lay, cam0) {
   // far fades; a role round the back of its sphere fades more, as seen through it
   const fogOf = new Map([...depth].map(([id, d]) => [id, (d1 > d0 ? 0.55 + 0.45 * ((d - d0) / (d1 - d0)) : 1)
     * (behind.has(id) ? 1 - 0.7 * Math.max(0, behind.get(id) - 0.35) / 0.65 : 1)]));
+  // satellites keep their offsets from their role, in the role's own plane at its height
   const sats = (lay.sats ?? []).map((s) => {
-    const w = placed.get(s.owner), p0 = lay.pos.get(s.owner);
-    const at = (x, y) => {
-      if (!w || !p0) return P({ x, y }, z(s.owner));
-      const anchor = P(w, w.z), q = P({ x: w.x + x - p0.x, y: w.y + y - p0.y }, w.z);
-      return { x: w.screen.x + q.x - anchor.x, y: w.screen.y + q.y - anchor.y };
-    };
+    const w = world.get(s.owner), p0 = lay.pos.get(s.owner);
+    const at = (x, y) => (w && p0 ? P({ x: w.x + x - p0.x, y: w.y + y - p0.y }, w.z) : P({ x, y }, z(s.owner)));
     const a = at(s.x, s.y), b = at(s.ax, s.ay);
     return { ...s, x: a.x, y: a.y, ax: b.x, ay: b.y };
   });
@@ -301,20 +336,22 @@ export function projectLayout(vm, lay, cam0) {
   const clusters = (lay.clusters ?? []).map((c) => {
     const zc = vm.global ? planeZ.get(c.id) ?? 0 : 0;
     const q = P(c, zc);
-    // global: a sphere (its outline a circle at any tilt); per shoal the cluster is only the hit area
+    // global: a sphere, drawn as the circle its silhouette makes for this camera (globeOutline: in perspective, a
+    // little larger than its middle's scale gives and shifted out from the middle's image, so every role, drawn where
+    // its world point projects, stays inside it); per shoal the cluster is only the hit area
     const globeGrid = [];
+    const out = vm.global ? globeOutline(cam, { x: c.x, y: c.y, z: zc - mid }, c.r * SPHERE_R) ?? { x: q.x, y: q.y, r: c.r * SPHERE_R * q.f } : { x: q.x, y: q.y, r: c.r * q.f };
     if (vm.global) {
-      const R = c.r * SPHERE_R;
       for (const lat of [-Math.PI / 6, 0, Math.PI / 6]) {
-        globeGrid.push(...globeCircle(cam, q, R * q.f, { x: 0, y: 0, z: Math.sin(lat) }, { x: Math.cos(lat), y: 0, z: 0 }, { x: 0, y: Math.cos(lat), z: 0 }));
+        globeGrid.push(...globeCircle(cam, out, out.r, { x: 0, y: 0, z: Math.sin(lat) }, { x: Math.cos(lat), y: 0, z: 0 }, { x: 0, y: Math.cos(lat), z: 0 }));
       }
       for (let i = 0; i < 3; i++) {
         const a = i * Math.PI / 3;
-        globeGrid.push(...globeCircle(cam, q, R * q.f, { x: 0, y: 0, z: 0 }, { x: Math.cos(a), y: Math.sin(a), z: 0 }, { x: 0, y: 0, z: 1 }));
+        globeGrid.push(...globeCircle(cam, out, out.r, { x: 0, y: 0, z: 0 }, { x: Math.cos(a), y: Math.sin(a), z: 0 }, { x: 0, y: 0, z: 1 }));
       }
     }
     // the way to the light from the globe's middle, as the camera sees it: what its glass is shaded from
-    return { ...c, x: q.x, y: q.y, r: c.r * (vm.global ? SPHERE_R : 1) * q.f, ry: vm.global ? 1 : cam.c, sphere: vm.global, globeGrid, s: q.f, depth: q.depth, zw: zc,
+    return { ...c, x: out.x, y: out.y, r: out.r, ry: vm.global ? 1 : cam.c, sphere: vm.global, globeGrid, s: q.f, depth: q.depth, zw: zc,
       light: lightFrom(cam, Lp, { x: c.x, y: c.y, z: zc }) };
   }).sort((a, b) => a.depth - b.depth);
   const regionFog = (xs) => {
@@ -342,44 +379,51 @@ export function projectLayout(vm, lay, cam0) {
   const floorZ = Math.min(-FLOOR_BELOW * PLANE_GAP,
     ...(vm.global ? (lay.clusters ?? []).map((c) => (planeZ.get(c.id) ?? 0) - c.r * SPHERE_R) : [])) - (vm.global ? FLOOR_CLEAR * PLANE_GAP : 0);
   const grid = floorGrid(P, o, radius * 1.15, floorZ);
+  // The one shadow caster: a ball of radius r (world units) whose middle is the world point w, on the floor, from the
+  // one light (castShadow). Every shadow in the view comes from it: the globes', the nodes' (scene.js, at the radius
+  // each is drawn with) and, point by point, the edges' (shade.cast, the same ray to the same floor).
+  const ball = (w, r) => castShadow(P, Lp, w, w.z, r, floorZ);
   // stems: each plane's middle (per shoal: the band ring's), and every lifted node, down to the floor; and the shadow each
-  // globe and lifted node casts there, all from the one light
+  // globe casts there. A node's stem carries its world point and its radius as drawn at zoom 1 (`r0`): the scene casts
+  // its shadow with `ball` at the radius it draws it
   const stems = [];
-  const stem = (id, p, zz, r) => {
-    const a = P(p, zz), b = P(p, floorZ);
-    stems.push({ id, x0: a.x, y0: a.y, x1: b.x, y1: b.y, r: r * b.f, ry: r * b.f * cam.c, shadow: castShadow(P, Lp, p, zz, r, floorZ) });
+  const stem = (id, p, zz, r, node = null) => {
+    const a = P(p, zz), b = P(p, floorZ), w = { x: p.x, y: p.y, z: zz };
+    stems.push({ id, x0: a.x, y0: a.y, x1: b.x, y1: b.y, r: r * b.f, ry: r * b.f * cam.c, w, ...(node ? { r0: r } : {}), shadow: ball(w, r) });
   };
   if (vm.global) for (const c of lay.clusters ?? []) stem(`c-${c.id}`, c, planeZ.get(c.id) ?? 0, c.r * SPHERE_R);
   else if ((lay.bands ?? []).length) for (const b of lay.bands) stem(`b-${b.host}`, { x: 0, y: 0 }, planeZ.get(b.host) ?? 0, 26);
-  for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.kind === "user" ? 30 : 14);
+  for (const n of vm.nodes) if (n.kind !== "role" && lay.pos.has(n.id)) stem(`n-${n.id}`, lay.pos.get(n.id), z(n.id), n.visual?.r ?? 8, n);
   // and each role on a globe: the globe is glass and catches no shadow, so a role's falls on the floor too, cast the same
-  // way from where the role is in the world (2026-11-13: without one, a seat's shadow that fell under a globe read as its
-  // roles', and their edges' shadows ended in nothing)
+  // way from its world point (2026-11-13: without one, a seat's shadow that fell under a globe read as its roles', and
+  // their edges' shadows ended in nothing). `r0` is its radius as drawn at zoom 1: a ball on the front of its globe is
+  // drawn larger, on the back smaller (scaleOf), so its shadow is of that ball
   const casts = [];
   for (const n of vm.nodes) {
-    const w = placed.get(n.id);
-    if (w) casts.push({ id: `r-${n.id}`, shadow: castShadow(P, Lp, w, w.z, Math.max(4, n.visual?.r ?? 8), floorZ) });
+    const w = behind.has(n.id) ? world.get(n.id) : null;
+    if (w) { const r0 = (n.visual?.r ?? 8) * (1.28 - 0.62 * behind.get(n.id)); casts.push({ id: `r-${n.id}`, w, r0, shadow: ball(w, r0) }); }
   }
-  // where each node's shadow falls on the floor (the ray from the light through it), for its edges' shadows: {x, y} on
-  // screen and {dx, dy} from the node as drawn
+  // where each node's shadow falls on the floor (the ray from the light through its world point): {x, y} on screen
+  // and {dx, dy} from the node as drawn
   const shadowOf = new Map();
-  for (const [id, p] of lay.pos) {
-    const w = placed.get(id), g = floorCast(Lp, w ?? { x: p.x, y: p.y, z: z(id) }, floorZ), sp = P(g, floorZ), at = pos.get(id);
+  for (const [id, w] of world) {
+    const sp = P(floorCast(Lp, w, floorZ), floorZ), at = pos.get(id);
     shadowOf.set(id, { x: sp.x, y: sp.y, dx: sp.x - at.x, dy: sp.y - at.y });
   }
   // what an edge's shadow is cast with (scene.js castCurve): each end's depth along its line of sight, the point of
   // the world seen at a layout point at a depth (the edge's 3D path is its curve on screen, lifted between its ends'
-  // depths), where the light's ray through it meets the floor, whether the floor is there, and where that is on screen
+  // depths: at each end, exactly the node's world point, as the node is drawn where that point projects), where the
+  // light's ray through it meets the floor, whether the floor is there, and where that is on screen
   const floorR = radius * 1.15;
   const shade = {
-    surface: "floor", light: Lp, floorZ, depthOf: depth,
+    surface: "floor", light: Lp, floorZ, depthOf: depth, ball,
     lift: (s, dd) => { const q = unproject(cam, s, dd); return { x: q.x, y: q.y, z: q.z + mid }; },
     cast: (X) => (X.z > floorZ && X.z < Lp.z ? { ...floorCast(Lp, X, floorZ), z: floorZ } : null),
     seen: (W) => Math.abs(W.x - o.x) <= floorR && Math.abs(W.y - o.y) <= floorR,
     screen: (W) => { const q = P(W, W.z); return { x: q.x, y: q.y }; },
   };
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, shadowOf, shade };
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, world, fOf, shadowOf, shade };
 }
 
 /**
@@ -450,9 +494,6 @@ const BOWL_GAIN = 1.25; // sizes in the bowl: this much larger than flat, times 
 const BOWL_BEHIND = 0.2; // how far behind you, along the line of sight, a role on the inside sits at least
 // sizes shrink with that depth this much faster than perspective alone, so the far wall reads far
 const SIZE_DEPTH = 1.6;
-/** How far in from the wall a role's middle is, in sphere radii, for its edges' shadows: the edges at a role run just
- * off the wall, so their shadows lie a little beside them, more where the light comes in low. */
-export const EDGE_LIFT = 0.07;
 
 /** The bowl's pitch for a camera: how far off its axis, vertically, the camera looks down into it: BOWL_HOME_TILT plus
  * the vertical orbit, in BOWL_ALPHA_RANGE (the same opening view in tilt and iso). */
@@ -515,22 +556,35 @@ function projectBowl(vm, lay, cam0) {
   const cam = { ...cam0, o: { x: 0, y: 0 }, d: DIST * radius };
   const spin = cam.spin ?? cam.yaw;
   const bands = bowlLunes(lay.bands ?? [], spin).map((b) => ({ ...b, bowl: true, depth: -Rs, fog: 1 }));
-  const pos = new Map(), depth = new Map(), scaleOf = new Map(), fogOf = new Map(), surfaceOf = new Map();
+  const pos = new Map(), depth = new Map(), scaleOf = new Map(), fogOf = new Map(), surfaceOf = new Map(), world = new Map(), fOf = new Map();
   // a point of the bowl's world (in sphere radii, the camera's frame) on screen, in perspective. Its paint order goes
   // by its depth along the line of sight and its size by how near it is: you, lifted toward the opening, are nearest
   // and largest (in perspective), every role on the inside behind the middle (BOWL_BEHIND at least) and smaller, faster
   // than perspective alone, the far wall's smallest.
+  const sizeAt = (u) => (u.z >= 0 ? fr.d / (fr.d - u.z) : fr.d / (fr.d - SIZE_DEPTH * u.z));
   const put = (id, u) => {
     const s = bowlProject(fr, u);
     pos.set(id, { x: Rs * s.x, y: Rs * s.y });
     depth.set(id, Rs * u.z);
-    return u.z >= 0 ? fr.d / (fr.d - u.z) : fr.d / (fr.d - SIZE_DEPTH * u.z);
+    return sizeAt(u);
   };
-  // where a point's shadow falls on the inner wall (the ray from the bowl's light through it), when it is seen there:
-  // {x, y} on screen and {dx, dy} from the point
-  const shadowOf = new Map(), liftZ = new Map();
+  // The one shadow caster, as in the global view: a ball of radius r (layout units) whose middle is the point w of the
+  // bowl's world, on the inner wall, from the bowl's light (sphere.js wallShadow; none where the wall shades the ball or
+  // its shadow is not seen). Its darkness and penumbra go by the ball's height off the wall (wallShadowTone).
+  const ball = (w, r) => {
+    const s = wallShadow(fr, w, r / Rs);
+    if (!s) return null;
+    return { x: Rs * s.x, y: Rs * s.y, a: { x: Rs * s.a.x, y: Rs * s.a.y }, b: { x: Rs * s.b.x, y: Rs * s.b.y }, ...wallShadowTone(s.h), h: s.h, at: s.c };
+  };
+  // a node's one point in the bowl's world (`world`), its depth along the line of sight (`castDepth`, in sphere radii:
+  // what its edges are lifted to at it, bowlLift) and, when the light reaches it and its shadow lands on the inside
+  // seen through the opening, where that falls (shadowOf: {x, y} on screen and {dx, dy} from the node)
+  const shadowOf = new Map(), castDepth = new Map();
   const castAt = (id, X) => {
-    liftZ.set(id, X.z);
+    world.set(id, X);
+    fOf.set(id, bowlProject(fr, X).f);
+    castDepth.set(id, X.z);
+    if (!bowlLit(fr, X)) return;
     const w = bowlCast(fr, X);
     if (!bowlKept(fr, w) || bowlSeen(fr, w) > 1) return;
     const s = bowlProject(fr, w), q = bowlProject(fr, X);
@@ -609,14 +663,26 @@ function projectBowl(vm, lay, cam0) {
     return out;
   };
   const at = place(fr, home === fr ? null : place(home, null));
+  // A role is a ball sitting on the wall at its place: its middle is its radius (as drawn at zoom 1, in sphere radii,
+  // and at least clear of the wall as bowlLift holds a point) in from the surface point. That middle is its one point
+  // in the world: it is drawn where that projects, its edges are lifted to it, and its shadow is cast from it (2026-11-13:
+  // its edges were lifted to the line of sight through its drawn point at a depth off the wall, a point its own cast
+  // was not made from, and its shadow was a contact mark at the role, not a cast at all)
+  const casts = [];
   for (const n of roles) {
     if (!at.has(n.id)) continue;
     const { u, theta, phi, host } = at.get(n.id);
-    castAt(n.id, { x: (1 - EDGE_LIFT) * u.x, y: (1 - EDGE_LIFT) * u.y, z: (1 - EDGE_LIFT) * u.z });
-    scaleOf.set(n.id, BOWL_GAIN * put(n.id, u));
+    const radiusAt = (w) => Math.max(1.5 * BOWL_LIFT_CLEAR, ((n.visual?.r ?? 8) * BOWL_GAIN * sizeAt(w)) / (Rs * bowlProject(fr, w).f));
+    let rw = radiusAt(u);
+    rw = radiusAt({ x: (1 - rw) * u.x, y: (1 - rw) * u.y, z: (1 - rw) * u.z });
+    const uc = { x: (1 - rw) * u.x, y: (1 - rw) * u.y, z: (1 - rw) * u.z };
+    castAt(n.id, uc);
+    scaleOf.set(n.id, BOWL_GAIN * put(n.id, uc));
     fogOf.set(n.id, 0.82 + 0.18 * (1 + u.z));
     surfaceOf.set(n.id, { shoal: vm.view, host, facing: -u.z, theta, phi });
+    casts.push({ id: `r-${n.id}`, w: uc, r0: rw * Rs, shadow: ball(uc, rw * Rs) });
   }
+  casts.sort((a, b) => depth.get(a.id.slice(2)) - depth.get(b.id.slice(2)));
   // everything else on a ring round the rim, in its plane
   if (user) fogOf.set(user.id, 1);
   for (const n of vm.nodes) {
@@ -653,21 +719,22 @@ function projectBowl(vm, lay, cam0) {
     stems.push({ id: `c-${c0.id}`, x0: Rs * a.x, y0: Rs * a.y, x1: Rs * b.x, y1: Rs * b.y,
       shadow: sh ? { x: Rs * sh.x, y: Rs * sh.y, a: sc(sh.a), b: sc(sh.b), peak: 0.62, soft: 0.4, h: sh.h, at: sh.at } : null });
   }
-  // what an edge's shadow is cast with (scene.js castCurve), as in the global view: each end's depth (you; a role's
-  // middle, EDGE_LIFT off the wall), the point seen at a layout point at a depth, held inside the sphere (sphere.js
-  // bowlLift), where the light's ray through it leaves the sphere (none from outside it), whether that is on the inside
-  // seen through the opening, and where it is on screen. A seat on the ring has no depth here: its edges leave the bowl
-  // over the lip, and the part of one near the opening cast a long thin streak across the inside that read as no arrow
-  // (its shadow outside falls on the outer wall and the floor, which are not drawn), so they cast none
+  // what an edge's shadow is cast with (scene.js castCurve), as in the global view: each end's depth (its node's world
+  // point's: you; a role's middle), the point seen at a layout point at a depth, held inside the sphere (sphere.js
+  // bowlLift), where the light's ray through it leaves the sphere (none from outside it, none where the wall shades it),
+  // whether that is on the inside seen through the opening, and where it is on screen. A seat on the ring has no depth
+  // here: its edges leave the bowl over the lip, and the part of one near the opening cast a long thin streak across the
+  // inside that read as no arrow (its shadow outside falls on the outer wall and the floor, which are not drawn), so
+  // they cast none
   const shade = {
-    surface: "wall", light: bowlLightAt(fr), frame: fr, R: Rs, depthOf: liftZ,
+    surface: "wall", light: bowlLightAt(fr), frame: fr, R: Rs, depthOf: castDepth, ball,
     lift: (s, z) => bowlLift(fr, { x: s.x / Rs, y: s.y / Rs }, z),
-    cast: (X) => (X.x * X.x + X.y * X.y + X.z * X.z < 1 ? bowlCast(fr, X) : null),
+    cast: (X) => (X.x * X.x + X.y * X.y + X.z * X.z < 1 && bowlLit(fr, X) ? bowlCast(fr, X) : null),
     seen: (W) => bowlKept(fr, W) && bowlSeen(fr, W) <= 1,
     screen: (W) => { const q = bowlProject(fr, W); return { x: Rs * q.x, y: Rs * q.y }; },
   };
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes: [], grid, stems, shadowOf, shade,
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes: [], grid, stems, casts, world, fOf, shadowOf, shade,
     light: null, bowl: { frame: fr, R: Rs, you, youLight: bowlLightDir(fr, you) } };
 }
 
