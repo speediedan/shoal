@@ -264,7 +264,7 @@ const unit = (v) => { const l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x 
 /** The ellipse a circle (middle c, unit axes f1 and f2, radius rho) projects to: its middle, two conjugate semi-axes
  * {a, b} (its principal ones), its quadratic form m ((s - c)' m (s - c) = 1 on it), and its half-width and half-height.
  * The circle's homogeneous image H (cos t, sin t, 1) is a conic whose matrix is H^-T diag(1, 1, -1) H^-1. */
-function projectedCircle(d, c, f1, f2, rho) {
+export function projectedCircle(d, c, f1, f2, rho) {
   const H = [[d * rho * f1.x, d * rho * f2.x, d * c.x], [d * rho * f1.y, d * rho * f2.y, d * c.y], [-rho * f1.z, -rho * f2.z, d - c.z]];
   const [[a, b, e], [f, g, k], [l, m, n]] = H;
   const det = a * (g * n - k * m) - b * (f * n - k * l) + e * (f * m - g * l);
@@ -565,6 +565,33 @@ export function bowlCast(fr, at) {
   const Lp = bowlLightAt(fr), D = comb(1, at, -1, Lp), a = dot(D, D), b = 2 * dot(Lp, D), c = dot(Lp, Lp) - 1;
   return comb(1, Lp, (-b + Math.sqrt(Math.max(0, b * b - 4 * a * c))) / (2 * a), D);
 }
+/** Whether the light reaches a point inside the sphere: its ray gets in through the opening (where it first meets the
+ * sphere, the near root, is cut away), not through the wall. A point the wall shades (under the lip on the light's side,
+ * rimShade) casts no shadow: the far root bowlCast would give is a mark across the bowl that nothing casts. */
+export function bowlLit(fr, at) {
+  const Lp = bowlLightAt(fr), D = comb(1, at, -1, Lp), a = dot(D, D), b = 2 * dot(Lp, D), c = dot(Lp, Lp) - 1, disc = b * b - 4 * a * c;
+  if (disc < 0) return false;
+  return !bowlKept(fr, comb(1, Lp, (-b - Math.sqrt(disc)) / (2 * a), D));
+}
+/** The darkest, and the penumbra, of a shadow on the inner wall by its caster's height `h` off the wall (in sphere
+ * radii): a ball sitting on the wall (a role, about 0.05 off) throws a dark, sharp-edged one, you (0.5 off) a paler,
+ * softer one, as a point light gives. {peak, soft}. */
+export const WALL_SHADOW = { peak: 0.55, fall: 0.3, soft: 0.25, spread: 0.5 };
+export const wallShadowTone = (h) => ({ peak: WALL_SHADOW.peak / (1 + WALL_SHADOW.fall * h), soft: Math.min(0.5, WALL_SHADOW.soft + WALL_SHADOW.spread * h) });
+/**
+ * The shadow a ball of radius rb (sphere radii) whose middle is `at` (inside the sphere) casts on the inner wall: where
+ * the light's ray through its middle leaves the sphere (bowlCast), an ellipse there (ballShadow), seen in perspective.
+ * {c: its middle on the wall, x, y: that middle on screen (radii from the bowl's middle), a, b: conjugate semi-axes on
+ * screen, h: the ball's height off the wall}, or null where the light does not reach the ball (bowlLit) or its shadow
+ * lands on the cut-away wall or outside the opening.
+ */
+export function wallShadow(fr, at, rb) {
+  if (!bowlLit(fr, at)) return null;
+  const c = bowlCast(fr, at);
+  if (!bowlKept(fr, c) || bowlSeen(fr, c) > 1) return null;
+  const { A, B } = ballShadow(bowlLightAt(fr), at, rb, c, c), e = projectedCircle(fr.d, c, A, B, 1), s = bowlProject(fr, c);
+  return { c, x: s.x, y: s.y, a: e.a, b: e.b, h: Math.max(0, 1 - len(at)) };
+}
 const cross = (a, b) => ({ x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x });
 const len = (v) => Math.hypot(v.x, v.y, v.z);
 // two axes across a unit normal n, the first across the way `ray` comes in (any, when it comes in square)
@@ -734,16 +761,19 @@ export const YOU_SHADOW = { peak: 0.55, soft: 0.5, size: 1 };
 /** Where the light's ray through `at` (inside the sphere) meets the inner surface, away from the light. */
 export const bowlShadowAt = (fr, at = ORIGIN) => bowlCast(fr, at);
 /** Whether your shadow lands on the inside, seen through the opening. */
-export const bowlShadowSeen = (fr, at) => { const u = bowlCast(fr, at); return bowlKept(fr, u) && bowlSeen(fr, u) <= 1; };
+export const bowlShadowSeen = (fr, at) => { const u = bowlCast(fr, at); return bowlLit(fr, at) && bowlKept(fr, u) && bowlSeen(fr, u) <= 1; };
 export function bowlShadow(fr, cx, cy, R, rb, at) {
   if (!bowlShadowSeen(fr, at)) return [];
   const c = bowlCast(fr, at), { A, B } = ballShadow(bowlLightAt(fr), at, YOU_SHADOW.size * rb, c, c);
   const e1 = projectedCircle(fr.d, c, A, B, 1), px = R * Math.sqrt(Math.hypot(e1.a.x, e1.a.y) * Math.hypot(e1.b.x, e1.b.y));
   // solved over the wall where it falls (its light and depth, no host's wash)
   const wall = bowlColorAt(fr, e1.cx, e1.cy, null);
+  // each layer's middle is the cast point's image (the ellipse's own middle is a little off it in perspective), so your
+  // shadow's middle is the one every node's is: where the ray through its world point meets the wall
+  const s = bowlProject(fr, c);
   return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, shadowSteps(YOU_SHADOW.peak, YOU_SHADOW.soft, px), wall).map((l) => {
     const e = projectedCircle(fr.d, c, comb(l.s, A), comb(l.s, B), 1);
-    return { x: cx + R * e.cx, y: cy + R * e.cy, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
+    return { x: cx + R * s.x, y: cy + R * s.y, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
   });
 }
 
