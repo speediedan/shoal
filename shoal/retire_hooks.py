@@ -47,6 +47,7 @@ class Target:
     @property
     def key(self):
         data = dataclasses.asdict(self)
+        data.pop("repo")  # derived from the doc's repository, and opt-out attempts resolve none: identity only
         if self.kind == "role":
             data.pop("session")  # a later incarnation retiring the same directory supersedes its earlier outcome
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
@@ -107,6 +108,8 @@ def _within(path, directory):
 
 
 def preflight(target, after=False):
+    if not target.doc:
+        return {"repo": "", "argv": [], "env": {}, "skip": "no start doc: nothing to archive"}
     lc = lifecycle.load(target.repo or target.doc or target.directory)
     command = lc["values"]["hooks"]["on_retire"]
     out = {"repo": lc["repo"], "argv": [], "env": {}, "skip": ""}
@@ -171,7 +174,8 @@ class Remote:
         import routes
         route = routes.route(target.host)
         if route is None or not routes.reachable(target.host, force=True):
-            raise Refused(f"document host {target.host} has no reachable route")
+            raise Refused(f"document host {target.host} has no reachable route "
+                          "(pass --no-archive to remove it without the hook)")
         self.err = tempfile.TemporaryFile()
         args = ["lifecycle", "_retire-worker", "--target", json.dumps(dataclasses.asdict(target))]
         if retry:
@@ -232,9 +236,13 @@ class Operation:
     def __init__(self, target, ledger, stack, no_archive=False, retry=False):
         self.target, self.ledger = target, ledger
         self.remote = None
+        self.prepared = False
         if no_archive:
             stack.enter_context(lock(target))
             self.plan = {"skip": "explicit --no-archive", "argv": [], "env": {}, "repo": ""}
+        elif not target.doc:
+            stack.enter_context(lock(target))
+            self.plan = {"skip": "no start doc: nothing to archive", "argv": [], "env": {}, "repo": ""}
         elif target.host != config.server():
             lc = lifecycle.load(target.repo or target.doc or target.directory)
             # Repository configuration travels with the repository. A known no-hook configuration executes
@@ -276,6 +284,21 @@ class Operation:
     def prepare(self):
         if self.enabled:
             self.record("failed", "hook prepared; removal has not yet been confirmed", "prepared")
+            self.prepared = True
+
+    def abort(self):
+        """Terminal outcome when the wrapped removal itself refused after `prepare()`: nothing was removed, so
+        the prepared receipt must not warn forever. A bare prepared receipt (a process killed before the next
+        event) still reads as failed, because only a removal that returned can reach this."""
+        if not self.prepared:
+            return
+        try:
+            self.record("aborted", "removal refused after the hook was prepared; nothing was removed",
+                        "removal-refused")
+            print(f"retire hook {self.target.role}: aborted (removal refused; nothing was removed)")
+        except Exception as exc:  # the refusal already happened: keep its outcome, name the stale receipt
+            print(f"retire hook {self.target.role}: WARNING: could not record the aborted outcome ({exc}); "
+                  "the prepared receipt still warns")
 
     def finish(self):
         t = self.target

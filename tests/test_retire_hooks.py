@@ -159,6 +159,42 @@ Path('.git/hook-complete').touch()
         self.assertEqual(json.loads(self.registry.read_text())["sessions"], [])
         self.assertEqual(self.events(True)[-1]["status"], "ok")
 
+    def test_removal_refused_after_prepare_leaves_no_warning(self):
+        self.standalone()
+        entry = json.loads(self.registry.read_text())
+        entry["sessions"][0]["session"] = "zzzzzzzz-0000-4000-8000-000000000000"  # not a Claude job id: prune refuses
+        self.registry.write_text(json.dumps(entry))
+        self.call("remove-session", "--session", "seat", expect=1)
+        self.assertTrue(json.loads(self.registry.read_text())["sessions"])  # nothing was removed
+        events = self.events(True)
+        self.assertEqual(events[-2]["phase"], "prepared")
+        self.assertEqual(events[-1]["status"], "aborted")
+        self.assertEqual(events[-1]["phase"], "removal-refused")
+        self.assertIn("no failed retirement hooks", self.call("lifecycle", "retire-hook", "--status"))
+        self.assertFalse((self.repo / ".git/hook-calls").exists())
+
+    def test_docless_role_skips_hook(self):
+        self.spec["roles"][0]["doc"] = ""
+        self.save_spec()
+        out = self.remove_role()  # cwd is the trusted, hooked repo: a doc-less target must not resolve hooks from it
+        self.assertIn("no start doc: nothing to archive", out)
+        self.assertEqual(json.loads(self.specfile.read_text())["roles"], [])
+        self.assertFalse((self.repo / ".git/hook-calls").exists())
+
+    def test_no_archive_supersedes_earlier_failed_hook(self):
+        (self.repo / ".git/hook-mode").write_text("partial")
+        self.remove_role(expect=1)
+        failed = self.events()[-1]
+        self.assertEqual(failed["status"], "failed")
+        self.save_spec()  # the role is back in the spec: a fresh removal, this time opting out of the hook
+        self.remove_role("--no-archive")
+        skipped = self.events()[-1]
+        self.assertEqual(skipped["target_key"], failed["target_key"])
+        self.assertEqual(skipped["phase"], "skipped")
+        out = self.call("lifecycle", "retire-hook", "--shoal", self.sid, "--role", "lane", expect=1)
+        self.assertIn("no failed retirement hook matches", out)
+        self.assertEqual(len((self.repo / ".git/hook-calls").read_text().splitlines()), 1)
+
     def test_untrusted_keeps_legacy_retire_behavior(self):
         self.configure(False)
         self.spec["roles"][0]["session"] = "abcdef01-0000"

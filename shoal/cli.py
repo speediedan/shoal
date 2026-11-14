@@ -1078,7 +1078,11 @@ def cmd_retire(a: argparse.Namespace) -> int:
                 for op in operations:
                     op.prepare()
             rc = _retire(a, spec)
-            if rc or a.dry_run:
+            if a.dry_run:
+                return rc
+            if rc:
+                for op in operations:
+                    op.abort()
                 return rc
             print(f"retirement {spec.sid}: complete")
             results = [op.finish() for op in operations]

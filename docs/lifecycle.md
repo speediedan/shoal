@@ -122,7 +122,8 @@ hooks. A hook trusted for a main checkout is not trusted in that checkout's work
 `retire`, `remove-role` and `remove-session` run a configured, trusted `on_retire` hook after the role or saved session
 has left the live start-doc roots. A role's `dir` field overrides its document directory; otherwise it is the directory
 of its start doc. Relative overrides resolve against the group's working directory (a standalone seat's `cwd`). The
-document directory must contain the start doc and stay inside its repository.
+document directory must contain the start doc and stay inside its repository. A target with no start doc has nothing
+to archive: the hook is skipped and the removal proceeds as before.
 
 The hook command is split into argv using shell-style quoting, with no implicit shell. Its first executable must
 resolve before anything is removed: a relative path containing a slash resolves against the repository root, a bare
@@ -162,10 +163,13 @@ shoal remove-session --session <label> --dry-run
 ```
 
 Hooks and explicit opt-out receipts require a configured ledger repository. Hook outcomes are durable `system`
-events named `retire-hook`, with `status` (`ok` or `failed`), role, document directory, host, argv, environment, retry
+events named `retire-hook`, with `status` (`ok`, `failed`, or `aborted` when the removal itself refused after the
+prepared receipt), role, document directory, host, argv, environment, retry
 target and an error tail. Group events live in the group's ledger. Standalone events use the reserved ledger
 namespace `shoals/_standalone/ledger/`, without a group spec. A prepared receipt precedes teardown; a pending receipt
 confirms removal before execution, so an interrupted operation remains discoverable. The terminal outcome follows.
+An `aborted` outcome (phase `removal-refused`) closes a prepared receipt when the removal returned without removing
+anything, so it stops warning; a bare prepared receipt from a process killed mid-removal still reads as failed.
 `shoal show` and `shoal status` display unresolved failures, including standalone failures; successful retry clears
 the warning. No health page is raised.
 

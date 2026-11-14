@@ -512,7 +512,10 @@ def remove_role(spec, spec_path: str, slug: str, force: bool = False, dry_run: b
             op = rh.Operation(rh.role_target(spec, role), rh.ledger_for(spec), stack, no_archive)
             op.preview()
             rc = _remove_role(spec, spec_path, slug, force, dry_run, op)
-            if rc or dry_run:
+            if dry_run:
+                return rc
+            if rc:
+                op.abort()
                 return rc
             print(f"removal {slug}: complete")
             return op.finish()
@@ -605,7 +608,10 @@ def remove_session(key: str, force: bool = False, dry_run: bool = False, no_arch
             op = rh.Operation(rh.session_target(entry), rh.ledger_for(), stack, no_archive)
             op.preview()
             rc = _remove_session(key, force, dry_run, op)
-            if rc or dry_run:
+            if dry_run:
+                return rc
+            if rc:
+                op.abort()
                 return rc
             print(f"removal {op.target.role}: complete")
             return op.finish()
