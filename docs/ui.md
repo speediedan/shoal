@@ -729,16 +729,13 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   tilt and the next iso again. The shoal globes are see-through glass, fainter until you point at one, with their
   names larger and clear above them, and their role names switch between light and dark ink to stay readable on the
   globe. The canvas behind them is a lighter slate than the flat view's, so shadows read on it. One light, a lamp high
-  over the scene, up and to the left at the opening views, lights every globe and casts every shadow, each where the
-  light's ray through its caster meets the floor below: each globe's, yours and each outside seat's (you float highest,
-  so yours lands furthest, down and to the right of the foot of your stem), each role's on a globe (the glass catches
-  none, so a role's shadow is on the floor, inside its globe's) and each arrow's, the shadow of the arrow itself: every
-  point of it casts where the light's ray through it meets the floor, so it bends as a real arrow's shadow would.
-  Everything has one place in the world: a role is drawn where that place projects, its arrows run to it, and its
-  shadow is cast from it, so each arrow's shadow ends in the shadows of the two it joins (as an arrow touching a role
-  must), and a globe is drawn as the outline a camera would see. Each stem casts a faint shadow too, from its foot to
-  its caster's shadow, so every shadow on the floor is tied to what casts it, and no shadow is drawn for anything not
-  on screen. Every shadow falls off smoothly from a dark middle
+  over the scene, up and to the left at the opening views, lights every globe and casts the shadows, each where the
+  light's ray through its caster meets the floor below: each globe's and yours (you float highest, so yours lands
+  furthest, down and to the right of the foot of your stem). Roles, outside seats and arrows cast none (2026-11-14:
+  dropped for simplicity after two passes at making them agree with their casters in every view). Everything has one
+  place in the world: a role is drawn where that place projects and its arrows run to it, and a globe is drawn as the
+  outline a camera would see. The globes' stems and yours cast a faint shadow too, from the foot to the caster's
+  shadow, so each shadow on the floor is tied to what casts it. Every shadow falls off smoothly from a dark middle
   to nothing at its edge, with no rings, and lies under every role, arrow and label, never over them. The lamp
   stays put as you orbit, so the lit sides and the shadows turn with the scene. Drilled into one shoal, depth mode
   shows a bowl turned far round to the side, its opening to your left and its bottom to the right, a little below
@@ -747,11 +744,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   bottom, and the far wall rises well past the rim of a hemisphere, so you see more of the back and the outside. The
   bowl has its own lamp, fixed to the bowl above and behind the opening, so it shines in through the opening onto the
   bottom and the bowl's shadow falls on the floor to its right; the inside darkens smoothly toward the bottom (no rings
-  of shading; faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow,
-  each role's (a ball sitting on the wall, its shadow cast from it, dark and sharp-edged under it, peeking out on the
-  side away from the lamp) and each arrow's shadow fall on the wall where its rays put them (an arrow's shadow is cast
-  point by point, clipped where the wall is hidden or shaded by the lip), so the arrows from you run from your shadow to
-  their roles' and you read as floating in front of the wall. The hosts' regions share the whole inside of the bowl in clearly different colors (azure, then amber, green,
+  of shading; faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow falls on the
+  wall where its rays put it, so you read as floating in front of the wall (the roles and arrows cast none). The hosts' regions share the whole inside of the bowl in clearly different colors (azure, then amber, green,
   rose and on), each host's roles sit on its region behind you, where the inside is seen and clear of one another, and
   the arrows, light cores
   over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far wall, with smaller

@@ -410,7 +410,7 @@ export function projectLayout(vm, lay, cam0) {
     const sp = P(floorCast(Lp, w, floorZ), floorZ), at = pos.get(id);
     shadowOf.set(id, { x: sp.x, y: sp.y, dx: sp.x - at.x, dy: sp.y - at.y });
   }
-  // what an edge's shadow is cast with (scene.js castCurve): each end's depth along its line of sight, the point of
+  // what an edge's 3D path is lifted with: each end's depth along its line of sight, the point of
   // the world seen at a layout point at a depth (the edge's 3D path is its curve on screen, lifted between its ends'
   // depths: at each end, exactly the node's world point, as the node is drawn where that point projects), where the
   // light's ray through it meets the floor, whether the floor is there, and where that is on screen
@@ -719,7 +719,7 @@ function projectBowl(vm, lay, cam0) {
     stems.push({ id: `c-${c0.id}`, x0: Rs * a.x, y0: Rs * a.y, x1: Rs * b.x, y1: Rs * b.y,
       shadow: sh ? { x: Rs * sh.x, y: Rs * sh.y, a: sc(sh.a), b: sc(sh.b), peak: 0.62, soft: 0.4, h: sh.h, at: sh.at } : null });
   }
-  // what an edge's shadow is cast with (scene.js castCurve), as in the global view: each end's depth (its node's world
+  // what an edge's 3D path is lifted with, as in the global view: each end's depth (its node's world
   // point's: you; a role's middle), the point seen at a layout point at a depth, held inside the sphere (sphere.js
   // bowlLift), where the light's ray through it leaves the sphere (none from outside it, none where the wall shades it),
   // whether that is on the inside seen through the opening, and where it is on screen. A seat on the ring has no depth
