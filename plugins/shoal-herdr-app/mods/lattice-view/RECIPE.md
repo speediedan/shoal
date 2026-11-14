@@ -55,17 +55,19 @@ you, per-shoal throughput and per-host load.
   at the node (global), labeled `remote-ci -> host-b`.
 - **Depth:** the lattice opens in depth, iso (an isometric turn), and `d` cycles the camera: iso, flat, tilt (52
   degrees), seen in perspective, so one press from the opening view is flat. In the
-  global view each shoal is on its own plane, stacked in depth, the operator and outside seats on a plane above, so
-  traffic between planes visibly crosses them. A floor grid lies below every globe,
+  global view each shoal is on its own plane, stacked in depth, outside seats on a plane above, so
+  traffic between planes visibly crosses them. You hover near the floor, keeping your opening screen position and
+  size by moving along the home camera sightline. A floor grid lies a full plane gap below every globe,
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. The canvas
   is a lighter slate in depth, so the shadows read. One light, a point high over the scene (`depth.js` `lightPoint`, up,
   to the left and a little toward the far side, fixed in the world so it stays put as the camera orbits), shades each
   globe from the way to it from that globe and casts the shadows: each globe's and yours (roles, outside seats and
   edges cast none, 2026-11-14), where the ray from the light through its middle meets the floor (`castShadow`), so the
-  shadows fall down and to the right of their casters at the presets, further the higher the caster (yours furthest). A shadow is a stack of fine alpha layers cut into equal
+  shadows fall down and to the right of their casters at the presets, further the higher the caster; yours sits close beneath you. A shadow is a stack of fine alpha layers cut into equal
   steps of darkness as drawn in 8 bits (about two color levels each, `sphere.js` `shadowLayers`), fewer for a small
   one, so it falls off smoothly from a dark core through a soft penumbra that widens as the caster rises, with no ring
-  showing. Every node has one point in the world (`projectLayout`'s `world`: a role's on its globe's sphere, rank 0
+  showing. The broad bloom behind you uses the same 8-bit solver with violet ink and a full-radius falloff,
+  replacing four visible bands; the canvas color sampler replays those exact layers. Every node has one point in the world (`projectLayout`'s `world`: a role's on its globe's sphere, rank 0
   facing the preset's eye from the globe's middle, `spherePoint` with `towardEye`): it is drawn where that point
   projects (`pos`), your shadow is cast from it (`shade.ball`, at the radius you are drawn with), its arrows are the
   projections of 3D paths between their nodes' points (`shade.lift`), and a globe is drawn as the circle of its

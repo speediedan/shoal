@@ -236,8 +236,12 @@ export function buildScene(vm, lay, opts) {
   const hub = vm.nodes.find((n) => n.kind === "user");
   const bloomAt = hub ? S(posOf(hub.id)) : { x: width / 2, y: height / 2 };
   const bloomR = Math.max(width, height) * 0.42;
-  [1, 0.72, 0.48, 0.28].forEach((f, i) => {
-    items.push({ t: "path", id: `bloom-${i}`, fill: true, cmds: circleCmds(bloomAt.x, bloomAt.y, bloomR * f), bg: solid(withAlpha("#2a2148", 0.05 + i * 0.012)) });
+  const bloomInk = "#2a2148";
+  const bloomUnder = over(mix(lay.cam ? DEPTH_BG.from : P.bgTop, lay.cam ? DEPTH_BG.to : P.bgBottom,
+    gradientAt(rect, 165, bloomAt.x, bloomAt.y)), withAlpha(P.navy, (lay.cam ? 0.18 : 0.7) * (1 - gradientAt(rect, 35, bloomAt.x, bloomAt.y))));
+  const bloom = shadowLayers(0.28, 1, 32, bloomUnder, bloomInk);
+  bloom.forEach((layer, i) => {
+    items.push({ t: "path", id: `bloom-${i}`, fill: true, cmds: circleCmds(bloomAt.x, bloomAt.y, bloomR * layer.s / 2), bg: solid(withAlpha(bloomInk, layer.alpha)) });
   });
 
   // 2026-11-14: no edge or role casts a shadow (the maintainer's call, after two passes at making the arrows' and roles'
@@ -640,7 +644,7 @@ export function buildScene(vm, lay, opts) {
   const canvasAt = (x, y) => {
     const g = gradientAt(rect, 165, x, y), wash = gradientAt(rect, 35, x, y);
     let col = over(mix(DEPTH_BG.from, DEPTH_BG.to, g), withAlpha(P.navy, 0.18 * (1 - wash)));
-    [1, 0.72, 0.48, 0.28].forEach((f, i) => { if (Math.hypot(x - bloomAt.x, y - bloomAt.y) <= bloomR * f) col = over(col, withAlpha("#2a2148", 0.05 + i * 0.012)); });
+    bloom.forEach((layer) => { if (Math.hypot(x - bloomAt.x, y - bloomAt.y) <= bloomR * layer.s / 2) col = over(col, withAlpha(bloomInk, layer.alpha)); });
     return col;
   };
   const clearColorAt = (x, y) => { const c = canvasAt(x, y); return surfaceUnder(surfaces, x, y, c) ?? c; };

@@ -1139,6 +1139,14 @@ opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, f
 inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
 inside the rim instead (`rimShade`), so the shade never spills over the shell.
 
+The global view keeps you close to the floor (2026-11-14): `projectLayout` moves your world point along the home
+camera sightline to 0.35 plane gaps above the floor, preserving your opening screen position and radius. It fixes
+that point for every orbit, and uses it for your stem, arrows and shadow. The floor clears the lowest globe by a
+full plane gap and extends beneath every world point. The one lamp is 18 scene radii away, so its rays stay aligned
+across the extended floor. The background bloom uses `shadowLayers` with violet ink and a full-radius falloff;
+the optional ink participates in the cache key and the alpha solver handles lighter and darker ink. `canvasAt`
+replays the same layers, keeping node backplates and label contrast consistent with the rendered background.
+
 Every caster in depth has one point in the world, and it is drawn where that point projects (the maintainer's
 screenshot, 2026-11-13: arrow shadows ending in empty floor beside the shadows of the roles they join, which no one light
 can give). A role on a globe had been drawn at an orthographic offset from its globe's projected middle, at the middle's
