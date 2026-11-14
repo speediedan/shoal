@@ -116,6 +116,13 @@ class MuseViewTests(unittest.TestCase):
         ago = time.time() - 3600
         os.utime(journal, (ago, ago))
         self.assertGreater(muse.activity_age(SID), 3500)
+        # a turn waiting on its subagents writes only their records: those count as its activity (2026-11-14)
+        sub = d / "subagent" / "a1" / "session.jsonl"
+        sub.parent.mkdir(parents=True)
+        sub.write_text("{}\n")
+        self.assertLess(muse.activity_age(SID), 3)
+        os.utime(sub, (ago, ago))
+        self.assertGreater(muse.activity_age(SID), 3500)
         journal.unlink()
         self.assertIsNone(muse.activity_age(SID))
         old = Path(os.environ["SHOAL_MUSE_DATA"]) / ".msp-view-v1" / SID

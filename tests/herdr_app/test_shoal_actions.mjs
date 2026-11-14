@@ -440,6 +440,11 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   assert.equal(M.handoffDocNote(f, "/example/core_plan_state.md"), "Resumes from its start doc: /example/core_plan_state.md");
   assert.match(M.handoffDocNote(f), /its saved start doc \(its plan_state\.md\)/);
   assert.equal(M.handoffDocNote(M.newForm("offer", NOW)), null);
+  // 2026-11-14: the dialog says how long a handoff takes, so it can be closed rather than watched
+  assert.match(M.handoffLatencyNote(f), /about a minute.*A checkpoint first waits.*does not cancel/);
+  assert.doesNotMatch(M.handoffLatencyNote(M.setValue(f, "prepare", false)), /checkpoint first/);
+  assert.match(M.handoffLatencyNote(M.setValue(M.setValue(f, "standalone", true), "prepare", false)), /^Expect a few seconds: .*about 2 s.*about 10 s/);
+  assert.equal(M.handoffLatencyNote(M.newForm("offer", NOW)), null);
   assert.ok(!M.visibleFields(f).some((x) => x.key === "throughQuestion"), "a role answers its question first");
   assert.equal(M.handoffMachine({ host: "lane-b" }, ["lane-a", "lane-b"], "lane-a"), "lane-b", "restart refuses another host's role");
   assert.equal(M.handoffMachine({ host: "here" }, ["lane-a"], "lane-a", "here"), null);

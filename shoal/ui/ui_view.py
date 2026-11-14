@@ -943,6 +943,9 @@ class _SeatReport:
         if self.prev == "working" and rep["state"] == "idle":
             self.ended = _iso(time.time())
         self.prev = rep["state"]
+        if harness != "claude" and not rep.get("ended") and self.ended:
+            # those report no turn end, so a wait declared before the turn this card saw end would never lapse
+            rep = dict(rep, ended=self.ended)
         entry = _seat_entry(self.label)
         agent = self.ui_app.standalone_agent(rep, bool(entry.get("dismissed")), entry)
         if agent != self.marked:
@@ -1047,8 +1050,11 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
             flush_input()
             # the attach's reporter is a thread of its own with its own state: nothing it touches is the loop's, and a
             # fresh latch says no `done` while you are in the session
-            s, j, att = session, job, _SeatReport(ui_app, label) if seat is not None and harness == "claude" else None
-            with _report_during("", "", ui_app, make=lambda: att.text(s, j)) if att is not None else contextlib.nullcontext():
+            # a Muse or Codex client draws its own report, so for those only the labels are kept current: they had
+            # frozen through an attach (2026-11-14: a seat read session-blocked for an hour after it cleared its wait)
+            s, j, h, att = session, job, harness, _SeatReport(ui_app, label) if seat is not None else None
+            make = (lambda: att.text(s, j)) if h == "claude" else (lambda: att.text(s, j, harness=h) and None)
+            with _report_during("", "", ui_app, make=make) if att is not None else contextlib.nullcontext():
                 run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
                                + (["--job", job] if job else []))
             if seat is not None:

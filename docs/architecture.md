@@ -1553,7 +1553,12 @@ own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toa
 feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
-`done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A local standalone
+`done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A card reports its
+role's or seat's name as its `app`, so the pane is headed by it; the app picks an agent's icon from its program table by
+that name, and none matched, so every card drew the generic agent robot (2026-11-14). The plan names each card's
+provider (`programs`), and `ui app-open` (and the quiet sync) gives each an entry of its own in the app's
+`programs.json` (`install_programs`: headed by the card's name, with its provider's icon), never changing an entry
+shoal did not write (those it wrote are listed in `.shoal-programs.json` beside it). A local standalone
 Claude card reports its session too (`standalone_report` over `claude agents`; `done` when a turn it saw has ended),
 and every such card on a host shares one listing (`ui_status.claude_rows_cached`, a locked file beside the status cache). `ui app-start` starts the app as a user
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
@@ -1605,11 +1610,33 @@ Three cases the 2026-11-09 seat moves hit by hand are now part of the flow:
 - **Registry lineage.** Each standalone handoff appends the retired harness, session and job to the entry's
   `lineage` (the last ten), so a stale card, job or name-addressed message can be traced to the seat it belonged to.
   A leftover entry is removed with `shoal remove-session`.
+- **A source stopped on its usage limit (2026-11-14).** Such a session answers no checkpoint request: each turn it is
+  woken for ends at once (a Codex role claimed an issue and edited five files, then could record none of it). Waiting
+  for its restart-ready mark runs to the deadline, and forcing loses what it did after its doc's stamp. `reconcile.py`
+  reads each harness's own record of the last turn (`limit_stop`: Codex's `task_complete` with `usage_limit_exceeded`,
+  or its headless `last.json`; a Claude transcript whose newest reply is a `rate_limit` error or the grace note; Muse's
+  `quota_hint`). When it finds the stop and the session is between turns, `handoff_flow` sends no checkpoint request
+  and `park.handoff`'s gate lets the handoff through without the mark or Force, adding a reconciliation brief to the new
+  session's first prompt (`reconcile.brief`: the start doc's stamp, the predecessor's transcript, the tool calls it
+  records after that stamp) and printing the same facts as the result. No separate dialog choice: the condition is
+  detected, so Force keeps its one meaning (cut off a session that could still checkpoint).
+- **Provider defaults (2026-11-14).** A move to another provider with no model or effort named records
+  `config.provider_default(eco)` (`[provider_defaults.<eco>]` in the host config) on the role or seat, so the new
+  session never inherits the provider client's last saved choice (Codex keeps a model picked in its interactive client
+  as its default) and a later move back gets the configured default again.
+- **Provider removal.** `ui_status.ecosystem_refusal` is checked by every path that starts a session on a provider:
+  a role's handoff and `add-role`, a standalone seat's handoff (`handoff_flow.preflight`, from the CLI as well as the
+  dialog) and Add session.
 
 A standalone card follows its registry entry by label each tick (`ui_view.registry_follow`), harness included: a
 seat moved from Claude to OpenCode or back switches its card in place, clears the app report of the old session, and
 reports only while the seat is on Claude. A routed card's attach re-reads the registry on the seat's own host, so it
 reaches the session the seat holds now rather than the one the card was opened with.
+Through an attach the card keeps its agent labels current whatever the harness (`_report_during` with a `make` that
+writes no OSC for a Muse or Codex client, which draws its own): they had frozen there, and a seat read
+`session-blocked` for an hour after it cleared its wait (2026-11-14). A Muse or Codex seat's declared wait lapses at a
+turn end its card saw (`_SeatReport.ended`), since those harnesses report none, and a Claude seat whose own background
+tasks run between turns reads `working: background` (they are its work), not waiting.
 The app's reconciler (`ui_app.Reconciler._gaps`) also replaces a standalone card that sits at its own screen
 with the harness and session it was opened with after its seat moved (`ui_app.seat_ids` read from the pane's
 foreground argv against the plan), on `ui app-open` and on the quiet sync. A card with a harness client open in it is

@@ -27,6 +27,8 @@ when neither is importable the file is skipped with one warning on stderr.
   ci_envs        (none)                                      {} (named CI environments a placed job may ask for)
   pool           (none)                                      true (false: this host stays out of CI pool placement)
   lifecycle.trusted_repos (none)                             [] (repositories whose .shoal/lifecycle.toml hooks run here)
+  provider_defaults.<eco> (none)                             {} (model and effort a session moved to that provider gets
+                                                                 when none is named; empty: the provider's own default)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
@@ -168,6 +170,17 @@ def tool_env_extra() -> dict[str, str]:
     if not isinstance(v, dict):
         return {}
     return {str(k): os.path.expanduser(str(x)) for k, x in v.items() if k != "PATH" and x not in (None, "")}
+
+
+def provider_default(ecosystem: str) -> tuple[str, str]:
+    """(model, effort) from `[provider_defaults.<ecosystem>]` in the host config, each "" when unset. A session handed to
+    a provider with no model named had run on whatever that provider's client last saved as its own default (2026-11-14:
+    Codex saves a model picked in its interactive client to its config, so a role moved to Codex ran that one), so a
+    move between providers records these, and moving back gets them again rather than an earlier session's choice."""
+    t = (file_values().get("provider_defaults") or {}).get(ecosystem) if isinstance(file_values().get("provider_defaults"), dict) else None
+    if not isinstance(t, dict):
+        return "", ""
+    return str(t.get("model") or ""), str(t.get("effort") or "")
 
 
 def lease_cmd() -> str:

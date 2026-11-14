@@ -108,8 +108,8 @@ export const FIELDS = {
   until: { key: "until", kind: "text", label: "Back at", placeholder: "ISO time with offset; empty for no time" },
   noWake: { key: "noWake", kind: "toggle", label: "Record without waking every role (--no-wake)", hint: "off: every role wakes once to see the change (tokens)" },
   ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
-  model: { key: "model", kind: "text", label: "Model", placeholder: "empty: the provider's default (a hand-off keeps the recorded one)" },
-  effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty: the provider's default (a hand-off keeps the recorded one)" },
+  model: { key: "model", kind: "text", label: "Model", placeholder: "empty: kept on the same provider; on another, this host's default for it" },
+  effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty: kept on the same provider; on another, this host's default for it" },
   undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
   dryRun: { key: "dryRun", kind: "toggle", label: "Preview first (dry run)", hint: "shows what it would do and waits for a confirm; off runs it at once" },
   force: { key: "force", kind: "toggle", label: "Even if it has not said it is restart-ready", hint: "can cut off work in progress" },
@@ -202,6 +202,18 @@ export function handoffDocNote(form, roleDoc = null) {
     return str(form.values.doc).trim() ? `Resumes from ${str(form.values.doc).trim()}.` : "Resumes from the seat's saved start doc (its plan_state.md) unless you name another below.";
   }
   return roleDoc ? `Resumes from its start doc: ${roleDoc}` : "Resumes from its saved start doc (its plan_state.md).";
+}
+
+/** How long a handoff takes, so the dialog can be closed instead of watched (measured 2026-11-14: a standalone seat's
+ * new session starts about 2 s after Apply; a role's restart records its spec in about 40 s and proves its watcher
+ * within about a minute). The card follows on the next graph write (every 5 s) and the view's poll (4 s). */
+export function handoffLatencyNote(form) {
+  if (form?.verb !== "handoff") return null;
+  const card = "its card shows in the lattice within about 10 s after";
+  if (form.values.standalone) {
+    return `Expect a few seconds: the new session starts about 2 s after Apply, and ${card}.${form.values.prepare ? " A checkpoint first waits for the seat's current turn and its checkpoint before that." : ""} You need not keep this open.`;
+  }
+  return `Expect about a minute: the restart records the new session in about 40 s and proves its watcher within a minute, and ${card}.${form.values.prepare ? " A checkpoint first waits for the role's current turn and its checkpoint before that, up to the deadline." : ""} Closing this does not cancel it.`;
 }
 
 /** The fields a form shows now: `until` only while offline is being turned on. */

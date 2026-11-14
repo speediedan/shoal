@@ -238,11 +238,19 @@ def prune_session(session: str, delete: bool = False) -> str:
 def activity_age(session: str):
     """Seconds since the durable record changed, or None when unreadable. Current Muse uses
     sessions/YYYY/MM/DD/<id>/session.jsonl; older .msp-view-v1 journals remain a fallback.
-    An interactive attachment alone is not evidence of a productive turn."""
+    An interactive attachment alone is not evidence of a productive turn. A turn waiting on its subagents writes only
+    their records (subagent/<id>/session.jsonl), so those count too (2026-11-14: such a turn read quiet)."""
+    import glob
     native = native_session_dir(session)
     if native:
         try:
-            return max(0.0, time.time() - os.path.getmtime(os.path.join(native, "session.jsonl")))
+            newest = os.path.getmtime(os.path.join(native, "session.jsonl"))
+            for f in glob.glob(os.path.join(native, "subagent", "*", "session.jsonl")):
+                try:
+                    newest = max(newest, os.path.getmtime(f))
+                except OSError:
+                    pass
+            return max(0.0, time.time() - newest)
         except OSError:
             pass
     root = sessions_root()

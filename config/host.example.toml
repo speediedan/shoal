@@ -102,3 +102,13 @@
 # execution from repository content, so they are ignored for any repository not listed. Default: []
 # [lifecycle]
 # trusted_repos = ["/path/to/repository"]
+
+# The model and effort a session moved to a provider gets when the handoff names none (`shoal handoff --ecosystem`, the
+# Handoff dialog). Without them, a provider's empty model means whatever its own client last saved as its default, which
+# an interactive model pick can change for every later session. Moving back to a provider gets these again. Default: none.
+# [provider_defaults.codex]
+# model = "<codex model>"
+# effort = "high"
+# [provider_defaults.claude]
+# model = "<claude model>"
+# effort = "high"
