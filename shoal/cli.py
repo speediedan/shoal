@@ -1177,7 +1177,9 @@ def cmd_status(spec: ShoalSpec) -> int:
         parts.append(f"hb={'never' if age is None else f'{age:.0f}m ago'}")
         ws, w = _state.wait_status(spec.sid, r.slug)
         if ws != "none":
-            parts.append(f"wait={ws}:{w.get('sub')} holder={w.get('holder')} rescan={w.get('rescan_utc')}")
+            ended = _state.wait_ended(spec.sid, r.slug, w) if ws == "covered" else ""
+            parts.append(f"wait={'ended' if ended else ws}:{w.get('sub')} holder={w.get('holder')} rescan={w.get('rescan_utc')}"
+                         + (f" (target {w.get('target')} done: {ended}; the role has not taken it up)" if ended else ""))
         parts.append(f"doc={'ok' if r.doc and os.path.exists(r.doc) else 'MISSING'}")
         print("  " + " | ".join(parts))
     try:
