@@ -274,6 +274,7 @@ assert rc == 1 and "archiving only" in out["refused"], out
 rc, out = archive(f"{RW}/g.md", "--cross-owner", "rewrite")
 assert rc == 1 and "proj/third/third_start.md is a start doc" in out["refused"] and "move that role first" in out["refused"], out
 rc, out = archive(*TARGETS, "--cross-owner", "rewrite", "--dry-run")
+assert rc == 0 and out["steps"][0] == "rewrite 8 reference(s) in 2 file(s), listed below", out["steps"][:2]
 assert rc == 0 and f"rewrite proj/other/other_start.md:3 `../design/rw/a.md` -> `../../archive/{RW}/a.md`" in out["steps"], out
 assert f"repoint symlink proj/other/f_link.md: ../design/rw/f.md -> ../../archive/{RW}/f.md" in out["steps"], out
 write("proj/other/other_start.md", OTHER + "an edit in progress\n")

@@ -212,6 +212,13 @@ def _rewritten(s: dict, new: str) -> str:
     return w[:-len(old)] + new
 
 
+def _relinked(s: dict, new: str, root: str) -> str:
+    """A symlink's new link text, in its own form: relative stays relative, absolute stays absolute."""
+    if os.path.isabs(s["written"]):
+        return os.path.join(root, new)
+    return posixpath.relpath(new, posixpath.dirname(s["file"]) or ".")
+
+
 def _plan_rewrites(plan: Plan, live: list[dict], roots: dict) -> None:
     """Plan the substitution of every live reference (`live`, spans) by its archive path: refuses an ambiguous token,
     a start-doc symlink, and a referrer that is untracked, dirty or not UTF-8 text with `\\n` line endings."""
@@ -225,7 +232,7 @@ def _plan_rewrites(plan: Plan, live: list[dict], roots: dict) -> None:
                 raise Refused(f"{s['file']} is a start doc ({'; '.join(refs.who_text(w) for w in roots[s['file']])}) "
                               f"and a symlink to {s['target']}: move that role first")
             _clean(plan, s["file"])
-            plan.relinks.append((s["file"], s["written"], posixpath.relpath(new, posixpath.dirname(s["file"]) or ".")))
+            plan.relinks.append((s["file"], s["written"], _relinked(s, new, plan.repo.root)))
             continue
         by_file.setdefault(s["file"], []).append(dict(s, to=_rewritten(s, new)))
     for f, subs in sorted(by_file.items()):
@@ -599,12 +606,14 @@ def cmd_archive(a) -> int:
         else:
             plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner), "archive"
         steps = describe(plan)
+        n = sum(len(rw["subs"]) for rw in plan.rewrites.values()) + len(plan.relinks)
+        files = len(plan.rewrites) + len(plan.relinks)
+        if n:
+            steps.insert(0, f"rewrite {n} reference(s) in {files} file(s), listed below")
         if a.dry_run:
             out = {"ok": True, "dry_run": True, "steps": steps, "events": plan.events, "notes": plan.notes}
         else:
             what = ", ".join(sorted({e["path"] for es in plan.events.values() for e in es}))
-            n = sum(len(rw["subs"]) for rw in plan.rewrites.values()) + len(plan.relinks)
-            files = len(plan.rewrites) + len(plan.relinks)
             message = (f"{verb}: {what}" + (f" ({a.reason})" if a.reason and verb == "archive" else "")
                        + (f"; rewrote {n} reference(s) in {files} file(s)" if n else ""))
             out = dict(apply(plan, message), steps=steps, events=plan.events)

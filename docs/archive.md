@@ -42,8 +42,9 @@ This is the one write a role may make outside its own directory, so it is a path
   `../../archive/proj/design/x/a.md`), a repository-relative one stays repository-relative, and an absolute or `~/` path
   keeps its prefix. A `#anchor` and trailing punctuation are kept. A unique partial path (`x/a.md`) becomes the full
   archive path: after the move it would still resolve, to the archived copy, and hide that the file was archived.
-- **A tracked symlink is repointed**, relative as before. A symlink that is a start doc refuses the run: that role moves
-  first.
+- **A tracked symlink is repointed** in its own form: a relative link stays relative. (Only relative links are read as
+  references today; an absolute one would stay absolute.) A symlink that is a start doc refuses the run: that role
+  moves first.
 - **A referrer must be tracked, clean and UTF-8 text with `\n` line endings.** History and excluded documents are never
   written; history references are counted in the manifest.
 - **Verified before it commits.** Every rewritten file must equal its `HEAD` copy with exactly the planned substitutions,
@@ -55,8 +56,12 @@ This is the one write a role may make outside its own directory, so it is a path
 
 The default, `notify`, is the refusal. `keep` is reserved. The command never reads `[checkpoint] cross_owner`: a
 repository's configuration does not widen what a manual run writes, so a caller with a policy (a retirement hook, say)
-passes the flag itself. Run with `--dry-run` first: it prints every substitution, one
+passes the flag itself. Run with `--dry-run` first: it prints a count, then every substitution, one
 `rewrite <file>:<line> <old> -> <new>` line each.
+
+What it does not rewrite: references *from* the archived files. A moved file's relative references to files that stay
+behind no longer resolve from the archive. Those files are history once archived, and their own references are left
+as written, as before.
 
 ## The manifest
 
