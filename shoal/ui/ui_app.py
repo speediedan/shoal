@@ -529,13 +529,13 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
                 notes.append(f"{spec.sid}: its home is {spec.home} (open it there, or name it with --shoal)")
                 continue
             spaces.append(shoal_space(spec, feed))
-            programs.update({r.slug: r.ecosystem for r in spec.roles if r.session})
+            programs.update({r.slug: program_key(r.ecosystem, r.account) for r in spec.roles if r.session})
         except Exception as exc:  # noqa: BLE001 - one broken spec never hides the others
             notes.append(f"{p}: {exc}")
     if standalone and not ids:
         for e in ui_herdr.local_standalone():
             spaces.append(standalone_space(e))
-            programs[e.get("label") or e["session"][:12]] = e.get("harness") or ""
+            programs[e.get("label") or e["session"][:12]] = program_key(e.get("harness") or "", e.get("account") or "")
     if not feed["fresh"]:
         notes.append(f"graph feed not running here: lattice tabs poll `ui graph` slowly (`shoal ui app-install` "
                      f"starts {FEED_UNIT})")
@@ -551,6 +551,62 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
 PROGRAM_ICONS = {"claude": ("icons/claude.svg", False), "codex": ("icons/codex.svg", False),
                  "opencode": ("icons/opencode.svg", True), "muse": ("icons/muse.svg", True)}
 PROGRAMS_OWNED = ".shoal-programs.json"
+BADGED_ICONS = "shoal-icons"  # the app's own icons/ is Herdr's to write; badged copies go beside it
+
+
+def program_key(ecosystem: str, account: str = "") -> str:
+    """A card's provider as the plan names it: the ecosystem, and for an account other than its default, `#<badge>`
+    (`claude#2`). The badge travels with the plan because the app's host need not declare the account."""
+    if not account:
+        return ecosystem
+    import accounts
+    return f"{ecosystem}#{accounts.badge(ecosystem, account)}"
+
+
+# seven-segment strokes for a badge digit, in a 24-unit icon: a b c d e f g
+_SEGMENTS = {"a": ((16.8, 15.8), (19.6, 15.8)), "b": ((19.6, 15.8), (19.6, 18.2)), "c": ((19.6, 18.2), (19.6, 20.6)),
+             "d": ((16.8, 20.6), (19.6, 20.6)), "e": ((16.8, 18.2), (16.8, 20.6)), "f": ((16.8, 15.8), (16.8, 18.2)),
+             "g": ((16.8, 18.2), (19.6, 18.2))}
+_DIGITS = {"0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd", "4": "fgbc", "5": "afgcd", "6": "afgedc", "7": "abc",
+           "8": "abcdefg", "9": "abcdfg"}
+
+
+def badged_svg(svg: str, badge: str) -> str:
+    """The provider's icon with a badge in its lower right corner: a dark disc and the badge's last digit drawn as
+    strokes (no font: the app's SVG renderer need not have one), or a plain disc for a badge that is not a digit."""
+    segs = _DIGITS.get(badge[-1:] if badge else "", "")
+    path = "".join(f"M{_SEGMENTS[s][0][0]} {_SEGMENTS[s][0][1]}L{_SEGMENTS[s][1][0]} {_SEGMENTS[s][1][1]}" for s in segs)
+    # the disc and its rim stay inside the 24-unit box (the app clips at the icon's edge)
+    mark = ('<circle cx="18.2" cy="18.2" r="5.4" fill="#1c1d21" stroke="#ffffff" stroke-width="0.8"/>'
+            + (f'<path d="{path}" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" '
+               f'stroke-linejoin="round"/>' if path else ""))
+    i = svg.rfind("</svg>")
+    return svg[:i] + mark + svg[i:] if i >= 0 else svg
+
+
+def badged_icon(ecosystem: str, badge: str, dry_run: bool = False) -> str:
+    """The app-relative path of the provider's icon with a badge, written into the app's home on first use; the plain
+    icon when the shipped one cannot be read."""
+    icon = PROGRAM_ICONS[ecosystem][0]
+    rel = f"{BADGED_ICONS}/{ecosystem}-{re.sub(r'[^A-Za-z0-9]', '', badge) or 'x'}.svg"
+    try:
+        with open(os.path.join(app_home(), icon)) as fh:
+            want = badged_svg(fh.read(), badge)
+    except OSError:
+        return icon
+    dst = os.path.join(app_home(), rel)
+    try:
+        with open(dst) as fh:
+            if fh.read() == want:
+                return rel
+    except OSError:
+        pass
+    if not dry_run:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst + ".tmp", "w") as fh:
+            fh.write(want)
+        os.replace(dst + ".tmp", dst)
+    return rel
 
 
 def install_programs(programs: dict, dry_run: bool = False) -> list[str]:
@@ -570,15 +626,18 @@ def install_programs(programs: dict, dry_run: bool = False) -> list[str]:
     if not isinstance(doc, dict) or not isinstance(doc.setdefault("programs", {}), dict):
         return ["programs.json has no programs table: card icons left as they are"]
     table, changed = doc["programs"], []
-    for app, eco in sorted((programs or {}).items()):
+    for app, key in sorted((programs or {}).items()):
+        eco, _, badge = str(key).partition("#")
         if eco not in PROGRAM_ICONS or app in PROGRAM_ICONS or (app in table and app not in owned):
             continue
         icon, tint = PROGRAM_ICONS[eco]
+        if badge:  # a second account's card: its provider's icon with the account's badge
+            icon = badged_icon(eco, badge, dry_run)
         want = {"name": app, "icon": icon, "tint": tint, "tile": "#1c1d21", "color": "#ffffff"}
         if table.get(app) != want:
             table[app] = want
             owned.add(app)
-            changed.append(f"card icon {app}: {eco}")
+            changed.append(f"card icon {app}: {eco}" + (f" (account badge {badge})" if badge else ""))
     if not changed or dry_run:
         return [f"[dry-run] {c}" for c in changed]
     for target, data in ((path, doc), (own_path, sorted(owned))):

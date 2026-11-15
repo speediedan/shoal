@@ -31,6 +31,7 @@ for _p in (PKG, HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import accounts  # noqa: E402
 import config  # noqa: E402
 from layout import GROUPS_DIR, SPEC_FILE  # noqa: E402
 from roles import ShoalSpec, state_dir  # noqa: E402
@@ -143,9 +144,16 @@ def usage_providers() -> list[str]:
     live role still runs on it: its subscription is still being spent, so its meter stays until the role is handed off."""
     on = set(active_ecosystems())
     want = ui_config().get("usage_providers", [])
-    aside = {USAGE_ECOSYSTEM.get(p, p) for p in want} - on
+    # each declared account of a provider read here has its own row, after the provider's (accounts.py)
+    want = list(dict.fromkeys(x for p in want for x in [p, *(accounts.of(p)[1:] if p in ("claude", "codex") else [])]))
+    aside = {usage_ecosystem(p) for p in want} - on
     still = {e for e in aside if roles_on({e})} if aside else set()
-    return [p for p in want if USAGE_ECOSYSTEM.get(p, p) in on | still]
+    return [p for p in want if usage_ecosystem(p) in on | still]
+
+
+def usage_ecosystem(key: str) -> str:
+    """The ecosystem a usage key reads: a provider's, or a declared account's provider."""
+    return USAGE_ECOSYSTEM.get(key) or accounts.provider_of(key) or key
 
 
 def save_ui_config(d: dict) -> None:
@@ -186,11 +194,16 @@ def discover(root: str, ids: list[str] | None = None, include_retired: bool = Fa
 
 def claude_rows() -> list[dict]:
     """`claude agents --json --all` rows (stopped sessions included: no `pid` is a dead worker,
-    FM-14). SHOAL_FAKE_SESSIONS answers it in tests."""
-    from backends import fake_sessions
+    FM-14), across every Claude account on this host. SHOAL_FAKE_SESSIONS answers it in tests."""
+    from backends import claude_agents, fake_sessions
     fake = fake_sessions()
     if fake is not None:
         return list(fake.get("claude") or [])
+    if accounts.several("claude"):
+        try:
+            return claude_agents(include_stopped=True)
+        except (OSError, subprocess.SubprocessError):
+            return []
     try:
         r = subprocess.run(["claude", "agents", "--json", "--all"], capture_output=True, text=True,
                            timeout=30, env=config.tool_env())
@@ -477,7 +490,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     dismissed = wanting and dismissed_now(ack, needs_fp, reasons, age_s(ack["ts"], now) if ack else None)
     return {
         "slug": slug, "tag": role.tag, "harness": role.ecosystem, "ecosystem": role.ecosystem,
-        "model": role.model, "fill": role.fill,
+        "model": role.model, "fill": role.fill, **({"account": role.account} if role.account else {}),
         "server": role.server or "", "host": _host_of(role, spec), "aux": bool(role.aux),
         "session_id": role.session or None,
         "status": role_status if role.session else "parked", "sub": sub or None,
@@ -1162,9 +1175,10 @@ def dismissed_now(ack: dict | None, fp: str, reasons, age_seconds) -> bool:
 
 def claude_says(row: dict, session: str) -> str:
     """What a blocked Claude session told its harness it needs from you (its job's `needs`), else ""."""
-    from backends import claude_base
+    from backends import job_base
+    job = str(row.get("id") or session)[:8]
     try:
-        with open(os.path.join(claude_base(), "jobs", str(row.get("id") or session)[:8], "state.json")) as fh:
+        with open(os.path.join(job_base(job), "jobs", job, "state.json")) as fh:
             return str(json.load(fh).get("needs") or "")
     except (OSError, ValueError, AttributeError):
         return ""

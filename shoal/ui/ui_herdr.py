@@ -384,7 +384,7 @@ def cmd_set(a) -> int:
                 assert isinstance(b, dict) and isinstance(b["command"], list) and b["command"]
                 assert all(isinstance(s, str) and s for s in b["command"])
                 assert isinstance(b["providers"], list) and b["providers"]
-                assert all(s in subscription_usage.PROVIDERS for s in b["providers"])
+                assert all(subscription_usage.known(s) for s in b["providers"])
             except (ValueError, KeyError, TypeError, AssertionError):
                 print("usage_bridge needs providers and a nonempty command argv array")
                 return 1
@@ -428,7 +428,7 @@ def cmd_set(a) -> int:
     elif key == "usage_providers":
         import subscription_usage
         providers = [s.strip() for s in a.value.split(",") if s.strip()]
-        if any(s not in subscription_usage.PROVIDERS for s in providers):
+        if any(not subscription_usage.known(s) for s in providers):
             print("ui set: supported usage providers: " + ",".join(subscription_usage.PROVIDERS))
             return 1
         d[key] = list(dict.fromkeys(providers))
@@ -1193,6 +1193,20 @@ def cmd_pick(a) -> int:
     return rc
 
 
+def session_account(harness: str, session: str, job: str = "", named: str | None = None) -> str:
+    """The account a picked session belongs to: the one named (checked), else where its state is found on this host
+    (a Claude job folder, a Codex rollout), else "" (the provider's default)."""
+    import accounts
+    if named is not None:
+        return accounts.normalize(harness, named)
+    if harness == "claude":
+        return accounts.job_account("claude", job or session[:8])
+    if harness == "codex":
+        import codex_harness
+        return codex_harness.thread_account(session) or ""
+    return ""
+
+
 def _pick(a) -> int:
     """Pick a non-shoal session, save it as a standalone seat, and open its 0.9.3 card when run from a 0.9.3 pane (or
     with --open); elsewhere it saves and names `ui app-open`, which opens the seat's space in the Herdr app."""
@@ -1203,6 +1217,13 @@ def _pick(a) -> int:
             e["cwd"] = os.path.abspath(os.path.expanduser(a.cwd))
         if getattr(a, "job", ""):  # a Claude background job: its card follows the job's /bg successors
             e["job"] = a.job
+        try:
+            acct = session_account(a.harness, a.session_id, getattr(a, "job", ""), getattr(a, "account", None))
+        except ValueError as exc:
+            print(f"REFUSED: {exc}")
+            return 1
+        if acct:
+            e["account"] = acct
     else:
         cands = candidates_standalone(role_sessions())
         if not cands:
@@ -1214,7 +1235,7 @@ def _pick(a) -> int:
                      for c in cands])
         if i is None:
             return 0
-        e = {k: cands[i][k] for k in ("harness", "session", "label", "cwd", "job", "model", "effort")
+        e = {k: cands[i][k] for k in ("harness", "session", "label", "cwd", "job", "model", "effort", "account")
              if cands[i].get(k) is not None}
         if a.label:
             e["label"] = a.label

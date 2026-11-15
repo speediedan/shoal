@@ -603,6 +603,8 @@ export function buildModel(doc, view = "global", opts = {}) {
       label: n.label ?? n.slug ?? n.id,
       slug: n.slug ?? null,
       ecosystem: n.ecosystem ?? null,
+      // the provider account a role runs on, when it is not the provider's default (claude-2)
+      account: typeof n.account === "string" && n.account ? n.account : null,
       model: n.model ?? null,
       host: typeof n.host === "string" ? n.host : null,
       hostColor: hostColor.get(n.host) ?? null,
@@ -1041,7 +1043,7 @@ export function cardLines(vm, id) {
     // "~": a status reading (no role-time probe), less certain than a role-time one
     rows.push(["state", `${s.source === "status" ? "~ " : ""}${v.label}${s.event && s.event !== "self" && v.key !== "other" ? ` (${s.event})` : ""} ${fmtAge(s.since_s)}`]);
     if (arr(s.quality).length) rows.push(["quality", arr(s.quality).map(str).join(", ")]);
-    rows.push(["agent", [n.ecosystem, n.model].filter(Boolean).join(" · ") || "?"]);
+    rows.push(["agent", [n.account ?? n.ecosystem, n.model].filter(Boolean).join(" · ") || "?"]);
     rows.push(["host", n.host ?? "?"]);
     if (n.jobHost) rows.push([str(s.event) === "research-proto" ? "research run on" : "CI job on", `${n.jobHost} (${str(s.event) || "ci"})`]);
     const job = obj(s.job);
@@ -1057,7 +1059,7 @@ export function cardLines(vm, id) {
     rows.push(["kind", n.kind]);
     if (n.alias_of) rows.push(["alias of", n.alias_of]);
     else if (n.kind === "external" && n.standalone) {
-      rows.push(["session", `${n.standalone.harness} ${n.standalone.id}`]);
+      rows.push(["session", `${str(n.standalone.account) || n.standalone.harness} ${n.standalone.id}`]);
       rows.push(["host", n.host ?? "?"]);
       rows.push(["now", STANDALONE_NOW[n.standalone.state] ?? "not read here"]);
       if (n.standalone.dismissed) rows.push(["app", "dismissed: no space of its own"]);

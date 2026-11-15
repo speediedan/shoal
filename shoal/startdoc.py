@@ -70,9 +70,9 @@ def doc_job_folders(path: str) -> list[str]:
 def split_job_folders(path: str) -> tuple[list[str], list[str]]:
     """The job folders a start doc names as (on this host, not on this host). The first is what a next session would
     lose; the second it already cannot use, here."""
-    from backends import claude_base
+    from backends import job_base
     named = doc_job_folders(path)
-    live = [j for j in named if os.path.isdir(os.path.join(claude_base(), "jobs", j))]
+    live = [j for j in named if os.path.isdir(os.path.join(job_base(j), "jobs", j))]
     return live, [j for j in named if j not in live]
 
 

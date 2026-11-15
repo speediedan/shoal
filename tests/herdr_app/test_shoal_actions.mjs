@@ -58,7 +58,7 @@ test("verbs: the seventeen buttons in order, each with a kind and a role rule", 
 
 test("forms: defaults, visible fields, Tab order", () => {
   const msg = M.newForm("msg", NOW);
-  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "", dryRun: false, undo: false });
+  assert.deepEqual(msg.values, { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, account: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "", dryRun: false, undo: false });
   assert.deepEqual(M.visibleFields(msg).map((f) => f.key), ["text", "wake", "dryRun"]);
   assert.equal(M.newForm("next", NOW), null, "a view has no form");
   assert.equal(M.newForm("msg", NOW, { wake: true, bogus: 1 }).values.wake, true);
@@ -164,11 +164,43 @@ test("validation and argv for every verb", () => {
   assert.equal(M.roleFor("next", "*"), null);
 });
 
+test("accounts: a provider with two or more accounts offers the choice, picked or the role's own; one account hides it", () => {
+  const roles = M.parseReply(ok({ v: 1, kind: "shoal-act-roles", shoals: [], ecosystems: ["claude", "codex"],
+    accounts: { claude: ["claude", "claude-2"], codex: ["codex"] } }), "roles");
+  assert.deepEqual(roles.accounts, { claude: ["claude", "claude-2"] });
+  const f = M.newForm("handoff", NOW);
+  assert.deepEqual(M.accountOptions(f, roles, "claude"), ["claude", "claude-2"]);
+  assert.deepEqual(M.accountOptions(f, roles, "codex"), []);
+  assert.deepEqual(M.accountOptions(f, roles), []);
+  const picked = M.setValue(M.setValue(M.setValue(f, "ecosystem", "claude"), "account", "claude-2"), "model", "m");
+  assert.deepEqual(M.accountOptions(picked, roles, "codex"), ["claude", "claude-2"]);
+  assert.equal(picked.values.account, "claude-2");
+  assert.equal(M.setValue(picked, "ecosystem", "codex").values.account, null);
+  const argv = M.planArgv("handoff", { shoal: "s-1", role: "r" }, picked);
+  assert.ok(argv.includes("--ecosystem=claude") && argv.includes("--account=claude-2"), argv.join(" "));
+  const add = M.setValue(M.setValue(M.setValue(M.setValue(M.setValue(M.newForm("add-role", NOW), "slug", "x"), "title", "t"),
+    "doc", "/d.md"), "ecosystem", "claude"), "account", "claude-2");
+  assert.ok(M.planArgv("add-role", { shoal: "s-1" }, add).includes("--account=claude-2"));
+  const rows = M.mergeSessions([{ sessions: [{ harness: "claude", session: "abc", account: "claude-2" }] }]).rows;
+  assert.equal(rows[0].account, "claude-2");
+  // quota balance: the host's pick is pre-selected once, with why; a cleared choice stays cleared
+  const bal = M.parseReply(ok({ v: 1, kind: "shoal-act-roles", shoals: [], accounts: { claude: ["claude", "claude-2"] },
+    account_best: { claude: { account: "claude-2", why: "best paced headroom 84" }, codex: { account: "codex-9", why: "x" } } }), "roles");
+  assert.deepEqual(bal.accountBest, { claude: { account: "claude-2", why: "best paced headroom 84" } });
+  const s1 = M.suggestAccount(M.newForm("handoff", NOW), bal, "claude");
+  assert.equal(s1.values.account, "claude-2");
+  assert.match(M.accountWhy(s1, bal, "claude"), /suggested: claude-2 \(best paced headroom 84\)/);
+  const cleared = M.setValue(s1, "account", null);
+  assert.equal(M.suggestAccount(cleared, bal, "claude").values.account, null);
+  assert.equal(M.suggestAccount(M.newForm("handoff", NOW), bal, "codex").values.account, null);
+});
+
 test("replies: roles", () => {
   const r = M.parseReply(ok(fx.roles), "roles");
   assert.equal(r.kind, "roles");
   assert.deepEqual(r.shoals.map((s) => [s.id, s.tag, s.needsYou]), [[A, "alpha", 1], [B, "beta", 1]]);
-  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, status: "blocked:user-ask", doc: null });
+  assert.deepEqual(r.shoals[0].roles[1], { slug: "lane-a", host: "host-a", needsYou: true, status: "blocked:user-ask", doc: null,
+    ecosystem: null, account: null });
   // unknown fields ignored; bad rows, repeats and a `*` slug dropped; a missing tag from the id
   const doc = JSON.parse(JSON.stringify(fx.roles));
   doc.future = 1;
@@ -434,7 +466,7 @@ test("handoff: a role, an optional provider and model, on the role's own host", 
   assert.deepEqual(M.planArgv("handoff", t, f), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--json"]);
   const g = M.setValue(M.setValue(M.setValue(M.setValue(M.setValue(f, "ecosystem", "codex"), "model", " gpt-x "), "effort", "high"), "force", true), "prepare", false);
   assert.deepEqual(M.planArgv("handoff", t, g), ["ui", "act-plan", "handoff", "--shoal", A, "--role=core", "--ecosystem=codex", "--model=gpt-x", "--effort=high", "--no-prepare", "--force", "--json"]);
-  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "model", "effort", "note", "prepare", "dryRun"]);
+  assert.deepEqual(M.visibleFields(f).map((x) => x.key), ["ecosystem", "account", "model", "effort", "note", "prepare", "dryRun"]);
   // a restart note rides on the plan; a role's form says which start doc it resumes from
   assert.ok(M.planArgv("handoff", t, M.setValue(f, "note", " look at #12 first ")).includes("--note=look at #12 first"));
   assert.equal(M.handoffDocNote(f, "/example/core_plan_state.md"), "Resumes from its start doc: /example/core_plan_state.md");

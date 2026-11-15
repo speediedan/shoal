@@ -2547,5 +2547,8 @@ assert "needs a checkable target" in refusal, refusal
 print("research-proto ok")
 PY2
 
+echo "== 42 accounts: none declared is the old path; a second account's jobs, transcripts, roster and usage are read from its own directory"
+python3 "$TESTD/test_accounts.py" || fail "provider accounts (tests/test_accounts.py)"
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

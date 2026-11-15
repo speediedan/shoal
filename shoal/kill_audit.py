@@ -37,7 +37,8 @@ def parse(ts: str) -> datetime.datetime:
 
 def corpus(since: str) -> list[dict]:
     out, seen = [], set()
-    for f in glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")):
+    from backends import claude_bases
+    for f in [f for b in claude_bases() for f in glob.glob(os.path.join(b, "projects", "*", "*.jsonl"))]:
         try:
             fh = open(f, errors="replace")
         except OSError:

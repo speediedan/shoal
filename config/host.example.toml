@@ -112,3 +112,15 @@
 # [provider_defaults.claude]
 # model = "<claude model>"
 # effort = "high"
+
+# More than one account of a provider on this host (shoal/accounts.py; `shoal accounts --check` lists them and asks each
+# provider's CLI for its sign-in). An account is the provider's CLI with these variables: what sits behind them (shared
+# or separate settings) is yours, and SHOAL reads only the account's state directory (Claude: CLAUDE_CONFIG_DIR, Codex:
+# CODEX_HOME). Each provider keeps its default account, named after it. A role or seat records its account; handoff,
+# add-role and the Actions dialog take one (`--account`). Default: none (one account per provider, as before).
+# [accounts]
+# select = "balance"       # the suggested account: the most paced quota headroom (default), or "default"
+# [accounts.claude-2]
+# provider = "claude"
+# env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }
+# badge = "2"              # optional: the mark on its card icon (default: the name's trailing digits)
