@@ -672,11 +672,19 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
             led.pull()
             led.append(SYSTEM_WRITER, "system", event="generation-started", gen=spec.display_gen,
                        note=",".join(f"{r.slug}={r.session}" for r in spec.roles if r.session), _push=False)
-            snap = spec.snapshot()
-            led.snapshot_spec(snap)
-            # this process's own write: persist_spec merges against it when it overwrote the spec file itself
             from layout import spec_file
-            spec.snapshot_written = (spec_file(led.dir), json.loads(json.dumps(snap)))
+            own = getattr(spec, "path", "")
+            if own and os.path.abspath(own) == os.path.abspath(spec_file(led.dir)):
+                # a live spec IS the ledger copy, and the restart saves it next through persist_spec, which merges this
+                # process's changes onto what another host pushed. Writing the whole in-memory spec over it here first put
+                # back another host's role as this process had loaded it (2026-11-15: two hosts' restarts in one shoal
+                # 30 s apart; it-tune's new claude-2 session and account were lost, and jlens-research's account)
+                pass
+            else:
+                snap = spec.snapshot()
+                led.snapshot_spec(snap)
+                # this process's own write: persist_spec merges against it when it overwrote the spec file itself
+                spec.snapshot_written = (spec_file(led.dir), json.loads(json.dumps(snap)))
         except Exception as exc:  # noqa: BLE001
             print(f"WARN: ledger generation record failed: {exc}")
     if launch_fail:
