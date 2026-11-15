@@ -257,6 +257,16 @@ you, per-shoal throughput and per-host load.
   `--shoal <id>` the per-shoal cutout sphere and `--hover globe:<id>` a globe in focus. It fails
   if the copy drew another view or fell back to flat (the mod's `init` reads `props()`, so a
   wrapper sets the home shoal itself).
+- The native script deadline is about 50 ms per render callback (measured 2026-11-15 with a busy-wait added to the
+  fixture's render under `check_depth` on an `Xvnc` display: 48 ms passes, 52 is interrupted; the view then reads
+  "could not be re-rendered"). About half of a render is `buildScene`, the rest building the elements. The live global
+  view rendered in 33 to 34 ms and a shoal's bowl in 41 to 50 ms on a fast host, so a slower one overran. Pure memos
+  (glass layer colors by tint, fog and focus; color parsing and blending), a `comb` without a per-axis key loop and
+  shorter rim bisections cut that to 26 to 29 and 30 to 33 ms with the same picture; and `main.js` times every render:
+  one of `LITE_MS` (30) or more turns on the lite scene (half the glass contours, a globe's shadow at most 12 layers,
+  your bowl shadow at most 10, every other bowl deepening step) for the session, marked `lite` in the header. Re-measure
+  with a timing wrapper around `check_depth` (render in a `try`, the elapsed time thrown, since `herdr-app check`
+  shows no console output) before adding layers.
 - Transparency on nested fills stacks: every contour covers the ones inside it, so a constant
   alpha on all of them turns the lit cap opaque. Each glass contour's alpha is solved from the
   total opacity wanted at its level, and alpha is 8-bit, so fewer, slightly stronger layers (48,

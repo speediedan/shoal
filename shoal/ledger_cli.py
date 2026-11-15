@@ -307,6 +307,11 @@ def cmd_msg(a) -> int:
         # an outside seat is reached by plain mail it reads with `show --slug ext:<name>`: a reply, never a wake
         print("ERROR: mail to an outside seat (ext:<name>) is plain: no --wake or special kind")
         return 1
+    if by == a.to:
+        # `--by` defaults to user, so a role that leaves it out and writes to user signs as the maintainer writing to
+        # themselves (2026-11-15: fts-core's ack of a request read `user -> user`, a self-loop in the lattice)
+        print(f"ERROR: a message from {by} to {by}: a role signs its own mail with --by <its slug>")
+        return 1
     if spec is not None and a.to not in ("*", "user") and not to_ext and spec.role(a.to) is None:
         print(f"ERROR: unknown target {a.to!r} (roles: {[r.slug for r in spec.roles]}, or * / user)")
         return 1

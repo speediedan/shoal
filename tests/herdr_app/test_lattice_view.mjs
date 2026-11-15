@@ -1228,7 +1228,7 @@ test("globe lighting follows surface normals and stays inside the silhouette", (
 test("curved light contours enclose the lit cap, including the clipped limb", () => {
   const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
   const N = shade.paths.length;
-  for (const level of [0, 5, 13, 20, 28, 29, 35, N - 1]) {
+  for (const level of [...new Set([0, 5, 13, 20, 28, 29, 35, 47].map((l) => Math.min(N - 1, Math.round((l * (N - 1)) / 47))))]) {
     const points = [];
     let p0;
     for (const c of shade.paths[level].cmds) {
@@ -2630,4 +2630,20 @@ test("2026-11-14: the global hub hovers over its shadow, the lowest globe clears
       c = next;
     }
   }
+});
+
+test("2026-11-15: lite scene (renders near the native script deadline): about half the globe and shadow layers", () => {
+  const pl = D.projectLayout(global, L.layoutGraph(global), D.camera("iso"));
+  const full = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full" });
+  const lite = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full", lite: true });
+  const count = (sc, pre) => sc.items.filter((it) => it.id.startsWith(pre)).length;
+  for (const pre of ["sphere-lit-"]) {
+    assert.ok(count(lite, pre) > 0 && count(lite, pre) <= Math.ceil(count(full, pre) / 2) + 1, `${pre} about halved`);
+  }
+  assert.ok(count(lite, "shadow-c-") < count(full, "shadow-c-"), "fewer shadow layers");
+  assert.ok(lite.items.length < full.items.length, "a lighter scene");
+  assert.equal(SP.sphereShade("t", 0, 0, 1, "#50d090", 1, false, SP.LIGHT, true).paths.length, SP.STEPS / 2);
+  const src = readFileSync(join(MOD, "main.js"), "utf8");
+  assert.match(src, /const LITE_MS = 30;/, "a render of 30 ms or more turns lite on");
+  assert.match(src, /lite: !!this\.lite/, "the scene is told");
 });

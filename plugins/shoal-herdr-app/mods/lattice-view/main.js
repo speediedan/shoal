@@ -53,6 +53,7 @@ const MOD = "lattice-view";
 const RAIL_W = 272;
 const BOARD_BAR_W = 226;
 const TIER_MS = 2000;
+const LITE_MS = 30; // a render at least this long turns the lite scene on (the native script deadline is about 50 ms)
 const P = PALETTE;
 const MONO = "Geist Mono";
 const ARROWS = ["left", "right", "up", "down"];
@@ -709,6 +710,24 @@ export default class Lattice extends View {
   // ---- render
 
   render(_cx) {
+    const t0 = Date.now();
+    try {
+      return this.renderTimed();
+    } finally {
+      this.noteRenderMs(Date.now() - t0);
+    }
+  }
+
+  // The native host stops a render's script at about 50 ms (measured 2026-11-15 with check_depth on a software display:
+  // 48 ms passes, 52 is interrupted), and the view then reads "could not be re-rendered". A render that took LITE_MS or
+  // more turns on the lite scene (about half the layers in globes and shadows) for the rest of the session, so
+  // a slower host draws a little less smoothly instead of failing.
+  noteRenderMs(ms) {
+    this.lastRenderMs = ms;
+    if (!this.lite && ms >= LITE_MS) this.lite = true;
+  }
+
+  renderTimed() {
     this.resolveMotion();
     if (this.mode === "pulse") return this.renderPulse();
     this.applySharedFocus();
@@ -753,7 +772,7 @@ export default class Lattice extends View {
     }
     const sc = buildScene(this.vm, this.lay, {
       width: size.width, height: size.height, tf: this.tf, hover: this.hover, selected: this.pinned,
-      policy: this.policy, packets: this.packets,
+      policy: this.policy, packets: this.packets, lite: !!this.lite,
     });
     this.hits = sc.hits;
     this.satHits = sc.satHits ?? [];
@@ -859,7 +878,7 @@ export default class Lattice extends View {
           .child(`${board.title} ↗`)))
         .when(chip !== null, (el) => el.child(chip))
         .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
-      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · d: depth ${this.depthNow !== this.depth ? `flat (${this.depth} off: CPU, low motion)` : this.depthNow ?? "flat"} · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
+      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · d: depth ${this.depthNow !== this.depth ? `flat (${this.depth} off: CPU, low motion)` : this.depthNow ?? "flat"} · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}${this.lite ? " · lite" : ""}`));
   }
 
   renderCard(id, at, size, pinned) {

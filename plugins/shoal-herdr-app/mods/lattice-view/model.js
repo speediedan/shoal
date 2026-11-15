@@ -579,7 +579,8 @@ export function buildModel(doc, view = "global", opts = {}) {
   const global = view === "global" || !live.has(view);
   const viewId = global ? "global" : view;
 
-  const rawEdges = arr(doc?.edges).filter((e) => e && typeof e.src === "string" && typeof e.dst === "string");
+  // an edge from a node to itself (mail a writer addressed to itself) has no direction to draw: left out
+  const rawEdges = arr(doc?.edges).filter((e) => e && typeof e.src === "string" && typeof e.dst === "string" && e.src !== e.dst);
   let keep;
   if (global) {
     keep = all.filter((n) => n.kind === "user" || n.kind === "external" || n.shoal == null || live.has(n.shoal));
