@@ -46,7 +46,14 @@ LIMITS_K = (300, 400, 500)  # candidate handover limits the replay tries
 
 
 def claude_dir() -> str:
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    from backends import claude_base
+    return claude_base()
+
+
+def claude_dirs() -> list[str]:
+    """Every Claude account's state directory on this host (one when none is declared)."""
+    from backends import claude_bases
+    return claude_bases()
 
 
 def names() -> dict[str, dict]:
@@ -56,8 +63,8 @@ def names() -> dict[str, dict]:
     id."""
     out: dict[str, dict] = {}
     # tombstones first: a live job record of the same id (none, once pruned) wins over its tombstone
-    for f in glob.glob(os.path.join(claude_dir(), "archived_sessions", "jobs", "*", "state.json")) + \
-            glob.glob(os.path.join(claude_dir(), "jobs", "*", "state.json")):
+    for f in [f for d in claude_dirs() for f in glob.glob(os.path.join(d, "archived_sessions", "jobs", "*", "state.json"))] + \
+            [f for d in claude_dirs() for f in glob.glob(os.path.join(d, "jobs", "*", "state.json"))]:
         job = os.path.basename(os.path.dirname(f))
         try:
             st = json.load(open(f))
@@ -274,7 +281,7 @@ def report(days: float = 1.0, until: dt.datetime | None = None, everything: bool
     since = until - dt.timedelta(days=days)
     nm = names()
     rows = []
-    for f in glob.glob(os.path.join(claude_dir(), "projects", "*", "*.jsonl")):
+    for f in [f for d in claude_dirs() for f in glob.glob(os.path.join(d, "projects", "*", "*.jsonl"))]:
         if os.path.getmtime(f) < since.timestamp():
             continue
         calls, turns = read_session(f, since, until)

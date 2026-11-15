@@ -230,10 +230,10 @@ def code_stamp() -> float:
         return 0.0
 
 
-def _limit_until(sid: str) -> str:
+def _limit_until(sid: str, account: str | None = None) -> str:
     try:
         from health import limit_until_sid
-        return limit_until_sid(sid)
+        return limit_until_sid(sid, account)
     except Exception:  # noqa: BLE001 - a missing or unreadable health state never holds a wake
         return ""
 
@@ -433,7 +433,7 @@ def cmd_ledger_watch(a) -> int:
             # undelivered and go out at the next idle tick
             save_sidecar(sc_path, sc)
             continue
-        if persistent and a.wake == "direct" and _limit_until(sid):
+        if persistent and a.wake == "direct" and _limit_until(sid, getattr(role, "account", None) if role is not None else None):
             # inside the account usage limit a delivered wake errors in the role's turn and is lost
             # (2026-10-14): hold the events; the first tick after the reset delivers them
             save_sidecar(sc_path, sc)

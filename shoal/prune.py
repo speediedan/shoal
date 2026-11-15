@@ -340,7 +340,7 @@ def git_worktree_under(root: str, depth: int = 3) -> str:
 
 
 def claude_candidates(w: World, standalone: bool, min_age: float, sizes: bool = True) -> tuple[int, list[Cand]]:
-    from backends import _state_of, claude_base, get as get_backend
+    from backends import _state_of, job_base, get as get_backend
     rows = get_backend("claude")._agents(include_stopped=True)
     now = time.time()
     info = []
@@ -365,7 +365,7 @@ def claude_candidates(w: World, standalone: bool, min_age: float, sizes: bool = 
         if not kind:
             continue
         c = Cand("claude", str(r.get("sessionId") or job), job=job, name=name, kind=kind, sid=sid, slug=slug,
-                 seq=seq, ids=ids, path=os.path.join(claude_base(), "jobs", job) if job else "")
+                 seq=seq, ids=ids, path=os.path.join(job_base(job), "jobs", job) if job else "")
         if not w.wanted(c):
             continue
         t = _ts(st.get("updatedAt")) or _ts(st.get("lastTerminalAt")) or _ts(r.get("startedAt"))

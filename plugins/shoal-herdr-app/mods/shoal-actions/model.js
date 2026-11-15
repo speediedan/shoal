@@ -50,12 +50,12 @@ export const VERBS = [
   { verb: "asks", label: "Asks", kind: "view", role: "opt", about: "open asks and roles waiting on a question (one role's, when one is picked)" },
   { verb: "offline", label: "Offline", kind: "write", role: "none", scoped: true, fields: ["state", "until", "note"], about: "user-offline mode on or off" },
   { verb: "freeze", label: "Freeze", kind: "write", role: "none", scoped: true, fields: ["state", "note", "noWake"], about: "freeze mode on or off" },
-  { verb: "handoff", label: "Handoff", kind: "write", role: "one", sessionAlso: true, fields: ["ecosystem", "model", "effort", "handoffDoc", "handoffNote", "prepare", "throughQuestion", "force"], about: "request a restart-ready checkpoint, then hand off from its start doc; progress continues if this dialog closes" },
+  { verb: "handoff", label: "Handoff", kind: "write", role: "one", sessionAlso: true, fields: ["ecosystem", "account", "model", "effort", "handoffDoc", "handoffNote", "prepare", "throughQuestion", "force"], about: "request a restart-ready checkpoint, then hand off from its start doc; progress continues if this dialog closes" },
   { verb: "fill", label: "Fill", kind: "write", role: "one", fields: ["fillTo", "note"], about: "where this role's work comes from: the board (self) or your offers (assigned)" },
   { verb: "dismiss", label: "Dismiss", kind: "write", role: "one", sessionAlso: true, fields: ["undo"], about: "clear this needs-you until something new is raised (a seat: until its next reply); it stays as it is" },
   { verb: "remove-role", label: "Remove", kind: "write", role: "one", fields: ["removeForce"], about: "take this role out for good: stop it, remove it from the shoal and its harness's list; the ledger keeps its history" },
   { verb: "remove-session", label: "Remove", kind: "write", role: "none", sessionOnly: true, fields: ["removeForce"], about: "take this standalone session out for good: stop it and remove it from its harness's list" },
-  { verb: "add-role", label: "New role", kind: "write", role: "none", fields: ["slug", "title", "doc", "starter", "guidance", "nextSteps", "grants", "provider", "model", "effort", "host", "fill"], about: "start a new session as a role of this shoal, from its start doc (or one written for it)" },
+  { verb: "add-role", label: "New role", kind: "write", role: "none", fields: ["slug", "title", "doc", "starter", "guidance", "nextSteps", "grants", "provider", "account", "model", "effort", "host", "fill"], about: "start a new session as a role of this shoal, from its start doc (or one written for it)" },
   { verb: "add-session", label: "Add session", kind: "write", role: "none", hostLevel: true, run: "Add standalone seat", fields: ["label", "pick"], about: "save a standalone session (Claude, opencode, Codex, Muse) as a seat and open its space" },
   { verb: "status", label: "Status", kind: "view", role: "none", about: "every role's status, with health conditions" },
   { verb: "conditions", label: "Conditions", kind: "view", role: "none", about: "health conditions now" },
@@ -108,6 +108,8 @@ export const FIELDS = {
   until: { key: "until", kind: "text", label: "Back at", placeholder: "ISO time with offset; empty for no time" },
   noWake: { key: "noWake", kind: "toggle", label: "Record without waking every role (--no-wake)", hint: "off: every role wakes once to see the change (tokens)" },
   ecosystem: { key: "ecosystem", kind: "choice", label: "Provider (leave unpicked to keep the current one)", options: ["claude", "codex", "opencode", "muse"] },
+  // shown only when the provider has two or more accounts on this host (accountOptions); its options come from there
+  account: { key: "account", kind: "choice", label: "Account (unpicked: the current one on the same provider, else the provider's default)", options: [] },
   model: { key: "model", kind: "text", label: "Model", placeholder: "empty: kept on the same provider; on another, this host's default for it" },
   effort: { key: "effort", kind: "text", label: "Effort", placeholder: "empty: kept on the same provider; on another, this host's default for it" },
   undo: { key: "undo", kind: "toggle", label: "Bring it back", hint: "show it as needing you again, if it still does" },
@@ -181,7 +183,7 @@ export function lastLines(text, n = 18) {
 export function newForm(verb, now = new Date(), prefill = {}) {
   const info = verbInfo(verb);
   if (!info || info.kind !== "write") return null;
-  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "" };
+  const values = { text: "", wake: false, item: "", note: "", state: null, until: "", noWake: true, ecosystem: null, account: null, model: "", effort: "", force: false, pick: null, label: "", slug: "", title: "", doc: "", host: "", fill: null, starter: false, guidance: "", nextSteps: "", grants: "" };
   values.dryRun = PREVIEW_FIRST.has(verb);
   if (verb === "handoff") {
     values.prepare = true;
@@ -244,6 +246,7 @@ export function nextField(form, at, back = false) {
 export function setValue(form, key, value) {
   if (!form) return form;
   const values = { ...form.values, [key]: value };
+  if (key === "ecosystem" && value !== form.values.ecosystem) Object.assign(values, { account: null, accountSuggested: false }); // an account is one provider's
   if (form.verb === "offline") {
     // the note follows the back time until someone writes their own; coming back, a default says nothing
     const was = backNote(form.values.until);
@@ -329,6 +332,7 @@ export function planArgv(verb, target, form = null) {
       if (v.noWake) argv.push("--no-wake");
     } else if (verb === "handoff") {
       if (strOrNull(v.ecosystem)) argv.push(`--ecosystem=${v.ecosystem}`);
+      if (strOrNull(v.account)) argv.push(`--account=${v.account}`);
       if (text("model")) argv.push(`--model=${text("model")}`);
       if (text("effort")) argv.push(`--effort=${text("effort")}`);
       if (target.session && text("doc")) argv.push(`--doc=${text("doc")}`);
@@ -346,6 +350,7 @@ export function planArgv(verb, target, form = null) {
     } else if (verb === "add-role") {
       argv.push(`--slug=${text("slug")}`, `--title=${text("title")}`, `--doc=${text("doc")}`, `--ecosystem=${v.ecosystem}`);
       for (const k of ["model", "effort", "host"]) if (text(k)) argv.push(`--${k}=${text(k)}`);
+      if (strOrNull(v.account)) argv.push(`--account=${v.account}`);
       if (strOrNull(v.fill)) argv.push(`--fill=${v.fill}`);
       if (v.starter) {
         argv.push("--starter", `--guidance=${text("guidance")}`);
@@ -355,7 +360,7 @@ export function planArgv(verb, target, form = null) {
     } else if (verb === "add-session") {
       const s = v.pick;
       argv.push(`--harness=${s.harness}`, `--id=${s.session}`, `--label=${text("label")}`);
-      for (const k of ["cwd", "job", "model", "effort"]) if (strOrNull(s[k])) argv.push(`--${k}=${s[k]}`);
+      for (const k of ["cwd", "job", "model", "effort", "account"]) if (strOrNull(s[k])) argv.push(`--${k}=${s[k]}`);
     }
   }
   argv.push("--json");
@@ -397,7 +402,8 @@ export function mergeSessions(replies) {
       if (seen.has(id)) continue;
       seen.add(id);
       rows.push({ key: `${r.machine ?? "local"}|${id}`, machine: r.machine ?? null, harness: s.harness, session: s.session,
-        label: str(s.label) || s.session.slice(0, 12), state: str(s.state), cwd: str(s.cwd), job: str(s.job), model: str(s.model), effort: str(s.effort) });
+        label: str(s.label) || s.session.slice(0, 12), state: str(s.state), cwd: str(s.cwd), job: str(s.job), model: str(s.model), effort: str(s.effort),
+        account: str(s.account) });
     }
   }
   return { rows, note: failed.length ? `not read: ${failed.join("; ")}` : null };
@@ -503,12 +509,55 @@ function normRoles(d) {
       const slug = strOrNull(o?.slug);
       if (!slug || slugs.has(slug) || slug === "*") continue;
       slugs.add(slug);
-      roles.push({ slug, host: strOrNull(o.host), needsYou: o.needs_you === true, status: strOrNull(o.status), doc: strOrNull(o.doc) });
+      roles.push({ slug, host: strOrNull(o.host), needsYou: o.needs_you === true, status: strOrNull(o.status), doc: strOrNull(o.doc),
+        ecosystem: strOrNull(o.ecosystem), account: strOrNull(o.account) });
     }
     shoals.push({ id, tag: strOrNull(s.tag) ?? shortShoal(id), roles, needsYou: roles.filter((r) => r.needsYou).length });
   }
   const ecosystems = arr(d.ecosystems).filter((e) => typeof e === "string" && e);
-  return { kind: "roles", shoals, ...(ecosystems.length ? { ecosystems } : {}) };
+  const accounts = {};
+  for (const [eco, list] of Object.entries(obj(d.accounts) ?? {})) {
+    const names = arr(list).filter((x) => typeof x === "string" && x);
+    if (names.length > 1) accounts[eco] = names;
+  }
+  const best = {};
+  for (const [eco, b] of Object.entries(obj(d.account_best) ?? {})) {
+    const name = strOrNull(obj(b)?.account);
+    if (name && accounts[eco]?.includes(name)) best[eco] = { account: name, why: str(obj(b).why) };
+  }
+  return { kind: "roles", shoals, ...(ecosystems.length ? { ecosystems } : {}), ...(Object.keys(accounts).length ? { accounts } : {}),
+    ...(Object.keys(best).length ? { accountBest: best } : {}) };
+}
+
+/**
+ * The form with the selection policy's account pre-selected (the host's quota balance: the account with the most paced
+ * headroom, `shoal accounts`), once per provider: a choice the operator clears stays cleared. Unchanged when the provider
+ * shows no account choice or the host made no suggestion.
+ */
+export function suggestAccount(form, roles, current = null) {
+  if (!form || form.values.accountSuggested || strOrNull(form.values.account)) return form;
+  const opts = accountOptions(form, roles, current);
+  const eco = strOrNull(form.values.ecosystem) ?? strOrNull(current);
+  const best = opts.length ? obj(roles?.accountBest)?.[eco] : null;
+  if (!best) return form;
+  return { ...form, values: { ...form.values, account: best.account, accountSuggested: true } };
+}
+
+/** Why the suggested account was picked, for the line under the choice ("" when none was). */
+export function accountWhy(form, roles, current = null) {
+  const eco = strOrNull(form?.values?.ecosystem) ?? strOrNull(current);
+  const best = obj(roles?.accountBest)?.[eco];
+  return best && accountOptions(form, roles, current).length ? `suggested: ${best.account} (${best.why})` : "";
+}
+
+/**
+ * The account choice of a form: the accounts on this host of the provider it will run on (the one picked, else the
+ * role's own), first the default (named after the provider). [] when that provider has one account, which hides the
+ * field: an operator with one account per provider sees nothing new.
+ */
+export function accountOptions(form, roles, current = null) {
+  const eco = strOrNull(form?.values?.ecosystem) ?? strOrNull(current);
+  return eco ? arr(obj(roles?.accounts)?.[eco]) : [];
 }
 
 /** A provider choice's options: those the host has in use, when it says (the roles reply), else all. */

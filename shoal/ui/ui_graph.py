@@ -238,7 +238,8 @@ def standalone_doc(e: dict, rows: list[dict]) -> dict:
             state = "blocked"
         else:
             state = "busy" if row.get("status") == "busy" else "alive"
-    return {"harness": harness, "id": session[:12], "state": state, "dismissed": bool(e.get("dismissed"))}
+    return {"harness": harness, "id": session[:12], "state": state, "dismissed": bool(e.get("dismissed")),
+            **({"account": str(e["account"])} if e.get("account") else {})}
 
 
 def item_titles(digest: dict | None) -> dict[str, str]:
@@ -714,6 +715,7 @@ class GraphBuilder:
                 nodes[nid] = {
                     "id": nid, "kind": "role", "shoal": sid, "slug": slug, "label": slug,
                     "ecosystem": row.get("ecosystem") or row.get("harness"), "model": row.get("model"),
+                    **({"account": row["account"]} if row.get("account") else {}),
                     "host": rhost, "fill": row.get("fill"),
                     "state": {"class": st["class"], "event": st["event"], "group": st["group"],
                               "source": st["source"], "quality": st.get("quality") or [],

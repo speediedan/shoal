@@ -139,6 +139,8 @@ def add_parsers(sub) -> None:
     q.add_argument("--model", default="", help="the seat's model (saved; its card resumes with it)")
     q.add_argument("--effort", default="", help="the seat's effort (saved; its card resumes with it)")
     q.add_argument("--job", default="", help="with --harness claude --id: its background job id (its card follows /bg)")
+    q.add_argument("--account", default=None, help="with --harness/--id: the provider account it runs on (default: the "
+                                                   "one whose state holds it on this host)")
     q.add_argument("--save", action="store_true", help="keep it as a seat: `ui app-open` (and 0.9.3 `ui open`) restore it")
     q.add_argument("--dry-run", action="store_true", help="with --save: say what would be saved, save nothing")
     q.add_argument("--open", action="store_true", help="open its Herdr 0.9.3 card even outside a 0.9.3 pane")

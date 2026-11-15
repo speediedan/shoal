@@ -42,6 +42,7 @@ import time
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import accounts  # noqa: E402
 import config  # noqa: E402
 
 CLI = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
@@ -72,8 +73,47 @@ def codex_bin() -> str:
     return config.env("CODEX_BIN") or shutil.which("codex") or os.path.expanduser("~/.nvm/versions/node/current/bin/codex")
 
 
-def turn_env() -> dict:
+def codex_homes() -> list[tuple[str, str]]:
+    """[(account, CODEX_HOME)] of every Codex account on this host, the default first. The default's is SHOAL_CODEX_HOME,
+    else CODEX_HOME, else ~/.codex, as before accounts."""
+    over = config.env("CODEX_HOME")
+    if not accounts.several("codex"):
+        return [("", over or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))]
+    hs = accounts.homes("codex")
+    return [("", over)] + hs[1:] if over else hs
+
+
+def rollouts(session: str) -> list[str]:
+    """The thread's rollout files, in whichever account holds it."""
+    import glob
+    if not session:
+        return []
+    for _, root in codex_homes():
+        files = glob.glob(os.path.join(root, "sessions", "*", "*", "*", f"rollout-*-{session}.jsonl"))
+        if files:
+            return files
+    return []
+
+
+def thread_account(session: str) -> str | None:
+    """The account holding a thread ("" the default), None when no account's store has it (or none is declared)."""
+    if not session or not accounts.several("codex"):
+        return None
+    import glob
+    for a, root in codex_homes():
+        if glob.glob(os.path.join(root, "sessions", "*", "*", "*", f"rollout-*-{session}.jsonl")):
+            return a
+    return None
+
+
+def turn_env(account: str | None = None, session: str = "") -> dict:
+    """The environment of a Codex call. With accounts declared, a call for a known thread runs in the account that
+    holds it, a new thread in the account named; otherwise the inherited CODEX_HOME stands (a runner inherits the one
+    its starter chose)."""
     env = dict(os.environ)
+    acct = account if account is not None else thread_account(session)
+    if acct is not None:
+        accounts.apply("codex", acct, env)
     if not config.env("CODEX_ALLOW_API_KEY"):
         for k in ("OPENAI_API_KEY", "CODEX_API_KEY"):
             env.pop(k, None)
@@ -139,10 +179,8 @@ ACTIVE_WINDOW_S = 120  # a thread whose rollout file changed within this long is
 def activity_age(session: str):
     """Seconds since the thread's rollout file last changed, or None when it cannot be found. `busy()` is
     also true for a client that is merely attached, which a viewer must not draw as working."""
-    import glob
-    root = config.env("CODEX_HOME") or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
     try:
-        files = glob.glob(os.path.join(root, "sessions", "*", "*", "*", f"rollout-*-{session}.jsonl"))
+        files = rollouts(session)
         return max(0.0, time.time() - max(os.path.getmtime(f) for f in files))
     except (OSError, ValueError):
         return None
@@ -200,7 +238,7 @@ def run_argv(session: str, repo_dir: str, model: str = "", effort: str = "") -> 
 
 
 def start_run(session: str, repo_dir: str, prompt: str, model: str = "", effort: str = "",
-              dry_run: bool = False) -> str:
+              dry_run: bool = False, account: str | None = None) -> str:
     """Start one turn in the background and return its state key at once. `session` empty starts a new
     thread (the key is then temporary; `create_session` waits for the thread id). The lock is taken HERE and
     inherited by the runner, so the thread reads busy from the moment this returns."""
@@ -231,7 +269,7 @@ def start_run(session: str, repo_dir: str, prompt: str, model: str = "", effort:
     log = open(os.path.join(d, "runner.log"), "a")
     try:
         subprocess.Popen(detached(argv), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                         cwd=repo_dir if os.path.isdir(repo_dir) else None, env=turn_env(),
+                         cwd=repo_dir if os.path.isdir(repo_dir) else None, env=turn_env(account, session),
                          start_new_session=True, pass_fds=[lock_fh.fileno()])
     finally:
         log.close()
@@ -239,9 +277,10 @@ def start_run(session: str, repo_dir: str, prompt: str, model: str = "", effort:
     return key
 
 
-def create_session(repo_dir: str, brief: str, model: str = "", effort: str = "") -> str:
-    """Start a thread's first turn and return its thread id (read from the first event)."""
-    key = start_run("", repo_dir, brief, model=model, effort=effort)
+def create_session(repo_dir: str, brief: str, model: str = "", effort: str = "", account: str | None = None) -> str:
+    """Start a thread's first turn, in an account when one is named, and return its thread id (read from the first
+    event)."""
+    key = start_run("", repo_dir, brief, model=model, effort=effort, account=account)
     path = os.path.join(sdir(key), "thread_id")
     end = time.time() + THREAD_WAIT_S
     while time.time() < end:
@@ -396,7 +435,7 @@ def interactive_view(session: str, model: str = "", effort: str = "") -> int:
             raise BusyError("a turn is running; the live view remains available")
         print("Native interactive mode pauses automatic wakes until you exit Codex (/exit).", flush=True)
         return subprocess.run([codex_bin(), "resume", session, *interactive_flags(model, effort)],
-                              env=turn_env()).returncode
+                              env=turn_env(session=session)).returncode
 
 
 def observer_argv(session: str, model: str = "", effort: str = "") -> list[str]:
@@ -481,14 +520,14 @@ def view_argv(session: str, model: str = "", effort: str = "") -> list[str]:
     return ["sh", "-c", f'"$0" resume "$1"{fl} || exec "$0"{fl}', codex_bin(), session]
 
 
-def app_server(calls: list[tuple[str, dict]], timeout: float = 60) -> list[dict]:
+def app_server(calls: list[tuple[str, dict]], timeout: float = 60, account: str | None = None) -> list[dict]:
     """Run JSON-RPC requests, in order, against a short-lived `codex app-server` (stdio): the results, one per call.
     The first error raises. The app-server is how a thread is named, listed, archived or deleted: the CLI's own
     `archive`/`delete` verbs wrap the same requests."""
     import queue
     import threading
     p = subprocess.Popen([codex_bin(), "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL, text=True, env=turn_env())
+                         stderr=subprocess.DEVNULL, text=True, env=turn_env(account))
     q: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: [q.put(ln) for ln in p.stdout], daemon=True).start()
 
@@ -530,7 +569,7 @@ def thread_name_set(thread_id: str, name: str) -> None:
     """Give a persisted thread its user-facing name through a short-lived `codex app-server` (stdio JSON-RPC,
     `thread/name/set`): `codex resume <name>` and `codex queue --thread <name>` then find it. The CLI has no
     flag for this; the TUI's /rename is the interactive form."""
-    app_server([("thread/name/set", {"threadId": thread_id, "name": name})])
+    app_server([("thread/name/set", {"threadId": thread_id, "name": name})], account=thread_account(thread_id))
 
 
 def list_threads(limit: int = 1000) -> list[dict]:
@@ -554,7 +593,7 @@ def prune_thread(thread_id: str, delete: bool = False) -> str:
     """Archive a thread (`thread/archive`: a flag on its one stored rollout, undone by `codex unarchive`), or with
     `delete` remove it (`thread/delete`); then drop shoal's own per-thread state. Callers check that it is idle."""
     method = "thread/delete" if delete else "thread/archive"
-    app_server([(method, {"threadId": thread_id})])
+    app_server([(method, {"threadId": thread_id})], account=thread_account(thread_id))
     shutil.rmtree(sdir(thread_id), ignore_errors=True)
     return ("deleted" if delete else "archived") + f" thread {thread_id}"
 
@@ -574,7 +613,8 @@ def cmd_codex_new(a) -> int:
         print("codex-new: a first prompt is required (--prompt or --prompt-file): Codex has no empty thread")
         return 2
     try:
-        tid = create_session(cwd, prompt, model=a.model, effort=a.effort)
+        acct = accounts.normalize("codex", getattr(a, "account", "") or "")
+        tid = create_session(cwd, prompt, model=a.model, effort=a.effort, account=acct)
         end = time.time() + a.wait
         while busy(tid) and time.time() < end:
             time.sleep(1)
@@ -582,12 +622,14 @@ def cmd_codex_new(a) -> int:
             print(f"codex-new: the first turn is still running after {a.wait} s; name it later with /rename")
             return 1
         thread_name_set(tid, a.name)
-    except (RuntimeError, OSError) as e:
+    except (RuntimeError, OSError, ValueError) as e:
         print(f"codex-new: {e}")
         return 1
     print(f"{a.name}  {tid}  {cwd}")
     pick = [sys.executable, CLI, "ui", "pick", "--harness", "codex", "--id", tid,
             "--label", a.label or a.name, "--cwd", cwd, "--save"]
+    if acct:
+        pick += ["--account", acct]
     if a.model:
         pick += ["--model", a.model]
     if a.effort:
@@ -612,7 +654,7 @@ def arm_watcher(spec, role, dry_run: bool = False) -> str:
     log = open(os.path.join(sd, f"ledger-watch-{role.slug}.log"), "a")
     try:
         subprocess.Popen(detached(argv), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                         start_new_session=True, env=turn_env())
+                         start_new_session=True, env=turn_env(role.account or None, role.session))
     finally:
         log.close()
     return "armed"

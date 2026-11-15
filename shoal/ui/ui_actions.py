@@ -45,7 +45,7 @@ APPLY_VERBS = WRITE_VERBS + ("set-fill",)
 SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions", "queue")
-SESSION_KEYS = ("harness", "session", "label", "state", "cwd", "job", "model", "effort")
+SESSION_KEYS = ("harness", "session", "label", "state", "cwd", "job", "model", "effort", "account")
 QUEUE_SET = "queue-set"  # the Queue dialog's batch (ui_queue.batch): several verbs under one token
 
 
@@ -136,7 +136,7 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
                            "pick another name (one name, one card)")
         args = ["ui", "pick", f"--harness={a.harness}", f"--id={a.session_id.strip()}", f"--label={a.label.strip()}",
                 "--save", "--no-open"]
-        for k in ("cwd", "job", "model", "effort"):
+        for k in ("cwd", "job", "model", "effort", "account"):
             if (getattr(a, k, "") or "").strip():
                 args.append(f"--{k}={getattr(a, k).strip()}")
         return args, "", True
@@ -153,7 +153,7 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             raise ActError(str(exc)) from exc
         prepare = not getattr(a, "no_prepare", False)
         args = ["handoff", f"--session={a.session}", "--prepare" if prepare else "--no-prepare", f"--expected-session={entry['session']}"]
-        for key in ("doc", "model", "effort", "ecosystem", "note"):
+        for key in ("doc", "model", "effort", "ecosystem", "account", "note"):
             if getattr(a, key, ""):
                 args.append(f"--{key}={getattr(a, key)}")
         if getattr(a, "through_question", False):
@@ -245,7 +245,7 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
                            "write and commit the doc first, then add the role (or leave Host empty)")
         if starter and os.path.exists(doc):
             raise ActError(f"{doc} exists: turn off the starter doc to use it, or give another path (it is never overwritten)")
-        extra = [(k, (getattr(a, k, "") or "").strip()) for k in ("model", "effort", "host", "fill")]
+        extra = [(k, (getattr(a, k, "") or "").strip()) for k in ("model", "effort", "host", "fill", "account")]
         if any("," in x for x in [title, doc] + [v for _, v in extra]):
             raise ActError("a comma cannot go in a role's title, doc, model, effort or host (the role spec is comma-separated)")
         fill = dict(extra)["fill"]
@@ -286,6 +286,8 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             args.append(f"--effort={a.effort}")
         if (getattr(a, "note", "") or "").strip():
             args.append(f"--note={a.note.strip()}")
+        if (getattr(a, "account", "") or "").strip():
+            args.append(f"--account={a.account.strip()}")
         if getattr(a, "through_question", False):
             raise ActError("--through-question is for standalone seats; a role's open question is answered first")
         if a.ecosystem:
@@ -585,9 +587,22 @@ def view(verb: str, a) -> dict:
             docs = _role_docs(s)
             shoals.append({"id": s["id"], "tag": ui_herdr.shoal_tag(s["id"]), "roles": [
                 {"slug": r["slug"], "host": r.get("host") or "", "needs_you": bool(r.get("needs_you")),
-                 "status": ui_status.status_label(r), "doc": docs.get(r["slug"], "")}
+                 "status": ui_status.status_label(r), "doc": docs.get(r["slug"], ""),
+                 "ecosystem": r.get("ecosystem") or "", "account": r.get("account") or ""}
                 for r in s.get("roles", []) if r.get("session_id")]})
-        return {"v": V, "kind": "shoal-act-roles", "shoals": shoals, "ecosystems": ui_status.active_ecosystems()}
+        import accounts
+        # each provider's accounts on this host, by name (the default named after the provider), for one with several
+        accts = {e: [accounts.name(e, x) for x in accounts.of(e)] for e in ui_status.active_ecosystems() if accounts.several(e)}
+        # the policy's pick per provider (quota balance), which the dialog pre-selects, and why
+        best = {}
+        for e in accts:
+            try:
+                a_, why = accounts.choose(e)
+                best[e] = {"account": accounts.name(e, a_), "why": why}
+            except Exception:  # noqa: BLE001 - no usage reading: no suggestion
+                pass
+        return {"v": V, "kind": "shoal-act-roles", "shoals": shoals, "ecosystems": ui_status.active_ecosystems(),
+                **({"accounts": accts} if accts else {}), **({"account_best": best} if best else {})}
     if verb == "sessions":
         # this host's sessions a seat could be made of: the 0.9.3 picker's own list (roles, old incarnations and
         # internal runs left out; saved seats stay, so one closed can be added back)
@@ -597,7 +612,7 @@ def view(verb: str, a) -> dict:
         import ui_herdr
         with contextlib.redirect_stdout(io.StringIO()) as said:  # a harness that cannot list says so on stdout
             cands = ui_herdr.candidates_standalone(ui_herdr.role_sessions())
-        rows = [{k: str(c.get(k) or "") for k in SESSION_KEYS} for c in cands]
+        rows = [{k: str(c.get(k) or "") for k in SESSION_KEYS if k != "account" or c.get(k)} for c in cands]
         return dict(base, host=config.server() or "", sessions=rows, notes=[x for x in said.getvalue().splitlines() if x.strip()],
                     text="\n".join(f"{r['harness']:<8} {r['label']:<40} {r['state'] or '?':<10} {r['cwd']}" for r in rows)
                     or "no standalone sessions here")
@@ -726,6 +741,7 @@ def add_parsers(u) -> None:
     q.add_argument("--model", default="", help="handoff: the new session's model")
     q.add_argument("--effort", default="", help="handoff: the new session's effort")
     q.add_argument("--ecosystem", default="", help="handoff, add-role: the new session's provider")
+    q.add_argument("--account", default="", help="handoff, add-role, add-session: the provider account (`shoal accounts`)")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--no-prepare", action="store_true", help="handoff: skip requesting a checkpoint first")
     q.add_argument("--through-question", action="store_true",

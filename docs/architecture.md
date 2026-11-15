@@ -689,6 +689,37 @@ generic default.
 | `pool` | (file only) | `true`; `false` keeps this host out of CI pool placement (a route's own `pool = false` leaves that host out from this side) |
 | `skill_homes` | `SHOAL_SKILL_HOMES` (path-separated) | the existing standard homes: `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills` |
 | `[tool_env]` | an exported variable of the same name wins | none: extra variables for every tool call and generated systemd unit (e.g. `OPENCHAMBER_DATA_DIR` for a server kept apart from a desktop app) |
+| `[accounts.<name>]` | (file only) | none: another account of a provider (`provider`, `env`, optional `badge`); see below |
+
+**Provider accounts** (`shoal/accounts.py`). An account is a way to run one provider's CLI: the same CLI with an
+environment overlay (`[accounts.claude-2] provider = "claude"`, `env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }`). Every
+provider keeps an implicit default account, named after it and recorded as empty, so a host that declares none behaves
+as before, call for call. SHOAL never inspects or syncs what sits behind an account and enforces no provider limit: a
+launch on an account that is not signed in fails with the provider's message. It needs one fact per provider, where an
+account keeps its state (`accounts.HOME_VARS`: Claude's `CLAUDE_CONFIG_DIR`, default `~/.claude`; Codex's `CODEX_HOME`,
+default `~/.codex`).
+- **Where it is recorded.** A role's `account` (spec), a standalone seat's `account` (registry, and in `lineage`).
+  `restart --set-account SLUG:ACCOUNT`, `add-role --account` (or `account=` in `--role`), `handoff --account`, `ui pick
+  --account` set it; moving to another provider clears it unless one is named. Another host's role is checked by that
+  host's own declarations.
+- **Reads find the account.** A session lives in exactly one account, so every reader of a Claude job, transcript or
+  daemon roster looks in each account's directory (`backends.job_base`, `claude_bases`), and a host-wide listing
+  (`backends.claude_agents`: health's busy map, the cards' shared listing, prune, discovery) runs `claude agents` once
+  per account and labels each row (`_account`). A Codex thread is found by its rollout (`codex_harness.thread_account`).
+- **Calls run in the account.** Every call on an existing session (resume, stop, respawn, `rm`, logs, attach, a Codex
+  turn) runs with the overlay of the account that holds it; a new session starts in the account it was made for
+  (`backends.get(ecosystem, account)`); a reset keeps its account. The default account's environment drops any variable
+  naming another account, so a command run from inside a second account's session still reaches the default's.
+- **Usage.** Each declared Claude or Codex account is a usage provider of its own, by name (`claude-2`), read with its
+  own sign-in; `usage_providers` lists each declared account after its provider. The credential override
+  (`SHOAL_USAGE_CLAUDE_OAUTH_TOKEN`) is the default account's only.
+- **Balance.** An account's paced headroom in a window is its free share over the share of the window still to run
+  (at least an hour of it): 50% free with 1 h of a week left scores 84, 60% free with 6 days left 0.7. Its tightest
+  window is its score; under 2% free or a reached limit scores 0, and an account with no fresh reading is ranked last
+  and never picked. `[accounts] select = "balance"` (the default) makes the best-scored account the suggestion
+  (`accounts.choose`): the Actions dialog pre-selects it with its reason, `--account auto` takes it on the command line,
+  and `shoal accounts` prints every score. `select = "default"` suggests the provider's default. The CLI never changes
+  an account unasked: a handoff with no `--account` keeps the current one.
 
 `doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
 the clock state. The providers (resource leases, wait targets, the board

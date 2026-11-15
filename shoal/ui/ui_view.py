@@ -53,8 +53,8 @@ class ViewError(RuntimeError):
 
 def clean_env(extra: dict[str, str] | None = None, *, base: dict | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
-    env.update(extra or {})
-    return {k: v for k, v in env.items() if not k.startswith(STRIP_PREFIXES)}
+    env.update(extra or {})  # None unsets (backends.view_env: the default account of a provider with several)
+    return {k: v for k, v in env.items() if v is not None and not k.startswith(STRIP_PREFIXES)}
 
 
 def resolve_role(sid: str, slug: str, spec_path: str = ""):
@@ -247,10 +247,10 @@ def _epoch(v) -> float | None:
 def _first_transcript_ts(session: str) -> float | None:
     """The first timestamp in a Claude session's own transcript (projects/*/<session>.jsonl), None when absent."""
     import glob
-    from backends import claude_base
+    from backends import claude_bases
     if not session or not re.fullmatch(r"[0-9a-fA-F-]{8,64}", session):
         return None
-    for p in glob.glob(os.path.join(claude_base(), "projects", "*", f"{session}.jsonl")):
+    for p in [p for b in claude_bases() for p in glob.glob(os.path.join(b, "projects", "*", f"{session}.jsonl"))]:
         try:
             with open(p) as fh:
                 for _, ln in zip(range(200), fh):
@@ -281,8 +281,12 @@ def _job_state(jobs_dir: str, job: str) -> dict | None:
     """A job's state.json under jobs_dir, None when unreadable (read-only)."""
     if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job):
         return None
+    p = os.path.join(jobs_dir, job, "state.json")
+    if not os.path.exists(p) and jobs_dir == claude_jobs_dir():  # the host's own: the job may be another account's
+        from backends import job_base
+        p = os.path.join(job_base(job), "jobs", job, "state.json")
     try:
-        with open(os.path.join(jobs_dir, job, "state.json")) as fh:
+        with open(p) as fh:
             d = json.load(fh)
         return d if isinstance(d, dict) else None
     except (OSError, ValueError):
@@ -440,7 +444,7 @@ def viewer(harness: str, session: str, label: str = "", model: str = "", effort:
         return muse.observer_argv(session, model, effort), clean_env(base=muse.turn_env())
     if harness == "codex" and observe:
         import codex_harness
-        return codex_harness.observer_argv(session, model, effort), clean_env(base=codex_harness.turn_env())
+        return codex_harness.observer_argv(session, model, effort), clean_env(base=codex_harness.turn_env(session=session))
     argv, extra = get_backend(harness).view_argv(session, model, effort)
     if harness == "muse":
         import muse
@@ -498,13 +502,16 @@ def service_restarted_since(t: float) -> bool:
     """True when the Claude background service logged a start after `t` (epoch seconds): its log names each start
     (`[supervisor] ─── daemon start ───`)."""
     import datetime as _dt
-    p = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "daemon.log")
-    try:
-        with open(p, "rb") as fh:
-            fh.seek(max(os.path.getsize(p) - 65536, 0))
-            lines = fh.read().decode(errors="replace").splitlines()
-    except OSError:
-        return False
+    from backends import claude_bases
+    lines = []
+    for b in claude_bases():  # each account's service logs its own starts; any one drops that account's clients
+        p = os.path.join(b, "daemon.log")
+        try:
+            with open(p, "rb") as fh:
+                fh.seek(max(os.path.getsize(p) - 65536, 0))
+                lines += fh.read().decode(errors="replace").splitlines()
+        except OSError:
+            continue
     for ln in reversed(lines):
         m = SERVICE_START.match(ln)
         if m:

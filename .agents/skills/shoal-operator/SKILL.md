@@ -35,6 +35,17 @@ For a one-off cleanup: `shoal prune-incarnations --all-specs [--standalone] [--m
 read the keep/prune table, then run it without `--dry-run`. It never removes a current, parked or
 registered session, a live one, or one whose worktree still exists.
 
+## Accounts
+
+A provider can have more than one account on a host: declare each extra one in the host config
+(`[accounts.<name>]` with `provider` and the `env` that selects it), then `shoal accounts --check` lists
+them with each provider's own sign-in answer. A role or seat records its account; to move one to another
+account of the same provider, `shoal handoff --spec <spec> --only <role> --account <name> --prepare`
+(a seat: `--session <label>`), dry-run first. It keeps the host, model and effort. The default account
+is named after its provider (`--account claude`). A role never chooses its own account. SHOAL does not
+check a provider's account limits: a launch on an account that is not signed in fails with the
+provider's message, so read `accounts --check` first.
+
 ## Upgrade
 
 `shoal upgrade --spec <spec> --dry-run` first. It names each change's rollout class (live, re-arm,

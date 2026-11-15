@@ -41,6 +41,34 @@ class UsageError(Exception):
     """A safe diagnostic: never wrap a credential, server body or argv."""
 
 
+ACCOUNT_PROVIDERS = ("claude", "codex")  # providers whose declared accounts get a usage row of their own (accounts.py)
+
+
+def account_key(key):
+    """(provider, account) a usage key names: a provider (its default account), or a declared account's name (an
+    account of claude or codex, read with that account's own credentials). None for anything else."""
+    if key in PROVIDERS:
+        return key, ""
+    import accounts
+    prov = accounts.provider_of(key)
+    return (prov, key) if prov in ACCOUNT_PROVIDERS else None
+
+
+def known(key):
+    return account_key(key) is not None
+
+
+def normalize_key(key, data):
+    """normalize() for a usage key; an account's own bucket is named after the account (`claude-2`, not `claude`)."""
+    prov, acct = account_key(key)
+    rows = normalize(prov, data)
+    if acct:
+        for r in rows:
+            if r.get("bucket") == prov:
+                r["bucket"] = acct
+    return rows
+
+
 def number(v):
     if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
         return None
@@ -180,9 +208,13 @@ def read_json(path):
         return json.load(f)
 
 
-def codex_read():
-    """A short-lived account RPC, using Codex's own credential renewal. No thread/start."""
+def codex_read(account=""):
+    """A short-lived account RPC, using Codex's own credential renewal. No thread/start. In an account's CODEX_HOME when
+    one is named."""
     env = os.environ.copy()
+    if account:
+        import accounts
+        accounts.apply("codex", account, env)
     for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
         env.pop(key, None)
     p = subprocess.Popen([config.env("CODEX_BIN") or "codex", "app-server"],
@@ -287,12 +319,16 @@ def credential(provider):
     return values.get(key, "")
 
 
-def fetch(provider):
+def fetch(key):
+    provider, acct = account_key(key) or (key, "")
     if provider == "codex":
-        return codex_read()
+        return codex_read(acct)
     if provider == "claude":
-        home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-        token = credential(provider) or (read_json(home / ".credentials.json").get("claudeAiOauth") or {}).get("accessToken", "")
+        import accounts
+        home = Path(accounts.home("claude", acct))
+        # the override token is the default account's: another account reads only its own sign-in
+        token = (credential(provider) if not acct else "") or \
+            (read_json(home / ".credentials.json").get("claudeAiOauth") or {}).get("accessToken", "")
         return http_json("https://api.anthropic.com/api/oauth/usage", token,
                          headers={"anthropic-beta": "oauth-2025-04-20"})
     if provider == "muse":
@@ -347,14 +383,14 @@ def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
         fetcher = fetcher or fetch
         fallback = []
         for provider in dict.fromkeys(providers):
-            if provider not in PROVIDERS:
+            if not known(provider):
                 continue
             prev = doc["accounts"].get(provider) or {}
             if not force and now < prev.get("next_poll_at", 0):
                 continue
             row = dict(prev, provider=provider, attempted_at=now)
             try:
-                rows = normalize(provider, fetcher(provider))
+                rows = normalize_key(provider, fetcher(provider))
                 row.update(rows=rows, known_resets=known_resets(prev, rows), observed_at=now,
                            source="account API",
                            error="", failures=0, next_poll_at=now + POLL_S)
@@ -377,7 +413,7 @@ def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
                     observed = stamp(data.get("observed_at")) if "observed_at" in data else now
                     if observed is None or observed > now + 60:
                         raise UsageError("invalid fallback observation time")
-                    row.update(rows=normalize(provider, data), observed_at=observed, source="fallback reader",
+                    row.update(rows=normalize_key(provider, data), observed_at=observed, source="fallback reader",
                                error="", failures=0, next_poll_at=now + POLL_S)
                 except Exception:
                     row["error"] += "; fallback quota reader unavailable"
@@ -460,7 +496,7 @@ def snapshot(providers, *, now=None):
     accounts = load_cache()["accounts"]
     out = []
     for provider in dict.fromkeys(providers):
-        if provider not in PROVIDERS:
+        if not known(provider):
             continue
         row = projected(dict(accounts.get(provider) or {}, provider=provider), now)
         observed = row.get("observed_at")
@@ -648,6 +684,16 @@ SHORT_NAMES = {"opencode-go": "opencode"}
 COMPACT_NAMES = {"codex": "cx", "claude": "cl", "muse": "mu", "opencode-go": "oc"}
 
 
+def compact_account(key, compact):
+    """A declared account's name in the status bar: in full, or compact as its provider's two letters and its badge
+    (`cl2`)."""
+    if not compact or not account_key(key) or not account_key(key)[1]:
+        return key
+    import accounts
+    prov, acct = account_key(key)
+    return COMPACT_NAMES.get(prov, prov) + accounts.badge(prov, acct)
+
+
 def summary(doc, compact=False):
     """The status-bar quick view: each provider's used percent for 5h, week and month, `-` where a window is
     not reported, e.g. `codex: 4%/23%/- | claude: 10%/87%/- | opencode: 4%/10%/13%`. Only exceptions add
@@ -661,7 +707,7 @@ def summary(doc, compact=False):
             for w in r.get("windows", []):
                 best[w["name"]] = max(best.get(w["name"], 0), w["used_percent"])
                 due = due or (w.get("resets_at") is not None and w["resets_at"] <= time.time())
-        name = (COMPACT_NAMES if compact else SHORT_NAMES).get(a["provider"], a["provider"])
+        name = (COMPACT_NAMES if compact else SHORT_NAMES).get(a["provider"]) or compact_account(a["provider"], compact)
         sep, unit = (" ", "") if compact else (": ", "%")
         limit = any(r.get("blocked") for r in a.get("rows", []))
         idle = any(r.get("idle") for r in a.get("rows", []))
@@ -677,8 +723,9 @@ def summary(doc, compact=False):
 def cmd_usage(a):
     import ui_status
     providers = a.providers.split(",") if a.providers else ui_status.usage_providers()
-    if any(p not in PROVIDERS for p in providers):
-        print("Supported subscription providers: " + ",".join(PROVIDERS))
+    if any(not known(p) for p in providers):
+        print("Supported subscription providers: " + ",".join(PROVIDERS) + " (and each declared claude or codex "
+              "account, by name: `shoal accounts`)")
         return 1
     if a.refresh:
         collect(providers, force=True, bridge=ui_status.ui_config().get("usage_bridge"))

@@ -26,6 +26,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import accounts  # noqa: E402
 import config  # noqa: E402
 
 TOOL_PATH = config.tool_path()
@@ -448,7 +449,7 @@ def claude_original(job: str) -> str:
     """The conversation id a Claude job was started with (its state.json), '' when unknown."""
     if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job) or fake_sessions() is not None:
         return ""
-    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    base = job_base(job)
     try:
         import json as _json
         with open(os.path.join(base, "jobs", job, "state.json")) as fh:
@@ -574,17 +575,90 @@ def parse_bg_id(text: str) -> "re.Match[str] | None":
     return m if m else None
 
 
-def claude_base() -> str:
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+def claude_base(account: str = "") -> str:
+    """A Claude account's state directory (the default account's unless one is named)."""
+    return accounts.home("claude", account)
+
+
+def claude_bases() -> list[str]:
+    """Every Claude account's state directory on this host, the default first (one when none is declared)."""
+    return [h for _, h in accounts.homes("claude")]
+
+
+def job_base(job: str) -> str:
+    """The state directory of the Claude account that holds a job (its `jobs/<job>/`), else the default's."""
+    return claude_base(accounts.job_account("claude", job))
+
+
+def claude_env(account: str = "") -> dict:
+    """The environment a `claude` call for an account runs with (exactly `_ENV` when no account is declared)."""
+    return _ENV if not accounts.several("claude") else accounts.env("claude", account)
+
+
+def view_env(provider: str, account: str) -> dict:
+    """The variables a viewer (an attach or resume client) adds for an account: its overlay, and for the default
+    account of a provider that has others, None for each variable another account sets (the viewer unsets it, so a
+    card opened from inside a second account's session still attaches to the default's). {} when none is declared."""
+    if not accounts.several(provider):
+        return {}
+    if account:
+        return dict((accounts.declared().get(account) or {}).get("env") or {})
+    return {k: None for a in accounts.of(provider)[1:] for k in (accounts.declared()[a].get("env") or {})}
+
+
+def id_account(key: str) -> str:
+    """The account of a job or conversation id a caller holds: its job folder (the id's first 8 characters), else the
+    row the listing finds for it (a conversation id after a `/clear`); "" (the default) when nothing is declared or
+    nothing matches."""
+    if not key or not accounts.several("claude"):
+        return ""
+    a = accounts.find_job("claude", key[:8])
+    if a is not None:
+        return a
+    try:
+        return row_account(claude_find(claude_agents(include_stopped=True), key))
+    except Exception:  # noqa: BLE001 - the default, as before accounts
+        return ""
+
+
+def row_account(row: dict | None, job: str = "") -> str:
+    """The account a listed row (or, failing that, a job id) belongs to."""
+    if row and row.get(accounts.ROW_KEY):
+        return str(row[accounts.ROW_KEY])
+    return accounts.job_account("claude", str((row or {}).get("id") or job))
+
+
+def claude_agents(include_stopped: bool = False, timeout: int = 30, which: str | None = None) -> list:
+    """`claude agents --json [--all]` across every Claude account on this host (or the one named by `which`), each row of
+    a declared account labeled with it (`accounts.ROW_KEY`). Job and conversation ids are unique across accounts, so
+    the rows simply concatenate. [] for an account whose listing fails."""
+    import json as _json
+    fake = fake_sessions()
+    if fake is not None:
+        return list(fake.get("claude") or [])
+    b = tool_which("claude") or "claude"
+    argv = [b, "agents", "--json"] + (["--all"] if include_stopped else [])
+    out = []
+    for a in (accounts.of("claude") if which is None else [which]):
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=claude_env(a))
+        try:
+            rows = _json.loads(r.stdout) if r.returncode == 0 else []
+        except Exception:
+            rows = []
+        for e in rows if isinstance(rows, list) else []:
+            if a and isinstance(e, dict):
+                e[accounts.ROW_KEY] = a
+            out.append(e)
+    return out
 
 
 def _state_of(job: str) -> dict:
-    """A Claude job's own record (~/.claude/jobs/<job>/state.json), {} when unreadable."""
+    """A Claude job's own record (~/.claude/jobs/<job>/state.json, in whichever account holds it), {} when unreadable."""
     if not job or not re.fullmatch(r"[0-9a-f]{6,64}", job):
         return {}
     try:
         import json as _json
-        d = _json.load(open(os.path.join(claude_base(), "jobs", job, "state.json")))
+        d = _json.load(open(os.path.join(job_base(job), "jobs", job, "state.json")))
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -592,8 +666,11 @@ def _state_of(job: str) -> dict:
 
 def tombstone_dir(job: str) -> str:
     """Where a pruned job's record is kept: ~/.claude/archived_sessions/jobs/<job>/ (the host's convention for jobs
-    removed by hand), so its name stays resolvable after `claude rm`."""
-    return os.path.join(claude_base(), "archived_sessions", "jobs", job)
+    removed by hand), so its name stays resolvable after `claude rm`. In the account that holds (or held) the job."""
+    for b in claude_bases()[1:]:
+        if os.path.isdir(os.path.join(b, "archived_sessions", "jobs", job)):
+            return os.path.join(b, "archived_sessions", "jobs", job)
+    return os.path.join(job_base(job), "archived_sessions", "jobs", job)
 
 
 def tombstone(job: str, row: dict | None = None) -> str:
@@ -601,8 +678,9 @@ def tombstone(job: str, row: dict | None = None) -> str:
     which is what the removal frees) and an ARCHIVE_INFO.txt naming the job, its conversation and transcript. Raises
     when it cannot be written: no tombstone, no removal."""
     import glob
-    src = os.path.join(claude_base(), "jobs", job)
-    dst = tombstone_dir(job)
+    base = claude_base(row_account(row, job))
+    src = os.path.join(base, "jobs", job)
+    dst = os.path.join(base, "archived_sessions", "jobs", job)
     os.makedirs(dst, exist_ok=True)
     for f in ("state.json", "timeline.jsonl"):
         if os.path.isfile(os.path.join(src, f)):
@@ -611,7 +689,7 @@ def tombstone(job: str, row: dict | None = None) -> str:
     row = row or {}
     conv = str(row.get("sessionId") or st.get("sessionId") or "")
     orig = str(st.get("sessionId") or "")
-    hits = glob.glob(os.path.join(claude_base(), "projects", "*", f"{conv}.jsonl")) if conv else []
+    hits = glob.glob(os.path.join(base, "projects", "*", f"{conv}.jsonl")) if conv else []
     lines = [f"name: {row.get('name') or st.get('name') or ''}", f"job_id: {job}", f"session_id: {conv}"]
     if orig and orig != conv:
         lines.append(f"original_session_id: {orig}")
@@ -645,13 +723,21 @@ class ClaudeBackend(Backend):
     Claude wake adapter is therefore not a send: it is a wake-request file the
     role's own ledger-watch delivers, else a direct wake that resumes the
     session (`wake` and `deliver` below; architecture doc §7).
+
+    An instance is bound to an account (`accounts`; "" is the default): `create` starts the new job there. Every call
+    on an existing job runs in the account that holds it, found from its listed row or its job folder, so a session is
+    reached whichever account the caller was made for.
     """
     ecosystem = "claude"
+
+    def __init__(self, account: str = ""):
+        self.account = account
 
     def sessions(self) -> list[dict]:
         return [{"session": str(e["sessionId"]), "job": str(e.get("id") or ""),
                  "label": str(e.get("name") or e["sessionId"][:8])[:40],
-                 "state": e.get("state") or e.get("kind"), "cwd": e.get("cwd")}
+                 "state": e.get("state") or e.get("kind"), "cwd": e.get("cwd"),
+                 **({"account": e[accounts.ROW_KEY]} if e.get(accounts.ROW_KEY) else {})}
                 for e in self._agents() if e.get("sessionId") and e.get("pid")]
 
     def wake(self, spec, role, text: str, condition: str = "", dry_run: bool = False) -> str:
@@ -725,14 +811,15 @@ class ClaudeBackend(Backend):
         cwd = row.get("cwd") or None
         if cwd and not os.path.isdir(cwd):
             cwd = None
+        env = claude_env(row_account(row))
         r = subprocess.run(detached([b, "--bg", "--resume", session, text]), capture_output=True, text=True,
-                           timeout=120, cwd=cwd, env=_ENV)
+                           timeout=120, cwd=cwd, env=env)
         out = ANSI_RE.sub("", r.stdout + r.stderr)
         m = COPY_RE.search(out)
         if m:
             # the session was still running: a copy would act as the role beside it, so it goes at once
             self.stop(m.group(1))
-            subprocess.run([b, "rm", m.group(1)], capture_output=True, text=True, timeout=30, env=_ENV)
+            subprocess.run([b, "rm", m.group(1)], capture_output=True, text=True, timeout=30, env=env)
             return f"FAILED (session still running; copy {m.group(1)} stopped and removed)"
         if r.returncode != 0:
             return f"FAILED rc={r.returncode}: {out.strip().splitlines()[-1][:120] if out.strip() else ''}"
@@ -749,10 +836,9 @@ class ClaudeBackend(Backend):
         e = holders[0] if holders else {}
         jobs = [str(h.get("id")) for h in holders if h.get("id")]
         flags = []
-        base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
         for j in jobs:  # the saved options of whichever copy has them (a long-lived job may carry none)
             try:
-                flags = list((_json.load(open(os.path.join(base, "jobs", j, "state.json"))) or {}).get("respawnFlags") or [])
+                flags = list((_json.load(open(os.path.join(job_base(j), "jobs", j, "state.json"))) or {}).get("respawnFlags") or [])
             except (OSError, ValueError):
                 flags = []
             if flags:
@@ -766,7 +852,10 @@ class ClaudeBackend(Backend):
                                                       f"(model {opt.get('--model', 'default')}) and stop {old}"}
         if fake_sessions() is not None:  # tests: no real launch
             return {"session": "fe5e7000-0000", "job": "fe5e7000", "did": f"fake new job fe5e7000 ({name}); stopped {old or '-'}"}
-        new = self.create(name, where, brief=prompt, name=name, model=opt.get("--model", ""), effort=opt.get("--effort", ""))
+        # the new job stays in the old one's account (a reset is not a move between accounts)
+        acct = row_account(e) if e else self.account
+        new = ClaudeBackend(acct).create(name, where, brief=prompt, name=name, model=opt.get("--model", ""),
+                                         effort=opt.get("--effort", ""))
         live = self.retire(jobs)
         did = f"new job {new[:8]} ({name}); stopped {old or '-'}"
         return {"session": new, "job": new[:8], "did": did + (f"; STILL LIVE: {', '.join(live)}" if live else ""),
@@ -812,7 +901,7 @@ class ClaudeBackend(Backend):
             _same(str(r.get("sessionId", "")), conv) or (orig and _same(str(r.get("sessionId", "")), orig))
             or (orig and _same(str(r.get("originalSessionId") or _state_of(str(r.get("id")))
                                    .get("sessionId") or ""), orig)))]
-        if not row and not os.path.isdir(os.path.join(claude_base(), "jobs", jid)):
+        if not row and not os.path.isdir(os.path.join(job_base(jid), "jobs", jid)):
             # already gone (a retry after `claude rm` ran by hand): a removal that has nothing left to remove succeeds,
             # so the caller can forget the entry (measured 2026-11-11: a retried remove-session refused on "No job
             # matching" and left the entry saved)
@@ -823,7 +912,7 @@ class ClaudeBackend(Backend):
             raise RuntimeError(f"job {jid} has a live worker (pid {row.get('pid')})")
         stone = tombstone(jid, row)
         b = tool_which("claude") or "claude"
-        r = subprocess.run([b, "rm", jid], capture_output=True, text=True, timeout=60, env=_ENV)
+        r = subprocess.run([b, "rm", jid], capture_output=True, text=True, timeout=60, env=claude_env(row_account(row, jid)))
         if r.returncode != 0:
             out = ANSI_RE.sub("", r.stdout + r.stderr).strip()
             lines = out.splitlines()
@@ -855,7 +944,7 @@ class ClaudeBackend(Backend):
             argv += ["--effort", effort]
         argv += [brief]
         r = subprocess.run(detached(argv), capture_output=True, text=True, timeout=120,
-                           cwd=repo_dir, env=_ENV)
+                           cwd=repo_dir, env=claude_env(self.account))
         m = parse_bg_id(r.stdout + r.stderr)
         if not m:
             raise RuntimeError(f"claude --bg failed for {title!r}: "
@@ -870,17 +959,8 @@ class ClaudeBackend(Backend):
             "Coordinator-to-consumer traffic goes in the queue file ONLY.")
 
     def _agents(self, include_stopped: bool = False) -> list:
-        import json as _json
-        fake = fake_sessions()
-        if fake is not None:
-            return list(fake.get("claude") or [])
-        b = tool_which("claude") or "claude"
-        r = subprocess.run([b, "agents", "--json"] + (["--all"] if include_stopped else []),
-                           capture_output=True, text=True, timeout=30, env=_ENV)
-        try:
-            return _json.loads(r.stdout) if r.returncode == 0 else []
-        except Exception:
-            return []
+        """Every account's sessions (`claude_agents`): a stored id is found whichever account it lives in."""
+        return claude_agents(include_stopped)
 
     def _row(self, session_id: str, include_stopped: bool = False) -> dict | None:
         return claude_find(self._agents(include_stopped), session_id)
@@ -905,7 +985,7 @@ class ClaudeBackend(Backend):
         e = self._row(session_id, include_stopped=True) or {}
         b = tool_which("claude") or "claude"
         r = subprocess.run(detached([b, "respawn", str(e.get("id") or session_id[:8])]), capture_output=True,
-                           text=True, timeout=120, env=_ENV)
+                           text=True, timeout=120, env=claude_env(row_account(e) if e else id_account(session_id)))
         out = ANSI_RE.sub("", r.stdout + r.stderr).strip().splitlines()
         return (out[-1] if out else "respawned") if r.returncode == 0 else f"FAILED rc={r.returncode}: {out[-1] if out else ''}"
 
@@ -913,7 +993,7 @@ class ClaudeBackend(Backend):
                  role: str = "") -> str:
         b = tool_which("claude") or "claude"
         r = subprocess.run([b, "logs", session_id], capture_output=True,
-                           text=True, timeout=30, env=_ENV)
+                           text=True, timeout=30, env=claude_env(id_account(session_id)))
         out = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", r.stdout)
         lines = [ln for ln in out.splitlines() if ln.strip()]
         return "\n".join(lines[-max(limit, 1) * 4:])
@@ -938,7 +1018,8 @@ class ClaudeBackend(Backend):
             raise UnsupportedError(f"claude session {session_id} runs interactively in pid {e.get('pid')}: "
                                    "`claude attach` opens background sessions only")
         job = str(e.get("id") or session_id.split("-", 1)[0][:8])
-        return [tool_which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"}
+        return [tool_which("claude") or "claude", "attach", job], {"CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
+                                                                   **view_env("claude", row_account(e, job))}
 
     @staticmethod
     def launch_command(brief_file: str) -> str:
@@ -947,10 +1028,9 @@ class ClaudeBackend(Backend):
 
     @staticmethod
     def stop(session_id: str) -> str:
-        import shutil as _sh
         b = tool_which("claude") or "claude"
         r = subprocess.run([b, "stop", session_id], capture_output=True,
-                           text=True, timeout=30, env=_ENV)
+                           text=True, timeout=30, env=claude_env(id_account(session_id)))
         return (r.stdout + r.stderr).strip()[-200:]
 
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:
@@ -962,7 +1042,7 @@ class ClaudeBackend(Backend):
             return ""
         try:
             r = subprocess.run([b, "logs", session_id], capture_output=True,
-                               text=True, timeout=60, env=_ENV)
+                               text=True, timeout=60, env=claude_env(id_account(session_id)))
         except Exception:
             return ""
         tail = r.stdout[-6000:]
@@ -993,8 +1073,12 @@ class ClaudeBackend(Backend):
 class CodexBackend(Backend):
     """Codex CLI: a session is a thread id and each turn is one `codex exec resume <id>` process
     (shoal/codex_harness.py). Like Muse there is no harness-wide listing, no attach and no respawn: a turn
-    that died is simply followed by the next wake, so revive is the ordinary wake path."""
+    that died is simply followed by the next wake, so revive is the ordinary wake path. Bound to an account for a new
+    thread; a turn on an existing thread runs in the account that holds it (`codex_harness.turn_env`)."""
     ecosystem = "codex"
+
+    def __init__(self, account: str = ""):
+        self.account = account
 
     def sessions(self) -> list[dict]:
         import ui_sessions
@@ -1008,7 +1092,7 @@ class CodexBackend(Backend):
             return "cx_DRYRUN_" + re.sub(r"\W+", "_", title)
         if not brief:
             raise UnsupportedError("codex create needs the role brief text")
-        return codex.create_session(repo_dir, brief, model=model, effort=effort)
+        return codex.create_session(repo_dir, brief, model=model, effort=effort, account=self.account or None)
 
     def send(self, session_id: str, repo_dir: str, prompt: str,
              dry_run: bool = False, model: str = "", effort: str = "") -> None:
@@ -1047,7 +1131,8 @@ class CodexBackend(Backend):
 
     def view_argv(self, session_id: str, model: str = "", effort: str = "") -> tuple[list[str], dict[str, str]]:
         import codex_harness as codex
-        return codex.view_argv(session_id, model, effort), {}
+        acct = codex.thread_account(session_id)
+        return codex.view_argv(session_id, model, effort), (view_env("codex", acct) if acct is not None else {})
 
     def prune(self, session: str, job: str = "", mode: str = "archive", dry_run: bool = False) -> str:
         """Codex: `archive` is `thread/archive` (a flag on the one stored rollout: nothing is copied, and
@@ -1146,5 +1231,9 @@ def ecosystems() -> tuple[str, ...]:
     return tuple(BACKENDS)
 
 
-def get(ecosystem: str) -> Backend:
-    return BACKENDS[ecosystem]()
+def get(ecosystem: str, account: str = "") -> Backend:
+    """The backend of an ecosystem, bound to one of its accounts ("" the default) for what it creates."""
+    cls = BACKENDS[ecosystem]
+    if account and cls in (ClaudeBackend, CodexBackend):
+        return cls(account)
+    return cls()
