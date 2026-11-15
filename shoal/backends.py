@@ -621,6 +621,37 @@ def id_account(key: str) -> str:
         return ""
 
 
+def claude_untrusted(account: str, path: str) -> str:
+    """Why a new Claude session on `account` would not start in `path`, "" when it would or it cannot be told. Claude asks
+    once per account whether to trust a workspace and keeps the answer in that account's own state (`.claude.json`: in
+    its config directory when one is set, else the home directory), and `claude --bg` refuses an untrusted one (measured
+    2026-11-15: a role handed to a new account failed "Workspace not trusted" after its old session had stopped), so a
+    handoff checks before it stops anything. A trusted parent directory covers its subdirectories. Checked where several
+    Claude accounts are declared, the case where an account can be new to a folder its role has used for months."""
+    import json as _json
+    if not path or fake_sessions() is not None or not accounts.several("claude"):
+        return ""
+    var = accounts.HOME_VARS["claude"][0]
+    cfg = claude_env(account).get(var)
+    state = os.path.join(cfg, ".claude.json") if cfg else os.path.expanduser("~/.claude.json")
+    try:
+        projects = (_json.load(open(state)) or {}).get("projects") or {}
+    except (OSError, ValueError, AttributeError):
+        return ""
+    p = os.path.abspath(os.path.expanduser(path))
+    while True:
+        if (projects.get(p) or {}).get("hasTrustDialogAccepted"):
+            return ""
+        up = os.path.dirname(p)
+        if up == p:
+            break
+        p = up
+    who = accounts.name("claude", account)
+    sel = f"{var}={cfg} " if cfg else ""
+    return (f"the {who} account has not trusted {path} (Claude asks once per account and refuses a background session "
+            f"in an untrusted folder): run `{sel}claude` in {path} once and accept, then hand off again")
+
+
 def row_account(row: dict | None, job: str = "") -> str:
     """The account a listed row (or, failing that, a job id) belongs to."""
     if row and row.get(accounts.ROW_KEY):

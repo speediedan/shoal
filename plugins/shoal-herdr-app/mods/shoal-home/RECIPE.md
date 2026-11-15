@@ -62,10 +62,18 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   `#0b0e12` at 92 percent, steel border): header with the reachable dot (green `#50d090`, red
   `#ff4d5e` for unreachable, grey `#6b7780` for not probed yet), the host name (14.5 px semibold),
   a `last` chip, a `N need you` pill in the theme's `blocked` color, and the host's digit key.
-  Lines below, 18 px each: the route (`this machine` for local) in Geist Mono; one row per shoal
-  (up to four, then `+n more shoals`): a tint dot, the tag in its pastel, `N need you` in the
-  blocked color, then `W working · Q waiting · R roles`; `⚠ Herdr pin differs: shoal ui doctor`
-  in amber when `pin_ok` is false; and the open status.
+  Lines below, 18 px each: the route (`this machine` for local) in Geist Mono; then what runs on
+  that host (the summary's `here`): one row per role, any shoal (a dot in its shoal's pastel, the
+  role's name, its state in a word, `asks you` and any role needing you in the blocked color,
+  `working` in mint, and its provider in Geist Mono with the account's digit: `cl`, `cl2`, `cx`),
+  then one row per standalone seat (an outlined square, the seat's name dimmed, its state and
+  provider), up to nine rows then `+n more`; `no roles or seats run here` for a host with none;
+  `⚠ ledger copy here is N d old` in amber when the host's ledger clone last fetched over six
+  hours ago (a host that runs no role never pulls); `⚠ Herdr pin differs: shoal ui doctor` in
+  amber when `pin_ok` is false; and the open status. The header's `N need you` counts that
+  host's own roles. Every host reads every shoal from its own ledger clone, so shoal-wide totals
+  would be the same on each card: a summary without `here` (an older host) still shows one row
+  per shoal (tint dot, tag, `N need you`, `W working · Q waiting · R roles`).
 - **Last choice:** a cyan ring 5 px outside the card. **Keyboard selection:** a brighter border.
 - **Footer:** `click a host to open · ↑↓ or j k move · 1-9 jump · Enter open · r refresh`.
 - **Text screen:** below 640 by 460, when the art does not fit, with `art: false`, or when an

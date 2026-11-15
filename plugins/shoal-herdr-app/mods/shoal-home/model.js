@@ -6,7 +6,10 @@
 //   {"v":1, "kind":"shoal-launch-list", "last": "<name>" | null,
 //    "hosts": [{"name", "local", "route", "reachable": true | false | null, "hint", "machine",
 //               "summary": null | {"shoals": [{"id", "tag", "roles", "working", "waiting",
-//                                              "needs_you"}], "needs_you", "pin_ok"}}]}
+//                                              "needs_you"}], "needs_you", "pin_ok",
+//                                  "here": {"host", "roles": [{"shoal", "tag", "slug", "ecosystem", "account",
+//                                           "state", "event", "needs_you"}], "seats": [{"label", "harness",
+//                                           "account", "state"}], "needs_you", "ledger_age_s"}}}]}
 // `reachable: null` means not probed yet.
 
 export const KIND = "shoal-launch-list";
@@ -42,8 +45,13 @@ export const DOT = { up: PALETTE.mint, down: PALETTE.red, unknown: "#6b7780" };
 
 /** How many shoal rows a card lists before "+n more". */
 export const MAX_SHOALS = 4;
+/** Role and seat lines a card shows before "+n more". */
+export const MAX_HERE = 9;
+/** A host's ledger clone older than this reads as stale on its card (a host running no role never pulls). */
+export const STALE_LEDGER_S = 6 * 3600;
 
 const num = (v, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
 const arr = (v) => (Array.isArray(v) ? v : []);
 const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
 const strOrNull = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
@@ -80,7 +88,45 @@ function normSummary(s) {
     shoals,
     needsYou: num(o.needs_you, shoals.reduce((t, x) => t + x.needsYou, 0)),
     pinOk: typeof o.pin_ok === "boolean" ? o.pin_ok : null,
+    here: normHere(o.here),
   };
+}
+
+function normHere(h) {
+  const o = obj(h);
+  if (!o) return null;
+  const roles = arr(o.roles).map(obj).filter((r) => r && strOrNull(r.slug)).map((r) => ({
+    shoal: strOrNull(r.shoal) ?? strOrNull(r.tag), tag: strOrNull(r.tag) ?? shortShoal(r.shoal), slug: r.slug,
+    ecosystem: str(r.ecosystem), account: str(r.account), state: str(r.state), event: str(r.event), needsYou: r.needs_you === true,
+  }));
+  const seats = arr(o.seats).map(obj).filter((s) => s && strOrNull(s.label)).map((s) => ({
+    label: s.label, harness: str(s.harness), account: str(s.account), state: str(s.state),
+  }));
+  const age = typeof o.ledger_age_s === "number" && Number.isFinite(o.ledger_age_s) ? o.ledger_age_s : null;
+  return { roles, seats, needsYou: num(o.needs_you, roles.filter((r) => r.needsYou).length), ledgerAgeS: age };
+}
+
+const PROVIDER_MARK = { claude: "cl", codex: "cx", opencode: "oc", muse: "mu" };
+
+/** A session's provider in two letters, with its account's digits when it is not the default (`cl2`). */
+export function providerMark(ecosystem, account = "") {
+  const base = PROVIDER_MARK[ecosystem] ?? str(ecosystem).slice(0, 2);
+  const digits = /(\d+)$/.exec(str(account));
+  return base + (account ? (digits ? digits[1] : "+") : "");
+}
+
+/** A role's state in a word or two, for its card line. */
+export function roleWord(r) {
+  if (r.state === "work") return "working";
+  if (r.state === "idle") return "idle";
+  if (r.state === "excluded") return r.event === "parked" ? "parked" : "excluded";
+  if (r.state === "wait") return r.event === "user-prompt" || r.event === "user-auth" ? "asks you" : r.event && r.event !== "self" ? `waits: ${r.event}` : "waiting";
+  return r.state || "?";
+}
+
+/** "14 d", "7 h", "40 min": a ledger clone's age. */
+export function ageText(s) {
+  return s >= 86400 ? `${Math.round(s / 86400)} d` : s >= 3600 ? `${Math.round(s / 3600)} h` : `${Math.max(1, Math.round(s / 60))} min`;
 }
 
 /**
@@ -212,7 +258,23 @@ export function cardLines(h, status = null) {
   lines.push({ kind: "sub", text: `${where}${machine}` });
   const st = hostState(h);
   if (st === "down") lines.push({ kind: "note", tone: "down", text: h.hint ? `unreachable: ${h.hint}` : "unreachable now" });
-  else if (h.summary) {
+  else if (h.summary?.here) {
+    // what runs on this host: its roles (any shoal, tinted by shoal) and its standalone seats; every host reads the same
+    // shoals, so shoal-wide totals would repeat on every card
+    const here = h.summary.here;
+    const tint = new Map(h.summary.shoals.map((s, i) => [s.id, PASTELS[i % PASTELS.length]]));
+    const items = [
+      ...here.roles.map((r) => ({ kind: "role", tint: tint.get(r.shoal) ?? PASTELS[0], ...r })),
+      ...here.seats.map((s) => ({ kind: "seat", ...s })),
+    ];
+    if (!items.length) lines.push({ kind: "note", tone: "dim", text: "no roles or seats run here" });
+    items.slice(0, MAX_HERE).forEach((x) => lines.push(x));
+    if (items.length > MAX_HERE) lines.push({ kind: "more", text: `+${items.length - MAX_HERE} more` });
+    if (here.ledgerAgeS !== null && here.ledgerAgeS > STALE_LEDGER_S) {
+      lines.push({ kind: "pin", text: `⚠ ledger copy here is ${ageText(here.ledgerAgeS)} old` });
+    }
+    if (h.summary.pinOk === false) lines.push({ kind: "pin", text: "⚠ Herdr pin differs: shoal ui doctor" });
+  } else if (h.summary) {
     const shoals = h.summary.shoals;
     if (!shoals.length) lines.push({ kind: "note", tone: "dim", text: "no shoals running" });
     shoals.slice(0, MAX_SHOALS).forEach((s, i) => lines.push({ kind: "shoal", tint: PASTELS[i % PASTELS.length], ...s }));
@@ -226,5 +288,6 @@ export function cardLines(h, status = null) {
 /** The text after a shoal tag on its row: roles working and waiting. */
 export const shoalCounts = (s) => `${s.working} working · ${s.waiting} waiting · ${s.roles} roles`;
 
-/** Total needs-you across a host's shoals (0 without a summary). */
-export const hostNeedsYou = (h) => (h?.summary ? h.summary.needsYou : 0);
+/** Needs-you on a host's card: its own roles' when the summary says which run there, else its shoals' total (0 without a
+ * summary). */
+export const hostNeedsYou = (h) => (h?.summary ? (h.summary.here ? h.summary.here.needsYou : h.summary.needsYou) : 0);

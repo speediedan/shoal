@@ -276,19 +276,47 @@ def rank(provider: str, now: float | None = None, snap: list | None = None) -> l
     import time
     import subscription_usage
     now = time.time() if now is None else now
-    keys = [name(provider, a) for a in of(provider)]
+    keys = [usage_key(provider, a) for a in of(provider)]
     rows = {r.get("provider"): r for r in (subscription_usage.snapshot(keys, now=now)["accounts"] if snap is None else snap)}
     out = []
     for a in of(provider):
-        score, why = headroom(rows.get(name(provider, a)) or {}, now)
+        score, why = headroom(rows.get(usage_key(provider, a)) or {}, now)
         out.append({"account": a, "name": name(provider, a), "score": score, "binding": why})
     return sorted(out, key=lambda r: (r["score"] is None, -(r["score"] or 0)))
+
+
+USAGE_KEYS = {"opencode": "opencode-go"}  # a provider whose usage reading has another name
+
+
+def usage_key(provider: str, account: str = "") -> str:
+    """The usage reading of an account (subscription_usage): a declared account by its name, a default by its provider's."""
+    return account or USAGE_KEYS.get(provider, provider)
+
+
+def excluded() -> list[str]:
+    """`[accounts] exclude`: providers kept out of balancing (never suggested by `auto`, their default account kept)."""
+    t = config.file_values().get("accounts")
+    v = t.get("exclude") if isinstance(t, dict) else None
+    return [str(x) for x in v] if isinstance(v, list) else []
+
+
+def pool(providers: list[str] | None = None) -> list[str]:
+    """The providers balancing may choose among: those given (else the ones in use on this host, `shoal ui set
+    ecosystems`), less `[accounts] exclude`."""
+    if providers is None:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+        import ui_status
+        providers = ui_status.active_ecosystems()
+    out = excluded()
+    return [p for p in providers if p not in out]
 
 
 def choose(provider: str, now: float | None = None, snap: list | None = None) -> tuple[str, str]:
     """(account, why) the selection policy picks for a new session on `provider`: `[accounts] select = "balance"` (the
     default) the best-scored eligible account, `default` the provider's default. The default account whenever the
-    provider has one account, or no account has a fresh, eligible reading."""
+    provider has one account, is excluded from balancing, or no account has a fresh, eligible reading."""
+    if provider in excluded():
+        return "", "excluded from balancing ([accounts] exclude)"
     if not several(provider):
         return "", "one account"
     if setting("select", "balance") not in ("balance",):
@@ -298,6 +326,24 @@ def choose(provider: str, now: float | None = None, snap: list | None = None) ->
     if not top or not top["score"]:
         return "", "no account has a fresh reading with room left: the default"
     return top["account"], f"best paced headroom {top['score']:.2g} ({top['binding']})"
+
+
+def choose_any(providers: list[str] | None = None, now: float | None = None,
+               snap: list | None = None) -> tuple[str, str, str]:
+    """(provider, account, why) across the balancing pool (`pool`): the account with the most paced headroom of any
+    provider in it. ("", "", why) when the pool is empty or no account has a fresh reading with room left: the caller
+    then keeps its provider. `--ecosystem auto` on handoff and add-role."""
+    if setting("select", "balance") != "balance":
+        return "", "", "select = default"
+    best = None
+    for p in pool(providers):
+        for r in rank(p, now, snap):
+            if r["score"] and (best is None or r["score"] > best[2]["score"]):
+                best = (p, r["account"], r)
+    if best is None:
+        return "", "", "no provider in the pool has a fresh reading with room left"
+    p, a, r = best
+    return p, a, f"best paced headroom in the pool ({', '.join(pool(providers))}): {name(p, a)} {r['score']:.2g} ({r['binding']})"
 
 
 def cmd_accounts(a) -> int:
@@ -334,4 +380,11 @@ def cmd_accounts(a) -> int:
     for p in sorted({r["provider"] for r in rows}):
         acct, why = choose(p)
         print(f"{p}: a new session would go to {name(p, acct)} ({why}; [accounts] select = {setting('select', 'balance')})")
+    try:
+        p, acct, why = choose_any()
+        print(f"pool {', '.join(pool()) or '(empty)'}" + (f" (excluded: {', '.join(excluded())})" if excluded() else "")
+              + f": `--ecosystem auto` would pick {name(p, acct) if p else 'nothing (the current provider stays)'}"
+              + (f" ({why})" if p else f" ({why})"))
+    except Exception:  # noqa: BLE001 - no usage cache or settings: the pool line is a convenience
+        pass
     return 0

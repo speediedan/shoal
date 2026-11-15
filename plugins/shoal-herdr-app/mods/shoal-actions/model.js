@@ -525,8 +525,16 @@ function normRoles(d) {
     const name = strOrNull(obj(b)?.account);
     if (name && accounts[eco]?.includes(name)) best[eco] = { account: name, why: str(obj(b).why) };
   }
+  const pb = obj(d.pool_best);
+  const poolBest = pb && strOrNull(pb.ecosystem) && strOrNull(pb.account) ? { ecosystem: pb.ecosystem, account: pb.account, why: str(pb.why) } : null;
   return { kind: "roles", shoals, ...(ecosystems.length ? { ecosystems } : {}), ...(Object.keys(accounts).length ? { accounts } : {}),
-    ...(Object.keys(best).length ? { accountBest: best } : {}) };
+    ...(Object.keys(best).length ? { accountBest: best } : {}), ...(poolBest ? { poolBest } : {}) };
+}
+
+/** The balancing pool's pick across providers, for a line under the provider choice ("" when the host made none). */
+export function poolHint(roles) {
+  const b = roles?.poolBest;
+  return b ? `most quota headroom now: ${b.account} (provider ${b.ecosystem}; \`[accounts] exclude\` keeps a provider out)` : "";
 }
 
 /**

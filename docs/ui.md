@@ -995,7 +995,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
 - **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
   "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's
   shoals (`id`, `tag`, `roles`, `working`, `waiting`, `needs_you`), its total needs-you and `pin_ok` (its
-  herdr-core at the pin), from its `ui graph`, cached 30 s.
+  herdr-core at the pin), from its `ui graph`, cached 30 s. `here` is what is particular to that host: the roles
+  that run on it in any shoal (`shoal`, `tag`, `slug`, `ecosystem`, `account`, `state`, `event`, `needs_you`), its
+  standalone seats (`label`, `harness`, `account`, `state`), their needs-you, and `ledger_age_s` (how long ago its
+  ledger clone last fetched). The app's home cards show `here`: every host reads the same shoals from its own clone,
+  so the shoal-wide totals repeat on every card, and a host that runs no role (a laptop) never pulls its clone.
 - **Doctor.** `shoal ui doctor` adds informational `app:` rows (app and core at the pin, mods installed from this
   checkout, machines, the feed unit); `ui app-install --check` prints the same rows and fails on them.
 

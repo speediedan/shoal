@@ -222,12 +222,21 @@ def run(a) -> int:
         raise HandoffError("this seat has changed sessions since the preview: plan the handoff again")
     doc = os.path.abspath(os.path.expanduser(doc)) if doc else ""
     preflight(doc, eco)
-    if getattr(a, "account", None) is not None:  # refused here, before any session is asked or stopped
-        import accounts
-        try:
-            accounts.normalize(eco, a.account)
-        except ValueError as exc:
-            raise HandoffError(str(exc))
+    import accounts
+    import backends
+    named = getattr(a, "account", None)
+    try:  # refused here, before any session is asked or stopped
+        target = accounts.normalize(eco, named) if named is not None else None
+    except ValueError as exc:
+        raise HandoffError(str(exc))
+    if eco == "claude":
+        if session_key:
+            acct, where = (target if target is not None else (entry.get("account", "") if entry.get("harness") == eco else "")), entry.get("cwd") or ""
+        else:
+            acct, where = (target if target is not None else (getattr(role, "account", "") if role.ecosystem == eco else "")), spec.dir
+        why = backends.claude_untrusted(acct, where)
+        if why:
+            raise HandoffError(why)
     if session_key and is_self(entry):
         # a self-handover has no later turn to take a checkpoint in: it must be written first, then opted into
         if prepare:
