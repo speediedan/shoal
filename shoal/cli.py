@@ -62,6 +62,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 sys.path.insert(0, os.path.join(HERE, "ui"))
 from ledger import SYSTEM_WRITER  # noqa: E402
+import accounts as _accounts  # noqa: E402
 import config  # noqa: E402
 
 from backends import ClaudeBackend, UnsupportedError, get as get_backend  # noqa: E402
@@ -138,7 +139,7 @@ def want(stages: str, name: str) -> bool:
 
 def parse_role(spec: str) -> Role:
     """SLUG,ECO,TITLE,DOC[,aux][,fill=self|assigned|none][,scope=repo|repo]
-    [,scope-label=NAME][,server=H][,model=M][,effort=E][,seq=N]. DOC is the
+    [,scope-label=NAME][,server=H][,model=M][,effort=E][,account=A][,seq=N]. DOC is the
     single plan_state.md start document. Grants come from the doc's
     grants-needed section at brief time — never from the CLI. seq sets the
     session tag ({slug}-r{seq}); default 1. fill defaults to self (5.k).
@@ -148,7 +149,7 @@ def parse_role(spec: str) -> Role:
     if len(parts) < 4:
         raise ValueError(f"bad --role spec (want SLUG,ECO,TITLE,DOC[,...]): {spec!r}")
     slug, eco, title, doc = parts[:4]
-    model, effort, seq = "", "", 1
+    model, effort, account, seq = "", "", "", 1
     fill, scope, server, aux = "self", {}, "", False
     for tok in parts[4:]:
         if tok == "aux":
@@ -165,6 +166,8 @@ def parse_role(spec: str) -> Role:
             model = tok[len("model="):]
         elif tok.startswith("effort="):
             effort = tok[len("effort="):]
+        elif tok.startswith("account="):
+            account = tok[len("account="):]
         elif tok.startswith("seq="):
             try:
                 seq = int(tok[len("seq="):])
@@ -173,7 +176,7 @@ def parse_role(spec: str) -> Role:
         else:
             raise ValueError(f"bad --role token {tok!r} in {spec!r}")
     return Role(slug=slug, ecosystem=eco, title=title, doc=doc,
-                model=model, effort=effort,
+                model=model, effort=effort, account=account,
                 seq=seq, fill="self" if aux else fill, scope=scope, server=server,
                 aux=aux)
 
@@ -587,7 +590,7 @@ def stage_restart(spec: ShoalSpec, old_sessions: list[str], launched: dict[str, 
     for role in spec.roles:
         if role not in targets:
             continue
-        be = get_backend(role.ecosystem)
+        be = get_backend(role.ecosystem, role.account) if role.account else get_backend(role.ecosystem)
         brief_path = os.path.join(home_dir(spec.sid), "briefs",
                                   f"{role.tag}.md")
         if not dry_run:
@@ -862,8 +865,35 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
             print(f"REFUSED: {slug}'s {r.ecosystem} session {r.session[:8]} is still live, so two sessions would hold the "
                   f"role: use `shoal handoff`")
             return 1
-        print(f"{slug}: recorded provider {r.ecosystem} -> {eco}" + (f"; effort {r.effort} cleared" if r.effort else ""))
-        r.ecosystem, r.effort = eco, ""  # an effort value means what its provider says it means: back to the default
+        print(f"{slug}: recorded provider {r.ecosystem} -> {eco}" + (f"; effort {r.effort} cleared" if r.effort else "")
+              + (f"; account {r.account} cleared" if r.account else ""))
+        # an effort value means what its provider says it means, and an account is one provider's: back to the defaults
+        r.ecosystem, r.effort, r.account = eco, "", ""
+    for kv in (getattr(args, "set_account", None) or []):
+        slug, _, acct = kv.partition(":")
+        r = spec.role(slug)
+        if r is None:
+            print(f"unknown --set-account slug: {slug}")
+            return 1
+        if slug not in (only or []):
+            print(f"REFUSED: --set-account {slug} needs --only {slug}: the record would change with no relaunch")
+            return 1
+        try:
+            acct = _accounts.normalize(r.ecosystem, acct) if is_local(r, spec) else acct.strip()
+        except ValueError as exc:
+            print(f"REFUSED: --set-account {slug}: {exc}")
+            return 1
+        if acct == r.account:
+            continue
+        gone_by = time.time() + OLD_SESSION_WAIT_S
+        while r.session and not dry and r.ecosystem == "claude" and _park.claude_live(r) and time.time() < gone_by:
+            time.sleep(1)
+        if r.session and not dry and (_park.session_held(r, spec.dir) or (r.ecosystem == "claude" and _park.claude_live(r))):
+            print(f"REFUSED: {slug}'s {r.ecosystem} session {r.session[:8]} is still live, so two sessions would hold the "
+                  f"role: use `shoal handoff`")
+            return 1
+        print(f"{slug}: recorded account {_accounts.name(r.ecosystem, r.account)} -> {_accounts.name(r.ecosystem, acct)}")
+        r.account = acct
     for kv in (getattr(args, "set_effort", None) or []):
         slug, _, effort = kv.partition(":")
         r = spec.role(slug)
@@ -1017,6 +1047,23 @@ def cmd_add_role(a: argparse.Namespace) -> int:
         print(f"spec is retired ({spec.retired_utc}); pass --force")
         return 1
     new_roles = [parse_role(r) for r in (a.role or [])]
+    for r in new_roles:
+        if r.ecosystem == "auto":  # the balancing pool's pick now (accounts.choose_any)
+            p, acct, why = _accounts.choose_any()
+            if not p:
+                print(f"REFUSED: {r.slug}: --role ecosystem auto, but {why}: name a provider")
+                return 1
+            print(f"{r.slug}: auto: {_accounts.name(p, acct)} ({why})")
+            r.ecosystem = p
+            r.account = r.account or acct
+        if getattr(a, "account", "") and not r.account:
+            r.account = a.account
+        if is_local(r, spec):  # another host's accounts are its own config's
+            try:
+                r.account = _accounts.normalize(r.ecosystem, r.account)
+            except ValueError as exc:
+                print(f"REFUSED: {r.slug}: {exc}")
+                return 1
     if getattr(a, "aux", ""):  # the residual lane (architecture §4.1); aux-launch avoids the bump
         eco, model = _aux.parse_aux_arg(a.aux)
         new_roles.append(_aux.aux_role(spec.sid, eco, model))
@@ -1166,7 +1213,7 @@ def cmd_status(spec: ShoalSpec) -> int:
     if g:
         print(f"  generation {g.get('gen')}: started {g.get('started_utc')} ended {g.get('ended_utc') or '(open)'}")
     for r in spec.roles:
-        parts = [f"{r.slug} [{r.ecosystem}]"]
+        parts = [f"{r.slug} [{r.ecosystem}" + (f" {r.account}" if r.account else "") + "]"]
         parts.append(f"tag={r.tag} session={r.session or '(none)'}")
         if r.session and not r.session.startswith(("ses_DRYRUN", "cc_DRYRUN")):
             try:
@@ -1177,7 +1224,9 @@ def cmd_status(spec: ShoalSpec) -> int:
         parts.append(f"hb={'never' if age is None else f'{age:.0f}m ago'}")
         ws, w = _state.wait_status(spec.sid, r.slug)
         if ws != "none":
-            parts.append(f"wait={ws}:{w.get('sub')} holder={w.get('holder')} rescan={w.get('rescan_utc')}")
+            ended = _state.wait_ended(spec.sid, r.slug, w) if ws == "covered" else ""
+            parts.append(f"wait={'ended' if ended else ws}:{w.get('sub')} holder={w.get('holder')} rescan={w.get('rescan_utc')}"
+                         + (f" (target {w.get('target')} done: {ended}; the role has not taken it up)" if ended else ""))
         parts.append(f"doc={'ok' if r.doc and os.path.exists(r.doc) else 'MISSING'}")
         print("  " + " | ".join(parts))
     try:
@@ -1268,6 +1317,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--set-ecosystem", action="append", default=[],
                    help="SLUG:ECOSYSTEM to relaunch a role on another provider (repeatable; `handoff` stops the old session)")
     p.add_argument("--set-effort", action="append", default=[], help="SLUG:EFFORT for a relaunched role (repeatable)")
+    p.add_argument("--set-account", action="append", default=[],
+                   help="SLUG:ACCOUNT to relaunch a role on another account of its provider (repeatable; the provider's "
+                        "name or empty is its default account; `handoff --account` stops the old session)")
     p.add_argument("--note", action="append", default=[],
                    help="SLUG:TEXT an operator's note added to that relaunched role's first prompt, this time only (repeatable)")
     p.add_argument("--stages", default=",".join(ALL_STAGES))
@@ -1289,7 +1341,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="also add the shoal-aux residual lane (needs features.matcher); on a running shoal "
                         "prefer `aux-init` + `aux-launch`, which do not bump the incarnation")
     p.add_argument("--role", action="append", default=[],
-                   help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,scope=R][,model=M][,effort=E][,seq=N] (repeatable)")
+                   help="SLUG,ECO,TITLE,DOC[,fill=self|assigned|none][,scope=R][,model=M][,effort=E][,account=A][,seq=N] (repeatable)")
+    p.add_argument("--account", default="", help="the provider account new roles run on when their --role names none "
+                                                 "(`shoal accounts` lists them; default: the provider's default)")
     p.add_argument("--stages", default="handoffs,sync-plans,restart")
     p.add_argument("--keep", action="append", default=[],
                    help="SLUG:ID to adopt an already-live session instead of launching")
@@ -1363,6 +1417,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--slug", required=True)
     p.add_argument("--out", default="")
     p.set_defaults(func=lambda a: cmd_brief(a))
+
+    p = sub.add_parser("accounts", help="the provider accounts on this host ([accounts.<name>] in the host config)")
+    p.add_argument("--check", action="store_true", help="ask each provider's CLI for the account's sign-in (relayed)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=lambda a: _accounts.cmd_accounts(a))
 
     p = sub.add_parser("status", help="restart preconditions + live status at a glance")
     p.add_argument("--spec", required=True)

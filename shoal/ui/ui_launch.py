@@ -657,18 +657,39 @@ def _summary_cache(name: str) -> str:
 
 
 def summarize(graph: dict, core_version: str = "") -> dict:
-    """A host card's numbers from its graph document: each live shoal's roles, working, waiting and needs-you."""
+    """A host card's content from that host's graph document. Every host reads every shoal from its own ledger clone, so
+    the shoal-wide numbers (`shoals`) are the same on each card; `here` is what is particular to the host: the roles that
+    run on it (any shoal), its standalone seats, and how long ago its ledger clone last fetched (a host that runs no
+    role never pulls, so what it shows of the shoals can be days old)."""
     import ui_app
-    shoals = []
+    shoals, live = [], set()
     for s in graph.get("shoals", []):
         if s.get("retired"):
             continue
+        live.add(s["id"])
         m = s.get("metrics") or {}
         shoals.append({"id": s["id"], "tag": re.sub(r"-\d{8}-\d{6}$", "", s["id"]), "roles": m.get("roles", 0),
                        "working": m.get("working", 0), "waiting": m.get("waiting", 0),
                        "needs_you": m.get("needs_you", 0)})
+    host = str(graph.get("host") or "")
+    roles, seats = [], []
+    for n in graph.get("nodes", []):
+        st = n.get("state") or {}
+        if n.get("kind") == "role" and n.get("host") == host and n.get("shoal") in live:
+            roles.append({"shoal": n["shoal"], "tag": re.sub(r"-\d{8}-\d{6}$", "", n["shoal"]), "slug": n.get("slug") or "",
+                          "ecosystem": n.get("ecosystem") or "", "account": n.get("account") or "",
+                          "state": st.get("class") or "", "event": st.get("event") or "",
+                          "needs_you": bool(st.get("needs_you"))})
+        elif n.get("kind") == "external" and isinstance(n.get("standalone"), dict) and n.get("host") == host:
+            sa = n["standalone"]
+            if not sa.get("dismissed"):
+                seats.append({"label": n.get("label") or "", "harness": sa.get("harness") or "",
+                              "account": sa.get("account") or "", "state": sa.get("state") or ""})
+    ages = [s.get("ledger_age_s") for s in graph.get("shoals", []) if s["id"] in live and s.get("ledger_age_s") is not None]
     return {"shoals": shoals, "needs_you": sum(x["needs_you"] for x in shoals),
-            "pin_ok": (core_version == ui_app.CORE_PIN) if core_version else None}
+            "pin_ok": (core_version == ui_app.CORE_PIN) if core_version else None,
+            "here": {"host": host, "roles": roles, "seats": seats, "needs_you": sum(1 for r in roles if r["needs_you"]),
+                     "ledger_age_s": min(ages) if ages else None}}
 
 
 def host_summary(choice: str) -> dict | None:

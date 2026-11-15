@@ -33,9 +33,8 @@ def transcript(ecosystem: str, session: str) -> str:
         import health
         return health.claude_transcript(session)
     if ecosystem == "codex":
-        import config
-        root = config.env("CODEX_HOME") or os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
-        hits = glob.glob(os.path.join(root, "sessions", "*", "*", "*", f"rollout-*-{session}.jsonl"))
+        import codex_harness
+        hits = codex_harness.rollouts(session)
         return max(hits, key=os.path.getmtime) if hits else ""
     if ecosystem == "muse":
         import muse

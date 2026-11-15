@@ -56,8 +56,8 @@ you, per-shoal throughput and per-host load.
 - **Depth:** the lattice opens in depth, iso (an isometric turn), and `d` cycles the camera: iso, flat, tilt (52
   degrees), seen in perspective, so one press from the opening view is flat. In the
   global view each shoal is on its own plane, stacked in depth, outside seats on a plane above, so
-  traffic between planes visibly crosses them. You hover near the floor, keeping your opening screen position and
-  size by moving along the home camera sightline. A floor grid lies a full plane gap below every globe,
+  traffic between planes visibly crosses them. You hover near the floor straight above the hub between the shoals,
+  at your opening size, so every turn and orbit keeps you among the globes. A floor grid lies a full plane gap below every globe,
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. The canvas
   is a lighter slate in depth, so the shadows read. One light, a point high over the scene (`depth.js` `lightPoint`, up,
   to the left and a little toward the far side, fixed in the world so it stays put as the camera orbits), shades each

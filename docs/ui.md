@@ -333,6 +333,10 @@ shoal ui usage --refresh
 shoal ui usage --json
 ```
 
+A provider with more than one account on the host (`[accounts.<name>]` in `config/host.toml`, `shoal accounts`) gets
+one row per account: each declared account is read with its own sign-in and shown by its name (`claude-2`; `cl2` in the
+compact status line), after its provider's row.
+
 `shoal ui status` displays the meter block above the role tables (a shoal's overview leaves it to the app's Usage
 tab, so it stays about the shoal): a boxed
 table with one row per provider and its 5h, week and month windows side by side.
@@ -932,6 +936,14 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   unless explicit values are entered, and with none configured, the provider's own. Its own can be whatever its client
   last saved (2026-11-14: Codex keeps a model picked in its interactive client as its default, so a seat moved to Codex
   ran that one), and moving back to a provider gets the configured default again, not an earlier session's choice.
+  A provider with two or more accounts on the host (`[accounts.<name>]`, `shoal accounts`) adds an **Account** choice
+  (pick the provider to see it; with one account per provider nothing new shows): unpicked keeps the current account on
+  the same provider, else the provider's default; picking one hands off to a fresh session on that account, same host,
+  model and effort (`shoal handoff --account`). The dialog pre-selects the account with the most paced quota headroom
+  (free share over the share of its window still to run; `[accounts] select`, `shoal accounts` shows every score) and
+  says why under the choice; clear it to keep the current one. **New role** has the same choice, **Add session** lists each candidate
+  under its account, and a second account's card shows its provider's icon with the account's badge (a subscript digit,
+  written by the app sync under the app's `shoal-icons/`); the lattice inspector reads `claude-2 · <model>`.
   Moving a role whose session stopped on its provider's usage limit needs no checkpoint and no Force: it can never
   write one, so the handoff detects the stop, sends no checkpoint request, and hands the new session a reconciliation
   brief in its first prompt (the start doc's stamp, the predecessor's transcript and how many tool calls it made after
@@ -983,7 +995,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
 - **`launch --list --json`** prints `{"v": 1, "kind": "shoal-launch-list", "last", "hosts": [{"name", "local",
   "server", "route", "reachable", "hint", "machine", "summary"}]}`. With `--summary`, each reachable host's
   shoals (`id`, `tag`, `roles`, `working`, `waiting`, `needs_you`), its total needs-you and `pin_ok` (its
-  herdr-core at the pin), from its `ui graph`, cached 30 s.
+  herdr-core at the pin), from its `ui graph`, cached 30 s. `here` is what is particular to that host: the roles
+  that run on it in any shoal (`shoal`, `tag`, `slug`, `ecosystem`, `account`, `state`, `event`, `needs_you`), its
+  standalone seats (`label`, `harness`, `account`, `state`), their needs-you, and `ledger_age_s` (how long ago its
+  ledger clone last fetched). The app's home cards show `here`: every host reads the same shoals from its own clone,
+  so the shoal-wide totals repeat on every card, and a host that runs no role (a laptop) never pulls its clone.
 - **Doctor.** `shoal ui doctor` adds informational `app:` rows (app and core at the pin, mods installed from this
   checkout, machines, the feed unit); `ui app-install --check` prints the same rows and fails on them.
 

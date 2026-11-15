@@ -47,6 +47,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
 from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
+import accounts  # noqa: E402
 import config  # noqa: E402
 import providers  # noqa: E402
 from roles import ShoalSpec, find_spec, host_of, is_detached_wake, is_home, is_local, state_dir  # noqa: E402
@@ -321,9 +322,9 @@ def claude_job_state(row: dict) -> dict:
     jid = str(row.get("id") or "")
     if not jid or not re.fullmatch(r"[0-9a-f]{6,64}", jid):
         return {}
-    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    from backends import job_base
     try:
-        with open(os.path.join(base, "jobs", jid, "state.json")) as fh:
+        with open(os.path.join(job_base(jid), "jobs", jid, "state.json")) as fh:
             st = json.load(fh)
         return st if isinstance(st, dict) else {}
     except (OSError, ValueError):
@@ -366,15 +367,18 @@ _CLAUDE_ROWS: list = []  # the rows behind the last claude_busy() call
 
 
 def claude_busy() -> dict[str, str]:
-    """sessionId -> 'busy'|'blocked'|'idle' from `claude agents --json` (parsed; never the TTY form)."""
+    """sessionId -> 'busy'|'blocked'|'idle' from `claude agents --json` (parsed; never the TTY form), across every
+    Claude account on this host (backends.claude_agents)."""
     try:
-        from backends import fake_sessions
+        from backends import claude_agents, fake_sessions
         fake = fake_sessions()  # SHOAL_FAKE_SESSIONS (tests): no harness call
         if fake is not None:
             rows = list(fake.get("claude") or [])
-        else:
+        elif not accounts.several("claude"):
             r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
             rows = json.loads(r.stdout or "[]")
+        else:
+            rows = claude_agents()
         _CLAUDE_ROWS[:] = rows  # session_between_turns reads a blocked session's row without a second listing
         # keyed by every id a role may have stored: the current conversation, the job id and the job's original
         # conversation (a `/clear` changes the first; backends.claude_find)
@@ -408,7 +412,7 @@ def claude_transcript(session: str) -> str:
     """The newest transcript file of a Claude session, or "": of its CURRENT conversation, since a `/clear` starts
     a new transcript under a new id (backends.claude_current)."""
     import glob
-    base = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "projects")
+    from backends import claude_bases
     hits = []
     if session:
         try:
@@ -416,7 +420,11 @@ def claude_transcript(session: str) -> str:
             cur = claude_current(session)
         except Exception:  # noqa: BLE001
             cur = session
-        hits = glob.glob(os.path.join(base, "*", f"{cur}*.jsonl")) or glob.glob(os.path.join(base, "*", f"{session}*.jsonl"))
+        for b in claude_bases():  # whichever account holds the session (one directory when none is declared)
+            base = os.path.join(b, "projects")
+            hits = glob.glob(os.path.join(base, "*", f"{cur}*.jsonl")) or glob.glob(os.path.join(base, "*", f"{session}*.jsonl"))
+            if hits:
+                break
     return max(hits, key=os.path.getmtime) if hits else ""
 
 
@@ -512,7 +520,8 @@ def claude_limit_marks(session: str, tail_bytes: int = 1048576) -> list[tuple[st
 def update_limit(spec: ShoalSpec, state: dict) -> dict:
     """Fold the Claude roles' usage-limit marks (last LIMIT_LOOKBACK_H hours) into state['limit']:
     {reset: newest known reset, affected: {slug: newest mark}, held: [slugs whose wakes were held],
-    woken: the reset already answered with a resume wake}."""
+    woken: the reset already answered with a resume wake}. With several Claude accounts on the host, `accounts` keeps
+    each account's own newest reset: a limit is one account's, and holds only its roles' wakes (`limit_until`)."""
     lim = state.get("limit") or {}
     floor = iso(utcnow() - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
     for role in spec.roles:
@@ -525,6 +534,10 @@ def update_limit(spec: ShoalSpec, state: dict) -> dict:
                 r = iso(datetime.datetime.fromtimestamp(reset, datetime.timezone.utc))
                 if r > lim.get("reset", ""):
                     lim["reset"] = r
+                if accounts.several("claude"):
+                    per = lim.setdefault("accounts", {})
+                    k = accounts.name("claude", role.account)
+                    per[k] = max(per.get(k, ""), r)
             aff = lim.setdefault("affected", {})
             aff[role.slug] = max(aff.get(role.slug, ""), ts)
     if lim.get("reset") and lim.get("woken") == lim["reset"] and lim["reset"] < floor:
@@ -536,19 +549,24 @@ def update_limit(spec: ShoalSpec, state: dict) -> dict:
     return lim
 
 
-def limit_until(lim: dict) -> str:
-    """The reset time while the usage limit is in force (plus a short grace), else ""."""
-    r = (lim or {}).get("reset", "")
+def limit_until(lim: dict, account: str | None = None) -> str:
+    """The reset time while the usage limit is in force (plus a short grace), else "". With `account` (a role's) and
+    per-account resets recorded, only that account's limit counts."""
+    per = (lim or {}).get("accounts")
+    if account is not None and isinstance(per, dict):
+        r = per.get(accounts.name("claude", account), "")
+    else:
+        r = (lim or {}).get("reset", "")
     t = parse(r)
     if t is None or utcnow() >= t + datetime.timedelta(minutes=LIMIT_RESET_GRACE_MIN):
         return ""
     return r
 
 
-def limit_until_sid(sid: str) -> str:
+def limit_until_sid(sid: str, account: str | None = None) -> str:
     """limit_until() from a shoal's health state, for processes outside the quorum (ledger-watch)."""
     try:
-        return limit_until(json.load(open(os.path.join(state_dir(sid), "health.json"))).get("limit") or {})
+        return limit_until(json.load(open(os.path.join(state_dir(sid), "health.json"))).get("limit") or {}, account)
     except (OSError, ValueError):
         return ""
 
@@ -912,12 +930,21 @@ def claude_roster() -> dict:
     raw = config.env("FAKE_ROSTER")
     if raw:
         return json.loads(raw)
-    p = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "daemon", "roster.json")
-    try:
-        d = json.load(open(p))
-    except (OSError, ValueError):
-        return {}
-    return d if isinstance(d, dict) else {}
+    from backends import claude_bases
+    out: dict = {}
+    for b in claude_bases():  # each account runs its own background service; job ids are unique across them
+        try:
+            d = json.load(open(os.path.join(b, "daemon", "roster.json")))
+        except (OSError, ValueError):
+            continue
+        # the service nests its workers under `workers` ({proto, supervisorPid, updatedAt, workers: {job: ...}}, seen
+        # 2026-11-15; reading the top level found no job, so stale-worker upkeep matched nothing); a flat map still reads
+        w = d.get("workers") if isinstance(d, dict) and isinstance(d.get("workers"), dict) else d
+        if isinstance(w, dict):
+            for k, v in w.items():
+                if isinstance(v, dict):
+                    out.setdefault(k, v)
+    return out
 
 
 def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, state: dict | None = None) -> None:
@@ -1245,15 +1272,17 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:
             at, action = steps[lad["step"]]
             role_ = spec.role(c["slug"])
-            if until and action == "wake" and role_ is not None and role_.ecosystem == "claude":
+            # several accounts: only this role's account's limit holds it
+            until_r = limit_until(lim, role_.account) if role_ is not None and lim.get("accounts") else until
+            if until_r and action == "wake" and role_ is not None and role_.ecosystem == "claude":
                 # inside the usage limit a Claude turn errors and the wake is lost: hold the step (it runs
                 # after the reset) and remember the role for the resume wake
                 if c["slug"] not in lim.setdefault("held", []):
                     lim["held"].append(c["slug"])
-                if lad.get("held") != until:
-                    lad["held"] = until
+                if lad.get("held") != until_r:
+                    lad["held"] = until_r
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
-                                 f"held (usage limit until {until})"))
+                                 f"held (usage limit until {until_r})"))
                 break
             client = restart_client(role_) if action == "restart" else ""
             if client:
@@ -1329,8 +1358,29 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             last_wake[slug_] = iso()
         for n_, (_, _, i_) in enumerate(items):
             acts[i_] = (acts[i_][0], acts[i_][1], ch if n_ == 0 else f"merged into the {items[0][0]} wake")
-    # the usage limit has reset: one resume wake to every role it touched or whose wakes were held
-    if lim.get("reset") and not until and lim.get("woken") != lim["reset"]:
+    # the usage limit has reset: one resume wake to every role it touched or whose wakes were held; with several accounts,
+    # each account's roles as soon as that account's own limit resets (another account's later reset does not hold them)
+    per = lim.get("accounts") or {}
+    if per:
+        woken = lim.setdefault("woken_accounts", {})
+        for acct_name, r_reset in sorted(per.items()):
+            if woken.get(acct_name) == r_reset or limit_until({"reset": r_reset}):
+                continue
+            floor = iso(parse(r_reset) - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
+            touched = {s for s, ts in (lim.get("affected") or {}).items() if ts >= floor} | set(lim.get("held") or [])
+            for s in sorted(touched):
+                r_ = spec.role(s)
+                if r_ is None or not r_.session or accounts.name("claude", r_.account) != acct_name:
+                    continue
+                acts.append((s, "usage-limit reset:wake", request_wake(
+                    spec, s, f"the {acct_name} account's usage limit reset at {r_reset}: a turn that errored, a turn you "
+                             f"stopped on the grace note, or a wake lost to the limit resumes now", "limit-reset", dry_run)))
+                if s in (lim.get("held") or []):
+                    lim["held"].remove(s)
+            woken[acct_name] = r_reset
+        if all(woken.get(k) == v for k, v in per.items()):
+            lim["woken"] = lim.get("reset", "")
+    elif lim.get("reset") and not until and lim.get("woken") != lim["reset"]:
         floor = iso(parse(lim["reset"]) - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
         touched = {s for s, ts in (lim.get("affected") or {}).items() if ts >= floor} | set(lim.get("held") or [])
         for s in sorted(touched):

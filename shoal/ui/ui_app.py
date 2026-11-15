@@ -529,13 +529,13 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
                 notes.append(f"{spec.sid}: its home is {spec.home} (open it there, or name it with --shoal)")
                 continue
             spaces.append(shoal_space(spec, feed))
-            programs.update({r.slug: r.ecosystem for r in spec.roles if r.session})
+            programs.update({r.slug: program_key(r.ecosystem, r.account) for r in spec.roles if r.session})
         except Exception as exc:  # noqa: BLE001 - one broken spec never hides the others
             notes.append(f"{p}: {exc}")
     if standalone and not ids:
         for e in ui_herdr.local_standalone():
             spaces.append(standalone_space(e))
-            programs[e.get("label") or e["session"][:12]] = e.get("harness") or ""
+            programs[e.get("label") or e["session"][:12]] = program_key(e.get("harness") or "", e.get("account") or "")
     if not feed["fresh"]:
         notes.append(f"graph feed not running here: lattice tabs poll `ui graph` slowly (`shoal ui app-install` "
                      f"starts {FEED_UNIT})")
@@ -551,6 +551,77 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
 PROGRAM_ICONS = {"claude": ("icons/claude.svg", False), "codex": ("icons/codex.svg", False),
                  "opencode": ("icons/opencode.svg", True), "muse": ("icons/muse.svg", True)}
 PROGRAMS_OWNED = ".shoal-programs.json"
+BADGED_ICONS = "shoal-icons"  # the app's own icons/ is Herdr's to write; badged copies go beside it
+
+
+def program_key(ecosystem: str, account: str = "") -> str:
+    """A card's provider as the plan names it: the ecosystem, and for an account other than its default, `#<badge>`
+    (`claude#2`). The badge travels with the plan because the app's host need not declare the account."""
+    if not account:
+        return ecosystem
+    import accounts
+    return f"{ecosystem}#{accounts.badge(ecosystem, account)}"
+
+
+# The badge in a 24-unit icon: the provider's glyph shrunk to GLYPH_SCALE in the upper left, and a light disc over the
+# lower right holding the digit as seven-segment strokes (a b c d e f g) in a DIGIT_W by DIGIT_H box. At the pane's icon
+# size (about 16 px) the first badge's digit was some 2 by 3 px of thin strokes on a dark disc, and did not read
+# (2026-11-15); this one is about twice that, heavier, dark on light.
+GLYPH_SCALE = 0.74
+BADGE = {"cx": 16.6, "cy": 16.6, "r": 7.2}
+DIGIT_W, DIGIT_H, DIGIT_STROKE = 5.0, 8.2, 2.3
+_DIGITS = {"0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd", "4": "fgbc", "5": "afgcd", "6": "afgedc", "7": "abc",
+           "8": "abcdefg", "9": "abcdfg"}
+
+
+def _segments() -> dict:
+    x0, x1 = BADGE["cx"] - DIGIT_W / 2, BADGE["cx"] + DIGIT_W / 2
+    y0, ym, y1 = BADGE["cy"] - DIGIT_H / 2, BADGE["cy"], BADGE["cy"] + DIGIT_H / 2
+    return {"a": ((x0, y0), (x1, y0)), "b": ((x1, y0), (x1, ym)), "c": ((x1, ym), (x1, y1)), "d": ((x0, y1), (x1, y1)),
+            "e": ((x0, ym), (x0, y1)), "f": ((x0, y0), (x0, ym)), "g": ((x0, ym), (x1, ym))}
+
+
+def badged_svg(svg: str, badge: str) -> str:
+    """The provider's icon with a badge in its lower right corner: the glyph shrunk toward the upper left, a light disc
+    with a dark rim, and the badge's last digit drawn as heavy strokes (no font: the app's SVG renderer need not have
+    one), or a plain disc for a badge that is not a digit."""
+    seg = _segments()
+    segs = _DIGITS.get(badge[-1:] if badge else "", "")
+    path = "".join(f"M{seg[s][0][0]:.2f} {seg[s][0][1]:.2f}L{seg[s][1][0]:.2f} {seg[s][1][1]:.2f}" for s in segs)
+    # the disc and its rim stay inside the 24-unit box (the app clips at the icon's edge)
+    mark = (f'<circle cx="{BADGE["cx"]}" cy="{BADGE["cy"]}" r="{BADGE["r"]}" fill="#f2f2f2" stroke="#1c1d21" '
+            f'stroke-width="0.9"/>'
+            + (f'<path d="{path}" fill="none" stroke="#111216" stroke-width="{DIGIT_STROKE}" stroke-linecap="round" '
+               f'stroke-linejoin="round"/>' if path else ""))
+    start, end = svg.find(">") + 1, svg.rfind("</svg>")
+    if start <= 0 or end < start:
+        return svg
+    return svg[:start] + f'<g transform="scale({GLYPH_SCALE})">' + svg[start:end] + "</g>" + mark + svg[end:]
+
+
+def badged_icon(ecosystem: str, badge: str, dry_run: bool = False) -> str:
+    """The app-relative path of the provider's icon with a badge, written into the app's home on first use; the plain
+    icon when the shipped one cannot be read."""
+    icon = PROGRAM_ICONS[ecosystem][0]
+    rel = f"{BADGED_ICONS}/{ecosystem}-{re.sub(r'[^A-Za-z0-9]', '', badge) or 'x'}.svg"
+    try:
+        with open(os.path.join(app_home(), icon)) as fh:
+            want = badged_svg(fh.read(), badge)
+    except OSError:
+        return icon
+    dst = os.path.join(app_home(), rel)
+    try:
+        with open(dst) as fh:
+            if fh.read() == want:
+                return rel
+    except OSError:
+        pass
+    if not dry_run:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst + ".tmp", "w") as fh:
+            fh.write(want)
+        os.replace(dst + ".tmp", dst)
+    return rel
 
 
 def install_programs(programs: dict, dry_run: bool = False) -> list[str]:
@@ -570,15 +641,18 @@ def install_programs(programs: dict, dry_run: bool = False) -> list[str]:
     if not isinstance(doc, dict) or not isinstance(doc.setdefault("programs", {}), dict):
         return ["programs.json has no programs table: card icons left as they are"]
     table, changed = doc["programs"], []
-    for app, eco in sorted((programs or {}).items()):
+    for app, key in sorted((programs or {}).items()):
+        eco, _, badge = str(key).partition("#")
         if eco not in PROGRAM_ICONS or app in PROGRAM_ICONS or (app in table and app not in owned):
             continue
         icon, tint = PROGRAM_ICONS[eco]
+        if badge:  # a second account's card: its provider's icon with the account's badge
+            icon = badged_icon(eco, badge, dry_run)
         want = {"name": app, "icon": icon, "tint": tint, "tile": "#1c1d21", "color": "#ffffff"}
         if table.get(app) != want:
             table[app] = want
             owned.add(app)
-            changed.append(f"card icon {app}: {eco}")
+            changed.append(f"card icon {app}: {eco}" + (f" (account badge {badge})" if badge else ""))
     if not changed or dry_run:
         return [f"[dry-run] {c}" for c in changed]
     for target, data in ((path, doc), (own_path, sorted(owned))):

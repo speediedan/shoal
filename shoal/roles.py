@@ -117,6 +117,8 @@ class Role:
     model: str = ""              # native model id ("" = harness default)
     effort: str = ""             # agent-neutral pace/depth knob ("" = default);
         # honored natively where the harness supports it, briefed otherwise.
+    account: str = ""            # the provider account the session runs on ("" = the provider's default; accounts.py,
+        # `[accounts.<name>]` in the host config of the role's host)
     grants: list[str] = dataclasses.field(default_factory=list)  # extracted
         # from the doc's grants-needed section at brief time, never CLI.
     fill: str = "self"           # self | assigned | none. self: pops the priority

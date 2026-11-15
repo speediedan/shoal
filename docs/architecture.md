@@ -288,6 +288,10 @@ lease): a test still holds the host's leases, and takes them again after each re
   pending stay live up to `proven_max_min`, rather than expiring after `peer_ttl_min`; a `hold:` still expires on
   its own age. Measured 2026-11-10: 178 rescans passed in 21 days, 87 on CI or research waits with a pending target
   and 77 on user waits with the ask open, each a model turn that wrote the same wait again;
+- the converse: a wait before its rescan reads covered, but `shoal status` shows `wait=ended` when its target is a
+  local `job:` or `lease:` that has finished (`state.wait_ended`, the same provider lookup, no network kinds), since
+  a role that could not be woken (an attached client held it) otherwise read covered by a job that had exited an
+  hour before (2026-11-14; health had paged it, the listing had not);
 - held claims in neither the active nor the next list are flagged `HELD-UNSCHEDULED`.
 
 ## 5. Work selection
@@ -685,6 +689,41 @@ generic default.
 | `pool` | (file only) | `true`; `false` keeps this host out of CI pool placement (a route's own `pool = false` leaves that host out from this side) |
 | `skill_homes` | `SHOAL_SKILL_HOMES` (path-separated) | the existing standard homes: `~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skills` |
 | `[tool_env]` | an exported variable of the same name wins | none: extra variables for every tool call and generated systemd unit (e.g. `OPENCHAMBER_DATA_DIR` for a server kept apart from a desktop app) |
+| `[accounts.<name>]` | (file only) | none: another account of a provider (`provider`, `env`, optional `badge`); see below |
+
+**Provider accounts** (`shoal/accounts.py`). An account is a way to run one provider's CLI: the same CLI with an
+environment overlay (`[accounts.claude-2] provider = "claude"`, `env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }`). Every
+provider keeps an implicit default account, named after it and recorded as empty, so a host that declares none behaves
+as before, call for call. SHOAL never inspects or syncs what sits behind an account and enforces no provider limit: a
+launch on an account that is not signed in fails with the provider's message. It needs one fact per provider, where an
+account keeps its state (`accounts.HOME_VARS`: Claude's `CLAUDE_CONFIG_DIR`, default `~/.claude`; Codex's `CODEX_HOME`,
+default `~/.codex`).
+- **Where it is recorded.** A role's `account` (spec), a standalone seat's `account` (registry, and in `lineage`).
+  `restart --set-account SLUG:ACCOUNT`, `add-role --account` (or `account=` in `--role`), `handoff --account`, `ui pick
+  --account` set it; moving to another provider clears it unless one is named. Another host's role is checked by that
+  host's own declarations.
+- **Reads find the account.** A session lives in exactly one account, so every reader of a Claude job, transcript or
+  daemon roster looks in each account's directory (`backends.job_base`, `claude_bases`), and a host-wide listing
+  (`backends.claude_agents`: health's busy map, the cards' shared listing, prune, discovery) runs `claude agents` once
+  per account and labels each row (`_account`). A Codex thread is found by its rollout (`codex_harness.thread_account`).
+- **Calls run in the account.** Every call on an existing session (resume, stop, respawn, `rm`, logs, attach, a Codex
+  turn) runs with the overlay of the account that holds it; a new session starts in the account it was made for
+  (`backends.get(ecosystem, account)`); a reset keeps its account. The default account's environment drops any variable
+  naming another account, so a command run from inside a second account's session still reaches the default's.
+- **Usage.** Each declared Claude or Codex account is a usage provider of its own, by name (`claude-2`), read with its
+  own sign-in; `usage_providers` lists each declared account after its provider. The credential override
+  (`SHOAL_USAGE_CLAUDE_OAUTH_TOKEN`) is the default account's only.
+- **Balance.** An account's paced headroom in a window is its free share over the share of the window still to run
+  (at least an hour of it): 50% free with 1 h of a week left scores 84, 60% free with 6 days left 0.7. Its tightest
+  window is its score; under 2% free or a reached limit scores 0, and an account with no fresh reading is ranked last
+  and never picked. `[accounts] select = "balance"` (the default) makes the best-scored account the suggestion
+  (`accounts.choose`): the Actions dialog pre-selects it with its reason, `--account auto` takes it on the command line,
+  and `shoal accounts` prints every score. `select = "default"` suggests the provider's default. The CLI never changes
+  an account unasked: a handoff with no `--account` keeps the current one. **The pool** is every provider in use on
+  the host (`ui set ecosystems`) less `[accounts] exclude` (a list of providers): `--ecosystem auto` on handoff and
+  add-role takes the account with the most headroom of any provider in it (`accounts.choose_any`), the dialog names it
+  under the provider choice, and an excluded provider is neither picked across providers nor balanced among its own
+  accounts.
 
 `doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
 the clock state. The providers (resource leases, wait targets, the board
@@ -1139,9 +1178,11 @@ opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, f
 inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
 inside the rim instead (`rimShade`), so the shade never spills over the shell.
 
-The global view keeps you close to the floor (2026-11-14): `projectLayout` moves your world point along the home
-camera sightline to 0.35 plane gaps above the floor, preserving your opening screen position and radius. It fixes
-that point for every orbit, and uses it for your stem, arrows and shadow. The floor clears the lowest globe by a
+The global view keeps you close to the floor: `projectLayout` puts your world point straight above the hub (your
+place in the layout, between the shoals) at 0.35 plane gaps above the floor, keeping your opening radius. It fixes
+that point for every turn and orbit, and uses it for your stem, arrows and shadow. (2026-11-14 to 15 it was moved
+along the opening camera's sightline instead, which kept your opening screen position but put the point hundreds of
+units beside the hub, so a turned or orbited view drew you far from every globe.) The floor clears the lowest globe by a
 full plane gap and extends beneath every world point. The one lamp is 18 scene radii away, so its rays stay aligned
 across the extended floor. The background bloom uses `shadowLayers` with violet ink and a full-radius falloff;
 the optional ink participates in the cache key and the alpha solver handles lighter and darker ink. `canvasAt`
@@ -1436,7 +1477,8 @@ and the contract are in [`ui.md`](ui.md).
   you holds what needs you), the operator and outside seats on a plane above; the layout
   is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
   stays flat. The rail warns when the feed's ledger
-  clone is over an hour old, because the feed never pulls.
+  clone is over an hour old, because the feed does not pull unless the host config's `ledger_pull_min` says how
+  often to (for a host that runs no role, whose clone nothing else keeps current; the home card warns past six hours).
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
   additive v1) every 20 s and on refresh, and draws a logo in original bold rounded glass letters on one baseline, each a small aquarium with water

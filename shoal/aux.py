@@ -186,7 +186,7 @@ def cmd_aux_launch(a) -> int:
     from backends import get as get_backend
     from cli import persist_spec, write_brief
     brief = open(write_brief(spec, role)).read()
-    be = get_backend(role.ecosystem)
+    be = get_backend(role.ecosystem, role.account) if role.account else get_backend(role.ecosystem)
     role.session = be.create(f"{role.title}-r{role.seq}", spec.dir, brief=brief,
                              name=role.tag, model=role.model, effort=role.effort)
     if role.ecosystem == "opencode":

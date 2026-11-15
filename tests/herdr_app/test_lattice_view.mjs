@@ -2598,15 +2598,26 @@ test("2026-11-14: the global hub hovers over its shadow, the lowest globe clears
     const orbited = D.projectLayout(global, base, D.camera(name, 0.4, { x: 0.3, y: 0.2 }));
     assert.deepEqual(orbited.world.get(user.id), w, "orbiting cannot move the caster in the world");
     const old = D.project(pl.cam, base.pos.get(user.id), pl.planes.at(-1).z / 2);
-    assert.ok(Math.hypot(old.x - p.x, old.y - p.y) < 1e-6, "opening position preserved");
+    // 2026-11-15: you stand straight above the hub, not slid along the opening sightline (that put you hundreds of
+    // units aside, so any turn drew you far from every globe)
+    const hub = base.pos.get(user.id);
+    assert.ok(Math.hypot(w.x - hub.x, w.y - hub.y) < 1e-6, "you stand straight above the hub");
     assert.ok(Math.abs(old.f - pl.scaleOf.get(user.id)) < 1e-6, "opening size preserved");
+    for (let k = 0; k < 8; k++) {
+      const turned = D.projectLayout(global, base, D.camera(name, (k * Math.PI) / 4, { x: 0.3 * Math.sin(k), y: 0.2 }));
+      const u = turned.pos.get(user.id);
+      const near = Math.min(...turned.clusters.map((c) => Math.hypot(c.x - u.x, c.y - u.y) - c.r));
+      const far = Math.max(...turned.clusters.map((c) => Math.hypot(c.x - u.x, c.y - u.y)));
+      const span = Math.max(...turned.clusters.flatMap((a) => turned.clusters.map((b) => Math.hypot(a.x - b.x, a.y - b.y))));
+      assert.ok(near < 600 && far < Math.max(span, 400) * 1.6, `${name} turn ${k}: you stay among the globes (${Math.round(near)}, ${Math.round(far)})`);
+    }
     for (const c of base.clusters) {
       const z = pl.planes.find((p) => p.id === c.id).z;
       assert.ok(z - c.r * 0.92 - pl.floorZ >= D.PLANE_GAP - 1e-6, "a full gap below each globe");
     }
     const sc = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "off" });
     const bloom = sc.items.filter((it) => it.id.startsWith("bloom-"));
-    assert.ok(bloom.length > 8, "many fine bloom layers replace four bands");
+    assert.ok(bloom.length >= 8, "many fine bloom layers replace four bands (8 or more: fewer are needed where the canvas behind you is darker)");
     let c = SP.rgb8(SP.SHADOW_UNDER);
     for (const it of bloom) {
       const next = SP.blend8(c, SP.rgb8(it.bg.color), Math.round(alphaOf(it.bg.color) * 255));

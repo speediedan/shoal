@@ -113,6 +113,8 @@ def detach_self(a, entry: dict, doc: str) -> int:
                       ("--note", getattr(a, "note", ""))):
         if val:
             cmd += [flag, val]
+    if getattr(a, "account", None) is not None:
+        cmd += ["--account", a.account or entry["harness"]]
     argv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
             "-p", f"WorkingDirectory={entry.get('cwd') or os.getcwd()}",
             "-p", f"StandardOutput=append:{log}", "-p", f"StandardError=append:{log}", "-E", "SHOAL_HANDOFF_DETACHED=1"]
@@ -220,6 +222,21 @@ def run(a) -> int:
         raise HandoffError("this seat has changed sessions since the preview: plan the handoff again")
     doc = os.path.abspath(os.path.expanduser(doc)) if doc else ""
     preflight(doc, eco)
+    import accounts
+    import backends
+    named = getattr(a, "account", None)
+    try:  # refused here, before any session is asked or stopped
+        target = accounts.normalize(eco, named) if named is not None else None
+    except ValueError as exc:
+        raise HandoffError(str(exc))
+    if eco == "claude":
+        if session_key:
+            acct, where = (target if target is not None else (entry.get("account", "") if entry.get("harness") == eco else "")), entry.get("cwd") or ""
+        else:
+            acct, where = (target if target is not None else (getattr(role, "account", "") if role.ecosystem == eco else "")), spec.dir
+        why = backends.claude_untrusted(acct, where)
+        if why:
+            raise HandoffError(why)
     if session_key and is_self(entry):
         # a self-handover has no later turn to take a checkpoint in: it must be written first, then opted into
         if prepare:
@@ -288,7 +305,7 @@ def run(a) -> int:
         restart_log = os.path.join(state_dir(spec.sid), f"context-restart-{label}.log")
         offset = os.path.getsize(restart_log) if os.path.exists(restart_log) else 0
         rc = park.handoff(ShoalSpec.load(a.spec), a.spec, label, a.model, a.ecosystem, False, False, a.effort,
-                          getattr(a, "note", ""))
+                          getattr(a, "note", ""), getattr(a, "account", None))
         if rc:
             return rc
         note("3/3 Restart launched; following its log until the replacement is recorded")
@@ -379,20 +396,25 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prep
     note(stopped)
     if "STILL LIVE" in stopped:
         raise HandoffError("the old session did not stop; no replacement started")
+    import accounts
     import config
+    named = getattr(a, "account", None)
+    acct = (entry.get("account", "") if eco == entry["harness"] else "") if named is None else accounts.normalize(eco, named)
     dmodel, deffort = config.provider_default(eco) if eco != entry["harness"] else ("", "")
     model = a.model or (entry.get("model", "") if eco == entry["harness"] else dmodel)
     effort = a.effort or (entry.get("effort", "") if eco == entry["harness"] else deffort)
-    note(f"3/3 Starting the new {eco} session from {doc}")
-    new = backends.get(eco).create(label, entry.get("cwd") or os.getcwd(),
+    note(f"3/3 Starting the new {eco} session" + (f" on {accounts.name(eco, acct)}" if acct or accounts.several(eco) else "")
+         + f" from {doc}")
+    new = (backends.get(eco, acct) if acct else backends.get(eco)).create(label, entry.get("cwd") or os.getcwd(),
                                    brief=resume_brief(doc, getattr(a, "note", "")), name=label, model=model, effort=effort)
     at = handover.now_iso()
     # the sessions this seat has had, newest last: which one a stale card, job or name-addressed message belongs to
     lineage = (list(original.get("lineage") or []) + [{"harness": original["harness"], "session": old,
-               "job": original.get("job", ""), "until": at}])[-LINEAGE_MAX:]
+               "job": original.get("job", ""), "until": at,
+               **({"account": original["account"]} if original.get("account") else {})}])[-LINEAGE_MAX:]
     updates = {"harness": eco, "session": new, "job": new[:8] if eco == "claude" else "", "doc": doc,
                "model": model, "effort": effort, "handover_state": {"step": "reset", "at": at, "from": old},
-               "lineage": lineage}
+               "lineage": lineage, **({"account": acct} if acct or original.get("account") else {})}
     if not ui_herdr.update_standalone(original, updates):
         raise HandoffError(f"replacement {new} started, but the seat registry changed: reconcile it before retrying")
     note(f"Handoff complete: {label} now follows {new}; its space and saved settings are retained")

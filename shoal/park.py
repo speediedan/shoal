@@ -403,7 +403,7 @@ def claude_live(role) -> bool:
 
 
 def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "", force: bool = False,
-            dry_run: bool = False, effort: str = "", note: str = "") -> int:
+            dry_run: bool = False, effort: str = "", note: str = "", account: str | None = None) -> int:
     """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
     or provider: the quorum's `context_restart` run by hand, under the quorum's gate. Everything that can be proved is
     proved before the old session stops: the role is at a boundary (restart-ready, status idle or waiting, between
@@ -434,6 +434,14 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     refusal = _ecosystem_refusal(new_eco)
     if refusal:
         print(f"REFUSED: {refusal}")
+        return 1
+    import accounts
+    # the account: the one named, else the role's own on the same provider, else the new provider's default
+    keep = role.account if not new_eco else ""
+    try:
+        new_acct = keep if account is None else accounts.normalize(new_eco or role.ecosystem, account)
+    except ValueError as exc:
+        print(f"REFUSED: {exc}")
         return 1
     if session_held(role, spec.dir):
         print(f"REFUSED: {slug}'s {role.ecosystem} session is held by a running turn or an attached client, and nothing "
@@ -471,6 +479,12 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
             why.append("it is not known to be between turns")
         print(f"REFUSED: {slug}: {'; '.join(why)}. --force hands off anyway and can cut off work in progress")
         return 1
+    if (new_eco or role.ecosystem) == "claude":  # before anything stops: the new session's account must trust its folder
+        from backends import claude_untrusted
+        why = claude_untrusted(new_acct, spec.dir)
+        if why:
+            print(f"REFUSED: {slug}: {why}")
+            return 1
     if role.doc:
         doc = startdoc.check(role.doc)
         if not doc["ok"]:
@@ -492,10 +506,15 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
         extra.append(f"--set-model={slug}:{model}")
     if effort:
         extra.append(f"--set-effort={slug}:{effort}")
+    if new_acct != keep or (new_eco and new_acct):
+        extra.append(f"--set-account={slug}:{new_acct}")
     if note.strip():  # the operator's restart note, in the new session's first prompt
         extra.append(f"--note={slug}:{note.strip()}")
+    acct_now = (f" ({role.account})" if role.account else "")
     to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model), effort) if x)
-    print(f"{slug}: {role.ecosystem} session {role.session[:8]} hands off to a new {to} session from "
+    if accounts.several(new_eco or role.ecosystem) or new_acct:
+        to += f" on {accounts.name(new_eco or role.ecosystem, new_acct)}"
+    print(f"{slug}: {role.ecosystem}{acct_now} session {role.session[:8]} hands off to a new {to} session from "
           f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else
           " (not restart-ready: stopped on its usage limit)" if stop is not None else " (not restart-ready: forced)"))
     if new_eco:
@@ -639,7 +658,7 @@ def _remove_session(key: str, force: bool = False, dry_run: bool = False, hook=N
     import types
     import prune
     import ui_herdr
-    from backends import claude_base, get as get_backend
+    from backends import job_base, get as get_backend
     entries = ui_herdr.load_standalone(raw=True)
     e = next((x for x in entries if not x.get("host") and key in (x.get("label"), x.get("session"), x.get("job"))), None)
     if e is None:
@@ -665,7 +684,7 @@ def _remove_session(key: str, force: bool = False, dry_run: bool = False, hook=N
         print(f"REFUSED: {label} has a live session: --force stops it first and can cut off work in progress")
         return 1
     if harness == "claude" and job and not force:
-        wt = prune.git_worktree_under(os.path.join(claude_base(), "jobs", job, "tmp"))
+        wt = prune.git_worktree_under(os.path.join(job_base(job), "jobs", job, "tmp"))
         if wt:
             print(f"REFUSED: a git worktree is under its job directory ({wt}): --force removes the session anyway")
             return 1
@@ -741,7 +760,23 @@ def cmd_remove_session(a) -> int:
     return remove_session(a.session, a.force, a.dry_run, getattr(a, "no_archive", False))
 
 
+def resolve_auto(a) -> str:
+    """`--ecosystem auto`: the provider and account the balancing pool picks now (accounts.choose_any), written into the
+    arguments; with nothing to pick, the current provider stays. Returns what it says about the pick."""
+    if getattr(a, "ecosystem", "") != "auto":
+        return ""
+    import accounts
+    p, acct, why = accounts.choose_any()
+    a.ecosystem = p
+    if p and getattr(a, "account", None) is None:
+        a.account = accounts.name(p, acct)
+    return f"auto: {accounts.name(p, acct)} ({why})" if p else f"auto: no pick ({why}); the current provider stays"
+
+
 def cmd_handoff(a) -> int:
+    said = resolve_auto(a)
+    if said:
+        print(said, flush=True)
     if getattr(a, "prepare", False) or getattr(a, "session", ""):
         import handoff_flow
         try:
@@ -758,7 +793,8 @@ def cmd_handoff(a) -> int:
     if expected and (spec.role(a.only) is None or spec.role(a.only).session != expected):
         print("REFUSED: this role changed sessions since the preview: plan the handoff again")
         return 1
-    return handoff(spec, a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort, getattr(a, "note", ""))
+    return handoff(spec, a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort, getattr(a, "note", ""),
+                   getattr(a, "account", None))
 
 
 def add_parser(sub) -> None:
@@ -801,7 +837,11 @@ def add_parser(sub) -> None:
     p.add_argument("--note", default="", help="a note for the new session, added to its first prompt after the start doc")
     p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
     p.add_argument("--effort", default="", help="the new session's effort (default: the recorded one; on another provider, its default)")
-    p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one)")
+    p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one); `auto`: the "
+                                                   "account with the most quota headroom in the balancing pool")
+    p.add_argument("--account", default=None,
+                   help="the new session's account of that provider (`shoal accounts`; default: the current one on the "
+                        "same provider, else the provider's default)")
     p.add_argument("--force", action="store_true", help="even though the role has not said it is restart-ready")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_handoff)

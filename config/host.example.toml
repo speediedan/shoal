@@ -103,6 +103,11 @@
 # [lifecycle]
 # trusted_repos = ["/path/to/repository"]
 
+# Minutes between the graph feed's pulls of this host's ledger clone (`shoal ui graph-feed`). A host that runs roles
+# keeps its clone current through them; one that runs none (a laptop that only views) has nothing else that pulls, so
+# its home cards and lattice show an old copy. Default: 0 (never).
+# ledger_pull_min = 5
+
 # The model and effort a session moved to a provider gets when the handoff names none (`shoal handoff --ecosystem`, the
 # Handoff dialog). Without them, a provider's empty model means whatever its own client last saved as its default, which
 # an interactive model pick can change for every later session. Moving back to a provider gets these again. Default: none.
@@ -112,3 +117,16 @@
 # [provider_defaults.claude]
 # model = "<claude model>"
 # effort = "high"
+
+# More than one account of a provider on this host (shoal/accounts.py; `shoal accounts --check` lists them and asks each
+# provider's CLI for its sign-in). An account is the provider's CLI with these variables: what sits behind them (shared
+# or separate settings) is yours, and SHOAL reads only the account's state directory (Claude: CLAUDE_CONFIG_DIR, Codex:
+# CODEX_HOME). Each provider keeps its default account, named after it. A role or seat records its account; handoff,
+# add-role and the Actions dialog take one (`--account`). Default: none (one account per provider, as before).
+# [accounts]
+# select = "balance"       # the suggested account: the most paced quota headroom (default), or "default"
+# exclude = ["opencode"]   # providers kept out of balancing (`--ecosystem auto` never picks them)
+# [accounts.claude-2]
+# provider = "claude"
+# env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }
+# badge = "2"              # optional: the mark on its card icon (default: the name's trailing digits)

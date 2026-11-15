@@ -34,7 +34,7 @@ import {
   validate, rolesArgv, planArgv, applyArgv, statusArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
-  providerOptions, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
+  providerOptions, accountOptions, suggestAccount, accountWhy, poolHint, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
   draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, handoffLatencyNote, verbGroups, pickKey,
 } from "./model.js";
 
@@ -950,7 +950,7 @@ export default class Actions extends View {
           list.child(h_flex().id(`s-${s.key}`).gap(8).px(8).py(4).rounded(6).cursor_pointer().items_center().flex_none()
             .bg(on ? withAlpha(c.accent, 0.2) : c.panel).hover((st) => st.bg(on ? withAlpha(c.accent, 0.26) : c.hover))
             .on_click((_e, cx) => { this.chooseSession(s); cx.notify(); })
-            .child(div().w(62).flex_none().text_size(11).text_color(c.muted).child(s.harness))
+            .child(div().w(62).flex_none().text_size(11).text_color(c.muted).child(s.account || s.harness))
             .child(div().w(168).flex_none().truncate().text_color(c.ink).child(s.label))
             .child(div().w(72).flex_none().truncate().text_size(11).text_color(c.dim).child(s.state || "?"))
             .child(div().w(92).flex_none().truncate().text_size(11).text_color(c.dim).child(s.machine ?? "this computer"))
@@ -960,21 +960,31 @@ export default class Actions extends View {
         col.child(v_flex().gap(5).child(this.label(f.label + count, c)).child(list));
         if (this.sessionsNote) col.child(div().text_size(11).text_color(c.amber).child(this.sessionsNote));
       } else if (f.kind === "choice") {
+        // a provider set aside on this host (`shoal ui set ecosystems`) is not offered; an account choice shows only for
+        // a provider with two or more accounts here
+        const current = this.roles?.shoals?.find((s) => s.id === this.sel.shoal)?.roles?.find((r) => r.slug === this.sel.role)?.ecosystem ?? null;
+        const mine = this.sel.session ? null : current;
+        const opts = f.key === "ecosystem" ? providerOptions(f.options, this.roles)
+          : f.key === "account" ? accountOptions(this.form, this.roles, mine) : f.options;
+        if (!opts.length) continue;
+        if (f.key === "account") this.form = suggestAccount(this.form, this.roles, mine);
+        const sel = this.form.values[f.key];
         const row = h_flex().gap(6).items_center();
-        // a provider set aside on this host (`shoal ui set ecosystems`) is not offered
-        for (const o of f.key === "ecosystem" ? providerOptions(f.options, this.roles) : f.options) {
+        for (const o of opts) {
           row.child(this.chip(`f-${f.key}-${o}`, o, {
-            on: v === o,
+            on: sel === o,
             // an optional choice clicks off again
             onClick: (_e, cx) => {
-              this.form = setValue(this.form, f.key, v === o && !f.required ? null : o);
+              this.form = setValue(this.form, f.key, sel === o && !f.required ? null : o);
               this.inputs.note.set_value(String(this.form.values.note ?? ""));
               this.hint = null;
               cx.notify();
             },
           }, c));
         }
-        col.child(v_flex().gap(5).child(this.label(f.label, c)).child(row));
+        const why = f.key === "account" ? accountWhy(this.form, this.roles, mine) : f.key === "ecosystem" ? poolHint(this.roles) : "";
+        col.child(v_flex().gap(5).child(this.label(f.label, c)).child(row)
+          .when(Boolean(why), (el) => el.child(div().text_size(11).text_color(c.dim).child(why))));
       }
     }
     if (this.hint) col.child(div().text_size(11.5).text_color(c.red).child(this.hint));

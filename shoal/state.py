@@ -72,6 +72,26 @@ def wait_status(sid: str, slug: str, now: datetime.datetime | None = None) -> tu
     return ("covered" if now < rescan else "stale"), w
 
 
+# targets a reader can check on this host without the network, quickly, for every role in a listing
+LOCAL_TARGET_KINDS = ("job", "lease")
+
+
+def wait_ended(sid: str, slug: str, w: dict | None) -> str:
+    """Why a covered wait is over although its rescan time has not come ("" when it is not, or cannot be told here): its
+    target is a local job or lease that has finished. Covered means only "before its rescan", so `shoal status` showed a
+    role covered by a job for an hour after the job exited, while the role, held by an attached client, never woke to
+    take it up (2026-11-14; health had already paged it)."""
+    target = str((w or {}).get("target") or "")
+    if target.split(":", 1)[0] not in LOCAL_TARGET_KINDS:
+        return ""
+    try:
+        import providers
+        pending, detail = providers.resolve(target, slug, sid)
+    except Exception:  # noqa: BLE001 - a listing never fails on one target
+        return ""
+    return detail if pending is False else ""
+
+
 def write_wait(sid: str, slug: str, sub: str, holder: str, rescan_min: float,
                monitor: str, note: str, target: str = "") -> dict:
     """`target` is machine-checkable where possible (the health quorum verifies it):
