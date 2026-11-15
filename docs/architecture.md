@@ -288,6 +288,10 @@ lease): a test still holds the host's leases, and takes them again after each re
   pending stay live up to `proven_max_min`, rather than expiring after `peer_ttl_min`; a `hold:` still expires on
   its own age. Measured 2026-11-10: 178 rescans passed in 21 days, 87 on CI or research waits with a pending target
   and 77 on user waits with the ask open, each a model turn that wrote the same wait again;
+- the converse: a wait before its rescan reads covered, but `shoal status` shows `wait=ended` when its target is a
+  local `job:` or `lease:` that has finished (`state.wait_ended`, the same provider lookup, no network kinds), since
+  a role that could not be woken (an attached client held it) otherwise read covered by a job that had exited an
+  hour before (2026-11-14; health had paged it, the listing had not);
 - held claims in neither the active nor the next list are flagged `HELD-UNSCHEDULED`.
 
 ## 5. Work selection

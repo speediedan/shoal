@@ -2259,6 +2259,17 @@ with patch("state.wait_status", return_value=("stale",proof)), \
         assert not jobs.yield_for_rescan(args, unit)
     with patch("state.wait_status", return_value=("stale",dict(proof,target="job:another"))):
         assert not jobs.yield_for_rescan(args, unit)
+# 2026-11-14: a covered wait whose local job has exited reads ended in `shoal status`, not covered until its rescan; a
+# remote or unreadable target, or one only the network can check, says nothing
+import providers, state
+with patch.object(providers, "resolve", return_value=(False, "unit u exited rc=0")):
+    assert state.wait_ended("h4selftest", "owner", proof) == "unit u exited rc=0"
+    assert state.wait_ended("h4selftest", "owner", dict(proof, target="gh-pr:acme/app#9")) == ""
+    assert state.wait_ended("h4selftest", "owner", dict(proof, target="")) == ""
+with patch.object(providers, "resolve", return_value=(True, "unit u active")):
+    assert state.wait_ended("h4selftest", "owner", proof) == ""
+with patch.object(providers, "resolve", return_value=(None, "unit u not found")):
+    assert state.wait_ended("h4selftest", "owner", proof) == ""
 print("operational request acknowledgment ok")
 PY2
 
