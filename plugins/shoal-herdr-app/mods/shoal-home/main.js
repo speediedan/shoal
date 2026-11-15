@@ -26,7 +26,7 @@ import { exec, readTextFile, appHome, props, theme, nextCommand, window as appWi
 import * as fs from "fs/promises";
 import {
   PALETTE, DOT, parseList, listSignature, hostState, canOpen, initialSelection, keepSelection, keyAction,
-  openArgv, openResult, cardLines, shoalCounts, hostNeedsYou, withAlpha,
+  openArgv, openResult, cardLines, shoalCounts, hostNeedsYou, withAlpha, providerMark, roleWord,
 } from "./model.js";
 import { homeLayout, cardHeight, CREATURES, CARD, PAD } from "./layout.js";
 import { resolveTier, motionPolicy, rendererFromProcess, MOTION_CYCLE } from "./motion.js";
@@ -375,6 +375,18 @@ export default class Home extends View {
           .child(div().flex_none().font_semibold().text_color(ln.tint).child(ln.tag))
           .when(ln.needsYou > 0, (el) => el.child(div().flex_none().font_bold().text_color(blocked).child(`${ln.needsYou} need you`)))
           .child(clip(shoalCounts(ln), P.dim));
+      case "role":
+        return row()
+          .child(dot(ln.tint, 6))
+          .child(div().flex_1().min_w(0).truncate().text_color(P.ink).child(ln.slug))
+          .child(div().flex_none().text_color(ln.needsYou ? blocked : ln.state === "work" ? P.mint : P.dim).child(roleWord(ln)))
+          .child(div().w(26).flex_none().font_family(MONO).text_size(10).text_color(P.faint).child(providerMark(ln.ecosystem, ln.account)));
+      case "seat":
+        return row()
+          .child(div().w(6).h(6).flex_none().rounded(1).border(1).border_color(P.dim))
+          .child(div().flex_1().min_w(0).truncate().text_color(P.dim).child(ln.label))
+          .child(div().flex_none().text_color(P.faint).child(ln.state === "busy" ? "working" : ln.state || "?"))
+          .child(div().w(26).flex_none().font_family(MONO).text_size(10).text_color(P.faint).child(providerMark(ln.harness, ln.account)));
       case "more":
         return row().child(clip(ln.text, P.faint));
       case "pin":

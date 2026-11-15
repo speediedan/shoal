@@ -193,6 +193,10 @@ test("accounts: a provider with two or more accounts offers the choice, picked o
   const cleared = M.setValue(s1, "account", null);
   assert.equal(M.suggestAccount(cleared, bal, "claude").values.account, null);
   assert.equal(M.suggestAccount(M.newForm("handoff", NOW), bal, "codex").values.account, null);
+  // the pool's pick across providers: a hint under the provider choice, never a pre-selection
+  const pool = M.parseReply(ok({ v: 1, kind: "shoal-act-roles", shoals: [], pool_best: { ecosystem: "codex", account: "codex", why: "w" } }), "roles");
+  assert.match(M.poolHint(pool), /most quota headroom now: codex \(provider codex/);
+  assert.equal(M.poolHint(bal), "");
 });
 
 test("replies: roles", () => {

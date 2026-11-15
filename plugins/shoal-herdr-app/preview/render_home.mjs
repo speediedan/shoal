@@ -27,7 +27,8 @@ const opt = (name, d) => { const i = args.indexOf(`--${name}`); return i >= 0 ? 
 const W = Number(opt("width", 1100));
 const H = Number(opt("height", 760));
 const P = M.PALETTE;
-const list = M.parseList(readFileSync(join(MOD, "fixtures", "launch-list.json"), "utf8"));
+// --list <file>: a real `shoal ui launch --list --json --summary` document instead of the bundled fixture
+const list = M.parseList(readFileSync(opt("list", join(MOD, "fixtures", "launch-list.json")), "utf8"));
 const lines = list.hosts.map((h) => M.cardLines(h));
 const L = La.homeLayout({ width: W, height: H }, lines.map((l) => La.cardHeight(l.length)), { art: opt("art", "true") !== "false" });
 
@@ -103,7 +104,16 @@ list.hosts.forEach((h, i) => {
     const ly = hy + La.CARD.head + 4 + j * La.CARD.line;
     const lh = La.CARD.line;
     const x = b.x + La.CARD.pad;
-    if (ln.kind === "shoal") {
+    if (ln.kind === "role" || ln.kind === "seat") {
+      const right = b.x + b.w - La.CARD.pad;
+      if (ln.kind === "role") body.push(`<circle cx="${x + 3}" cy="${ly + lh / 2}" r="3" fill="${ln.tint}"/>`);
+      else body.push(`<rect x="${x}" y="${ly + lh / 2 - 3}" width="6" height="6" rx="1" fill="none" stroke="${P.dim}"/>`);
+      text(x + 12, ly, lh, ln.kind === "role" ? ln.slug : ln.label, 11, ln.kind === "role" ? P.ink : P.dim);
+      const word = ln.kind === "role" ? M.roleWord(ln) : ln.state === "busy" ? "working" : ln.state || "?";
+      const wc = ln.kind === "seat" ? P.faint : ln.needsYou ? P.magenta : ln.state === "work" ? P.mint : P.dim;
+      text(right - 32, ly, lh, word, 11, wc, "end");
+      text(right, ly, lh, M.providerMark(ln.kind === "role" ? ln.ecosystem : ln.harness, ln.account), 10, P.faint, "end");
+    } else if (ln.kind === "shoal") {
       body.push(`<circle cx="${x + 3}" cy="${ly + lh / 2}" r="3" fill="${ln.tint}"/>`);
       const need = ln.needsYou > 0 ? `<tspan font-weight="700" fill="${P.magenta}">${ln.needsYou} need you  </tspan>` : "";
       body.push(`<text x="${x + 12}" y="${ly + lh / 2}" ${FONT} font-size="11" fill="${P.dim}" dominant-baseline="central" xml:space="preserve"><tspan font-weight="600" fill="${ln.tint}">${esc(ln.tag)}  </tspan>${need}${esc(M.shoalCounts(ln))}</text>`);

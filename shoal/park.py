@@ -479,6 +479,12 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
             why.append("it is not known to be between turns")
         print(f"REFUSED: {slug}: {'; '.join(why)}. --force hands off anyway and can cut off work in progress")
         return 1
+    if (new_eco or role.ecosystem) == "claude":  # before anything stops: the new session's account must trust its folder
+        from backends import claude_untrusted
+        why = claude_untrusted(new_acct, spec.dir)
+        if why:
+            print(f"REFUSED: {slug}: {why}")
+            return 1
     if role.doc:
         doc = startdoc.check(role.doc)
         if not doc["ok"]:
@@ -754,7 +760,23 @@ def cmd_remove_session(a) -> int:
     return remove_session(a.session, a.force, a.dry_run, getattr(a, "no_archive", False))
 
 
+def resolve_auto(a) -> str:
+    """`--ecosystem auto`: the provider and account the balancing pool picks now (accounts.choose_any), written into the
+    arguments; with nothing to pick, the current provider stays. Returns what it says about the pick."""
+    if getattr(a, "ecosystem", "") != "auto":
+        return ""
+    import accounts
+    p, acct, why = accounts.choose_any()
+    a.ecosystem = p
+    if p and getattr(a, "account", None) is None:
+        a.account = accounts.name(p, acct)
+    return f"auto: {accounts.name(p, acct)} ({why})" if p else f"auto: no pick ({why}); the current provider stays"
+
+
 def cmd_handoff(a) -> int:
+    said = resolve_auto(a)
+    if said:
+        print(said, flush=True)
     if getattr(a, "prepare", False) or getattr(a, "session", ""):
         import handoff_flow
         try:
@@ -815,7 +837,8 @@ def add_parser(sub) -> None:
     p.add_argument("--note", default="", help="a note for the new session, added to its first prompt after the start doc")
     p.add_argument("--model", default="", help="the new session's model (default: the recorded one)")
     p.add_argument("--effort", default="", help="the new session's effort (default: the recorded one; on another provider, its default)")
-    p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one)")
+    p.add_argument("--ecosystem", default="", help="the new session's provider (default: the current one); `auto`: the "
+                                                   "account with the most quota headroom in the balancing pool")
     p.add_argument("--account", default=None,
                    help="the new session's account of that provider (`shoal accounts`; default: the current one on the "
                         "same provider, else the provider's default)")

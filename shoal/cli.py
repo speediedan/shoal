@@ -1048,6 +1048,14 @@ def cmd_add_role(a: argparse.Namespace) -> int:
         return 1
     new_roles = [parse_role(r) for r in (a.role or [])]
     for r in new_roles:
+        if r.ecosystem == "auto":  # the balancing pool's pick now (accounts.choose_any)
+            p, acct, why = _accounts.choose_any()
+            if not p:
+                print(f"REFUSED: {r.slug}: --role ecosystem auto, but {why}: name a provider")
+                return 1
+            print(f"{r.slug}: auto: {_accounts.name(p, acct)} ({why})")
+            r.ecosystem = p
+            r.account = r.account or acct
         if getattr(a, "account", "") and not r.account:
             r.account = a.account
         if is_local(r, spec):  # another host's accounts are its own config's

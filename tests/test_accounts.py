@@ -100,7 +100,10 @@ json.dump([{"id": "bbbb2222", "sessionId": B2, "name": "role-b", "pid": 22, "sta
           open(os.path.join(D2, "fake-agents.json"), "w"))
 for d, jid in ((D1, "aaaa1111"), (D2, "bbbb2222")):
     os.makedirs(os.path.join(d, "daemon"), exist_ok=True)
-    json.dump({jid: {"pid": 1, "cliVersion": "9.9.9"}}, open(os.path.join(d, "daemon", "roster.json"), "w"))
+# a flat map (older services), and the nested shape the service writes now ({proto, ..., workers: {job: ...}})
+json.dump({"aaaa1111": {"pid": 1, "cliVersion": "9.9.9"}}, open(os.path.join(D1, "daemon", "roster.json"), "w"))
+json.dump({"proto": 1, "supervisorPid": 5, "updatedAt": 1, "workers": {"bbbb2222": {"pid": 2, "cliVersion": "9.9.9"}}},
+          open(os.path.join(D2, "daemon", "roster.json"), "w"))
 
 # ---- 1. nothing declared: one account, the old paths and environment ---------------------------------------------
 use(NONE_CFG)
@@ -180,6 +183,18 @@ argv, extra = backends.ClaudeBackend().view_argv("aaaa1111")
 check("CLAUDE_CONFIG_DIR" in extra and extra["CLAUDE_CONFIG_DIR"] is None, "a default attach unsets the variable")
 check("CLAUDE_CONFIG_DIR" not in ui_view.clean_env(extra), "the viewer's environment drops an unset variable")
 
+# workspace trust is per account: a handoff refuses before it stops anything when the new account has not trusted it
+REPO = os.path.join(T, "repo")
+os.makedirs(os.path.join(REPO, "sub"), exist_ok=True)
+json.dump({"projects": {REPO: {"hasTrustDialogAccepted": True}}}, open(os.path.join(HOME, ".claude.json"), "w"))
+json.dump({"projects": {}}, open(os.path.join(D2, ".claude.json"), "w"))
+check(backends.claude_untrusted("", os.path.join(REPO, "sub")) == "", "the default trusts it (a parent covers its subfolders)")
+why = backends.claude_untrusted("claude-2", REPO)
+check("claude-2 account has not trusted" in why and f"CLAUDE_CONFIG_DIR={D2} claude" in why, f"claude-2 has not: {why}")
+use(NONE_CFG)
+check(backends.claude_untrusted("", os.path.join(T, "elsewhere")) == "", "with one account nothing is checked")
+use(TWO_CFG)
+
 sess = {s["job"]: s.get("account", "") for s in backends.ClaudeBackend().sessions()}
 check(sess == {"aaaa1111": "", "bbbb2222": "claude-2"}, f"discovery labels each session's account: {sess}")
 
@@ -238,6 +253,22 @@ snap = [dict(reading(10, 46), provider="claude"), {"provider": "claude-2", "stal
 check(accounts.choose("claude", NOW, snap)[0] == "", "an unread account is never chosen")
 check(accounts.rank("claude", NOW, snap)[-1]["account"] == "claude-2", "and is ranked last")
 check(accounts.choose("codex", NOW, [])[0] == "", "no reading at all: the default")
+
+# the pool: every provider in use less `[accounts] exclude`; `auto` picks the best account of any of them
+snap = [dict(reading(94, 46), provider="claude"), dict(reading(50, 160), provider="claude-2"),
+        dict(reading(0, 1), provider="opencode-go"), dict(reading(20, 100), provider="codex")]
+p, a, why = accounts.choose_any(["claude", "codex", "opencode"], NOW, snap)
+check((p, a) == ("opencode", ""), f"with nothing excluded the freshest headroom wins: {p} {a}")
+EXCL_CFG = os.path.join(T, "excl.toml")
+open(EXCL_CFG, "w").write(open(TWO_CFG).read().replace('select = "balance"', 'select = "balance"\nexclude = ["opencode"]'))
+use(EXCL_CFG)
+check(accounts.excluded() == ["opencode"] and accounts.pool(["claude", "codex", "opencode"]) == ["claude", "codex"],
+      "exclude keeps a provider out of the pool")
+p, a, why = accounts.choose_any(["claude", "codex", "opencode"], NOW, snap)
+check((p, a) == ("codex", ""), f"an excluded provider is never picked: {p} {a} ({why})")
+check(accounts.choose("opencode", NOW, snap)[1].startswith("excluded"), "nor balanced within")
+check(list(accounts.declared()) == ["claude-2", "codex-b"], "a list under [accounts] is a setting, not an account")
+use(TWO_CFG)
 
 # a usage limit is one account's: it holds only that account's roles
 import datetime as _dt  # noqa: E402

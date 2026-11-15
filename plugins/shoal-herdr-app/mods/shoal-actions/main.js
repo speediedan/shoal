@@ -34,7 +34,7 @@ import {
   validate, rolesArgv, planArgv, applyArgv, statusArgv, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
-  providerOptions, accountOptions, suggestAccount, accountWhy, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
+  providerOptions, accountOptions, suggestAccount, accountWhy, poolHint, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
   draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, handoffLatencyNote, verbGroups, pickKey,
 } from "./model.js";
 
@@ -982,7 +982,7 @@ export default class Actions extends View {
             },
           }, c));
         }
-        const why = f.key === "account" ? accountWhy(this.form, this.roles, mine) : "";
+        const why = f.key === "account" ? accountWhy(this.form, this.roles, mine) : f.key === "ecosystem" ? poolHint(this.roles) : "";
         col.child(v_flex().gap(5).child(this.label(f.label, c)).child(row)
           .when(Boolean(why), (el) => el.child(div().text_size(11).text_color(c.dim).child(why))));
       }

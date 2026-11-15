@@ -937,9 +937,13 @@ def claude_roster() -> dict:
             d = json.load(open(os.path.join(b, "daemon", "roster.json")))
         except (OSError, ValueError):
             continue
-        if isinstance(d, dict):
-            for k, v in d.items():
-                out.setdefault(k, v)
+        # the service nests its workers under `workers` ({proto, supervisorPid, updatedAt, workers: {job: ...}}, seen
+        # 2026-11-15; reading the top level found no job, so stale-worker upkeep matched nothing); a flat map still reads
+        w = d.get("workers") if isinstance(d, dict) and isinstance(d.get("workers"), dict) else d
+        if isinstance(w, dict):
+            for k, v in w.items():
+                if isinstance(v, dict):
+                    out.setdefault(k, v)
     return out
 
 
@@ -1354,8 +1358,29 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             last_wake[slug_] = iso()
         for n_, (_, _, i_) in enumerate(items):
             acts[i_] = (acts[i_][0], acts[i_][1], ch if n_ == 0 else f"merged into the {items[0][0]} wake")
-    # the usage limit has reset: one resume wake to every role it touched or whose wakes were held
-    if lim.get("reset") and not until and lim.get("woken") != lim["reset"]:
+    # the usage limit has reset: one resume wake to every role it touched or whose wakes were held; with several accounts,
+    # each account's roles as soon as that account's own limit resets (another account's later reset does not hold them)
+    per = lim.get("accounts") or {}
+    if per:
+        woken = lim.setdefault("woken_accounts", {})
+        for acct_name, r_reset in sorted(per.items()):
+            if woken.get(acct_name) == r_reset or limit_until({"reset": r_reset}):
+                continue
+            floor = iso(parse(r_reset) - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
+            touched = {s for s, ts in (lim.get("affected") or {}).items() if ts >= floor} | set(lim.get("held") or [])
+            for s in sorted(touched):
+                r_ = spec.role(s)
+                if r_ is None or not r_.session or accounts.name("claude", r_.account) != acct_name:
+                    continue
+                acts.append((s, "usage-limit reset:wake", request_wake(
+                    spec, s, f"the {acct_name} account's usage limit reset at {r_reset}: a turn that errored, a turn you "
+                             f"stopped on the grace note, or a wake lost to the limit resumes now", "limit-reset", dry_run)))
+                if s in (lim.get("held") or []):
+                    lim["held"].remove(s)
+            woken[acct_name] = r_reset
+        if all(woken.get(k) == v for k, v in per.items()):
+            lim["woken"] = lim.get("reset", "")
+    elif lim.get("reset") and not until and lim.get("woken") != lim["reset"]:
         floor = iso(parse(lim["reset"]) - datetime.timedelta(hours=LIMIT_LOOKBACK_H))
         touched = {s for s, ts in (lim.get("affected") or {}).items() if ts >= floor} | set(lim.get("held") or [])
         for s in sorted(touched):

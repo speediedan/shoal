@@ -601,8 +601,16 @@ def view(verb: str, a) -> dict:
                 best[e] = {"account": accounts.name(e, a_), "why": why}
             except Exception:  # noqa: BLE001 - no usage reading: no suggestion
                 pass
+        pool_best = {}
+        try:  # the balancing pool's pick across providers (`--ecosystem auto`), shown under the provider choice
+            p, a_, why = accounts.choose_any()
+            if p:
+                pool_best = {"ecosystem": p, "account": accounts.name(p, a_), "why": why}
+        except Exception:  # noqa: BLE001 - no usage reading: no hint
+            pass
         return {"v": V, "kind": "shoal-act-roles", "shoals": shoals, "ecosystems": ui_status.active_ecosystems(),
-                **({"accounts": accts} if accts else {}), **({"account_best": best} if best else {})}
+                **({"accounts": accts} if accts else {}), **({"account_best": best} if best else {}),
+                **({"pool_best": pool_best} if pool_best else {})}
     if verb == "sessions":
         # this host's sessions a seat could be made of: the 0.9.3 picker's own list (roles, old incarnations and
         # internal runs left out; saved seats stay, so one closed can be added back)

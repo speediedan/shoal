@@ -633,3 +633,34 @@ test("scenes are worked out once per layout, and again on a resize", () => {
   assert.match(src, /const seaOf = lastResult\(oceanScene\)/);
   assert.match(src, /const logoOf = lastResult\(logoDraw\)/);
 });
+
+test("a card lists what runs on its host: its roles (any shoal), its seats, its needs-you; a stale ledger copy warns", () => {
+  const doc = {
+    v: 1, kind: "shoal-launch-list", last: null, hosts: [{
+      name: "host-a", reachable: true, summary: {
+        shoals: [{ id: "alpha-20260101-000000", tag: "alpha", roles: 5, working: 1, waiting: 3, needs_you: 4 },
+          { id: "beta-20260101-000000", tag: "beta", roles: 2, working: 0, waiting: 2, needs_you: 1 }],
+        needs_you: 5,
+        here: {
+          host: "host-a", needs_you: 1, ledger_age_s: 40000,
+          roles: [{ shoal: "alpha-20260101-000000", tag: "alpha", slug: "core", ecosystem: "claude", account: "claude-2", state: "wait", event: "user-prompt", needs_you: true },
+            { shoal: "beta-20260101-000000", tag: "beta", slug: "tune", ecosystem: "codex", account: "", state: "work", event: "turn", needs_you: false }],
+          seats: [{ label: "notes", harness: "claude", account: "", state: "busy" }],
+        },
+      },
+    }],
+  };
+  const h = M.parseList(doc).hosts[0];
+  const lines = M.cardLines(h);
+  assert.deepEqual(lines.map((l) => l.kind), ["sub", "role", "role", "seat", "pin"]);
+  assert.equal(lines[1].tint, M.PASTELS[0]);
+  assert.equal(lines[2].tint, M.PASTELS[1]);
+  assert.equal(M.roleWord(lines[1]), "asks you");
+  assert.equal(M.roleWord(lines[2]), "working");
+  assert.equal(M.providerMark("claude", "claude-2"), "cl2");
+  assert.equal(M.providerMark("codex", ""), "cx");
+  assert.match(lines[4].text, /ledger copy here is 11 h old/);
+  assert.equal(M.hostNeedsYou(h), 1);
+  const empty = M.parseList({ hosts: [{ name: "lap", reachable: true, summary: { shoals: [], here: { roles: [], seats: [], ledger_age_s: 60 } } }] }).hosts[0];
+  assert.deepEqual(M.cardLines(empty).slice(1).map((l) => l.text), ["no roles or seats run here"]);
+});

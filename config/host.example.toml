@@ -120,6 +120,7 @@
 # add-role and the Actions dialog take one (`--account`). Default: none (one account per provider, as before).
 # [accounts]
 # select = "balance"       # the suggested account: the most paced quota headroom (default), or "default"
+# exclude = ["opencode"]   # providers kept out of balancing (`--ecosystem auto` never picks them)
 # [accounts.claude-2]
 # provider = "claude"
 # env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }

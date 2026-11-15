@@ -719,7 +719,11 @@ default `~/.codex`).
   and never picked. `[accounts] select = "balance"` (the default) makes the best-scored account the suggestion
   (`accounts.choose`): the Actions dialog pre-selects it with its reason, `--account auto` takes it on the command line,
   and `shoal accounts` prints every score. `select = "default"` suggests the provider's default. The CLI never changes
-  an account unasked: a handoff with no `--account` keeps the current one.
+  an account unasked: a handoff with no `--account` keeps the current one. **The pool** is every provider in use on
+  the host (`ui set ecosystems`) less `[accounts] exclude` (a list of providers): `--ecosystem auto` on handoff and
+  add-role takes the account with the most headroom of any provider in it (`accounts.choose_any`), the dialog names it
+  under the provider choice, and an excluded provider is neither picked across providers nor balanced among its own
+  accounts.
 
 `doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
 the clock state. The providers (resource leases, wait targets, the board
