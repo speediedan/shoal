@@ -1178,9 +1178,10 @@ opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, f
 inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
 inside the rim instead (`rimShade`), so the shade never spills over the shell.
 
-The global view keeps you close to the floor: `projectLayout` puts your world point straight above the hub (your
-place in the layout, between the shoals) at 0.35 plane gaps above the floor, keeping your opening radius. It fixes
-that point for every turn and orbit, and uses it for your stem, arrows and shadow. (2026-11-14 to 15 it was moved
+The global view floats you among the globes: `projectLayout` puts your world point at the height halfway between the
+globes' middles, over the hub (your place in the layout, between the shoals), moved `YOU_FORWARD` (0.7) globe radii
+toward the opening camera along the floor, so you sit just in front of the line between the globes; it keeps your
+opening radius. It fixes that point for every turn and orbit, and uses it for your stem, arrows and shadow. (2026-11-14 to 15 it was moved
 along the opening camera's sightline instead, which kept your opening screen position but put the point hundreds of
 units beside the hub, so a turned or orbited view drew you far from every globe.) The floor clears the lowest globe by a
 full plane gap and extends beneath every world point. The one lamp is 18 scene radii away, so its rays stay aligned

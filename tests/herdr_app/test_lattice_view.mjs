@@ -1228,7 +1228,7 @@ test("globe lighting follows surface normals and stays inside the silhouette", (
 test("curved light contours enclose the lit cap, including the clipped limb", () => {
   const shade = SP.sphereShade("test", 0, 0, 1, "#50d090");
   const N = shade.paths.length;
-  for (const level of [0, 5, 13, 20, 28, 29, 35, N - 1]) {
+  for (const level of [...new Set([0, 5, 13, 20, 28, 29, 35, 47].map((l) => Math.min(N - 1, Math.round((l * (N - 1)) / 47))))]) {
     const points = [];
     let p0;
     for (const c of shade.paths[level].cmds) {
@@ -2593,15 +2593,20 @@ test("2026-11-14: the global hub hovers over its shadow, the lowest globe clears
   for (const name of ["iso", "tilt"]) {
     const pl = D.projectLayout(global, base, D.camera(name)), w = pl.world.get(user.id), p = pl.pos.get(user.id);
     const sh = pl.stems.find((s) => s.id === `n-${user.id}`).shadow;
-    assert.ok(w.z - pl.floorZ < D.PLANE_GAP / 2, "you hover close to the receiving floor");
-    assert.ok(sh.x > p.x && sh.y > p.y && Math.hypot(sh.x - p.x, sh.y - p.y) < 65, "your shadow is close below and right");
+    // 2026-11-15 (the maintainer): you float at the height halfway between the globes' middles, a little in front of the
+    // hub toward the opening camera; not slid along the opening sightline (that put you hundreds of units aside, so any
+    // turn drew you far from every globe)
+    const zs = base.clusters.map((c) => pl.planes.find((q) => q.id === c.id).z);
+    assert.ok(Math.abs(w.z - zs.reduce((t, v) => t + v, 0) / zs.length) < 1e-6, "you float halfway between the globes' heights");
+    assert.ok(sh.y > p.y, "your shadow falls below you");
     const orbited = D.projectLayout(global, base, D.camera(name, 0.4, { x: 0.3, y: 0.2 }));
     assert.deepEqual(orbited.world.get(user.id), w, "orbiting cannot move the caster in the world");
     const old = D.project(pl.cam, base.pos.get(user.id), pl.planes.at(-1).z / 2);
-    // 2026-11-15: you stand straight above the hub, not slid along the opening sightline (that put you hundreds of
-    // units aside, so any turn drew you far from every globe)
-    const hub = base.pos.get(user.id);
-    assert.ok(Math.hypot(w.x - hub.x, w.y - hub.y) < 1e-6, "you stand straight above the hub");
+    const hub = base.pos.get(user.id), Rm = base.clusters.reduce((t, c) => t + c.r * 0.92, 0) / base.clusters.length;
+    const aside = Math.hypot(w.x - hub.x, w.y - hub.y);
+    assert.ok(Math.abs(aside - D.YOU_FORWARD * Rm) < 1e-6 && aside < Rm, "only slightly in front of the hub, under one globe radius");
+    const eye = D.eyeOf(pl.cam, pl.planes.at(-1).z / 2);
+    assert.ok(Math.hypot(eye.x - w.x, eye.y - w.y) < Math.hypot(eye.x - hub.x, eye.y - hub.y), "in front: toward the opening camera");
     assert.ok(Math.abs(old.f - pl.scaleOf.get(user.id)) < 1e-6, "opening size preserved");
     for (let k = 0; k < 8; k++) {
       const turned = D.projectLayout(global, base, D.camera(name, (k * Math.PI) / 4, { x: 0.3 * Math.sin(k), y: 0.2 }));
@@ -2625,4 +2630,20 @@ test("2026-11-14: the global hub hovers over its shadow, the lowest globe clears
       c = next;
     }
   }
+});
+
+test("2026-11-15: lite scene (renders near the native script deadline): about half the globe and shadow layers", () => {
+  const pl = D.projectLayout(global, L.layoutGraph(global), D.camera("iso"));
+  const full = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full" });
+  const lite = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full", lite: true });
+  const count = (sc, pre) => sc.items.filter((it) => it.id.startsWith(pre)).length;
+  for (const pre of ["sphere-lit-"]) {
+    assert.ok(count(lite, pre) > 0 && count(lite, pre) <= Math.ceil(count(full, pre) / 2) + 1, `${pre} about halved`);
+  }
+  assert.ok(count(lite, "shadow-c-") < count(full, "shadow-c-"), "fewer shadow layers");
+  assert.ok(lite.items.length < full.items.length, "a lighter scene");
+  assert.equal(SP.sphereShade("t", 0, 0, 1, "#50d090", 1, false, SP.LIGHT, true).paths.length, SP.STEPS / 2);
+  const src = readFileSync(join(MOD, "main.js"), "utf8");
+  assert.match(src, /const LITE_MS = 30;/, "a render of 30 ms or more turns lite on");
+  assert.match(src, /lite: !!this\.lite/, "the scene is told");
 });

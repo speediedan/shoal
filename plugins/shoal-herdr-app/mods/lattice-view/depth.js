@@ -1,6 +1,6 @@
 // depth.js: the lattice's depth mode (P3b), pure (no Herdr imports, so it tests under Node). GPUI has no 3D, but every
 // position is the mod's own: in the global view each node gets a plane (its shoal's; the operator and outside seats on
-// an anchor plane above; the operator hovers near the floor straight above the hub), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
+// an anchor plane above; the operator floats between the globes' heights, just in front of the hub), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
 // back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon and near ones grow.
 // Per shoal, the view is a cutout sphere instead (projectBowl): you at its middle, each host a lune of its inner surface.
 // Every node has one point in the view's world (`world`): it is drawn where that point projects, its edges are lifted
@@ -20,6 +20,8 @@ const DEG = Math.PI / 180;
 const ACTIVITY = { working: 0, "local-ci": 1, "remote-ci": 1, "research-proto": 1, handover: 2, refill: 2, lease: 3, upstream: 3, peer: 3, hold: 3, other: 3,
   queued: 4, starved: 5, held: 5, dismissed: 5, excluded: 6 };
 const SPHERE_R = 0.92; // of the shoal's disc radius
+/** How far in front of the hub you float, toward the opening camera along the floor, in globe radii (slightly). */
+export const YOU_FORWARD = 0.7;
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
 const CAP = 0.95; // how far back the spiral reaches: 1 is the far pole
 
@@ -240,7 +242,7 @@ export function unproject(cam, s, depth) {
 /**
  * Each node's plane height and the planes themselves, far to near: {zOf: Map id -> z, planes: [{id, z, kind}]}. Global:
  * one plane per shoal, in the layout's cluster order; per shoal: one per host band. The operator and outside seats go on
- * an anchor plane above them all; projectLayout lowers the operator to near the floor, straight above the hub.
+ * an anchor plane above them all; projectLayout moves the operator to the globes' middle height, just in front of the hub.
  */
 export function planesOf(vm, lay) {
   const zOf = new Map();
@@ -314,15 +316,23 @@ export function projectLayout(vm, lay, cam0) {
     }
   }
   for (const [id, p] of lay.pos) if (!world.has(id)) world.set(id, { x: p.x, y: p.y, z: z(id) });
-  // You hover close to the floor straight below your place in the layout (the hub between the shoals), one point in the
-  // world that draws you, your stem and your shadow at every turn and orbit. Lowering you along the opening camera's
-  // sightline instead (#175) kept your opening spot on screen but put that point hundreds of units to the side of the
-  // hub, so any turn showed you far from every globe (2026-11-15: about 1,800 px away at a half turn). Your size keeps
-  // what the anchor plane gave you at the opening view.
+  // You float at the height halfway between the globes' middles, over the hub (your place in the layout, between the
+  // shoals), moved a little toward the opening camera along the floor (YOU_FORWARD globe radii), so you sit just in front
+  // of the line between them rather than on it: one point in the world that draws you, your stem and your shadow at
+  // every turn and orbit (2026-11-15, the maintainer's placement). Lowering you along the opening camera's sightline
+  // instead (#175) kept your opening spot on screen but put that point hundreds of units to the side of the hub, so any
+  // turn showed you far from every globe (about 1,800 px at a half turn). Your size keeps what the anchor plane gave you
+  // at the opening view.
   const userScale = new Map();
+  const globeZ = (lay.clusters ?? []).map((c) => planeZ.get(c.id) ?? 0);
+  const globeR = (lay.clusters ?? []).map((c) => c.r * SPHERE_R);
+  const meanOf = (xs, d) => (xs.length ? xs.reduce((t, v) => t + v, 0) / xs.length : d);
   for (const n of vm.nodes) if (n.kind === "user" && world.has(n.id)) {
     const w = world.get(n.id), at = project(homeCam, w, w.z - mid);
-    const q = { x: w.x, y: w.y, z: floorZ + 0.35 * PLANE_GAP };
+    const zh = meanOf(globeZ, floorZ + 0.35 * PLANE_GAP);
+    const e = towardEye(homeCam, mid, { x: w.x, y: w.y, z: zh }), flat = Math.hypot(e.x, e.y) || 1;
+    const off = YOU_FORWARD * meanOf(globeR, 0);
+    const q = { x: w.x + (off * e.x) / flat, y: w.y + (off * e.y) / flat, z: zh };
     world.set(n.id, q);
     userScale.set(n.id, at.f / project(homeCam, q, q.z - mid).f);
   }

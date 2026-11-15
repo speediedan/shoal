@@ -77,24 +77,40 @@ export function contoursFor(L = LIGHT) {
 }
 
 /** The body's color and each contour's, alpha included: layer i lifts the total opacity toward `lit` on a curve
- * that saves most of the rise for the lit cap, so the shadow side stays clear. */
-function glassLayers(tint, fog, focused) {
+ * that saves most of the rise for the lit cap, so the shadow side stays clear. Cached by tint, focus and fog (to 1/512:
+ * the colors are 8-bit), since a render needs them for every globe and every label on one, and recomputing them was
+ * about a third of a scene's script time (2026-11-15: the global view's render overran the native script deadline). */
+const glassCache = new Map();
+function glassLayers(tint, fog, focused, n = STEPS) {
+  const key = `${tint}|${Math.round(fog * 512)}|${focused ? 1 : 0}|${n}`;
+  let hit = glassCache.get(key);
+  if (!hit) {
+    if (glassCache.size >= 256) glassCache.clear();
+    hit = glassLayersOf(tint, Math.round(fog * 512) / 512, focused, n);
+    glassCache.set(key, hit);
+  }
+  return hit;
+}
+
+function glassLayersOf(tint, fog, focused, n = STEPS) {
   const g = glassOf(focused);
   const dark = mix(tint, "#050b17", 0.8), lit = mix(tint, "#ffffff", 0.55);
   const total = (t) => fog * (g.body + (g.lit - g.body) * t ** 1.2);
   const layers = [];
-  for (let i = 0; i < STEPS; i++) {
-    const a = 1 - (1 - total((i + 1) / STEPS)) / (1 - total(i / STEPS));
-    layers.push(withAlpha(mix(dark, lit, (i / (STEPS - 1)) ** 0.7), a));
+  for (let i = 0; i < n; i++) {
+    const a = 1 - (1 - total((i + 1) / n)) / (1 - total(i / n));
+    layers.push(withAlpha(mix(dark, lit, (i / (n - 1)) ** 0.7), a));
   }
   return { dark, body: withAlpha(dark, total(0)), layers };
 }
 
 /** A glass globe at (x, y), radius r, lit from `light` (camera space): its body (the whole disc) and the light
  * contours over it. */
-export function sphereShade(id, x, y, r, tint, fog = 1, focused = false, light = LIGHT) {
-  const g = glassLayers(tint, fog, focused);
-  const paths = contoursFor(light).map((cmds, i) => ({
+export function sphereShade(id, x, y, r, tint, fog = 1, focused = false, light = LIGHT, lite = false) {
+  // lite (the mod's renders near the native script deadline): every other contour, its alphas solved for half the steps
+  const g = glassLayers(tint, fog, focused, lite ? STEPS / 2 : STEPS);
+  const contours = lite ? contoursFor(light).filter((_, i) => i % 2 === 0) : contoursFor(light);
+  const paths = contours.map((cmds, i) => ({
     t: "path", id: `sphere-lit-${id}-${i}`, fill: true,
     cmds: cmds.map((c) => [c[0], ...c.slice(1).map((n, j) => (j % 2 ? y : x) + r * n)]),
     bg: { kind: "solid", color: g.layers[i] },
@@ -102,15 +118,31 @@ export function sphereShade(id, x, y, r, tint, fog = 1, focused = false, light =
   return { dark: g.dark, body: g.body, paths };
 }
 
-const rgba = (hex) => {
+// color parsing and blending are pure and see the same few hundred colors each render: memoized (a render's label
+// inks blend every layer under them, and re-parsing was a large part of a bowl scene's script time, 2026-11-15)
+const memo = (f, max = 4096) => {
+  const m = new Map();
+  return (k) => {
+    let v = m.get(k);
+    if (v === undefined) {
+      if (m.size >= max) m.clear();
+      v = f(k);
+      m.set(k, v);
+    }
+    return v;
+  };
+};
+const rgba = memo((hex) => {
   const s = String(hex).replace("#", "");
   return { c: [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16)), a: s.length >= 8 ? parseInt(s.slice(6, 8), 16) / 255 : 1 };
-};
-/** `color` (with its alpha) blended over the opaque color `under`. */
-export const over = (under, color) => {
+});
+const overOf = memo((key) => {
+  const [under, color] = key.split("|");
   const { c, a } = rgba(color), u = rgba(under).c;
   return "#" + u.map((v, i) => Math.round(v + (c[i] - v) * a).toString(16).padStart(2, "0")).join("");
-};
+}, 16384);
+/** `color` (with its alpha) blended over the opaque color `under`. */
+export const over = (under, color) => overOf(`${under}|${color}`);
 
 /**
  * What the eye sees at a point of a globe (nx, ny: unit offsets from its middle) over the color `under` it: the same
@@ -256,10 +288,15 @@ export const BOWL_FAR_EXTRA = (29 * Math.PI) / 180;
 export const BOWL_LIP = 0.035;
 
 const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+// sum of scalar * vector terms; written out per axis: a loop over ["x", "y", "z"] per term was the bowl scene's largest
+// script cost (2026-11-15: the per-shoal view's render was at the native script deadline)
 const comb = (...terms) => {
-  const out = { x: 0, y: 0, z: 0 };
-  for (let i = 0; i < terms.length; i += 2) for (const k of ["x", "y", "z"]) out[k] += terms[i] * terms[i + 1][k];
-  return out;
+  let x = 0, y = 0, z = 0;
+  for (let i = 0; i < terms.length; i += 2) {
+    const s = terms[i], v = terms[i + 1];
+    x += s * v.x; y += s * v.y; z += s * v.z;
+  }
+  return { x, y, z };
 };
 const unit = (v) => { const l = Math.hypot(v.x, v.y, v.z) || 1; return { x: v.x / l, y: v.y / l, z: v.z / l }; };
 
@@ -628,7 +665,7 @@ export function rimShade(fr, cx, cy, R) {
   if (!faces(psi0) || faces(psi0 + Math.PI)) return null;
   const reach = (dir) => {
     let lo = 0, hi = Math.PI;
-    for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (faces(psi0 + dir * mid)) lo = mid; else hi = mid; }
+    for (let i = 0; i < 26; i++) { const mid = (lo + hi) / 2; if (faces(psi0 + dir * mid)) lo = mid; else hi = mid; }
     return lo;
   };
   const a0 = reach(-1), a1 = reach(1), mid = psi0 + (a1 - a0) / 2, del = (a0 + a1) / 2;
@@ -764,7 +801,7 @@ export const YOU_SHADOW = { peak: 0.55, soft: 0.5, size: 1 };
 export const bowlShadowAt = (fr, at = ORIGIN) => bowlCast(fr, at);
 /** Whether your shadow lands on the inside, seen through the opening. */
 export const bowlShadowSeen = (fr, at) => { const u = bowlCast(fr, at); return bowlLit(fr, at) && bowlKept(fr, u) && bowlSeen(fr, u) <= 1; };
-export function bowlShadow(fr, cx, cy, R, rb, at) {
+export function bowlShadow(fr, cx, cy, R, rb, at, lite = false) {
   if (!bowlShadowSeen(fr, at)) return [];
   const c = bowlCast(fr, at), { A, B } = ballShadow(bowlLightAt(fr), at, YOU_SHADOW.size * rb, c, c);
   const e1 = projectedCircle(fr.d, c, A, B, 1), px = R * Math.sqrt(Math.hypot(e1.a.x, e1.a.y) * Math.hypot(e1.b.x, e1.b.y));
@@ -773,7 +810,8 @@ export function bowlShadow(fr, cx, cy, R, rb, at) {
   // each layer's middle is the cast point's image (the ellipse's own middle is a little off it in perspective), so your
   // shadow's middle is the one every node's is: where the ray through its world point meets the wall
   const s = bowlProject(fr, c);
-  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, shadowSteps(YOU_SHADOW.peak, YOU_SHADOW.soft, px), wall).map((l) => {
+  const n = shadowSteps(YOU_SHADOW.peak, YOU_SHADOW.soft, px);
+  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, lite ? Math.min(10, n) : n, wall).map((l) => {
     const e = projectedCircle(fr.d, c, comb(l.s, A), comb(l.s, B), 1);
     return { x: cx + R * s.x, y: cy + R * s.y, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
   });
