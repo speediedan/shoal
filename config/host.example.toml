@@ -103,6 +103,11 @@
 # [lifecycle]
 # trusted_repos = ["/path/to/repository"]
 
+# Minutes between the graph feed's pulls of this host's ledger clone (`shoal ui graph-feed`). A host that runs roles
+# keeps its clone current through them; one that runs none (a laptop that only views) has nothing else that pulls, so
+# its home cards and lattice show an old copy. Default: 0 (never).
+# ledger_pull_min = 5
+
 # The model and effort a session moved to a provider gets when the handoff names none (`shoal handoff --ecosystem`, the
 # Handoff dialog). Without them, a provider's empty model means whatever its own client last saved as its default, which
 # an interactive model pick can change for every later session. Moving back to a provider gets these again. Default: none.

@@ -563,25 +563,40 @@ def program_key(ecosystem: str, account: str = "") -> str:
     return f"{ecosystem}#{accounts.badge(ecosystem, account)}"
 
 
-# seven-segment strokes for a badge digit, in a 24-unit icon: a b c d e f g
-_SEGMENTS = {"a": ((16.8, 15.8), (19.6, 15.8)), "b": ((19.6, 15.8), (19.6, 18.2)), "c": ((19.6, 18.2), (19.6, 20.6)),
-             "d": ((16.8, 20.6), (19.6, 20.6)), "e": ((16.8, 18.2), (16.8, 20.6)), "f": ((16.8, 15.8), (16.8, 18.2)),
-             "g": ((16.8, 18.2), (19.6, 18.2))}
+# The badge in a 24-unit icon: the provider's glyph shrunk to GLYPH_SCALE in the upper left, and a light disc over the
+# lower right holding the digit as seven-segment strokes (a b c d e f g) in a DIGIT_W by DIGIT_H box. At the pane's icon
+# size (about 16 px) the first badge's digit was some 2 by 3 px of thin strokes on a dark disc, and did not read
+# (2026-11-15); this one is about twice that, heavier, dark on light.
+GLYPH_SCALE = 0.74
+BADGE = {"cx": 16.6, "cy": 16.6, "r": 7.2}
+DIGIT_W, DIGIT_H, DIGIT_STROKE = 5.0, 8.2, 2.3
 _DIGITS = {"0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd", "4": "fgbc", "5": "afgcd", "6": "afgedc", "7": "abc",
            "8": "abcdefg", "9": "abcdfg"}
 
 
+def _segments() -> dict:
+    x0, x1 = BADGE["cx"] - DIGIT_W / 2, BADGE["cx"] + DIGIT_W / 2
+    y0, ym, y1 = BADGE["cy"] - DIGIT_H / 2, BADGE["cy"], BADGE["cy"] + DIGIT_H / 2
+    return {"a": ((x0, y0), (x1, y0)), "b": ((x1, y0), (x1, ym)), "c": ((x1, ym), (x1, y1)), "d": ((x0, y1), (x1, y1)),
+            "e": ((x0, ym), (x0, y1)), "f": ((x0, y0), (x0, ym)), "g": ((x0, ym), (x1, ym))}
+
+
 def badged_svg(svg: str, badge: str) -> str:
-    """The provider's icon with a badge in its lower right corner: a dark disc and the badge's last digit drawn as
-    strokes (no font: the app's SVG renderer need not have one), or a plain disc for a badge that is not a digit."""
+    """The provider's icon with a badge in its lower right corner: the glyph shrunk toward the upper left, a light disc
+    with a dark rim, and the badge's last digit drawn as heavy strokes (no font: the app's SVG renderer need not have
+    one), or a plain disc for a badge that is not a digit."""
+    seg = _segments()
     segs = _DIGITS.get(badge[-1:] if badge else "", "")
-    path = "".join(f"M{_SEGMENTS[s][0][0]} {_SEGMENTS[s][0][1]}L{_SEGMENTS[s][1][0]} {_SEGMENTS[s][1][1]}" for s in segs)
+    path = "".join(f"M{seg[s][0][0]:.2f} {seg[s][0][1]:.2f}L{seg[s][1][0]:.2f} {seg[s][1][1]:.2f}" for s in segs)
     # the disc and its rim stay inside the 24-unit box (the app clips at the icon's edge)
-    mark = ('<circle cx="18.2" cy="18.2" r="5.4" fill="#1c1d21" stroke="#ffffff" stroke-width="0.8"/>'
-            + (f'<path d="{path}" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" '
+    mark = (f'<circle cx="{BADGE["cx"]}" cy="{BADGE["cy"]}" r="{BADGE["r"]}" fill="#f2f2f2" stroke="#1c1d21" '
+            f'stroke-width="0.9"/>'
+            + (f'<path d="{path}" fill="none" stroke="#111216" stroke-width="{DIGIT_STROKE}" stroke-linecap="round" '
                f'stroke-linejoin="round"/>' if path else ""))
-    i = svg.rfind("</svg>")
-    return svg[:i] + mark + svg[i:] if i >= 0 else svg
+    start, end = svg.find(">") + 1, svg.rfind("</svg>")
+    if start <= 0 or end < start:
+        return svg
+    return svg[:start] + f'<g transform="scale({GLYPH_SCALE})">' + svg[start:end] + "</g>" + mark + svg[end:]
 
 
 def badged_icon(ecosystem: str, badge: str, dry_run: bool = False) -> str:

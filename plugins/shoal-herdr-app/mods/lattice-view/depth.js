@@ -1,6 +1,6 @@
 // depth.js: the lattice's depth mode (P3b), pure (no Herdr imports, so it tests under Node). GPUI has no 3D, but every
 // position is the mod's own: in the global view each node gets a plane (its shoal's; the operator and outside seats on
-// an anchor plane above; the operator is lowered along the home sightline), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
+// an anchor plane above; the operator hovers near the floor straight above the hub), and the layout is projected before the scene draws it. A camera turns the planes (yaw), tilts them
 // back (pitch) and sees them in perspective from a distance, so far planes shrink toward the horizon and near ones grow.
 // Per shoal, the view is a cutout sphere instead (projectBowl): you at its middle, each host a lune of its inner surface.
 // Every node has one point in the view's world (`world`): it is drawn where that point projects, its edges are lifted
@@ -240,7 +240,7 @@ export function unproject(cam, s, depth) {
 /**
  * Each node's plane height and the planes themselves, far to near: {zOf: Map id -> z, planes: [{id, z, kind}]}. Global:
  * one plane per shoal, in the layout's cluster order; per shoal: one per host band. The operator and outside seats go on
- * an anchor plane above them all; projectLayout lowers the operator along the home sightline.
+ * an anchor plane above them all; projectLayout lowers the operator to near the floor, straight above the hub.
  */
 export function planesOf(vm, lay) {
   const zOf = new Map();
@@ -314,19 +314,17 @@ export function projectLayout(vm, lay, cam0) {
     }
   }
   for (const [id, p] of lay.pos) if (!world.has(id)) world.set(id, { x: p.x, y: p.y, z: z(id) });
-  // You hover close to the floor. Keep your opening position by moving along the home camera's
-  // sightline, once in world space: the same point then draws you, your stem and your shadow on every orbit.
+  // You hover close to the floor straight below your place in the layout (the hub between the shoals), one point in the
+  // world that draws you, your stem and your shadow at every turn and orbit. Lowering you along the opening camera's
+  // sightline instead (#175) kept your opening spot on screen but put that point hundreds of units to the side of the
+  // hub, so any turn showed you far from every globe (2026-11-15: about 1,800 px away at a half turn). Your size keeps
+  // what the anchor plane gave you at the opening view.
   const userScale = new Map();
   for (const n of vm.nodes) if (n.kind === "user" && world.has(n.id)) {
-    const w = world.get(n.id), at = project(homeCam, w, w.z - mid), height = floorZ + 0.35 * PLANE_GAP;
-    let lo = -4 * cam.d, hi = 0.8 * cam.d;
-    for (let i = 0; i < 48; i++) {
-      const dd = (lo + hi) / 2;
-      if (unproject(homeCam, at, dd).z + mid < height) lo = dd; else hi = dd;
-    }
-    const q = unproject(homeCam, at, (lo + hi) / 2);
-    world.set(n.id, { x: q.x, y: q.y, z: q.z + mid });
-    userScale.set(n.id, at.f / project(homeCam, q, q.z).f);
+    const w = world.get(n.id), at = project(homeCam, w, w.z - mid);
+    const q = { x: w.x, y: w.y, z: floorZ + 0.35 * PLANE_GAP };
+    world.set(n.id, q);
+    userScale.set(n.id, at.f / project(homeCam, q, q.z - mid).f);
   }
   const pos = new Map(), depth = new Map(), scaleOf = new Map(), fOf = new Map();
   for (const [id, w] of world) {

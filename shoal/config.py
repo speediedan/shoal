@@ -29,6 +29,9 @@ when neither is importable the file is skipped with one warning on stderr.
   lifecycle.trusted_repos (none)                             [] (repositories whose .shoal/lifecycle.toml hooks run here)
   provider_defaults.<eco> (none)                             {} (model and effort a session moved to that provider gets
                                                                  when none is named; empty: the provider's own default)
+  ledger_pull_min (none)                                     0 (minutes between the graph feed's pulls of this host's
+                                                                 ledger clone; 0: it never pulls, as a host running roles
+                                                                 needs no extra pull)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
@@ -181,6 +184,16 @@ def provider_default(ecosystem: str) -> tuple[str, str]:
     if not isinstance(t, dict):
         return "", ""
     return str(t.get("model") or ""), str(t.get("effort") or "")
+
+
+def ledger_pull_min() -> float:
+    """`ledger_pull_min` in the host config: how often the graph feed pulls this host's ledger clone, in minutes; 0 (the
+    default) never. A host that runs no role has nothing else that pulls, so what it shows of the shoals goes stale
+    (2026-11-15: a laptop's clone was two weeks old); its feed can keep it current."""
+    try:
+        return max(0.0, float(file_values().get("ledger_pull_min") or 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def lease_cmd() -> str:

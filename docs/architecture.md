@@ -1178,9 +1178,11 @@ opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, f
 inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
 inside the rim instead (`rimShade`), so the shade never spills over the shell.
 
-The global view keeps you close to the floor (2026-11-14): `projectLayout` moves your world point along the home
-camera sightline to 0.35 plane gaps above the floor, preserving your opening screen position and radius. It fixes
-that point for every orbit, and uses it for your stem, arrows and shadow. The floor clears the lowest globe by a
+The global view keeps you close to the floor: `projectLayout` puts your world point straight above the hub (your
+place in the layout, between the shoals) at 0.35 plane gaps above the floor, keeping your opening radius. It fixes
+that point for every turn and orbit, and uses it for your stem, arrows and shadow. (2026-11-14 to 15 it was moved
+along the opening camera's sightline instead, which kept your opening screen position but put the point hundreds of
+units beside the hub, so a turned or orbited view drew you far from every globe.) The floor clears the lowest globe by a
 full plane gap and extends beneath every world point. The one lamp is 18 scene radii away, so its rays stay aligned
 across the extended floor. The background bloom uses `shadowLayers` with violet ink and a full-radius falloff;
 the optional ink participates in the cache key and the alpha solver handles lighter and darker ink. `canvasAt`
@@ -1475,7 +1477,8 @@ and the contract are in [`ui.md`](ui.md).
   you holds what needs you), the operator and outside seats on a plane above; the layout
   is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
   stays flat. The rail warns when the feed's ledger
-  clone is over an hour old, because the feed never pulls.
+  clone is over an hour old, because the feed does not pull unless the host config's `ledger_pull_min` says how
+  often to (for a host that runs no role, whose clone nothing else keeps current; the home card warns past six hours).
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
   a native mod. It reads `shoal ui launch --list --json --summary` (the terminal chooser's list,
   additive v1) every 20 s and on refresh, and draws a logo in original bold rounded glass letters on one baseline, each a small aquarium with water

@@ -3948,5 +3948,6 @@ else
 fi
 
 python3 "$TESTD/test_handoff_flow.py" || fail "checkpoint-first and background handoff"
+python3 "$TESTD/test_graph_feed_pull.py" || fail "the graph feed's ledger pull (ledger_pull_min)"
 
 echo "SELFTEST PASS ($S)"

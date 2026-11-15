@@ -1005,13 +1005,34 @@ def cmd_graph(a) -> int:
     return 0 if not any(s.get("error") for s in doc["shoals"]) else 1
 
 
+def pull_ledger(root: str, verbose: bool = False) -> bool:
+    """Bring this host's ledger clone up to its remote (the ledger's own locked fetch and rebase). True when its head
+    moved; a failed pull (offline) says so and leaves the clone as it was."""
+    import ledger as _ledger
+    try:
+        head = _ledger.git(root, "rev-parse", "HEAD", check=False).stdout.strip()
+        ok = _ledger.sync_pull(root)
+        moved = ok and _ledger.git(root, "rev-parse", "HEAD", check=False).stdout.strip() != head
+    except Exception as exc:  # noqa: BLE001 - a feed reports and retries, it does not die
+        print(f"graph-feed: ledger pull failed: {exc}", file=sys.stderr, flush=True)
+        return False
+    if verbose or not ok:
+        print(f"graph-feed: ledger pull {'moved' if moved else 'current' if ok else 'failed (offline?)'}: {root}", flush=True)
+    return moved
+
+
 def cmd_graph_feed(a) -> int:
     """Write the graph document atomically every `--interval` seconds (a systemd user unit can run
     this as it is). The builder lives across ticks, so each tick reads only appended ledger bytes."""
     path = a.out or graph_path()
     b = GraphBuilder(a.ids or None, a.ledger_root, a.window_rate, a.events)
+    pull_s, pulled = config.ledger_pull_min() * 60, 0.0
     while True:
         t0 = time.time()
+        if pull_s and t0 - pulled >= pull_s:  # `ledger_pull_min`: a host whose roles do not keep its clone current
+            pulled = t0
+            if pull_ledger(a.ledger_root or config.ledger_dir(), a.verbose):
+                b = GraphBuilder(a.ids or None, a.ledger_root, a.window_rate, a.events)  # specs and files may have changed
         try:
             doc = b.build("", t0)
             write_doc(doc, path)
