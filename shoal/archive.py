@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reference-aware archival of role documents (docs/archive.md): warm archive, restore, and warm to cold.
 
-    shoal archive <path> [<path> ...] [--reason R] [--by WHO] [--dry-run] [--json]
+    shoal archive <path> [<path> ...] [--reason R] [--by WHO] [--cross-owner notify|rewrite] [--dry-run] [--json]
     shoal archive --restore <original path> [--by WHO] [--dry-run] [--json]
     shoal archive --cold <original path> [<path> ...] [--force] [--by WHO] [--dry-run] [--json]
 
@@ -11,6 +11,14 @@
 root, or is still named by a live document: that is the break this command exists to prevent, so the caller first
 points live references elsewhere (or keeps the file). History documents' references stay as written; the manifest is
 what resolves them.
+
+`--cross-owner rewrite` points those live references at the archive paths in the same run instead of refusing: a path
+substitution only, each reference kept in the form it was written in (relative, repository-relative, absolute, `~/`;
+a unique partial path becomes the full archive path), and a tracked symlink repointed. Every rewritten file must equal
+its `HEAD` copy with exactly those substitutions, and a rescan must find no live reference left to an old path, or the
+run is undone. A referrer must be tracked, clean and UTF-8 text; a symlink that is a start doc refuses (its role moves
+first). The default, `notify`, is the refusal above; the manual command never reads `[checkpoint] cross_owner`, so a
+caller with a policy passes the flag.
 
 `--restore` moves a file back to its original path, from the warm archive or, once cold, from the commit its `cold`
 event names. `--cold` deletes a warm file from the tree with a `cold` event whose `restore_from` is the commit that still
@@ -102,6 +110,9 @@ class Plan:
         self.moves: list[tuple[str, str]] = []           # (from, to), repository-relative
         self.restores: list[tuple[str, str, dict]] = []  # from cold: (archive path, original, {blob, mode})
         self.deletes: list[str] = []
+        self.rewrites: dict[str, dict] = {}              # referrer -> {before: its text, subs: [span + "to"]}
+        self.relinks: list[tuple[str, str, str]] = []    # (symlink, link text, new link text)
+        self.old_new: dict[str, str] = {}                # archived original -> archive path, for the rescan
         self.events: dict[str, list[dict]] = {}          # manifest path -> new events
         self.notes: list[str] = []
 
@@ -134,6 +145,7 @@ class Plan:
 
     def paths(self) -> list[str]:
         out = [p for mv in self.moves for p in mv] + list(self.deletes) + list(self.events)
+        out += list(self.rewrites) + [link for link, _, _ in self.relinks]
         # a cold file is no longer in the tree, so only its original path is committed
         out += [o for _, o, _ in self.restores]
         return sorted(set(out))
@@ -163,22 +175,124 @@ def _clean(plan: Plan, rel: str) -> None:
         raise Refused(f"{rel} has uncommitted changes ({st.split()[0]}): commit or discard them first")
 
 
-def _live_referrers(plan: Plan, targets: list[str]) -> dict[str, list[dict]]:
-    """{target: [live referrers]} across the repository, by the repository's tiers, plus shoal's own roots."""
-    tiers = plan.lc["values"]["tiers"]
+def _spans(plan: Plan, targets: list[str], repo: refs.Repo | None = None, skip: set[str] = frozenset()) -> list[dict]:
+    """Every reference to `targets` from outside them (and outside `skip`), by the repository's tiers, excluded tiers
+    left out: `refs.reference_spans`, so the refusal and the rewrite read the same references."""
+    repo, tiers = repo or plan.repo, plan.lc["values"]["tiers"]
 
     def tier(p: str) -> str:
         if refs._matches(p, tiers["exclude"]):
             return "excluded"
         return "history" if refs._matches(p, tiers["history"]) else "live"
 
-    referrers = sorted(p for p in plan.repo.mode if plan.repo.mode[p] != "120000"
-                       and posixpath.splitext(p)[1] in refs.TEXT_EXT and tier(p) != "excluded" and p not in targets)
-    edges = refs.edges_to(plan.repo, targets, referrers, tier)
-    return {t: [e for e in es if e["tier"] in ("live", "symlink") and e["file"] not in targets] for t, es in edges.items()}
+    out_of = set(targets) | set(skip)
+    referrers = sorted(p for p in repo.mode if repo.mode[p] != "120000"
+                       and posixpath.splitext(p)[1] in refs.TEXT_EXT and tier(p) != "excluded" and p not in out_of)
+    return [s for s in refs.reference_spans(repo, targets, referrers, tier) if s["file"] not in out_of]
 
 
-def plan_archive(paths: list[str], reason: str, by: str, force: bool = False) -> Plan:
+def _live_referrers(plan: Plan, targets: list[str]) -> dict[str, list[dict]]:
+    """{target: [live referrers]} across the repository, by the repository's tiers, plus shoal's own roots."""
+    named: dict[str, list[dict]] = {t: [] for t in targets}
+    for s in _spans(plan, targets):
+        if s["tier"] in ("live", "symlink"):
+            named[s["target"]].append({"file": s["file"], "line": s["line"], "tier": s["tier"]})
+    return named
+
+
+def _rewritten(s: dict, new: str) -> str:
+    """The text that names `new` in the form `s` named its target in (a `refs.reference_spans` span)."""
+    if s["form"] == "relative":
+        return posixpath.relpath(new, posixpath.dirname(s["file"]) or ".")
+    if s["form"] in ("repo", "suffix"):
+        return new
+    w, old = s["written"], s["target"]
+    if not w.endswith("/" + old):
+        raise Refused(f"{s['file']}:{s['line']}: cannot rewrite `{w}` in its own form (it does not end with {old})")
+    return w[:-len(old)] + new
+
+
+def _relinked(s: dict, new: str, root: str) -> str:
+    """A symlink's new link text, in its own form: relative stays relative, absolute stays absolute."""
+    if os.path.isabs(s["written"]):
+        return os.path.join(root, new)
+    return posixpath.relpath(new, posixpath.dirname(s["file"]) or ".")
+
+
+def _plan_rewrites(plan: Plan, live: list[dict], roots: dict) -> None:
+    """Plan the substitution of every live reference (`live`, spans) by its archive path: refuses an ambiguous token,
+    a start-doc symlink, and a referrer that is untracked, dirty or not UTF-8 text with `\\n` line endings."""
+    by_file: dict[str, list[dict]] = {}
+    for s in live:
+        if s["ambiguous"]:
+            raise Refused(f"{s['file']}:{s['line']}: `{s['written']}` names more than one archived path")
+        new = plan.archive_path(s["target"])
+        if s["form"] == "symlink":
+            if s["file"] in roots:
+                raise Refused(f"{s['file']} is a start doc ({'; '.join(refs.who_text(w) for w in roots[s['file']])}) "
+                              f"and a symlink to {s['target']}: move that role first")
+            _clean(plan, s["file"])
+            plan.relinks.append((s["file"], s["written"], _relinked(s, new, plan.repo.root)))
+            continue
+        by_file.setdefault(s["file"], []).append(dict(s, to=_rewritten(s, new)))
+    for f, subs in sorted(by_file.items()):
+        _clean(plan, f)
+        with open(os.path.join(plan.repo.root, f), "rb") as fh:
+            raw = fh.read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        if text is None or text != plan.repo.read(f):
+            raise Refused(f"{f} names an archived path but is not UTF-8 text with \\n line endings: rewrite it by hand")
+        subs.sort(key=lambda x: x["start"])
+        plan.rewrites[f] = {"before": text, "subs": subs}
+
+
+def _substitute(text: str, subs: list[dict]) -> str:
+    out, pos = [], 0
+    for x in subs:
+        out += [text[pos:x["start"]], x["to"]]
+        pos = x["end"]
+    return "".join(out) + text[pos:]
+
+
+def _verify_rewrites(plan: Plan) -> None:
+    """Each rewritten file is its `HEAD` copy with exactly the planned substitutions, each new text names the archive
+    path, and a rescan of the written tree finds no live reference left to an old path. Checked independently of the
+    writer, so a writer bug is caught here rather than committed."""
+    root = plan.repo.root
+    for f, rw in plan.rewrites.items():
+        head = _git_bytes(root, "cat-file", "blob", f"HEAD:{f}").decode("utf-8", errors="replace")
+        with open(os.path.join(root, f), "rb") as fh:
+            after = fh.read().decode("utf-8", errors="replace")
+        if head != rw["before"]:
+            raise Refused(f"{f} changed at HEAD while this run was planning it")
+        pos = apos = 0
+        for x in rw["subs"]:
+            seg = head[pos:x["start"]]
+            if after[apos:apos + len(seg)] != seg or head[x["start"]:x["end"]] != x["written"]:
+                raise Refused(f"{f}: the rewrite is not a pure path substitution (near line {x['line']})")
+            apos += len(seg)
+            if after[apos:apos + len(x["to"])] != x["to"]:
+                raise Refused(f"{f}:{x['line']}: expected `{x['to']}` where `{x['written']}` was")
+            apos, pos = apos + len(x["to"]), x["end"]
+        if after[apos:] != head[pos:]:
+            raise Refused(f"{f}: the rewrite changed text after its last substitution")
+    after_repo = refs.Repo(root)
+    for f, rw in plan.rewrites.items():
+        for x in rw["subs"]:
+            new = plan.archive_path(x["target"])
+            if new not in refs.candidates(x["to"], posixpath.dirname(f), after_repo):
+                raise Refused(f"{f}:{x['line']}: `{x['to']}` does not name {new}")
+    left = [s for s in _spans(plan, list(plan.old_new), after_repo, set(plan.old_new.values()))
+            if s["tier"] in ("live", "symlink")]
+    if left:
+        raise Refused("live references to archived paths remain after the rewrite: "
+                      + "; ".join(f"{s['file']}:{s['line']} `{s['written']}`" for s in left[:8]))
+
+
+def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cross_owner: str = "notify") -> Plan:
     plan = Plan(paths[0])
     rels = [plan.rel(p) for p in paths]
     for r in rels:
@@ -200,17 +314,32 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False) ->
     for r in rels:
         if r in roots:
             raise Refused(f"{r} is a start doc ({'; '.join(refs.who_text(w) for w in roots[r])}): retire or move the role first")
-    named = _live_referrers(plan, rels)
-    blocked = {t: es for t, es in named.items() if es}
-    if blocked:
+    if cross_owner not in ("notify", "rewrite"):
+        raise Refused(f"--cross-owner {cross_owner} is not defined yet: notify (refuse and list) or rewrite")
+    spans = _spans(plan, rels)
+    live = [s for s in spans if s["tier"] in ("live", "symlink")]
+    if live and cross_owner != "rewrite":
+        blocked: dict[str, list[dict]] = {}
+        for s in live:
+            blocked.setdefault(s["target"], []).append(s)
         lines = [f"{t} is still named by live documents:" + "".join(f"\n    {e['file']}:{e['line']}" for e in es[:8])
                  for t, es in sorted(blocked.items())]
-        raise Refused("\n  ".join(lines) + "\n  point those references elsewhere (or keep the file), then archive it")
+        raise Refused("\n  ".join(lines) + "\n  point those references elsewhere (or keep the file), or "
+                      "--cross-owner rewrite, then archive it")
+    if live:
+        _plan_rewrites(plan, live, roots)
+    plan.old_new = {r: plan.archive_path(r) for r in rels}
     when = utcnow()
     for r in rels:
         a = plan.archive_path(r)
         plan.moves.append((r, a))
-        plan.add_event(r, {"ts": when, "by": by, "event": "archive", "path": r, "archive_path": a, "reason": reason})
+        rewritten = [{"file": x["file"], "line": x["line"], "from": x["written"], "to": x["to"]}
+                     for f, rw in sorted(plan.rewrites.items()) for x in rw["subs"] if x["target"] == r]
+        rewritten += [{"file": link, "line": 0, "from": old, "to": new} for link, old, new in plan.relinks
+                      if posixpath.normpath(posixpath.join(posixpath.dirname(link), old)) == r]
+        history = sum(1 for s in spans if s["tier"] == "history" and s["target"] == r)
+        plan.add_event(r, {"ts": when, "by": by, "event": "archive", "path": r, "archive_path": a, "reason": reason,
+                           "refs": {"history": history, "rewritten": rewritten}})
     return plan
 
 
@@ -341,6 +470,24 @@ def apply(plan: Plan, message: str) -> dict:
         for a in plan.deletes:
             _git(root, "rm", "-q", "--", a)
             done.append(("rm", a))
+        for f, rw in plan.rewrites.items():
+            p = os.path.join(root, f)
+            with open(p, "rb") as fh:
+                if fh.read() != rw["before"].encode("utf-8"):
+                    raise Refused(f"{f} changed after this run planned its rewrite: run it again")
+            after = _substitute(rw["before"], rw["subs"]).encode("utf-8")
+            with open(p, "wb") as fh:
+                fh.write(after)
+            _git(root, "add", "--", f)
+            done.append(("rewrite", f, rw["before"].encode("utf-8"), after))
+        for link, old, new in plan.relinks:
+            p = os.path.join(root, link)
+            if os.readlink(p) != old:
+                raise Refused(f"{link} changed after this run planned to repoint it: run it again")
+            os.remove(p)
+            os.symlink(new, p)
+            _git(root, "add", "--", link)
+            done.append(("relink", link, old, new))
         for m, events in plan.events.items():
             os.makedirs(os.path.join(root, posixpath.dirname(m)), exist_ok=True)
             base = saved[m] or ""
@@ -350,22 +497,45 @@ def apply(plan: Plan, message: str) -> dict:
                 fh.write(written[m])
             _git(root, "add", "--", m)
             done.append(("manifest", m, saved[m] is not None))
+        if plan.rewrites or plan.relinks:
+            _verify_rewrites(plan)
         head = _commit(plan, message, written)
         return {"ok": True, "commit": head, "notes": plan.notes}
     except Exception as exc:
-        _undo(root, done)
-        if isinstance(exc, Refused):
-            raise
-        raise Refused(f"{exc.__class__.__name__}: {exc}") from None
+        left = _undo(root, done)
+        why = str(exc) if isinstance(exc, Refused) else f"{exc.__class__.__name__}: {exc}"
+        raise Refused(why + "".join(f"\n  {x}" for x in left)) from None
 
 
-def _undo(root: str, done: list[tuple]) -> None:
-    """Put every step back, newest first: moves reversed, restored files removed, deletions restored, and each manifest
-    back to HEAD's copy (it was clean when the run began) or removed when the run created it."""
+def _undo(root: str, done: list[tuple]) -> list[str]:
+    """Put every step back, newest first: moves reversed, restored files removed, deletions restored, each manifest
+    back to HEAD's copy (it was clean when the run began) or removed when the run created it, and each rewritten file or
+    repointed symlink back as it was, but only while it still holds what this run wrote: someone else's edit since is
+    left in place and named in the returned notes."""
+    left = []
     for step in reversed(done):
-        if step[0] == "mv":
+        if step[0] == "rewrite":
+            p = os.path.join(root, step[1])
+            with open(p, "rb") as fh:
+                ours = fh.read() == step[3]
+            if ours:
+                with open(p, "wb") as fh:
+                    fh.write(step[2])
+                _git(root, "reset", "-q", "HEAD", "--", step[1], check=False)
+            else:
+                left.append(f"left {step[1]} as found: it changed after this run rewrote it")
+        elif step[0] == "relink":
+            p = os.path.join(root, step[1])
+            if os.path.islink(p) and os.readlink(p) == step[3]:
+                os.remove(p)
+                os.symlink(step[2], p)
+                _git(root, "reset", "-q", "HEAD", "--", step[1], check=False)
+            else:
+                left.append(f"left {step[1]} as found: it changed after this run repointed it")
+        elif step[0] == "mv":
             _git(root, "mv", "-f", "--", step[2], step[1], check=False)
             _repoint_symlink(root, step[2], step[1], {v: k for k, v in step[3].items()})
+            _prune_empty(root, posixpath.dirname(step[2]))
         elif step[0] == "add":
             _git(root, "rm", "-q", "-f", "--", step[1], check=False)
         elif step[0] == "rm":
@@ -380,6 +550,17 @@ def _undo(root: str, done: list[tuple]) -> None:
                 p = os.path.join(root, step[1])
                 if os.path.exists(p):
                     os.remove(p)
+    return left
+
+
+def _prune_empty(root: str, rel_dir: str) -> None:
+    """Remove `rel_dir` and its parents while they are empty: the directories a run's first move into them created."""
+    while rel_dir and rel_dir != ".":
+        try:
+            os.rmdir(os.path.join(root, rel_dir))
+        except OSError:
+            return
+        rel_dir = posixpath.dirname(rel_dir)
 
 
 def _repoint_symlink(root: str, src: str, dst: str, moved: dict[str, str] | None = None) -> None:
@@ -404,6 +585,8 @@ def describe(plan: Plan) -> list[str]:
     out = [f"move {a} -> {b}" for a, b in plan.moves]
     out += [f"restore {o} from blob {src['blob'][:12]} (mode {src['mode']})" for _, o, src in plan.restores]
     out += [f"delete {a} (cold)" for a in plan.deletes]
+    out += [f"rewrite {f}:{x['line']} `{x['written']}` -> `{x['to']}`" for f, rw in plan.rewrites.items() for x in rw["subs"]]
+    out += [f"repoint symlink {link}: {old} -> {new}" for link, old, new in plan.relinks]
     out += [f"append {len(es)} event(s) to {m}" for m, es in plan.events.items()]
     return out
 
@@ -411,6 +594,8 @@ def describe(plan: Plan) -> list[str]:
 def cmd_archive(a) -> int:
     by = a.by or os.environ.get("SHOAL_SLUG") or "user"
     try:
+        if a.cross_owner != "notify" and (a.restore or a.cold):
+            raise Refused(f"--cross-owner {a.cross_owner} applies to archiving only")
         if a.restore:
             plan, verb = plan_restore(a.restore, by), "restore"
         elif not a.paths:
@@ -419,14 +604,19 @@ def cmd_archive(a) -> int:
         elif a.cold:
             plan, verb = plan_cold(a.paths, a.force, by), "cold"
         else:
-            plan, verb = plan_archive(a.paths, a.reason, by, a.force), "archive"
+            plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner), "archive"
         steps = describe(plan)
+        n = sum(len(rw["subs"]) for rw in plan.rewrites.values()) + len(plan.relinks)
+        files = len(plan.rewrites) + len(plan.relinks)
+        if n:
+            steps.insert(0, f"rewrite {n} reference(s) in {files} file(s), listed below")
         if a.dry_run:
             out = {"ok": True, "dry_run": True, "steps": steps, "events": plan.events, "notes": plan.notes}
         else:
             what = ", ".join(sorted({e["path"] for es in plan.events.values() for e in es}))
-            out = dict(apply(plan, f"{verb}: {what}" + (f" ({a.reason})" if a.reason and verb == "archive" else "")),
-                       steps=steps, events=plan.events)
+            message = (f"{verb}: {what}" + (f" ({a.reason})" if a.reason and verb == "archive" else "")
+                       + (f"; rewrote {n} reference(s) in {files} file(s)" if n else ""))
+            out = dict(apply(plan, message), steps=steps, events=plan.events)
     except Refused as exc:
         if a.json:
             print(json.dumps({"ok": False, "refused": str(exc)}))
@@ -452,6 +642,10 @@ def add_parser(sub) -> None:
     p.add_argument("--force", action="store_true", help="with --cold: before [cold] warm_days have passed; archiving: "
                    "although a routed host's start-doc roots cannot be read")
     p.add_argument("--reason", default="", help="why, recorded in the manifest")
+    p.add_argument("--cross-owner", default="notify", choices=("notify", "rewrite", "keep"),
+                   help="live references to an archived file: notify refuses and lists them (default); rewrite points "
+                        "them at the archive path in the same commit (path substitution only, verified); keep is not "
+                        "defined yet")
     p.add_argument("--by", default="", help="who, recorded in the manifest (default $SHOAL_SLUG, else user)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true")
