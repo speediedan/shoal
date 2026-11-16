@@ -205,8 +205,9 @@ export const pulseFrames = (kind) => (kind === "needs" ? [PULSE_GLYPH, " "] : [P
 export function buildScene(vm, lay, opts) {
   const { width, height, tf } = opts;
   const policy = opts.policy ?? motionPolicy(opts.motion ?? "full");
-  // lite: about half the layers in globes and shadows, for a host whose renders come near the native script
-  // deadline (main.js turns it on from its own render times)
+  // lite: half the globes' glass contours and the bowl's deepening steps, for a host whose renders come near the native
+  // script deadline (main.js turns it on from its own render times). Shadows keep every layer: halving them drew coarse
+  // rings (2026-11-15, the maintainer)
   const lite = !!opts.lite;
   const animate = policy.any;
   const items = [];
@@ -290,7 +291,7 @@ export function buildScene(vm, lay, opts) {
     if (!sh) return;
     const c = S(sh), ax = { x: sh.a.x * k, y: sh.a.y * k }, bx = { x: sh.b.x * k, y: sh.b.y * k };
     const px = Math.sqrt(Math.hypot(ax.x, ax.y) * Math.hypot(bx.x, bx.y));
-    const layers = shadowLayers(sh.peak, sh.soft, lite ? Math.min(12, shadowSteps(sh.peak, sh.soft, px)) : shadowSteps(sh.peak, sh.soft, px), under(c)), mine = [];
+    const layers = shadowLayers(sh.peak, sh.soft, shadowSteps(sh.peak, sh.soft, px), under(c)), mine = [];
     for (const [i, l] of layers.entries()) {
       const a = { x: ax.x * l.s, y: ax.y * l.s }, b = { x: bx.x * l.s, y: bx.y * l.s };
       if (hidden && hidden(c, a, b)) break; // nested: every layer inside this one is covered too
@@ -421,7 +422,7 @@ export function buildScene(vm, lay, opts) {
     // shading and its guides
     const youAt = lay.bowl.you ?? { x: 0, y: 0, z: 0 };
     if (hub && nodeR.has(hub.id)) {
-      bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R, youAt, lite).forEach((e, i) => {
+      bowlShadow(fr, o.x, o.y, R, nodeR.get(hub.id) / R, youAt).forEach((e, i) => {
         items.push({ t: "path", id: `bowl-shadow-${i}`, fill: true, cmds: ellipseArcCmds(e.x, e.y, e.a, e.b), bg: solid(withAlpha("#01040a", e.alpha)) });
         if (!i) {
           footprints.push({ kind: "ellipse", c: { x: e.x, y: e.y }, a: e.a, b: e.b });
