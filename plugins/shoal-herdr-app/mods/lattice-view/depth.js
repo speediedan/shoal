@@ -87,7 +87,9 @@ const GRID = 10; // floor grid lines each way
 // as a lamp's would. At the presets it is up and to the left on screen (sphere.js LIGHT), so shadows fall down and to the
 // right of what casts them, each where the ray from the light through it meets the floor.
 const unit3 = (x, y, z) => { const l = Math.hypot(x, y, z); return { x: x / l, y: y / l, z: z / l }; };
-export const LIGHT_WORLD = unit3(-0.37, -0.07, 0.926);
+// more overhead than it was (-0.37, -0.07, 0.926): every shadow about 14 percent closer under what casts it, yours
+// among them (2026-11-15, the maintainer)
+export const LIGHT_WORLD = unit3(-0.22, -0.042, 0.975);
 export const LIGHT_DIST = 18;
 /** The light's place for a scene whose middle is o (on the plane), `mid` its middle height and `size` its radius. */
 export const lightPoint = (o, size, mid) => ({ x: o.x + LIGHT_DIST * size * LIGHT_WORLD.x, y: o.y + LIGHT_DIST * size * LIGHT_WORLD.y, z: mid + LIGHT_DIST * size * LIGHT_WORLD.z });
@@ -239,6 +241,26 @@ export function unproject(cam, s, depth) {
   return { x: cam.o.x + xr * cam.cyaw + yr * cam.syaw, y: cam.o.y - xr * cam.syaw + yr * cam.cyaw, z };
 }
 
+/** The world point at height z that a projected layout's camera sees at the layout point s (a drag's plane under the
+ * pointer): along the line of sight, by bisection on depth. Null without a depth camera. */
+export function planePointAt(pl, s, z) {
+  if (!pl?.cam || typeof pl.mid !== "number") return null;
+  let lo = -4 * pl.cam.d, hi = 0.8 * pl.cam.d;
+  for (let i = 0; i < 48; i++) {
+    const dd = (lo + hi) / 2;
+    if (unproject(pl.cam, s, dd).z + pl.mid < z) lo = dd; else hi = dd;
+  }
+  const q = unproject(pl.cam, s, (lo + hi) / 2);
+  return { x: q.x, y: q.y };
+}
+
+/** Layout px on screen per world unit of height at world point w (a drag's vertical scale), positive up. */
+export function heightPx(pl, w) {
+  if (!pl?.cam || typeof pl.mid !== "number") return 0;
+  const a = project(pl.cam, w, w.z - pl.mid), b = project(pl.cam, w, w.z + 1 - pl.mid);
+  return a.y - b.y;
+}
+
 /**
  * Each node's plane height and the planes themselves, far to near: {zOf: Map id -> z, planes: [{id, z, kind}]}. Global:
  * one plane per shoal, in the layout's cluster order; per shoal: one per host band. The operator and outside seats go on
@@ -270,7 +292,7 @@ export function planesOf(vm, lay) {
  * Per shoal: the cutout sphere, with the same fields plus `bowl` {frame, R} and `surfaceOf` giving each role's host and
  * place on it.
  */
-export function projectLayout(vm, lay, cam0) {
+export function projectLayout(vm, lay, cam0, opts = {}) {
   if (!cam0 || !lay) return lay;
   if (!vm.global) return projectBowl(vm, lay, cam0);
   const { zOf, planes } = planesOf(vm, lay);
@@ -332,7 +354,12 @@ export function projectLayout(vm, lay, cam0) {
     const zh = meanOf(globeZ, floorZ + 0.35 * PLANE_GAP);
     const e = towardEye(homeCam, mid, { x: w.x, y: w.y, z: zh }), flat = Math.hypot(e.x, e.y) || 1;
     const off = YOU_FORWARD * meanOf(globeR, 0);
-    const q = { x: w.x + (off * e.x) / flat, y: w.y + (off * e.y) / flat, z: zh };
+    // where you were dragged (opts.youOffset, world units, kept by the mod): moved along the floor and up or down, never
+    // below just over the floor nor far over the top globe
+    const d = opts.youOffset ?? { x: 0, y: 0, z: 0 };
+    const zMin = floorZ + 0.15 * PLANE_GAP, zMax = Math.max(...globeZ, zh) + 1.5 * PLANE_GAP;
+    const q = { x: w.x + (off * e.x) / flat + (d.x || 0), y: w.y + (off * e.y) / flat + (d.y || 0),
+      z: Math.min(zMax, Math.max(zMin, zh + (d.z || 0))) };
     world.set(n.id, q);
     userScale.set(n.id, at.f / project(homeCam, q, q.z - mid).f);
   }
@@ -448,7 +475,7 @@ export function projectLayout(vm, lay, cam0) {
     screen: (W) => { const q = P(W, W.z); return { x: q.x, y: q.y }; },
   };
   const order = [...vm.nodes].sort((a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0));
-  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, world, fOf, shadowOf, shade };
+  return { ...lay, pos, sats, clusters, bands, anchors, tethers, cam, scaleOf, fogOf, surfaceOf, order, planes, grid, stems, casts, floorZ, light: Lp, world, fOf, shadowOf, shade, mid };
 }
 
 /**

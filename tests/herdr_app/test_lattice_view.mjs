@@ -1718,7 +1718,8 @@ test("2026-11-11: the bowl from above: no near wall in the way, you at the middl
     assert.ok(Math.hypot(sh.x - c.x, sh.y - c.y) < 0.02 * youR, "its middle where the ray meets the wall");
     const off = { x: sh.x - you.x / Rs, y: sh.y - you.y / Rs }, apart = Math.hypot(off.x, off.y) / youR;
     assert.ok(SP.rimNorm(fr, sh) < 1 && SP.bowlShadowSeen(fr, pa.bowl.you), "on the inside, seen through the opening");
-    assert.ok(off.y > 0 && apart > 1 && apart < 6, `below you and clear of you: ${apart.toFixed(2)} of your radius`);
+    // (6 radii at your old size, 22; you are 18 since 2026-11-15, the same distance is 22/18 as many radii)
+    assert.ok(off.y > 0 && apart > 1 && apart < 6 * 22 / 18, `below you and clear of you: ${apart.toFixed(2)} of your radius`);
     assert.ok(1 - layers.reduce((w, l) => w * (1 - l.alpha), 1) > 0.4, "dark enough to be seen");
     assert.ok(Math.hypot(layers[0].a.x, layers[0].a.y) > 0.8 * youR && layers.length >= 8, "about your size, soft at its edge");
     // the washes are strong enough that two hosts read apart, light enough that edges and arrows over them read
@@ -2632,7 +2633,7 @@ test("2026-11-14: the global hub hovers over its shadow, the lowest globe clears
   }
 });
 
-test("2026-11-15: lite scene (renders near the native script deadline): about half the globe and shadow layers", () => {
+test("2026-11-15: lite scene (renders near the native script deadline): half the glass contours, every shadow layer kept", () => {
   const pl = D.projectLayout(global, L.layoutGraph(global), D.camera("iso"));
   const full = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full" });
   const lite = S.buildScene(global, pl, { width: 1400, height: 860, tf: G.identity(), motion: "full", lite: true });
@@ -2640,10 +2641,36 @@ test("2026-11-15: lite scene (renders near the native script deadline): about ha
   for (const pre of ["sphere-lit-"]) {
     assert.ok(count(lite, pre) > 0 && count(lite, pre) <= Math.ceil(count(full, pre) / 2) + 1, `${pre} about halved`);
   }
-  assert.ok(count(lite, "shadow-c-") < count(full, "shadow-c-"), "fewer shadow layers");
+  // halving the shadows drew coarse rings (the maintainer, 2026-11-15): lite keeps every shadow layer
+  assert.equal(count(lite, "shadow-c-"), count(full, "shadow-c-"), "every shadow layer kept");
   assert.ok(lite.items.length < full.items.length, "a lighter scene");
   assert.equal(SP.sphereShade("t", 0, 0, 1, "#50d090", 1, false, SP.LIGHT, true).paths.length, SP.STEPS / 2);
   const src = readFileSync(join(MOD, "main.js"), "utf8");
-  assert.match(src, /const LITE_MS = 30;/, "a render of 30 ms or more turns lite on");
+  assert.match(src, /const LITE_MS = 40;/, "renders of 40 ms or more");
+  assert.match(src, /const LITE_WARMUP = 3;/, "after the first three, which build the caches");
+  assert.match(src, /this\.slowInRow >= 2\) this\.lite = true/, "two in a row turn lite on");
   assert.match(src, /lite: !!this\.lite/, "the scene is told");
+});
+
+test("2026-11-15: you can be dragged: along the floor under the pointer, and up and down, kept above the floor", () => {
+  const base = L.layoutGraph(global), user = global.nodes.find((n) => n.kind === "user");
+  const pl = D.projectLayout(global, base, D.camera("iso"));
+  const w = pl.world.get(user.id), s = pl.pos.get(user.id);
+  // the plane under the pointer: the layout point you are drawn at, at your height, is your own world point
+  const back = D.planePointAt(pl, s, w.z);
+  assert.ok(Math.hypot(back.x - w.x, back.y - w.y) < 1e-6, "the point under the pointer at your height is you");
+  // moved by an offset, your world point moves by it, and you are drawn where it projects
+  const moved = D.projectLayout(global, base, D.camera("iso"), { youOffset: { x: 60, y: -40, z: 50 } }), w2 = moved.world.get(user.id);
+  assert.ok(Math.abs(w2.x - w.x - 60) < 1e-6 && Math.abs(w2.y - w.y + 40) < 1e-6 && Math.abs(w2.z - w.z - 50) < 1e-6, "moved in all three");
+  const p2 = D.project(moved.cam, w2, w2.z - moved.mid);
+  assert.ok(Math.hypot(p2.x - moved.pos.get(user.id).x, p2.y - moved.pos.get(user.id).y) < 1e-6, "drawn where it is");
+  assert.ok(D.heightPx(pl, w) > 0, "up is up the screen");
+  const low = D.projectLayout(global, base, D.camera("iso"), { youOffset: { x: 0, y: 0, z: -1e6 } });
+  assert.ok(low.world.get(user.id).z > low.floorZ, "never through the floor");
+  // the shadow follows: cast from where you now are
+  const sh = moved.stems.find((st) => st.id === `n-${user.id}`).shadow;
+  assert.ok(Math.hypot(sh.at.x - w2.x, sh.at.y - w2.y) > 0 && sh.h > 0, "your shadow is cast from your new place");
+  const src = readFileSync(join(MOD, "main.js"), "utf8");
+  assert.match(src, /you: this\.youPress\(lp\)/, "a press on you starts dragging you");
+  assert.match(src, /k === "y"\) this\.setYouOffset\(\{ x: 0, y: 0, z: 0 \}/, "y puts you back");
 });

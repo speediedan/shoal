@@ -801,7 +801,7 @@ export const YOU_SHADOW = { peak: 0.55, soft: 0.5, size: 1 };
 export const bowlShadowAt = (fr, at = ORIGIN) => bowlCast(fr, at);
 /** Whether your shadow lands on the inside, seen through the opening. */
 export const bowlShadowSeen = (fr, at) => { const u = bowlCast(fr, at); return bowlLit(fr, at) && bowlKept(fr, u) && bowlSeen(fr, u) <= 1; };
-export function bowlShadow(fr, cx, cy, R, rb, at, lite = false) {
+export function bowlShadow(fr, cx, cy, R, rb, at) {
   if (!bowlShadowSeen(fr, at)) return [];
   const c = bowlCast(fr, at), { A, B } = ballShadow(bowlLightAt(fr), at, YOU_SHADOW.size * rb, c, c);
   const e1 = projectedCircle(fr.d, c, A, B, 1), px = R * Math.sqrt(Math.hypot(e1.a.x, e1.a.y) * Math.hypot(e1.b.x, e1.b.y));
@@ -810,8 +810,7 @@ export function bowlShadow(fr, cx, cy, R, rb, at, lite = false) {
   // each layer's middle is the cast point's image (the ellipse's own middle is a little off it in perspective), so your
   // shadow's middle is the one every node's is: where the ray through its world point meets the wall
   const s = bowlProject(fr, c);
-  const n = shadowSteps(YOU_SHADOW.peak, YOU_SHADOW.soft, px);
-  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, lite ? Math.min(10, n) : n, wall).map((l) => {
+  return shadowLayers(YOU_SHADOW.peak, YOU_SHADOW.soft, shadowSteps(YOU_SHADOW.peak, YOU_SHADOW.soft, px), wall).map((l) => {
     const e = projectedCircle(fr.d, c, comb(l.s, A), comb(l.s, B), 1);
     return { x: cx + R * s.x, y: cy + R * s.y, a: { x: R * e.a.x, y: R * e.a.y }, b: { x: R * e.b.x, y: R * e.b.y }, alpha: l.alpha };
   });

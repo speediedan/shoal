@@ -243,7 +243,7 @@ export function nodeVisual(node) {
     const work = obj(node.work);
     const grants = Math.max(num(work.grants_pending), arr(work.grants_pending).length);
     const asks = num(work.asks_open) + grants;
-    return { kind, key: "hub", shape: "circle", r: 22, color: asks > 0 ? P.magenta : P.ink, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
+    return { kind, key: "hub", shape: "circle", r: 18, color: asks > 0 ? P.magenta : P.ink, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
   }
   if (kind === "writer") {
     // an unknown or removed ledger writer: a small dashed node, quieter than an external
