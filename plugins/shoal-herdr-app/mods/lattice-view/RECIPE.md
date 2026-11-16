@@ -56,8 +56,9 @@ you, per-shoal throughput and per-host load.
 - **Depth:** the lattice opens in depth, iso (an isometric turn), and `d` cycles the camera: iso, flat, tilt (52
   degrees), seen in perspective, so one press from the opening view is flat. In the
   global view each shoal is on its own plane, stacked in depth, outside seats on a plane above, so
-  traffic between planes visibly crosses them. You hover near the floor straight above the hub between the shoals,
-  at your opening size, so every turn and orbit keeps you among the globes. A floor grid lies a full plane gap below every globe,
+  traffic between planes visibly crosses them. You float at the height halfway between the globes' middles, over
+  the hub between the shoals and a little in front of it toward the opening camera (0.7 globe radii), at your opening
+  size, so every turn and orbit keeps you among the globes. A floor grid lies a full plane gap below every globe,
   its lines converging; a dashed stem drops from each plane's middle and from each lifted node to the floor. The canvas
   is a lighter slate in depth, so the shadows read. One light, a point high over the scene (`depth.js` `lightPoint`, up,
   to the left and a little toward the far side, fixed in the world so it stays put as the camera orbits), shades each
@@ -256,6 +257,16 @@ you, per-shoal throughput and per-host load.
   `--shoal <id>` the per-shoal cutout sphere and `--hover globe:<id>` a globe in focus. It fails
   if the copy drew another view or fell back to flat (the mod's `init` reads `props()`, so a
   wrapper sets the home shoal itself).
+- The native script deadline is about 50 ms per render callback (measured 2026-11-15 with a busy-wait added to the
+  fixture's render under `check_depth` on an `Xvnc` display: 48 ms passes, 52 is interrupted; the view then reads
+  "could not be re-rendered"). About half of a render is `buildScene`, the rest building the elements. The live global
+  view rendered in 33 to 34 ms and a shoal's bowl in 41 to 50 ms on a fast host, so a slower one overran. Pure memos
+  (glass layer colors by tint, fog and focus; color parsing and blending), a `comb` without a per-axis key loop and
+  shorter rim bisections cut that to 26 to 29 and 30 to 33 ms with the same picture; and `main.js` times every render:
+  one of `LITE_MS` (30) or more turns on the lite scene (half the glass contours, a globe's shadow at most 12 layers,
+  your bowl shadow at most 10, every other bowl deepening step) for the session, marked `lite` in the header. Re-measure
+  with a timing wrapper around `check_depth` (render in a `try`, the elapsed time thrown, since `herdr-app check`
+  shows no console output) before adding layers.
 - Transparency on nested fills stacks: every contour covers the ones inside it, so a constant
   alpha on all of them turns the lit cap opaque. Each glass contour's alpha is solved from the
   total opacity wanted at its level, and alpha is 8-bit, so fewer, slightly stronger layers (48,

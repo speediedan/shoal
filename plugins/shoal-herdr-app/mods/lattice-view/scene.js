@@ -205,6 +205,10 @@ export const pulseFrames = (kind) => (kind === "needs" ? [PULSE_GLYPH, " "] : [P
 export function buildScene(vm, lay, opts) {
   const { width, height, tf } = opts;
   const policy = opts.policy ?? motionPolicy(opts.motion ?? "full");
+  // lite: half the globes' glass contours and the bowl's deepening steps, for a host whose renders come near the native
+  // script deadline (main.js turns it on from its own render times). Shadows keep every layer: halving them drew coarse
+  // rings (2026-11-15, the maintainer)
+  const lite = !!opts.lite;
   const animate = policy.any;
   const items = [];
   const k = tf.k;
@@ -336,7 +340,7 @@ export function buildScene(vm, lay, opts) {
         // glass: much clearer with nothing on it in focus, a little more opaque when the pointer is on it
         // lit from the way to the one light from this globe (depth.js lightFrom), so its lit side and its shadow agree
         const focused = inFocus.has(c.id), glassFog = 0.72 + 0.28 * fog, gl = lightOf(c.light ?? LIGHT);
-        const shade = sphereShade(c.id, p.x, p.y, r, c.tint, glassFog, focused, gl);
+        const shade = sphereShade(c.id, p.x, p.y, r, c.tint, glassFog, focused, gl, lite);
         surfaces.push({ kind: "globe", x: p.x, y: p.y, r, tint: c.tint, fog: glassFog, focused, light: gl });
         items.push({ t: "path", id: `sphere-body-${c.id}`, fill: true, cmds: circleCmds(p.x, p.y, r), bg: solid(shade.body) });
         items.push(...shade.paths);
@@ -404,7 +408,8 @@ export function buildScene(vm, lay, opts) {
     }
     // depth: many faint caps of latitude round the bottom, nested, so the inside darkens smoothly toward it (no step
     // shows, sphere.js bowlCaps)
-    bowlCaps(fr).forEach((t, i) => items.push({ t: "path", id: `bowl-deep-${i}`, fill: true, cmds: latitudeCmds(fr, o.x, o.y, R, t), bg: solid(withAlpha(BOWL_SHADE, BOWL.deep)) }));
+    // lite: every other step of the deepening, each twice as dark
+    bowlCaps(fr).filter((_, i) => !lite || i % 2 === 1).forEach((t, i) => items.push({ t: "path", id: `bowl-deep-${i}`, fill: true, cmds: latitudeCmds(fr, o.x, o.y, R, t), bg: solid(withAlpha(BOWL_SHADE, lite ? 2 * BOWL.deep : BOWL.deep)) }));
     // the lip's shade on the inside: the wall under the lip on the light's side is out of the light
     const shade = rimShade(fr, o.x, o.y, R);
     if (shade) items.push({ t: "path", id: "bowl-shade", fill: true, cmds: shade.cmds, bg: { kind: "linear", angle: shade.angle, from: withAlpha(BOWL_SHADE, BOWL.shade), to: withAlpha(BOWL_SHADE, BOWL.shadeEdge) } });

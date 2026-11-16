@@ -243,7 +243,7 @@ export function nodeVisual(node) {
     const work = obj(node.work);
     const grants = Math.max(num(work.grants_pending), arr(work.grants_pending).length);
     const asks = num(work.asks_open) + grants;
-    return { kind, key: "hub", shape: "circle", r: 22, color: asks > 0 ? P.magenta : P.ink, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
+    return { kind, key: "hub", shape: "circle", r: 18, color: asks > 0 ? P.magenta : P.ink, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
   }
   if (kind === "writer") {
     // an unknown or removed ledger writer: a small dashed node, quieter than an external
@@ -579,7 +579,8 @@ export function buildModel(doc, view = "global", opts = {}) {
   const global = view === "global" || !live.has(view);
   const viewId = global ? "global" : view;
 
-  const rawEdges = arr(doc?.edges).filter((e) => e && typeof e.src === "string" && typeof e.dst === "string");
+  // an edge from a node to itself (mail a writer addressed to itself) has no direction to draw: left out
+  const rawEdges = arr(doc?.edges).filter((e) => e && typeof e.src === "string" && typeof e.dst === "string" && e.src !== e.dst);
   let keep;
   if (global) {
     keep = all.filter((n) => n.kind === "user" || n.kind === "external" || n.shoal == null || live.has(n.shoal));

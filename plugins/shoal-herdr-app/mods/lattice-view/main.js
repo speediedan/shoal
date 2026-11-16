@@ -47,12 +47,15 @@ import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CY
 import { buildScene, fitScene, fitText, headerText, GLOBE } from "./scene.js";
 import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, hitGlobe, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS, REPLAY_SPEEDS, REPLAY_DAY_S } from "./replay.js";
-import { camera, projectLayout, nextDepth, depthFor, orbitBy, YAW_STEP, ORBIT_STEP, DEFAULT_DEPTH, DEPTH_CYCLE } from "./depth.js";
+import { camera, projectLayout, nextDepth, depthFor, orbitBy, planePointAt, heightPx, YAW_STEP, ORBIT_STEP, DEFAULT_DEPTH, DEPTH_CYCLE } from "./depth.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
 const BOARD_BAR_W = 226;
 const TIER_MS = 2000;
+const LITE_MS = 40; // two renders in a row at least this long turn the lite scene on (the native deadline is about 50 ms)
+const LITE_WARMUP = 3; // the first renders build every cache, so they are slower, and are not counted
+const YOU_KEY = "lattice.you"; // where you were dragged in the global view (world units), shared by every copy
 const P = PALETTE;
 const MONO = "Geist Mono";
 const ARROWS = ["left", "right", "up", "down"];
@@ -440,12 +443,51 @@ export default class Lattice extends View {
     if (!this.tf || this.needFit || (this.autoFit && lay.moved)) this.fit();
   }
 
+  /** Where you were dragged in the global view: {x, y, z} world units from your place (shared by every copy). */
+  youOffset() {
+    try {
+      const v = shared(YOU_KEY);
+      if (v && typeof v === "object" && [v.x, v.y, v.z].every((n) => typeof n === "number" && Number.isFinite(n))) return v;
+    } catch (_e) { /* no shared state: where you are by default */ }
+    return { x: 0, y: 0, z: 0 };
+  }
+
+  setYouOffset(v, cx) {
+    setShared(YOU_KEY, v);
+    const lay = this.layouts.get(this.view);
+    if (lay) this.lay = this.seen(lay.result());
+    cx?.notify();
+  }
+
+  /** A press on you in the depth global view starts dragging you, not the canvas. */
+  youPress(lp) {
+    const uid = this.vm?.global ? this.vm.nodes.find((n) => n.kind === "user")?.id : null;
+    if (!uid || !this.lay?.cam || !this.lay.world?.has(uid) || hitNode(this.hits, lp, 4) !== uid) return null;
+    return { uid, last: lp };
+  }
+
+  /** Drag you: along the floor at your height (the world point under the pointer follows it), or with shift up and down. */
+  youDrag(you, p, shift, cx) {
+    const tf = this.tf, toLay = (q) => ({ x: (q.x - tf.tx) / tf.k, y: (q.y - tf.ty) / tf.k });
+    const w = this.lay.world.get(you.uid), d = { ...this.youOffset() };
+    if (shift) {
+      const per = heightPx(this.lay, w) * tf.k;
+      if (per > 1e-6) d.z -= (p.y - you.last.y) / per;
+    } else {
+      const a = planePointAt(this.lay, toLay(you.last), w.z), b = planePointAt(this.lay, toLay(p), w.z);
+      if (a && b) { d.x += b.x - a.x; d.y += b.y - a.y; }
+    }
+    you.last = p;
+    this.autoFit = false; // your move does not refit the view under the pointer
+    this.setYouOffset(d, cx);
+  }
+
   /** The layout as the depth camera sees it (flat: as it is). Low and off motion on a CPU renderer stay flat. */
   seen(lay) {
     this.depthNow = depthFor(this.depth, this.tier?.tier, this.renderer);
     // the orbit kept to what this view allows (the bowl's range is not the global view's)
     if (this.depthNow !== "flat") this.orbit = orbitBy(this.depthNow, this.orbit, 0, 0, !this.vm?.global);
-    return projectLayout(this.vm, lay, camera(this.depthNow, this.yawTurn, this.orbit));
+    return projectLayout(this.vm, lay, camera(this.depthNow, this.yawTurn, this.orbit), { youOffset: this.youOffset() });
   }
 
   setDepth(name, cx) {
@@ -567,6 +609,7 @@ export default class Lattice extends View {
     else if (k === "l") this.legend = !this.legend;
     else if (k === "m") this.motionReq = MOTION_CYCLE[(MOTION_CYCLE.indexOf(this.motionReq) + 1) % MOTION_CYCLE.length];
     else if (k === "f" || k === "0") this.relayout(cx);
+    else if (k === "y") this.setYouOffset({ x: 0, y: 0, z: 0 }, cx); // you back to your place between the globes
     else if (k === "i") { this.items = !this.items; this.needFit = this.autoFit; this.rebuild(cx); }
     else if (k === "r") this.startReplay(cx);
     else if (k === "d") this.setDepth(nextDepth(this.depth), cx);
@@ -591,6 +634,12 @@ export default class Lattice extends View {
 
   move(e, cx) {
     const p = e.local_position;
+    if (this.press?.you && p) {
+      const dx = e.position.x - this.press.x, dy = e.position.y - this.press.y;
+      if (!this.drag && Math.abs(dx) + Math.abs(dy) > 2) this.drag = true;
+      if (this.drag) this.youDrag(this.press.you, p, !!e.modifiers?.shift, cx);
+      return;
+    }
     if (this.press) {
       const dx = e.position.x - this.press.x, dy = e.position.y - this.press.y;
       if (!this.drag && Math.abs(dx) + Math.abs(dy) > 4) this.drag = true;
@@ -709,6 +758,28 @@ export default class Lattice extends View {
   // ---- render
 
   render(_cx) {
+    const t0 = Date.now();
+    try {
+      return this.renderTimed();
+    } finally {
+      this.noteRenderMs(Date.now() - t0);
+    }
+  }
+
+  // The native host stops a render's script at about 50 ms (measured 2026-11-15 with check_depth on a software display:
+  // 48 ms passes, 52 is interrupted), and the view then reads "could not be re-rendered". Two renders in a row of LITE_MS
+  // or more, after the first LITE_WARMUP (which build the caches), turn on the lite scene (half the globes' glass
+  // contours) for the rest of the session, so a slower host draws its globes a little less smoothly instead of failing.
+  // A single slow render, the first one above all, no longer does: it had turned a laptop lite at once (2026-11-15).
+  noteRenderMs(ms) {
+    this.lastRenderMs = ms;
+    this.renders = (this.renders ?? 0) + 1;
+    if (this.renders <= LITE_WARMUP) return;
+    this.slowInRow = ms >= LITE_MS ? (this.slowInRow ?? 0) + 1 : 0;
+    if (!this.lite && this.slowInRow >= 2) this.lite = true;
+  }
+
+  renderTimed() {
     this.resolveMotion();
     if (this.mode === "pulse") return this.renderPulse();
     this.applySharedFocus();
@@ -732,7 +803,7 @@ export default class Lattice extends View {
       .on_mouse_down("left", (e, _cx) => {
         this.handle.focus();
         const lp = e.local_position ?? { x: 0, y: 0 };
-        this.press = { x: e.position.x, y: e.position.y, lx: lp.x, ly: lp.y, tf: { ...this.tf } };
+        this.press = { x: e.position.x, y: e.position.y, lx: lp.x, ly: lp.y, tf: { ...this.tf }, you: this.youPress(lp) };
         this.drag = false;
       })
       .on_mouse_move((e, cx) => this.move(e, cx))
@@ -753,7 +824,7 @@ export default class Lattice extends View {
     }
     const sc = buildScene(this.vm, this.lay, {
       width: size.width, height: size.height, tf: this.tf, hover: this.hover, selected: this.pinned,
-      policy: this.policy, packets: this.packets,
+      policy: this.policy, packets: this.packets, lite: !!this.lite,
     });
     this.hits = sc.hits;
     this.satHits = sc.satHits ?? [];
@@ -859,7 +930,7 @@ export default class Lattice extends View {
           .child(`${board.title} ↗`)))
         .when(chip !== null, (el) => el.child(chip))
         .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
-      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · d: depth ${this.depthNow !== this.depth ? `flat (${this.depth} off: CPU, low motion)` : this.depthNow ?? "flat"} · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}`));
+      .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · d: depth ${this.depthNow !== this.depth ? `flat (${this.depth} off: CPU, low motion)` : this.depthNow ?? "flat"} · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}${this.lite ? " · lite" : ""}`));
   }
 
   renderCard(id, at, size, pinned) {
@@ -1056,7 +1127,7 @@ export default class Lattice extends View {
       rail.child(div().id("show-hidden").px(6).cursor_pointer().text_color(P.dim).hover((st) => st.text_color(P.ink))
         .on_click((_e, cx) => this.setHidden([], cx)).child(`${vm.hiddenN} hidden: show them`));
     }
-    rail.child(div().text_size(9).text_color(P.faint).child("drag: pan · wheel: zoom · click: pin · right-click: actions · esc: back · f: fit · l: legend"));
+    rail.child(div().text_size(9).text_color(P.faint).child("drag: pan · drag you: move you (shift: up and down) · y: you back · wheel: zoom · click: pin · right-click: actions · esc: back · f: fit · l: legend"));
     return rail;
   }
 
