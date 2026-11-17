@@ -62,7 +62,27 @@ def _ledger(a, spec: ShoalSpec | None) -> Ledger:
 EXT_RE = re.compile(r"^ext:[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 
+def session_role(spec: ShoalSpec | None) -> str:
+    """The role whose session runs this command ("" when none can be told): a Claude session by its conversation or
+    background job, any harness by `SHOAL_SELF_SESSION`."""
+    if spec is None:
+        return ""
+    mine = {os.environ.get("CLAUDE_CODE_SESSION_ID", ""), os.environ.get("SHOAL_SELF_SESSION", "")} - {""}
+    job = os.path.basename(os.environ.get("CLAUDE_JOB_DIR", "").rstrip("/"))
+    for r in spec.roles:
+        if r.session and (r.session in mine or (job and r.session[:8] == job)):
+            return r.slug
+    return ""
+
+
 def _writer(a, spec: ShoalSpec | None, attr: str = "by", default: str = "user", allow_ext: bool = False) -> str:
+    if attr == "by" and not getattr(a, "by", ""):
+        # `--by` left out from inside a role's session wrote under the maintainer's name (measured 2026-11-17: it-tune
+        # mail to fts-tutorial as `user`): a role names itself, or names `user` for a recorded first-person approval
+        role = session_role(spec)
+        if role:
+            raise LedgerError(f"this is {role}'s session: name the writer, `--by {role}` (or `--by user` only to "
+                              f"record the maintainer's own words) (nothing written)")
     by = getattr(a, attr, "") or default
     if allow_ext and EXT_RE.match(by) and len(by) <= 36:
         return by  # an outside seat (a standalone session): mail only, see cmd_msg
@@ -215,7 +235,7 @@ def cmd_claim(a) -> int:
         print(f"already held by {by}: {fmt_item(w)} [{w['id']}]")
         return 0
     if key in view.done:
-        print(f"CLAIM-REFUSED {key}: done {view.done[key]['ts']} by {view.done[key]['by']}")
+        print(f"CLAIM-REFUSED {key}: done {view.done[key]['ts']} by {view.done[key]['by']}" + "; an issue still open with work left: ask the maintainer to offer it again (a user offer reopens a done item)")
         return 4
     addressed = next((o["to"] for o in view.by_item.get(key, []) if o["status"] == "open"), None)
     if not view.perms.may_claim(by, addressed, a.src):
@@ -275,6 +295,22 @@ def cmd_release(a) -> int:
     return 0
 
 
+def open_in_digest(spec: ShoalSpec | None, key: str) -> str:
+    """The digest's time when its last read had this issue open, else "" (no read here: the digest is at most
+    DIGEST_MAX_AGE_MIN old, and a done just after the merge that closed the issue may still see it open)."""
+    if spec is None:
+        return ""
+    try:
+        import digest
+        doc = digest.load(spec.sid) or {}
+    except Exception:  # noqa: BLE001 - a note never fails a done
+        return ""
+    for name, it in (doc.get("items") or {}).items():
+        if item_key(name) == key and it.get("kind") == "issue" and it.get("state") == "OPEN":
+            return f"as of {doc.get('generated_utc', '?')}"
+    return ""
+
+
 @_guard
 def cmd_done(a) -> int:
     spec = _spec(a)
@@ -287,6 +323,12 @@ def cmd_done(a) -> int:
         return 0
     ev = led.append(by, "done", item=key, verb=verb, kind=a.kind or verb, url=a.url, sha=a.sha, note=a.note)
     print(f"done {fmt_item(ev)} by {by} [{ev['id']}] (reconcile verifies against GitHub)")
+    still = open_in_digest(spec, key)
+    if still:
+        # measured 2026-11-17: a done for one slice of an issue that stayed open refused every later slice to every lane
+        print(f"NOTE: the board digest ({still}) shows {key} still OPEN. A done closes the item for every lane: if your "
+              f"PR only advanced it (one slice of several), the next slice cannot be claimed until the maintainer "
+              f"offers it again; record a slice as progress on your queue instead")
     return 0
 
 
@@ -668,7 +710,8 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:
         if slug:
             p.add_argument("--slug", required=True, help="the role acting")
         if by:
-            p.add_argument("--by", default="user", help="writer: user (default) or a role slug")
+            p.add_argument("--by", default="", help="writer: user (the default outside a role's session) or a role "
+                                                    "slug; required inside a role's session")
 
     p = sub.add_parser("offer", help="put work on a role's queue (user only)")
     common(p, by=True)
