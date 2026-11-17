@@ -41,6 +41,16 @@ def probe(path: str) -> dict:
     for key in ("candidates", "dangling", "untracked", "deleted"):
         out["counts"][key] = len(scan[key])
         out["samples"][key] = scan[key][:5]
+    # the deep pass is the role's own periodic work: say when it is owed, from the companion log alone (cheap)
+    import deeppass
+    repo = refs.Repo(os.path.dirname(path))
+    rel = repo.rel(path)
+    log = refs.companion_log(rel, repo.mode) if rel else None
+    dp = lc["values"]["deep_pass"]
+    d = deeppass.due(repo.read(log) if log else "", dp["every_days"], dp["every_restarts"])
+    out["deep_pass_due"] = d["due"]
+    if d["due"]:
+        out["notes"].insert(0, f"deep pass due ({d['why']}): shoal lifecycle deep-pass {path}")  # first: notes are capped
     if mode == "auto":
         out["notes"].append("auto is advisory propose in this release; archival awaits a measured rollout")
     return out
