@@ -723,13 +723,21 @@ default `~/.codex`).
   no session) for each account whose token has lapsed or is within minutes of it; with `[accounts] keepalive = true`
   (opt-in: about three tiny calls per account a day) the usage meter does the same before it reads. The refresh is the
   CLI's own, so it follows how the CLI shares a token among processes; refreshing from shoal would race it.
-- **Balance.** An account's paced headroom in a window is its free share over the share of the window still to run
-  (at least an hour of it): 50% free with 1 h of a week left scores 84, 60% free with 6 days left 0.7. Its tightest
+- **Balance.** An account's paced headroom in a window is the share it would still have free at the reset if it went
+  on at the rate it has used the window so far, over the share of the window still to run (each at least an hour): 50%
+  free with 1 h of a week left scores 83, 60% free with 6 days left after using 40% in one day 0 (on course to run out).
+  So an idle account beats one carrying the load even when the busy one resets sooner (measured 2026-11-17: claude-2 at
+  40% of its week with 2.5 days left, every Claude role on it, outscored the idle default 1.7 to 1.3 on free share
+  alone; now 1.06 to 1.27). A window not started yet (no reset time) is a whole unused one and scores 1. Its tightest
   window is its score; under 2% free or a reached limit scores 0, and an account with no fresh reading is ranked last
   and never picked. `[accounts] select = "balance"` (the default) makes the best-scored account the suggestion
   (`accounts.choose`): the Actions dialog pre-selects it with its reason, `--account auto` takes it on the command line,
   and `shoal accounts` prints every score. `select = "default"` suggests the provider's default. The CLI never changes
-  an account unasked: a handoff with no `--account` keeps the current one. **The pool** is every provider in use on
+  an account unasked: a handoff with no `--account` keeps the current one. **Rebalance** (`[accounts] rebalance = true`,
+  opt-in): the health quorum's automatic context restart (`features.health.context_restart = "auto"`) starts the new
+  session on the account `choose` picks now, within the role's provider (`health.rebalance`), and says so in its
+  action; never onto a Claude account that has not trusted the shoal's folder, and never for another host's role.
+  **The pool** is every provider in use on
   the host (`ui set ecosystems`) less `[accounts] exclude` (a list of providers): `--ecosystem auto` on handoff and
   add-role takes the account with the most headroom of any provider in it (`accounts.choose_any`), the dialog names it
   under the provider choice, and an excluded provider is neither picked across providers nor balanced among its own

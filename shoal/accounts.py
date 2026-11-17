@@ -267,6 +267,14 @@ def keepalive_on() -> bool:
     return isinstance(t, dict) and t.get("keepalive") is True
 
 
+def rebalance_on() -> bool:
+    """`[accounts] rebalance = true`: the health quorum's automatic restart of a role (past its context limit, at a quiet
+    boundary) starts the new session on the account the selection policy picks now, within the role's provider, rather
+    than the one it had. Every other restart and handoff keeps the account unless one is named."""
+    t = config.file_values().get("accounts")
+    return isinstance(t, dict) and t.get("rebalance") is True
+
+
 def keepalive(provider: str, account: str = "", min_hours: float = KEEPALIVE_MIN_H) -> str:
     """Refresh an account's sign-in through its CLI when its token has under `min_hours` left: one headless call on the
     smallest model, saving no session. Says what it found and did."""
@@ -300,10 +308,14 @@ def keepalive(provider: str, account: str = "", min_hours: float = KEEPALIVE_MIN
 
 
 # ---- quota balance -------------------------------------------------------------------------------------------------
-# An account's paced headroom in one window: its free share divided by the share of the window still to run (never less
-# than an hour of it), so 50% free with 1 h of a week left (84) beats 60% free with 6 days left (0.7). The account's score
-# is its tightest window's; one with any window under MIN_FREE free, or a reached limit, scores 0 (ineligible); one with
-# no fresh reading has no score and is ranked last, never chosen by the policy.
+# An account's paced headroom in one window: the share it would still have free at the reset if it went on using the
+# window at the rate it has so far (used over the time elapsed, both never less than an hour), divided by the share of
+# the window still to run (never less than an hour of it). So 50% free with 1 h of a week left (83) beats 60% free with
+# 6 days left after using 40% in one day (0: it would run out), and an idle account beats one carrying the load though
+# the busy one's window resets sooner (2026-11-17: claude-2 at 39% of its week with 2.5 days left, carrying every Claude
+# role, outscored the default at 0% with 5.5 days left on free share alone). A window not started yet (no reset time)
+# is a whole unused one: 1. The account's score is its tightest window's; one with any window under MIN_FREE free, or a
+# reached limit, scores 0 (ineligible); one with no fresh reading has no score and is ranked last, never chosen.
 MIN_FREE = 0.02
 SELECT = ("balance", "default")
 
@@ -322,13 +334,20 @@ def headroom(usage_row: dict, now: float) -> tuple[float | None, str]:
                 used, minutes, reset = float(w["used_percent"]), float(w.get("minutes") or 0), w.get("resets_at")
             except (KeyError, TypeError, ValueError):
                 continue
-            if minutes <= 0 or reset is None:
+            if minutes <= 0:
                 continue
             span = minutes * 60
             free = max(0.0, 1 - used / 100)
-            left = max(float(reset) - now, 0.0)
-            h = 0.0 if free < MIN_FREE else free / max(left / span, 3600 / span)
-            label = f"{w['name']} {used:g}% used, resets in {_dur(left)}"
+            if reset is None:  # not started yet: a whole unused window
+                if used > 0:
+                    continue
+                h, label = 1.0, f"{w['name']} not started"
+            else:
+                left = max(float(reset) - now, 0.0)
+                spare = free - (used / 100) * max(left, 3600.0) / max(span - left, 3600.0)
+                h = 0.0 if free < MIN_FREE else max(spare, 0.0) / max(left / span, 3600 / span)
+                label = f"{w['name']} {used:g}% used, resets in {_dur(left)}" + ("" if spare > 0 else
+                                                                                  ", on course to run out")
             if best is None or h < best[0]:
                 best = (h, label)
     return best if best is not None else (None, "no window reported")
