@@ -389,8 +389,13 @@ def _state(plan: Plan, rel: str, hist: list[dict]) -> dict:
     last = hist[-1] if hist else None
     restore = f"shoal archive --restore {shlex.quote(rel)}"
     if tracked:
-        return {"state": "restored" if last and last["event"] == "restore" else "live", "ok": True,
-                **({"event": last} if last else {})}
+        out = {"state": "restored" if last and last["event"] == "restore" else "live", "ok": True,
+               **({"event": last} if last else {})}
+        if last and last["event"] != "restore":
+            # recreated by hand after it was archived: say why the manifest still lists it
+            out["note"] = (f"tracked again without a restore event; its last manifest event is {last['event']} "
+                           f"{last.get('ts', '')} (archive path {last.get('archive_path', '')})")
+        return out
     if last and last["event"] in ("archive", "migrate"):
         a = last["archive_path"]
         if a not in plan.repo.mode:
@@ -493,6 +498,8 @@ def resolve_text(r: dict) -> list[str]:
         lines.append(f"  read it: {r['recover']}")
     if r.get("restore"):
         lines.append(f"  restore: {r['restore']}")
+    if r.get("note"):
+        lines.append(f"  note: {r['note']}")
     if r.get("problem"):
         lines.append(f"  problem: {r['problem']}")
     return lines

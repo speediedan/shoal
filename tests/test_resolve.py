@@ -2,7 +2,8 @@
 """Hermetic proof of `shoal refs --resolve` (archive.resolve) on a scratch repository taken through every state by the
 real `shoal archive` commands:
 
-- `live` (tracked), `warm` (its archive path and the restore command), `restored`;
+- `live` (tracked), `warm` (its archive path and the restore command), `restored`; a file recreated by hand after
+  it was archived reads `live` with a note saying the manifest's last event is not a restore;
 - `cold`: the recovery command reads the content back by blob, and by `restore_from:archive_path` once the event has no
   usable blob;
 - `gone`: deleted outside the archive protocol, exit 0 with `"protocol": "bypassed"` and a `git show <commit>^:<path>`
@@ -157,6 +158,16 @@ git("commit", "-q", "-m", "removed outside the protocol")
 rc, r = resolve("x/n.md")
 assert rc == 0 and r["state"] == "gone" and r["path"] == "x/n.md", "the path itself, deleted, beats a partial-path match"
 print("--from, relative and suffix ok")
+
+write(f"{D}/cold.md", "recreated by hand\n")
+git("add", f"{D}/cold.md")
+git("commit", "-q", "-m", "recreated outside the protocol")
+rc, r = resolve(f"{D}/cold.md")
+assert rc == 0 and r["state"] == "live" and "tracked again without a restore event" in r["note"] and "cold" in r["note"], r
+assert "note: tracked again" in shoal("refs", "--resolve", f"{D}/cold.md").stdout
+rc, r = resolve(f"{D}/live.md")
+assert "note" not in r, "a file never archived carries no note"
+print("tracked again ok")
 
 set_manifest(manifest() + [{"ts": "2026-11-16T10:06:00Z", "by": "t", "event": "archive", "path": f"{D}/phantom.md",
                             "archive_path": f"{A}/phantom.md"}], "an event the tree contradicts")
