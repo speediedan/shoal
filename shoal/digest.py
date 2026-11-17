@@ -13,11 +13,23 @@ Keyword ranking (the fallback when `features.matcher` is off or in shadow mode; 
 gate except `never`):
   score = sum of the role's optional affinity weights matched (repo, labels, keywords in
           title+body, path prefixes in body) + routing bonus (+2 when another role's decline
-          suggested this role) - 1 when an open blocker exists
+          suggested this role) + release bonus (+3 for an item of its repository's release in
+          progress) - 1 when an open blocker exists - 2 for an umbrella (any sub-issues)
   rank  = score - board_pos / N          (board order breaks ties among equal fits)
-A role with no affinity weights ranks by board order alone. An item matching a role's
-`never` list is excluded for that role. An item every self-filling role has passed on is
-listed under `unowned`.
+A role with no affinity weights ranks by board order alone (plus the release and umbrella
+terms). An item matching a role's `never` list is excluded for that role. An item every
+self-filling role has passed on is listed under `unowned`.
+
+The release in progress of a repository is the lowest version among the milestones of its
+open items (`v2.15.0` before `v2.17.0`); a milestone that names no version is not a release.
+Its items, whoever holds them, are listed under `release` so a lane can see why none is free
+(`next` prints them). An umbrella (an issue with sub-issues) licenses no work on its rows
+(umbrella.py), so it ranks below claimable items rather than spend a candidate place.
+
+Sources: `github-project` (a board, in board order) and `github-label` (the open issues
+carrying a label in the given repositories, such as a lane label: those on no board of the
+shoal follow the board items, marked `unboarded`, so lane work missing from the board is still
+offered, and the maintainer sees what to add to it).
 
 Semantic mode (`features.matcher`, architecture §4.1; matcher.py): a model scores every
 item 0-3 against every lane's brief. Lanes rank by fit, then EFFECTIVE board position:
@@ -54,6 +66,8 @@ EXCERPT_CHARS = 600
 DIGEST_MAX_AGE_MIN = 30.0
 ROUTING_BONUS = 2.0
 BLOCKED_PENALTY = 1.0
+RELEASE_BONUS = 3.0
+UMBRELLA_PENALTY = 2.0
 DEFAULT_MIN_SCORE = 0.5
 # a role with fewer ranked candidates than this gets back the items it passed on for these classes, last (`build`)
 FALLBACK_BELOW = 6
@@ -74,16 +88,7 @@ query($login:String!, $number:Int!, $after:String) {
           }
           content {
             __typename
-            ... on Issue { number title state url bodyText updatedAt
-              repository { nameWithOwner }
-              labels(first:20) { nodes { name } }
-              milestone { title }
-              assignees(first:5) { nodes { login } }
-              parent { number repository { nameWithOwner } }
-              subIssuesSummary { total completed }
-              subIssues(first:30) { nodes { number state repository { nameWithOwner } } }
-              blockedBy(first:10) { nodes { number state repository { nameWithOwner } } }
-              closedByPullRequestsReferences(first:5) { nodes { number state headRefName } } }
+            ... on Issue { ISSUE_FIELDS }
             ... on PullRequest { number title state isDraft url bodyText updatedAt
               repository { nameWithOwner }
               labels(first:20) { nodes { name } } }
@@ -94,6 +99,26 @@ query($login:String!, $number:Int!, $after:String) {
   }
 }
 """
+ISSUE_FIELDS = """number title state url bodyText updatedAt
+              repository { nameWithOwner }
+              labels(first:20) { nodes { name } }
+              milestone { title }
+              assignees(first:5) { nodes { login } }
+              parent { number repository { nameWithOwner } }
+              subIssuesSummary { total completed }
+              subIssues(first:30) { nodes { number state repository { nameWithOwner } } }
+              blockedBy(first:10) { nodes { number state repository { nameWithOwner } } }
+              closedByPullRequestsReferences(first:5) { nodes { number state headRefName } }"""
+QUERY = QUERY.replace("ISSUE_FIELDS", ISSUE_FIELDS)
+# `github-label`: the open issues carrying a label, by search (no board order: in the order GitHub returns them)
+SEARCH = """
+query($q:String!, $after:String) {
+  search(query:$q, type:ISSUE, first:50, after:$after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { __typename ... on Issue { %s } }
+  }
+}
+""" % ISSUE_FIELDS
 
 
 BOARD_META: dict[str, dict] = {}  # `<owner>/<number>` -> the title and page a board read reported
@@ -137,40 +162,89 @@ def fetch_board(owner: str, number: int) -> list[dict]:
             c = n.get("content") or {}
             if not c or "number" not in c:
                 continue
-            repo = (c.get("repository") or {}).get("nameWithOwner", "")
-            blockers = [f"{_short((b.get('repository') or {}).get('nameWithOwner', repo))}#{b['number']}"
-                        for b in ((c.get("blockedBy") or {}).get("nodes") or []) if b.get("state") == "OPEN"]
-            parent = c.get("parent") or None
-            items.append({
-                "pos": len(items) + 1,
-                "item": f"{_short(repo)}#{c['number']}",
-                "repo": repo, "number": c["number"],
-                "kind": "pr" if c.get("__typename") == "PullRequest" else "issue",
-                "title": c.get("title", ""), "state": c.get("state", ""),
-                "status": ((n.get("status") or {}).get("name") or ""),
-                "labels": [l["name"] for l in (c.get("labels") or {}).get("nodes", [])],
-                "milestone": ((c.get("milestone") or {}).get("title") or ""),
-                "assignees": [a["login"] for a in (c.get("assignees") or {}).get("nodes", [])],
-                "url": c.get("url", ""), "draft": bool(c.get("isDraft")),
-                "updated": c.get("updatedAt", ""),
-                "excerpt": re.sub(r"\s+", " ", c.get("bodyText") or "")[:EXCERPT_CHARS],
-                "blocked_by": blockers,
-                "parent": (f"{_short((parent.get('repository') or {}).get('nameWithOwner', repo))}"
-                           f"#{parent['number']}") if parent else "",
-                "sub_issues": (c.get("subIssuesSummary") or {}).get("total", 0),
-                # an umbrella's open rows, so a lane told its active item is an umbrella sees who holds each (umbrella.py)
-                "rows": [f"{_short((r.get('repository') or {}).get('nameWithOwner', repo))}#{r['number']}"
-                         for r in ((c.get("subIssues") or {}).get("nodes") or []) if r.get("state") == "OPEN"],
-                "linked_prs": [p["number"] for p in ((c.get("closedByPullRequestsReferences") or {})
-                                                     .get("nodes") or [])],
-                "prs": [{"number": p["number"], "state": p.get("state", ""), "branch": p.get("headRefName", "")}
-                        for p in ((c.get("closedByPullRequestsReferences") or {}).get("nodes") or [])],
-            })
+            items.append(_content_item(c, len(items) + 1, ((n.get("status") or {}).get("name") or "")))
         pi = data["items"]["pageInfo"]
         if not pi.get("hasNextPage"):
             break
         after = pi.get("endCursor")
     return items
+
+
+def _content_item(c: dict, pos: int, status: str = "") -> dict:
+    """One issue or PR (a board item's content, or a search result) with the fields the digest needs."""
+    repo = (c.get("repository") or {}).get("nameWithOwner", "")
+    blockers = [f"{_short((b.get('repository') or {}).get('nameWithOwner', repo))}#{b['number']}"
+                for b in ((c.get("blockedBy") or {}).get("nodes") or []) if b.get("state") == "OPEN"]
+    parent = c.get("parent") or None
+    return {
+        "pos": pos,
+        "item": f"{_short(repo)}#{c['number']}",
+        "repo": repo, "number": c["number"],
+        "kind": "pr" if c.get("__typename") == "PullRequest" else "issue",
+        "title": c.get("title", ""), "state": c.get("state", ""),
+        "status": status,
+        "labels": [l["name"] for l in (c.get("labels") or {}).get("nodes", [])],
+        "milestone": ((c.get("milestone") or {}).get("title") or ""),
+        "assignees": [a["login"] for a in (c.get("assignees") or {}).get("nodes", [])],
+        "url": c.get("url", ""), "draft": bool(c.get("isDraft")),
+        "updated": c.get("updatedAt", ""),
+        "excerpt": re.sub(r"\s+", " ", c.get("bodyText") or "")[:EXCERPT_CHARS],
+        "blocked_by": blockers,
+        "parent": (f"{_short((parent.get('repository') or {}).get('nameWithOwner', repo))}"
+                   f"#{parent['number']}") if parent else "",
+        "sub_issues": (c.get("subIssuesSummary") or {}).get("total", 0),
+        # an umbrella's open rows, so a lane told its active item is an umbrella sees who holds each (umbrella.py)
+        "rows": [f"{_short((r.get('repository') or {}).get('nameWithOwner', repo))}#{r['number']}"
+                 for r in ((c.get("subIssues") or {}).get("nodes") or []) if r.get("state") == "OPEN"],
+        "linked_prs": [p["number"] for p in ((c.get("closedByPullRequestsReferences") or {})
+                                             .get("nodes") or [])],
+        "prs": [{"number": p["number"], "state": p.get("state", ""), "branch": p.get("headRefName", "")}
+                for p in ((c.get("closedByPullRequestsReferences") or {}).get("nodes") or [])],
+    }
+
+
+def label_query(src: dict) -> str:
+    """The issue search a `github-label` source runs: open issues with its label in its repositories (or its owner's)."""
+    where = " ".join(f"repo:{r}" for r in src.get("repos") or []) or f"user:{src['owner']}"
+    return f'is:issue is:open label:"{src["label"]}" {where}'
+
+
+def fetch_label(src: dict) -> list[dict]:
+    """The open issues a `github-label` source names (`SHOAL_LABEL_FIXTURE` in tests: a JSON map label -> items)."""
+    from sources import fixture_item, gh_graphql
+    fixture = config.env("LABEL_FIXTURE")
+    if fixture:
+        with open(fixture) as fh:
+            return [fixture_item(d, i + 1) for i, d in enumerate(json.load(fh).get(src["label"], []))]
+    items: list[dict] = []
+    after = None
+    while True:
+        d = gh_graphql(SEARCH, q=label_query(src), after=after or "")
+        data = (d.get("data") or {}).get("search") or {}
+        for c in data.get("nodes") or []:
+            if c and "number" in c:
+                items.append(_content_item(c, len(items) + 1))
+        pi = data.get("pageInfo") or {}
+        if not pi.get("hasNextPage") or len(items) >= 500:
+            break
+        after = pi.get("endCursor")
+    return items
+
+
+def _version(milestone: str) -> tuple | None:
+    """A milestone's release version (`v2.15.0` -> (2, 15, 0)); None for one that names no version."""
+    m = re.fullmatch(r"\s*v?(\d+(?:\.\d+)*)\s*", milestone or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def releases(items: list[dict]) -> dict[str, str]:
+    """repository -> its release in progress: the lowest version among its open items' milestones."""
+    best: dict[str, tuple] = {}
+    for it in items:
+        v = _version(it.get("milestone", ""))
+        if v is not None and (it["repo"] not in best or v < best[it["repo"]][0]):
+            best[it["repo"]] = (v, it["milestone"])
+    return {repo: m for repo, (_, m) in best.items()}
 
 
 def _match_repo(item: dict, pattern: str) -> bool:
@@ -184,8 +258,10 @@ def has_affinity(ctx: dict) -> bool:
     return any(aff.get(k) for k in ("repos", "labels", "keywords", "paths"))
 
 
-def score_item(item: dict, ctx: dict, routed: bool = False) -> tuple[float | None, list[str]]:
-    """(score, why tokens) for one item against one working context; None = never."""
+def score_item(item: dict, ctx: dict, routed: bool = False,
+               release: dict[str, str] | None = None) -> tuple[float | None, list[str]]:
+    """(score, why tokens) for one item against one working context; None = never. `release`: repository -> its
+    release in progress (`releases`)."""
     never = ctx.get("never") or {}
     if any(_match_repo(item, r) for r in never.get("repos") or []):
         return None, ["never:repo"]
@@ -214,6 +290,14 @@ def score_item(item: dict, ctx: dict, routed: bool = False) -> tuple[float | Non
     if routed:
         score += ROUTING_BONUS
         why.append(f"routed{ROUTING_BONUS:+g}")
+    if release and item.get("milestone") and release.get(item["repo"]) == item["milestone"]:
+        score += RELEASE_BONUS
+        why.append(f"release:{item['milestone']}{RELEASE_BONUS:+g}")
+    if item.get("rows") or item.get("sub_issues"):
+        # an umbrella whose rows are all closed is still one: its remaining work is named elsewhere (measured
+        # 2026-11-17: interpretune#815, two closed sub-issues, "its work is in the sub-issues below and in #812")
+        score -= UMBRELLA_PENALTY
+        why.append(f"umbrella:{len(item.get('rows') or [])}-open-rows{-UMBRELLA_PENALTY:+g}")
     if item.get("blocked_by"):
         score -= BLOCKED_PENALTY
         why.append(f"blocked-by:{','.join(item['blocked_by'])}{-BLOCKED_PENALTY:+g}")
@@ -355,6 +439,8 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
     if items is None:
         items = []
         for src in spec.sources or []:
+            if src.get("kind") == "github-label":
+                continue  # after every board: an item on a board keeps its place there
             if src.get("kind") != "github-project":
                 continue
             src_desc.append(f"github-project:{src['owner']}/{src['number']}")
@@ -370,8 +456,19 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
                 items.append(dict(it, source=src_desc[-1]))
             board.update(BOARD_META.get(f"{src['owner']}/{src['number']}") or {})
             boards.append(board)
+        seen = {item_key(it["item"]) for it in items}
+        for src in spec.sources or []:
+            if src.get("kind") != "github-label":
+                continue
+            src_desc.append(f"github-label:{src['label']}")
+            for it in fetch_label(src):
+                if item_key(it["item"]) in seen:
+                    continue
+                seen.add(item_key(it["item"]))
+                items.append(dict(it, pos=len(items) + 1, source=src_desc[-1], unboarded=True))
     taken = (view.taken() | view.offered_open()) if view is not None else set()
     routing = _routing(view) if view is not None else {}
+    release = releases(items)
     declined = {r.slug: view.declined(r.slug) for r in spec.roles} if view is not None else {}
     import matcher
     mcfg = matcher.config(spec)
@@ -406,7 +503,7 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
             key = item_key(it["item"])
             if key in taken:
                 continue
-            sc, why = score_item(it, ctx, routed=r.slug in routing.get(key, set()))
+            sc, why = score_item(it, ctx, routed=r.slug in routing.get(key, set()), release=release)
             if sc is None:
                 continue
             row = {"item": it["item"], "verb": "review" if it["kind"] == "pr" else "fix",
@@ -431,12 +528,14 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
             key = item_key(it["item"])
             if key not in taken and all(key in declined.get(r.slug, set()) for r in fillers):
                 unowned.append(it["item"])
+    rel = release_items(items, release, view)
+    unboarded = [it["item"] for it in items if it.get("unboarded")]
     if live:
-        doc = dict(sem_doc, unowned=unowned, boards=boards)
+        doc = dict(sem_doc, unowned=unowned, boards=boards, release=rel, unboarded=unboarded)
         return doc
     doc = {"shoal": spec.sid, "generated_utc": now_iso(), "sources": src_desc, "ranking": "keyword",
            "n_items": len(items), "items": {it["item"]: it for it in items},
-           "roles": roles, "unowned": unowned, "boards": boards}
+           "roles": roles, "unowned": unowned, "boards": boards, "release": rel, "unboarded": unboarded}
     if sem_doc is not None:
         for r in fillers:  # the keyword ranking means nothing for a lane with no brief
             if getattr(r, "aux", False):
@@ -446,6 +545,45 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
         doc["shadow"] = dict(sem_doc, unowned=unowned)
         doc["matcher"] = dict(sem_doc["matcher"], shadow=True)
     return doc
+
+
+def holder_of(view, item: str) -> str:
+    """Who has an item, in words: "claimed by X", "offered to X", "handed to X by Y", "done", or "" when free."""
+    from ledger import item_key
+    if view is None:
+        return ""
+    key = item_key(item)
+    if key in view.done:
+        return "done"
+    w = view.winner(key)
+    if w is not None:
+        return f"claimed by {w['by']}"
+    for o in view.by_item.get(key, []):
+        if o["status"] == "open" and not o.get("declined_by"):
+            return (f"handed to {o['to']} by {o['by']}" if o.get("src") == "handoff" else f"offered to {o['to']}")
+    return ""
+
+
+def release_items(items: list[dict], release: dict[str, str], view) -> dict[str, list[dict]]:
+    """"<repo> <milestone>" -> its open items with who has each (`holder_of`), in rank order: what `next` shows a
+    lane so it can see why no release item is free, and ask for one to be re-offered."""
+    out: dict[str, list[dict]] = {}
+    for it in items:
+        m = release.get(it["repo"])
+        if m and it.get("milestone") == m:
+            out.setdefault(f"{_short(it['repo'])} {m}", []).append({"item": it["item"], "has": holder_of(view, it["item"])})
+    return out
+
+
+def release_lines(sid: str, slug: str) -> list[str]:
+    """`next` lines for a self-filling role: each release in progress and who has its items (a free one is a candidate
+    above, unless this role passed on it)."""
+    doc = load(sid)
+    out = []
+    for name, rows in sorted(((doc or {}).get("release") or {}).items()):
+        parts = [f"{r['item']} ({r['has'] or 'free'})" for r in rows[:8]]
+        out.append(f"RELEASE {name}: {', '.join(parts)}" + (f" (+{len(rows) - 8} more)" if len(rows) > 8 else ""))
+    return out
 
 
 def _write_json(path: str, doc: dict) -> None:
@@ -553,6 +691,10 @@ def candidates(sid: str, slug: str, taken: set[str], declined: set[str], limit: 
 
 def fmt_candidate(c: dict, excerpt: int = 220) -> str:
     extra = f" blocked-by={','.join(c['blocked_by'])}" if c.get("blocked_by") else ""
+    if c.get("rows"):  # an umbrella: its rows are the work, and a claim on it licenses none of them
+        extra += f" umbrella-rows={','.join(c['rows'][:6])}"
+    if c.get("unboarded"):
+        extra += f" unboarded ({c.get('source', '')})"
     return (f"BOARD {c['item']}:{c['verb']} pos={c['pos']} score={c['score']:g}"
             f"{' (weak)' if c.get('weak') else ''} [{' '.join(c.get('why') or []) or 'no affinity'}]{extra}"
             f" :: {c.get('title', '')[:80]} :: {c.get('excerpt', '')[:excerpt]}")

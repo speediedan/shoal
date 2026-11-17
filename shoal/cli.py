@@ -30,6 +30,7 @@ Subcommands:
   brief         print/write one role's first prompt (restart uses this).
   install-systemd / uninstall-systemd   watcher units per shoal generation.
   spec absolutize-docs   rewrite relative role docs to absolute paths under --base.
+  spec sources           list, add or remove a live shoal's priority-table sources (a board, a label).
   ledger verbs  offer | withdraw | claim | release | done | msg | show | fill |
                 sync | ledger-init | ledger-lint | ledger-watch (ledger_cli.py,
                 ledger_watch.py): the unified primitive, 2026-09-20.
@@ -1293,7 +1294,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--repo", action="append", default=[],
                    help="GitHub repo owner/name the shoal works (reconcile ground truth; repeatable)")
     p.add_argument("--source", action="append", default=[],
-                   help="priority table for self-fill: github-project:OWNER/NUMBER[:repo|repo] (repeatable)")
+                   help="priority table for self-fill: github-project:OWNER/NUMBER[:repo|repo], or the open issues with a "
+                        "label: github-label:OWNER/REPO[|OWNER/REPO]:LABEL (repeatable)")
     p.add_argument("--ledger-repo", "--ledger", dest="ledger", default="",
                    help="ledger repo url (default: config `ledger_repo`; required when that is empty)")
     p.add_argument("--ledger-dir", default="", help="local clone of the ledger repo (default: config `ledger_dir`)")
@@ -1455,7 +1457,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rescan-min", type=float, default=0)
     p.set_defaults(func=lambda a: cmd_watch_register(a))
 
-    p = sub.add_parser("spec", help="spec maintenance (absolutize-docs)")
+    p = sub.add_parser("spec", help="spec maintenance (absolutize-docs, sources)")
     ssub = p.add_subparsers(dest="spec_cmd", required=True)
     q = ssub.add_parser("absolutize-docs",
                         help="rewrite every relative role doc to an absolute path under --base")
@@ -1463,6 +1465,13 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--base", required=True, help="directory the relative docs are relative to")
     q.add_argument("--dry-run", action="store_true")
     q.set_defaults(func=cmd_spec_absolutize_docs)
+    q = ssub.add_parser("sources", help="list, add or remove the shoal's priority-table sources (self-filling roles' "
+                                        "pool; the digest reads them at its next refresh)")
+    q.add_argument("--spec", required=True)
+    q.add_argument("--add", action="append", default=[], help="a source in --source form (repeatable)")
+    q.add_argument("--remove", action="append", default=[], help="a source in --source form (repeatable)")
+    q.add_argument("--dry-run", action="store_true")
+    q.set_defaults(func=cmd_spec_sources)
 
     p = sub.add_parser("install-systemd",
                        help="write (and optionally enable) systemd --user watcher units")
@@ -1503,6 +1512,40 @@ def cmd_spec_absolutize_docs(a: argparse.Namespace) -> int:
         return 0
     persist_spec(spec, a.spec, note=f"absolutize {len(changed)} role doc(s)")
     print(f"rewrote {len(changed)} role doc(s) in {a.spec}")
+    return 0
+
+
+def cmd_spec_sources(a: argparse.Namespace) -> int:
+    """`spec sources`: the shoal's priority-table sources, changed through the usual save (commit + push when the spec
+    lives in the ledger clone). A live shoal had no way to add one short of editing its spec by hand."""
+    from sources import parse_source
+    spec = ShoalSpec.load(a.spec)
+    try:
+        add, remove = [parse_source(x) for x in a.add], [parse_source(x) for x in a.remove]
+    except ValueError as exc:
+        print(exc)
+        return 1
+    have = list(spec.sources or [])
+    missing = [r for r in remove if r not in have]
+    if missing:
+        print(f"not a source of {spec.sid}: {missing} (nothing written)")
+        return 1
+    new = [s for s in have if s not in remove] + [s for s in add if s not in have]
+    for src in new:
+        print(f"  {json.dumps(src)}" + (" (new)" if src not in have else ""))
+    if new == have:
+        print(f"{spec.sid}: {len(have)} source(s), nothing to change")
+        return 0
+    spec.sources = new
+    errs = [e for e in spec.validate() if "source" in e]
+    if errs:
+        print("REFUSED: " + "; ".join(errs))
+        return 1
+    if a.dry_run:
+        print(f"[dry-run] would save {len(new)} source(s) to {a.spec}")
+        return 0
+    persist_spec(spec, a.spec, note=f"sources: +{len(add)} -{len(remove)}")
+    print(f"{spec.sid}: saved {len(new)} source(s); `shoal digest --refresh` reads them now, else its timer does")
     return 0
 
 

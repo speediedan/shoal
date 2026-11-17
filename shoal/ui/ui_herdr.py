@@ -1668,7 +1668,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         if how == "m":
             text = _ask("answer text: ")
             if text:
-                return confirm_run(["msg", "--shoal", sid, "--to", pick, f"--text={text}", "--wake"],
+                return confirm_run(["msg", "--shoal", sid, "--by", "user", "--to", pick, f"--text={text}", "--wake"],
                                    "a --wake from user starts one turn of that role (tokens)")
         return 0
     if verb == "msg":
@@ -1677,7 +1677,7 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
         if not text:
             return 1
         wake = _ask("wake it now? (mail is otherwise read at its next boundary) [y/N] ").lower() == "y"
-        args = ["msg", "--shoal", sid, "--to", slug, f"--text={text}"] + (["--wake"] if wake else [])
+        args = ["msg", "--shoal", sid, "--by", "user", "--to", slug, f"--text={text}"] + (["--wake"] if wake else [])
         note = ("a * message with --wake starts a turn in EVERY role" if slug == "*" and wake else
                 "a --wake starts one turn of that role (tokens)" if wake else "")
         return confirm_run(args, note)
