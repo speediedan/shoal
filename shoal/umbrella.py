@@ -122,7 +122,14 @@ def report(spec, view, item: str, slug: str = "", doc: dict | None = None) -> tu
         lines.append(f"FREE {key}: no live claim")
     for o in view.offers.values():
         if o["status"] == "open" and item_key(o["item"]) == key:
-            lines.append(f"OFFERED to {o['to']} by {o['by']}")
+            # the same reading as `next`: an offer its addressee declined is not on its queue (measured 2026-11-17:
+            # `claimed` said OFFERED to it-tune for an item it-tune had passed as blocked), and a holder's handoff
+            # is not the maintainer's offer
+            what = (f"HANDED to {o['to']} by {o['by']} (its holder's handoff)" if o.get("src") == "handoff"
+                    else f"OFFERED to {o['to']} by {o['by']}")
+            if o.get("declined_by"):
+                what += f" (declined by {', '.join(o['declined_by'])}: not on their queue)"
+            lines.append(what)
     u = parents.get(key)
     if u:
         lines.append(f"UMBRELLA {u}" + (f": the active item of {act[u]}" if act.get(u) else ": nobody's active item"))

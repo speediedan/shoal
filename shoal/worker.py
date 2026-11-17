@@ -466,6 +466,18 @@ def cmd_next(a) -> int:
             out.append(aux_header(spec, slug))
         except Exception as exc:  # noqa: BLE001
             out.append(f"AUX: (header unavailable: {short(str(exc), 100)})")
+    if me.fill == "self" and (spec.features or {}).get("digest"):
+        try:
+            from digest import release_lines
+            out += release_lines(spec.sid, slug)
+        except Exception as exc:  # noqa: BLE001 - a release note never breaks `next`
+            out.append(f"(release items unavailable: {short(str(exc), 100)})")
+        if not me.working_context():
+            # measured 2026-11-17: every fts-it-refactor role had `context: {}`, so its candidates came in board order
+            # alone and its own lane's work ranked no higher than anyone's
+            out.append(f"CONTEXT NONE: you have no working context, so BOARD candidates rank by board order alone. "
+                       f"Record your lane (`shoal context set --shoal {spec.sid} --slug {slug} --file <json>`: a "
+                       f"brief and affinity weights for repos, labels, keywords) so your own work ranks first")
     # slots candidates may fill: next items with a recorded blocker hold no slot, and a role with no
     # active item has one more (it pops a next item or takes a candidate). Counting blocked items and
     # subtracting for an idle role hid every candidate from a role idle behind two blocked items
@@ -487,7 +499,7 @@ def cmd_next(a) -> int:
             # pass of class `blocked` returns each to the pool (it lapses in a day, so it comes back once unblocked),
             # and a blocked item stays in a queue only when nothing listed is workable
             first = "an OFFER above first, else the BOARD items" if offers else "the BOARD items above"
-            back = " ".join(f"--pass {x}:blocked" for x in blocked_next)
+            back = " ".join(f"--pass {split_item(x)[0]}:blocked" for x in blocked_next)
             out.append(f"RETURN BLOCKED WORK: you fill your own queue and work is listed, so blocked items do not hold "
                        f"places in it. Pass {', '.join(blocked_next)} back to the board ({back}) and fill their places "
                        f"from {first}" + ("" if active else ", taking the first now (`queue --claim <item>`, then "
@@ -592,7 +604,9 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             print(f"CLAIM-REFUSED {key}: held by {w['by']} since {w['ts']} (nothing written)")
             return 4
         if key in view.done:
-            print(f"CLAIM-REFUSED {key}: done {view.done[key]['ts']} by {view.done[key]['by']} (nothing written)")
+            print(f"CLAIM-REFUSED {key}: done {view.done[key]['ts']} by {view.done[key]['by']} (nothing written); an "
+                  f"issue still open with work left: ask the maintainer to offer it again (a user offer reopens a done "
+                  f"item)")
             return 4
         addressed = next((o["to"] for o in view.by_item.get(key, []) if o["status"] == "open"), None)
         if not view.perms.may_claim(slug, addressed, ""):
@@ -602,6 +616,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     passes = []
     for p in a.pass_ or []:
         parts = p.split(":")
+        if len(parts) > 2 and parts[1] not in PASS_CLASSES and parts[2] in PASS_CLASSES:
+            parts = [parts[0]] + parts[2:]  # ITEM:VERB:CLASS, the item as `next` names it: the verb plays no part
         if len(parts) < 2 or parts[1] not in PASS_CLASSES:
             print(f"ERROR: --pass {p!r}: want ITEM:CLASS[:suggest=ROLE][:note=TEXT], CLASS in {PASS_CLASSES}")
             return 1

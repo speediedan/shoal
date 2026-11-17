@@ -299,7 +299,7 @@ def batch(spec, view, slug: str, order: list[str], drop: list[str], blocked: lis
             ([f"Release from your queue: {', '.join(release_asks)} (`release --item <it> --kind decline --reason \"dropped by the maintainer\"`)."]
              if release_asks else [])
             + ([f"Blocked, record each with `queue --blocked <item>=<what it waits on>`: {'; '.join(notes)}."] if notes else []))
-        msgs.append(["msg", "--shoal", sid, "--to", slug, "--kind", "request", "--ack", f"--text={text}"]
+        msgs.append(["msg", "--shoal", sid, "--by", "user", "--to", slug, "--kind", "request", "--ack", f"--text={text}"]
                     + ([] if orders or transfers else ["--wake"]))
     argvs = withdraws + offers + transfers + msgs + orders
     if not argvs:

@@ -1032,6 +1032,9 @@ check "status=idle" $Q --slug tl --idle --next app#9802,app#9803 \
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek 2>&1)
 grep -q "^BOARD app#80" <<<"$OUT" || fail "no candidates for a role idle behind blocked next items :: $OUT"
 grep -q "^RETURN BLOCKED WORK: .*--pass app#9802:blocked --pass app#9803:blocked" <<<"$OUT" || fail "a fill=self role behind blocked items is not told to return them and take board work :: $OUT"
+# the item as `next` names it, verb and all, is a pass too (2026-11-17: the hint printed `ITEM:fix:blocked`, refused)
+check "\[dry-run\] .*passes=\['app#9802:blocked'\]" $Q --slug tl --idle --next app#9803 --blocked "app#9803=up:app#9301" \
+  --pass app#9802:fix:blocked --dry-run
 grep -q "short queue: [1-9][0-9]* eligible candidate" <<<"$(tail -1 $A/shoals/$SID/ledger/tl.jsonl)" \
   || fail "default reason claims no eligible items beside candidates :: $(tail -1 $A/shoals/$SID/ledger/tl.jsonl)"
 # three unblocked next items and an active one: the queue is full, no candidates
@@ -2509,6 +2512,7 @@ python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.p
 python3 "$TESTD/test_retire_hooks.py" || fail "retirement hooks (tests/test_retire_hooks.py)"
 python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
 python3 "$TESTD/test_umbrella.py" || fail "umbrella rows (tests/test_umbrella.py)"
+python3 "$TESTD/test_release_fill.py" || fail "release work first, lane work off the board (tests/test_release_fill.py)"
 check "name a start doc" $H doc-head
 python3 "$TESTD/test_log_entry.py" || fail "log-entry (tests/test_log_entry.py)"
 check "name a key" $H log-entry /dev/null

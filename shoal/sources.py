@@ -79,18 +79,20 @@ def board_fixture() -> list[dict] | None:
         return None
     with open(path) as fh:
         raw = json.load(fh)
-    items = []
-    for d in raw:
-        repo = d.get("repo", "")
-        short = repo.split("/", 1)[1] if "/" in repo else repo
-        it = {"item": f"{short}#{d['number']}", "repo": repo, "number": d["number"], "kind": "issue",
-              "title": "", "state": "OPEN", "status": "", "labels": [], "milestone": "", "assignees": [],
-              "url": "", "draft": False, "project_item_id": "", "updated": "", "excerpt": "",
-              "blocked_by": [], "parent": "", "sub_issues": 0, "linked_prs": []}
-        it.update(d)
-        it["pos"] = len(items) + 1
-        items.append(it)
-    return items
+    return [fixture_item(d, i + 1) for i, d in enumerate(raw)]
+
+
+def fixture_item(d: dict, pos: int) -> dict:
+    """A test item (`repo` and `number` at least) with neutral defaults for every other board field."""
+    repo = d.get("repo", "")
+    short = repo.split("/", 1)[1] if "/" in repo else repo
+    it = {"item": f"{short}#{d['number']}", "repo": repo, "number": d["number"], "kind": "issue",
+          "title": "", "state": "OPEN", "status": "", "labels": [], "milestone": "", "assignees": [],
+          "url": "", "draft": False, "project_item_id": "", "updated": "", "excerpt": "",
+          "blocked_by": [], "parent": "", "sub_issues": 0, "linked_prs": []}
+    it.update(d)
+    it["pos"] = pos
+    return it
 
 
 def github_project_items(owner: str, number: int, ttl_s: float = 120) -> list[dict]:
@@ -157,7 +159,7 @@ def candidates(sources: list[dict], scope: dict | None, taken: set[str],
     out: list[dict] = []
     for src in sources or []:
         if src.get("kind") != "github-project":
-            continue
+            continue  # a `github-label` source is read by the digest (digest.fetch_label)
         src_repos = {r.lower() for r in (src.get("repos") or [])}
         skip = set(src.get("skip_status") or ["Done"])
         for it in github_project_items(src["owner"], int(src["number"]), ttl_s=ttl_s):
@@ -190,7 +192,13 @@ def project_url(src: dict) -> str:
 
 
 def parse_source(spec: str) -> dict:
-    """CLI form: github-project:OWNER/NUMBER[:repo1|repo2]"""
+    """CLI forms: github-project:OWNER/NUMBER[:repo1|repo2], github-label:OWNER/REPO[|OWNER/REPO]:LABEL (the label is
+    everything after the second colon, so a lane label such as `lane: x` keeps its own)."""
+    if spec.startswith("github-label:"):
+        _, repos, label = (spec.split(":", 2) + ["", ""])[:3]
+        if not repos or "/" not in repos or not label.strip():
+            raise ValueError(f"bad --source {spec!r} (want github-label:OWNER/REPO[|OWNER/REPO]:LABEL)")
+        return {"kind": "github-label", "label": label.strip(), "repos": repos.split("|")}
     parts = spec.split(":")
     if len(parts) < 2 or parts[0] != "github-project" or "/" not in parts[1]:
         raise ValueError(f"bad --source {spec!r} (want github-project:OWNER/NUMBER[:repo|repo])")

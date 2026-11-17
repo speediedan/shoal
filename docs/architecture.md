@@ -332,8 +332,22 @@ own history; `upgrade --enable matcher.live` switches without a restart. `privat
 
 **Keyword ranking, the fallback.** While the matcher is off, or in shadow mode, the live digest
 ranks by the role's optional affinity weights (repos, labels, keywords, path prefixes), with board
-order breaking ties. A role with no weights ranks by board order alone. With the matcher live,
-affinity weights are not used.
+order breaking ties. A role with no weights ranks by board order alone, and `next` says so
+(`CONTEXT NONE`). With the matcher live, affinity weights are not used. Two terms apply to every
+role: an item of its repository's **release in progress** (the lowest version among the milestones
+of the repository's open items: `v2.15.0` before `v2.17.0`; a milestone that names no version is no
+release) gains 3, and an **umbrella** (an issue with sub-issues, open or closed) loses 2, since
+claiming it licenses none of its rows and its remaining work is named elsewhere. `next` prints `RELEASE <repo> <milestone>` with each of its items and who has it (claimed,
+offered, handed, or free), so a lane sees why no release item is free and can ask for one.
+
+**Sources.** A spec's `sources` are boards (`github-project`, read in board order) and labels
+(`github-label`: the open issues carrying a label, such as a lane label, in the listed
+repositories). Issues a label brings that are on no board follow the board items, marked
+`unboarded` in their BOARD line and listed under the digest's `unboarded`, so a lane's work missing
+from its board is still offered (measured 2026-11-17: ten `lane: fts-it-refactor` issues off
+project 3 while two of its lanes idled) and the maintainer sees what to add. `shoal spec sources
+--spec <spec> --add github-label:OWNER/REPO[|OWNER/REPO]:LABEL` changes a live shoal's sources;
+`next`, `fill` and the idle check read them at the digest's next refresh.
 
 **Effective priority** (with the matcher) is the order the digest ranks by: an item that blocks an
 active role's work is lifted above it, an item named by a peer's `--blocked-on` wait goes to the
