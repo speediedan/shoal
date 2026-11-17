@@ -250,8 +250,21 @@ def reading(used: float, left_h: float, minutes: int = WEEK, **kw) -> dict:
 
 h_a, _ = accounts.headroom(reading(50, 1), NOW)
 h_b, why = accounts.headroom(reading(40, 144), NOW)
-check(round(h_a) == 84 and round(h_b, 1) == 0.7 and h_a > h_b, f"the maintainer's example: {h_a} vs {h_b}")
-check("week 40% used" in why, f"the binding window is named: {why}")
+check(round(h_a) == 83 and h_b == 0.0 and h_a > h_b, f"the maintainer's example: {h_a} vs {h_b}")
+check("week 40% used" in why and "on course to run out" in why, f"the binding window is named, and why: {why}")
+# 2026-11-17: claude-2 at 40% of its week with 2.5 days left (carrying every Claude role) against the default at 0% with
+# 5.5 days left. On free share alone claude-2 scored 1.7 to 1.3; at the rate it is used it keeps less to spare
+idle, busy = accounts.headroom(reading(0, 132), NOW)[0], accounts.headroom(reading(40, 60), NOW)[0]
+check(round(idle, 2) == 1.27 and round(busy, 2) == 1.06, f"idle and busy: {idle} {busy}")
+snap = [dict(reading(0, 132), provider="claude"), dict(reading(40, 60), provider="claude-2")]
+check(accounts.choose("claude", NOW, snap)[0] == "", "the idle account wins though the busy one resets sooner")
+# a window not started yet (no reset time: the 5 h one of an account idle for hours) is a whole unused window, not
+# no limit at all: before, it was skipped and the account was scored on its week alone
+fresh = {"rows": [{"bucket": "b", "windows": [{"name": "5h", "used_percent": 0, "resets_at": None, "minutes": 300},
+                                               {"name": "week", "used_percent": 40, "resets_at": NOW + 60 * 3600,
+                                                "minutes": WEEK}]}]}
+h, why = accounts.headroom(fresh, NOW)
+check(h == 1.0 and why == "5h not started", f"a window not started scores 1: {h} {why}")
 check(accounts.headroom(reading(99, 1), NOW)[0] == 0.0, "under 2% free is ineligible")
 check(accounts.headroom(reading(10, 1, blocked=True), NOW)[0] == 0.0, "a reached limit is ineligible")
 check(accounts.headroom({"stale": True}, NOW)[0] is None, "a stale reading has no score")
@@ -320,6 +333,29 @@ subscription_usage.http_json = lambda url, token, **kw: got.append(token) or {}
 subscription_usage.fetch("claude-2")
 check(any(c.startswith(f"{D2}|-p ") for c in calls()) and accounts.token_hours("claude", "claude-2") > 7,
       f"the meter refreshes a lapsed account before it reads: {calls()}")
+use(TWO_CFG)
+
+# ---- rebalance: the quorum's automatic restart takes the account balance picks now ------------------------------------
+RSPEC = ShoalSpec(sid="acct-reb", dir=T, roles=[Role(slug="x", ecosystem="claude", account="claude-2"),
+                                               Role(slug="c", ecosystem="codex", account="")])
+_snapshot = subscription_usage.snapshot
+subscription_usage.snapshot = lambda keys, now=None: {"accounts": [dict(reading(0, 132), provider="claude"),
+                                                                   dict(reading(40, 60), provider="claude-2")]}
+check(not accounts.rebalance_on() and health.rebalance(RSPEC, RSPEC.roles[0]) == (), "rebalance is opt-in")
+REB_CFG = os.path.join(T, "reb.toml")
+open(REB_CFG, "w").write(open(TWO_CFG).read().replace('select = "balance"', 'select = "balance"\nrebalance = true'))
+use(REB_CFG)
+json.dump({"projects": {}}, open(os.path.join(HOME, ".claude.json"), "w"))
+check(health.rebalance(RSPEC, RSPEC.roles[0]) == (), "never onto an account that has not trusted the folder")
+json.dump({"projects": {T: {"hasTrustDialogAccepted": True}}}, open(os.path.join(HOME, ".claude.json"), "w"))
+moved = health.rebalance(RSPEC, RSPEC.roles[0])
+check(moved and moved[0] == "--set-account=x:claude" and "claude-2 -> claude" in moved[1], f"moved: {moved}")
+check(health.rebalance(RSPEC, RSPEC.roles[1]) == (), "a provider with its pick already on record stays")
+RSPEC.roles[0].account = ""
+check(health.rebalance(RSPEC, RSPEC.roles[0]) == (), "a role already on the pick stays")
+out = health.context_restart(RSPEC, "/s.json", RSPEC.roles[0], True, ("--set-account=x:claude-2",))
+check(out.endswith("--set-account=x:claude-2"), f"the restart carries the account: {out}")
+subscription_usage.snapshot = _snapshot
 use(TWO_CFG)
 
 # ---- 6. records and icons ------------------------------------------------------------------------------------------
