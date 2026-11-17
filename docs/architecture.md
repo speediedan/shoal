@@ -714,6 +714,14 @@ default `~/.codex`).
 - **Usage.** Each declared Claude or Codex account is a usage provider of its own, by name (`claude-2`), read with its
   own sign-in; `usage_providers` lists each declared account after its provider. The credential override
   (`SHOAL_USAGE_CLAUDE_OAUTH_TOKEN`) is the default account's only.
+- **Keeping a sign-in fresh.** Claude's sign-in is a short access token (about 8 hours) and a long refresh token, and
+  only the CLI refreshes the access token, when it runs and the token is about to expire. An account no session runs
+  on (every role moved to another account, a laptop that only views) then reads `HTTP 401: login rejected` on its meter
+  within hours, although its sign-in is fine: a headless call refreshes it with no login. `shoal accounts` prints each
+  Claude account's hours left; `shoal accounts --keepalive` makes that call (`claude -p` on the smallest model, saving
+  no session) for each account whose token has lapsed or is within minutes of it; with `[accounts] keepalive = true`
+  (opt-in: about three tiny calls per account a day) the usage meter does the same before it reads. The refresh is the
+  CLI's own, so it follows how the CLI shares a token among processes; refreshing from shoal would race it.
 - **Balance.** An account's paced headroom in a window is its free share over the share of the window still to run
   (at least an hour of it): 50% free with 1 h of a week left scores 84, 60% free with 6 days left 0.7. Its tightest
   window is its score; under 2% free or a reached limit scores 0, and an account with no fresh reading is ranked last

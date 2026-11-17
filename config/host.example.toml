@@ -126,6 +126,7 @@
 # [accounts]
 # select = "balance"       # the suggested account: the most paced quota headroom (default), or "default"
 # exclude = ["opencode"]   # providers kept out of balancing (`--ecosystem auto` never picks them)
+# keepalive = true         # the usage meter refreshes a lapsing Claude sign-in through the CLI (a tiny call, ~3/day)
 # [accounts.claude-2]
 # provider = "claude"
 # env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }

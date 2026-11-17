@@ -44,7 +44,9 @@ account of the same provider, `shoal handoff --spec <spec> --only <role> --accou
 (a seat: `--session <label>`), dry-run first. It keeps the host, model and effort. The default account
 is named after its provider (`--account claude`). A role never chooses its own account. SHOAL does not
 check a provider's account limits: a launch on an account that is not signed in fails with the
-provider's message, so read `accounts --check` first.
+provider's message, so read `accounts --check` first. A meter that reads `HTTP 401: login rejected` for an
+account no session runs on is usually a lapsed access token, not a lost sign-in: `shoal accounts --keepalive`
+refreshes it through the CLI (and `[accounts] keepalive = true` lets the meter do it itself).
 
 ## Upgrade
 

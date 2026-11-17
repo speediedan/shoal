@@ -38,6 +38,17 @@ case "$1" in
   agents) cat "$d/fake-agents.json" ;;
   --bg) echo "backgrounded · ${{FAKE_NEW_ID:-feedf00d}}" ;;
   stop|rm|respawn|logs) echo "ok $1 $2" ;;
+  -p) # a headless call refreshes an expired token, as the real CLI does (and only then)
+      python3 - "$d/.credentials.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]
+d = json.load(open(p))
+o = d.setdefault("claudeAiOauth", {{}})
+if o.get("expiresAt", 0) / 1000 - time.time() < 300:
+    o["expiresAt"] = int((time.time() + 8 * 3600) * 1000)
+    json.dump(d, open(p, "w"))
+PY
+      echo OK ;;
 esac
 """)
 os.chmod(os.path.join(BIN, "claude"), 0o755)
@@ -277,6 +288,39 @@ lim = {"reset": soon, "accounts": {"claude": soon}}
 check(health.limit_until(lim, "") == soon and health.limit_until(lim, "claude-2") == "", "a limit holds its own account only")
 check(health.limit_until(lim) == soon, "without an account, the shoal-wide reset as before")
 check(health.limit_until({"reset": soon}, "claude-2") == soon, "a reading from before accounts still holds everyone")
+
+# ---- keepalive: a lapsed sign-in is refreshed by the CLI itself, before the meter reads it ----------------------------
+import time as _time  # noqa: E402
+
+
+def creds(base: str, hours: float) -> None:
+    json.dump({"claudeAiOauth": {"accessToken": "tok", "expiresAt": int((_time.time() + hours * 3600) * 1000)}},
+              open(os.path.join(base, ".credentials.json"), "w"))
+
+
+creds(D1, -51)  # two days lapsed, as the default account was with no session on it
+creds(D2, 5)
+check(round(accounts.token_hours("claude", "")) == -51 and round(accounts.token_hours("claude", "claude-2")) == 5, "hours left")
+open(LOG, "w").close()
+said = accounts.keepalive("claude", "claude-2")
+check(said.startswith("fresh") and calls() == [], f"a fresh sign-in is left alone, no call: {said} {calls()}")
+said = accounts.keepalive("claude", "")
+check(said.startswith("refreshed") and accounts.token_hours("claude", "") > 7, f"a lapsed one is refreshed: {said}")
+check(calls() and calls()[0].startswith("default|-p ") and "--no-session-persistence" in calls()[0] and "haiku" in calls()[0],
+      f"by one headless call on the smallest model, in the account's own environment, saving no session: {calls()}")
+check(not accounts.keepalive_on(), "keepalive is opt-in")
+KEEP_CFG = os.path.join(T, "keep.toml")
+open(KEEP_CFG, "w").write(open(TWO_CFG).read().replace('select = "balance"', 'select = "balance"\nkeepalive = true'))
+use(KEEP_CFG)
+check(accounts.keepalive_on(), "[accounts] keepalive = true")
+creds(D2, -3)
+open(LOG, "w").close()
+got = []
+subscription_usage.http_json = lambda url, token, **kw: got.append(token) or {}
+subscription_usage.fetch("claude-2")
+check(any(c.startswith(f"{D2}|-p ") for c in calls()) and accounts.token_hours("claude", "claude-2") > 7,
+      f"the meter refreshes a lapsed account before it reads: {calls()}")
+use(TWO_CFG)
 
 # ---- 6. records and icons ------------------------------------------------------------------------------------------
 spec = ShoalSpec.from_dict({"sid": "acct-test", "roles": [{"slug": "x", "ecosystem": "claude", "account": "claude-2"}]}) \
