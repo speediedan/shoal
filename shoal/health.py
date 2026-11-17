@@ -984,6 +984,29 @@ def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, stat
                                                 + be.respawn(job, dry_run) + " (no turn)"))
 
 
+def rebalance(spec: ShoalSpec, role) -> tuple[str, ...]:
+    """`[accounts] rebalance`: (the restart argument, what it does) to start this role's automatic restart on the account
+    the selection policy picks now (`accounts.choose`, same provider), or () to keep its account: the setting off,
+    another host's role, the pick its account already, or a Claude account that does not trust the shoal's folder (the
+    restart would stop the old session, then fail to start the new one)."""
+    import accounts
+    if role is None or not accounts.rebalance_on() or not is_local(role, spec):
+        return ()
+    try:
+        acct, why = accounts.choose(role.ecosystem)
+    except Exception:  # noqa: BLE001 - no usage cache or settings: the account stays
+        return ()
+    if acct == (role.account or ""):
+        return ()
+    if role.ecosystem == "claude":
+        from backends import claude_untrusted
+        if claude_untrusted(acct, spec.dir):
+            return ()
+    return (f"--set-account={role.slug}:{acct or role.ecosystem}",
+            f"account {accounts.name(role.ecosystem, role.account)} -> {accounts.name(role.ecosystem, acct)} "
+            f"([accounts] rebalance: {why})")
+
+
 def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False, extra: tuple[str, ...] = ()) -> str:
     """features.health.context_restart `auto`: hand a restart-ready role to a fresh session. The old Claude
     session is stopped first and its detached watcher ended (neither wakes it), so nothing delivers to it
@@ -1339,7 +1362,10 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 lad["step"] += 1
                 break
             if action == "restart":
-                ch = context_restart(spec, spec_path, role_, dry_run)
+                moved = rebalance(spec, role_)
+                ch = context_restart(spec, spec_path, role_, dry_run, moved[:1])
+                if moved and not ch.startswith("FAILED"):
+                    ch += f"; {moved[1]}"
             elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
