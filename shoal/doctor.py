@@ -500,6 +500,10 @@ def ledger_checks(d: Doc, spec: ShoalSpec) -> None:
         try:
             from sources import github_project_items
             for src in spec.sources:
+                if src.get("kind") == "github-label":
+                    from digest import fetch_label
+                    d.ok(f"source label {src['label']!r}", f"{len(fetch_label(src))} open issues")
+                    continue
                 items = github_project_items(src["owner"], int(src["number"]))
                 open_n = sum(1 for i in items if i["state"] == "OPEN")
                 d.ok(f"source {src['owner']}/{src['number']}", f"{len(items)} items, {open_n} open (board order = priority)")

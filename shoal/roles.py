@@ -253,8 +253,12 @@ class ShoalSpec:
         elif not self.ledger.get("dir"):
             errs.append("ledger set without a clone dir")
         for s in self.sources:
-            if s.get("kind") != "github-project" or not s.get("owner") or not s.get("number"):
-                errs.append(f"bad source {s} (want kind=github-project, owner, number)")
+            if s.get("kind") == "github-label":
+                if not s.get("label") or not (s.get("repos") or s.get("owner")):
+                    errs.append(f"bad source {s} (want kind=github-label, label, repos or owner)")
+            elif s.get("kind") != "github-project" or not s.get("owner") or not s.get("number"):
+                errs.append(f"bad source {s} (want kind=github-project, owner, number; or kind=github-label, label, "
+                            f"repos)")
         if not self.sources and any(r.fill == "self" for r in self.roles):
             errs.append("self-filling roles but no `sources` (priority table) in the spec")
         slugs = [r.slug for r in self.roles]

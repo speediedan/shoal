@@ -177,7 +177,7 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
         role = _role(spec, a.role, allow_all=True)
         if not (a.text or "").strip():
             raise ActError("msg needs --text")
-        args = ["msg", "--shoal", sid, "--to", role, f"--text={a.text}"] + (["--wake"] if a.wake else [])
+        args = ["msg", "--shoal", sid, "--by", "user", "--to", role, f"--text={a.text}"] + (["--wake"] if a.wake else [])
         cost = ("a * message with --wake starts a turn in EVERY role" if role == "*" and a.wake else
                 "a --wake starts one turn of that role (tokens)" if a.wake else "")
         return args, cost, True
