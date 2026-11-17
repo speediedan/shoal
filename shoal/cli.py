@@ -1430,6 +1430,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("accounts", help="the provider accounts on this host ([accounts.<name>] in the host config)")
     p.add_argument("--check", action="store_true", help="ask each provider's CLI for the account's sign-in (relayed)")
+    p.add_argument("--keepalive", action="store_true", help="refresh each Claude account's sign-in through its CLI when its "
+                   "token has expired or is about to (one tiny model call each; the CLI refreshes only then)")
+    p.add_argument("--min-hours", type=float, default=0.1, help="with --keepalive: act on a token with less left (default 0.1)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=lambda a: _accounts.cmd_accounts(a))
 

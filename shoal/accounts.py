@@ -231,6 +231,74 @@ def signin(provider: str, account: str = "") -> str:
     return (out.splitlines() or [f"rc={r.returncode}"])[-1][:160]
 
 
+# ---- keeping a sign-in fresh ---------------------------------------------------------------------------------------
+# Claude's sign-in is a short access token (about 8 h) and a long refresh token. Only the CLI refreshes the access token,
+# and only when it runs; the usage meter reads the stored token as it is. An account no session runs on (every role moved
+# to another account, or a laptop that only views) then reads "HTTP 401: login rejected" within hours although its sign-in
+# is fine (2026-11-17: the default account after the claude-2 reseat, and both of a laptop's; a one-line headless call
+# brought each back with no login). The keepalive is that call, made by the CLI itself, so the refresh follows the CLI's
+# own handling of a token several processes share; refreshing from here would race it and could sign the account out.
+KEEPALIVE_ARGV = ["-p", "Reply with exactly: OK", "--model", "claude-haiku-5-5", "--no-session-persistence",
+                  "--output-format", "text"]
+# the CLI refreshes only a token about to expire (measured 2026-11-17: with 2.5 h left a call used it as it was; expired
+# two days, a call refreshed it), so the keepalive acts then: expired, or within minutes. The meter polls every 5 min.
+KEEPALIVE_MIN_H = 0.1
+
+
+def token_hours(provider: str, account: str = "") -> float | None:
+    """Hours until an account's stored access token expires (negative: expired); None where it keeps none in its state
+    directory (another provider, a keychain, never signed in)."""
+    import json
+    import time
+    if provider != "claude":
+        return None
+    try:
+        with open(os.path.join(home(provider, account), ".credentials.json")) as fh:
+            exp = ((json.load(fh) or {}).get("claudeAiOauth") or {}).get("expiresAt")
+        return (float(exp) / 1000 - time.time()) / 3600 if exp else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def keepalive_on() -> bool:
+    """`[accounts] keepalive = true`: let the usage meter refresh a Claude account's sign-in when it is about to lapse
+    (opt-in: it costs one tiny model call per account about every 8 hours)."""
+    t = config.file_values().get("accounts")
+    return isinstance(t, dict) and t.get("keepalive") is True
+
+
+def keepalive(provider: str, account: str = "", min_hours: float = KEEPALIVE_MIN_H) -> str:
+    """Refresh an account's sign-in through its CLI when its token has under `min_hours` left: one headless call on the
+    smallest model, saving no session. Says what it found and did."""
+    import shutil
+    import subprocess
+    import tempfile
+    if provider != "claude":
+        return "no keepalive for this provider"
+    before = token_hours(provider, account)
+    if before is None:
+        return "no stored sign-in to keep"
+    if before >= min_hours:
+        return f"fresh ({before:.1f} h left)"
+    e = env(provider, account)
+    exe = shutil.which("claude", path=e.get("PATH", ""))
+    if not exe:
+        return "claude is not on this host's tool path"
+    try:
+        with tempfile.TemporaryDirectory(prefix="shoal-keepalive-") as d:
+            r = subprocess.run([exe, *KEEPALIVE_ARGV], capture_output=True, text=True, timeout=120, env=e, cwd=d,
+                               stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"keepalive failed ({exc.__class__.__name__})"
+    after = token_hours(provider, account)
+    if after is not None and after > max(before, 0) + 0.01:
+        return f"refreshed: {before:.1f} -> {after:.1f} h"
+    said = (r.stdout + r.stderr).strip().splitlines()
+    if r.returncode == 0 and after is not None and after > 0:
+        return f"still valid ({after:.1f} h left): the CLI refreshes only a token about to expire"
+    return f"not refreshed ({said[-1][:160] if said else f'rc={r.returncode}'}): sign in again"
+
+
 # ---- quota balance -------------------------------------------------------------------------------------------------
 # An account's paced headroom in one window: its free share divided by the share of the window still to run (never less
 # than an hour of it), so 50% free with 1 h of a week left (84) beats 60% free with 6 days left (0.7). The account's score
@@ -350,6 +418,17 @@ def cmd_accounts(a) -> int:
     """`shoal accounts`: each provider's accounts on this host (declared ones and the defaults beside them)."""
     import json
     rows = describe()
+    if not any(r["provider"] == "claude" for r in rows):  # the default Claude account has a sign-in to show and keep too
+        rows = [{"provider": "claude", "account": "", "name": "claude", "home": home("claude"),
+                 "exists": os.path.isdir(home("claude")), "badge": ""}] + rows
+    if getattr(a, "keepalive", False):
+        for r in rows:
+            if r["provider"] == "claude":
+                print(f"{r['name']}: {keepalive('claude', r['account'], float(getattr(a, 'min_hours', KEEPALIVE_MIN_H)))}")
+        return 0
+    for r in rows:
+        h = token_hours(r["provider"], r["account"])
+        r["token_hours"] = round(h, 2) if h is not None else None
     if getattr(a, "check", False):
         for r in rows:
             r["signin"] = signin(r["provider"], r["account"])
@@ -372,6 +451,8 @@ def cmd_accounts(a) -> int:
         return 0
     for r in rows:
         line = f"{r['provider']:<8} {r['name']:<14} {r['home'] or '-'}" + ("" if r["exists"] or not r["home"] else "  (missing)")
+        if r.get("token_hours") is not None:
+            line += f"  token {'expired ' + format(-r['token_hours'], '.1f') + ' h ago' if r['token_hours'] < 0 else format(r['token_hours'], '.1f') + ' h left'}"
         if "signin" in r:
             line += f"  {r['signin']}"
         if r.get("binding"):

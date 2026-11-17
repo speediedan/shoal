@@ -325,6 +325,9 @@ def fetch(key):
         return codex_read(acct)
     if provider == "claude":
         import accounts
+        if not credential(provider) or acct:  # an override token is the operator's to keep
+            if accounts.keepalive_on():  # about to lapse (or lapsed): the CLI refreshes it first (accounts.keepalive)
+                accounts.keepalive("claude", acct, accounts.KEEPALIVE_MIN_H)
         home = Path(accounts.home("claude", acct))
         # the override token is the default account's: another account reads only its own sign-in
         token = (credential(provider) if not acct else "") or \
