@@ -96,6 +96,28 @@ sections and durable-job-reference checks still apply. No lifecycle enforcement 
 Measure the model work separately on one or two roles before enabling routine distillation or automatic archival:
 record turn-token counters immediately before and after the pass, separating cached input and output where available.
 
+## Reading history: `log-entry` and `refs --resolve`
+
+The log is read rarely, and then an entry at a time. `shoal log-entry <log> C12` prints that session's entries (its
+checkpoints and addenda included) and nothing else, as `doc-head` prints only a start doc's header:
+
+```bash
+shoal log-entry <log> C12            # session C12's entries, in log order
+shoal log-entry <log> 12             # a bare number matches any prefix: C12, r12, Session 12
+shoal log-entry <log> --last 1       # the newest session's entries: the usual restart read
+shoal log-entry <log> C12 --snapshot # its end-of-session snapshot (After C12 ...); --any: every heading with the key
+shoal log-entry <log> --list         # the heading outline with line numbers, no bodies
+```
+
+An entry is a heading at levels 2 to 4 with its body, up to the next heading at the same or a higher level; a heading
+inside a fenced block is content. A heading's key is its first session token after at most two words (`Session C4
+checkpoint 2` has key `C4`, `After Session 12` has `12`). Session entries are the headings whose words before the key are
+`Session`; snapshots are those that start `After`. `--last N` counts keys, in the chosen mode, so `--snapshot --last 2`
+prints the two newest snapshots. No match exits 1 and names the nearest keys.
+
+A path an old entry names may have been archived since. `shoal refs --resolve <path> [--from <log>]` says where it is
+now, and how to read or restore it ([`refs.md`](refs.md#where-is-it-now---resolve)).
+
 ## Hooks run only for a trusted repository
 
 `[hooks]` names commands shoal would run, which makes the file code execution from repository content: any repository a

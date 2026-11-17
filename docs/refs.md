@@ -10,6 +10,7 @@ read-only and makes no model calls.
 shoal refs --roots [--all-hosts] [--json]             # every start doc that live specs and standalone sessions name
 shoal refs <dir> [--doc <path>] [--json] [--check]     # what names each tracked file in a role directory
 shoal refs --shoal <id> --slug <role> [--check]       # the same for a role: its doc's directory, its doc and brief as roots
+shoal refs --resolve <path> [--from <doc>] [--json]   # where a path an old document names is now
 ```
 
 ## Roots
@@ -82,3 +83,27 @@ tracked set (`git ls-files`), never against the disk alone, so a reference that 
 does not count.
 
 `--scope dir` looks for references inside the directory only, which is faster and misses what other directories name.
+
+## Where is it now (`--resolve`)
+
+A history document keeps the paths it was written with, and archival moves files away from them. `--resolve` answers
+for one such path, from the archive manifests ([`archive.md`](archive.md)) checked against the tree:
+
+| State | Meaning | Also printed |
+|---|---|---|
+| `live` | tracked at that path | nothing more |
+| `warm` | archived, and its archive path is tracked | the archive path and `shoal archive --restore <path>` |
+| `cold` | archived, then deleted from the tree | `git show <blob>`, or `git show <restore_from>:<archive path>` when the blob is gone, and the restore command |
+| `restored` | restored and tracked again | the restore event |
+| `gone` | deleted outside the archive protocol | `git show <commit>^:<path>`, from the commit that deleted it; the JSON carries `"protocol": "bypassed"` |
+
+With `--from <doc>`, the path is read as written in that document: relative to it, or repository-relative. Without it,
+relative to the current directory, then repository-relative. A path no manifest names is looked for as a legacy path (a
+`migrate` event's `from`) and as an archive path that has since gone cold, in every tracked manifest. Then as a path
+deleted outside the protocol. Last, a partial path of two or more components resolves when exactly one known path ends
+with it, as a reference does (an archive path counts as its original).
+
+It exits 0 when the path resolves, `gone` included: a deleting commit is an answer, and whether that deletion bypassed the
+protocol is for the repository's own checks to judge. It exits 1 when nothing resolves, or when a manifest event and the
+tree disagree (a `warm` event whose archive path is not tracked, say): it reports the disagreement rather than pointing at a
+file that is not there. Outside a repository, 2.

@@ -372,6 +372,132 @@ def plan_restore(path: str, by: str) -> Plan:
     return plan
 
 
+def _manifests(plan: Plan) -> list[str]:
+    """Every tracked manifest: files named as the layout's manifest template names them, under its archive root."""
+    name = posixpath.basename(plan.layout["manifest"])
+    top = plan.layout["archive"].split("{", 1)[0].rstrip("/")
+    return sorted(p for p in plan.repo.mode if posixpath.basename(p) == name and (not top or p.startswith(top + "/")))
+
+
+def _events(plan: Plan, rel: str) -> list[dict]:
+    return [e for e in plan.history(rel) if e.get("event") in ("archive", "migrate", "restore", "cold")]
+
+
+def _state(plan: Plan, rel: str, hist: list[dict]) -> dict:
+    """Where original path `rel` is now, from its manifest events (oldest first) checked against the tree."""
+    root, tracked = plan.repo.root, rel in plan.repo.mode
+    last = hist[-1] if hist else None
+    restore = f"shoal archive --restore {shlex.quote(rel)}"
+    if tracked:
+        return {"state": "restored" if last and last["event"] == "restore" else "live", "ok": True,
+                **({"event": last} if last else {})}
+    if last and last["event"] in ("archive", "migrate"):
+        a = last["archive_path"]
+        if a not in plan.repo.mode:
+            return {"state": "inconsistent", "ok": False, "event": last,
+                    "problem": f"its {last['event']} event says {a}, which is not tracked"}
+        return {"state": "warm", "ok": True, "archive_path": a, "event": last, "restore": restore}
+    if last and last["event"] == "cold":
+        a, blob, sha = last["archive_path"], last.get("blob", ""), last.get("restore_from", "")
+        if a in plan.repo.mode:
+            return {"state": "inconsistent", "ok": False, "event": last,
+                    "problem": f"its cold event says {a} left the tree, but it is tracked"}
+        if blob and not _git(root, "cat-file", "-e", blob, check=False).returncode:
+            recover = f"git show {blob}"
+        elif sha and _ls_tree(root, sha, a)[1]:
+            recover = f"git show {sha}:{shlex.quote(a)}"
+        else:
+            return {"state": "inconsistent", "ok": False, "event": last,
+                    "problem": f"neither its blob {blob[:12]!r} nor restore_from {sha[:12]!r} holds {a}"}
+        return {"state": "cold", "ok": True, "archive_path": a, "event": last, "recover": recover, "restore": restore}
+    # no event, or a restored file deleted since: removed outside the archive protocol, or never here
+    sha = _git(root, "log", "-1", "--format=%H", "--diff-filter=D", "--", f":(literal){rel}", check=False).stdout.strip()
+    if sha:
+        return {"state": "gone", "ok": True, "protocol": "bypassed", "deleted_in": sha,
+                "recover": f"git show {sha}^:{shlex.quote(rel)}", **({"event": last} if last else {})}
+    return {"state": "unknown", "ok": False, "problem": "not tracked, no manifest event and no commit deleting it"}
+
+
+def resolve(path: str, from_doc: str = "") -> dict:
+    """Where a path a document names is now: live, warm, cold, restored, or gone (deleted outside the archive protocol).
+
+    With `from_doc`, `path` is read as written in that document (relative to it, or repository-relative), as `shoal refs`
+    reads references; without, relative to the current directory, then repository-relative. A path no manifest names is
+    then looked for as a legacy `from` or an `archive_path` in every tracked manifest, then as a path deleted outside the
+    protocol, and last as a unique suffix of a tracked or archived path. The result's `ok` is false when nothing resolves or the manifest and the tree disagree."""
+    base = os.path.expanduser(from_doc) if from_doc else os.getcwd()
+    anchor = base if os.path.isdir(base) else os.path.dirname(os.path.abspath(base))
+    if os.path.isabs(os.path.expanduser(path)) and not from_doc:
+        anchor = os.path.expanduser(path)
+        while anchor and not os.path.isdir(anchor):
+            anchor = os.path.dirname(anchor)
+    try:
+        plan = Plan(anchor)
+    except RuntimeError as exc:
+        raise Refused(str(exc)) from None
+    r = plan.repo.rel(os.path.abspath(base) if from_doc else os.path.join(anchor, "x"))
+    here = posixpath.dirname(r) if r and not r.startswith("..") else ""
+    cands = refs.candidates(path, here, plan.repo)
+    order = sorted(cands, key=lambda c: c != posixpath.normpath(posixpath.join(here, path.split("#", 1)[0])))
+    out = {"query": path, "from": from_doc, "repo": plan.repo.root}
+    for c in order:
+        hist = _events(plan, c)
+        if c in plan.repo.mode or hist:
+            return {**out, "path": c, "via": "path", **_state(plan, c, hist)}
+    # a legacy path (a migrate event's `from`) or an archive path that went cold: find the event that names it
+    events = [e for m in _manifests(plan) for e in read_manifest(os.path.join(plan.repo.root, m))]
+    for c in order:
+        for field in ("from", "archive_path"):
+            hit = [e for e in events if e.get(field) == c and e.get("path")]
+            if hit:
+                p = hit[-1]["path"]
+                hist = _events(plan, p)
+                return {**out, "path": p, "via": field, **_state(plan, p, hist)}
+    # the path itself, deleted outside the protocol: before a partial-path match, which could name another file
+    for c in order:
+        st = _state(plan, c, [])
+        if st["state"] == "gone":
+            return {**out, "path": c, "via": "path", **st}
+    # a unique partial path, as `refs` reads one (two or more segments, not relative): of a tracked file, or of an
+    # original path an event names
+    tok = path.split("#", 1)[0].rstrip("/.,:;")
+    known = set(plan.repo.mode) | {e["path"] for e in events if e.get("path")}
+    original = {e["archive_path"]: e["path"] for e in events if e.get("archive_path") and e.get("path")}
+    hits = (sorted({original.get(p, p) for p in known if p.endswith("/" + tok)})  # an archive path is its original
+            if "/" in tok and not tok.startswith((".", "/", "~")) else [])
+    if len(hits) == 1:
+        p = hits[0]
+        hist = _events(plan, p)
+        return {**out, "path": p, "via": "suffix", **_state(plan, p, hist)}
+    return {**out, "path": order[0] if order else path, "via": "path", "state": "unknown", "ok": False,
+            "problem": (f"{len(hits)} paths end in {tok}: {', '.join(hits[:5])}" if len(hits) > 1 else
+                        "not tracked, named by no manifest event, and no commit deleting it")}
+
+
+def resolve_text(r: dict) -> list[str]:
+    head = f"{r['path']}: {r['state']}"
+    if r.get("via") not in (None, "path"):
+        head += f" (found by its {r['via'].replace('_', ' ')} {r['query']})"
+    lines = [head]
+    e = r.get("event") or {}
+    if r["state"] == "warm":
+        lines.append(f"  at {r['archive_path']} ({e['event']} {e.get('ts', '')}"
+                     + (f", reason: {e['reason']}" if e.get("reason") else "") + ")")
+    if r["state"] == "cold":
+        lines.append(f"  left the tree {e.get('ts', '')}; was at {r['archive_path']}")
+    if r["state"] == "restored":
+        lines.append(f"  restored {e.get('ts', '')}")
+    if r["state"] == "gone":
+        lines.append(f"  deleted outside the archive protocol in {r['deleted_in'][:12]}")
+    if r.get("recover"):
+        lines.append(f"  read it: {r['recover']}")
+    if r.get("restore"):
+        lines.append(f"  restore: {r['restore']}")
+    if r.get("problem"):
+        lines.append(f"  problem: {r['problem']}")
+    return lines
+
+
 def plan_cold(paths: list[str], force: bool, by: str) -> Plan:
     plan = Plan(paths[0])
     warm_days = plan.lc["values"]["cold"]["warm_days"]

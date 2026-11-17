@@ -2497,17 +2497,21 @@ OUT=$(env XDG_CONFIG_HOME="$S/xdg-prune" CLAUDE_CONFIG_DIR="$S/cc-prune" $H prun
 grep -q "== claude: 0 listed, 0 shoal-created" <<<"$OUT" && grep -q "\[dry-run\] total: prune 0" <<<"$OUT" \
   || fail "prune-incarnations dry-run table :: $OUT"
 
-echo "== 38 refs: start-doc roots (parked roles, standalone docs, never a retired spec), a role directory's classes, --check"
+echo "== 38 refs: start-doc roots (parked roles, standalone docs, never a retired spec), a role directory's classes, --check, --resolve"
 python3 "$TESTD/test_refs.py" || fail "refs (tests/test_refs.py)"
+python3 "$TESTD/test_resolve.py" || fail "refs --resolve (tests/test_resolve.py)"
 check "name a directory" $H refs
+check "goes with --resolve" $H refs "$S" --from x.md
 
-echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head"
+echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head, log-entry"
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
 python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.py)"
 python3 "$TESTD/test_retire_hooks.py" || fail "retirement hooks (tests/test_retire_hooks.py)"
 python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
 python3 "$TESTD/test_umbrella.py" || fail "umbrella rows (tests/test_umbrella.py)"
 check "name a start doc" $H doc-head
+python3 "$TESTD/test_log_entry.py" || fail "log-entry (tests/test_log_entry.py)"
+check "name a key" $H log-entry /dev/null
 
 echo "== 40 archive: reference-aware warm archive, restore and cold, one commit of exactly its paths, undone on a refused hook"
 python3 "$TESTD/test_archive.py" || fail "archive (tests/test_archive.py)"

@@ -86,6 +86,7 @@ import park as _park  # noqa: E402
 import grants as _grants  # noqa: E402
 import startdoc as _startdoc  # noqa: E402
 import refs as _refs  # noqa: E402
+import logentry as _logentry  # noqa: E402
 import lifecycle as _lifecycle  # noqa: E402
 import archive as _archive  # noqa: E402
 import resource_usage as _resource_usage  # noqa: E402
@@ -1393,6 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
     _grants.add_parsers(sub)
     _startdoc.add_parser(sub)
     _refs.add_parser(sub)
+    _logentry.add_parser(sub)
     _lifecycle.add_parser(sub)
     _archive.add_parser(sub)
     _resource_usage.add_parser(sub)

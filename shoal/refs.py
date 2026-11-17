@@ -5,6 +5,11 @@ calls.
     shoal refs --roots [--all-hosts] [--json]
     shoal refs [<dir>] [--doc PATH | --shoal ID --slug S [--spec P]] [--root PATH ...] [--scope repo|dir]
                [--min-age-days N] [--history GLOB ...] [--exclude GLOB ...] [--json] [--check]
+    shoal refs --resolve PATH [--from DOC] [--json]
+
+`--resolve` says where a path a document names is now (`live`, `warm`, `cold`, `restored`, or `gone` when it was deleted
+outside the archive protocol), from the manifests checked against the tree, with the command that reads or restores
+it. It exits 1 when nothing resolves or the manifest and the tree disagree (`archive.resolve`).
 
 `--roots` lists every start-doc path a live spec (not retired; any role, parked included, since an offer relaunches a
 parked role from its doc) or a saved standalone session names. Archiving one of them breaks the next launch or
@@ -481,6 +486,18 @@ def _first_commit_times(repo: Repo, d: str) -> dict[str, float]:
 # ---- the command -------------------------------------------------------------------------
 
 def cmd_refs(a) -> int:
+    if a.resolve:
+        import archive  # lazily: archive imports refs
+        try:
+            r = archive.resolve(a.resolve, a.from_doc)
+        except archive.Refused as exc:
+            print(json.dumps({"ok": False, "refused": str(exc)}) if a.json else f"refs --resolve: {exc}")
+            return 2
+        print(json.dumps(r, indent=1) if a.json else "\n".join(archive.resolve_text(r)))
+        return 0 if r["ok"] else 1
+    if a.from_doc:
+        print("refs: --from goes with --resolve")
+        return 2
     if a.roots:
         r = roots(a.all_hosts, a.refresh)
         if a.json:
@@ -573,6 +590,10 @@ def add_parser(sub) -> None:
     p.add_argument("--no-known-roots", action="store_true", help="do not treat --roots paths inside the directory as roots")
     p.add_argument("--json", action="store_true")
     p.add_argument("--check", action="store_true", help="exit 1 on dangling references, untracked or uncommitted deletions")
+    p.add_argument("--resolve", default="", metavar="PATH", help="where a path a document names is now: live, warm, cold, "
+                   "restored or gone, with the command that reads or restores it")
+    p.add_argument("--from", dest="from_doc", default="", metavar="DOC",
+                   help="with --resolve: read PATH as written in this document")
     p.set_defaults(func=cmd_refs)
 
 
