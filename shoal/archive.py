@@ -393,8 +393,9 @@ def _state(plan: Plan, rel: str, hist: list[dict]) -> dict:
                **({"event": last} if last else {})}
         if last and last["event"] != "restore":
             # recreated by hand after it was archived: say why the manifest still lists it
+            a = last.get("archive_path", "")
             out["note"] = (f"tracked again without a restore event; its last manifest event is {last['event']} "
-                           f"{last.get('ts', '')} (archive path {last.get('archive_path', '')})")
+                           f"{last.get('ts', '')}" + (f" (archive path {a})" if a else ""))
         return out
     if last and last["event"] in ("archive", "migrate"):
         a = last["archive_path"]

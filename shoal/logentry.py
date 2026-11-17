@@ -10,8 +10,8 @@ needs one entry, as a peer needs only a start doc's header (`shoal doc-head`).
 An entry is a heading at levels 2 to 4 and its body, up to the next heading at the same or a higher level. Headings
 inside fenced blocks are content (`startdoc.prose`). A heading's key is its first session token, after at most two
 words: `C12`, `r22`, or a bare `12` when a session word comes before it (`Session 12`, `After Session 12`), so section
-numbers (`Part 1`, `Phase 2`, `1. Where things are`) are never keys. A bare number matches any prefix (`12` matches `C12`, `r12` and `12`); a prefixed key matches
-only itself, in either case.
+numbers (`Part 1`, `Phase 2`, `1. Where things are`) are never keys. A bare number matches any prefix (`12` matches
+`C12`, `r12` and `12`); a prefixed key matches only itself, in either case.
 
 By default only session entries print: headings whose words before the key are `Session`, so `Session C4 checkpoint 2`
 and `Session C1 addendum` come with `C4` and `C1`. `--snapshot` prints the `After ...` snapshots instead, and `--any`

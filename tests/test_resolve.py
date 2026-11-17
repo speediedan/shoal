@@ -165,6 +165,7 @@ git("commit", "-q", "-m", "recreated outside the protocol")
 rc, r = resolve(f"{D}/cold.md")
 assert rc == 0 and r["state"] == "live" and "tracked again without a restore event" in r["note"] and "cold" in r["note"], r
 assert "note: tracked again" in shoal("refs", "--resolve", f"{D}/cold.md").stdout
+assert f"(archive path {A}/cold.md)" in r["note"], r["note"]
 rc, r = resolve(f"{D}/live.md")
 assert "note" not in r, "a file never archived carries no note"
 print("tracked again ok")
