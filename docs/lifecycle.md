@@ -108,8 +108,8 @@ shoal lifecycle deep-pass <start-doc> [--json]
 ```
 
 - **Due**: the last pass is the last `Deep pass <UTC>:` line in the start doc's companion log; the log is append-only,
-  so the last marker is the last pass. Restarts since are the `After ...` snapshot headings below it. With no marker,
-  the pass reads as due.
+  so the last marker is the last pass. A marker inside a fenced block, or one whose time does not parse, is skipped.
+  Restarts since are the `After ...` snapshot headings below it. With no marker, the pass reads as due.
 - **Keep reasons to review**: each file whose front matter has `keep:`, with the days since it last changed. Remove a
   reason that no longer holds, and the next checkpoint lists the file as a candidate again.
 - **Consolidation candidates**: the live auxiliary files (not a root, not history), oldest change first, with size.
@@ -121,8 +121,9 @@ shoal lifecycle deep-pass <start-doc> [--json]
   marker's numbers, so growth is visible.
 
 `lifecycle checkpoint` (and so `queue --restart-ready`) carries `deep_pass_due`, read from the companion log alone.
-When the pass is due, its first note names the command. Shoal records nothing itself: the marker in the log is the
-record.
+When the pass is due, its first note starts with the command, so the notes' 200-character cap never cuts it. A failure
+in that check is one more note; it never costs the checkpoint its counts. Shoal records nothing itself: the marker in
+the log is the record.
 
 ## Reading history: `log-entry` and `refs --resolve`
 

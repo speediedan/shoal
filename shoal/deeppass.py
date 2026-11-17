@@ -5,13 +5,14 @@ whether that work is due. Advisory and read-only; it moves nothing, runs no hook
     shoal lifecycle deep-pass <start-doc> [--json]
 
 The pass is due every `[deep_pass] every_days` days or `every_restarts` restarts, whichever comes first. The last pass
-is the last `Deep pass <UTC>:` line in the start doc's companion log (append-only, so the last marker is the last pass),
-and restarts since it are the log's `After ...` snapshot headings below that line. The report lists, for the role to
+is the last `Deep pass <UTC>:` line in the start doc's companion log (append-only, so the last marker is the last pass;
+one inside a fenced block, or with a time that does not parse, is skipped), and restarts since it are the log's
+`After ...` snapshot headings below that line. The report lists, for the role to
 act on:
 
 - **keep reasons** to review: each file whose front matter has `keep:`, with the days since it last changed;
-- **consolidation candidates**: live auxiliary files (not a root, not history), oldest change first, to fold into the
-  start doc, design doc or log when concluded;
+- **consolidation candidates**: live auxiliary files (not a root, not history), oldest change first (one not yet
+  committed last), to fold into the start doc, design doc or log when concluded;
 - **cold candidates**: archived entries of the directory's manifest warm for at least `[cold] warm_days` with no live
   reference now, each with its `shoal archive --cold` command (which checks again before it moves anything);
 - **the trend**: a marker line for the role to append to its log snapshot, and the previous marker's numbers.
@@ -43,15 +44,24 @@ def _ts(text: str) -> float:
 def due(log_text: str, every_days: float, every_restarts: int, now: float | None = None) -> dict:
     """When the last pass ran (its marker), days and restarts since, and whether the next one is due."""
     import logentry
+    import startdoc
     now = time.time() if now is None else now
     lines = log_text.splitlines()
-    marks = [(i, m) for i, m in ((i, MARKER.match(x)) for i, x in enumerate(lines)) if m]
+    # a marker in a fenced block (a log quoting the docs' example) is content, as a fenced heading is
+    prose = startdoc.prose(lines)
+    marks = [(i, m) for i, m in ((i, MARKER.match(x)) for i, x in enumerate(lines)) if m and prose[i]]
     out = {"every_days": every_days, "every_restarts": every_restarts, "last": None, "days_since": None,
            "restarts_since": None, "previous_trend": "", "due": True, "why": "no deep pass recorded in the log"}
-    if not marks:
+    when = None
+    for at, m in reversed(marks):  # the last marker that parses: a malformed one (25:61Z) is skipped, never raised
+        try:
+            when = _ts(m.group(1))
+            break
+        except ValueError:
+            continue
+    if when is None:
         return out
-    at, m = marks[-1]
-    days = round((now - _ts(m.group(1))) / 86400, 1)
+    days = round((now - when) / 86400, 1)
     restarts = sum(1 for e in logentry.entries(log_text) if e["kind"] == "snapshot" and e["line"] > at + 1)
     why = [f"{days} days since (every {every_days})"] if days >= every_days else []
     why += [f"{restarts} restarts since (every {every_restarts})"] if restarts >= every_restarts else []
@@ -101,6 +111,7 @@ def probe(path: str, now: float | None = None) -> dict:
                    for f in scan["files"] if f.get("keep")]
     aux = [f["path"] for f in scan["files"] if f["class"] == "live" and f["path"] != log
            and not refs._matches(f["path"], history)]
+    # oldest change first; a file with no commit yet (age None) sorts last, as the newest
     out["consolidate"] = sorted(({"path": p, "days_since_change": age.get(p), "bytes": size.get(p, 0)} for p in aux),
                                 key=lambda x: -(x["days_since_change"] or 0))
 

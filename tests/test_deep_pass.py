@@ -8,7 +8,9 @@
 - cold candidates are warm manifest entries at least `[cold] warm_days` old that no live document names, with the
   `shoal archive --cold` command; a younger entry and one a live document still names are left out;
 - the trend marker line counts what it reports, and the previous marker's numbers come back;
-- `lifecycle checkpoint` carries `deep_pass_due` and names the command first among its notes; nothing is written.
+- a marker inside a fenced block, or one whose time does not parse, is skipped;
+- `lifecycle checkpoint` carries `deep_pass_due`, and its first note starts with the whole command; a failure in the
+  deep-pass check is a note that costs the checkpoint none of its counts; nothing is written.
 
 Synthetic paths and ids only."""
 from __future__ import annotations
@@ -74,6 +76,14 @@ d = deeppass.due("### After C0\n\n" + LOG.format(ts=utc(NOW - DAY)) + snaps, 3, 
 assert d["due"] and d["restarts_since"] == 3 and "3 restarts since" in d["why"], "a snapshot above the marker is not counted"
 d = deeppass.due(LOG.format(ts=utc(NOW - 5 * DAY)) + LOG.format(ts=utc(NOW - DAY)), 3, 3, NOW)
 assert not d["due"] and d["days_since"] == 1.0, "the last marker is the last pass"
+bad = "Deep pass 2026-11-17T25:61Z: 1 live auxiliary\n"
+d = deeppass.due(LOG.format(ts=utc(NOW - DAY)) + bad, 3, 3, NOW)
+assert not d["due"] and d["days_since"] == 1.0, "a marker whose time does not parse is skipped, not raised"
+d = deeppass.due("# log\n\n" + bad, 3, 3, NOW)
+assert d["due"] and d["last"] is None, d
+fenced = "```\nDeep pass {ts}: 0 live auxiliary\n```\n".format(ts=utc(NOW - DAY))
+d = deeppass.due(LOG.format(ts=utc(NOW - 9 * DAY)) + fenced, 3, 3, NOW)
+assert d["due"] and d["days_since"] == 9.0, "a marker inside a fenced block is content"
 print("due ok")
 
 # a role directory: start doc linking two auxiliary files (one old, one new) and an archive path still in use
@@ -132,8 +142,23 @@ print("trend ok")
 
 r = shoal("lifecycle", "checkpoint", DOC, "--json")
 cp = json.loads(r.stdout)
-assert cp["deep_pass_due"] is True and cp["notes"][0].startswith("deep pass due (5.0 days since"), cp["notes"]
+assert cp["deep_pass_due"] is True and cp["notes"][0] == (
+    f"deep pass due: shoal lifecycle deep-pass {DOC} (5.0 days since (every 3))"), "the command comes first, whole"
 assert git("status", "--porcelain") + git("rev-parse", "HEAD") == before, "the deep pass and checkpoint write nothing"
+
+# a failure in the deep-pass check is a note; the checkpoint keeps its counts and samples
+os.environ.update(ENV)
+import checkpoint  # noqa: E402
+
+
+def broken(*a, **k):
+    raise RuntimeError("simulated deep-pass failure")
+
+
+deeppass.due = broken
+cp = checkpoint.probe(DOC)
+assert "deep_pass_due" not in cp and "candidates" in cp["counts"], cp
+assert any(n.startswith("deep-pass check unavailable: simulated") for n in cp["notes"]), cp["notes"]
 print("checkpoint ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
