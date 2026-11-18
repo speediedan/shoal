@@ -130,13 +130,13 @@ def parse_needs(text: str) -> dict:
 
 def demand(needs: str = "cpu", vendor_default: str = "any", cpu_heavy: bool = False, memory_gib: float = 0,
            env: str = "", repo: str = "", sha: str = "", pin: str = "", remote_block: str = "",
-           job_class: str = "ci") -> dict:
+           job_class: str = "ci", cpu_light: bool = False) -> dict:
     """One job's demand. `remote_block` is a reason no host but home can run it (no pushed SHA, a dirty
     tree, nothing to stage). A `ci` job never uses resources a research reservation holds."""
     d = parse_needs(needs)
     if d["gpus"] and not d["vendor"]:
         d["vendor"] = vendor_default or "any"
-    d.update(cpu_heavy=bool(cpu_heavy), memory_gib=float(memory_gib or 0), env=str(env or ""),
+    d.update(cpu_heavy=bool(cpu_heavy), cpu_light=bool(cpu_light), memory_gib=float(memory_gib or 0), env=str(env or ""),
              repo=str(repo or ""), sha=str(sha or ""), pin=str(pin or ""), remote_block=str(remote_block or ""),
              job_class=str(job_class or "ci"))
     return d
@@ -145,10 +145,15 @@ def demand(needs: str = "cpu", vendor_default: str = "any", cpu_heavy: bool = Fa
 def lease_args(dem: dict) -> tuple[list[str], str]:
     """The lease-helper arguments for a demand, and its scope label. CPU-only work takes only
     `--lease cpu-heavy`, and only when cpu-heavy was asked for: a bare `--cpu-heavy` would also take the
-    whole-host `gpu` key. A GPU request takes `--gpus 1 [--min-vram G]` (any count above one is the
-    whole host, `--gpus all`), plus `--cpu-heavy` when asked."""
+    whole-host `gpu` key. A local CPU suite asks for `cpu-light` instead (`--lease cpu-light`): one at a time
+    per host, and it yields to every cpu-heavy holder and waiter, so CI never waits behind it (measured
+    2026-11-17: a 108 min local suite under cpu-heavy failed a GPU gate's lease wait while both GPUs idled).
+    A GPU request takes `--gpus 1 [--min-vram G]` (any count above one is the whole host, `--gpus all`), plus
+    `--cpu-heavy` when asked."""
     g, cpu = int(dem.get("gpus") or 0), bool(dem.get("cpu_heavy"))
     if not g:
+        if dem.get("cpu_light"):
+            return ["--lease", "cpu-light"], "cpu-light"
         return (["--lease", "cpu-heavy"], "cpu-heavy") if cpu else ([], "none")
     args = ["--gpus", "1" if g == 1 else ALL]
     scope = "gpu:1" if g == 1 else "gpu:all"

@@ -16,7 +16,9 @@ serializes access to shared resources by key.
 
 **Rules for a role:**
 - Wrap work that needs a shared resource in the provider (usually inside a job unit).
-- **Take only the scope you need.** CPU-only work takes `--lease cpu-heavy`, never a bare
+- **Take only the scope you need.** A local CPU test suite takes `--lease cpu-light` (`job run --place
+  ... --needs cpu --cpu-light`): it yields to CI, so a pipeline's GPU phase never waits behind it. Take
+  `--lease cpu-heavy` only for CPU work that must hold the host (a benchmark), never a bare
   `--cpu-heavy`: the bare flag also reserves every GPU, and the GPU queue waits behind your CPU suite.
   GPU work asks for `--gpus 1 --min-vram <GiB>` unless it really needs the whole host. A long job with a
   CPU phase and a short GPU phase is two jobs. `job run --place` picks the scope from `--needs` for you.
