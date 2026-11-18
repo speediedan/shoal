@@ -208,5 +208,22 @@ rc, r = refs(os.path.join(REPO, L2), "--json", "--min-age-days", "7", "--age-flo
 assert "proj/design/lane2/recent.md" not in r["candidates"], r["candidates"]
 print("symlinked roots, per-file owners, age floor ok")
 
+# a live reference to a subdirectory keeps every file under it live: a data table's bare data_dir field, or a path in
+# prose ending in a slash; an unnamed subdirectory's files stay candidates
+L3 = "proj/design/lane3"
+write(f"{L3}/l3_start.md", "# lane3\n\nRuns: `heat/` and the table runs.csv.\n")
+write(f"{L3}/runs.csv", "run,data_dir\nr1, run_a\n")
+write(f"{L3}/run_a/raw.txt", "raw a\n")
+write(f"{L3}/heat/h.txt", "heat\n")
+write(f"{L3}/stray/s.txt", "nobody names this\n")
+sh("git", "add", "-A", L3)
+sh("git", "commit", "-q", "-m", "a lane with run directories", env=dict(ENV, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD))
+rc, r = refs(os.path.join(REPO, L3), "--json", "--doc", os.path.join(REPO, L3, "l3_start.md"))
+cls3 = {f["path"].split(L3 + "/")[1]: f["class"] for f in r["files"]}
+assert cls3["run_a/raw.txt"] == "live" and cls3["heat/h.txt"] == "live" and cls3["stray/s.txt"] == "unreferenced", cls3
+via = [e.get("dir") for f in r["files"] if f["path"].endswith("run_a/raw.txt") for e in f["referrers"]]
+assert f"{L3}/run_a" in via, via
+print("directory references reach their files ok")
+
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_refs OK")

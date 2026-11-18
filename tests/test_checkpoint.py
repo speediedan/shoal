@@ -77,6 +77,25 @@ with tempfile.TemporaryDirectory(prefix="shoal-checkpoint-") as tmp:
         checkpoint.report(r)
     assert "auto (lane): shoal archive /" in stream.getvalue(), stream.getvalue()
     assert before[1] == git("rev-parse", "HEAD"), "auto advice moves nothing itself"
+    # a shared directory is never one role's auto scope: another role's start doc beside this one keeps it proposing
+    shared = dict(known, roots=dict(known["roots"], **{str(lane / "other_start.md"): [
+        {"kind": "role", "slug": "other", "shoal": "g9"}]}))
+    with mock.patch.object(refs, "roots", return_value=shared):
+        r = checkpoint.probe(str(doc))
+    assert r["effective_mode"] == "propose" and "commands" not in r, r
+    why = [x for x in r["notes"][:2] if x.startswith("auto not applied")]  # first after the deep-pass command, if any
+    assert why and "role other of g9" in why[0], r["notes"]
+    # a start doc named through a symlink is scoped where its target lives, whatever the link's directory holds
+    hub = root / "hub"
+    hub.mkdir()
+    (hub / "lane_link.md").symlink_to(doc)
+    linked = dict(known, roots={str(hub / "lane_link.md"): [{"kind": "standalone", "label": "lane", "host": "host-a"}],
+                                str(hub / "x_start.md"): [{"kind": "role", "slug": "x", "shoal": "g9"}]})
+    with mock.patch.object(refs, "roots", return_value=linked):
+        r = checkpoint.probe(str(hub / "lane_link.md"))
+    assert r["effective_mode"] == "auto" and r["roles"] == ["lane"], r
+    assert r["commands"] and r["commands"][0].split()[2].endswith("/lane/result.md"), r["commands"]
+    assert checkpoint.shared_with(linked["roots"], str(hub), {"lane"}) == ["role x of g9"], "the hub itself is shared"
     config.write_text('[checkpoint]\narchive = "off"\n')
     with mock.patch.object(refs, "scan", side_effect=AssertionError("off must not scan")):
         assert checkpoint.probe(str(doc))["skipped"]
