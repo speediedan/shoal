@@ -2519,6 +2519,7 @@ python3 "$TESTD/test_retire_hooks.py" || fail "retirement hooks (tests/test_reti
 python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
 python3 "$TESTD/test_umbrella.py" || fail "umbrella rows (tests/test_umbrella.py)"
 python3 "$TESTD/test_release_fill.py" || fail "release work first, lane work off the board (tests/test_release_fill.py)"
+python3 "$TESTD/test_handoff_respawn.py" || fail "a handoff that a background task would undo (tests/test_handoff_respawn.py)"
 check "name a start doc" $H doc-head
 python3 "$TESTD/test_log_entry.py" || fail "log-entry (tests/test_log_entry.py)"
 check "name a key" $H log-entry /dev/null
