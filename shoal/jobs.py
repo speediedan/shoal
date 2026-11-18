@@ -630,7 +630,11 @@ def add_parsers(sub) -> None:
     g.add_argument("--needs", default="cpu", metavar="cpu|gpu[:N][:vendor][:vramGiB]",
                    help="cpu (default) or gpu: count, vendor any|nvidia|amd (default: the home host's), min VRAM")
     g.add_argument("--cpu-heavy", action="store_true",
-                   help="also take the cpu-heavy lease (CPU-only work takes only `--lease cpu-heavy`)")
+                   help="also take the cpu-heavy lease, exclusive and ahead of CI (CPU work that must hold the host, a "
+                        "benchmark; CPU-only work takes only `--lease cpu-heavy`)")
+    g.add_argument("--cpu-light", action="store_true",
+                   help="CPU-only local suite: take `--lease cpu-light`, one per host, which yields to every cpu-heavy "
+                        "holder and waiter so CI never waits behind it (the default choice for a local test suite)")
     g.add_argument("--memory-gib", type=float, default=0, help="host memory the job needs available")
     g.add_argument("--ci-env", default="", metavar="NAME", help="a named CI environment ([ci_envs.NAME] on the host)")
     g.add_argument("--repo", default="", metavar="PATH", help="the local checkout whose pushed SHA is staged elsewhere")

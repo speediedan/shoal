@@ -71,6 +71,8 @@ class Demand(unittest.TestCase):
         # CPU-only work never takes the gpu key: --lease cpu-heavy only, and only when asked
         self.assertEqual(pool.lease_args(pool.demand("cpu")), ([], "none"))
         self.assertEqual(pool.lease_args(pool.demand("cpu", cpu_heavy=True)), (["--lease", "cpu-heavy"], "cpu-heavy"))
+        # a local CPU suite takes the light lease, which yields to CI
+        self.assertEqual(pool.lease_args(pool.demand("cpu", cpu_light=True)), (["--lease", "cpu-light"], "cpu-light"))
         self.assertEqual(pool.lease_args(pool.demand("gpu:1:nvidia:16"))[0], ["--gpus", "1", "--min-vram", "16"])
         self.assertEqual(pool.lease_args(pool.demand("gpu:2", cpu_heavy=True)),
                          (["--gpus", "all", "--cpu-heavy"], "gpu:all+cpu-heavy"))

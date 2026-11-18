@@ -341,6 +341,11 @@ check "scope=cpu-heavy" $PJ --name c1 --place farhost --needs cpu --cpu-heavy --
 grep -q -- "--lease cpu-heavy --" "$S/last_check.out" && ! grep -q -- "--cpu-heavy" "$S/last_check.out" \
   && grep -q "export CUDA_VISIBLE_DEVICES=" "$S/last_check.out" && grep -q "export HIP_VISIBLE_DEVICES=" "$S/last_check.out" \
   || fail "CPU-only lease scope or device selectors wrong :: $(cat "$S/last_check.out")"
+# a local CPU suite takes the light lease, which yields to CI; never with cpu-heavy or a GPU
+check "scope=cpu-light" $PJ --name c1l --place farhost --needs cpu --cpu-light --repo "$PL/poolrepo" --dry-run -- true
+grep -q -- "--lease cpu-light --" "$S/last_check.out" || fail "cpu-light lease scope wrong :: $(cat "$S/last_check.out")"
+check "ERROR: --cpu-light is for CPU-only work" $PJ --name c1x --place farhost --needs gpu:1 --cpu-light \
+  --repo "$PL/poolrepo" --dry-run -- true
 check "scope=none" $PJ --name c2 --place homehost --needs cpu --repo "$PL/poolrepo" --dry-run -- true
 grep -q "stage on homehost" "$S/last_check.out" && fail "home staged without --ref :: $(cat "$S/last_check.out")"
 grep -q "WorkingDirectory=$PL/poolrepo " "$S/last_check.out" || fail "home without --ref runs in the checkout"

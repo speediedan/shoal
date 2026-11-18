@@ -425,8 +425,9 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   `--ref`, so it tests the same commit wherever it lands; without `--ref` it runs in the `--cwd` or
   `--repo` checkout as it is. A successful run's staged worktree is removed at the verdict; a failed
   one's is kept for inspection. The command runs as an ordinary job unit (`--on` for another host) inside
-  `<lease helper> <scope> --`: `--lease cpu-heavy` for CPU work that asked for it (a bare `--cpu-heavy`
-  would also take every GPU), `--gpus 1 [--min-vram G]` or `--gpus all` for GPU work, with
+  `<lease helper> <scope> --`: `--lease cpu-light` for a local CPU suite (`--cpu-light`: one per host, it
+  yields to every cpu-heavy holder and waiter, so CI never waits behind it), `--lease cpu-heavy` for CPU
+  work that asked for it (a bare `--cpu-heavy` would also take every GPU), `--gpus 1 [--min-vram G]` or `--gpus all` for GPU work, with
   `GPU_LEASE_PROJECT=<unit>` so the job's waiter and hold are recognizable. Inside the lease, before
   the command, the job takes its start claim (a directory: a move that took it first cancels this
   start), writes a grant-time marker, exports `SHOAL_JOB_OUT` (a per-job output dir), the CI
