@@ -47,7 +47,7 @@ import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CY
 import { buildScene, fitScene, fitText, headerText, GLOBE } from "./scene.js";
 import { hitNode, hitEdge, hitDisc, hitHole, hitTitle, hitGlobe, panBy, zoomAt, wheelFactor, placeCard, clamp, withAlpha } from "./geom.js";
 import { replayModel, replayStep, replayAdvance, replayOfDoc, binStart, binOf, clock, REPLAY_BINS, REPLAY_TICK_MS, REPLAY_SPEEDS, REPLAY_DAY_S } from "./replay.js";
-import { camera, projectLayout, nextDepth, depthFor, orbitBy, planePointAt, heightPx, YAW_STEP, ORBIT_STEP, DEFAULT_DEPTH, DEPTH_CYCLE } from "./depth.js";
+import { camera, projectLayout, nextDepth, depthFor, orbitBy, planePointAt, heightPx, YAW_STEP, ORBIT_STEP, DEFAULT_DEPTH, DEPTH_CYCLE, GLOBAL_FRAME } from "./depth.js";
 
 const MOD = "lattice-view";
 const RAIL_W = 272;
@@ -487,7 +487,7 @@ export default class Lattice extends View {
     this.depthNow = depthFor(this.depth, this.tier?.tier, this.renderer);
     // the orbit kept to what this view allows (the bowl's range is not the global view's)
     if (this.depthNow !== "flat") this.orbit = orbitBy(this.depthNow, this.orbit, 0, 0, !this.vm?.global);
-    return projectLayout(this.vm, lay, camera(this.depthNow, this.yawTurn, this.orbit), { youOffset: this.youOffset() });
+    return projectLayout(this.vm, lay, camera(this.depthNow, this.yawTurn, this.orbit, !!this.vm?.global), { youOffset: this.youOffset() });
   }
 
   setDepth(name, cx) {
@@ -497,6 +497,15 @@ export default class Lattice extends View {
     if (lay) this.lay = this.seen(lay.result());
     this.autoFit = true;
     this.fit();
+  }
+
+  /** A turn of the camera by a key (the arrows' orbit, `,` and `.`): the view seen anew at the zoom and pan it has. A
+   * refit here (setDepth's) rescaled to the turned scene's extent, so every press zoomed (2026-11-18, the maintainer);
+   * the turn also leaves auto-fit off, as a pan or a zoom does, so a settling layout does not refit it either. */
+  turned(cx) {
+    const lay = this.layouts.get(this.view);
+    if (lay) this.lay = this.seen(lay.result());
+    this.autoFit = false;
   }
 
   /** `f`: a fresh full layout of this view, fitted to the canvas. */
@@ -539,7 +548,10 @@ export default class Lattice extends View {
   fit(quick = false) {
     if (!this.lay || !this.vm) return;
     this.needFit = false;
-    this.tf = fitScene(this.vm, this.lay, this.canvasSize(), { pad: 24, top: 48, kMax: 1.6, iterations: quick ? 2 : 5 });
+    const size = this.canvasSize();
+    this.tf = fitScene(this.vm, this.lay, size, { pad: 24, top: 48, kMax: 1.6, iterations: quick ? 2 : 5 });
+    const fr = this.vm.global && GLOBAL_FRAME[this.depthNow];
+    if (fr) this.tf = panBy(zoomAt(this.tf, { x: size.width / 2, y: size.height / 2 }, fr.zoom), fr.dx * size.width, fr.dy * size.height);
   }
 
   spawnPackets(fresh, cx, force = false) {
@@ -613,7 +625,7 @@ export default class Lattice extends View {
     else if (k === "i") { this.items = !this.items; this.needFit = this.autoFit; this.rebuild(cx); }
     else if (k === "r") this.startReplay(cx);
     else if (k === "d") this.setDepth(nextDepth(this.depth), cx);
-    else if ((k === "," || k === ".") && this.depth !== "flat") { this.yawTurn += k === "," ? -YAW_STEP : YAW_STEP; this.setDepth(this.depth, cx); }
+    else if ((k === "," || k === ".") && this.depth !== "flat") { this.yawTurn += k === "," ? -YAW_STEP : YAW_STEP; this.turned(cx); }
     else if (k === "space" && this.replay?.rm) this.playReplay(cx, !this.replay.playing);
     else if ((k === "[" || k === "]") && this.replay) this.stepReplaySpeed(k === "]" ? 1 : -1);
     else if (k === "=" || k === "+" || k === "shift-=") { this.tf = zoomAt(this.tf, center, 1.2); this.autoFit = false; }
@@ -622,7 +634,7 @@ export default class Lattice extends View {
       // depth mode: an arrow orbits the camera (up raises it, to look down from higher; right takes it round to the right)
       const dx = k === "left" ? -ORBIT_STEP : k === "right" ? ORBIT_STEP : 0, dy = k === "up" ? ORBIT_STEP : k === "down" ? -ORBIT_STEP : 0;
       this.orbit = orbitBy(this.depth, this.orbit, dx, dy, !this.vm?.global);
-      this.setDepth(this.depth, cx);
+      this.turned(cx);
     } else if (ARROWS.some((a) => k === a || k === `shift-${a}`)) {
       // an arrow pans in flat, and shift with an arrow in depth mode
       const a = k.replace("shift-", ""), d = 48;

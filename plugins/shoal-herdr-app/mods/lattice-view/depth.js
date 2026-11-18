@@ -164,16 +164,28 @@ export const BOWL_HOME_TURN = -70 * DEG;
 export const BOWL_ALPHA_RANGE = [-30 * DEG, 64 * DEG];
 export const BOWL_BETA_RANGE = [-78 * DEG, 78 * DEG];
 export const BOWL_OFF_AXIS_MAX = 78 * DEG;
+// The global view opens turned round from its preset: {x, y} added to the arrows' orbit there (yaw and pitch), so an
+// orbit of zero is this view and the arrows turn on from it. Iso opens 95 degrees round and 10 degrees higher, the view
+// the maintainer orbited to and asked for as the opening one (2026-11-18): IT-MVP's globe nearer, on the left, the other
+// shoal's on the right, seen from above. The bowl (per shoal) keeps its own opening view (BOWL_HOME_*).
+export const GLOBAL_HOME = { iso: { x: 95 * DEG, y: 10 * DEG } };
+const homeOf = (name, global) => (global && GLOBAL_HOME[name]) || { x: 0, y: 0 };
+// and framed as in that view: a fit (every node, label and ring inside the canvas) zoomed out about the canvas's middle
+// by `zoom`, then moved by (dx, dy) canvas widths and heights, up and to the left, so the floor and the globes' shadows
+// show below them. `f`, `d` and a drill back to the global view frame it so; the arrows and `,` `.` keep the zoom.
+export const GLOBAL_FRAME = { iso: { zoom: 0.75, dx: -0.056, dy: -0.138 } };
 const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /**
  * The camera for a preset, a yaw turned on top of it (`,` and `.`) and an orbit (the arrows: {x, y} in radians), or
- * null for flat. `spin` is the yaw less the orbit's x: what the bowl turns its hosts round its own axis by.
+ * null for flat. `spin` is the yaw less the orbit's x: what the bowl turns its hosts round its own axis by. In the
+ * global view (`global`) the orbit is taken from GLOBAL_HOME, the view's opening turn.
  */
-export function camera(name, yawTurn = 0, orbit = null) {
+export function camera(name, yawTurn = 0, orbit = null, global = false) {
   const c = CAMERAS[name];
   if (!c) return null;
-  const ox = Number.isFinite(orbit?.x) ? orbit.x : 0, oy = Number.isFinite(orbit?.y) ? orbit.y : 0;
+  const h = homeOf(name, global);
+  const ox = (Number.isFinite(orbit?.x) ? orbit.x : 0) + h.x, oy = (Number.isFinite(orbit?.y) ? orbit.y : 0) + h.y;
   const spin = c.yaw + yawTurn, yaw = spin + ox, pitch = clampTo(c.pitch + oy, ...PITCH_RANGE);
   return { name, pitch, yaw, spin, orbit: { x: ox, y: oy }, c: Math.cos(pitch), s: Math.sin(pitch), cyaw: Math.cos(yaw), syaw: Math.sin(yaw), d: 0, o: { x: 0, y: 0 } };
 }
@@ -214,7 +226,9 @@ export function orbitBy(name, orbit, dx = 0, dy = 0, bowl = false) {
     return at(lo);
   }
   const x = Math.atan2(Math.sin((Number.isFinite(orbit?.x) ? orbit.x : 0) + dx), Math.cos((Number.isFinite(orbit?.x) ? orbit.x : 0) + dx));
-  const y = clampTo(c.pitch + (Number.isFinite(orbit?.y) ? orbit.y : 0) + dy, ...PITCH_RANGE) - c.pitch;
+  // the pitch range holds for the camera, so the global view's opening lift counts toward it
+  const lift = homeOf(name, true).y;
+  const y = clampTo(c.pitch + lift + (Number.isFinite(orbit?.y) ? orbit.y : 0) + dy, ...PITCH_RANGE) - c.pitch - lift;
   return { x, y };
 }
 
