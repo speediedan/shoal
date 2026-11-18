@@ -2345,6 +2345,32 @@ assert health.LADDERS["asks-on-return"] == [(0, "wake")]
 print("asks-on-return ok")
 PY2
 
+echo "== 36a3 an open ask with no question on screen is raised again while the maintainer is online (asks-unraised)"
+python3 - "$SHOALD" <<'PY2' || fail "asks-unraised"
+import sys, time, types
+sys.path.insert(0, sys.argv[1])
+import health, maintenance
+now = time.time()
+online = lambda: None
+view = types.SimpleNamespace(user_offline=online, last_by={"r": maintenance.utc(now - 1800)})
+q = {"asks": ["PR 230 is ready: may I squash-merge it once its GPU gate passes?"]}
+c = health.unraised_condition(view, "r", q, "waiting", True)
+assert c and c["condition"] == "asks-unraised" and c["key"].startswith("asks:") and "ASKS TO RAISE" in c["detail"], c
+assert "user-auth wait over it" in c["detail"] and "record a user-auth wait, then" not in c["detail"], \
+    "a role re-raising behind a CI wait keeps that wait"
+assert health.unraised_condition(view, "r", {"asks": ["another"]}, "waiting", True)["key"] != c["key"], "a new ask re-raises"
+assert health.unraised_condition(view, "r", q, "waiting", False) is None, "a question already open (not between turns)"
+assert health.unraised_condition(view, "r", q, "waiting", None) is None, "unknown turn state: not judged"
+assert health.unraised_condition(view, "r", q, "active", True) is None, "a role at work raises at its own boundary"
+assert health.unraised_condition(view, "r", {"asks": []}, "idle", True) is None, "no asks"
+recent = types.SimpleNamespace(user_offline=online, last_by={"r": maintenance.utc(now - 60)})
+assert health.unraised_condition(recent, "r", q, "waiting", True) is None, "just wrote: still at its boundary"
+away = types.SimpleNamespace(user_offline=lambda: {"state": "on"}, last_by=view.last_by)
+assert health.unraised_condition(away, "r", q, "waiting", True) is None, "offline: the asks stay recorded"
+assert health.LADDERS["asks-unraised"] == [(0, "wake"), (120, "wake")]
+print("asks-unraised ok")
+PY2
+
 echo "== 36b remove a role or a saved session for good: the order that lets the prune see its incarnations, and the refusals"
 cat > "$S/remove_tool.py" <<'PY_REMOVE'
 import os, sys, types

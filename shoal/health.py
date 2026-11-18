@@ -85,6 +85,8 @@ LADDERS = {
     # the maintainer's return (user-offline off): a role holding asks raises them. `offline off` wakes only the roles of
     # the host it ran on, so each host's quorum wakes its own, once per return, after RETURN_GRACE_MIN
     "asks-on-return": [(0, "wake")],
+    # open asks with no question on screen while the maintainer is online (`unraised_condition`): raised again, twice
+    "asks-unraised": [(0, "wake"), (120, "wake")],
     # [accounts] quota_handoff: a role at a quiet boundary whose account nears a 5 h or weekly limit, or carries more
     # than its share, is handed to the account balancing picks (accounts.quota_pick); held through its cooldown
     "quota-handoff": [(0, "restart")],
@@ -114,6 +116,7 @@ WAKE_GAP_MIN = 30
 REARM_RETRY_MIN = 15
 RETURN_GRACE_MIN = 3     # `offline off`'s own wake goes first on its host
 RETURN_WINDOW_MIN = 720  # a return older than this is not news to a role that has not written since
+ASKS_RAISE_MIN = 10      # an open ask with no question on screen this long after the role's last write is re-raised
 HOST_BEAT_MIN = 15
 HOST_SILENT_MIN = 60
 CI_WAITS = ("remote-ci", "local-ci")
@@ -695,6 +698,34 @@ def return_condition(view, slug: str, q: dict) -> dict | None:
             "detail": f"USER-ONLINE since {back}: " + RETURN_PROTOCOL}
 
 
+def unraised_condition(view, slug: str, q: dict, role_status: str, between: bool | None) -> dict | None:
+    """`asks-unraised`: a role holding open asks, at a quiet boundary with no question open, while the maintainer is
+    online. A role that records an ask (`queue --ask`) and then sleeps on a CI wait leaves the ask showing as needs-you
+    with nothing to answer when the maintainer attaches (measured 2026-11-18: fts-core's merge ask for PR 230 behind a
+    remote-ci wait), and only the maintainer's next return raised it. Keyed on the session and the asks, so a new ask
+    re-raises and an ask raised and left unanswered is not raised over and over."""
+    asks = q.get("asks") or []
+    if not asks or role_status not in ("idle", "waiting") or between is not True or view.user_offline() is not None:
+        return None
+    last = view.last_by.get(slug, "") or q.get("ts") or ""
+    age = age_min(last)
+    if age is None or age < ASKS_RAISE_MIN:
+        return None
+    import hashlib
+    from worker import RETURN_PROTOCOL
+    fp = hashlib.sha256("\n".join(asks).encode()).hexdigest()[:10]
+    return {"slug": slug, "condition": "asks-unraised", "key": f"asks:{fp}", "since": last,
+            "detail": f"ASKS TO RAISE: {len(asks)} open ask(s) and no question open for them while the maintainer is "
+                      f"online. Keep the wait you recorded (its watcher stays armed; the question on screen is the "
+                      f"ask, so record no user-auth wait over it): " + keep_wait_protocol(RETURN_PROTOCOL)
+                      + " Then go back to your wait."}
+
+
+def keep_wait_protocol(protocol: str) -> str:
+    """The return protocol without its user-auth wait step: a role re-raising asks behind a CI wait keeps that wait."""
+    return protocol.replace("record a user-auth wait, then raise", "then raise")
+
+
 def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     """[{slug, condition, key, since, detail}] for every live condition instance."""
     from state import read_wait, wait_discipline
@@ -841,6 +872,10 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         rc = return_condition(view, slug, q)
         if rc is not None:
             out.append(rc)
+        else:
+            ur = unraised_condition(view, slug, q, role_status, between)
+            if ur is not None:
+                out.append(ur)
         # bounded context: past its limit at a quiet boundary. In `page` mode the role marks that boundary itself
         # (restart-ready); in `auto` any quiet boundary counts, with no advise-then-refresh round trip (maintainer,
         # 2026-11-11): a role keeps its start doc current at every boundary, so it is handed over on the doc as it stands,
