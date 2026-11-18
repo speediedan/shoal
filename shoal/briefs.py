@@ -349,7 +349,9 @@ def h4_disciplines(role: Role, spec: ShoalSpec) -> str:
         run = (f"JOBS: any local work that would hurt to lose (test suites, GPU renders, A/B runs, anything "
                f"over a few minutes) runs as a job unit, never as a harness background command: `{SHOAL_CLI} job run "
                f"--shoal {sid} --slug {role.slug} --name <short> [--memory-high 24G] -- <cmd>` (wrap GPU work in "
-               f"gpu_lease.sh inside <cmd>), ")
+               f"gpu_lease.sh inside <cmd>; a CPU-only suite takes `--cpu-light --place auto --repo <your checkout>` "
+               f"after pushing its commit, so the pool runs it on the host that finishes it first instead of queueing "
+               f"behind this host's leases), ")
         if headless:
             # an in-turn `job wait` dies with the exec process (measured 2026-11-18: a Codex role's three waiters each
             # ended `Failed (exit -1)`); the watcher shoal runs already wakes it on the job's verdict

@@ -776,8 +776,15 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         if role_status == "waiting" and sub not in USER_WAITS:
             pending, why = target_pending(target, slug, spec.sid, upstream=(sub == "upstream"))
             if pending is False:
+                detail = f"wait target {target} no longer pending ({why})"
+                if target.startswith("job:"):
+                    import jobs as _jobs
+                    sib = _jobs.running_siblings(spec.sid, slug, target[4:])
+                    if sib:
+                        detail += (f"; still running: {', '.join('job:' + x for x in sib)}. Act on the finished one, then "
+                                   f"re-point your wait at one still running (`queue --wait local-ci --target job:{sib[0]}`)")
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
-                            "detail": f"wait target {target} no longer pending ({why})", "first_seen": True})
+                            "detail": detail, "first_seen": True})
             # `upstream` waits resolve through their target (wait-resolved), not a periodic re-verify.
             # The ladder is keyed by the target, so re-declaring the same wait keeps escalating: keyed
             # by the boundary, every rewrite restarted it at step 1 and it never paged (measured

@@ -47,6 +47,27 @@ PASS_ENV = ("PATH", "HOME", "USER", "LANG", "VIRTUAL_ENV", "PYTHONPATH", "HF_HOM
             "GH_TOKEN_FILE")
 
 
+def running_siblings(sid: str, slug: str, name: str = "") -> list[str]:
+    """The names of `slug`'s other jobs whose units are still active on this host (a placed job on another host is not
+    read here: that would be an ssh per health run). A wait on a job that ended while its siblings run is a wait to
+    re-point, not a job to act on (2026-11-18: a role's `job:` wait resolved with two sibling jobs queued for a lease,
+    and it slept on, its target done)."""
+    sdir = paths(sid, "x")["sdir"]
+    out = []
+    try:
+        for f in sorted(os.listdir(sdir)):
+            if not f.endswith(".json"):
+                continue
+            m = json.load(open(os.path.join(sdir, f)))
+            if m.get("slug") != slug or m.get("name") == name or m.get("host"):
+                continue
+            if unit_state(m.get("unit", "")).get("ActiveState") in ("active", "activating"):
+                out.append(str(m.get("name")))
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

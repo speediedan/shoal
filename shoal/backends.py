@@ -435,11 +435,14 @@ WAITERS_STOPPED_NOTE = ("Your in-session job or CI waiters were stopped to deliv
                         "CI wait you recorded, so re-arm a waiter only if no recorded wait covers it. Act on this wake: ")
 # a background command that only waits on the role's own job or on CI: stopping it loses nothing, since the job unit runs on
 # and the role's recorded wait (and its detached watcher) covers it. Anything else in flight is real work and holds the wake.
-WAITER_SHELL = ("for ", "done", "fi", "if ", "while ", "until ", "echo ", "sleep ", "cat ", "tail ", "printf ", "true")
+# what a waiter's pipeline runs beside it: output filters, never work of their own (2026-11-18: a role's
+# `job wait .. | sed .. | grep .. | tail` held its wake for hours with sed and grep counted as work)
+WAITER_HELPERS = ("tail", "sleep", "cat", "head", "sed", "grep", "ugrep", "egrep", "fgrep", "awk", "cut", "tr", "tee",
+                  "sort", "uniq", "wc")
+WAITER_SHELL = ("for ", "done", "fi", "if ", "while ", "until ", "echo ", "printf ", "true") + tuple(f"{h} " for h in WAITER_HELPERS)
 WAITER_RE = re.compile(r"(?:\bshoal|cli\.py) (?:job wait|ci-wait) |\bgh (?:run watch|pr checks [^|;&]*--watch)\b")
 
 
-WAITER_HELPERS = ("tail", "sleep", "cat", "head")  # what a waiter's pipeline runs beside it
 
 
 def live_task_commands(pid) -> list[str] | None:
