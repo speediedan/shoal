@@ -457,6 +457,10 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
             board.update(BOARD_META.get(f"{src['owner']}/{src['number']}") or {})
             boards.append(board)
         seen = {item_key(it["item"]) for it in items}
+        # a board item keeps its place among every item of its board, done ones included, so the unboarded follow the
+        # highest of those places, not the count of open items (measured 2026-11-17: an unboarded item and the board's
+        # #757 both read pos=21, and unboarded items outranked later board items)
+        last = max((it["pos"] for it in items), default=0)
         for src in spec.sources or []:
             if src.get("kind") != "github-label":
                 continue
@@ -465,7 +469,8 @@ def build(spec: ShoalSpec, view=None, items: list[dict] | None = None, no_model:
                 if item_key(it["item"]) in seen:
                     continue
                 seen.add(item_key(it["item"]))
-                items.append(dict(it, pos=len(items) + 1, source=src_desc[-1], unboarded=True))
+                last += 1
+                items.append(dict(it, pos=last, source=src_desc[-1], unboarded=True))
     taken = (view.taken() | view.offered_open()) if view is not None else set()
     routing = _routing(view) if view is not None else {}
     release = releases(items)
