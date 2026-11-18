@@ -872,11 +872,19 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   wait, such as `◷ local-ci`), `blocked` when the role needs you or cannot be woken, else `idle`. A blocked
   report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask (the message then leads with the
   asks themselves, `2 asks: <first>; <second> ·`, so the badge's question can be read, and labels the count, `shoal.asks`:
-  a click on the badge opens the actions dialog's Asks on that role, every ask in full with Reply (a message to the role,
-  `re ask <n>:`, wake on), its answer set as one button per choice (grant, defer, delegate review and deny for a merge;
-  grant, defer and deny otherwise: the reply with `re ask <n>: <choice>. ` filled in, left open for a condition or a
-  reviewer's name), which is how a headless role (a Codex or Muse turn, with no question tool) is answered, and a link to each issue or PR it names (a bare `#n` after "gate", "build", "run" and the like is
-  a build number and links nothing). When the badge is an open prompt, its click focuses the pane where the prompt is
+  a click on the badge opens the actions dialog's Asks on that role, every ask in full (read from the role's queue, not
+  the status row's 160-character cut) with its answer set as one choice per button (grant, defer, delegate review and
+  deny for a merge; grant, defer and deny otherwise; a click picks it, a second click clears it) and a note box for any
+  text, which is how a headless role (a Codex or Muse turn, with no question tool) is answered, and a link to each issue
+  or PR it names (a bare `#n` after "gate", "build", "run" and the like is a build number and links nothing). Answers
+  are collected across the asks, the way a question tool collects every question's before one submit: the role's
+  **Submit answers** sends them as one message with a wake, a line per answered ask (`re ask <n>: <choice>. <note>`,
+  either part alone when only one is given; unanswered asks are left out), planned as a dry run first so the message is
+  read before Confirm, and the answers stay until it lands (Clear drops them). **The dialog's size**: the platform
+  sizes an overlay only when it opens and has no resize by drag, so the header's `⤢` cycles normal (640 by 600),
+  large and full (shares of the window), reopening the dialog at the new size on the same target and verb with the
+  answers kept; the size is remembered for the person (`shared("shoal-actions.size")`), and a dialog opened at another
+  size (a card's right-click, `mod.open`) reopens itself at the remembered one. When the badge is an open prompt, its click focuses the pane where the prompt is
   answered, and the row's right-click still opens any asks beside it) or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
   seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until

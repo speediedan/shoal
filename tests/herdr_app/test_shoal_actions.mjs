@@ -746,3 +746,43 @@ test("a long command breaks at its arguments, never inside a word or a quoted sp
   assert.equal(M.commandLines("shoal next --shoal x"), "shoal next --shoal x");
   assert.equal(M.commandLines("shoal a\nshoal b"), "shoal a\nshoal b");
 });
+
+test("batch answers: a choice and/or a note per ask, one message per role in the form a headless brief reads", () => {
+  const card = { role: "it-architect", asks: ["May I squash-merge PR #948?", "May I squash-merge PR #1028?", "Publish the lens?"] };
+  const k = (n) => M.answerKey(A, card.role, n, card.asks[n - 1]);
+  let p = M.toggleChoice({}, k(1), "Grant merge");
+  p = M.setNote(p, k(1), "  after its GPU gate\n passes ");
+  p = M.setNote(p, k(3), "not yet: hold until the review lands");
+  assert.equal(M.batchAnswerText(A, card, p),
+    "re ask 1: Grant merge. after its GPU gate passes\nre ask 3: not yet: hold until the review lands",
+    "ask order, the choice then the note (whitespace folded), unanswered asks left out");
+  assert.equal(M.answeredCount(A, card, p), 2);
+  p = M.toggleChoice(p, k(2), "Defer review");
+  assert.ok(M.batchAnswerText(A, card, p).includes("re ask 2: Defer review."), "a choice alone ends with its full stop");
+  p = M.toggleChoice(p, k(2), "Defer review");
+  assert.equal(M.answeredCount(A, card, p), 2, "picking the chosen one again clears it");
+  assert.equal(M.batchAnswerText(A, card, M.setNote({}, k(2), "   ")), "", "a blank note is no answer");
+  // an ask replaced at the same number does not inherit the old one's answer
+  assert.equal(M.batchAnswerText(A, { ...card, asks: ["a different first ask", ...card.asks.slice(1)] }, M.toggleChoice({}, k(1), "Grant merge")), "");
+  const other = M.toggleChoice(p, M.answerKey(A, "fts-core", 1, "x"), "Deny");
+  const cleared = M.clearRole(other, A, card.role);
+  assert.equal(M.answeredCount(A, card, cleared), 0, "Clear (or a landed Submit) drops one role's answers");
+  assert.equal(Object.keys(cleared).length, 1, "and keeps every other role's");
+  // the single-ask Reply's text, still the same form: a choice prefill is what one batch line looks like
+  assert.equal(M.answerTarget({ shoal: A }, { role: "lane-b" }, new Date(), 1, "Grant merge").form.values.text, "re ask 1: Grant merge. ");
+});
+
+test("dialog size: three sizes, a cycle, and a reopen that keeps the target, the verb and the answers", () => {
+  assert.equal(M.sizeName("large"), "large");
+  assert.equal(M.sizeName("huge"), "normal", "anything else is normal");
+  assert.deepEqual(["normal", "large", "full"].map(M.nextSize), ["large", "full", "normal"]);
+  assert.deepEqual([M.SIZES.normal.width, M.SIZES.normal.height], [640, 600], "normal is what every opener asks for");
+  assert.ok(M.SIZES.full.width <= 1 && M.SIZES.full.height <= 1, "large and full are shares of the window");
+  const answers = M.toggleChoice({}, M.answerKey(A, "r", 1, "?"), "Deny");
+  const s = M.resizeSpec("full", { shoal: A, role: "r" }, "asks", answers, "machine-a");
+  assert.equal(s.mod, M.MOD);
+  assert.equal(s.kind, "dialog");
+  assert.deepEqual([s.width, s.height], [M.SIZES.full.width, M.SIZES.full.height]);
+  assert.deepEqual(s.props, { size: "full", shoal: A, role: "r", scope: null, session: null, machine: "machine-a", verb: "asks", answers });
+  assert.equal(M.SIZE_KEY, "shoal-actions.size");
+});

@@ -649,19 +649,24 @@ def view(verb: str, a) -> dict:
         s = doc["shoals"][0] if doc.get("shoals") else {}
         here = s.get("this_host", "")
         repos = ui_graph.repo_map(spec)
+        view = _view_of(spec)
         rows = []
         for r in s.get("roles", []):
             if a.role and r["slug"] != a.role:
                 continue  # one role's asks (its badge in the agents list opens them)
             reasons = set(r["can_progress"]["reasons"])
             if r["asks"] or {"blocked-on-question", "blocked-says-waiting"} & reasons:
+                # each ask in full from the role's queue: the status row cuts one at 160 characters for a table cell,
+                # and this view is where it is read and answered
+                full = list((view.current_queue(r["slug"]) or {}).get("asks") or [])
+                asks = full if len(full) == len(r["asks"]) else list(r["asks"])
                 rows.append({"role": r["slug"], "host": r.get("host") or "", "remote": bool(r.get("host")) and r.get("host") != here,
-                             "asks": list(r["asks"]), "question": "blocked-on-question" in reasons,
+                             "asks": asks, "question": "blocked-on-question" in reasons,
                              "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or "",
-                             "links": [ask_links(q, r.get("active") or "", repos) for q in r["asks"]],
+                             "links": [ask_links(q, r.get("active") or "", repos) for q in asks],
                              # each ask's answer set (worker.ask_options): a headless role cannot prompt, so its asks
                              # are answered here, from the choices a prompting role's question tool would offer
-                             "options": [[o["label"] for o in ask_options(q)] for q in r["asks"]],
+                             "options": [[o["label"] for o in ask_options(q)] for q in asks],
                              "headless": (getattr(spec.role(r["slug"]), "ecosystem", "") or "") in HEADLESS})
         text = "\n".join([f"{x['role']}" + ("  (a question is open in its session: attach to answer it)" if x["question"] else "")
                           + (f"\n  it says: {x['says']}" if x["says"] else "")

@@ -838,6 +838,84 @@ export function answerTarget(target, ask, now = new Date(), n = null, choice = n
   };
 }
 
+// ---- batch answers: a choice and/or a note per ask, sent as one message (the way a question tool collects every
+// question's answer before one submit)
+
+/** The key of one ask's answer in the batch: its role and number, with its text, so an ask replaced by another at the
+ *  same number does not inherit the old one's answer. */
+export const answerKey = (shoal, role, n, ask) => `${str(shoal)}|${str(role)}|${n}|${str(ask)}`;
+
+/** One ask's answer, with `choice` toggled: picking the chosen one again clears it. */
+export function toggleChoice(picks, key, choice) {
+  const was = picks?.[key] ?? {};
+  return { ...(picks ?? {}), [key]: { ...was, choice: was.choice === choice ? null : choice } };
+}
+
+/** One ask's answer, with its note set (free text, kept as typed). */
+export function setNote(picks, key, text) {
+  return { ...(picks ?? {}), [key]: { ...(picks?.[key] ?? {}), text: str(text) } };
+}
+
+const noteOf = (p) => str(p?.text).replace(/\s+/g, " ").trim();
+const answered = (p) => Boolean(p?.choice) || Boolean(noteOf(p));
+
+/**
+ * The one message a role's batch sends: a line per answered ask, in ask order, `re ask <n>: <choice>. <note>` (either
+ * part alone when only one is given), the form a headless brief tells its role to read. Unanswered asks are left out;
+ * "" when none is answered.
+ */
+export function batchAnswerText(shoal, card, picks) {
+  const lines = [];
+  arr(card?.asks).forEach((ask, j) => {
+    const p = picks?.[answerKey(shoal, card.role, j + 1, ask)];
+    if (!answered(p)) return;
+    const parts = [p.choice ? `${p.choice}.` : "", noteOf(p)].filter(Boolean);
+    lines.push(`re ask ${j + 1}: ${parts.join(" ")}`);
+  });
+  return lines.join("\n");
+}
+
+/** How many of a role's asks have an answer in the batch. */
+export const answeredCount = (shoal, card, picks) =>
+  arr(card?.asks).filter((ask, j) => answered(picks?.[answerKey(shoal, card.role, j + 1, ask)])).length;
+
+/** The batch without one role's answers (after they were sent, or on Clear). */
+export function clearRole(picks, shoal, role) {
+  const pre = `${str(shoal)}|${str(role)}|`;
+  return Object.fromEntries(Object.entries(picks ?? {}).filter(([k]) => !k.startsWith(pre)));
+}
+
+// ---- dialog size: the platform sizes an overlay when it opens (mod.json, or the opener's width/height) and has no
+// resize by drag, so the dialog offers three sizes and reopens itself at the one picked, remembered for the person
+
+export const SIZE_KEY = "shoal-actions.size";
+export const SIZES = {
+  normal: { width: 640, height: 600, label: "normal" },
+  large: { width: 0.72, height: 0.86, label: "large" },
+  full: { width: 0.96, height: 0.94, label: "full" },
+};
+const SIZE_ORDER = ["normal", "large", "full"];
+
+/** A stored or given size name, "normal" for anything else. */
+export const sizeName = (v) => (Object.prototype.hasOwnProperty.call(SIZES, v) ? v : "normal");
+
+/** The size after `name` in the toggle's cycle (normal, large, full, normal). */
+export const nextSize = (name) => SIZE_ORDER[(SIZE_ORDER.indexOf(sizeName(name)) + 1) % SIZE_ORDER.length];
+
+/**
+ * The overlay that reopens this dialog at size `name`, on the same target and verb, carrying the batch's answers, so a
+ * resize loses nothing typed.
+ */
+export function resizeSpec(name, target, verb, picks, machine = null) {
+  const size = SIZES[sizeName(name)];
+  const t = target ?? {};
+  return {
+    mod: MOD, kind: "dialog", width: size.width, height: size.height,
+    props: { size: sizeName(name), shoal: t.shoal ?? null, role: t.role ?? null, scope: t.scope ?? null,
+             session: t.session ?? null, machine, verb: verb ?? null, answers: picks ?? {} },
+  };
+}
+
 /** Short words for the result line. */
 export function resultLine(res) {
   if (!res) return "";

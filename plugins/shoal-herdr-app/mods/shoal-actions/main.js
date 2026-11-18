@@ -28,7 +28,7 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, Link } from "gpui-base";
-import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, machines, closeOverlay, nextCommand } from "herdr";
+import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, machines, closeOverlay, openOverlay, shared, setShared, nextCommand } from "herdr";
 import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
   validate, rolesArgv, planArgv, applyArgv, statusArgv, planExpired, parseReply, textLines, preselect, settleSelection,
@@ -36,6 +36,7 @@ import {
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, accountOptions, suggestAccount, accountWhy, poolHint, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
   draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, handoffLatencyNote, verbGroups, pickKey,
+  answerKey, toggleChoice, setNote, batchAnswerText, answeredCount, clearRole, SIZE_KEY, SIZES, sizeName, nextSize, resizeSpec,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -86,6 +87,15 @@ export default class Actions extends View {
     this.sessionsSeq = 0;
     this.prefill = { text: typeof p.text === "string" ? p.text : undefined, wake: p.wake === true ? true : undefined,
                      item: typeof p.item === "string" ? p.item : undefined };
+    // the Asks view's batch: {answerKey: {choice, text}} across every role's asks, sent one role at a time as one message
+    this.answers = p.answers && typeof p.answers === "object" && !Array.isArray(p.answers) ? p.answers : {};
+    this.noteInputs = {}; // answerKey -> its note's InputState
+    this.sending = null; // {shoal, role}: the batch a planned Message carries, cleared from `answers` once it lands
+    // the size the overlay opened at (a resize passes it); the person's remembered size, else normal. An opener that
+    // does not know the size (mod.open, a card's right-click) gets the remembered one by a reopen at once
+    this.size = sizeName(p.size);
+    const want = sizeName(safe(() => shared(SIZE_KEY), "normal"));
+    if (p.size === undefined && want !== this.size && p.overlay) cx.timer.after(0, () => this.resize(want));
     this.queue = null; // Queue: the role's queue as read
     this.draft = null; // and the layout proposed for it
     this.blocking = null; // the item whose blocker is being typed
@@ -262,6 +272,7 @@ export default class Actions extends View {
     if (!info || this.applying) return;
     this.seq++; // an earlier call's reply no longer lands
     this.dropPlan();
+    this.sending = null; // a batch is sent only by the Message its Submit opens
     this.result = null;
     this.error = null;
     this.hint = null;
@@ -420,6 +431,8 @@ export default class Actions extends View {
       if (r.kind === "result") {
         this.result = { ...r, auto, plan };
         this.screen = "result";
+        if (r.ok && this.verb === "msg" && this.sending) this.answers = clearRole(this.answers, this.sending.shoal, this.sending.role);
+        this.sending = null;
         if (r.ok && this.verb === "add-session") this.openSeat(str(this.form?.values?.label).trim(), plan.machine, cx);
       } else {
         this.error = r.error;
@@ -545,6 +558,41 @@ export default class Actions extends View {
     this.sel = { shoal: a.target.shoal, role: a.target.role };
     this.verb = null;
     this.pick("msg", cx, { wake: true, ...(Number.isInteger(n) ? { text: a.form.values.text } : {}) });
+  }
+
+  /** One role's batch as one Message with a wake, planned as a dry run first: the preview shows the message before
+   *  Confirm sends it, and the answers stay in the batch until it lands. */
+  submitAnswers(card, cx) {
+    const shoal = this.sel.shoal;
+    const text = batchAnswerText(shoal, card, this.answers);
+    if (!text || this.applying) return;
+    this.sel = { shoal, role: card.role };
+    this.verb = null;
+    this.pick("msg", cx, { wake: true, text, dryRun: true });
+    this.sending = { shoal, role: card.role };
+    this.preview(cx);
+  }
+
+  /** The note box of one ask, made on first use and kept, so what is typed survives a redraw. */
+  noteInput(key) {
+    if (!this.noteInputs[key]) {
+      const st = InputState.new({ placeholder: "add a note (optional): what to do, or why" });
+      st.set_value(String(this.answers[key]?.text ?? ""));
+      st.on("change", (_e, cx) => { this.answers = setNote(this.answers, key, st.value()); cx.notify(); });
+      this.noteInputs[key] = st;
+    }
+    return this.noteInputs[key];
+  }
+
+  /** Reopen the dialog at size `name` (the platform sizes an overlay only when it opens), on the same target and verb
+   *  and with the batch's answers, and remember the size for the person. */
+  resize(name) {
+    const to = sizeName(name);
+    safe(() => setShared(SIZE_KEY, to), null);
+    const verb = isView(this.verb) || isQueue(this.verb) ? this.verb : null;
+    const at = props()?.overlay;
+    if (!at) return; // not an overlay this dialog can close: a second one would open beside it
+    if (safe(() => openOverlay(resizeSpec(to, this.sel, verb, this.answers, this.origin)), null)) closeOverlay(at);
   }
 
   // ---- the queue manager
@@ -799,6 +847,9 @@ export default class Actions extends View {
       .child(h_flex().id("refresh").px(6).rounded(5).cursor_pointer().text_size(11).text_color(c.dim)
         .hover((s) => s.text_color(c.ink).bg(c.hover)).tooltip("read the roles again")
         .on_click((_e, cx) => { this.loadRoles(cx); cx.notify(); }).child("↻"))
+      .child(h_flex().id("resize").px(6).rounded(5).cursor_pointer().text_size(11).text_color(c.dim)
+        .hover((s) => s.text_color(c.ink).bg(c.hover)).tooltip(`size: ${SIZES[this.size].label}; click for ${SIZES[nextSize(this.size)].label} (remembered)`)
+        .on_click(() => this.resize(nextSize(this.size))).child(this.size === "full" ? "⤡" : "⤢"))
       .child(div().text_size(11).text_color(c.dim).child("Esc"));
     const col = v_flex().px(16).pt(14).pb(10).gap(8).flex_none().child(head);
     if (this.sel.scope || this.sel.session) return col; // no shoal or role to pick
@@ -1074,29 +1125,51 @@ export default class Actions extends View {
               .text_size(11.5).font_medium().hover((s) => s.opacity(0.88)).tooltip(`Message ${a.role}, wake on`)
               .on_click((_e, cx) => { this.answer(a, cx); cx.notify(); }).child("Answer")));
         if (why) card.child(div().text_size(11).text_color(c.dim).child(why));
+        const shoal = this.sel.shoal;
         a.asks.forEach((t, j) => {
-          // each ask: its text in full, a reply naming it, and the issues or PRs it names
+          // each ask: its text in full (wrapped), the issues or PRs it names, its answer set as choices to pick, and a
+          // note; every ask's answer is collected, and the card's Submit sends them all as one message
+          const key = answerKey(shoal, a.role, j + 1, t);
+          const mine = this.answers[key] ?? {};
           const row = h_flex().id(`ask-${i}-${j}`).gap(8).items_start()
-            .child(div().flex_1().min_w(0).text_size(12).text_color(c.ink).child(`ask ${j + 1}: ${t}`))
-            .child(h_flex().id(`reply-${i}-${j}`).flex_none().h(22).px(8).items_center().rounded(5).cursor_pointer().border_1().border_color(c.input)
-              .text_size(11).text_color(c.ink).hover((s) => s.bg(c.hover)).tooltip(`Message ${a.role} "re ask ${j + 1}:", wake on`)
-              .on_click((_e, cx) => { this.answer(a, cx, j + 1); cx.notify(); }).child("Reply"));
+            .child(div().flex_1().min_w(0).text_size(12).text_color(c.ink).child(`ask ${j + 1}: ${t}`));
           for (const [k, l] of (a.links?.[j] ?? []).entries()) {
             row.child(Link.new(`open-${i}-${j}-${k}`).href(l.url).flex_none().text_size(11).text_color(c.accent).child(`${l.text} ↗`));
           }
           card.child(row);
-          // its answer set: each choice opens the reply with that answer filled in (Message, wake on), so a headless
-          // role's ask is answered like a prompted one
           const opts = a.options?.[j] ?? [];
           if (opts.length) {
             const choices = h_flex().id(`choices-${i}-${j}`).gap(6).items_center().flex_wrap();
-            opts.forEach((o, k) => choices.child(h_flex().id(`choice-${i}-${j}-${k}`).h(22).px(8).items_center().rounded(5)
-              .cursor_pointer().border_1().border_color(c.input).text_size(11).text_color(c.ink).hover((s) => s.bg(c.hover))
-              .tooltip(`Message ${a.role} "re ask ${j + 1}: ${o}.", wake on`)
-              .on_click((_e, cx) => { this.answer(a, cx, j + 1, o); cx.notify(); }).child(o)));
+            opts.forEach((o, k) => {
+              const on = mine.choice === o;
+              choices.child(h_flex().id(`choice-${i}-${j}-${k}`).h(22).px(8).items_center().rounded(5).cursor_pointer()
+                .border_1().border_color(on ? c.solid : c.input).bg(on ? c.solid : c.raised).text_color(on ? c.solidFg : c.ink)
+                .text_size(11).hover((s) => s.opacity(0.88))
+                .tooltip(on ? "picked: click again to clear" : `answer ask ${j + 1} "${o}" (sent with Submit answers)`)
+                .on_click((_e, cx) => { this.answers = toggleChoice(this.answers, key, o); cx.notify(); }).child(o));
+            });
             card.child(choices);
           }
+          card.child(Input.new(this.noteInput(key)).h(26).px(8).rounded(5).border_1().border_color(c.input)
+            .bg(c.code).text_size(11.5));
         });
+        const n = answeredCount(shoal, a, this.answers);
+        if (a.asks.length) {
+          card.child(h_flex().id(`submit-row-${i}`).gap(8).items_center().pt(4)
+            .child(div().flex_1().text_size(11).text_color(c.dim)
+              .child(n ? `${n} of ${a.asks.length} answered: one message to ${a.role}, wake on, previewed first` : "pick a choice or add a note on any ask, then submit them together"))
+            .when(n > 0, (el) => el.child(h_flex().id(`clear-${i}`).h(24).px(10).items_center().rounded(6).cursor_pointer()
+              .border_1().border_color(c.input).text_size(11.5).text_color(c.muted).hover((s) => s.bg(c.hover)).tooltip("drop this role's answers")
+              .on_click((_e, cx) => {
+                this.answers = clearRole(this.answers, shoal, a.role);
+                for (const [k, st] of Object.entries(this.noteInputs)) if (k.startsWith(`${shoal}|${a.role}|`)) st.set_value("");
+                cx.notify();
+              }).child("Clear")))
+            .child(h_flex().id(`submit-${i}`).h(24).px(10).items_center().rounded(6).cursor_pointer()
+              .bg(n ? c.solid : c.raised).text_color(n ? c.solidFg : c.dim).text_size(11.5).font_medium()
+              .hover((s) => s.opacity(0.88)).tooltip(n ? batchAnswerText(shoal, a, this.answers) : "nothing answered yet")
+              .on_click((_e, cx) => { this.submitAnswers(a, cx); cx.notify(); }).child(n ? `Submit answers (${n})` : "Submit answers")));
+        }
         col.child(card);
       });
       if (v.text && v.text.trim()) col.child(this.mono("view-text", v.text, c));
