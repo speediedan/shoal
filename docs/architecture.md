@@ -233,7 +233,7 @@ deny for a merge), and the maintainer's answers reach the role as mail with a wa
 line per answered ask, every ask's answer sent at once from the role's Submit answers (`model.batchAnswerText`). Each
 ask's note box is made when the Asks view arrives (`makeNoteInputs`), never while it draws: the app refuses an
 `InputState` made during render, which broke the dialog on its first ask. The
-restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question. Nor does a headless turn run a waiter: a background command ends with its exec process, so its JOBS clause (`briefs.h4_disciplines`) records a `job:` wait and ends the turn for the watcher to wake it on the verdict, where a Claude role follows its job with an in-session `job wait` (a Codex role's in-turn waiters each ended `exit -1`).
+restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question. Nor does a headless turn run a waiter: a background command ends with its exec process, so its JOBS clause (`briefs.h4_disciplines`) records a `job:` wait and ends the turn for the watcher to wake it on the verdict, where a Claude role follows its job with an in-session `job wait` (a Codex role's in-turn waiters each ended `exit -1`). Every role's JOBS clause sends a CPU-only suite to the pool (`--cpu-light --place auto --repo`): on 2026-11-18 local `cpu-light` lease waits ran a median 66 min on the host where most suites were started, against 13 on the other.
 
 **Signed standing grants** (`features.grants`). A `grant` event from `user` carries an ssh
 signature (`ssh-keygen -Y sign -n shoal-grant`, maintainer's key) over its canonical form;
@@ -508,7 +508,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | condition | evidence | ladder (minutes) |
 | --- | --- | --- |
 | `unacked-work` | an unacknowledged operational request in any status, an offer to an idle role, a `--now` offer, or an outstanding wake request | wake 10, wake 30, page 60 |
-| `wait-resolved` | a checkable wait target is no longer pending | wake 15, page 60 |
+| `wait-resolved` | a checkable wait target is no longer pending; a `job:` wait whose job ended while the role's other jobs run here names them (`jobs.running_siblings`), so the role re-points its wait | wake 15, page 60 |
 | `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
 | `turn-ended-active` (`continuation`) | status `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
@@ -1837,7 +1837,7 @@ reported any in-flight background work, and a role that follows a long job with 
 for the whole run, so an operator's `msg --wake` waited hours (2026-11-18: four roles' waiters held every wake, an
 urgent message included). Now, when every task the job's state lists (`fan`) is one of its own waiters
 (`backends.only_waiters`: each command a `shoal job wait` naming its `--slug`, `shoal ci-wait`, `gh run watch` or
-`gh pr checks --watch`, beside loop keywords and helpers such as `echo` and `sleep`), the wake stops and resumes the
+`gh pr checks --watch`, beside loop keywords, `echo`, `sleep`, and output filters such as `tail`, `sed`, `grep`, `awk`), the wake stops and resumes the
 session as for an idle one, and its prompt says the waiters were stopped and that the recorded waits cover the
 jobs. The job units run on and the detached watcher wakes the role on each recorded `job:` or CI wait. Anything
 else in flight (a test suite run in the session, a subagent, a task the state does not name) still defers.

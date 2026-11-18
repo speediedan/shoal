@@ -1684,6 +1684,25 @@ for fan in ([{"kind": "shell", "label": f"shoal job wait --shoal {spec.sid} --sl
 rows(pid=9, tempo="idle", inFlight={"tasks": 2, "queued": 0, "kinds": ["local_bash"]}, fan=wait_fan)
 assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", "a task the fan does not name"
 assert "waiters were stopped" in backends.WAITERS_STOPPED_NOTE and "re-arm a waiter only if" in backends.WAITERS_STOPPED_NOTE
+# output filters in a waiter's pipeline are not work (a role's `job wait | sed | grep | tail` loop held its wake for hours)
+filt = [{"kind": "shell", "label": f"for j in a b; do shoal job wait --shoal {spec.sid} --slug up --name $j 2>&1 | sed -n 's/x/y/p' | grep -E V | tail -1; done"}]
+assert backends._labels_only_waiters({"inFlight": {"tasks": 1, "queued": 0}, "fan": filt}, "up"), filt
+work = [{"kind": "shell", "label": f"shoal job wait --shoal {spec.sid} --slug up --name a | python3 analyze.py"}]
+assert not backends._labels_only_waiters({"inFlight": {"tasks": 1, "queued": 0}, "fan": work}, "up"), "a pipeline into a program is work"
+# a `job:` wait that resolved while the role's sibling jobs still run names them, to re-point the wait
+import jobs as _jobs
+sd = _jobs.paths(spec.sid, "x")["sdir"]
+os.makedirs(sd, exist_ok=True)
+for nm in ("done1", "run1", "run2"):
+    json.dump({"slug": "sibrole", "name": nm, "unit": f"u-{nm}"}, open(os.path.join(sd, f"u-{nm}.json"), "w"))
+json.dump({"slug": "other", "name": "theirs", "unit": "u-theirs"}, open(os.path.join(sd, "u-theirs.json"), "w"))
+_us = _jobs.unit_state
+_jobs.unit_state = lambda u: {"ActiveState": "inactive" if u == "u-done1" else "active"}
+assert _jobs.running_siblings(spec.sid, "sibrole", "done1") == ["run1", "run2"], _jobs.running_siblings(spec.sid, "sibrole", "done1")
+assert _jobs.running_siblings(spec.sid, "sibrole", "run1") == ["run2"], "the job waited on is never its own sibling"
+_jobs.unit_state = _us
+for nm in ("done1", "run1", "run2", "theirs"):
+    os.remove(os.path.join(sd, f"u-{nm}.json"))
 # a label is a whole command line: `di-sync commit && job wait` reads as work after the commit ended, so what the worker's
 # shells run now decides (a real process tree here: a bash running a waiter-shaped command under this process)
 import subprocess as _sp, time as _t
