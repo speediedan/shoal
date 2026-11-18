@@ -2506,9 +2506,10 @@ python3 "$TESTD/test_resolve.py" || fail "refs --resolve (tests/test_resolve.py)
 check "name a directory" $H refs
 check "goes with --resolve" $H refs "$S" --from x.md
 
-echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head, log-entry"
+echo "== 39 lifecycle: a repository's .shoal/lifecycle.toml (trusted hooks only), the start-doc header, doc-head, log-entry, deep-pass"
 python3 "$TESTD/test_lifecycle.py" || fail "lifecycle (tests/test_lifecycle.py)"
 python3 "$TESTD/test_checkpoint.py" || fail "checkpoint (tests/test_checkpoint.py)"
+python3 "$TESTD/test_deep_pass.py" || fail "deep pass (tests/test_deep_pass.py)"
 python3 "$TESTD/test_retire_hooks.py" || fail "retirement hooks (tests/test_retire_hooks.py)"
 python3 "$TESTD/test_fill.py" || fail "capacious fill (tests/test_fill.py)"
 python3 "$TESTD/test_umbrella.py" || fail "umbrella rows (tests/test_umbrella.py)"

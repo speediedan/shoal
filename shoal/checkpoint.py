@@ -41,6 +41,21 @@ def probe(path: str) -> dict:
     for key in ("candidates", "dangling", "untracked", "deleted"):
         out["counts"][key] = len(scan[key])
         out["samples"][key] = scan[key][:5]
+    # the deep pass is the role's own periodic work: say when it is owed, from the companion log alone (cheap). Its
+    # own try: a failure here is a note, never the loss of the checkpoint's counts and samples
+    try:
+        import deeppass
+        repo = refs.Repo(os.path.dirname(path))
+        rel = repo.rel(path)
+        log = refs.companion_log(rel, repo.mode) if rel else None
+        dp = lc["values"]["deep_pass"]
+        d = deeppass.due(repo.read(log) if log else "", dp["every_days"], dp["every_restarts"])
+        out["deep_pass_due"] = d["due"]
+        if d["due"]:
+            # first among the capped notes, and the command first within it, so the 200-character cap cuts the why
+            out["notes"].insert(0, f"deep pass due: shoal lifecycle deep-pass {path} ({d['why']})")
+    except Exception as exc:  # advisory: never let the deep-pass check blank the checkpoint
+        out["notes"].append(f"deep-pass check unavailable: {str(exc)[:150]}")
     if mode == "auto":
         out["notes"].append("auto is advisory propose in this release; archival awaits a measured rollout")
     return out

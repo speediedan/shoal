@@ -60,7 +60,7 @@ repository, and files are moved by it, so where files go never leaves the reposi
 Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age_days`, unless flags name them), by
 `doc-check` and `doc-head` (the header cap), and by `shoal archive` ([`archive.md`](archive.md): `[layout] archive` and
 `manifest`, `[cold] warm_days`, `[hooks] commit`). The checkpoint reads `[checkpoint]`; retirement commands read
-`[hooks] on_retire`. Deep-pass settings are reserved for the deep-pass command.
+`[hooks] on_retire`. `lifecycle deep-pass` and the checkpoint's `deep_pass_due` read `[deep_pass]` and `[cold] warm_days`.
 
 ## Checkpoint pass at restart-ready
 
@@ -95,6 +95,35 @@ candidates never reject `restart_ready`, including beyond the context limit. Exi
 sections and durable-job-reference checks still apply. No lifecycle enforcement gate is introduced in this release.
 Measure the model work separately on one or two roles before enabling routine distillation or automatic archival:
 record turn-token counters immediately before and after the pass, separating cached input and output where available.
+
+## Deep pass
+
+Every `[deep_pass] every_days` days or `every_restarts` restarts, whichever comes first, a role tidies its directory
+more deeply than a checkpoint does. It folds concluded auxiliary files into the start doc, the design doc or the log
+and archives the originals. It reviews its `keep:` reasons, sends long-warm archive entries cold, and records the trend.
+That is model work. The command gathers its inputs and says when it is due, and moves nothing:
+
+```bash
+shoal lifecycle deep-pass <start-doc> [--json]
+```
+
+- **Due**: the last pass is the last `Deep pass <UTC>:` line in the start doc's companion log; the log is append-only,
+  so the last marker is the last pass. A marker inside a fenced block, or one whose time does not parse, is skipped.
+  Restarts since are the `After ...` snapshot headings below it. With no marker, the pass reads as due.
+- **Keep reasons to review**: each file whose front matter has `keep:`, with the days since it last changed. Remove a
+  reason that no longer holds, and the next checkpoint lists the file as a candidate again.
+- **Consolidation candidates**: the live auxiliary files (not a root, not history), oldest change first, with size.
+- **Cold candidates**: entries of the directory's manifest whose latest event is `archive` or `migrate`, warm for at
+  least `[cold] warm_days`, that no live document names now, with the `shoal archive --cold` command. `archive --cold`
+  checks again before it moves anything.
+- **Trend**: a line to append to the log's session snapshot, which is also the next pass's marker, for example
+  `Deep pass 2026-11-17T22:00Z: 14 live auxiliary, 412 KB, 3 kept, 2 warm, 1 cold candidate`, and the previous
+  marker's numbers, so growth is visible.
+
+`lifecycle checkpoint` (and so `queue --restart-ready`) carries `deep_pass_due`, read from the companion log alone.
+When the pass is due, its first note starts with the command, so the notes' 200-character cap never cuts it. A failure
+in that check is one more note; it never costs the checkpoint its counts. Shoal records nothing itself: the marker in
+the log is the record.
 
 ## Reading history: `log-entry` and `refs --resolve`
 
