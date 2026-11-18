@@ -31,10 +31,9 @@ header_max_lines = 40                  # the start-doc header cap (advisory)
 header_max_bytes = 3072
 
 [checkpoint]
-archive = "propose"                    # auto | propose | off
+archive = "propose"                    # auto | propose | off, or per role: { "*" = "propose", "<slug>" = "auto" }
 min_age_days = 7                       # an unreferenced file younger than this is not an archive candidate
 cross_owner = "notify"                 # notify | rewrite | keep: a candidate another role's live document names
-auto_roles = []                        # archive = "auto" applies only to these roles (slugs or standalone labels)
 
 [deep_pass]
 every_days = 3
@@ -94,10 +93,11 @@ archive operation still checks roots across hosts before a move.
 For `[checkpoint] archive = "propose"`, the role lists candidates for review or records a `keep: <reason>` in their
 front matter. Roots, live files and untracked files cannot be archive candidates. Resolve untracked work first.
 Keep files another owner's live document references and tell that owner through ledger mail to update its link.
-`archive = "auto"` takes effect only for a role in `auto_roles` (its slug, or a standalone session's label), the pilot
-opt-in; every other role still proposes, and the report says why. For an auto role the checkpoint computes candidates
+`archive` is one mode for every role, or a table of modes per role in the shape `context_restart` uses: keys are role
+slugs or standalone labels, and `"*"` is everyone else (`propose` when absent). A pilot is
+`archive = { "*" = "propose", "<slug>" = "auto" }`; a bad mode anywhere in the table keeps the default. For an auto role the checkpoint computes candidates
 with the age floor on every class (`refs --age-floor-all`) and adds `commands`: the `shoal archive ... --cross-owner
-<cross_owner> --strict` run that archives them, which the role runs itself from the repository root after moving any
+<cross_owner> --strict` run that archives them, with absolute paths, which the role runs itself (from any directory) after moving any
 durable knowledge up a tier (the protocol's work loop). The checkpoint still moves nothing and makes no model calls.
 `off` skips the lifecycle check.
 

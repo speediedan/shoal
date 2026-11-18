@@ -73,7 +73,6 @@ header_max_lines = 5
 archive = "sometimes"
 min_age_days = "seven"
 cross_owner = "keep"
-auto_roles = "it-tune"
 [hooks]
 on_retire = "scripts/retire.sh"
 [bogus]
@@ -93,9 +92,8 @@ r = js("lifecycle", "show", LANE)
 v, notes = r["values"], " | ".join(r["notes"])
 assert r["found"] and os.path.realpath(r["repo"]) == os.path.realpath(REPO), r
 assert v["tiers"]["history"] == ["*_log.md", "*_prompts.md"] and v["tiers"]["header_max_lines"] == 5, v
-assert v["checkpoint"] == {"archive": "propose", "min_age_days": 7, "cross_owner": "keep", "auto_roles": []}, v["checkpoint"]
+assert v["checkpoint"] == {"archive": "propose", "min_age_days": 7, "cross_owner": "keep"}, v["checkpoint"]
 for want in ("checkpoint.archive = 'sometimes' is not one of", "checkpoint.min_age_days = 'seven' is not a number",
-             "checkpoint.auto_roles = 'it-tune' is not a list of strings",
              "unknown table [bogus]", "unknown key cold.warm_dayz", "hooks.on_retire ignored",
              "cold.after_checkpoints = -1 is below its least value 1", "deep_pass.every_days = 0 is below",
              "deep_pass.every_restarts = 2.5 is not a whole number", "layout.archive = '../../elsewhere/{path}' is absolute or climbs",
@@ -168,5 +166,18 @@ assert r["tiers"]["history"] == ["*_log.md", "*_prompts.md"] and r["lifecycle"][
 assert not r["dangling"], "a history document's old paths are not dangling: %r" % r["dangling"]
 print("refs with the repository's tiers ok")
 
+# checkpoint.archive per role, the context_restart shape: a table of modes, "*" the default; a bad mode keeps the default
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shoal"))
+import lifecycle as lc_mod  # noqa: E402
+assert lc_mod.archive_mode("auto", {"a"}) == "auto" and lc_mod.archive_mode("propose") == "propose"
+assert lc_mod.archive_mode({"*": "propose", "b": "auto"}, {"b"}) == "auto"
+assert lc_mod.archive_mode({"*": "off", "b": "auto"}, {"a"}) == "off" and lc_mod.archive_mode({"b": "auto"}, {"a"}) == "propose"
+write(".shoal/lifecycle.toml", '[checkpoint]\narchive = { "*" = "propose", "it-tune" = "auto" }\n')
+r = js("lifecycle", "show", LANE)
+assert r["values"]["checkpoint"]["archive"] == {"*": "propose", "it-tune": "auto"}, r["values"]["checkpoint"]
+write(".shoal/lifecycle.toml", '[checkpoint]\narchive = { "*" = "propose", "it-tune" = "always" }\n')
+r = js("lifecycle", "show", LANE)
+assert r["values"]["checkpoint"]["archive"] == "propose" and any("per-role modes" in n for n in r["notes"]), r
+print("per-role archive modes ok")
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_lifecycle OK")

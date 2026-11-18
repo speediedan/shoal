@@ -23,24 +23,28 @@ def probe(path: str) -> dict:
 
     path = os.path.abspath(os.path.expanduser(path))
     lc = lifecycle.load(path)
-    mode = lc["values"]["checkpoint"]["archive"]
-    out = {"v": 1, "advisory": True, "mode": mode, "effective_mode": "off" if mode == "off" else "propose",
+    setting = lc["values"]["checkpoint"]["archive"]
+    out = {"v": 1, "advisory": True, "mode": setting, "effective_mode": "propose",
            "ok": True, "notes": list(lc["notes"]), "counts": {}, "samples": {}}
+    if setting == "off":
+        out["effective_mode"], out["skipped"] = "off", "checkpoint.archive = off"
+        return out
+    known = refs.roots(False)
+    # who this start doc belongs to: a role's slug or a standalone session's label, from the roots
+    whos = known["roots"].get(path) or known["roots"].get(os.path.realpath(path)) or []
+    names = {w.get("slug") or w.get("label") for w in whos} - {None, ""}
+    mode = lifecycle.archive_mode(setting, names)
     if mode == "off":
-        out["skipped"] = "checkpoint.archive = off"
+        out["effective_mode"], out["skipped"] = "off", f"checkpoint.archive is off for {', '.join(sorted(names)) or 'this doc'}"
         return out
     doc = startdoc.check(path)
     out["notes"] += doc["problems"] + doc["warnings"]
-    known = refs.roots(False)
     out["notes"] += known["notes"]
     out["hosts"] = known["hosts"]
     out["notes"].append("roots cover this host's standalone sessions; other hosts are not read")
     if not known["specs_live"]:
         out["notes"].append("no live spec found: other roles' roots may be missing")
-    # who this start doc belongs to: a role's slug or a standalone session's label, from the same roots
-    whos = known["roots"].get(path) or known["roots"].get(os.path.realpath(path)) or []
-    names = {w.get("slug") or w.get("label") for w in whos} - {None, ""}
-    auto = mode == "auto" and bool(names & set(lc["values"]["checkpoint"]["auto_roles"]))
+    auto = mode == "auto"
     if auto:
         out["effective_mode"] = "auto"
         out["roles"] = sorted(names)
@@ -67,10 +71,9 @@ def probe(path: str) -> dict:
     if auto and scan["candidates"]:
         # the role runs these itself, after moving any durable knowledge up a tier (the work loop's auto step)
         policy = lc["values"]["checkpoint"]["cross_owner"]
-        out["commands"] = ["shoal archive " + " ".join(shlex.quote(c) for c in scan["candidates"])
+        # absolute paths, so the command archives the same files from any working directory
+        out["commands"] = ["shoal archive " + " ".join(shlex.quote(os.path.join(scan["repo"], c)) for c in scan["candidates"])
                            + f" --cross-owner {policy} --strict --reason {shlex.quote('checkpoint auto')}"]
-    elif mode == "auto" and not auto:
-        out["notes"].append("archive = auto applies only to the roles in [checkpoint] auto_roles; this one proposes")
     return out
 
 

@@ -115,8 +115,7 @@ never stop a context restart. In propose mode list candidates for review or keep
 an owner whose live document references a file before proposing its move.
 
 **Auto mode (a pilot, per role).** When the checkpoint's `effective_mode` is `auto` (the repository's
-`[checkpoint] archive = "auto"` and your role in `auto_roles`), it lists `commands`: run them yourself, from the
-repository root, in the same turn. Before you do, move what is durable up a tier, because your role ends and the
+`[checkpoint] archive` mode is `auto` for your role), it lists `commands` (absolute paths): run them yourself, in the same turn. Before you do, move what is durable up a tier, because your role ends and the
 repository stays: a concluded research result goes to the repository's research wiki (distributed-insight: the
 `research-wiki` skill), a host or operational fact to its runbook, a script others reuse to the shared scripts. Then
 run the command. It archives only files past the age floor, refuses and lists any partial-path reference (`--strict`),

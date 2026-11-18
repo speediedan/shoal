@@ -34,8 +34,8 @@ DEFAULTS: dict[str, dict] = {
     "layout": {"role_dir": "", "archive": "archive/{path}", "manifest": "archive/{dir}/MANIFEST.jsonl"},
     "tiers": {"history": ["*_log.md", "*_log_*.md"], "exclude": ["archive/*"], "header_max_lines": 40,
               "header_max_bytes": 3072},
-    # archive = "auto" takes effect only for the roles (slugs, or standalone labels) in auto_roles: the pilot opt-in
-    "checkpoint": {"archive": "propose", "min_age_days": 7.0, "cross_owner": "notify", "auto_roles": []},
+    # archive is one mode for every role, or per role in the context_restart shape: {"*" = "propose", "<slug>" = "auto"}
+    "checkpoint": {"archive": "propose", "min_age_days": 7.0, "cross_owner": "notify"},
     "deep_pass": {"every_days": 3, "every_restarts": 3},
     "cold": {"warm_days": 90, "after_checkpoints": 2},
     "instructions": {"every_days": 14},
@@ -99,6 +99,17 @@ def _escapes(template: str) -> bool:
     return os.path.isabs(t) or t.startswith("~") or ".." in t.replace("\\", "/").split("/")
 
 
+def archive_mode(value, names: set[str] | frozenset[str] = frozenset()) -> str:
+    """The checkpoint archive mode for a start doc whose role is one of `names` (role slugs, standalone labels):
+    `value` itself when it is a string, else the first named role's entry, else its "*" entry, else propose."""
+    if isinstance(value, str):
+        return value
+    for n in sorted(names):
+        if n in value:
+            return value[n]
+    return value.get("*", "propose")
+
+
 def load(path: str) -> dict:
     """{repo, file, found, trusted, values, notes} for the repository holding `path`. `values` has every table and key
     of DEFAULTS, from the file where it is valid, else the default."""
@@ -129,6 +140,13 @@ def load(path: str) -> dict:
         for key, value in keys.items():
             if key not in DEFAULTS[table]:
                 out["notes"].append(f"unknown key {table}.{key} ignored")
+            elif (table, key) == ("checkpoint", "archive") and isinstance(value, dict):
+                bad = {k: v for k, v in value.items() if not isinstance(k, str) or v not in CHOICES[(table, key)]}
+                if bad:
+                    out["notes"].append(f"checkpoint.archive per-role modes {bad!r} are not one of "
+                                        f"{CHOICES[(table, key)]}: default kept")
+                else:
+                    out["values"][table][key] = value
             elif not _same_type(DEFAULTS[table][key], value):
                 out["notes"].append(f"{table}.{key} = {value!r} is not {KIND[type(DEFAULTS[table][key])]}: default kept")
             elif (table, key) in CHOICES and value not in CHOICES[(table, key)]:
