@@ -4,7 +4,8 @@
 - a key prints that session's entries in log order, checkpoints and addenda included, and nothing else; an entry ends
   at the next heading of the same or a higher level, so its own subheadings come with it;
 - a bare number matches every prefix (`12` gives `C12` and `Session 12`), a prefixed key only itself, in either case;
-- `--snapshot` prints the `After ...` snapshots instead, `--any` every heading with the key;
+- `--snapshot` prints the `After ...` snapshots instead, `--any` every heading with the key; a section number
+  (`Part 1`, `Phase 2`, `1. Where things are`) is never a key;
 - `--last N` gives every entry of the newest N keys in the chosen mode (`--snapshot --last 2`: the two newest snapshots);
 - a heading inside a fenced block is content, never an entry;
 - `--list` prints the outline with line numbers and no bodies; `--json` carries line, level, key and kind;
@@ -92,6 +93,10 @@ r3 body.
 - twelve
 
 ## Part 3: archived
+
+### 1. Where things are
+
+### Phase 2 notes
 """)
 
 rc, out = run(LOG, "C1")
@@ -120,6 +125,11 @@ rc, out = run(LOG, "12", "--snapshot")
 assert headings(out) == ["### After Session 12 (2026-11-04) - snapshot twelve"], out
 rc, out = run(LOG, "C1", "--any")
 assert len(headings(out)) == 3 and headings(out)[-1] == "### After C1 (2026-11-02) - snapshot one", out
+rc, out = run(LOG, "1", "--any")
+assert headings(out) == ["### Session C1 (2026-11-01) - first", "### Session C1 addendum (2026-11-02) - a correction",
+                         "### After C1 (2026-11-02) - snapshot one"], "section numbers (Part 1, 1. Where) are not keys"
+rc, out = run(LOG, "2", "--any")
+assert not any("Phase" in h or "Part" in h for h in headings(out)), out
 print("modes ok")
 
 rc, out = run(LOG, "--last", "1")
