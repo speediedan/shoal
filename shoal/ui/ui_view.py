@@ -697,6 +697,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             flush_input()
             with _report_during(sid, slug, ui_app):
                 remote_attach(remote, sid, slug)
+            sent = _after_attach(ui_app)
             if latch is not None:
                 latch.looked()
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
@@ -708,6 +709,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
             with _report_during(sid, slug, ui_app):
                 run_attached(_view_cmd(sid, slug, spec_path))
+            sent = _after_attach(ui_app)
             if latch is not None:
                 latch.looked()
             print("\x1b[2m(back to the card in 3s)\x1b[0m")
@@ -722,6 +724,16 @@ def _card_labels(ui_app, row: dict) -> dict:
     return {ui_app.NEED_LABEL: rep.get("need", ""), ui_app.ASKS_LABEL: str(rep.get("asks") or ""),
             ui_app.ASKS_BADGE_LABEL: "1" if rep.get("asks_badge") else "", ui_app.GROUP_LABEL: group,
             ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail}
+
+
+def _after_attach(ui_app) -> None:
+    """After an attach, the card's next report is written again whatever it last sent (returns the new `sent`: None).
+    A Codex client writes the pane's report itself (`app=codex`) and takes it with it when it exits, and the card held
+    back an unchanged `done` report, so the role left the agents list for good (measured 2026-11-18: it-architect after a
+    detach). The attached mark is cleared again too: a card's own report is what that mark holds back."""
+    if ui_app is not None:
+        _mark_attached(ui_app, "")
+    return None
 
 
 def _mark_attached(ui_app, value: str) -> None:

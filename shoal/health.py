@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.join(HERE, "telemetry"))
 from ledger import OFFER_WRITERS, SYSTEM_WRITER  # noqa: E402
 
 import accounts  # noqa: E402
+from briefs import HEADLESS  # noqa: E402 - harnesses whose turns have no question tool (Codex, Muse)
 import config  # noqa: E402
 import providers  # noqa: E402
 from roles import ShoalSpec, find_spec, host_of, is_detached_wake, is_home, is_local, state_dir  # noqa: E402
@@ -698,12 +699,16 @@ def return_condition(view, slug: str, q: dict) -> dict | None:
             "detail": f"USER-ONLINE since {back}: " + RETURN_PROTOCOL}
 
 
-def unraised_condition(view, slug: str, q: dict, role_status: str, between: bool | None) -> dict | None:
+def unraised_condition(view, slug: str, q: dict, role_status: str, between: bool | None,
+                       ecosystem: str = "claude") -> dict | None:
     """`asks-unraised`: a role holding open asks, at a quiet boundary with no question open, while the maintainer is
     online. A role that records an ask (`queue --ask`) and then sleeps on a CI wait leaves the ask showing as needs-you
     with nothing to answer when the maintainer attaches (measured 2026-11-18: fts-core's merge ask for PR 230 behind a
     remote-ci wait), and only the maintainer's next return raised it. Keyed on the session and the asks, so a new ask
-    re-raises and an ask raised and left unanswered is not raised over and over."""
+    re-raises and an ask raised and left unanswered is not raised over and over. Never for a headless role (Codex,
+    Muse): its turns have no question tool, and its asks are answered from the Asks view's answer set."""
+    if ecosystem in HEADLESS:
+        return None
     asks = q.get("asks") or []
     if not asks or role_status not in ("idle", "waiting") or between is not True or view.user_offline() is not None:
         return None
@@ -873,7 +878,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         if rc is not None:
             out.append(rc)
         else:
-            ur = unraised_condition(view, slug, q, role_status, between)
+            ur = unraised_condition(view, slug, q, role_status, between, role.ecosystem)
             if ur is not None:
                 out.append(ur)
         # bounded context: past its limit at a quiet boundary. In `page` mode the role marks that boundary itself
