@@ -50,7 +50,9 @@ This is the one write a role may make outside its own directory, so it is a path
   trailing `/` when it had one. When the directory's files land in different places (a `--migrate` run whose legacy
   folder holds a nested legacy folder, say), no one path replaces the directory, so `rewrite` refuses and lists the
   references. The manifest records a directory's rewrites with the first file (sorted) moved out of it, each entry
-  carrying `dir`.
+  carrying `dir`. "Empties" counts tracked files only: a directory that still holds untracked files stays on disk
+  after the run, yet its references now name the archive. Commit or remove those files first if the old path should
+  keep meaning something.
 - **A tracked symlink is repointed** in its own form: a relative link stays relative. (Only relative links are read as
   references today; an absolute one would stay absolute.) A symlink that is a start doc refuses the run: that role
   moves first.
@@ -118,7 +120,8 @@ each manifest is returned to HEAD's copy, or removed if the run created it.
 A refusal shows the hook's (or `git commit`'s) output from its first line that reads as a failure (`Failed`, `REFUSED`,
 `refuse`, `error:`, `fatal:`, `exit code: `), stdout and stderr interleaved in the order written, capped at 1,500
 characters; with no such line, the last 600 characters. The whole output is kept in a file under the git directory
-(`<git dir>/shoal/archive-hook-<utc>.log`), never in the work tree, and the refusal names it. A hook can print its cause
+(`<git dir>/shoal/archive-hook-<utc>.log`), never in the work tree, and the refusal names it. The newest 20 such
+logs are kept; older ones are removed when a new one is written. A hook can print its cause
 first and pages of accepted notes after it, so the tail alone can omit the cause.
 
 A `[hooks] commit` must commit every path it is given in one commit. Landing is judged by the manifests, so a hook that

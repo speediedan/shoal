@@ -191,6 +191,13 @@ assert rc == 1 and "the-real-cause" in out["refused"] and "full output: " in out
 kept = out["refused"].split("full output: ", 1)[1].split(")")[0]
 assert kept.startswith(os.path.join(REPO, ".git")) and "number 39" in open(kept).read(), kept
 assert state() == before, "the kept output lives under the git directory, not in the tree"
+# only the newest KEEP_OUTPUTS logs stay: plant older ones and refuse once more
+kd = os.path.dirname(kept)
+for i in range(25):
+    open(os.path.join(kd, f"archive-hook-2000-01-01T00{i:02d}00Z.log"), "w").write("old\n")
+rc, out = archive("proj/design/lane/tmp.md")
+logs = sorted(f for f in os.listdir(kd) if f.startswith("archive-hook-"))
+assert rc == 1 and len(logs) == 20 and not any(f.startswith("archive-hook-2000-01-01T0000") for f in logs), logs
 write("hook.sh", 'msg=$1; shift; git commit -q -m "$msg" -- "$@" && exit 5\n')
 git("commit", "-q", "-am", "hook commits then fails")
 rc, out = archive("proj/design/lane/tmp.md")

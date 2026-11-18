@@ -684,6 +684,7 @@ def _commit(plan: Plan, message: str, written: dict[str, str]) -> str:
 
 FAILURE_MARK = ("Failed", "REFUSED", "refuse", "error:", "fatal:", "exit code: ")
 EXCERPT_MAX = 1500
+KEEP_OUTPUTS = 20  # refused-hook logs kept under the git directory; older ones are removed when a new one is written
 
 
 def _failure_excerpt(out: str) -> str:
@@ -698,13 +699,19 @@ def _failure_excerpt(out: str) -> str:
 
 
 def _keep_output(root: str, out: str) -> str:
-    """Write the whole output under the git directory (never the work tree) and say where; empty if it cannot."""
+    """Write the whole output under the git directory (never the work tree), keep the newest KEEP_OUTPUTS such logs,
+    and say where; empty if it cannot."""
     try:
         path = _git(root, "rev-parse", "--path-format=absolute", "--git-path",
                     f"shoal/archive-hook-{utcnow().replace(':', '')}.log").stdout.strip()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        d = os.path.dirname(path)
+        os.makedirs(d, exist_ok=True)
         with open(path, "w") as fh:
             fh.write(out)
+        # the names sort by time (a UTC stamp), so the oldest are first
+        logs = sorted(f for f in os.listdir(d) if f.startswith("archive-hook-") and f.endswith(".log"))
+        for f in logs[:-KEEP_OUTPUTS]:
+            os.remove(os.path.join(d, f))
         return f"\n  (full output: {path})"
     except (OSError, Refused):
         return ""
