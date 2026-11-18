@@ -504,13 +504,14 @@ print("data tables ok")
 # a whole data-table field names a directory even without a slash (a data_dir column of bare run names); prose does not
 L7 = "proj/design/lane7"
 write(f"{L7}/archive/raw.txt", "raw\n")
-write(f"{L7}/runs.csv", "run,data_dir\nr1,archive\n")
+write(f"{L7}/runs.csv", "run,data_dir\nr1,archive\nr2, archive\n")
 write(f"{L7}/notes.md", "The raw archive is kept.\n")
 git("add", "-A")
 git("commit", "-q", "-m", "a bare data_dir field")
 rc, out = archive("--migrate", f"{L7}/archive", "--cross-owner", "rewrite")
 assert rc == 0 and out["ok"], out
-assert open(os.path.join(REPO, L7, "runs.csv")).read() == f"run,data_dir\nr1,../../../archive/{L7}\n"
+assert open(os.path.join(REPO, L7, "runs.csv")).read() == (
+    f"run,data_dir\nr1,../../../archive/{L7}\nr2, ../../../archive/{L7}\n")  # a space after the comma is padding
 assert open(os.path.join(REPO, L7, "notes.md")).read() == "The raw archive is kept.\n"
 print("bare data-table fields ok")
 
@@ -527,6 +528,13 @@ before = state()
 rc, out = archive(f"{L8}/far_target.md", "--cross-owner", "rewrite")
 assert rc == 1 and out["refused"].startswith(f"{L8}/far_target.md is a start doc (role far of g1"), out
 assert state() == before, out
+# an absolute link target resolves to the same start doc
+os.remove(os.path.join(REPO, "proj/hub/far_start.md"))
+os.symlink(os.path.join(os.path.realpath(REPO), L8, "far_target.md"), os.path.join(REPO, "proj/hub/far_start.md"))
+git("add", "-A")
+git("commit", "-q", "-m", "the start-doc symlink made absolute")
+rc, out = archive(f"{L8}/far_target.md")
+assert rc == 1 and out["refused"].startswith(f"{L8}/far_target.md is a start doc (role far of g1"), out
 json.dump(sp, open(spec, "w"))
 print("symlinked start-doc target ok")
 
@@ -542,6 +550,11 @@ assert rc == 1 and "--strict" in out["refused"] and "proj/other/n.md:1 `lane9/u_
 assert state() == before, out
 rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--dry-run")
 assert rc == 0 and any("lane9/u_xyz.md` -> `archive/proj/design/lane9/u_xyz.md`" in s for s in out["steps"]), out
+# a role (any writer but user) rewriting other owners' documents is strict without asking; --no-strict is a person's override
+rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--by", "lane", "--dry-run")
+assert rc == 1 and "--strict" in out["refused"], out
+rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--by", "lane", "--no-strict", "--dry-run")
+assert rc == 0, out
 print("strict ok")
 
 subprocess.run(["rm", "-rf", T], check=True)

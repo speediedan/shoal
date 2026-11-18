@@ -261,6 +261,16 @@ class Repo:
             return ""
 
 
+def link_target(repo: "Repo", rel: str) -> str | None:
+    """The repository-relative path a tracked symlink resolves to, through any chain and whether its link text is
+    relative or absolute; None when it leaves the repository or cannot be read."""
+    try:
+        t = repo.rel(os.path.realpath(os.path.join(repo.root, rel)))
+    except OSError:
+        return None
+    return t if t and not t.startswith("..") and t != rel else None
+
+
 def candidates(token: str, here: str, repo: Repo) -> set[str]:
     """Repository-relative paths a token could name from a file in directory `here`."""
     tok = token.split("#", 1)[0].rstrip(".,:;")
@@ -346,9 +356,12 @@ def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier
 
 
 def _whole_field(line: str, start: int, end: int) -> bool:
-    """True when line[start:end] is a whole delimited field: a comma, tab or quote (or the line's edge) on both sides."""
+    """True when line[start:end] is a whole delimited field: a comma, tab or quote (or the line's edge) on both sides,
+    spaces between them aside."""
     body = line.rstrip("\r\n")
-    return (start == 0 or body[start - 1] in ',\t"') and (end >= len(body) or body[end] in ',\t"')
+    # spaces may sit between a delimiter and the field (`a, run1`); a tab is a delimiter, not padding
+    before, after = body[:start].rstrip(" "), body[end:].lstrip(" ")
+    return (not before or before[-1] in ',\t"') and (not after or after[0] in ',\t"')
 
 
 def _form(written: str, here: str, target: str) -> str:
@@ -420,9 +433,9 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
         if r is None:
             continue
         docs_here = [r]
-        if repo.mode.get(r) == "120000":
+        t = link_target(repo, r) if repo.mode.get(r) == "120000" else None
+        if t:
             # a start doc named through a symlink is the target too, wherever the target lives
-            t = posixpath.normpath(posixpath.join(posixpath.dirname(r), os.readlink(os.path.join(repo.root, r))))
             docs_here.append(t)
             if inside(t):
                 root_paths.setdefault(t, []).extend(f"{who_text(w)} (through {r})" for w in whos)
@@ -435,8 +448,8 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             root_paths.setdefault(r, []).extend(who_text(w) for w in whos)
     # a symlinked root's target is a root too: it is what the session reads
     for r in list(root_paths):
-        if repo.mode.get(r) == "120000":
-            t = posixpath.normpath(posixpath.join(posixpath.dirname(r), os.readlink(os.path.join(repo.root, r))))
+        t = link_target(repo, r) if repo.mode.get(r) == "120000" else None
+        if t:
             root_paths.setdefault(t, []).append(f"target of {r}")
 
     referrers = sorted(p for p in repo.mode if (scope == "repo" or inside(p)) and repo.mode[p] != "120000"

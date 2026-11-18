@@ -54,8 +54,9 @@ This is the one write a role may make outside its own directory, so it is a path
   after the run, yet its references now name the archive. Commit or remove those files first if the old path should
   keep meaning something.
 - **`--strict` refuses a partial path.** A unique partial path (`x/a.md`) can be prose about another repository's file
-  that happens to match, so with `--strict` the run refuses and lists such references instead of rewriting them. An
-  unattended run passes it; a person can check the list and run without it.
+  that happens to match, so with `--strict` the run refuses and lists such references instead of rewriting them. It is
+  the default whenever the writer (`--by`, else `$SHOAL_SLUG`) is not `user`, so a role's unattended run is strict
+  without asking; a person who has checked the list passes `--no-strict`.
 - **A tracked symlink is repointed** in its own form: a relative link stays relative. (Only relative links are read as
   references today; an absolute one would stay absolute.) A symlink that is a start doc refuses the run: that role
   moves first.

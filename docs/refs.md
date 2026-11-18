@@ -46,7 +46,7 @@ left out and named in `notes`, rather than resolved against wherever the command
 
 | Class | Meaning | Archive candidate |
 |---|---|---|
-| `root` | a start doc or brief (`--doc`, `--shoal/--slug`, `--root`), any `--roots` path inside the directory, and the target of a root that is a symlink, wherever the symlink lives | never |
+| `root` | a start doc or brief (`--doc`, `--shoal/--slug`, `--root`), any `--roots` path inside the directory, and the target of a root that is a symlink, wherever the symlink lives and whether its link is relative, absolute or a chain | never |
 | `live` | reachable from a root through live documents inside the directory, or named by a live document (or a symlink) anywhere else in the repository | no |
 | `history-only` | named only by history documents: the companion log (`*_log.md`), or what `--history` adds | yes (with `--age-floor-all`, once older than `--min-age-days`) |
 | `superseded` | its front matter says `status: superseded` and nothing live names it | yes (with `--age-floor-all`, once older than `--min-age-days`) |
@@ -93,7 +93,7 @@ data_max_bytes` (4 MiB by default) is not read, so a large tracked dataset does 
 under `skipped`, and `archive` and the deep pass name it in their notes. A directory is named only by a token
 written with a `/` (`archive/`, `x/archive`): a bare word would resolve beside the naming file, and nothing tells a
 directory name from a word. In a data table, a whole field may name a directory without a `/` (a `data_dir` column of
-bare run names): a field is not prose.
+bare run names, spaces after the delimiter allowed): a field is not prose.
 
 `--scope dir` looks for references inside the directory only, which is faster and misses what other directories name.
 
