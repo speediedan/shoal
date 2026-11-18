@@ -85,6 +85,9 @@ LADDERS = {
     # the maintainer's return (user-offline off): a role holding asks raises them. `offline off` wakes only the roles of
     # the host it ran on, so each host's quorum wakes its own, once per return, after RETURN_GRACE_MIN
     "asks-on-return": [(0, "wake")],
+    # [accounts] quota_handoff: a role at a quiet boundary whose account nears a 5 h or weekly limit, or carries more
+    # than its share, is handed to the account balancing picks (accounts.quota_pick); held through its cooldown
+    "quota-handoff": [(0, "restart")],
 }
 CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after this
@@ -861,6 +864,10 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                             "since": q.get("ts") or iso(), "first_seen": True,
                             "detail": f"context {o[0]}k past its {o[1]}k limit at a quiet boundary (nothing mid-flight): "
                                       f"`shoal restart --spec <spec> --only {slug}` hands it to a fresh session"})
+            else:
+                qh = quota_condition(spec, role, q, auto)
+                if qh is not None:
+                    out.append(qh)
         # continuation: a turn that ended while the status says active (architecture doc §3.2)
         cont = continuation_cfg(spec)
         if cont is not None and role_status == "active" and between:
@@ -994,6 +1001,43 @@ def stale_worker_upkeep(spec: ShoalSpec, acts: list, dry_run: bool = False, stat
             continue
         acts.append((role.slug, "stale worker", f"runs Claude {have}, installed {want}: "
                                                 + be.respawn(job, dry_run) + " (no turn)"))
+
+
+def quota_condition(spec: ShoalSpec, role, q: dict, auto: bool) -> dict | None:
+    """`[accounts] quota_handoff`: the quota-handoff condition for a local role at a quiet boundary, or None. The role is
+    handed over as a context restart is: in `auto` context mode at any quiet boundary once its start doc meets its
+    contract, else only when it marked itself restart-ready. The target is `accounts.quota_pick` over the balancing pool
+    (its own provider only when `[accounts] pin` names it), never a provider this host will not run or a Claude account
+    that has not trusted the shoal's folder."""
+    import accounts
+    if role is None or not role.session or not accounts.quota_handoff_on() or not is_local(role, spec):
+        return None
+    if not (q.get("restart_ready") or auto):
+        return None
+    try:
+        pick = accounts.quota_pick(role.ecosystem, role.account, accounts.role_load(), accounts.pinned(role.slug),
+                                   slug=role.slug)
+    except Exception:  # noqa: BLE001 - no usage cache or specs: the role stays
+        return None
+    if pick is None:
+        return None
+    p, acct, why = pick
+    import park
+    new_eco = p if p != role.ecosystem else ""
+    if new_eco and park._ecosystem_refusal(new_eco):
+        return None
+    if p == "claude":
+        from backends import claude_untrusted
+        if claude_untrusted(acct, spec.dir):
+            return None
+    if not q.get("restart_ready") and role.doc:
+        import startdoc as _sd
+        if not _sd.check(role.doc)["ok"]:
+            return None  # no blind handover: the role's own boundary (context-doc) gets its doc fixed first
+    extra = park.move_args(role, new_eco, acct)[0]
+    return {"slug": role.slug, "condition": "quota-handoff", "key": f"session:{role.session}:{p}/{acct}",
+            "since": q.get("ts") or iso(), "first_seen": True, "extra": extra,
+            "detail": f"{accounts.name(role.ecosystem, role.account)} -> {accounts.name(p, acct)}: {why}"}
 
 
 def rebalance(spec: ShoalSpec, role) -> tuple[str, ...]:
@@ -1287,6 +1331,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         del woke[k_]
     last_wake = state.setdefault("last_wake", {})
     merged: dict[str, list] = {}  # slug -> [(condition, detail, act index)]: one wake per role per run
+    quota_done = False  # one quota handoff per run
     ladders = state.setdefault("ladders", {})
     prev_keys = set(ladders)
     live_keys = set()
@@ -1303,6 +1348,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
         elif c["condition"] == "context-restart" and __import__("context").mode(spec, c["slug"]) == "auto":
             steps = CONTEXT_AUTO_LADDER
+        elif c["condition"] == "quota-handoff":
+            steps = LADDERS["quota-handoff"]
         else:
             steps = LADDERS[c["condition"]]
         if c["condition"] in wake_off:  # features.health.wake_off: this condition pages, never wakes
@@ -1376,7 +1423,26 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", ""))
                 lad["step"] += 1
                 break
-            if action == "restart":
+            if action == "restart" and c["condition"] == "quota-handoff":
+                # one quota move per run, and none for a role moved within its cooldown: the readings and the load the
+                # next pick reads catch up with each move first, so roles do not swing between accounts
+                import accounts as _ac
+                moved_at = state.setdefault("quota_moved", {})
+                since = age_min(moved_at.get(c["slug"], ""))
+                hold = ("another role moved this run" if quota_done else
+                        f"moved {since:.0f} min ago (cooldown {_ac.quota_cooldown_min():g})"
+                        if since is not None and since < _ac.quota_cooldown_min() else "")
+                if hold:
+                    if lad.get("quiet") != hold.split(" ")[0]:
+                        lad["quiet"] = hold.split(" ")[0]
+                        acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:restart", f"held ({hold})"))
+                    break
+                ch = context_restart(spec, spec_path, role_, dry_run, tuple(c.get("extra") or ()))
+                if not ch.startswith("FAILED"):
+                    moved_at[c["slug"]] = iso()
+                    quota_done = True
+                    ch += f"; {c['detail']}"
+            elif action == "restart":
                 moved = rebalance(spec, role_)
                 ch = context_restart(spec, spec_path, role_, dry_run, moved[:1])
                 if moved and not ch.startswith("FAILED"):

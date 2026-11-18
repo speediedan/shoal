@@ -496,18 +496,7 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     if role_status == "waiting":  # what the operator is deciding about: a job or lease goes on without this session
         print(f"{slug} waits on {st.get('sub') or '?'}" + (f" ({st['target']})" if st.get("target") else "")
               + ": the wait stays with the role, and the new session reads it from the ledger")
-    extra: list[str] = []
-    if new_eco:
-        extra.append(f"--set-ecosystem={slug}:{new_eco}")
-        # another provider never inherits the old model or effort: this host's default for it (empty: the provider's own)
-        dmodel, deffort = config.provider_default(new_eco)
-        model, effort = model or dmodel, effort or deffort
-    if model or new_eco:
-        extra.append(f"--set-model={slug}:{model}")
-    if effort:
-        extra.append(f"--set-effort={slug}:{effort}")
-    if new_acct != keep or (new_eco and new_acct):
-        extra.append(f"--set-account={slug}:{new_acct}")
+    extra, model, effort = move_args(role, new_eco, new_acct, model, effort)
     if note.strip():  # the operator's restart note, in the new session's first prompt
         extra.append(f"--note={slug}:{note.strip()}")
     acct_now = (f" ({role.account})" if role.account else "")
@@ -522,6 +511,25 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     out = health.context_restart(spec, spec_path, role, dry_run, tuple(extra))
     print(out)
     return 1 if out.startswith("FAILED") else 0
+
+
+def move_args(role, new_eco: str, new_acct: str, model: str = "", effort: str = "") -> tuple[list[str], str, str]:
+    """(restart arguments, model, effort) that move `role` to provider `new_eco` ("" for its own) and account `new_acct`:
+    `handoff` and the quorum's quota handoff build them alike. Another provider never inherits the old model or effort:
+    this host's default for it (`[provider_defaults.<eco>]`, empty for the provider's own)."""
+    slug, keep = role.slug, (role.account if not new_eco else "")
+    extra: list[str] = []
+    if new_eco:
+        extra.append(f"--set-ecosystem={slug}:{new_eco}")
+        dmodel, deffort = config.provider_default(new_eco)
+        model, effort = model or dmodel, effort or deffort
+    if model or new_eco:
+        extra.append(f"--set-model={slug}:{model}")
+    if effort:
+        extra.append(f"--set-effort={slug}:{effort}")
+    if new_acct != keep or (new_eco and new_acct):
+        extra.append(f"--set-account={slug}:{new_acct}")
+    return extra, model, effort
 
 
 def _ecosystem_refusal(ecosystem: str) -> str:
