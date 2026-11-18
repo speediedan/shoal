@@ -410,6 +410,77 @@ for line in sys.stdin:
         self.assertEqual(d["rateLimits"]["primary"]["usedPercent"], 12)
         self.assertEqual(methods.read_text().splitlines(), ["initialize", "initialized", "account/rateLimits/read"])
 
+    def test_a_signed_out_codex_host_says_so(self):
+        """The server's 'authentication required' reply is named (2026-11-18: a host whose auth.json was gone read as
+        a bare 'RPC failed' while its meter kept an old 27% and Codex's own client said 98%)."""
+        fake = Path(self.tmp.name) / "codex-signed-out"
+        fake.write_text("#!/usr/bin/env python3\n" + '''import json,sys
+for line in sys.stdin:
+ d=json.loads(line)
+ if 'id' not in d:continue
+ if d['method']=='initialize':print(json.dumps({'id':d['id'],'result':{}}),flush=True)
+ else:print(json.dumps({'id':d['id'],'error':{'code':-32600,'message':'codex account authentication required to read rate limits'}}),flush=True)
+''')
+        fake.chmod(0o700)
+        with patch.dict(os.environ, {"SHOAL_CODEX_BIN": str(fake)}):
+            with self.assertRaisesRegex(u.UsageError, "not signed in on this host"):
+                u.codex_read()
+
+    def test_an_account_this_host_cannot_read_is_read_from_another_host(self):
+        """A failed read takes the freshest direct reading another host holds; the meter says where and why."""
+        u.collect(["codex"], fetcher=lambda _: codex(27), now=1000)
+
+        def signed_out(_):
+            raise u.UsageError("Codex is not signed in on this host (`codex login`)")
+
+        def peer(observed, percent, source="account API", error=""):
+            return {"provider": "codex", "observed_at": observed, "source": source, "error": error,
+                    "rows": [{"bucket": "codex", "plan": "plus", "secret": "x",
+                              "windows": [{"name": "5h", "used_percent": percent, "resets_at": FUTURE, "minutes": 300}]}]}
+
+        peers = lambda p: [("relay", peer(1290, 50, source="hostb account API")), ("broken", peer(1295, 60, error="x")),
+                           ("hostb", peer(1280, 98)), ("future", peer(9999, 70))]
+        d = u.collect(["codex"], fetcher=signed_out, peers=peers, force=True, now=1300)
+        a = d["accounts"]["codex"]
+        self.assertEqual(a["rows"][0]["windows"][0]["used_percent"], 98)  # the direct reading, not the relayed one
+        self.assertNotIn("secret", a["rows"][0])
+        self.assertEqual((a["source"], a["observed_at"], a["error"]), ("hostb account API", 1280, ""))
+        self.assertIn("not signed in", a["local_error"])
+        self.assertEqual(a["next_poll_at"], 1300 + u.POLL_S)
+        snap = u.snapshot(["codex"], now=1301)
+        self.assertFalse(snap["accounts"][0]["stale"])
+        self.assertIn("read on hostb; here: Codex is not signed in", u.render_table(snap))
+        self.assertIn("read on hostb; here: Codex is not signed in", u.render_lines(snap))
+        # nothing newer anywhere: this host's error shows, the peer is asked again at the normal rate
+        d = u.collect(["codex"], fetcher=signed_out, peers=lambda p: [("hostb", peer(1280, 98))], force=True, now=1400)
+        a = d["accounts"]["codex"]
+        self.assertTrue(a["error"].startswith("Codex is not signed in"))
+        self.assertEqual((a["observed_at"], a["next_poll_at"]), (1280, 1400 + u.POLL_S))
+        # a direct read here again clears the note
+        a = u.collect(["codex"], fetcher=lambda _: codex(99), force=True, now=1500)["accounts"]["codex"]
+        self.assertEqual((a["source"], a["local_error"]), ("account API", ""))
+
+    def test_an_injected_fetcher_never_asks_other_hosts(self):
+        with patch.object(u, "read_peers", side_effect=AssertionError("no ssh under an injected fetcher")):
+            def fail(_):
+                raise u.UsageError("down")
+            d = u.collect(["codex"], fetcher=fail, now=1000)
+        self.assertEqual(d["accounts"]["codex"]["error"], "down")
+
+    def test_a_host_asked_by_another_never_asks_in_turn(self):
+        """`--no-peers` (peers=False), the form a peer is asked in, keeps the real reader from asking other hosts."""
+        def fail(_):
+            raise u.UsageError("down")
+        with patch.object(u, "fetch", fail), \
+                patch.object(u, "read_peers", side_effect=AssertionError("asked another host")) as peers:
+            d = u.collect(["codex"], peers=False, now=1000)
+            self.assertEqual(d["accounts"]["codex"]["error"], "down")
+            peers.assert_not_called()
+            peers.side_effect = None
+            peers.return_value = []
+            u.collect(["codex"], force=True, now=1100)
+            peers.assert_called_once_with("codex")
+
 
 if __name__ == "__main__":
     unittest.main()
