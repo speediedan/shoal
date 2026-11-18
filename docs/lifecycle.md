@@ -53,6 +53,7 @@ on_retire = ""                         # run when a role or standalone session r
 
 [refs]
 text_ext = []                          # extensions read for references beyond the built-in text set, e.g. [".rst"]
+data_max_bytes = 4194304               # a .csv or .tsv larger than this is not read for references (and is reported)
 ```
 
 A key that is unknown, of the wrong type, or outside its choices is reported by `shoal lifecycle show` and the default

@@ -489,6 +489,15 @@ assert open(os.path.join(REPO, L5, "tables/runs.csv")).read() == (
     f"run_id,data_dir,label\nr1,../../../../archive/{L5}/runs/r1,\"a, b\"\nr2,../live,x\n")
 assert open(os.path.join(REPO, L5, "tables/notes.rst")).read() == (
     f"See ../../../../archive/{L5}/runs/r1/raw.txt for the raw run.\n")
+# a data table over [refs] data_max_bytes is skipped, and the run says so
+write(f"{L5}/tables/big.csv", "x," * 400 + f"\n../../../../archive/{L5}/runs/r1\n")
+write("proj/design/lane6/z.md", "z\n")
+lc = open(os.path.join(REPO, ".shoal/lifecycle.toml")).read()
+write(".shoal/lifecycle.toml", lc.replace("[refs]\n", "[refs]\ndata_max_bytes = 512\n"))
+git("add", "-A")
+git("commit", "-q", "-m", "a table over the cap")
+rc, out = archive("proj/design/lane6/z.md", "--dry-run")
+assert any(f"{L5}/tables/big.csv not read for references" in n for n in out["notes"]), out
 print("data tables ok")
 
 subprocess.run(["rm", "-rf", T], check=True)

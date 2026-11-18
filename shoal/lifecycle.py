@@ -39,8 +39,9 @@ DEFAULTS: dict[str, dict] = {
     "cold": {"warm_days": 90, "after_checkpoints": 2},
     "instructions": {"every_days": 14},
     "hooks": {"commit": "", "on_retire": ""},
-    # extensions read for references beyond refs.TEXT_EXT (which already holds .csv and .tsv), e.g. [".rst", ".dat"]
-    "refs": {"text_ext": []},
+    # extensions read for references beyond refs.TEXT_EXT (which already holds .csv and .tsv), e.g. [".rst", ".dat"];
+    # a data table (.csv, .tsv) larger than data_max_bytes is skipped, and the skip is reported
+    "refs": {"text_ext": [], "data_max_bytes": 4194304},
 }
 CHOICES = {("checkpoint", "archive"): ("auto", "propose", "off"),
            ("checkpoint", "cross_owner"): ("notify", "rewrite", "keep")}
@@ -49,7 +50,7 @@ KIND = {int: "a whole number", float: "a number", str: "a string", list: "a list
 # a negative age floor makes every file a candidate. min_age_days 0 means "now" and is a number of days, so a float.
 FLOORS = {("tiers", "header_max_lines"): 1, ("tiers", "header_max_bytes"): 1, ("checkpoint", "min_age_days"): 0,
           ("deep_pass", "every_days"): 1, ("deep_pass", "every_restarts"): 1, ("cold", "warm_days"): 1,
-          ("cold", "after_checkpoints"): 1, ("instructions", "every_days"): 1}
+          ("cold", "after_checkpoints"): 1, ("instructions", "every_days"): 1, ("refs", "data_max_bytes"): 1}
 
 
 def _toml():

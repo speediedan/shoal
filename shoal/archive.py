@@ -200,6 +200,11 @@ def _spans(plan: Plan, targets: list[str], repo: refs.Repo | None = None, skip: 
     out_of, exts = set(targets) | set(skip), refs.text_ext(plan.lc["values"])
     referrers = sorted(p for p in repo.mode if repo.mode[p] != "120000"
                        and posixpath.splitext(p)[1].lower() in exts and tier(p) != "excluded" and p not in out_of)
+    referrers, skipped = refs.readable(repo, referrers, plan.lc["values"])
+    for p in skipped:
+        note = f"{p} not read for references: a data table over [refs] data_max_bytes"
+        if note not in plan.notes:
+            plan.notes.append(note)
     return [s for s in refs.reference_spans(repo, targets, referrers, tier, plan.dirs) if s["file"] not in out_of]
 
 
