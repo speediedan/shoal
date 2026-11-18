@@ -540,11 +540,11 @@ export default class Actions extends View {
     if (isView(this.verb)) this.runView(cx);
   }
 
-  answer(ask, cx, n = null) {
-    const a = answerTarget(this.sel, ask, new Date(), n);
+  answer(ask, cx, n = null, choice = null) {
+    const a = answerTarget(this.sel, ask, new Date(), n, choice);
     this.sel = { shoal: a.target.shoal, role: a.target.role };
     this.verb = null;
-    this.pick("msg", cx, { wake: true, ...(Number.isInteger(n) ? { text: `re ask ${n}: ` } : {}) });
+    this.pick("msg", cx, { wake: true, ...(Number.isInteger(n) ? { text: a.form.values.text } : {}) });
   }
 
   // ---- the queue manager
@@ -1061,7 +1061,9 @@ export default class Actions extends View {
     if (Array.isArray(v.asks)) {
       if (!v.asks.length) col.child(div().text_color(c.dim).child("no open asks and no role waiting on a question"));
       v.asks.forEach((a, i) => {
-        const why = a.question ? "blocked on a question in its session: attach to its card to answer there, or answer by mail" : a.saysWaiting ? "says it waits on you, with no prompt: answer by mail with a wake" : "";
+        const why = a.question ? "blocked on a question in its session: attach to its card to answer there, or answer by mail"
+          : a.headless && a.asks.length ? "its turns are headless (no question tool): answer each ask here, from its choices"
+          : a.saysWaiting ? "says it waits on you, with no prompt: answer by mail with a wake" : "";
         const card = v_flex().id(`ask-${i}`).gap(4).p(10).rounded(8).bg(c.panel).border_1().border_color(withAlpha(c.blocked, 0.45))
           .child(h_flex().gap(8).items_center()
             .child(div().w(8).h(8).rounded(4).flex_none().bg(c.blocked))
@@ -1083,6 +1085,17 @@ export default class Actions extends View {
             row.child(Link.new(`open-${i}-${j}-${k}`).href(l.url).flex_none().text_size(11).text_color(c.accent).child(`${l.text} ↗`));
           }
           card.child(row);
+          // its answer set: each choice opens the reply with that answer filled in (Message, wake on), so a headless
+          // role's ask is answered like a prompted one
+          const opts = a.options?.[j] ?? [];
+          if (opts.length) {
+            const choices = h_flex().id(`choices-${i}-${j}`).gap(6).items_center().flex_wrap();
+            opts.forEach((o, k) => choices.child(h_flex().id(`choice-${i}-${j}-${k}`).h(22).px(8).items_center().rounded(5)
+              .cursor_pointer().border_1().border_color(c.input).text_size(11).text_color(c.ink).hover((s) => s.bg(c.hover))
+              .tooltip(`Message ${a.role} "re ask ${j + 1}: ${o}.", wake on`)
+              .on_click((_e, cx) => { this.answer(a, cx, j + 1, o); cx.notify(); }).child(o)));
+            card.child(choices);
+          }
         });
         col.child(card);
       });

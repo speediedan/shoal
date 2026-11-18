@@ -873,7 +873,9 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   report carries `kind`: `auth` for `user-auth`, `question` for an open prompt, an ask (the message then leads with the
   asks themselves, `2 asks: <first>; <second> ·`, so the badge's question can be read, and labels the count, `shoal.asks`:
   a click on the badge opens the actions dialog's Asks on that role, every ask in full with Reply (a message to the role,
-  `re ask <n>:`, wake on) and a link to each issue or PR it names (a bare `#n` after "gate", "build", "run" and the like is
+  `re ask <n>:`, wake on), its answer set as one button per choice (grant, defer, delegate review and deny for a merge;
+  grant, defer and deny otherwise: the reply with `re ask <n>: <choice>. ` filled in, left open for a condition or a
+  reviewer's name), which is how a headless role (a Codex or Muse turn, with no question tool) is answered, and a link to each issue or PR it names (a bare `#n` after "gate", "build", "run" and the like is
   a build number and links nothing). When the badge is an open prompt, its click focuses the pane where the prompt is
   answered, and the row's right-click still opens any asks beside it) or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has

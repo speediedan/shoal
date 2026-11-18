@@ -1516,6 +1516,24 @@ assert w.startswith("exec:") and "run by shoal itself" in how, (w, how)
 b = briefs.brief_for(r, spec)
 assert "HEADLESS TURNS (Muse)" in b and "never ask one" in b and "queue --ask" in b, "muse brief lacks the headless clause"
 assert "run it once with `--test` first" not in b, "a muse role must not be told to arm a watcher"
+# a headless role (no question tool) keeps its asks recorded and is answered from the Asks view's choices, never told to
+# raise question sets or to ask directly: a Codex role told both cleared its asks to put them "first-person"
+feats = spec.features
+spec.features = dict(feats or {}, workwake=True)  # the work-loop brief every live shoal runs
+for eco in ("muse", "codex"):
+    r.ecosystem = eco
+    hb = briefs.brief_for(r, spec)
+    assert "question-tool call" not in hb and "AskUserQuestion" not in hb and "ask the maintainer directly" not in hb, eco
+    missing = [x for x in ("re ask <n>: <choice>", "Never clear a still-valid ask", "queue --answered <n>") if x not in hb]
+    assert not missing, (eco, missing, hb[:300])
+r.ecosystem = "claude"
+cb = briefs.brief_for(r, spec)
+assert "one question-tool call per set" in cb and "ask the maintainer directly with decline/hold" in cb, "claude brief changed"
+spec.features = feats
+r.ecosystem = "muse"
+import worker
+assert [o["label"] for o in worker.ask_options("May I merge PR #5?")] == ["Grant merge", "Defer review", "Delegate review", "Deny"]
+assert [o["label"] for o in worker.ask_options("May I bump the pin?")] == ["Grant", "Defer", "Deny"]
 # between turns: free lock is between turns, a held one is mid-turn
 assert health.session_between_turns(r, {}, "/x") is True
 d = muse.sdir(r.session, create=True)

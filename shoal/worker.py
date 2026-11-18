@@ -202,6 +202,20 @@ def pr_live(ref: str) -> dict:
         return {}
 
 
+def ask_options(ask: str) -> list[dict]:
+    """The answer set of one recorded ask: grant, defer, delegate and deny for a merge, else grant, defer and deny.
+    The question tool shows it for a role that can prompt; the viewer's Asks view shows it for every role, so a headless
+    one (a Codex or Muse turn, which has no question tool) is answered from the same choices."""
+    if "merge" in ask.lower():
+        return [{"label": "Grant merge", "description": "Merge now (explicit squash subject and body)."},
+                {"label": "Defer review", "description": "Keep it open; the lane stacks or continues other work."},
+                {"label": "Delegate review", "description": "Offer a review to another role (name it)."},
+                {"label": "Deny", "description": "Do not merge; say what should change."}]
+    return [{"label": "Grant", "description": "Proceed as asked."},
+            {"label": "Defer", "description": "Not now; the lane continues other work."},
+            {"label": "Deny", "description": "Do not proceed; say what should change."}]
+
+
 def question_sets(spec: ShoalSpec, view: View, slug: str) -> dict:
     """The role's recorded asks as prompted question sets: at most ASKS_PER_SET questions per set, each
     labelled from LIVE PR data (title, state, head, checks), never from the model's memory (measured
@@ -221,17 +235,9 @@ def question_sets(spec: ShoalSpec, view: View, slug: str) -> dict:
                              f"{', draft' if live.get('isDraft') else ''}, head {str(live.get('headRefOid'))[:8]}, "
                              f"mergeable {live.get('mergeable')}, checks: {checks})")
         hint = ask_hint(spec, view, ask)
-        merge = "merge" in ask.lower()
-        opts = ([{"label": "Grant merge", "description": "Merge now (explicit squash subject and body)."},
-                 {"label": "Defer review", "description": "Keep it open; the lane stacks or continues other work."},
-                 {"label": "Delegate review", "description": "Offer a review to another role (name it)."},
-                 {"label": "Deny", "description": "Do not merge; say what should change."}] if merge else
-                [{"label": "Grant", "description": "Proceed as asked."},
-                 {"label": "Defer", "description": "Not now; the lane continues other work."},
-                 {"label": "Deny", "description": "Do not proceed; say what should change."}])
         questions.append({"ask": i, "header": f"Ask {i}", "multiSelect": False,
                           "question": ask + (hint or "") + ("\n\nLive: " + "; ".join(facts) if facts else ""),
-                          "options": opts})
+                          "options": ask_options(ask)})
     sets = [questions[k:k + ASKS_PER_SET] for k in range(0, len(questions), ASKS_PER_SET)]
     return {"role": slug, "sets": sets, "dropped_unanswered": recent_drops(view, slug),
             "rule": (f"Raise every set, one question-tool call per set, in order; at most {ASKS_PER_SET} per set. "

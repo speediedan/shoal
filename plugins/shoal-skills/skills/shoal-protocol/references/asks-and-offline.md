@@ -21,6 +21,20 @@ where you sit, and a question buried in a status report is not an ask.
 5. **After the answers,** remove each answered ask with `queue --answered <n>`. An ask whose answer
    was a condition stays recorded until the condition holds.
 
+## Headless turns (Codex, Muse)
+
+A turn started by `codex exec` or `muse exec` has no terminal and no question tool, so it never
+prompts. Its asks are still first-person, and the maintainer still answers from a set of choices:
+
+1. **Record the ask** with `shoal queue --ask "<question>"`: your role, the item, and for a merge the
+   PR and its head SHA. Write the question, not the options: the viewer's Asks view shows every
+   recorded ask with its answer set (grant, defer, delegate review and deny for a merge; grant,
+   defer and deny otherwise), the same set `shoal asks` builds for the question tool.
+2. **Keep it recorded.** A still-valid ask from an earlier session of your role stays as it is:
+   grants never transfer, but the ask is yours to keep, so do not clear it only to record it again.
+3. **The answer arrives as mail**, `re ask <n>: <choice>. <detail>`, read in `next` at your
+   boundary (the maintainer's answer wakes you). Act on it, then `queue --answered <n>`.
+
 ## Dropping an ask
 
 An ask that no longer applies is dropped with `queue --drop-ask <n> --drop-reason <why>`, after

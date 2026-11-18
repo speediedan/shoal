@@ -94,6 +94,12 @@ def grants_block(role: Role, spec=None, view=None) -> str:
     if not needed:
         return out
     items = "\n".join(f"- {g}" for g in needed)
+    if role.ecosystem in HEADLESS:
+        # no question tool in a headless turn: the grants go on record, and the Asks view puts them to the maintainer
+        return out + (
+            "\nGRANTS NEEDED: record them first-person with `queue --ask`, one ask naming every item (the Asks view "
+            "gives the maintainer a grant / defer / deny choice), and do only work no item gates until the answer "
+            "arrives as mail. Ask only for what no standing grant above covers:\n" + items)
     return out + (
         "\nGRANTS NEEDED — before starting any work, ask the maintainer "
         "directly (first-person), all items in ONE question with a "
@@ -132,6 +138,45 @@ def watch_clause(role: Role, spec: ShoalSpec, arm: str, how_arm: str) -> str:
     return (f"WATCH (mandatory, first act after reading): arm `{arm}` {how_arm}; run it once with `--test` first and "
             f"confirm the test wake arrived. Re-arm after every wake and "
             f"{pid_proof(watch_sidecar(spec.sid, role.slug), sidecar=True)}. ")
+
+
+HEADLESS = ("muse", "codex")  # turns are headless exec processes: no terminal, no question tool (watch_clause)
+
+
+def ask_evidence(role: Role) -> str:
+    """What a user-auth/user-design wait must stand on: a prompted question raised this turn, or for a headless role
+    (which cannot prompt) an ask it recorded this turn."""
+    if role.ecosystem in HEADLESS:
+        return ("an ask you recorded THIS turn with `queue --ask \"<question>\"` (first-person: your role, the item, a "
+                "PR's head SHA)")
+    return ("a first-person prompted question you raised THIS turn (question tool / AskUserQuestion, options plus "
+            "decline/hold) and recorded with `queue --ask \"<question>\"`")
+
+
+def raise_clause(role: Role, sid: str) -> str:
+    """How recorded asks reach the maintainer. A role that can prompt raises them as question sets; a headless one
+    leaves them recorded, and the viewer's Asks view shows each with its answer set (worker.ask_options), so the
+    maintainer answers from the same choices and the answer comes back as mail."""
+    if role.ecosystem in HEADLESS:
+        return ("and keep the rest recorded: you never prompt (no question tool), and each recorded ask reaches the "
+                "maintainer as a question in the Asks view with its answer set (grant, defer, delegate review, deny "
+                "for a merge; grant, defer, deny otherwise), so write the ask, not the options. Never clear a "
+                "still-valid ask only to record it again. The answer arrives as mail `re ask <n>: <choice>. <detail>`, "
+                "read in `next` at your boundary: act on it and remove it with `queue --answered <n>`.")
+    return (f"build the sets with `{SHOAL_CLI} asks --shoal {sid} --slug {role.slug} --question-json` (live PR "
+            "labels: never describe a PR from memory), and raise EVERY set, one question-tool call per set of at most "
+            "four; remove answered asks with `queue --answered <n>`. BEFORE ANY PROMPTED QUESTION (merge asks "
+            "included): run `next` unpiped (never through head/grep: MAIL and banners print first); if it says USER "
+            "OFFLINE, record the ask with `queue --ask` instead. The question tool blocks your turn, so record the ask "
+            "and a user-auth wait first.")
+
+
+def grant_clause(role: Role) -> str:
+    """Grants are first-person in every harness; how the ask is put differs."""
+    if role.ecosystem in HEADLESS:
+        return ("Grants are first-person: record your own ask with `queue --ask` (the Asks view gives the maintainer "
+                "its decline and hold choices); authorizations never transfer.")
+    return "Grants are first-person: ask the maintainer directly with decline/hold options; authorizations never transfer."
 
 
 def arming(role: Role, spec: ShoalSpec) -> tuple[str, str]:
@@ -204,9 +249,8 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
         f"Lane row you post says that status, never `active`. If you stop while your status is still active, the "
         f"health quorum wakes you to continue about 5 minutes later, which is a wasted turn. Sleep only when "
         f"WAITING (arm the waiter first, give --target so the health quorum can verify it) or when your queue is "
-        f"empty (--idle). EVERY WAIT EXPIRES: a user-auth/user-design wait exists only together with a "
-        f"first-person prompted question you raised THIS turn (question tool / AskUserQuestion, options plus "
-        f"decline/hold) and recorded with `queue --ask \"<question>\"`; a session-blocked wait names its blocker "
+        f"empty (--idle). EVERY WAIT EXPIRES: a user-auth/user-design wait exists only together with "
+        f"{ask_evidence(role)}; a session-blocked wait names its blocker "
         f"with `--blocked-on <role>:<repo#n>`; when `next` prints RESCAN EXPIRED, re-verify and re-raise or pivot "
         f"to the next unblocked item. When `next` prints BLOCKING, another role waits on you: schedule that item or "
         f"pass it with a reason. HELD-UNSCHEDULED claims are scheduled or released (`release --kind handoff`), "
@@ -218,19 +262,13 @@ def workwake_brief(role: Role, spec: ShoalSpec) -> str:
         f"USER OFFLINE, never wait on the maintainer: record each blocking ask with `queue --ask`, stack PRs "
         f"(gh-stack) or take the next unblocked item; you are woken when they return. When they RETURN (or "
         f"whenever `next` prints ASKS TO RAISE): re-verify every recorded ask, drop the ones that no longer apply "
-        f"(`queue --drop-ask <n> --drop-reason <why>`), build the sets with `{SHOAL_CLI} asks --shoal {sid} --slug "
-        f"{role.slug} --question-json` (live PR labels: never describe a PR from memory), and raise EVERY set, "
-        f"one question-tool call per set of at most four; remove answered asks with `queue --answered <n>`. "
-        f"BEFORE ANY PROMPTED QUESTION (merge asks included): run `next` unpiped (never through head/grep: MAIL "
-        f"and banners print first); if it says USER OFFLINE, record the ask with `queue --ask` instead. The "
-        f"question tool blocks your turn, so record the ask and a user-auth wait first. "
+        f"(`queue --drop-ask <n> --drop-reason <why>`), {raise_clause(role, sid)} "
         f"PR SIZING: every PR attempts to close at least two issues (find the second before the first push; a "
         f"single-issue PR says why in its body); slices of one issue ('Advances #n') count as single-issue, and "
         f"slices that share a change or files belong in ONE PR; separable work goes in a gh-stack with every "
         f"gated-path change in the bottom layer, because only a PR based on the default branch queues a gated "
         f"build. "
-        f"{h4_disciplines(role, spec)}Grants are first-person: ask the maintainer directly with decline/hold "
-        f"options; authorizations never transfer. Confirm arming with: `next` output echoed, watcher pid, test "
+        f"{h4_disciplines(role, spec)}{grant_clause(role)} Confirm arming with: `next` output echoed, watcher pid, test "
         f"wake seen, first `queue` version written.")
 
 
@@ -293,8 +331,7 @@ def ledger_brief(role: Role, spec: ShoalSpec) -> str:
         f"armed watch for daemon validation: `{SHOAL_CLI} watch-register --shoal {sid} --slug {role.slug} "
         f"--kind ci|ledger|lease --target <what> --pid <pid> --session <your-full-session-id> "
         f"[--rescan-min N]` (the daemon pages you if the pid dies or the rescan lapses +50%). Keep a "
-        f"`## Running monitors` section in your plan_state current (exact re-arm lines). Grants are "
-        f"first-person: ask the maintainer directly with decline/hold options; authorizations never transfer. "
+        f"`## Running monitors` section in your plan_state current (exact re-arm lines). {grant_clause(role)} "
         f"{h4_disciplines(role, spec)}"
         f"Confirm arming with: ledger view echoed (item counts), watcher pid, test wake seen; "
         f"{pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}.")
