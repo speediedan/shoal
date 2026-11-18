@@ -430,6 +430,109 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 RESUMED_NOTE = ("Your session was resumed for this wake: its worker had been retired (idle) or had died, so "
                 "background commands it ran inside the session are gone. A detached ledger-watch survives that; "
                 "`next` says whether yours is armed. Act on this wake: ")
+WAITERS_STOPPED_NOTE = ("Your in-session job or CI waiters were stopped to deliver this wake (they held every wake "
+                        "back for as long as they ran). The jobs run on, and your watcher wakes you on each `job:` or "
+                        "CI wait you recorded, so re-arm a waiter only if no recorded wait covers it. Act on this wake: ")
+# a background command that only waits on the role's own job or on CI: stopping it loses nothing, since the job unit runs on
+# and the role's recorded wait (and its detached watcher) covers it. Anything else in flight is real work and holds the wake.
+WAITER_SHELL = ("for ", "done", "fi", "if ", "while ", "until ", "echo ", "sleep ", "cat ", "tail ", "printf ", "true")
+WAITER_RE = re.compile(r"(?:\bshoal|cli\.py) (?:job wait|ci-wait) |\bgh (?:run watch|pr checks [^|;&]*--watch)\b")
+
+
+WAITER_HELPERS = ("tail", "sleep", "cat", "head")  # what a waiter's pipeline runs beside it
+
+
+def live_task_commands(pid) -> list[str] | None:
+    """The commands the background shells under a Claude worker (`pid`, its own process or the service's) run now: the
+    leaf processes below each `bash` it started. None when /proc cannot say (no such process here, no shell). A task's
+    label is its whole command line, so `di-sync commit && shoal job wait ..` reads as work long after the commit ended
+    (2026-11-18, a role whose maintainer's answer waited behind it); what runs now is what holds the session."""
+    try:
+        pid = int(pid)
+        kids: dict[int, list[int]] = {}
+        comm: dict[int, str] = {}
+        for e in os.listdir("/proc"):
+            if not e.isdigit():
+                continue
+            try:
+                stat = open(f"/proc/{e}/stat").read()
+            except OSError:
+                continue
+            name, rest = stat[stat.index("(") + 1:stat.rindex(")")], stat[stat.rindex(")") + 2:].split()
+            comm[int(e)] = name
+            kids.setdefault(int(rest[1]), []).append(int(e))
+    except (OSError, ValueError, TypeError):
+        return None
+    if pid not in comm:
+        return None
+    shells, todo = [], list(kids.get(pid, []))
+    while todo:
+        q = todo.pop()
+        if comm.get(q) == "bash":
+            shells.append(q)  # a task's shell: what runs below it is the task; a bash inside it is part of it
+        else:
+            todo += kids.get(q, [])
+    out = []
+    for sh in shells:
+        stack, leaves = list(kids.get(sh, [])), []
+        while stack:
+            q = stack.pop()
+            if kids.get(q):
+                stack += kids[q]
+            else:
+                leaves.append(q)
+        for q in leaves:
+            try:
+                out.append(open(f"/proc/{q}/cmdline").read().replace("\0", " ").strip())
+            except OSError:
+                continue
+    return out if shells else None
+
+
+def only_waiters(state: dict, slug: str = "", pid=None) -> bool:
+    """True when every background task a Claude job has in flight is one of its waiters (`WAITER_RE`; a `job wait` names
+    this role's `--slug`), so a wake may stop and resume it (2026-11-18: four roles' in-session `job wait`s held every
+    wake, an operator's urgent message included, for hours). Failing that, what the worker's shells run now (`pid`,
+    `live_task_commands`): every command a waiter or a waiter's helper. False when anything else runs, or nothing says
+    what runs."""
+    if _labels_only_waiters(state, slug):
+        return True
+    fan = state.get("fan") if isinstance(state, dict) else None
+    fl = (state or {}).get("inFlight") or {}
+    if not fan or int(fl.get("queued") or 0) or any((t or {}).get("kind") != "shell" for t in fan):
+        return False  # a subagent or a queued task has no shell to look at: it is work
+    live = live_task_commands(pid) if pid else None
+    if not live:
+        return False
+    for cmd in live:
+        name = os.path.basename(cmd.split(" ", 1)[0])
+        if name in WAITER_HELPERS:
+            continue
+        if not WAITER_RE.search(cmd + " ") or ("job wait" in cmd and slug and f"--slug {slug}" not in cmd):
+            return False
+    return True
+
+
+def _labels_only_waiters(state: dict, slug: str = "") -> bool:
+    """The task labels' half of `only_waiters`: every in-flight task is a shell whose every command is a waiter."""
+    fan = state.get("fan") if isinstance(state, dict) else None
+    fl = (state or {}).get("inFlight") or {}
+    if not fan or int(fl.get("queued") or 0) or len(fan) < int(fl.get("tasks") or 0):
+        return False
+    for t in fan:
+        label = str((t or {}).get("label") or "")
+        if (t or {}).get("kind") != "shell" or not WAITER_RE.search(label):
+            return False
+        if "job wait" in label and slug and f"--slug {slug}" not in label:
+            return False
+        # every command in it is a waiter, a loop keyword or a harmless helper: `job wait .. && <a test suite>` is work
+        for seg in re.split(r"&&|\|\||[;|\n]", label):
+            seg = re.sub(r"^\s*(?:do|then|else)\s+", "", seg).strip()
+            if seg and not seg.startswith(WAITER_SHELL) and not WAITER_RE.search(seg + " "):
+                return False
+    return True
+
+
 # `claude --bg --resume` right after `claude stop` still finds the session running and forks a copy;
 # measured 2026-10-20: forked with the pid gone for 1 s, continued in place 4 s later
 RESUME_SETTLE_S = 6.0
@@ -819,13 +922,15 @@ class ClaudeBackend(Backend):
                 why = "mid-turn"
             elif claude_prompt_open(row, full) and not through_question:
                 why = "at a question"
-            elif busy_fl:
+            elif busy_fl and not only_waiters(claude_job_state(row), getattr(role, "slug", ""), row.get("pid")):
                 why = "background work in flight"
             elif mode != "idle" and not through_question:
                 why = "live worker (direct_wake dead)"
             else:
                 if dry_run or fake_sessions() is not None:
                     return "stop+resume" + (" (dry-run)" if dry_run else " (fake)")
+                if busy_fl:  # only its own job or CI waiters: they stop with the worker, the jobs and the watcher go on
+                    text = WAITERS_STOPPED_NOTE + text
                 self.stop(str(row.get("id") or full[:8]))
                 for _ in range(40):
                     r2 = self._row(full, include_stopped=True) or {}

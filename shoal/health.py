@@ -322,7 +322,7 @@ CLAUDE_TEMPO = {"active": "busy", "idle": "idle", "blocked": "blocked"}
 def claude_job_state(row: dict) -> dict:
     """The job's state file ({} when unknown). A row may carry `tempo`/`inFlight` itself (tests)."""
     if row.get("tempo"):
-        return {"tempo": row["tempo"], "inFlight": row.get("inFlight") or {}}
+        return {"tempo": row["tempo"], "inFlight": row.get("inFlight") or {}, "fan": row.get("fan") or []}
     from backends import fake_sessions
     if fake_sessions() is not None:  # tests: never read the host's real job files
         return {}

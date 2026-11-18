@@ -510,7 +510,8 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
 - **Live state of routed remote roles.** Harness liveness and sidecars are readable only on the role's host,
   so the read model pulls that host's own rows (`shoal ui status --shoal <id> --rows-only --json`, which has
   no usage and never pulls further hosts) over the route, cached 30 s, and takes their live fields
-  (`session`, `watcher`, `can_progress`, `needs_you`, `context_k`, `heartbeat_age_s`). Each merged row
+  (`session`, `watcher`, `can_progress`, `needs_you`, `context_k`, `heartbeat_age_s`, and `agent`, the agents-list
+  group: an open question is read from the role's transcript, which only its host has). Each merged row
   carries `remote_status` (`ok`, `age_s`, `stale`). A failed pull keeps the last good rows for up to 10 min,
   marked stale, and the card says so. Without a route a remote row reads `session: remote`.
 - **Role panes:** each tick reports `pane.report_agent` (source `shoal`, agent = role slug, state

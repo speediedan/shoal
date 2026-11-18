@@ -570,7 +570,7 @@ copy that appears. Modes:
 
 | `direct_wake` | a session with no worker | a live session idle at its prompt, nothing in flight | anything else (mid-turn, at a question, background work in flight) |
 | --- | --- | --- | --- |
-| `idle` (default) | resumed directly | stopped, then resumed directly | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
+| `idle` (default) | resumed directly | stopped, then resumed directly (also when everything in flight is only its own waiters) | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
 | `dead` | resumed directly | deferred (a live worker is never stopped) | deferred |
 
 Under `idle` a Claude watcher is detached (`--wake direct`) and delivers each wake through the same
@@ -1829,11 +1829,13 @@ generated unit.
 What this design does not handle yet, and the measurement that would trigger each change, is in
 [`limitations.md`](limitations.md).
 
-**Open: an urgent wake waits behind a role's background job wait** (found live 2026-11-01). A Claude
-role's direct wake (`ClaudeBackend.wake`, `shoal/backends.py`) is deferred with `deferred (background
-work in flight)` while the session's job reports in-flight background work, and a role that follows a
-long job with `job wait` as its background command has that work in flight for the whole run. An
-operator's `msg --wake --kind request` to such a role is therefore deferred until the job wait exits,
-which can be hours: the message is in the ledger, but nothing puts it in front of the session. The wake
-path is unchanged for now; until a fix is designed, a request that cannot wait goes to a role that is
-not following a long job, or the operator attaches the session (`shoal view`) and prompts it directly.
+**A wake no longer waits behind a role's own waiters** (found live 2026-11-01, fixed 2026-11-18). A Claude role's
+direct wake (`ClaudeBackend.deliver`, `shoal/backends.py`) was deferred `background work in flight` while its job
+reported any in-flight background work, and a role that follows a long job with `job wait` has that work in flight
+for the whole run, so an operator's `msg --wake` waited hours (2026-11-18: four roles' waiters held every wake, an
+urgent message included). Now, when every task the job's state lists (`fan`) is one of its own waiters
+(`backends.only_waiters`: each command a `shoal job wait` naming its `--slug`, `shoal ci-wait`, `gh run watch` or
+`gh pr checks --watch`, beside loop keywords and helpers such as `echo` and `sleep`), the wake stops and resumes the
+session as for an idle one, and its prompt says the waiters were stopped and that the recorded waits cover the
+jobs. The job units run on and the detached watcher wakes the role on each recorded `job:` or CI wait. Anything
+else in flight (a test suite run in the session, a subagent, a task the state does not name) still defers.
