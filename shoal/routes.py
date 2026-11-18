@@ -144,7 +144,8 @@ STATUS_CACHE_S = 30
 STATUS_STALE_S = 600
 # the fields of a role row that only the role's own host can know (its harness and its sidecars); the
 # ledger-derived ones (status, queue, asks, last write) are already right on every host
-LIVE_FIELDS = ("session", "watcher", "can_progress", "needs_you", "dismissed", "needs_fp", "says", "wait_done", "context_k", "heartbeat_age_s")
+LIVE_FIELDS = ("session", "watcher", "can_progress", "needs_you", "dismissed", "needs_fp", "says", "wait_done", "context_k", "heartbeat_age_s",
+               "agent")  # the agents-list group: an open question is read from the role's transcript, on its own host
 
 
 def remote_rows(server: str, sid: str) -> tuple[dict, dict]:

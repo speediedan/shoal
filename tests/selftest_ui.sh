@@ -174,7 +174,8 @@ print("rows-only ok")
 PY2
 cat > "$S/far-rows.json" <<JSON
 {"v": 1, "shoals": [{"id": "$SID", "roles": [{"slug": "far", "session_id": "farfar00", "session": "idle", "watcher": "alive",
- "can_progress": {"ok": true, "reasons": []}, "needs_you": false, "context_k": 42, "heartbeat_age_s": 30}]}]}
+ "can_progress": {"ok": true, "reasons": []}, "needs_you": false, "context_k": 42, "heartbeat_age_s": 30,
+ "agent": {"group": "needs-you", "state": "question", "detail": "an open question prompt in its session"}}]}]}
 JSON
 rm -rf "$SHOAL_ROUTE_CACHE"
 STUB_SSH_OUT="$S/far-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" "$ROOT" <<'PY2' || fail "remote status merge"
@@ -185,6 +186,9 @@ def far():
     return next(x for x in doc["shoals"][0]["roles"] if x["slug"] == "far")
 f = far()
 assert f["session"] == "idle" and f["watcher"] == "alive" and f["context_k"] == 42, f
+# its group too: only its own host reads an open question from its transcript (2026-11-18: a role at a question on
+# another host read working in the agents list here, from this host's own derivation)
+assert f["agent"]["group"] == "needs-you" and f["agent"]["state"] == "question", f["agent"]
 assert f["remote_status"]["ok"] and not f["remote_status"]["stale"], f["remote_status"]
 # the host stops answering: the last good rows stay, marked stale once the cache has aged
 os.environ["STUB_SSH_RC"] = "255"; os.environ.pop("STUB_SSH_OUT")

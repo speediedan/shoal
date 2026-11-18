@@ -1671,6 +1671,34 @@ rows(pid=9, tempo="idle")
 assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("stop+resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
 rows(pid=9, tempo="idle", inFlight={"tasks": 1, "queued": 0, "kinds": ["local_bash"]})
 assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", be.deliver(spec, r, "bbbb2222-0000", "w")
+# only its own job or CI waiters in flight: they held every wake for hours, so the wake stops and resumes the session
+# (the jobs run on; its recorded waits and the detached watcher cover them)
+wait_fan = [{"kind": "shell", "label": f"python3 shoal/cli.py job wait --shoal {spec.sid} --slug up --name t1"}]
+rows(pid=9, tempo="idle", inFlight={"tasks": 1, "queued": 0, "kinds": ["local_bash"]}, fan=wait_fan)
+assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("stop+resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
+for fan in ([{"kind": "shell", "label": f"shoal job wait --shoal {spec.sid} --slug up --name t1 && bash suite.sh"}],
+            [{"kind": "shell", "label": f"shoal job wait --shoal {spec.sid} --slug other --name t1"}],
+            [{"kind": "shell", "label": "bash run_gpu_suite.sh"}], [{"kind": "agent", "label": "a subagent"}]):
+    rows(pid=9, tempo="idle", inFlight={"tasks": 1, "queued": 0, "kinds": ["local_bash"]}, fan=fan)
+    assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", fan
+rows(pid=9, tempo="idle", inFlight={"tasks": 2, "queued": 0, "kinds": ["local_bash"]}, fan=wait_fan)
+assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", "a task the fan does not name"
+assert "waiters were stopped" in backends.WAITERS_STOPPED_NOTE and "re-arm a waiter only if" in backends.WAITERS_STOPPED_NOTE
+# a label is a whole command line: `di-sync commit && job wait` reads as work after the commit ended, so what the worker's
+# shells run now decides (a real process tree here: a bash running a waiter-shaped command under this process)
+import subprocess as _sp, time as _t
+waiter = _sp.Popen(["bash", "-c", f"exec -a 'shoal job wait --shoal {spec.sid} --slug up --name t2' sleep 30 & wait"])
+_t.sleep(0.5)
+mixed = {"inFlight": {"tasks": 1, "queued": 0}, "fan": [{"kind": "shell", "label": "di-sync.sh commit && shoal job wait --slug up"}]}
+assert not backends._labels_only_waiters(mixed, "up"), "the label alone reads as work"
+live = backends.live_task_commands(os.getpid())
+assert live and any("job wait" in c for c in live), live
+assert backends.only_waiters(mixed, "up", os.getpid()), (live, "what runs now is a waiter of this role")
+assert not backends.only_waiters(mixed, "other", os.getpid()), "another role's waiter is not this role's"
+assert not backends.only_waiters(dict(mixed, fan=mixed["fan"] + [{"kind": "agent", "label": "x"}]), "up", os.getpid()), \
+    "a subagent has no shell to look at: work"
+waiter.kill(); waiter.wait()
+assert backends.live_task_commands(999999999) is None, "no such process: nothing to say"
 # arming: direct idle (the default) makes a Claude watcher detached; dead (never stop a live worker) does not
 assert briefs.arming(r, spec)[0] == "direct"
 spec = spec_with(direct_wake="dead")
