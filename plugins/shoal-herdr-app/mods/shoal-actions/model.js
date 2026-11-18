@@ -584,6 +584,10 @@ function normAsks(list) {
     // per ask: the issues and PRs it names, http(s) only
     links: arr(a.links).map((l) => arr(l).map(obj).filter((x) => x && strOrNull(x.text) && /^https?:\/\//i.test(str(x.url)))
       .map((x) => ({ text: str(x.text), url: str(x.url) }))),
+    // per ask: its answer set (grant, defer, delegate, deny), the choices a prompting role's question tool offers
+    options: arr(a.options).map((o) => arr(o).map(str).filter((x) => x.trim())),
+    // its turns are headless (Codex, Muse): no question tool, so it is answered only here
+    headless: a.headless === true,
   }));
 }
 
@@ -822,12 +826,15 @@ export function keyAction(keystroke, screen, opts = {}) {
   return null;
 }
 
-/** What the asks view's Answer does: Message to that role, wake on, the text box empty. */
-export function answerTarget(target, ask, now = new Date(), n = null) {
-  // a reply to one ask names it, so the role knows which it answers
+/**
+ * What the asks view's Answer does: Message to that role, wake on, the text box empty. A reply to one ask (`n`) names
+ * it, and a choice from its answer set (`choice`) fills the answer in, left open for a condition or a reviewer's name.
+ */
+export function answerTarget(target, ask, now = new Date(), n = null, choice = null) {
+  const text = Number.isInteger(n) ? `re ask ${n}: ${choice ? `${choice}. ` : ""}` : null;
   return {
     target: { ...target, role: ask.role },
-    form: newForm("msg", now, { wake: true, ...(Number.isInteger(n) ? { text: `re ask ${n}: ` } : {}) }),
+    form: newForm("msg", now, { wake: true, ...(text ? { text } : {}) }),
   };
 }
 

@@ -250,7 +250,11 @@ test("replies: plan, result, view, asks", () => {
   assert.deepEqual(asks.asks.map((a) => [a.role, a.host, a.asks.length, a.question, a.saysWaiting]),
     [["lane-a", "host-a", 1, true, false], ["lane-b", "host-b", 2, false, true]]);
   assert.deepEqual(M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["", "a", 3] }, { asks: ["y"] }, null] }), "view").asks,
-    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false, links: [] }]);
+    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false, links: [], options: [], headless: false }]);
+  // each ask's answer set, and whether the role is headless (answered only here)
+  const lb = asks.asks.find((a) => a.role === "lane-b");
+  assert.ok(lb.headless && lb.options.length === lb.asks.length && lb.options[0].includes("Defer"), "a headless role's answer sets");
+  assert.equal(asks.asks.find((a) => a.role === "lane-a").headless, false);
   const linked = M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["see #945"],
     links: [[{ text: "repo#945", url: "https://github.com/acme/repo/issues/945" }, { text: "bad", url: "file:///etc/x" }]] }] }), "view").asks[0];
   assert.deepEqual(linked.links, [[{ text: "repo#945", url: "https://github.com/acme/repo/issues/945" }]], "web links only");
@@ -605,6 +609,10 @@ test("Reply to one ask: the message names it, wake on", () => {
   assert.equal(a.form.values.text, "re ask 2: ");
   assert.equal(a.form.values.wake, true);
   assert.equal(M.answerTarget({ shoal: A }, { role: "lane-b" }).form.values.text, "", "the role's Answer: no ask named");
+  // a choice from the ask's answer set fills the answer in, left open for a condition or a reviewer's name
+  const g = M.answerTarget({ shoal: A }, { role: "lane-b" }, new Date(), 1, "Grant merge");
+  assert.equal(g.form.values.text, "re ask 1: Grant merge. ");
+  assert.equal(g.form.values.wake, true);
 });
 
 test("Fill: a role's work from the board or from offers, previewed with set-fill", () => {

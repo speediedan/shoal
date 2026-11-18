@@ -241,7 +241,15 @@
                 "url": "https://github.com/acme/repo-one/issues/104"
               }
             ]
-          ]
+          ],
+          "options": [
+            [
+              "Grant",
+              "Defer",
+              "Deny"
+            ]
+          ],
+          "headless": false
         },
         {
           "role": "lane-b",
@@ -260,7 +268,20 @@
               }
             ],
             []
-          ]
+          ],
+          "options": [
+            [
+              "Grant",
+              "Defer",
+              "Deny"
+            ],
+            [
+              "Grant",
+              "Defer",
+              "Deny"
+            ]
+          ],
+          "headless": true
         }
       ]
     },

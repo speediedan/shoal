@@ -45,6 +45,8 @@ APPLY_VERBS = WRITE_VERBS + ("set-fill",)
 SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions", "queue")
+# providers whose turns are headless exec processes (briefs.watch_clause): no question tool, so the Asks view answers them
+HEADLESS = ("codex", "muse")
 SESSION_KEYS = ("harness", "session", "label", "state", "cwd", "job", "model", "effort", "account")
 QUEUE_SET = "queue-set"  # the Queue dialog's batch (ui_queue.batch): several verbs under one token
 
@@ -642,6 +644,7 @@ def view(verb: str, a) -> dict:
         return dict(base, text="\n".join(lines), conditions=c.get("open", []))
     if verb == "asks":
         import ui_graph
+        from worker import ask_options
         doc = ui_status.status([spec.sid], opencode_probe=False)
         s = doc["shoals"][0] if doc.get("shoals") else {}
         here = s.get("this_host", "")
@@ -655,10 +658,15 @@ def view(verb: str, a) -> dict:
                 rows.append({"role": r["slug"], "host": r.get("host") or "", "remote": bool(r.get("host")) and r.get("host") != here,
                              "asks": list(r["asks"]), "question": "blocked-on-question" in reasons,
                              "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or "",
-                             "links": [ask_links(q, r.get("active") or "", repos) for q in r["asks"]]})
+                             "links": [ask_links(q, r.get("active") or "", repos) for q in r["asks"]],
+                             # each ask's answer set (worker.ask_options): a headless role cannot prompt, so its asks
+                             # are answered here, from the choices a prompting role's question tool would offer
+                             "options": [[o["label"] for o in ask_options(q)] for q in r["asks"]],
+                             "headless": (getattr(spec.role(r["slug"]), "ecosystem", "") or "") in HEADLESS})
         text = "\n".join([f"{x['role']}" + ("  (a question is open in its session: attach to answer it)" if x["question"] else "")
                           + (f"\n  it says: {x['says']}" if x["says"] else "")
-                          + "".join(f"\n  ask {i}: {q}" for i, q in enumerate(x["asks"], 1)) for x in rows]) \
+                          + "".join(f"\n  ask {i}: {q}\n    answer: {' | '.join(o)}" for i, (q, o)
+                                    in enumerate(zip(x["asks"], x["options"]), 1)) for x in rows]) \
             or "no open asks and no role waiting on a question"
         return dict(base, text=text, asks=rows)
     if verb == "queue":

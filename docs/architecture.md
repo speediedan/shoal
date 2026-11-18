@@ -226,7 +226,11 @@ work depends on an unmerged one, and to keep working. Roles waiting on the maint
 once to pivot, and maintainer pages are deferred. `offline off` prints every recorded ask per role,
 with a likely-stale hint where the named item is merged, closed or done, wakes each role holding
 asks to re-verify, drop or raise them as prompted question sets (at most four questions per set),
-and delivers the deferred pages as one summary.
+and delivers the deferred pages as one summary. A headless role (a `codex exec` or `muse exec` turn) has no question
+tool, so its brief (`briefs.raise_clause`) has it keep the asks recorded instead: the viewer's Asks view shows each one
+with the answer set `shoal asks` would put to the question tool (`worker.ask_options`: grant, defer, delegate review and
+deny for a merge), and the maintainer's choice reaches the role as mail with a wake, `re ask <n>: <choice>.`. The
+restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question.
 
 **Signed standing grants** (`features.grants`). A `grant` event from `user` carries an ssh
 signature (`ssh-keygen -Y sign -n shoal-grant`, maintainer's key) over its canonical form;
