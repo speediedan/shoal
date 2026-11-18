@@ -249,6 +249,10 @@ def codex_read(account=""):
                 continue
             if d.get("id") == i:
                 if "error" in d:
+                    # the one server message worth naming: the host is signed out (its auth.json gone), which
+                    # leaves every Codex turn here failing too, not only this meter (2026-11-18)
+                    if "authentication required" in str((d.get("error") or {}).get("message", "")):
+                        raise UsageError("Codex is not signed in on this host (`codex login`)")
                     raise UsageError("Codex account quota RPC failed")
                 return d.get("result") or {}
         raise UsageError("Codex account quota RPC timed out")
@@ -372,8 +376,83 @@ def read_bridge(bridge, targets):
         return {p: None for p in targets}
 
 
-def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
-    """One host-wide lock and per-account TTL, including failures. Cache normalized data only."""
+PEER_TIMEOUT_S = 20
+
+
+def read_peers(provider):
+    """[(server, row)]: `provider`'s reading on each host with a route, read there now from its own account API
+    (`ui usage --refresh --no-peers --json`: an account RPC, never a model turn, and `--no-peers` so no host asks
+    another in turn). A host that cannot be reached, or answers with anything else, is left out."""
+    import routes
+    out = []
+    for server, r in routes.routes().items():
+        try:
+            p = subprocess.run(routes.ssh_argv(r) + [routes.remote_cmd(r, "ui", "usage", "--providers", provider, "--refresh",
+                                                                   "--no-peers", "--json")],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=PEER_TIMEOUT_S)
+            if p.returncode or len(p.stdout) > MAX_BYTES:
+                continue
+            for a in json.loads(p.stdout).get("accounts") or []:
+                if isinstance(a, dict) and a.get("provider") == provider:
+                    out.append((server, a))
+        except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+            continue
+    return out
+
+
+def peer_rows(rows):
+    """Another host's normalized rows, whitelisted again: they crossed a process boundary."""
+    out = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            raise UsageError("invalid peer reading")
+        ws = [dict(window(w.get("name"), w.get("used_percent"), w.get("resets_at"), w.get("minutes")))
+              for w in r.get("windows") or [] if isinstance(w, dict)]
+        out.append({"bucket": text(r.get("bucket")), "plan": text(r.get("plan")), "windows": ws,
+                    **({"blocked": True} if r.get("blocked") is True else {}),
+                    **({"idle": True} if r.get("idle") is True else {})})
+    return out
+
+
+def adopt_peer(row, provider, prev, now, peers):
+    """Take the freshest direct reading another host holds for an account this host failed to read: only one its own
+    account API made (a relayed one could be this host's stale value coming back), observed after the last reading
+    here and not in the future. Keeps this host's error as `local_error`, so the meter still says why. True when one
+    was taken."""
+    if peers is None:
+        return False
+    best = None
+    try:
+        got = peers(provider)
+    except Exception:  # a peer reader never crashes the feeder
+        return False
+    if got:  # a peer that answers is polled at the normal rate, not this host's failure backoff
+        row["next_poll_at"] = now + POLL_S
+    for server, a in got:
+        observed = number(a.get("observed_at"))
+        if a.get("source") != "account API" or a.get("error") or observed is None or observed > now + 60:
+            continue
+        if observed <= (number(prev.get("observed_at")) or 0) or (best and observed <= best[1]):
+            continue
+        try:
+            best = (server, observed, peer_rows(a.get("rows")))
+        except UsageError:
+            continue
+    if best is None:
+        return False
+    server, observed, rows = best
+    row.update(rows=rows, known_resets=known_resets(prev, rows), observed_at=observed,
+               source=f"{text(server, 40)} account API", local_error=row.get("error", ""), error="",
+               next_poll_at=now + POLL_S)
+    return True
+
+
+def collect(providers, *, force=False, fetcher=None, now=None, bridge=None, peers=None):
+    """One host-wide lock and per-account TTL, including failures. Cache normalized data only.
+
+    An account this host cannot read (signed out here, an RPC that fails) is read from another host's meter instead:
+    `peers(provider)` gives [(server, row)], by default `read_peers` over the `[hosts.*]` routes when the real fetcher
+    is used; `peers=False` asks no other host (`ui usage --no-peers`, the form a peer is asked in). The account is the same on every host, so a fresher direct reading there is the account's reading."""
     now = time.time() if now is None else now
     path = cache_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -396,12 +475,14 @@ def collect(providers, *, force=False, fetcher=None, now=None, bridge=None):
                 rows = normalize_key(provider, fetcher(provider))
                 row.update(rows=rows, known_resets=known_resets(prev, rows), observed_at=now,
                            source="account API",
-                           error="", failures=0, next_poll_at=now + POLL_S)
+                           error="", local_error="", failures=0, next_poll_at=now + POLL_S)
             except Exception as e:  # credentials, HTTP, CLI and parser failures never crash the feeder
                 failures = min(int(prev.get("failures", 0)) + 1, 5)
                 row.update(error=str(e) if isinstance(e, UsageError) else "quota read unavailable; check provider login",
                            failures=failures, next_poll_at=now + min(POLL_S * 2 ** (failures - 1), 3600))
-                if provider in (bridge or {}).get("providers", []):
+                if adopt_peer(row, provider, prev, now, (None if peers is False else peers or (read_peers if fetcher is fetch else None))):
+                    pass
+                elif provider in (bridge or {}).get("providers", []):
                     fallback.append(provider)
             doc["accounts"][provider] = row
         # Direct account credentials always win. One optional batch covers failed accounts only.
@@ -520,6 +601,12 @@ def severity(account, row):
     return "ok"
 
 
+def peer_note(a):
+    """`read on <host>; here: <why not>` for a reading another host made."""
+    where = str(a.get("source") or "").removesuffix(" account API") or "another host"
+    return f"read on {where}; here: " + text(a.get("local_error"), 80)
+
+
 def reset_text(value):
     if value is None:
         return "reset ?"
@@ -562,6 +649,8 @@ def render_lines(doc, *, color=False):
                 body += f"  as of {int(a['age_s']) // 60}m ago"
             if a.get("source") == "fallback reader":
                 body += "  [fallback]"
+            elif a.get("local_error"):
+                body += f"  [{peer_note(a)}]"
             lines.append(colors[state] + body + "\x1b[0m" if color else body)
     return "\n".join(lines)
 
@@ -671,6 +760,7 @@ def render_table(doc, *, color=False, width=0, glyphs=None):
                 lines.append((SEVERITY_CODES["critical"] + f"{a['provider']}: LIMIT REACHED" + RESET_CODE) if color
                              else f"{a['provider']}: LIMIT REACHED")
         extra = ([f"fallback reader"] if a.get("source") == "fallback reader" else []) + \
+                ([peer_note(a)] if a.get("local_error") and a.get("source") != "fallback reader" else []) + \
                 ([text(a["error"], 100)] if a.get("error") else [])
         if extra:
             lines.append(f"{a['provider']}: " + "; ".join(extra))
@@ -731,7 +821,8 @@ def cmd_usage(a):
               "account, by name: `shoal accounts`)")
         return 1
     if a.refresh:
-        collect(providers, force=True, bridge=ui_status.ui_config().get("usage_bridge"))
+        collect(providers, force=True, bridge=ui_status.ui_config().get("usage_bridge"),
+                peers=False if getattr(a, "no_peers", False) else None)
     doc = snapshot(providers)
     print(json.dumps(doc) if a.json else render(doc, color=ui_status.use_color(), width=ui_status.term_width()) or
           "No subscription providers configured; set usage_providers in the UI settings.")

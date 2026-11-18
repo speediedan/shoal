@@ -1327,8 +1327,19 @@ files contain normalized meter fields and safe diagnostics only. Direct account
 reads require no browser, terminal scraping, always-running CLI session, model
 request, or role wake.
 
+An account this host cannot read is read from another host's meter. The account is the same everywhere, but a
+host can be signed out of it (its Codex `auth.json` gone: the app-server answers "authentication required", named
+as "Codex is not signed in on this host") while another host reads it fine, and then the failed host kept showing its
+last reading, 27% while Codex's own client said 98% (2026-11-18). After a failed direct read the collector asks each
+`[hosts.*]` route to read it there (`shoal ui usage --providers <p> --refresh --no-peers --json`: an account RPC,
+never a model turn, and `--no-peers` so no host asks another in turn) and takes the freshest one that host's own account API made (never a relayed one, so two failing
+hosts cannot feed each other a stale value), observed after the last reading here and not in the future, its rows
+whitelisted again. The cache keeps its original `observed_at`, labels the source (`<host> account API`) and keeps
+this host's error as `local_error`; the meter reads "read on <host>; here: <why>". A host that answers keeps the
+poll at five minutes rather than this host's failure backoff. Tests injecting a reader never ask other hosts.
+
 An optional, operator-owned `usage_bridge` command supplies fallback observations
-only after direct account reads fail. It is disabled by default, runs once per
+only after direct account reads and other hosts' readings fail. It is disabled by default, runs once per
 due batch with failed providers on JSON stdin, and returns provider payloads on
 stdout. The cache labels its source. SHOAL contains no browser credential reader;
 a separately configured helper owns any additional authentication dependency.

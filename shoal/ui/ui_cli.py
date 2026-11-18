@@ -81,6 +81,8 @@ def add_parsers(sub) -> None:
     q = u.add_parser("usage", help="cached subscription meters (no model turns); --refresh reads account APIs")
     q.add_argument("--providers", default="", help="comma-separated codex,claude,muse,opencode-go; default UI setting")
     q.add_argument("--refresh", action="store_true", help="read account APIs now, without inference")
+    q.add_argument("--no-peers", action="store_true",
+                   help="with --refresh: an account this host cannot read is not read from another host instead")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=subscription_usage.cmd_usage)
 

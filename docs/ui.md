@@ -344,7 +344,8 @@ In the app's Usage tab, each reset also reads as a wall-clock time in the zone o
 ("resets in 4h (14:30 PST)", the weekday within a week, the date beyond). Each reported window is a short bar, its used percentage and its reset date/time
 in the host's configured timezone (`SHOAL_TZ` or `timezone` in host.toml), and
 the last column says how old the reading is. A reached limit, a fallback reader
-or a read error is named on a line under the table. The bars shrink (8, 5, then 3
+or a read error is named on a line under the table, and so is a reading taken from another host because this one
+could not read the account (`codex: read on <host>; here: Codex is not signed in on this host`). The bars shrink (8, 5, then 3
 cells) to fit the terminal, and a terminal too narrow for the table gets one text
 line per provider instead. The status line (the quick view in the tab bar)
 shows each provider's used percent for 5h, week and month, for example
