@@ -329,13 +329,19 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cr
     plan = Plan(paths[0])
     rels = _expand(plan, paths) if migrate else [plan.rel(p) for p in paths]
     origin: dict[str, str] = {}  # migrate: legacy path -> original path
+    top = plan.layout["archive"].split("{", 1)[0].rstrip("/")
     for r in rels:
         if migrate:
+            if top and (r == top or r.startswith(top + "/")):
+                raise Refused(f"{r} is already under the archive root {top}/: not a legacy folder to migrate")
             o = legacy_original(r)
             if o is None:
                 raise Refused(f"{r} is not in a legacy archive folder (no {', '.join(LEGACY)} segment to drop)")
             if o in plan.repo.mode or os.path.lexists(os.path.join(plan.repo.root, o)):
                 raise Refused(f"{r}: its original path {o} is live again, so the mirror would mean two files")
+            twin = next((x for x, y in origin.items() if y == o), None)
+            if twin:
+                raise Refused(f"{twin} and {r} both had the original path {o}: migrate one, and rename or keep the other")
             origin[r] = o
         _clean(plan, r)
         a = plan.archive_path(origin.get(r, r))

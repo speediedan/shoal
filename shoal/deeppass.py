@@ -120,7 +120,8 @@ def probe(path: str, now: float | None = None) -> dict:
     plan = archive.Plan(path)
     mpath = plan.manifest_path(posixpath.join(d, "x") if d else "x")
     top, name = posixpath.dirname(mpath), posixpath.basename(mpath)
-    manifests = sorted(p for p in repo.mode if posixpath.basename(p) == name and (p == mpath or p.startswith(top + "/")))
+    manifests = sorted(p for p in repo.mode if posixpath.basename(p) == name
+                       and (p == mpath or (top and p.startswith(top + "/"))))  # a root-level mirror reads its own only
     latest: dict[str, dict] = {}
     for m in manifests:
         for e in archive.read_manifest(os.path.join(repo.root, m)):

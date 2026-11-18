@@ -91,8 +91,8 @@ stands for every tracked file under it, and subfolders keep their place below th
 
 Everything else is an archive run: the same refusals (an untracked, dirty or start-doc file; a live reference, unless
 `--cross-owner rewrite`, which points it at the new path), one commit, and the same undo. It also refuses a path with
-no legacy segment, an original path that is live again (the mirror would then stand for two files), and a mirror that
-already exists. After the commit lands, a run removes the directories its moves emptied, so a migrated legacy folder,
+no legacy segment, a path already under the archive root, two legacy files with the same original in one run, an
+original path that is live again (the mirror would then stand for two files), and a mirror that already exists. After the commit lands, a run removes the directories its moves emptied, so a migrated legacy folder,
 or a retired role's directory, does not linger on disk. A history document that still names the legacy path resolves
 it with `shoal refs --resolve <legacy path>`, which finds the event by its `from`.
 

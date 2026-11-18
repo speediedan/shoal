@@ -16,7 +16,8 @@
   (a rebase rewrote that commit) still restores by blob; a hook template's other braces are left as written;
 - `--migrate` moves a legacy nested archive folder (or a file in one) to the mirror of each file's original path with
   `migrate` events naming the legacy path in `from`, refusing live references unless rewritten, a path with no legacy
-  segment, an original that is live again, and a mirror that already exists; `refs --resolve` finds it by `from`.
+  segment, a path already under the archive root, two legacy files with one original in a run, an original that is
+  live again, and a mirror that already exists; `refs --resolve` finds it by `from`.
 
 Synthetic paths and ids only."""
 from __future__ import annotations
@@ -363,6 +364,17 @@ rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive")
 assert rc == 1 and "is still named by live documents" in out["refused"] and state() == before, out
 rc, out = archive("--migrate", "proj/design/lane2/handoffs/live_h3.md")
 assert rc == 1 and "not in a legacy archive folder" in out["refused"], out
+write("proj/design/lane2/handoffs/archived/h1.md", "twin\n")
+write("archive/proj/archive/x.md", "x\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a twin legacy copy and a file under the archive root")
+before = state()
+rc, out = archive("--migrate", f"{LG}/h1.md", "proj/design/lane2/handoffs/archived/h1.md", "--cross-owner", "rewrite")
+assert rc == 1 and "both had the original path proj/design/lane2/handoffs/h1.md" in out["refused"], out
+rc, out = archive("--migrate", "archive/proj/archive/x.md")
+assert rc == 1 and "already under the archive root archive/" in out["refused"] and state() == before, out
+git("rm", "-q", "-r", "proj/design/lane2/handoffs/archived", "archive/proj/archive")
+git("commit", "-q", "-m", "drop the twin and the archive-root file")
 rc, out = archive("--migrate", "--restore", f"{LG}/h1.md")
 assert rc == 1 and "not with --restore" in out["refused"], out
 rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive", "--cross-owner", "rewrite", "--reason", "legacy")
