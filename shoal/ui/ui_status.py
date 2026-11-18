@@ -1101,6 +1101,10 @@ def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: li
 
     def g(group, state, detail=""):
         return {"group": group, "state": state, "detail": _short(detail, 160) or None}
+    if asks and sess == "working" and "parked" not in r:
+        # its turn is running: it is working now, and the ask (still its badge) is answered once the turn ends (measured
+        # 2026-11-18: venngram-expert read needs-you, asked, through a whole turn of its own)
+        return g("working", "working", f"asks you: {asks[0]}")
     if asks:  # a parked role's ask too: answering it is the maintainer's move either way
         # a role can ask while it waits on something else (a CI run): say both, so "asked" beside remote-ci reads as one
         also = f"also waiting {sub}; " if role_status == "waiting" and sub and sub not in USER_WAITS else ""
