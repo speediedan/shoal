@@ -87,8 +87,15 @@ def _warn(key: str, msg: str) -> None:
 def file_values() -> dict:
     """The parsed host config file ({} when absent, unreadable or no TOML reader)."""
     path = config_path()
-    if path in _CACHE:
-        return _CACHE[path]
+    # keyed by the file's mtime too: a long-lived process (a detached handoff that waited two hours, a watcher) reads
+    # the file as it is now, not as it was when the process started (measured 2026-11-18: a handoff launched a role on
+    # the provider default the operator had changed while it waited)
+    try:
+        key = f"{path}\0{os.path.getmtime(path)}"
+    except OSError:
+        key = path
+    if key in _CACHE:
+        return _CACHE[key]
     vals: dict = {}
     if os.path.isfile(path):
         try:
@@ -107,7 +114,9 @@ def file_values() -> dict:
             except Exception as exc:  # noqa: BLE001 - a bad file never takes a command down
                 _warn("parse", f"{path} skipped: {exc}")
                 vals = {}
-    _CACHE[path] = vals
+    for k in [k for k in _CACHE if k.split("\0")[0] == path]:
+        del _CACHE[k]
+    _CACHE[key] = vals
     return vals
 
 

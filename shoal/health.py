@@ -571,6 +571,18 @@ def limit_until_sid(sid: str, account: str | None = None) -> str:
         return ""
 
 
+def claude_background(role) -> int:
+    """How many background tasks (shells, monitors, subagents) a Claude role's job has in flight, from the listing
+    `claude_busy` last read: each one re-invokes the session when it ends, so a stop while any runs does not hold."""
+    from backends import claude_find
+    e = claude_find(_CLAUDE_ROWS, role.session) if role.session else None
+    fl = (claude_job_state(e).get("inFlight") or {}) if e else {}
+    try:
+        return int(fl.get("tasks") or 0) + int(fl.get("queued") or 0) if isinstance(fl, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def session_between_turns(role, cbusy: dict[str, str], repo_dir: str) -> bool | None:
     # SHOAL_HEALTH_BETWEEN (tests only): comma slugs to treat as proven between turns
     if role.slug in [x for x in config.env("HEALTH_BETWEEN").split(",") if x]:
@@ -1039,8 +1051,11 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
             import park
             stopped = park.stop_session(role)
             if "STILL LIVE" in stopped:
+                # the watcher ended above would leave a live session with nobody to wake it (measured 2026-11-18:
+                # it-architect, re-armed by hand): re-arm it now, as the quorum does a dead one
+                rearmed = rearm_watcher(spec, role, {}, dry_run) if alive and is_detached_wake(str(sc.get("wake", ""))) else ""
                 __import__("context").note_restart(spec, role, f"FAILED ({stopped})")
-                return f"FAILED ({stopped}; nothing restarted)"
+                return f"FAILED ({stopped}; nothing restarted" + (f"; watcher: {rearmed}" if rearmed else "") + ")"
         from backends import spawn_detached
         # its own scope, like a re-armed watcher: the quorum's oneshot unit would end it with its cgroup
         spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,

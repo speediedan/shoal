@@ -171,7 +171,9 @@ def role_ready(spec, slug: str, previous_queue: str = "") -> bool:
     role_status = st.get("state") or ("idle" if view.is_idle(slug) else "active")
     return bool(q.get("restart_ready") and (not previous_queue or q.get("id") != previous_queue) and role_status in ("idle", "waiting") and
                 not park.session_held(role, spec.dir) and
-                health.session_between_turns(role, health.claude_busy() if role.ecosystem == "claude" else {}, spec.dir))
+                health.session_between_turns(role, health.claude_busy() if role.ecosystem == "claude" else {}, spec.dir)
+                # a background task still running re-invokes the session after the stop (2026-11-18): wait for none
+                and not (role.ecosystem == "claude" and health.claude_background(role)))
 
 
 def wait_for(check, message: str, deadline: float) -> None:
@@ -292,6 +294,9 @@ def run(a) -> int:
                     "continue from them alone. Preserve your work, queue, blockers, grants-needed and monitors. "
                     f"Set `Last updated: <UTC>` using seconds, at or after {requested_at.strftime('%Y-%m-%dT%H:%M:%SZ')}. "
                     "Acknowledge this request with a linked `msg --kind ack --to user --re <request-id>`. "
+                    "Stop every in-session background task or monitor you hold (a CI watch, a shell): your waits stay "
+                    "recorded in the ledger and shoal watches them, but a task still running re-invokes this session "
+                    "after the handoff stops it. "
                     "End at an idle or waiting boundary with `queue --restart-ready`, then stop this turn. "
                     "The operator will perform the handoff after that checkpoint; do not restart yourself.")
             rc = subprocess.call([sys.executable, os.path.join(HERE, "cli.py"), "msg", "--shoal", spec.sid, "--spec", a.spec,

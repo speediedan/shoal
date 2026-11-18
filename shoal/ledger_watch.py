@@ -269,12 +269,15 @@ def claude_deliver(sid: str, spec, role, session: str, text: str) -> str:
     return get_backend("claude").deliver(spec, role, session, text)
 
 
-def fire(wake: str, text: str, repo_dir: str, ecosystem: str = "muse") -> bool:
+def fire(wake: str, text: str, repo_dir: str, ecosystem: str = "muse", model: str = "", effort: str = "") -> bool:
     if wake.startswith("exec:"):
         sid = wake[len("exec:"):]
         try:
             from backends import get as get_backend
-            get_backend(ecosystem if ecosystem in ("muse", "codex") else "muse").send(sid, repo_dir, text)
+            # a Codex turn without a model keeps the thread's last one, so a spec change never reached it (2026-11-18:
+            # a thread put on an unavailable model by its native view went on failing after the spec was reverted)
+            kw = {"model": model, "effort": effort} if ecosystem == "codex" else {}
+            get_backend(ecosystem if ecosystem in ("muse", "codex") else "muse").send(sid, repo_dir, text, **kw)
         except Exception as exc:  # noqa: BLE001 - a busy session or an unrunnable muse: retried next tick
             print(f"ERROR: wake turn on {sid} not started: {str(exc)[-200:]}")
             return False
@@ -459,7 +462,8 @@ def cmd_ledger_watch(a) -> int:
                 continue
             fired = not ch.startswith(("FAILED", "no-adapter"))
         else:
-            fired = fire(a.wake, text, repo_dir, role.ecosystem if role else "muse")
+            fired = fire(a.wake, text, repo_dir, role.ecosystem if role else "muse",
+                         getattr(role, "model", "") or "", getattr(role, "effort", "") or "")
         if a.wake == "print":
             continue
         if persistent:

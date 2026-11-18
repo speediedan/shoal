@@ -435,6 +435,7 @@ RESUMED_NOTE = ("Your session was resumed for this wake: its worker had been ret
 RESUME_SETTLE_S = 6.0
 # how long a reset watches the old jobs for a respawned worker (2026-10-24: one came back within 2 s of a removal)
 RETIRE_VERIFY_S = 20.0
+RETIRE_MAX_RESTOPS = 5
 COPY_RE = re.compile(r"started a copy as ([0-9a-f]{8})")
 
 
@@ -902,16 +903,20 @@ class ClaudeBackend(Backend):
         import time as _time
         for j in jobs:
             self.stop(j)
-        restopped: set[str] = set()
+        # each time a job comes back it is stopped again, and the window runs on from then: one re-stop was not enough
+        # (measured 2026-11-18: a role's own background CI waiters re-invoked it, a spare worker claimed the job at once,
+        # and the handoff ended FAILED with the session live). RETIRE_MAX_RESTOPS bounds it
+        restops = 0
         deadline = _time.time() + verify_s
         while jobs and _time.time() < deadline:
             _time.sleep(2)
             rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
             back = [j for j in jobs if (rows.get(j) or {}).get("pid")]
-            for j in back:
-                if j not in restopped:
+            if back and restops < RETIRE_MAX_RESTOPS:
+                for j in back:
                     self.stop(j)
-                    restopped.add(j)
+                restops += 1
+                deadline = max(deadline, _time.time() + verify_s / 2)
         rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
         return [j for j in jobs if (rows.get(j) or {}).get("pid")]
 
