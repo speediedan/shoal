@@ -23,7 +23,7 @@ Nothing is moved when any path in the run is:
 
 - not tracked (an untracked file is its owner's to commit or delete), or carries uncommitted changes;
 - a start doc that a live spec or a standalone session names, on any routed host ([`refs.md`](refs.md),
-  `--roots --all-hosts`). When a routed host cannot answer, the run is refused: a file here could be a start doc there.
+  `--roots --all-hosts`), or the target of one named through a symlink, wherever the target lives. When a routed host cannot answer, the run is refused: a file here could be a start doc there.
   `--force` archives anyway and records that it did;
 - named by a live document anywhere in the repository, or by a tracked symlink: that reader would break. Point those
   references elsewhere first, keep the file, or archive with `--cross-owner rewrite` (below). History documents (the
@@ -53,6 +53,9 @@ This is the one write a role may make outside its own directory, so it is a path
   carrying `dir`. "Empties" counts tracked files only: a directory that still holds untracked files stays on disk
   after the run, yet its references now name the archive. Commit or remove those files first if the old path should
   keep meaning something.
+- **`--strict` refuses a partial path.** A unique partial path (`x/a.md`) can be prose about another repository's file
+  that happens to match, so with `--strict` the run refuses and lists such references instead of rewriting them. An
+  unattended run passes it; a person can check the list and run without it.
 - **A tracked symlink is repointed** in its own form: a relative link stays relative. (Only relative links are read as
   references today; an absolute one would stay absolute.) A symlink that is a start doc refuses the run: that role
   moves first.
