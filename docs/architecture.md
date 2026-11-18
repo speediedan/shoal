@@ -757,6 +757,28 @@ default `~/.codex`).
   add-role takes the account with the most headroom of any provider in it (`accounts.choose_any`), the dialog names it
   under the provider choice, and an excluded provider is neither picked across providers nor balanced among its own
   accounts.
+- **Capacity.** Headroom is a share of an account's own windows, so accounts of different plans are compared by what
+  each window holds: `[accounts.capacity]` names each account's plan or units (a default account by its provider's
+  name), in units where one Claude Max plan is 100 (`accounts.PLAN_UNITS`: Codex Plus 18 and Codex Pro 125, the
+  maintainer's 2026-11-18 estimates of 0.15 to 0.2 and about 1.25 of a Max plan per 5 h and per week; a number or
+  `{ plan, units }` overrides). An account with none is 100, so a host that declares nothing compares raw headroom as
+  before. Every pick (`choose`, `choose_any`) ranks by headroom times units over 100.
+- **Quota handoff** (`[accounts] quota_handoff = true`, opt-in). Each account's share of the roles is its weighted
+  headroom (capped at its units, so an account near its reset with room to spare does not draw every role) over the
+  pool's total, times the roles running on the pool (counted from every live shoal's spec, whichever host a role runs
+  on; `accounts.shares`). A role at a quiet boundary moves (`accounts.quota_pick`, the health condition
+  `quota-handoff`) off an account near a limit (`near_5h`, default 70% used, `near_week` 85%) to the account furthest
+  under its share that is not near one, or off an account carrying at least one whole role over its share to one at
+  least one under (shares rounded to whole roles, so an account whose share is most of a role, as a Codex Plus one's
+  among two Max plans and nine roles, draws one back once its window resets), so a move never only swaps which side is
+  over. `[accounts.prefer] <provider> = [<slugs>]` names the roles that may be moved onto that provider (a small plan
+  suits roles with short items). It is handed over as a context restart is: in `auto`
+  context mode at any quiet boundary once its start doc meets its contract, else when it marked itself restart-ready;
+  through `park.move_args`, as `shoal handoff` builds a move, so a role taken to another provider gets that provider's
+  `[provider_defaults]` model and effort. At most one quota move per quorum run, and none for a role moved within
+  `quota_cooldown_min` (60), so readings and the role count catch up between moves; `[accounts] pin` lists roles kept
+  on their own provider. `shoal accounts` prints each account's units and plan, and each account's roles against its
+  share.
 
 `doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
 the clock state. The providers (resource leases, wait targets, the board

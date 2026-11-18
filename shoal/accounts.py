@@ -275,6 +275,30 @@ def rebalance_on() -> bool:
     return isinstance(t, dict) and t.get("rebalance") is True
 
 
+def quota_handoff_on() -> bool:
+    """`[accounts] quota_handoff = true`: the health quorum hands a role at a quiet boundary to another account or
+    provider when its own nears a 5 h or weekly limit, or carries more than its share (`quota_pick`)."""
+    t = config.file_values().get("accounts")
+    return isinstance(t, dict) and t.get("quota_handoff") is True
+
+
+def pinned(slug: str) -> bool:
+    """`[accounts] pin`: roles balancing keeps on their own provider (it may still change their account)."""
+    t = config.file_values().get("accounts")
+    v = t.get("pin") if isinstance(t, dict) else None
+    return isinstance(v, list) and slug in [str(x) for x in v]
+
+
+QUOTA_COOLDOWN_MIN = 60  # a role moved for quota is not moved again sooner (`[accounts] quota_cooldown_min`)
+
+
+def quota_cooldown_min() -> float:
+    try:
+        return float(setting("quota_cooldown_min", "") or QUOTA_COOLDOWN_MIN)
+    except ValueError:
+        return float(QUOTA_COOLDOWN_MIN)
+
+
 def keepalive(provider: str, account: str = "", min_hours: float = KEEPALIVE_MIN_H) -> str:
     """Refresh an account's sign-in through its CLI when its token has under `min_hours` left: one headless call on the
     smallest model, saving no session. Says what it found and did."""
@@ -368,8 +392,11 @@ def rank(provider: str, now: float | None = None, snap: list | None = None) -> l
     out = []
     for a in of(provider):
         score, why = headroom(rows.get(usage_key(provider, a)) or {}, now)
-        out.append({"account": a, "name": name(provider, a), "score": score, "binding": why})
-    return sorted(out, key=lambda r: (r["score"] is None, -(r["score"] or 0)))
+        units, plan = capacity(provider, a)
+        out.append({"account": a, "name": name(provider, a), "score": score, "binding": why, "units": units,
+                    "plan": plan, "weighted": None if score is None else score * units / BASE_UNITS,
+                    "near": near_limit(rows.get(usage_key(provider, a)) or {})})
+    return sorted(out, key=lambda r: (r["weighted"] is None, -(r["weighted"] or 0)))
 
 
 USAGE_KEYS = {"opencode": "opencode-go"}  # a provider whose usage reading has another name
@@ -412,7 +439,7 @@ def choose(provider: str, now: float | None = None, snap: list | None = None) ->
     top = ranked[0] if ranked else None
     if not top or not top["score"]:
         return "", "no account has a fresh reading with room left: the default"
-    return top["account"], f"best paced headroom {top['score']:.2g} ({top['binding']})"
+    return top["account"], f"best paced headroom {top['score']:.2g} x {top['units']} units ({top['binding']})"
 
 
 def choose_any(providers: list[str] | None = None, now: float | None = None,
@@ -425,12 +452,150 @@ def choose_any(providers: list[str] | None = None, now: float | None = None,
     best = None
     for p in pool(providers):
         for r in rank(p, now, snap):
-            if r["score"] and (best is None or r["score"] > best[2]["score"]):
+            if r["score"] and (best is None or r["weighted"] > best[2]["weighted"]):
                 best = (p, r["account"], r)
     if best is None:
         return "", "", "no provider in the pool has a fresh reading with room left"
     p, a, r = best
-    return p, a, f"best paced headroom in the pool ({', '.join(pool(providers))}): {name(p, a)} {r['score']:.2g} ({r['binding']})"
+    return p, a, (f"best capacity-weighted headroom in the pool ({', '.join(pool(providers))}): {name(p, a)} "
+                  f"{r['score']:.2g} x {r['units']} units ({r['binding']})")
+
+
+# ---- capacity and shares -------------------------------------------------------------------------------------------
+# What an account's plan buys, in units where one Claude Max plan is 100: headroom is a share of an account's own
+# windows, so comparing a Codex Plus account's with a Claude Max account's needs what each window holds (the
+# maintainer's estimates, 2026-11-18: Codex Plus 0.15 to 0.2 of a Claude Max plan per 5 h and per week, Codex Pro about
+# 1.25). `[accounts.capacity]` names each account's plan or units, a default account by its provider's name:
+#
+#   [accounts.capacity]
+#   claude = "max"
+#   claude-2 = "max"
+#   codex = "plus"              # or { plan = "plus", units = 20 }, or a bare number of units
+#
+# An account with none is BASE_UNITS, so a host that declares nothing compares raw headroom as before.
+BASE_UNITS = 100
+PLAN_UNITS = {"claude": {"max": 100}, "codex": {"plus": 18, "pro": 125}}
+NEAR = {"5h": 70.0, "week": 85.0}  # percent used of a window that counts as near its limit (`[accounts] near_5h`, `near_week`)
+
+
+def capacity(provider: str, account: str = "") -> tuple[int, str]:
+    """(units, plan) of an account from `[accounts.capacity]`: a plan name (PLAN_UNITS), a number of units, or
+    {plan, units}; (BASE_UNITS, "") when it names none, or a plan this provider does not have."""
+    t = config.file_values().get("accounts")
+    cap = t.get("capacity") if isinstance(t, dict) else None
+    v = cap.get(name(provider, account)) if isinstance(cap, dict) else None
+    plan, units = "", None
+    if isinstance(v, dict):
+        plan, units = str(v.get("plan") or ""), v.get("units")
+    elif isinstance(v, str):
+        plan = v
+    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+        units = v
+    if not isinstance(units, (int, float)) or isinstance(units, bool) or units <= 0:
+        units = PLAN_UNITS.get(provider, {}).get(plan.lower())
+    return (int(round(units)), plan) if units else (BASE_UNITS, plan)
+
+
+def near_threshold(window: str) -> float:
+    """The percent used at which `window` counts as near its limit: `[accounts] near_5h` / `near_week`, else NEAR."""
+    try:
+        return float(setting(f"near_{window}", "") or NEAR.get(window, 100.0))
+    except ValueError:
+        return NEAR.get(window, 100.0)
+
+
+def near_limit(usage_row: dict) -> str:
+    """The window of a usage reading that is near its limit ("5h 74% used"), a reached limit, or "" for none."""
+    for r in (usage_row or {}).get("rows") or []:
+        if r.get("blocked"):
+            return f"{r.get('bucket') or '?'}: limit reached"
+        for w in r.get("windows") or []:
+            try:
+                used = float(w["used_percent"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if w.get("name") in NEAR and used >= near_threshold(w["name"]):
+                return f"{w['name']} {used:g}% used"
+    return ""
+
+
+def shares(load: dict, providers: list[str] | None = None, now: float | None = None,
+           snap: list | None = None) -> dict[tuple[str, str], dict]:
+    """{(provider, account): {load, share, target, units, weighted, near}} over the balancing pool: each account's
+    share of the roles is its capacity-weighted headroom (`weighted`, at most its units: an account near its reset
+    with room to spare does not draw every role) over the pool's total, and `target` that share of the roles running
+    on the pool now (`load`, from the specs). An account with no fresh reading takes no share and keeps its load."""
+    rows = []
+    for p in pool(providers):
+        for r in rank(p, now, snap):
+            w = 0.0 if r["weighted"] is None or r["near"] else min(r["weighted"], float(r["units"]))
+            rows.append(((p, r["account"]), w, r))
+    total_w = sum(w for _, w, _ in rows)
+    n = sum(load.get(k, 0) for k, _, _ in rows)
+    out = {}
+    for k, w, r in rows:
+        share = w / total_w if total_w else 0.0
+        out[k] = {"load": load.get(k, 0), "share": share, "target": share * n, "units": r["units"],
+                  "weighted": w, "near": r["near"], "binding": r["binding"]}
+    return out
+
+
+def role_load(specs: list | None = None) -> dict[tuple[str, str], int]:
+    """{(provider, account): roles running on it} over every live shoal the viewer shows (`ui_status.discover`): a role
+    with a session counts on its recorded account, whichever host it runs on (an account is named alike on every host)."""
+    if specs is None:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+        import ui_status
+        from roles import ShoalSpec
+        specs = []
+        for path in ui_status.discover(config.ledger_dir()):
+            try:
+                specs.append(ShoalSpec.load(path))
+            except (OSError, ValueError):
+                continue
+    out: dict[tuple[str, str], int] = {}
+    for spec in specs:
+        for r in spec.roles:
+            if r.session and r.ecosystem:
+                k = (r.ecosystem, r.account or "")
+                out[k] = out.get(k, 0) + 1
+    return out
+
+
+def preferred(provider: str) -> list[str] | None:
+    """`[accounts.prefer] <provider> = [<role slugs>]`: the roles balancing may move onto that provider (shorter items
+    suit a small plan: a long one would outlast its window); None when the provider names none (any role)."""
+    t = config.file_values().get("accounts")
+    v = (t.get("prefer") if isinstance(t, dict) else None) or {}
+    roles = v.get(provider) if isinstance(v, dict) else None
+    return [str(x) for x in roles] if isinstance(roles, list) else None
+
+
+def quota_pick(provider: str, account: str, load: dict, pinned: bool = False, providers: list[str] | None = None,
+               now: float | None = None, snap: list | None = None, slug: str = "") -> tuple[str, str, str] | None:
+    """(provider, account, why) a role on `provider`/`account` should move to now, or None to stay: off an account near
+    a limit to the account furthest under its share that is not; else off an account carrying at least one role over
+    its share to one at least one role under (shares rounded to whole roles, so an account whose share is most of a role
+    gets one, and a move never just swaps which side is over). `pinned`: its own provider's accounts only; `slug`: a
+    provider with `[accounts.prefer]` takes only the roles it names. None when this account has no fresh reading."""
+    plan = shares(load, [provider] if pinned else providers, now, snap)
+    here = plan.get((provider, account or ""))
+    if here is None or (not here["near"] and here["weighted"] == 0 and here["binding"] == "no fresh reading"):
+        return None
+    room = [(k, v) for k, v in plan.items() if k != (provider, account or "") and v["weighted"] > 0 and not v["near"]
+            and (k[0] == provider or preferred(k[0]) is None or slug in preferred(k[0]))]
+    if not room:
+        return None
+    (p, a), v = max(room, key=lambda kv: (round(kv[1]["target"]) - kv[1]["load"], kv[1]["weighted"]))
+    under = round(v["target"]) - v["load"]
+    if here["near"]:
+        return p, a, f"{name(provider, account)} is near its limit ({here['near']}); {name(p, a)} has room " \
+                     f"({v['load']} of a {v['target']:.1f}-role share, {v['units']} units)"
+    over = here["load"] - round(here["target"])
+    if over >= 1 and under >= 1:
+        return p, a, f"{name(provider, account)} carries {here['load']} roles against a {here['target']:.1f}-role " \
+                     f"share; {name(p, a)} {v['load']} against {v['target']:.1f}"
+    return None
 
 
 def cmd_accounts(a) -> int:
@@ -440,6 +605,14 @@ def cmd_accounts(a) -> int:
     if not any(r["provider"] == "claude" for r in rows):  # the default Claude account has a sign-in to show and keep too
         rows = [{"provider": "claude", "account": "", "name": "claude", "home": home("claude"),
                  "exists": os.path.isdir(home("claude")), "badge": ""}] + rows
+    try:
+        balanced = pool()
+    except Exception:  # noqa: BLE001 - no viewer settings: the pool rows are a convenience
+        balanced = []
+    for p in balanced:  # every pool provider's default account, which balancing chooses among too
+        if not any(r["provider"] == p for r in rows):
+            rows.append({"provider": p, "account": "", "name": p, "home": home(p) if p in HOME_VARS else "",
+                         "exists": p in HOME_VARS and os.path.isdir(home(p)), "badge": ""})
     if getattr(a, "keepalive", False):
         for r in rows:
             if r["provider"] == "claude":
@@ -474,6 +647,8 @@ def cmd_accounts(a) -> int:
             line += f"  token {'expired ' + format(-r['token_hours'], '.1f') + ' h ago' if r['token_hours'] < 0 else format(r['token_hours'], '.1f') + ' h left'}"
         if "signin" in r:
             line += f"  {r['signin']}"
+        units, plan = capacity(r["provider"], r["account"])
+        line += f"  {units} units" + (f" ({plan})" if plan else "")
         if r.get("binding"):
             line += f"  headroom {r['score']:.2g} ({r['binding']})" if r["score"] is not None else f"  ({r['binding']})"
         print(line)
@@ -486,5 +661,11 @@ def cmd_accounts(a) -> int:
               + f": `--ecosystem auto` would pick {name(p, acct) if p else 'nothing (the current provider stays)'}"
               + (f" ({why})" if p else f" ({why})"))
     except Exception:  # noqa: BLE001 - no usage cache or settings: the pool line is a convenience
+        pass
+    try:
+        for (p, acct), v in sorted(shares(role_load()).items()):
+            print(f"  share {name(p, acct)}: {v['load']} role(s) running, {v['target']:.1f} its share"
+                  + (f" (near its limit: {v['near']})" if v["near"] else ""))
+    except Exception:  # noqa: BLE001 - no specs or usage cache: the share lines are a convenience
         pass
     return 0

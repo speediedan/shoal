@@ -358,6 +358,116 @@ check(out.endswith("--set-account=x:claude-2"), f"the restart carries the accoun
 subscription_usage.snapshot = _snapshot
 use(TWO_CFG)
 
+# ---- capacity: a plan's units weigh its headroom; shares and the quota handoff ---------------------------------------
+check(accounts.capacity("claude", "") == (100, "") and accounts.capacity("codex", "") == (100, ""),
+      "an account with no capacity declared is the base, so raw headroom compares as before")
+CAP_CFG = os.path.join(T, "cap.toml")
+open(CAP_CFG, "w").write(open(TWO_CFG).read().replace(
+    'select = "balance"', 'select = "balance"\nquota_handoff = true\npin = ["pinned"]\nnear_5h = 75') +
+    '\n[accounts.capacity]\nclaude = "max"\nclaude-2 = 100\ncodex = "plus"\ncodex-b = { plan = "pro", units = 120 }\n')
+use(CAP_CFG)
+check(accounts.capacity("claude", "") == (100, "max") and accounts.capacity("claude", "claude-2") == (100, ""),
+      "a plan name, or bare units")
+check(accounts.capacity("codex", "") == (18, "plus") and accounts.capacity("codex", "codex-b") == (120, "pro"),
+      "Codex Plus is 18 units of a Claude Max plan's 100; units given with a plan win")
+check("capacity" not in accounts.declared(), "the capacity table is a setting, not an account")
+check(accounts.near_threshold("5h") == 75 and accounts.near_threshold("week") == 85, "near_5h overrides, week default")
+
+
+def five(used: float, left_h: float) -> dict:
+    return {"rows": [{"bucket": "b", "windows": [{"name": "5h", "used_percent": used, "resets_at": NOW + left_h * 3600,
+                                                  "minutes": 300}]}], "stale": False, "error": ""}
+
+
+# the same paced headroom on Codex Plus and a Claude Max account: the Max account holds five times more
+snap = [dict(five(5, 4), provider="claude"), dict(five(5, 4), provider="claude-2"), dict(five(5, 4), provider="codex"),
+        dict(five(5, 4), provider="codex-b")]
+p, a, why = accounts.choose_any(["claude", "codex"], NOW, snap)
+check((p, a) == ("codex", "codex-b") and "120 units" in why, f"capacity weighs the pick: {p} {a} ({why})")
+check(accounts.near_limit(five(76, 2)) == "5h 76% used" and accounts.near_limit(five(70, 2)) == "",
+      "near is the configured share of a window used")
+# shares: two Max accounts and Codex Plus (codex-b left unread), eleven roles running
+snap = [dict(five(10, 4), provider="claude"), dict(five(10, 4), provider="claude-2"), dict(five(10, 4), provider="codex"),
+        {"provider": "codex-b", "stale": True}]
+load = {("claude", ""): 7, ("claude", "claude-2"): 1, ("codex", ""): 3}
+sh = accounts.shares(load, ["claude", "codex"], NOW, snap)
+check(round(sh[("codex", "")]["target"], 1) == 0.9 and round(sh[("claude", "")]["target"], 1) == 5.0,
+      f"each account's share of the roles follows its weighted capacity: {sh}")
+check(sh[("codex", "codex-b")]["target"] == 0 and sh[("codex", "codex-b")]["load"] == 0, "an unread account takes no share")
+pick = accounts.quota_pick("codex", "", load, False, ["claude", "codex"], NOW, snap)
+check(pick and pick[:2] == ("claude", "claude-2") and "3 roles against a 0.9-role share" in pick[2],
+      f"a role over its account's share moves to the account furthest under: {pick}")
+check(accounts.quota_pick("claude", "claude-2", load, False, ["claude", "codex"], NOW, snap) is None,
+      "a role on an account under its share stays")
+even = {("claude", ""): 5, ("claude", "claude-2"): 5, ("codex", ""): 1}
+check(accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW, snap) is None,
+      "under a whole role either way, nothing moves (no swaps)")
+# shares round to whole roles: Codex Plus's 0.9-role share is a role, so an idle Codex account draws one back
+back = {("claude", ""): 6, ("claude", "claude-2"): 5, ("codex", ""): 0}
+pick = accounts.quota_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="short")
+check(pick and pick[:2] == ("codex", ""), f"the account under by a whole (rounded) role takes it: {pick}")
+PREF_CFG = os.path.join(T, "pref.toml")
+open(PREF_CFG, "w").write(open(CAP_CFG).read() + '\n[accounts.prefer]\ncodex = ["short"]\n')
+use(PREF_CFG)
+check(accounts.preferred("codex") == ["short"] and accounts.preferred("claude") is None, "[accounts.prefer] by provider")
+check(accounts.quota_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="short")[:2] == ("codex", ""),
+      "a preferred role may move onto the provider")
+check(accounts.quota_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="long") is None,
+      "a role the provider does not name never moves onto it (and claude-2 is at its share)")
+use(CAP_CFG)
+hot = [dict(five(80, 2), provider="claude"), dict(five(10, 4), provider="claude-2"), dict(five(10, 4), provider="codex")]
+pick = accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW, hot)
+check(pick and pick[:2] == ("claude", "claude-2") and "near its limit (5h 80% used)" in pick[2],
+      f"an account near a limit hands its role to one with room: {pick}")
+pick = accounts.quota_pick("codex", "", even, True, ["claude", "codex"], NOW,
+                           [dict(five(90, 2), provider="codex"), dict(five(10, 4), provider="claude")])
+check(pick is None, "a pinned role never leaves its provider (and Codex has no other account with a reading)")
+allhot = [dict(five(90, 2), provider="claude"), dict(five(90, 2), provider="claude-2"), dict(five(90, 2), provider="codex")]
+check(accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW, allhot) is None,
+      "every account near its limit: nowhere better, the role stays")
+check(accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW,
+                          [{"provider": "claude", "stale": True}, dict(five(10, 4), provider="claude-2")]) is None,
+      "no fresh reading of its own account: the role stays")
+
+# the quorum reads the clock: readings around it
+def five_now(used: float, left_h: float) -> dict:
+    return {"rows": [{"bucket": "b", "windows": [{"name": "5h", "used_percent": used, "minutes": 300,
+                                                  "resets_at": _time.time() + left_h * 3600}]}], "stale": False, "error": ""}
+
+
+hot = [dict(five_now(80, 2), provider="claude"), dict(five_now(10, 4), provider="claude-2"),
+       dict(five_now(10, 4), provider="codex")]
+json.dump({"projects": {T: {"hasTrustDialogAccepted": True}}}, open(os.path.join(D2, ".claude.json"), "w"))
+# the quorum: a quiet role on an account near its limit is handed over, once per run and per cooldown
+QSPEC = ShoalSpec(sid="acct-quota", dir=T, roles=[Role(slug="q1", ecosystem="claude", account="", session="s-q1"),
+                                                 Role(slug="pinned", ecosystem="codex", account="", session="s-p")])
+subscription_usage.snapshot = lambda keys, now=None: {"accounts": hot}
+_load, _ref = accounts.role_load, __import__("park")._ecosystem_refusal
+accounts.role_load = lambda specs=None: even
+__import__("park")._ecosystem_refusal = lambda eco: ""
+c = health.quota_condition(QSPEC, QSPEC.roles[0], {}, False)
+check(c is None, "page mode: only a role that marked itself restart-ready is handed over")
+c = health.quota_condition(QSPEC, QSPEC.roles[0], {"restart_ready": True, "ts": "2026-11-18T00:00:00Z"}, False)
+check(c and c["condition"] == "quota-handoff" and c["extra"] == ["--set-account=q1:claude-2"]
+      and c["key"] == "session:s-q1:claude/claude-2", f"the handoff names the account to set: {c}")
+subscription_usage.snapshot = lambda keys, now=None: {"accounts": [dict(five_now(10, 4), provider="claude"),
+                                                                   dict(five_now(10, 4), provider="claude-2"),
+                                                                   dict(five_now(80, 2), provider="codex")]}
+codexed = health.quota_condition(QSPEC, Role(slug="cx", ecosystem="codex", account="", session="s-cx"),
+                                 {"restart_ready": True}, False)
+check(codexed and codexed["extra"][0] == "--set-ecosystem=cx:claude" and "--set-model=cx:" in codexed["extra"][1],
+      f"a move to another provider sets it, with that provider's default model: {codexed}")
+check(health.quota_condition(QSPEC, QSPEC.roles[1], {"restart_ready": True}, False) is None,
+      "a pinned role on a provider with no other account stays")
+off = os.path.join(T, "capoff.toml")
+open(off, "w").write(open(CAP_CFG).read().replace("quota_handoff = true\n", ""))
+use(off)
+check(health.quota_condition(QSPEC, QSPEC.roles[0], {"restart_ready": True}, False) is None, "quota_handoff is opt-in")
+use(CAP_CFG)
+accounts.role_load, __import__("park")._ecosystem_refusal = _load, _ref
+subscription_usage.snapshot = _snapshot
+use(TWO_CFG)
+
 # ---- 6. records and icons ------------------------------------------------------------------------------------------
 spec = ShoalSpec.from_dict({"sid": "acct-test", "roles": [{"slug": "x", "ecosystem": "claude", "account": "claude-2"}]}) \
     if hasattr(ShoalSpec, "from_dict") else None

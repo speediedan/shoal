@@ -128,6 +128,15 @@
 # exclude = ["opencode"]   # providers kept out of balancing (`--ecosystem auto` never picks them)
 # keepalive = true         # the usage meter refreshes a lapsing Claude sign-in through the CLI (a tiny call, ~3/day)
 # rebalance = true         # the quorum's automatic context restart moves a role to the balanced account of its provider
+# quota_handoff = true     # a quiet role moves off an account near a limit, or over its share, to the one most under
+# near_5h = 70             # percent of a 5 h window used that counts as near its limit (default 70); near_week (85)
+# quota_cooldown_min = 60  # a role moved for quota is not moved again sooner (default 60)
+# pin = ["<role-slug>"]    # roles balancing keeps on their own provider
+# [accounts.capacity]      # what each plan buys, in units where a Claude Max plan is 100 (Codex Plus 18, Pro 125)
+# claude = "max"           # a default account by its provider's name; a plan, a number, or { plan = "plus", units = 20 }
+# codex = "plus"
+# [accounts.prefer]        # optional: the roles balancing may move onto a provider (default: any role)
+# codex = ["<role-slug>"]
 # [accounts.claude-2]
 # provider = "claude"
 # env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }
