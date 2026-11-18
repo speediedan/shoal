@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -36,7 +37,14 @@ def probe(path: str) -> dict:
     out["notes"].append("roots cover this host's standalone sessions; other hosts are not read")
     if not known["specs_live"]:
         out["notes"].append("no live spec found: other roles' roots may be missing")
-    scan = refs.scan(os.path.dirname(path), docs=[path], known_roots=known["roots"])
+    # who this start doc belongs to: a role's slug or a standalone session's label, from the same roots
+    whos = known["roots"].get(path) or known["roots"].get(os.path.realpath(path)) or []
+    names = {w.get("slug") or w.get("label") for w in whos} - {None, ""}
+    auto = mode == "auto" and bool(names & set(lc["values"]["checkpoint"]["auto_roles"]))
+    if auto:
+        out["effective_mode"] = "auto"
+        out["roles"] = sorted(names)
+    scan = refs.scan(os.path.dirname(path), docs=[path], known_roots=known["roots"], age_floor_all=auto)
     out["ok"] = doc["ok"] and scan["ok"] and not scan["candidates"] and not doc["warnings"]
     for key in ("candidates", "dangling", "untracked", "deleted"):
         out["counts"][key] = len(scan[key])
@@ -56,8 +64,13 @@ def probe(path: str) -> dict:
             out["notes"].insert(0, f"deep pass due: shoal lifecycle deep-pass {path} ({d['why']})")
     except Exception as exc:  # advisory: never let the deep-pass check blank the checkpoint
         out["notes"].append(f"deep-pass check unavailable: {str(exc)[:150]}")
-    if mode == "auto":
-        out["notes"].append("auto is advisory propose in this release; archival awaits a measured rollout")
+    if auto and scan["candidates"]:
+        # the role runs these itself, after moving any durable knowledge up a tier (the work loop's auto step)
+        policy = lc["values"]["checkpoint"]["cross_owner"]
+        out["commands"] = ["shoal archive " + " ".join(shlex.quote(c) for c in scan["candidates"])
+                           + f" --cross-owner {policy} --strict --reason {shlex.quote('checkpoint auto')}"]
+    elif mode == "auto" and not auto:
+        out["notes"].append("archive = auto applies only to the roles in [checkpoint] auto_roles; this one proposes")
     return out
 
 
@@ -86,6 +99,8 @@ def report(out: dict) -> None:
     for key, entries in out["samples"].items():
         for entry in entries:
             print(f"  {key}: {entry}")
+    for command in out.get("commands", []):
+        print(f"  auto ({', '.join(out.get('roles', []))}): {command}")
     for note in out["notes"]:
         print(f"  note: {note}")
 

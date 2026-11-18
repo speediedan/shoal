@@ -34,6 +34,7 @@ header_max_bytes = 3072
 archive = "propose"                    # auto | propose | off
 min_age_days = 7                       # an unreferenced file younger than this is not an archive candidate
 cross_owner = "notify"                 # notify | rewrite | keep: a candidate another role's live document names
+auto_roles = []                        # archive = "auto" applies only to these roles (slugs or standalone labels)
 
 [deep_pass]
 every_days = 3
@@ -93,8 +94,12 @@ archive operation still checks roots across hosts before a move.
 For `[checkpoint] archive = "propose"`, the role lists candidates for review or records a `keep: <reason>` in their
 front matter. Roots, live files and untracked files cannot be archive candidates. Resolve untracked work first.
 Keep files another owner's live document references and tell that owner through ledger mail to update its link.
-Automatic archival remains deferred pending model-cost measurements: `auto` currently also reports proposals and
-never moves files. `off` skips the lifecycle check. The check itself makes no model calls.
+`archive = "auto"` takes effect only for a role in `auto_roles` (its slug, or a standalone session's label), the pilot
+opt-in; every other role still proposes, and the report says why. For an auto role the checkpoint computes candidates
+with the age floor on every class (`refs --age-floor-all`) and adds `commands`: the `shoal archive ... --cross-owner
+<cross_owner> --strict` run that archives them, which the role runs itself from the repository root after moving any
+durable knowledge up a tier (the protocol's work loop). The checkpoint still moves nothing and makes no model calls.
+`off` skips the lifecycle check.
 
 The probe runs in a child process with a 15-second timeout. A failed scan, a timeout, a header warning or unresolved
 candidates never reject `restart_ready`, including beyond the context limit. Existing start-doc freshness, required

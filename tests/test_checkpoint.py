@@ -56,7 +56,21 @@ with tempfile.TemporaryDirectory(prefix="shoal-checkpoint-") as tmp:
     config.write_text('[checkpoint]\narchive = "auto"\n')
     with mock.patch.object(refs, "roots", return_value=known):
         r = checkpoint.probe(str(doc))
-    assert r["effective_mode"] == "propose" and any("auto" in n for n in r["notes"]), r
+    assert r["effective_mode"] == "propose" and any("auto_roles" in n for n in r["notes"]), r
+    # the pilot opt-in: an auto role gets its archive command, with --strict, and fresh history-only files held back
+    config.write_text('[checkpoint]\narchive = "auto"\nauto_roles = ["lane"]\ncross_owner = "rewrite"\n')
+    with mock.patch.object(refs, "roots", return_value=known):
+        r = checkpoint.probe(str(doc))
+    assert r["effective_mode"] == "auto" and r["roles"] == ["lane"], r
+    assert r["counts"]["candidates"] == 0 and "commands" not in r, r  # result.md is history-only and younger than 7 days
+    config.write_text('[checkpoint]\narchive = "auto"\nauto_roles = ["lane"]\ncross_owner = "rewrite"\nmin_age_days = 0\n')
+    with mock.patch.object(refs, "roots", return_value=known):
+        r = checkpoint.probe(str(doc))
+    assert r["commands"] == ["shoal archive lane/result.md --cross-owner rewrite --strict --reason 'checkpoint auto'"], r
+    with contextlib.redirect_stdout(io.StringIO()) as stream:
+        checkpoint.report(r)
+    assert "auto (lane): shoal archive lane/result.md" in stream.getvalue(), stream.getvalue()
+    assert before[1] == git("rev-parse", "HEAD"), "auto advice moves nothing itself"
     config.write_text('[checkpoint]\narchive = "off"\n')
     with mock.patch.object(refs, "scan", side_effect=AssertionError("off must not scan")):
         assert checkpoint.probe(str(doc))["skipped"]

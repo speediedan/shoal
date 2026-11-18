@@ -34,7 +34,8 @@ DEFAULTS: dict[str, dict] = {
     "layout": {"role_dir": "", "archive": "archive/{path}", "manifest": "archive/{dir}/MANIFEST.jsonl"},
     "tiers": {"history": ["*_log.md", "*_log_*.md"], "exclude": ["archive/*"], "header_max_lines": 40,
               "header_max_bytes": 3072},
-    "checkpoint": {"archive": "propose", "min_age_days": 7.0, "cross_owner": "notify"},
+    # archive = "auto" takes effect only for the roles (slugs, or standalone labels) in auto_roles: the pilot opt-in
+    "checkpoint": {"archive": "propose", "min_age_days": 7.0, "cross_owner": "notify", "auto_roles": []},
     "deep_pass": {"every_days": 3, "every_restarts": 3},
     "cold": {"warm_days": 90, "after_checkpoints": 2},
     "instructions": {"every_days": 14},
