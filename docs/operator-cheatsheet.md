@@ -245,7 +245,8 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
 
 - A placed job's meta records the hosts considered, their predicted starts, the choice and
   `lease_granted`; `job status` shows `lease_granted=`.
-- Lease scope: CPU-only work takes `--lease cpu-heavy` (`--needs cpu --cpu-heavy`); a bare
+- Lease scope: a local CPU suite takes `--lease cpu-light` (`--needs cpu --cpu-light`), which yields to
+  CI; CPU work that must hold the host takes `--lease cpu-heavy` (`--needs cpu --cpu-heavy`); a bare
   `--cpu-heavy` on the helper also reserves every GPU.
 - A `ci` job (the default `--class`) past `features.placement.ci_budget_min` (90 min) pages its role and
   you once (`JOB-OVERRUN`, an `overrun` event); it is never killed. Long research runs use `--class research`.

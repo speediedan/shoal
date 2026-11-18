@@ -9,7 +9,7 @@ wraps, launches, supervises and records:
     shoal pool probe --json                 # this host: leases, devices, memory, cores, CI envs, worktree root
     shoal pool status [--json]              # per host: capacity, holders, queue, predicted drain
     shoal pool plan [--dry-run] [--json]    # the plan over this host's queued placed jobs, and any transfers
-    shoal job run ... --place auto|<host> --needs cpu|gpu[:N][:vendor][:vramGiB] [--cpu-heavy]
+    shoal job run ... --place auto|<host> --needs cpu|gpu[:N][:vendor][:vramGiB] [--cpu-heavy|--cpu-light]
                   [--ci-env NAME] [--repo PATH --ref SHA] [--est MIN] -- CMD
 
 A placed job runs through the ordinary job-unit machinery (`--on` for another host), wrapped in the
@@ -638,8 +638,12 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
     probes = gather(only=[pin] if pin else None)
     f = _spec_feature(a.sid)
     hosts = capacities(probes, time.time(), f["max_age_s"])
+    if getattr(a, "cpu_light", False) and (a.cpu_heavy or not a.needs.startswith("cpu")):
+        print("ERROR: --cpu-light is for CPU-only work (`--needs cpu`), and never with --cpu-heavy (nothing written)")
+        return 1
     dem = pool.demand(a.needs, _vendor_default(hosts, home), a.cpu_heavy, a.memory_gib, a.ci_env,
-                      src["identity"], src["sha"], pin, src["block"], a.job_class)
+                      src["identity"], src["sha"], pin, src["block"], a.job_class,
+                      cpu_light=getattr(a, "cpu_light", False))
     if a.job_class == "research":
         return _run_research(a, cmd, unit, p, src, hosts, dem, now, home)
     prior_s = a.est * 60 if a.est else None
