@@ -166,5 +166,18 @@ assert r["tiers"]["history"] == ["*_log.md", "*_prompts.md"] and r["lifecycle"][
 assert not r["dangling"], "a history document's old paths are not dangling: %r" % r["dangling"]
 print("refs with the repository's tiers ok")
 
+# checkpoint.archive per role, the context_restart shape: a table of modes, "*" the default; a bad mode keeps the default
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shoal"))
+import lifecycle as lc_mod  # noqa: E402
+assert lc_mod.archive_mode("auto", {"a"}) == "auto" and lc_mod.archive_mode("propose") == "propose"
+assert lc_mod.archive_mode({"*": "propose", "b": "auto"}, {"b"}) == "auto"
+assert lc_mod.archive_mode({"*": "off", "b": "auto"}, {"a"}) == "off" and lc_mod.archive_mode({"b": "auto"}, {"a"}) == "propose"
+write(".shoal/lifecycle.toml", '[checkpoint]\narchive = { "*" = "propose", "it-tune" = "auto" }\n')
+r = js("lifecycle", "show", LANE)
+assert r["values"]["checkpoint"]["archive"] == {"*": "propose", "it-tune": "auto"}, r["values"]["checkpoint"]
+write(".shoal/lifecycle.toml", '[checkpoint]\narchive = { "*" = "propose", "it-tune" = "always" }\n')
+r = js("lifecycle", "show", LANE)
+assert r["values"]["checkpoint"]["archive"] == "propose" and any("per-role modes" in n for n in r["notes"]), r
+print("per-role archive modes ok")
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_lifecycle OK")

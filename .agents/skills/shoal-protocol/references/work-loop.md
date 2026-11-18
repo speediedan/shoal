@@ -111,9 +111,22 @@ to your append-only log, refresh the header, and append the session entry and sn
 directory and commit by exact path. `queue --restart-ready` adds bounded, read-only lifecycle advice (header, dangling
 references, untracked files and archive candidates), recorded in its queue event. Standalone sessions can run
 `shoal lifecycle checkpoint <start-doc>` explicitly. In this advisory rollout, unresolved advice and scan timeouts
-never stop a context restart, and no files are moved automatically. Routine model distillation and automatic archival
-wait for measured pass costs on one or two roles. In propose mode list candidates for review or keep them with a
-`keep: <reason>`; notify an owner whose live document references a file before proposing its move.
+never stop a context restart. In propose mode list candidates for review or keep them with a `keep: <reason>`; notify
+an owner whose live document references a file before proposing its move.
+
+**Auto mode (a pilot, per role).** When the checkpoint's `effective_mode` is `auto` (the repository's
+`[checkpoint] archive` mode is `auto` for your role), it lists `commands` (absolute paths): run them yourself, in the same turn. Before you do, move what is durable up a tier, because your role ends and the
+repository stays: a concluded research result goes to the repository's research wiki (distributed-insight: the
+`research-wiki` skill), a host or operational fact to its runbook, a script others reuse to the shared scripts. Then
+run the command. It archives only files past the age floor, refuses and lists any partial-path reference (`--strict`),
+and commits through the repository's hook; if it refuses, fix what it names or keep the file with a reason, never
+force it.
+
+**The deep pass.** When the checkpoint notes `deep pass due`, run `shoal lifecycle deep-pass <start-doc>` and work
+through its report: fold a concluded auxiliary file's result into the start doc, the design doc or, better, the
+repository-level home above; review each `keep:` reason and drop the ones no longer true; take the cold candidates it
+lists with their `shoal archive --cold` commands. Then append the marker line it prints to your log's snapshot. Weigh
+the work by what outlives the role: repository knowledge and the wiki first, your own directory's tidiness second.
 
 ## Wakes
 
