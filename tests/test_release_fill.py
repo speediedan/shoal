@@ -78,7 +78,8 @@ class ReleaseFill(unittest.TestCase):
 
     def test_a_label_source_brings_lane_issues_the_board_lacks(self):
         board, labels = Path(self.tmp.name, "board.json"), Path(self.tmp.name, "labels.json")
-        board.write_text(json.dumps([{"repo": "o/r", "number": 1}, {"repo": "o/r", "number": 2}]))
+        board.write_text(json.dumps([{"repo": "o/r", "number": 1}, {"repo": "o/r", "number": 9, "state": "CLOSED"},
+                                     {"repo": "o/r", "number": 2}]))
         labels.write_text(json.dumps({"lane: x": [{"repo": "o/r", "number": 2}, {"repo": "o/s", "number": 7}]}))
         self.spec.sources = [{"kind": "github-project", "owner": "o", "number": 3},
                              {"kind": "github-label", "label": "lane: x", "repos": ["o/r", "o/s"]}]
@@ -89,7 +90,7 @@ class ReleaseFill(unittest.TestCase):
         self.assertEqual(doc["sources"], ["github-project:o/3", "github-label:lane: x"])
         self.assertEqual([x["item"] for x in doc["roles"]["r"]], ["r#1", "r#2", "s#7"], "the board first, once each")
         self.assertEqual(doc["unboarded"], ["s#7"])
-        self.assertEqual(doc["items"]["s#7"]["pos"], 3)
+        self.assertEqual(doc["items"]["s#7"]["pos"], 4, "after the board's last place, a closed item's included")
         self.assertIn("unboarded (github-label:lane: x)", digest.fmt_candidate(dict(doc["items"]["s#7"], verb="fix",
                                                                                     score=0, why=[])))
         self.assertEqual(digest.label_query(self.spec.sources[1]), 'is:issue is:open label:"lane: x" repo:o/r repo:o/s')
