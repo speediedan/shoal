@@ -17,7 +17,10 @@
 - `--migrate` moves a legacy nested archive folder (or a file in one) to the mirror of each file's original path with
   `migrate` events naming the legacy path in `from`, refusing live references unless rewritten, a path with no legacy
   segment, a path already under the archive root, two legacy files with one original in a run, an original that is
-  live again, and a mirror that already exists; `refs --resolve` finds it by `from`.
+  live again, and a mirror that already exists; `refs --resolve` finds it by `from`;
+- a directory the run empties is a target (listed, dry-run, rewritten keeping a trailing slash, prose words left alone),
+  refused under rewrite when its files land in different places; a refusing hook's cause is shown and its whole output
+  kept under the git directory; a .csv field and an extension listed in `[refs] text_ext` are referrers.
 
 Synthetic paths and ids only."""
 from __future__ import annotations
@@ -464,6 +467,38 @@ rc, out = archive("--migrate", f"{L4}/archive", "--cross-owner", "rewrite")
 assert rc == 1 and "moves to different places" in out["refused"] and f"{L4}/index.md:1" in out["refused"], out
 assert state() == before, out
 print("directories ok")
+
+# data tables are referrers: a .csv field naming a moved file or an emptied directory is listed and rewritten, the rest of
+# the row byte for byte; another extension is read once the repository lists it in [refs] text_ext
+L5 = "proj/design/lane5"
+write(f"{L5}/archive/runs/r1/raw.txt", "raw\n")
+write(f"{L5}/tables/runs.csv", "run_id,data_dir,label\nr1,../archive/runs/r1,\"a, b\"\nr2,../live,x\n")
+write(f"{L5}/tables/notes.rst", "See ../archive/runs/r1/raw.txt for the raw run.\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a run table and an rst note")
+before = state()
+rc, out = archive("--migrate", f"{L5}/archive")
+assert rc == 1 and f"{L5}/tables/runs.csv:2" in out["refused"] and "notes.rst" not in out["refused"], out
+assert state() == before, out
+lc = open(os.path.join(REPO, ".shoal/lifecycle.toml")).read()
+write(".shoal/lifecycle.toml", lc + "\n[refs]\ntext_ext = [\"rst\"]\n")
+git("commit", "-q", "-am", "read .rst for references")
+rc, out = archive("--migrate", f"{L5}/archive", "--cross-owner", "rewrite")
+assert rc == 0 and out["ok"], out
+assert open(os.path.join(REPO, L5, "tables/runs.csv")).read() == (
+    f"run_id,data_dir,label\nr1,../../../../archive/{L5}/runs/r1,\"a, b\"\nr2,../live,x\n")
+assert open(os.path.join(REPO, L5, "tables/notes.rst")).read() == (
+    f"See ../../../../archive/{L5}/runs/r1/raw.txt for the raw run.\n")
+# a data table over [refs] data_max_bytes is skipped, and the run says so
+write(f"{L5}/tables/big.csv", "x," * 400 + f"\n../../../../archive/{L5}/runs/r1\n")
+write("proj/design/lane6/z.md", "z\n")
+lc = open(os.path.join(REPO, ".shoal/lifecycle.toml")).read()
+write(".shoal/lifecycle.toml", lc.replace("[refs]\n", "[refs]\ndata_max_bytes = 512\n"))
+git("add", "-A")
+git("commit", "-q", "-m", "a table over the cap")
+rc, out = archive("proj/design/lane6/z.md", "--dry-run")
+assert any(f"{L5}/tables/big.csv not read for references" in n for n in out["notes"]), out
+print("data tables ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_archive OK")

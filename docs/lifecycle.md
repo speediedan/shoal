@@ -50,6 +50,10 @@ every_days = 14                        # instruction-tier distillation, as propo
 commit = ""                            # how to commit by exact path; "" : git commit -- <paths>
                                        # {message} and {paths} expand shell-quoted: write them unquoted
 on_retire = ""                         # run when a role or standalone session retires
+
+[refs]
+text_ext = []                          # extensions read for references beyond the built-in text set, e.g. [".rst"]
+data_max_bytes = 4194304               # a .csv or .tsv larger than this is not read for references (and is reported)
 ```
 
 A key that is unknown, of the wrong type, or outside its choices is reported by `shoal lifecycle show` and the default
@@ -59,7 +63,9 @@ repository, and files are moved by it, so where files go never leaves the reposi
 
 Today these settings are read by `shoal refs` (`[tiers]` and `checkpoint.min_age_days`, unless flags name them), by
 `doc-check` and `doc-head` (the header cap), and by `shoal archive` ([`archive.md`](archive.md): `[layout] archive` and
-`manifest`, `[cold] warm_days`, `[hooks] commit`). The checkpoint reads `[checkpoint]`; retirement commands read
+`manifest`, `[cold] warm_days`, `[hooks] commit`). `[refs] text_ext` widens the files `refs`, `archive` and the deep pass
+read for references: the built-in set is `.md`, `.sh`, `.py`, `.yaml`, `.yml`, `.json`, `.jsonl`, `.toml`, `.txt`, `.cfg`,
+`.ini`, `.csv` and `.tsv` (a data table's path column is a reference its generator follows). The checkpoint reads `[checkpoint]`; retirement commands read
 `[hooks] on_retire`. `lifecycle deep-pass` and the checkpoint's `deep_pass_due` read `[deep_pass]` and `[cold] warm_days`.
 
 ## Checkpoint pass at restart-ready

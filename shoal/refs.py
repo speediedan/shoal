@@ -50,11 +50,41 @@ import standalone  # noqa: E402
 
 ROOTS_V = 1
 REFS_V = 1
-TEXT_EXT = {".md", ".sh", ".py", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".txt", ".cfg", ".ini"}
+# data tables too: a .csv or .tsv field that records a path (a data_dir column) is a reference a generator follows;
+# TOKEN already stops at commas, tabs and quotes, so a field is a token
+TEXT_EXT = {".md", ".sh", ".py", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".txt", ".cfg", ".ini", ".csv", ".tsv"}
 # the characters a path uses, so link syntax, backticks, quotes and brackets all delimit one
 TOKEN = re.compile(r"[A-Za-z0-9_.~/+@%-]*[A-Za-z0-9_/]")
 MD_LINK = re.compile(r"\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 FRONT = re.compile(r"^(status|keep)\s*:\s*(.+?)\s*$", re.I | re.M)
+
+
+DATA_EXT = {".csv", ".tsv"}
+DATA_MAX_BYTES = 4 * 1024 * 1024
+
+
+def readable(repo: "Repo", paths: list[str], values: dict) -> tuple[list[str], list[str]]:
+    """(read, skipped): a data table (.csv, .tsv) larger than `[refs] data_max_bytes` is not read for references, so a
+    large tracked dataset does not slow every scan; each caller says what it skipped."""
+    cap = values.get("refs", {}).get("data_max_bytes", DATA_MAX_BYTES)
+    read, skipped = [], []
+    for p in paths:
+        if posixpath.splitext(p)[1].lower() in DATA_EXT:
+            try:
+                size = os.path.getsize(os.path.join(repo.root, p))
+            except OSError:
+                size = 0
+            if size > cap:
+                skipped.append(p)
+                continue
+        read.append(p)
+    return read, skipped
+
+
+def text_ext(values: dict) -> set[str]:
+    """The extensions read for references: TEXT_EXT plus the repository's `[refs] text_ext` (lifecycle values)."""
+    extra = {e.lower() if e.startswith(".") else "." + e.lower() for e in values.get("refs", {}).get("text_ext", []) if e}
+    return TEXT_EXT | extra
 
 
 # ---- roots -----------------------------------------------------------------------------
@@ -354,6 +384,7 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
     lc = lifecycle.load(repo.root)
     history = list(history or lc["values"]["tiers"]["history"])
     exclude = list(exclude or lc["values"]["tiers"]["exclude"])
+    exts = text_ext(lc["values"])
     min_age_days = lc["values"]["checkpoint"]["min_age_days"] if min_age_days is None else min_age_days
     inside = (lambda p: p.startswith(d + "/")) if d else (lambda p: True)
 
@@ -385,7 +416,8 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             root_paths.setdefault(t, []).append(f"target of {r}")
 
     referrers = sorted(p for p in repo.mode if (scope == "repo" or inside(p)) and repo.mode[p] != "120000"
-                       and posixpath.splitext(p)[1] in TEXT_EXT and tier(p) != "excluded")
+                       and posixpath.splitext(p)[1].lower() in exts and tier(p) != "excluded")
+    referrers, skipped = readable(repo, referrers, lc["values"])
     edges = edges_to(repo, files, referrers, tier)
     dangling: list[dict] = []
     in_dir = set(files)
@@ -435,7 +467,7 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
     out_files, candidates_out = [], []
     for p in files:
-        text = repo.read(p) if posixpath.splitext(p)[1] in TEXT_EXT else ""
+        text = repo.read(p) if posixpath.splitext(p)[1].lower() in exts else ""
         front = {k.lower(): v for k, v in FRONT.findall("\n".join(text.splitlines()[:12]))}
         es = edges[p]
         if p in root_paths:
@@ -466,7 +498,7 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             "tiers": {"history": history, "exclude": exclude, "min_age_days": min_age_days},
             "roots": sorted(root_paths), "files": out_files,
             "candidates": candidates_out, "dangling": dangling, "untracked": untracked, "deleted": deleted,
-            "ok": not (dangling or untracked or deleted)}
+            "skipped": skipped, "ok": not (dangling or untracked or deleted)}
 
 
 def _owner(owners: dict[str, str], path: str, d: str) -> str:
@@ -556,6 +588,8 @@ def cmd_refs(a) -> int:
                   "unreferenced (is this host's config the one the shoals use?)")
         else:
             print(f"  roots from {k['specs_live']} live specs ({k['specs_from']}) and {', '.join(k['hosts'])}'s standalone sessions")
+        for x in r["skipped"]:
+            print(f"  not read for references (a data table over [refs] data_max_bytes): {x}")
         order = ("root", "live", "history-only", "superseded", "unreferenced")
         for cls in order:
             group = [f for f in r["files"] if f["class"] == cls]

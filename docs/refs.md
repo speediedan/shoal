@@ -82,6 +82,14 @@ repository. A partial path of two or more components counts when no other tracke
 tracked set (`git ls-files`), never against the disk alone, so a reference that works only because of an untracked file
 does not count.
 
+"Text file" means the built-in extensions (`.md`, `.sh`, `.py`, `.yaml`, `.yml`, `.json`, `.jsonl`, `.toml`, `.txt`,
+`.cfg`, `.ini`, `.csv`, `.tsv`) plus any the repository lists in `.shoal/lifecycle.toml` `[refs] text_ext`. A token
+stops at commas, tabs and quotes, so each field of a data table is a token. A data table larger than `[refs]
+data_max_bytes` (4 MiB by default) is not read, so a large tracked dataset does not slow every scan; `refs` lists it
+under `skipped`, and `archive` and the deep pass name it in their notes. A directory is named only by a token
+written with a `/` (`archive/`, `x/archive`): a bare word would resolve beside the naming file, and nothing tells a
+directory name from a word.
+
 `--scope dir` looks for references inside the directory only, which is faster and misses what other directories name.
 
 ## Where is it now (`--resolve`)

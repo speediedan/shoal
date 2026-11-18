@@ -129,10 +129,12 @@ def probe(path: str, now: float | None = None) -> dict:
                 latest[e["path"]] = e
     warm = {p: e for p, e in latest.items() if e.get("event") in ("archive", "migrate")
             and e.get("archive_path") in repo.mode}
-    named = refs.edges_to(repo, [e["archive_path"] for e in warm.values()],
-                          [p for p in repo.mode if posixpath.splitext(p)[1] in refs.TEXT_EXT
-                           and not refs._matches(p, v["tiers"]["exclude"]) and not refs._matches(p, history)],
-                          lambda p: "live") if warm else {}
+    exts = refs.text_ext(v)
+    referrers, skipped = refs.readable(repo, [p for p in repo.mode if posixpath.splitext(p)[1].lower() in exts
+                                              and not refs._matches(p, v["tiers"]["exclude"])
+                                              and not refs._matches(p, history)], v)
+    out["notes"] += [f"{p} not read for references: a data table over [refs] data_max_bytes" for p in skipped]
+    named = refs.edges_to(repo, [e["archive_path"] for e in warm.values()], referrers, lambda p: "live") if warm else {}
     cold = []
     for p, e in sorted(warm.items()):
         days = round((now - _ts(e["ts"])) / 86400, 1) if e.get("ts") else None
