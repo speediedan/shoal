@@ -46,15 +46,19 @@ left out and named in `notes`, rather than resolved against wherever the command
 
 | Class | Meaning | Archive candidate |
 |---|---|---|
-| `root` | a start doc or brief (`--doc`, `--shoal/--slug`, `--root`), any `--roots` path inside the directory, and the target of a root that is a symlink | never |
+| `root` | a start doc or brief (`--doc`, `--shoal/--slug`, `--root`), any `--roots` path inside the directory, and the target of a root that is a symlink, wherever the symlink lives and whether its link is relative, absolute or a chain | never |
 | `live` | reachable from a root through live documents inside the directory, or named by a live document (or a symlink) anywhere else in the repository | no |
-| `history-only` | named only by history documents: the companion log (`*_log.md`), or what `--history` adds | yes |
-| `superseded` | its front matter says `status: superseded` and nothing live names it | yes |
+| `history-only` | named only by history documents: the companion log (`*_log.md`), or what `--history` adds | yes (with `--age-floor-all`, once older than `--min-age-days`) |
+| `superseded` | its front matter says `status: superseded` and nothing live names it | yes (with `--age-floor-all`, once older than `--min-age-days`) |
 | `unreferenced` | nothing names it | yes, once older than `--min-age-days` (default 7, by the commit that added it): a new file is unreferenced until it is linked |
 
 A file whose front matter (its first lines) carries `keep: <reason>` is never a candidate; the reason is reported. For a
 file named from another role's directory, the report names that role, so an archiver can tell its owner rather than edit
-another role's document.
+another role's document. The owner is the role whose start doc the referrer is, when it is one; otherwise the roles whose
+start docs share the referrer's directory, all of them when several do.
+
+`--age-floor-all` applies the age floor to every class, so a history-only script of work still running (written hours
+ago, named only by the log) is not a candidate. An automatic pass uses it.
 
 It also reports three things a checkout or an archive would lose or break, and `--check` exits 1 on any of them:
 
@@ -88,7 +92,8 @@ stops at commas, tabs and quotes, so each field of a data table is a token. A da
 data_max_bytes` (4 MiB by default) is not read, so a large tracked dataset does not slow every scan; `refs` lists it
 under `skipped`, and `archive` and the deep pass name it in their notes. A directory is named only by a token
 written with a `/` (`archive/`, `x/archive`): a bare word would resolve beside the naming file, and nothing tells a
-directory name from a word.
+directory name from a word. In a data table, a whole field may name a directory without a `/` (a `data_dir` column of
+bare run names, spaces after the delimiter allowed): a field is not prose.
 
 `--scope dir` looks for references inside the directory only, which is faster and misses what other directories name.
 

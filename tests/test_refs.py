@@ -181,5 +181,32 @@ assert "kept.md" in names and "orphan.md" not in names, names
 assert any("'orphan.md'" in n and "nocwd" in n for n in r["notes"]), r["notes"]
 print("relative standalone docs ok")
 
+# a shared hub directory: two roles' start docs, and a third role's start doc named through a symlink whose target
+# lives in another directory. The target is a root there; a referrer is owned by its own start doc's role, not by the
+# first role found in its directory; --age-floor-all keeps a fresh history-only file out of the candidates
+H, L2 = "proj/design/hub", "proj/design/lane2"
+write(f"{H}/x_start.md", "# x\n")
+write(f"{H}/y_start.md", "# y\n\nUses `proj/design/lane2/note.md`.\n")
+write(f"{L2}/l2_start.md", "# lane2, reached through the hub\n")
+write(f"{L2}/note.md", "a note\n")
+write(f"{L2}/l2_log.md", "C1: wrote recent.md.\n")
+write(f"{L2}/recent.md", "a script of work still running\n")
+os.symlink("../lane2/l2_start.md", os.path.join(REPO, H, "l2_start.md"))
+sh("git", "add", "-A", "proj/design/hub", "proj/design/lane2")
+sh("git", "commit", "-q", "-m", "a hub and a lane reached through it")
+spec("g3", [{"slug": "x", "doc": os.path.join(REPO, H, "x_start.md")},
+            {"slug": "y", "doc": os.path.join(REPO, H, "y_start.md")},
+            {"slug": "c", "doc": os.path.join(REPO, H, "l2_start.md")}])
+rc, r = refs(os.path.join(REPO, L2), "--json", "--min-age-days", "7")
+assert rc in (0, 1) and isinstance(r, dict), r
+f2 = {os.path.basename(f["path"]): f for f in r["files"]}
+assert f2["l2_start.md"]["class"] == "root", f2["l2_start.md"]
+owners = {e["file"]: e["owner"] for e in f2["note.md"]["referrers"]}
+assert owners == {f"{H}/y_start.md": "role y of g3"}, owners
+assert "proj/design/lane2/recent.md" in r["candidates"], r["candidates"]  # history-only: no age floor by default
+rc, r = refs(os.path.join(REPO, L2), "--json", "--min-age-days", "7", "--age-floor-all")
+assert "proj/design/lane2/recent.md" not in r["candidates"], r["candidates"]
+print("symlinked roots, per-file owners, age floor ok")
+
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_refs OK")

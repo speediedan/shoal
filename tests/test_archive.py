@@ -296,7 +296,8 @@ assert rc == 1 and "not defined yet" in out["refused"], out
 rc, out = archive("--cold", f"{RW}/a.md", "--cross-owner", "rewrite")
 assert rc == 1 and "archiving only" in out["refused"], out
 rc, out = archive(f"{RW}/g.md", "--cross-owner", "rewrite")
-assert rc == 1 and "proj/third/third_start.md is a start doc" in out["refused"] and "move that role first" in out["refused"], out
+# the target of a start doc named through a symlink is a start doc itself, refused before any rewrite is planned
+assert rc == 1 and out["refused"].startswith(f"{RW}/g.md is a start doc (role third of g1)") and "move the role first" in out["refused"], out
 rc, out = archive(*TARGETS, "--cross-owner", "rewrite", "--dry-run")
 assert rc == 0 and out["steps"][0] == "rewrite 8 reference(s) in 2 file(s), listed below", out["steps"][:2]
 assert rc == 0 and f"rewrite proj/other/other_start.md:3 `../design/rw/a.md` -> `../../archive/{RW}/a.md`" in out["steps"], out
@@ -499,6 +500,62 @@ git("commit", "-q", "-m", "a table over the cap")
 rc, out = archive("proj/design/lane6/z.md", "--dry-run")
 assert any(f"{L5}/tables/big.csv not read for references" in n for n in out["notes"]), out
 print("data tables ok")
+
+# a whole data-table field names a directory even without a slash (a data_dir column of bare run names); prose does not
+L7 = "proj/design/lane7"
+write(f"{L7}/archive/raw.txt", "raw\n")
+write(f"{L7}/runs.csv", "run,data_dir\nr1,archive\nr2, archive\n")
+write(f"{L7}/notes.md", "The raw archive is kept.\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a bare data_dir field")
+rc, out = archive("--migrate", f"{L7}/archive", "--cross-owner", "rewrite")
+assert rc == 0 and out["ok"], out
+assert open(os.path.join(REPO, L7, "runs.csv")).read() == (
+    f"run,data_dir\nr1,../../../archive/{L7}\nr2, ../../../archive/{L7}\n")  # a space after the comma is padding
+assert open(os.path.join(REPO, L7, "notes.md")).read() == "The raw archive is kept.\n"
+print("bare data-table fields ok")
+
+# a start doc named through a symlink in another directory: its target is refused as a start doc itself
+L8 = "proj/design/lane8"
+write(f"{L8}/far_target.md", "far\n")
+os.makedirs(os.path.join(REPO, "proj/hub"), exist_ok=True)
+os.symlink("../design/lane8/far_target.md", os.path.join(REPO, "proj/hub/far_start.md"))
+git("add", "-A")
+git("commit", "-q", "-m", "a start doc through a symlink")
+sp = json.load(open(spec))
+json.dump(dict(sp, roles=sp["roles"] + [{"slug": "far", "doc": os.path.join(REPO, "proj/hub/far_start.md")}]), open(spec, "w"))
+before = state()
+rc, out = archive(f"{L8}/far_target.md", "--cross-owner", "rewrite")
+assert rc == 1 and out["refused"].startswith(f"{L8}/far_target.md is a start doc (role far of g1"), out
+assert state() == before, out
+# an absolute link target resolves to the same start doc
+os.remove(os.path.join(REPO, "proj/hub/far_start.md"))
+os.symlink(os.path.join(os.path.realpath(REPO), L8, "far_target.md"), os.path.join(REPO, "proj/hub/far_start.md"))
+git("add", "-A")
+git("commit", "-q", "-m", "the start-doc symlink made absolute")
+rc, out = archive(f"{L8}/far_target.md")
+assert rc == 1 and out["refused"].startswith(f"{L8}/far_target.md is a start doc (role far of g1"), out
+json.dump(sp, open(spec, "w"))
+print("symlinked start-doc target ok")
+
+# --strict: a reference written only as a unique partial path is listed for a person, not rewritten
+L9 = "proj/design/lane9"
+write(f"{L9}/u_xyz.md", "u\n")
+write("proj/other/n.md", "See lane9/u_xyz.md for it.\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a partial-path mention")
+before = state()
+rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--strict")
+assert rc == 1 and "--strict" in out["refused"] and "proj/other/n.md:1 `lane9/u_xyz.md`" in out["refused"], out
+assert state() == before, out
+rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--dry-run")
+assert rc == 0 and any("lane9/u_xyz.md` -> `archive/proj/design/lane9/u_xyz.md`" in s for s in out["steps"]), out
+# a role (any writer but user) rewriting other owners' documents is strict without asking; --no-strict is a person's override
+rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--by", "lane", "--dry-run")
+assert rc == 1 and "--strict" in out["refused"], out
+rc, out = archive(f"{L9}/u_xyz.md", "--cross-owner", "rewrite", "--by", "lane", "--no-strict", "--dry-run")
+assert rc == 0, out
+print("strict ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_archive OK")

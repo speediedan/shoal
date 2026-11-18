@@ -365,7 +365,7 @@ def _ancestors(rel: str) -> list[str]:
 
 
 def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cross_owner: str = "notify",
-                 migrate: bool = False) -> Plan:
+                 migrate: bool = False, strict: bool = False) -> Plan:
     """Archive `paths`; with `migrate`, move files out of a legacy nested archive folder into the layout's mirror of
     their original path (`legacy_original`), recording `migrate` events whose `from` is the legacy path."""
     plan = Plan(paths[0])
@@ -401,6 +401,11 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cr
                           "--force to archive anyway")
         plan.notes.append(f"archived without the roots of {silent} (--force)")
     roots = {plan.repo.rel(p): whos for p, whos in known["roots"].items()}
+    for r, whos in list(roots.items()):
+        # a start doc named through a symlink is its target too: the session reads the target
+        t = refs.link_target(plan.repo, r) if r and plan.repo.mode.get(r) == "120000" else None
+        if t:
+            roots.setdefault(t, whos)
     for r in rels:
         if r in roots:
             raise Refused(f"{r} is a start doc ({'; '.join(refs.who_text(w) for w in roots[r])}): retire or move the role first")
@@ -425,6 +430,12 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cr
                  for t, es in sorted(blocked.items())]
         raise Refused("\n  ".join(lines) + "\n  point those references elsewhere (or keep the file), or "
                       "--cross-owner rewrite, then archive it")
+    suffix = [s for s in live if s.get("form") == "suffix"]
+    if suffix and strict and cross_owner == "rewrite":
+        # a unique partial path can be prose about another repository's file; an unattended run lists it for a person
+        raise Refused("--strict: these references name an archived path only by a partial path, so they may mean "
+                      "something else; check and fix them by hand, then run again:"
+                      + "".join(f"\n    {s['file']}:{s['line']} `{s['written']}`" for s in suffix[:8]))
     if live:
         _plan_rewrites(plan, live, roots)
     when = utcnow()
@@ -877,6 +888,8 @@ def describe(plan: Plan) -> list[str]:
 
 def cmd_archive(a) -> int:
     by = a.by or os.environ.get("SHOAL_SLUG") or "user"
+    # an unattended writer (a role, not a person) that rewrites other owners' documents is strict by default
+    strict = a.strict or (by != "user" and a.cross_owner == "rewrite" and not a.no_strict)
     try:
         if a.cross_owner != "notify" and (a.restore or a.cold):
             raise Refused(f"--cross-owner {a.cross_owner} applies to archiving only")
@@ -890,9 +903,9 @@ def cmd_archive(a) -> int:
         elif a.cold:
             plan, verb = plan_cold(a.paths, a.force, by), "cold"
         elif a.migrate:
-            plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner, migrate=True), "migrate"
+            plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner, migrate=True, strict=strict), "migrate"
         else:
-            plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner), "archive"
+            plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner, strict=strict), "archive"
         steps = describe(plan)
         n = sum(len(rw["subs"]) for rw in plan.rewrites.values()) + len(plan.relinks)
         files = len(plan.rewrites) + len(plan.relinks)
@@ -936,6 +949,11 @@ def add_parser(sub) -> None:
                    help="live references to an archived file: notify refuses and lists them (default); rewrite points "
                         "them at the archive path in the same commit (path substitution only, verified); keep is not "
                         "defined yet")
+    p.add_argument("--strict", action="store_true",
+                   help="with --cross-owner rewrite: refuse, and list, any reference written only as a partial path; "
+                        "the default whenever the writer (--by, $SHOAL_SLUG) is not user")
+    p.add_argument("--no-strict", action="store_true",
+                   help="a person who has checked the partial-path references: rewrite them even as a role")
     p.add_argument("--by", default="", help="who, recorded in the manifest (default $SHOAL_SLUG, else user)")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true")

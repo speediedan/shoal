@@ -261,6 +261,16 @@ class Repo:
             return ""
 
 
+def link_target(repo: "Repo", rel: str) -> str | None:
+    """The repository-relative path a tracked symlink resolves to, through any chain and whether its link text is
+    relative or absolute; None when it leaves the repository or cannot be read."""
+    try:
+        t = repo.rel(os.path.realpath(os.path.join(repo.root, rel)))
+    except OSError:
+        return None
+    return t if t and not t.startswith("..") and t != rel else None
+
+
 def candidates(token: str, here: str, repo: Repo) -> set[str]:
     """Repository-relative paths a token could name from a file in directory `here`."""
     tok = token.split("#", 1)[0].rstrip(".,:;")
@@ -313,6 +323,7 @@ def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier
         if not present:
             continue
         here = posixpath.dirname(src)
+        data = posixpath.splitext(src)[1].lower() in DATA_EXT
         offset = 0
         for n, line in enumerate(text.splitlines(True), 1):
             at, offset = offset, offset + len(line)
@@ -329,8 +340,8 @@ def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier
                 if not named and tok.rstrip("/.,:;") in suffixes:
                     named, form, written = {suffixes[tok.rstrip("/.,:;")]}, "suffix", tok.rstrip("/.,:;")
                 named -= {src}
-                if "/" not in written:
-                    named -= dirs
+                if "/" not in written and not (data and _whole_field(line, m.start(), m.start() + len(written))):
+                    named -= dirs  # a bare word names no directory; a whole data-table field may (a data_dir column)
                 for t in sorted(named):
                     yield {"file": src, "line": n, "tier": tier(src), "target": t, "start": at + m.start(),
                            "end": at + m.start() + len(written), "written": written,
@@ -342,6 +353,15 @@ def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier
             if t in wanted and t != p:
                 yield {"file": p, "line": 0, "tier": "symlink", "target": t, "written": link, "form": "symlink",
                        "ambiguous": False}
+
+
+def _whole_field(line: str, start: int, end: int) -> bool:
+    """True when line[start:end] is a whole delimited field: a comma, tab or quote (or the line's edge) on both sides,
+    spaces between them aside."""
+    body = line.rstrip("\r\n")
+    # spaces may sit between a delimiter and the field (`a, run1`); a tab is a delimiter, not padding
+    before, after = body[:start].rstrip(" "), body[end:].lstrip(" ")
+    return (not before or before[-1] in ',\t"') and (not after or after[0] in ',\t"')
 
 
 def _form(written: str, here: str, target: str) -> str:
@@ -373,7 +393,10 @@ def companion_log(root: str, tracked) -> str | None:
 
 def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] | None = None, scope: str = "repo",
          min_age_days: float | None = None, history: list[str] | None = None, exclude: list[str] | None = None,
-         known_roots: dict | None = None, now: float | None = None) -> dict:
+         known_roots: dict | None = None, now: float | None = None, age_floor_all: bool = False) -> dict:
+    """Classify a role directory's files and list its archive candidates (docs/refs.md). `age_floor_all` applies
+    `min_age_days` to every candidate class, not only `unreferenced`: an automatic pass must not take a history-only
+    file of work still running (a script written hours ago is history-only too)."""
     repo = Repo(directory)
     d = repo.rel(os.path.abspath(directory))
     if d is None:
@@ -401,18 +424,32 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
         r = repo.rel(os.path.abspath(os.path.expanduser(x)))
         if r:
             root_paths.setdefault(r, []).append("--root")
-    owners: dict[str, str] = {}
+    # owners, per start doc first: a directory can hold several roles' start docs, so the first one found does not
+    # speak for the rest
+    owners: dict[str, list[str]] = {}       # start-doc directory -> the roles whose start docs live there
+    doc_owner: dict[str, str] = {}          # start doc (and a symlinked one's target) -> its role
     for p, whos in (known_roots or {}).items():
         r = repo.rel(p)
         if r is None:
             continue
-        owners.setdefault(posixpath.dirname(r), who_text(whos[0]))
+        docs_here = [r]
+        t = link_target(repo, r) if repo.mode.get(r) == "120000" else None
+        if t:
+            # a start doc named through a symlink is the target too, wherever the target lives
+            docs_here.append(t)
+            if inside(t):
+                root_paths.setdefault(t, []).extend(f"{who_text(w)} (through {r})" for w in whos)
+        for x in docs_here:
+            doc_owner.setdefault(x, who_text(whos[0]))
+            names = owners.setdefault(posixpath.dirname(x), [])
+            if who_text(whos[0]) not in names:
+                names.append(who_text(whos[0]))
         if inside(r):
             root_paths.setdefault(r, []).extend(who_text(w) for w in whos)
     # a symlinked root's target is a root too: it is what the session reads
     for r in list(root_paths):
-        if repo.mode.get(r) == "120000":
-            t = posixpath.normpath(posixpath.join(posixpath.dirname(r), os.readlink(os.path.join(repo.root, r))))
+        t = link_target(repo, r) if repo.mode.get(r) == "120000" else None
+        if t:
             root_paths.setdefault(t, []).append(f"target of {r}")
 
     referrers = sorted(p for p in repo.mode if (scope == "repo" or inside(p)) and repo.mode[p] != "120000"
@@ -482,12 +519,14 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             cls = "unreferenced"
         age = (now - born[p]) / 86400 if p in born else None
         rec = {"path": p, "class": cls, "age_days": None if age is None else round(age, 1),
-               "referrers": [dict(e, owner=_owner(owners, e["file"], d)) for e in es]}
+               "referrers": [dict(e, owner=_owner(owners, doc_owner, e["file"], d)) for e in es]}
         if p in root_paths:
             rec["roots"] = root_paths[p]
         if front.get("keep"):
             rec["keep"] = front["keep"]
-        candidate = cls in ("history-only", "superseded") or (cls == "unreferenced" and (age is None or age >= min_age_days))
+        old_enough = age is None or age >= min_age_days
+        candidate = ((cls in ("history-only", "superseded") and (old_enough or not age_floor_all))
+                     or (cls == "unreferenced" and old_enough))
         if candidate and not rec.get("keep"):
             candidates_out.append(p)
         out_files.append(rec)
@@ -501,10 +540,13 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             "skipped": skipped, "ok": not (dangling or untracked or deleted)}
 
 
-def _owner(owners: dict[str, str], path: str, d: str) -> str:
-    """The role whose start-doc directory holds `path` (the longest such directory), unless it is this one."""
+def _owner(owners: dict[str, list[str]], doc_owner: dict[str, str], path: str, d: str) -> str:
+    """Who owns `path`: the role whose start doc it is; else the roles whose start-doc directory holds it (the longest
+    such directory, unless it is this one), all of them when several share it."""
+    if path in doc_owner and posixpath.dirname(path) != d:
+        return doc_owner[path]
     best = max((od for od in owners if od and od != d and path.startswith(od + "/")), key=len, default=None)
-    return owners[best] if best is not None else ""
+    return ", ".join(owners[best]) if best is not None else ""
 
 
 def _first_commit_times(repo: Repo, d: str) -> dict[str, float]:
@@ -568,7 +610,7 @@ def cmd_refs(a) -> int:
     known = roots(False) if not a.no_known_roots else None
     try:
         r = scan(directory, docs, a.root, a.scope, a.min_age_days, a.history or None, a.exclude or None,
-                 known_roots=known["roots"] if known else {})
+                 known_roots=known["roots"] if known else {}, age_floor_all=a.age_floor_all)
     except RuntimeError as exc:
         print(f"refs: {exc}")
         return 2
@@ -622,6 +664,8 @@ def add_parser(sub) -> None:
     p.add_argument("--root", action="append", default=[], help="another root document (repeatable)")
     p.add_argument("--scope", choices=("repo", "dir"), default="repo",
                    help="look for references in the whole repository (default) or the directory only")
+    p.add_argument("--age-floor-all", action="store_true",
+                   help="apply --min-age-days to every candidate class, history-only and superseded too (an automatic pass)")
     p.add_argument("--min-age-days", type=float, default=None,
                    help="an unreferenced file younger than this is not a candidate yet")
     p.add_argument("--history", action="append", default=[], help="a history-document glob (default: the repository's .shoal/lifecycle.toml, else *_log.md)")
