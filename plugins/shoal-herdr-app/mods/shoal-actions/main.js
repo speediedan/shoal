@@ -370,6 +370,7 @@ export default class Actions extends View {
     this.request(`reading ${verbInfo(verb).label.toLowerCase()}`, planArgv(verb, this.sel), machine, "view", (r) => {
       if (r.kind === "view") {
         this.view = { ...r, machine };
+        this.makeNoteInputs(this.view);
         this.screen = "view";
       } else {
         this.error = r.error;
@@ -573,15 +574,21 @@ export default class Actions extends View {
     this.preview(cx);
   }
 
-  /** The note box of one ask, made on first use and kept, so what is typed survives a redraw. */
-  noteInput(key) {
-    if (!this.noteInputs[key]) {
-      const st = InputState.new({ placeholder: "add a note (optional): what to do, or why" });
-      st.set_value(String(this.answers[key]?.text ?? ""));
-      st.on("change", (_e, cx) => { this.answers = setNote(this.answers, key, st.value()); cx.notify(); });
-      this.noteInputs[key] = st;
+  /** The note box of every ask a view lists, made when the view arrives and kept, so what is typed survives a redraw.
+   *  Never from render: the app refuses `InputState.new` there, and the Asks view failed to draw on its first ask
+   *  (2026-11-18). */
+  makeNoteInputs(view) {
+    const shoal = this.sel.shoal;
+    for (const a of Array.isArray(view?.asks) ? view.asks : []) {
+      (a.asks ?? []).forEach((t, j) => {
+        const key = answerKey(shoal, a.role, j + 1, t);
+        if (this.noteInputs[key]) return;
+        const st = InputState.new({ placeholder: "add a note (optional): what to do, or why" });
+        st.set_value(String(this.answers[key]?.text ?? ""));
+        st.on("change", (_e, cx) => { this.answers = setNote(this.answers, key, st.value()); cx.notify(); });
+        this.noteInputs[key] = st;
+      });
     }
-    return this.noteInputs[key];
   }
 
   /** Reopen the dialog at size `name` (the platform sizes an overlay only when it opens), on the same target and verb
@@ -1150,8 +1157,8 @@ export default class Actions extends View {
             });
             card.child(choices);
           }
-          card.child(Input.new(this.noteInput(key)).h(26).px(8).rounded(5).border_1().border_color(c.input)
-            .bg(c.code).text_size(11.5));
+          const note = this.noteInputs[key]; // made when the view arrived (makeNoteInputs)
+          if (note) card.child(Input.new(note).h(26).px(8).rounded(5).border_1().border_color(c.input).bg(c.code).text_size(11.5));
         });
         const n = answeredCount(shoal, a, this.answers);
         if (a.asks.length) {
