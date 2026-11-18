@@ -786,3 +786,18 @@ test("dialog size: three sizes, a cycle, and a reopen that keeps the target, the
   assert.deepEqual(s.props, { size: "full", shoal: A, role: "r", scope: null, session: null, machine: "machine-a", verb: "asks", answers });
   assert.equal(M.SIZE_KEY, "shoal-actions.size");
 });
+
+test("main.js makes InputState only in init or when a view arrives, never during render", () => {
+  // the app refuses `InputState.new` while rendering: the Asks view's note boxes made from render broke the dialog on
+  // its first ask (2026-11-18, "InputState.new(...) cannot run during render")
+  const src = readFileSync(join(MOD, "main.js"), "utf8");
+  const where = [];
+  src.split("\n").forEach((line, n, lines) => {
+    if (!line.includes("InputState.new") || /^\s*(\*|\/\/|\/\*)/.test(line)) return;
+    const head = lines.slice(0, n).reverse().find((l) => /^  (?:static )?\w+\s*\(/.test(l));
+    where.push(head?.match(/^  (?:static )?(\w+)/)?.[1]);
+  });
+  assert.ok(where.length >= 1, "main.js makes no InputState: the test no longer finds its target");
+  for (const fn of where) assert.ok(["init", "makeNoteInputs"].includes(fn), `InputState.new in ${fn}: make it in init or an event handler`);
+  assert.ok(!/this\.noteInput\(/.test(src), "the render path asks for a note box that it would have to create");
+});
