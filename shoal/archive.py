@@ -16,7 +16,10 @@ what resolves them.
 
 `--cross-owner rewrite` points those live references at the archive paths in the same run instead of refusing: a path
 substitution only, each reference kept in the form it was written in (relative, repository-relative, absolute, `~/`;
-a unique partial path becomes the full archive path), and a tracked symlink repointed. Every rewritten file must equal
+a unique partial path becomes the full archive path), and a tracked symlink repointed. A directory the run empties (every
+tracked file under it moves, all to one mirror directory) is a target too, so a reference to the directory itself is
+listed under `notify` and rewritten under `rewrite`, keeping a trailing `/`; a directory whose files land in different
+places is refused under `rewrite` rather than guessed. Every rewritten file must equal
 its `HEAD` copy with exactly those substitutions, and a rescan must find no live reference left to an old path, or the
 run is undone. A referrer must be tracked, clean and UTF-8 text; a symlink that is a start doc refuses (its role moves
 first). The default, `notify`, is the refusal above; the manual command never reads `[checkpoint] cross_owner`, so a
@@ -33,7 +36,9 @@ holds it; it refuses a file a live document names, and one archived fewer than `
 Each run is one commit of exactly its paths (the moved files, their new paths and the manifests), through the
 repository's `[hooks] commit` when this host trusts it, else `git commit -- <paths>`: never `git add -A`, because other
 sessions commit in the same checkout. If the commit does not land, every move is undone and each manifest is put back as
-it was, so a refused hook leaves nothing behind. Agent-neutral: shell, git and files only; no model calls.
+it was, so a refused hook leaves nothing behind. A refusal shows the hook's output from its first failure line (both
+streams, interleaved), and names a file under the git directory that holds all of it. Agent-neutral: shell, git and
+files only; no model calls.
 """
 from __future__ import annotations
 
@@ -119,6 +124,7 @@ class Plan:
         self.rewrites: dict[str, dict] = {}              # referrer -> {before: its text, subs: [span + "to"]}
         self.relinks: list[tuple[str, str, str]] = []    # (symlink, link text, new link text)
         self.old_new: dict[str, str] = {}                # archived original -> archive path, for the rescan
+        self.dirs: frozenset[str] = frozenset()          # the directories among the targets (emptied by the run)
         self.events: dict[str, list[dict]] = {}          # manifest path -> new events
         self.notes: list[str] = []
 
@@ -194,7 +200,7 @@ def _spans(plan: Plan, targets: list[str], repo: refs.Repo | None = None, skip: 
     out_of = set(targets) | set(skip)
     referrers = sorted(p for p in repo.mode if repo.mode[p] != "120000"
                        and posixpath.splitext(p)[1] in refs.TEXT_EXT and tier(p) != "excluded" and p not in out_of)
-    return [s for s in refs.reference_spans(repo, targets, referrers, tier) if s["file"] not in out_of]
+    return [s for s in refs.reference_spans(repo, targets, referrers, tier, plan.dirs) if s["file"] not in out_of]
 
 
 def _live_referrers(plan: Plan, targets: list[str]) -> dict[str, list[dict]]:
@@ -208,14 +214,15 @@ def _live_referrers(plan: Plan, targets: list[str]) -> dict[str, list[dict]]:
 
 def _rewritten(s: dict, new: str) -> str:
     """The text that names `new` in the form `s` named its target in (a `refs.reference_spans` span)."""
-    if s["form"] == "relative":
-        return posixpath.relpath(new, posixpath.dirname(s["file"]) or ".")
-    if s["form"] in ("repo", "suffix"):
-        return new
     w, old = s["written"], s["target"]
-    if not w.endswith("/" + old):
+    slash = "/" if w.endswith("/") else ""  # a directory written with its trailing slash keeps it
+    if s["form"] == "relative":
+        return posixpath.relpath(new, posixpath.dirname(s["file"]) or ".") + slash
+    if s["form"] in ("repo", "suffix"):
+        return new + slash
+    if not w.rstrip("/").endswith("/" + old):
         raise Refused(f"{s['file']}:{s['line']}: cannot rewrite `{w}` in its own form (it does not end with {old})")
-    return w[:-len(old)] + new
+    return w.rstrip("/")[:-len(old)] + new + slash
 
 
 def _relinked(s: dict, new: str, root: str) -> str:
@@ -322,6 +329,36 @@ def _expand(plan: Plan, paths: list[str]) -> list[str]:
     return out
 
 
+def _emptied(plan: Plan, rels: list[str]) -> tuple[dict[str, str], list[str]]:
+    """The directories a run empties: ({directory: its destination}, [directories whose files land in different
+    places]). A directory is emptied when every tracked file under it is in `rels`; its destination is the one directory
+    every file's destination shares with the file's path below it, as `plan.old_new` maps them."""
+    moving = set(rels)
+    dirs = {d for r in rels for d in _ancestors(r)}
+    whole, split = {}, []
+    for d in sorted(dirs):
+        under = [q for q in plan.repo.mode if q.startswith(d + "/")]
+        if not under or any(q not in moving for q in under):
+            continue
+        dests = set()
+        for q in under:
+            tail, new = q[len(d):], plan.old_new[q]
+            dests.add(new[:-len(tail)] if new.endswith(tail) else None)
+        if len(dests) == 1 and None not in dests:
+            whole[d] = dests.pop()
+        else:
+            split.append(d)
+    return whole, split
+
+
+def _ancestors(rel: str) -> list[str]:
+    out, d = [], posixpath.dirname(rel)
+    while d:
+        out.append(d)
+        d = posixpath.dirname(d)
+    return out
+
+
 def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cross_owner: str = "notify",
                  migrate: bool = False) -> Plan:
     """Archive `paths`; with `migrate`, move files out of a legacy nested archive folder into the layout's mirror of
@@ -364,8 +401,17 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cr
             raise Refused(f"{r} is a start doc ({'; '.join(refs.who_text(w) for w in roots[r])}): retire or move the role first")
     if cross_owner not in ("notify", "rewrite"):
         raise Refused(f"--cross-owner {cross_owner} is not defined yet: notify (refuse and list) or rewrite")
-    spans = _spans(plan, rels)
+    # a directory the run empties is named like a file: a reference to it would dangle as surely as one to a moved file
+    emptied, split = _emptied(plan, rels)
+    plan.old_new.update(emptied)
+    plan.dirs = frozenset(emptied) | frozenset(split)
+    spans = _spans(plan, rels + sorted(emptied) + split)
     live = [s for s in spans if s["tier"] in ("live", "symlink")]
+    stranded = [s for s in live if s["target"] in split]
+    if stranded and cross_owner == "rewrite":
+        raise Refused("live documents name a directory whose files this run moves to different places, so no one path "
+                      "replaces it:" + "".join(f"\n    {s['file']}:{s['line']} `{s['written']}`" for s in stranded[:8])
+                      + "\n  point those references at the files, or move the directory's files together")
     if live and cross_owner != "rewrite":
         blocked: dict[str, list[dict]] = {}
         for s in live:
@@ -385,6 +431,16 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cr
         rewritten += [{"file": link, "line": 0, "from": old, "to": new} for link, old, new in plan.relinks
                       if posixpath.normpath(posixpath.join(posixpath.dirname(link), old)) == r]
         history = sum(1 for s in spans if s["tier"] == "history" and s["target"] == r)
+        # an emptied directory's references are recorded once, with the first file moved out of it
+        for d in sorted(emptied):
+            if r == min(q for q in rels if q.startswith(d + "/")):
+                rewritten += [{"file": x["file"], "line": x["line"], "from": x["written"], "to": x["to"], "dir": d}
+                              for f, rw in sorted(plan.rewrites.items()) for x in rw["subs"] if x["target"] == d]
+                rewritten += [{"file": link, "line": 0, "from": old, "to": new, "dir": d}
+                              for link, old, new in plan.relinks
+                              if posixpath.normpath(posixpath.join(posixpath.dirname(link), old)) == d]
+        history += sum(1 for s in spans if s["tier"] == "history" and s["target"] in emptied
+                       and r == min(q for q in rels if q.startswith(s["target"] + "/")))
         o = origin.get(r, r)
         plan.add_event(o, {"ts": when, "by": by, "event": "migrate" if migrate else "archive", "path": o,
                            **({"from": r} if migrate else {}), "archive_path": a, "reason": reason,
@@ -610,11 +666,13 @@ def _commit(plan: Plan, message: str, written: dict[str, str]) -> str:
             # only the two placeholders are replaced, so any other brace in the hook (${VAR}, awk's {print}) is left as
             # written; each expands already shell-quoted, so the template writes them unquoted
             cmd = hook.replace("{message}", shlex.quote(message)).replace("{paths}", " ".join(shlex.quote(p) for p in paths))
-            r = subprocess.run(["bash", "-c", cmd], cwd=root, capture_output=True, text=True, timeout=600)
-            why = f"the commit hook exited {r.returncode}: {(r.stderr or r.stdout).strip()[-600:]}" if r.returncode else ""
+            argv, what = ["bash", "-c", cmd], "the commit hook exited"
         else:
-            r = _git(root, "commit", "-q", "-m", message, "--", *paths, check=False)
-            why = f"git commit refused: {(r.stderr or r.stdout).strip()[-600:]}" if r.returncode else ""
+            argv, what = ["git", "-C", root, "commit", "-q", "-m", message, "--", *paths], "git commit exited"
+        # both streams in one, in the order written: a pre-commit hook reports a failure on stdout and its notes on stderr
+        r = subprocess.run(argv, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
+        if r.returncode:
+            why = f"{what} {r.returncode}: {_failure_excerpt(r.stdout)}{_keep_output(root, r.stdout)}"
     except subprocess.TimeoutExpired:
         why = "the commit hook did not finish in 600 s"
     if not _landed(plan, written):
@@ -622,6 +680,34 @@ def _commit(plan: Plan, message: str, written: dict[str, str]) -> str:
     if why:
         plan.notes.append(f"committed, but {why}")
     return _git(root, "rev-parse", "HEAD").stdout.strip()
+
+
+FAILURE_MARK = ("Failed", "REFUSED", "refuse", "error:", "fatal:", "exit code: ")
+EXCERPT_MAX = 1500
+
+
+def _failure_excerpt(out: str) -> str:
+    """The hook's output from its first line that reads as a failure, capped; the tail when no line does. A hook can
+    print its cause first and pages of accepted notes after it, so the tail alone can omit the cause."""
+    lines = out.strip().splitlines()
+    at = next((i for i, ln in enumerate(lines) if any(m in ln for m in FAILURE_MARK)), None)
+    if at is None:
+        return out.strip()[-600:]
+    text = "\n".join(lines[at:])
+    return text if len(text) <= EXCERPT_MAX else text[:EXCERPT_MAX] + " [...]"
+
+
+def _keep_output(root: str, out: str) -> str:
+    """Write the whole output under the git directory (never the work tree) and say where; empty if it cannot."""
+    try:
+        path = _git(root, "rev-parse", "--path-format=absolute", "--git-path",
+                    f"shoal/archive-hook-{utcnow().replace(':', '')}.log").stdout.strip()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(out)
+        return f"\n  (full output: {path})"
+    except (OSError, Refused):
+        return ""
 
 
 def apply(plan: Plan, message: str) -> dict:

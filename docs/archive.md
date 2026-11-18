@@ -44,6 +44,13 @@ This is the one write a role may make outside its own directory, so it is a path
   `../../archive/proj/design/x/a.md`), a repository-relative one stays repository-relative, and an absolute or `~/` path
   keeps its prefix. A `#anchor` and trailing punctuation are kept. A unique partial path (`x/a.md`) becomes the full
   archive path: after the move it would still resolve, to the archived copy, and hide that the file was archived.
+- **A directory the run empties is a target too.** When every tracked file under a directory moves, and all of them
+  land under one mirror directory, a reference to the directory itself (`archive/runs/r1/`,
+  `proj/design/x/archive`) is listed under `notify` and rewritten under `rewrite` like a file reference, keeping a
+  trailing `/` when it had one. When the directory's files land in different places (a `--migrate` run whose legacy
+  folder holds a nested legacy folder, say), no one path replaces the directory, so `rewrite` refuses and lists the
+  references. The manifest records a directory's rewrites with the first file (sorted) moved out of it, each entry
+  carrying `dir`.
 - **A tracked symlink is repointed** in its own form: a relative link stays relative. (Only relative links are read as
   references today; an absolute one would stay absolute.) A symlink that is a start doc refuses the run: that role
   moves first.
@@ -76,7 +83,7 @@ One JSON object per line, appended, never rewritten:
 | `path`, `archive_path` | the original path, and where the file went |
 | `from` | `migrate` only: the legacy path the file came from, which `refs --resolve` follows |
 | `reason` | `--reason`, for `archive` and `migrate` |
-| `refs` | `archive` and `migrate`: `history`, the number of history references left as written, and `rewritten`, one `{file, line, from, to}` per reference `--cross-owner rewrite` changed (`line` 0 for a symlink) |
+| `refs` | `archive` and `migrate`: `history`, the number of history references left as written, and `rewritten`, one `{file, line, from, to}` per reference `--cross-owner rewrite` changed (`line` 0 for a symlink; `dir` when the reference named a directory the run emptied) |
 | `blob`, `mode` | `cold` only: the file's blob id and git mode; `--restore` reads the blob first, so a binary comes back byte for byte and an executable keeps its bit |
 | `restore_from` | `cold` only: a commit that holds `archive_path`: the merge base with the upstream when that holds the file (already published), else HEAD. A shared checkout's HEAD may be a local commit that a commit hook rebases before pushing, which orphans it; the blob survives that rebase, so it is read first |
 
@@ -107,6 +114,12 @@ Whether the run landed is decided by content: HEAD must hold every manifest exac
 when another session commits meanwhile, and it tells a hook that refused (nothing landed) from one that committed and
 then failed later, a rejected push for one (landed, reported as a note). When nothing landed, every move is undone and
 each manifest is returned to HEAD's copy, or removed if the run created it.
+
+A refusal shows the hook's (or `git commit`'s) output from its first line that reads as a failure (`Failed`, `REFUSED`,
+`refuse`, `error:`, `fatal:`, `exit code: `), stdout and stderr interleaved in the order written, capped at 1,500
+characters; with no such line, the last 600 characters. The whole output is kept in a file under the git directory
+(`<git dir>/shoal/archive-hook-<utc>.log`), never in the work tree, and the refusal names it. A hook can print its cause
+first and pages of accepted notes after it, so the tail alone can omit the cause.
 
 A `[hooks] commit` must commit every path it is given in one commit. Landing is judged by the manifests, so a hook that
 committed the manifests but not the moves would count as landed with the moves still staged.

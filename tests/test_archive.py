@@ -181,6 +181,16 @@ before, mf = state(), manifest()
 rc, out = archive("proj/design/lane/tmp.md")
 assert rc == 1 and "hook exited 1" in out["refused"], out
 assert state() == before and manifest() == mf, "a refused hook must leave the tree, index and manifest as they were"
+# the cause printed first and a page of accepted notes after it, on the other stream: the refusal still shows the cause
+write("hook.sh", 'echo "check....Failed"; echo "the-real-cause: x.md is still named"; '
+      'i=0; while [ $i -lt 40 ]; do echo "note: an accepted reference, number $i" >&2; i=$((i+1)); done; exit 1\n')
+git("commit", "-q", "-am", "a hook whose cause comes first")
+before = state()
+rc, out = archive("proj/design/lane/tmp.md")
+assert rc == 1 and "the-real-cause" in out["refused"] and "full output: " in out["refused"], out
+kept = out["refused"].split("full output: ", 1)[1].split(")")[0]
+assert kept.startswith(os.path.join(REPO, ".git")) and "number 39" in open(kept).read(), kept
+assert state() == before, "the kept output lives under the git directory, not in the tree"
 write("hook.sh", 'msg=$1; shift; git commit -q -m "$msg" -- "$@" && exit 5\n')
 git("commit", "-q", "-am", "hook commits then fails")
 rc, out = archive("proj/design/lane/tmp.md")
@@ -404,6 +414,49 @@ assert rc == 1 and "is live again" in out["refused"], out
 rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive/h1.md")
 assert rc == 1 and "already exists in the archive" in out["refused"], out
 print("migrate ok")
+
+# a directory the run empties is a target: named by a live document, it is listed under notify, shown by --dry-run and
+# rewritten under rewrite (trailing slash kept, each form kept; a bare word such as prose's "archive" is not a
+# reference to it); history keeps it and is counted; a directory whose
+# files land in different places is refused under rewrite
+L3 = "proj/design/lane3"
+write(f"{L3}/archive/top.md", "top\n")
+write(f"{L3}/archive/runs/r1/notes.txt", "raw\n")
+write(f"{L3}/README.md", "Runs: `archive/runs/r1/` stay raw.\nIndex: proj/design/lane3/archive holds the rest.\n"
+      "The raw archive is kept.\n")
+write(f"{L3}/lane3_log.md", "C1: kept archive/runs/r1/ as written.\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a legacy folder named as a directory")
+before = state()
+rc, out = archive("--migrate", f"{L3}/archive")
+assert rc == 1 and f"{L3}/archive/runs/r1 is still named" in out["refused"] and f"{L3}/README.md:1" in out["refused"], out
+assert f"{L3}/archive is still named" in out["refused"] and state() == before, out
+rc, out = archive("--migrate", f"{L3}/archive", "--cross-owner", "rewrite", "--dry-run")
+steps = "\n".join(out["steps"])
+assert rc == 0 and f"`archive/runs/r1/` -> `../../../archive/{L3}/runs/r1/`" in steps, steps
+assert f"`{L3}/archive` -> `archive/{L3}`" in steps and state() == before, steps
+rc, out = archive("--migrate", f"{L3}/archive", "--cross-owner", "rewrite", "--reason", "legacy")
+assert rc == 0 and out["ok"], out
+assert open(os.path.join(REPO, L3, "README.md")).read() == (
+    f"Runs: `../../../archive/{L3}/runs/r1/` stay raw.\nIndex: archive/{L3} holds the rest.\nThe raw archive is kept.\n")
+assert open(os.path.join(REPO, L3, "lane3_log.md")).read() == "C1: kept archive/runs/r1/ as written.\n"
+assert not os.path.exists(os.path.join(REPO, L3, "archive")) and git("status", "--porcelain") == ""
+ev = [json.loads(x) for x in open(os.path.join(REPO, "archive", L3, "runs/r1/MANIFEST.jsonl"))]
+dirs = [x for x in ev[0]["refs"]["rewritten"] if x.get("dir") == f"{L3}/archive/runs/r1"]
+assert [x["from"] for x in dirs] == ["archive/runs/r1/"] and ev[0]["refs"]["history"] == 1, ev
+# each emptied directory's references go with the first file (sorted) moved out of it: here runs/r1/notes.txt for both
+assert [x["from"] for x in ev[0]["refs"]["rewritten"] if x.get("dir") == f"{L3}/archive"] == [f"{L3}/archive"], ev
+L4 = "proj/design/lane4"
+write(f"{L4}/archive/a.md", "a\n")
+write(f"{L4}/archive/archived/b.md", "b\n")
+write(f"{L4}/index.md", f"Old: {L4}/archive/ is legacy.\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a legacy folder whose files land in two places")
+before = state()
+rc, out = archive("--migrate", f"{L4}/archive", "--cross-owner", "rewrite")
+assert rc == 1 and "moves to different places" in out["refused"] and f"{L4}/index.md:1" in out["refused"], out
+assert state() == before, out
+print("directories ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_archive OK")

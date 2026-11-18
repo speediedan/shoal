@@ -252,7 +252,7 @@ def edges_to(repo: "Repo", targets: list[str], referrers: list[str], tier) -> di
     return edges
 
 
-def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier):
+def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier, dirs: frozenset = frozenset()):
     """Every reference to a target, one dict each: `file`, `line`, `tier`, `target`, `form`, `written`, `ambiguous`.
 
     A text reference also has `start` and `end`, character offsets into the file's text of the token's path part (the
@@ -260,13 +260,16 @@ def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier
     names the target: `relative` to the naming file, `repo` (relative to the repository root), `absolute`, `home` (`~/`)
     or `suffix` (a unique partial path). A tracked symlink has `form` `symlink`, `line` 0 and its link text as `written`.
     `ambiguous` marks a token that resolves to more than one target. `edges_to` and `shoal archive --cross-owner
-    rewrite` share this one extraction, so what counts as a reference and what gets rewritten cannot disagree."""
+    rewrite` share this one extraction, so what counts as a reference and what gets rewritten cannot disagree.
+
+    A target in `dirs` is a directory: it is named only by a token written with a `/` (`archive/`, `x/archive`), since a
+    bare word (prose's "archive") would resolve beside the naming file and has no extension to tell it from a name."""
     # every way of naming a target contains its basename, so one search skips the files, lines and tokens that cannot
     # hold a reference before any path is resolved (substring tests, not one regex alternation: Python's re tries every
     # alternative at every position, which cost 10 s on a 55-file directory against a 28 MB repository; `in` takes 1)
     names = sorted({posixpath.basename(p) for p in targets})
     tails: dict[str, int] = {}
-    for q in repo.mode:
+    for q in list(repo.mode) + sorted(repo.dirs):  # directories too: an emptied directory is a target like a file
         parts = q.split("/")
         for k in range(2, len(parts) + 1):  # the whole path too, so a root-level `a/b.md` makes `x/a/b.md` ambiguous
             t = "/".join(parts[-k:])
@@ -296,6 +299,8 @@ def reference_spans(repo: "Repo", targets: list[str], referrers: list[str], tier
                 if not named and tok.rstrip("/.,:;") in suffixes:
                     named, form, written = {suffixes[tok.rstrip("/.,:;")]}, "suffix", tok.rstrip("/.,:;")
                 named -= {src}
+                if "/" not in written:
+                    named -= dirs
                 for t in sorted(named):
                     yield {"file": src, "line": n, "tier": tier(src), "target": t, "start": at + m.start(),
                            "end": at + m.start() + len(written), "written": written,
