@@ -1506,7 +1506,7 @@ export SHOAL_MUSE_BIN="$S/muse-stub" SHOAL_MUSE_STATE="$S/muse-state"
 MU=$(python3 -c "
 import sys; sys.path.insert(0, '$SHOALD'); import muse; print(muse.uuid7())")
 python3 - "$SHOALD" "$SPEC" "$MU" <<'PY2' || fail "muse brief, arming and between-turns"
-import fcntl, os, sys
+import fcntl, os, sys, types
 sys.path.insert(0, sys.argv[1])
 import briefs, health, muse
 from roles import ShoalSpec
@@ -1526,7 +1526,13 @@ for eco in ("muse", "codex"):
     assert "question-tool call" not in hb and "AskUserQuestion" not in hb and "ask the maintainer directly" not in hb, eco
     missing = [x for x in ("re ask <n>: <choice>", "Never clear a still-valid ask", "queue --answered <n>") if x not in hb]
     assert not missing, (eco, missing, hb[:300])
+    # no in-turn waiter: a `job wait` run inside a headless turn dies with it (a Codex role's three ended exit -1)
+    jb = briefs.h4_disciplines(r, types.SimpleNamespace(sid=spec.sid, features={"jobs": True}))
+    assert "--target job:<short>" in jb and "Never run `job wait`" in jb and "as your background waiter" not in jb, (eco, jb)
+    assert "A KILL IS A WAKE" not in jb, "a headless role has no in-session watcher to be killed"
 r.ecosystem = "claude"
+cj = briefs.h4_disciplines(r, types.SimpleNamespace(sid=spec.sid, features={"jobs": True}))
+assert "as your background waiter" in cj and "A KILL IS A WAKE" in cj, "a Claude role keeps its in-session waiter"
 cb = briefs.brief_for(r, spec)
 assert "one question-tool call per set" in cb and "ask the maintainer directly with decline/hold" in cb, "claude brief changed"
 spec.features = feats
@@ -2385,7 +2391,18 @@ recent = types.SimpleNamespace(user_offline=online, last_by={"r": maintenance.ut
 assert health.unraised_condition(recent, "r", q, "waiting", True) is None, "just wrote: still at its boundary"
 away = types.SimpleNamespace(user_offline=lambda: {"state": "on"}, last_by=view.last_by)
 assert health.unraised_condition(away, "r", q, "waiting", True) is None, "offline: the asks stay recorded"
+assert health.unraised_condition(view, "r", q, "waiting", True, "codex") is None, \
+    "a headless role's asks are answered from the Asks view: no question tool to raise them with"
 assert health.LADDERS["asks-unraised"] == [(0, "wake"), (120, "wake")]
+# after an attach the card writes its report again whatever it sent last, and clears its attached mark again
+import os
+sys.path.insert(0, os.path.join(sys.argv[1], "ui"))
+import ui_view
+marks = []
+fake = types.SimpleNamespace(ATTACH_LABEL="shoal.attached", hc_label=lambda t, labels: marks.append(labels))
+os.environ["HC_TERMINAL_ID"] = "t-test"
+assert ui_view._after_attach(fake) is None and marks == [{"shoal.attached": ""}], marks
+assert ui_view._after_attach(None) is None, "a 0.9.3 card (no app adapter) only resets its last report"
 print("asks-unraised ok")
 PY2
 

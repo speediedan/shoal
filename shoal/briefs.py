@@ -344,19 +344,28 @@ def h4_disciplines(role: Role, spec: ShoalSpec) -> str:
         return ""
     sid = spec.sid
     out = []
+    headless = role.ecosystem in HEADLESS
     if feats.get("jobs"):
+        run = (f"JOBS: any local work that would hurt to lose (test suites, GPU renders, A/B runs, anything "
+               f"over a few minutes) runs as a job unit, never as a harness background command: `{SHOAL_CLI} job run "
+               f"--shoal {sid} --slug {role.slug} --name <short> [--memory-high 24G] -- <cmd>` (wrap GPU work in "
+               f"gpu_lease.sh inside <cmd>), ")
+        if headless:
+            # an in-turn `job wait` dies with the exec process (measured 2026-11-18: a Codex role's three waiters each
+            # ended `Failed (exit -1)`); the watcher shoal runs already wakes it on the job's verdict
+            out.append(run + f"then record `queue --wait local-ci --target job:<short>` and end your turn: your watcher "
+                             f"starts your next turn with the job's verdict. Never run `job wait` (or any waiter) "
+                             f"inside a turn: it ends with the turn, unfinished.")
+        else:
+            out.append(run + f"then follow it with `{SHOAL_CLI} job wait --shoal {sid} --slug {role.slug} "
+                             f"--name <short>` as your background waiter. The job survives your session and any reap; "
+                             f"the waiter is safe to re-arm and prints one JOB-VERDICT line.")
+    if not headless:  # a headless role has no in-session watcher to be killed
         out.append(
-            f"JOBS: any local work that would hurt to lose (test suites, GPU renders, A/B runs, anything "
-            f"over a few minutes) runs as a job unit, never as a harness background command: `{SHOAL_CLI} job run "
-            f"--shoal {sid} --slug {role.slug} --name <short> [--memory-high 24G] -- <cmd>` (wrap GPU work in "
-            f"gpu_lease.sh inside <cmd>), then follow it with `{SHOAL_CLI} job wait --shoal {sid} --slug {role.slug} "
-            f"--name <short>` as your background waiter. The job survives your session and any reap; the "
-            f"waiter is safe to re-arm and prints one JOB-VERDICT line.")
-    out.append(
-        "A KILL IS A WAKE: a watcher notification with status killed (any reason) is handled exactly like a "
-        f"wake: show, act, re-arm, then {pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}, in the same "
-        "turn. Tally kills from notification status only, never from exit counts.")
-    return " ".join(out) + " "
+            "A KILL IS A WAKE: a watcher notification with status killed (any reason) is handled exactly like a "
+            f"wake: show, act, re-arm, then {pid_proof(watch_sidecar(sid, role.slug), sidecar=True)}, in the same "
+            "turn. Tally kills from notification status only, never from exit counts.")
+    return " ".join(out) + " " if out else ""
 
 
 def brief_for(role: Role, spec: ShoalSpec) -> str:

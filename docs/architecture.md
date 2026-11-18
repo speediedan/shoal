@@ -230,7 +230,7 @@ and delivers the deferred pages as one summary. A headless role (a `codex exec` 
 tool, so its brief (`briefs.raise_clause`) has it keep the asks recorded instead: the viewer's Asks view shows each one
 with the answer set `shoal asks` would put to the question tool (`worker.ask_options`: grant, defer, delegate review and
 deny for a merge), and the maintainer's choice reaches the role as mail with a wake, `re ask <n>: <choice>.`. The
-restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question.
+restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question. Nor does a headless turn run a waiter: a background command ends with its exec process, so its JOBS clause (`briefs.h4_disciplines`) records a `job:` wait and ends the turn for the watcher to wake it on the verdict, where a Claude role follows its job with an in-session `job wait` (a Codex role's in-turn waiters each ended `exit -1`).
 
 **Signed standing grants** (`features.grants`). A `grant` event from `user` carries an ssh
 signature (`ssh-keygen -Y sign -n shoal-grant`, maintainer's key) over its canonical form;
@@ -516,7 +516,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:` or `lease:` blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
 | `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
-| `asks-unraised` | the maintainer is online and a role holds open asks while at a quiet boundary with no question open, 10 min after its last write (an ask recorded before a CI wait otherwise showed as needs-you with nothing to answer); keyed by its asks, so a new ask raises again. The wake keeps the role's recorded wait (no user-auth wait over it) | wake, again at 120 min |
+| `asks-unraised` | the maintainer is online and a role holds open asks while at a quiet boundary with no question open, 10 min after its last write (an ask recorded before a CI wait otherwise showed as needs-you with nothing to answer); keyed by its asks, so a new ask raises again. The wake keeps the role's recorded wait (no user-auth wait over it). Never for a headless role (Codex, Muse: no question tool; its asks are answered from the Asks view) | wake, again at 120 min |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily

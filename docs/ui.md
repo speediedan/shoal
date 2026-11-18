@@ -806,7 +806,7 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   kind goes in the card's `shoal.need` label instead: `\u2715` its session is dead, `\u25cc` its watcher is dead and it has
   work, `\u2298` a blocker that cannot move; `!` is left for a cause nobody named. A session that says it waits on you reads `?`. A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two
-  reporters would take turns on one row. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
+  reporters would take turns on one row. After any attach the card writes its report again, even an unchanged `done` (a Codex client takes its own report with it when it exits, which left the role off the agents list), and clears the `shoal.attached` label again. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
   the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open. That hold covers every roles tab of the shoal until the last card detaches: a
   new role's card appears, and a removed role's card goes, at the next sync after that, so the grid can change just after a detach.
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's

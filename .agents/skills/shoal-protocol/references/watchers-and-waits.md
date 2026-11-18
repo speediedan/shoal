@@ -41,6 +41,11 @@ A detached process that only writes a log is not a watcher, because an idle sess
 the log. That includes `setsid nohup shoal job wait ... &` in a harness whose background commands
 do not report back: it finishes, writes its verdict to a file, and wakes nobody.
 
+**A headless turn** (`codex exec`, `muse exec`) runs no waiter at all: a background command it
+starts ends with the turn, unfinished (`exit -1`). Record the wait with its target (`queue --wait
+<sub> --target job:<name>|gh-run:..|lease:..`) and end the turn: the watcher shoal runs for you
+starts your next turn when the target resolves.
+
 **Run CI on the best pool host.** For local CI expected to take more than a few minutes, let the
 pool place it instead of queueing behind your own host's lease:
 
