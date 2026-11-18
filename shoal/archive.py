@@ -4,6 +4,8 @@
     shoal archive <path> [<path> ...] [--reason R] [--by WHO] [--cross-owner notify|rewrite] [--dry-run] [--json]
     shoal archive --restore <original path> [--by WHO] [--dry-run] [--json]
     shoal archive --cold <original path> [<path> ...] [--force] [--by WHO] [--dry-run] [--json]
+    shoal archive --migrate <legacy path or folder> [...] [--cross-owner notify|rewrite] [--reason R] [--dry-run]
+                  [--json]
 
 `archive` moves tracked files to the repository's archive layout (`.shoal/lifecycle.toml` `[layout] archive`, by default
 `archive/<original path>`) and appends one event per file to that directory's manifest (`[layout] manifest`, by default
@@ -19,6 +21,10 @@ its `HEAD` copy with exactly those substitutions, and a rescan must find no live
 run is undone. A referrer must be tracked, clean and UTF-8 text; a symlink that is a start doc refuses (its role moves
 first). The default, `notify`, is the refusal above; the manual command never reads `[checkpoint] cross_owner`, so a
 caller with a policy passes the flag.
+
+`--migrate` moves files out of a legacy nested archive folder (`handoffs/archive/x.md`) to the layout's mirror of the
+path they had before (`handoffs/x.md`), with `migrate` events whose `from` is the legacy path; otherwise it is an
+archive run. After a run lands, the directories its moves emptied are removed.
 
 `--restore` moves a file back to its original path, from the warm archive or, once cold, from the commit its `cold`
 event names. `--cold` deletes a warm file from the tree with a `cold` event whose `restore_from` is the commit that still
@@ -226,7 +232,7 @@ def _plan_rewrites(plan: Plan, live: list[dict], roots: dict) -> None:
     for s in live:
         if s["ambiguous"]:
             raise Refused(f"{s['file']}:{s['line']}: `{s['written']}` names more than one archived path")
-        new = plan.archive_path(s["target"])
+        new = plan.old_new[s["target"]]
         if s["form"] == "symlink":
             if s["file"] in roots:
                 raise Refused(f"{s['file']} is a start doc ({'; '.join(refs.who_text(w) for w in roots[s['file']])}) "
@@ -282,7 +288,7 @@ def _verify_rewrites(plan: Plan) -> None:
     after_repo = refs.Repo(root)
     for f, rw in plan.rewrites.items():
         for x in rw["subs"]:
-            new = plan.archive_path(x["target"])
+            new = plan.old_new[x["target"]]
             if new not in refs.candidates(x["to"], posixpath.dirname(f), after_repo):
                 raise Refused(f"{f}:{x['line']}: `{x['to']}` does not name {new}")
     left = [s for s in _spans(plan, list(plan.old_new), after_repo, set(plan.old_new.values()))
@@ -292,16 +298,58 @@ def _verify_rewrites(plan: Plan) -> None:
                       + "; ".join(f"{s['file']}:{s['line']} `{s['written']}`" for s in left[:8]))
 
 
-def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cross_owner: str = "notify") -> Plan:
+LEGACY = ("archive", "archived", "_archive")
+
+
+def legacy_original(rel: str) -> str | None:
+    """The path a file in a legacy nested archive folder had before it was archived there: `rel` without its deepest
+    `archive`, `archived` or `_archive` segment (never the first segment, which is a root archive, nor the file name).
+    `a/handoffs/archive/x.md` was `a/handoffs/x.md`; None when no such segment exists."""
+    parts = rel.split("/")
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i] in LEGACY:
+            return "/".join(parts[:i] + parts[i + 1:])
+    return None
+
+
+def _expand(plan: Plan, paths: list[str]) -> list[str]:
+    """Repository-relative paths, a directory standing for every tracked file under it."""
+    out: list[str] = []
+    for p in paths:
+        r = plan.rel(p)
+        under = sorted(q for q in plan.repo.mode if q.startswith(r.rstrip("/") + "/"))
+        out += under if r not in plan.repo.mode and under else [r]
+    return out
+
+
+def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cross_owner: str = "notify",
+                 migrate: bool = False) -> Plan:
+    """Archive `paths`; with `migrate`, move files out of a legacy nested archive folder into the layout's mirror of
+    their original path (`legacy_original`), recording `migrate` events whose `from` is the legacy path."""
     plan = Plan(paths[0])
-    rels = [plan.rel(p) for p in paths]
+    rels = _expand(plan, paths) if migrate else [plan.rel(p) for p in paths]
+    origin: dict[str, str] = {}  # migrate: legacy path -> original path
+    top = plan.layout["archive"].split("{", 1)[0].rstrip("/")
     for r in rels:
+        if migrate:
+            if top and (r == top or r.startswith(top + "/")):
+                raise Refused(f"{r} is already under the archive root {top}/: not a legacy folder to migrate")
+            o = legacy_original(r)
+            if o is None:
+                raise Refused(f"{r} is not in a legacy archive folder (no {', '.join(LEGACY)} segment to drop)")
+            if o in plan.repo.mode or os.path.lexists(os.path.join(plan.repo.root, o)):
+                raise Refused(f"{r}: its original path {o} is live again, so the mirror would mean two files")
+            twin = next((x for x, y in origin.items() if y == o), None)
+            if twin:
+                raise Refused(f"{twin} and {r} both had the original path {o}: migrate one, and rename or keep the other")
+            origin[r] = o
         _clean(plan, r)
-        a = plan.archive_path(r)
+        a = plan.archive_path(origin.get(r, r))
         if a == r or a.startswith("..") or os.path.isabs(a):
             raise Refused(f"{r}: the layout maps it to {a!r}, outside the archive")
         if a in plan.repo.mode or os.path.lexists(os.path.join(plan.repo.root, a)):
             raise Refused(f"{r}: {a} already exists in the archive")
+    plan.old_new = {r: plan.archive_path(origin.get(r, r)) for r in rels}
     # every host's roots: a document here may be another host's standalone seat's start doc, which no file here names
     known = refs.roots(all_hosts=True)
     if known["unreachable"]:
@@ -328,17 +376,18 @@ def plan_archive(paths: list[str], reason: str, by: str, force: bool = False, cr
                       "--cross-owner rewrite, then archive it")
     if live:
         _plan_rewrites(plan, live, roots)
-    plan.old_new = {r: plan.archive_path(r) for r in rels}
     when = utcnow()
     for r in rels:
-        a = plan.archive_path(r)
+        a = plan.old_new[r]
         plan.moves.append((r, a))
         rewritten = [{"file": x["file"], "line": x["line"], "from": x["written"], "to": x["to"]}
                      for f, rw in sorted(plan.rewrites.items()) for x in rw["subs"] if x["target"] == r]
         rewritten += [{"file": link, "line": 0, "from": old, "to": new} for link, old, new in plan.relinks
                       if posixpath.normpath(posixpath.join(posixpath.dirname(link), old)) == r]
         history = sum(1 for s in spans if s["tier"] == "history" and s["target"] == r)
-        plan.add_event(r, {"ts": when, "by": by, "event": "archive", "path": r, "archive_path": a, "reason": reason,
+        o = origin.get(r, r)
+        plan.add_event(o, {"ts": when, "by": by, "event": "migrate" if migrate else "archive", "path": o,
+                           **({"from": r} if migrate else {}), "archive_path": a, "reason": reason,
                            "refs": {"history": history, "rewritten": rewritten}})
     return plan
 
@@ -634,6 +683,9 @@ def apply(plan: Plan, message: str) -> dict:
         if plan.rewrites or plan.relinks:
             _verify_rewrites(plan)
         head = _commit(plan, message, written)
+        for src, _ in plan.moves:
+            # git leaves the directories a move emptied (a migrated legacy folder, a retired role's): remove them
+            _prune_empty(root, posixpath.dirname(src))
         return {"ok": True, "commit": head, "notes": plan.notes}
     except Exception as exc:
         left = _undo(root, done)
@@ -730,6 +782,8 @@ def cmd_archive(a) -> int:
     try:
         if a.cross_owner != "notify" and (a.restore or a.cold):
             raise Refused(f"--cross-owner {a.cross_owner} applies to archiving only")
+        if a.migrate and (a.restore or a.cold):
+            raise Refused("--migrate moves legacy archive folders into the layout: not with --restore or --cold")
         if a.restore:
             plan, verb = plan_restore(a.restore, by), "restore"
         elif not a.paths:
@@ -737,6 +791,8 @@ def cmd_archive(a) -> int:
             return 2
         elif a.cold:
             plan, verb = plan_cold(a.paths, a.force, by), "cold"
+        elif a.migrate:
+            plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner, migrate=True), "migrate"
         else:
             plan, verb = plan_archive(a.paths, a.reason, by, a.force, a.cross_owner), "archive"
         steps = describe(plan)
@@ -773,6 +829,8 @@ def add_parser(sub) -> None:
     p.add_argument("paths", nargs="*")
     p.add_argument("--restore", default="", metavar="PATH", help="move an archived file back to its original path")
     p.add_argument("--cold", action="store_true", help="delete warm archived files from the tree (git history keeps them)")
+    p.add_argument("--migrate", action="store_true", help="move files (or every tracked file under a directory) out of "
+                   "a legacy nested archive folder into the layout's mirror of their original path, with migrate events")
     p.add_argument("--force", action="store_true", help="with --cold: before [cold] warm_days have passed; archiving: "
                    "although a routed host's start-doc roots cannot be read")
     p.add_argument("--reason", default="", help="why, recorded in the manifest")

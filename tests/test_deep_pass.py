@@ -6,7 +6,8 @@
 - keep reasons are listed with the days since the file last changed;
 - consolidation candidates are the live auxiliary files, oldest change first, never the start doc or its log;
 - cold candidates are warm manifest entries at least `[cold] warm_days` old that no live document names, with the
-  `shoal archive --cold` command; a younger entry and one a live document still names are left out;
+  `shoal archive --cold` command, a subdirectory's manifest included; a younger entry and one a live document still
+  names are left out;
 - the trend marker line counts what it reports, and the previous marker's numbers come back;
 - a marker inside a fenced block, or one whose time does not parse, is skipped;
 - `lifecycle checkpoint` carries `deep_pass_due`, and its first note starts with the whole command; a failure in the
@@ -107,6 +108,10 @@ ev = [{"ts": utc(NOW - 100 * DAY), "by": "t", "event": "archive", "path": f"{D}/
       {"ts": utc(NOW - 100 * DAY), "by": "t", "event": "migrate", "path": f"{D}/ref.md", "from": f"{D}/old/ref.md",
        "archive_path": f"{A}/ref.md"}]
 write(f"{A}/MANIFEST.jsonl", "".join(json.dumps(e) + "\n" for e in ev))
+# a subdirectory's files keep their own manifest; the pass reads every manifest under the directory's mirror
+write(f"{A}/sub/s.md", "s\n")
+write(f"{A}/sub/MANIFEST.jsonl", json.dumps({"ts": utc(NOW - 100 * DAY), "by": "t", "event": "archive",
+                                            "path": f"{D}/sub/s.md", "archive_path": f"{A}/sub/s.md"}) + "\n")
 git("add", "-A")
 git("commit", "-q", "-m", "lane")
 spec = os.path.join(T, "ledger", "shoals", "g1", "shoal.json")
@@ -126,14 +131,14 @@ assert [c["path"] for c in out["consolidate"]] == [f"{D}/aux_old.md", f"{D}/aux_
 assert out["consolidate"][0]["days_since_change"] == 30.0 and out["consolidate"][0]["bytes"] == 10, out["consolidate"]
 print("keep and consolidation ok")
 
-assert [c["path"] for c in out["cold"]] == [f"{D}/old.md"], "younger and still-named entries are not cold candidates"
-assert out["cold_command"] == f"shoal archive --cold {D}/old.md", out
+assert [c["path"] for c in out["cold"]] == [f"{D}/old.md", f"{D}/sub/s.md"], "younger and still-named entries are not"
+assert out["cold_command"] == f"shoal archive --cold {D}/old.md {D}/sub/s.md", out
 print("cold candidates ok")
 
 t = out["trend"]
-assert t == {"live_auxiliary": 2, "kb": t["kb"], "kept": 1, "warm": 3, "cold_candidates": 1}, t
+assert t == {"live_auxiliary": 2, "kb": t["kb"], "kept": 1, "warm": 4, "cold_candidates": 2}, t
 assert out["marker"].startswith("Deep pass ") and out["marker"].endswith(
-    f": 2 live auxiliary, {t['kb']} KB, 1 kept, 3 warm, 1 cold candidate"), out["marker"]
+    f": 2 live auxiliary, {t['kb']} KB, 1 kept, 4 warm, 2 cold candidates"), out["marker"]
 assert out["due"]["previous_trend"].startswith("3 live auxiliary"), out["due"]
 text = shoal("lifecycle", "deep-pass", DOC).stdout
 assert "DUE (5.0 days since (every 3))" in text and "record in the log snapshot: Deep pass " in text, text

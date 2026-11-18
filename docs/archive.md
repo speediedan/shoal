@@ -9,6 +9,8 @@ shoal archive <path> [<path> ...] [--reason R] [--by WHO] [--cross-owner notify|
                                                                                  # move to the warm archive
 shoal archive --restore <original path> [--dry-run] [--json]                    # back to where it was
 shoal archive --cold <original path> [...] [--force] [--dry-run] [--json]        # warm -> cold
+shoal archive --migrate <legacy path or folder> [...] [--cross-owner notify|rewrite] [--reason R] [--dry-run] [--json]
+                                                                                 # legacy archive folder -> the layout
 ```
 
 Where files go comes from the repository's `.shoal/lifecycle.toml` ([`lifecycle.md`](lifecycle.md)): by default an
@@ -70,12 +72,29 @@ One JSON object per line, appended, never rewritten:
 | field | meaning |
 | --- | --- |
 | `ts`, `by` | UTC time; who (`--by`, else `$SHOAL_SLUG`, else `user`) |
-| `event` | `archive`, `restore` or `cold` (`migrate`, for files arriving from a legacy archive folder, is reserved) |
+| `event` | `archive`, `restore` or `cold`, or `migrate` for a file that arrived from a legacy archive folder (`--migrate`) |
 | `path`, `archive_path` | the original path, and where the file went |
-| `reason` | `--reason`, for `archive` |
-| `refs` | `archive` only: `history`, the number of history references left as written, and `rewritten`, one `{file, line, from, to}` per reference `--cross-owner rewrite` changed (`line` 0 for a symlink) |
+| `from` | `migrate` only: the legacy path the file came from, which `refs --resolve` follows |
+| `reason` | `--reason`, for `archive` and `migrate` |
+| `refs` | `archive` and `migrate`: `history`, the number of history references left as written, and `rewritten`, one `{file, line, from, to}` per reference `--cross-owner rewrite` changed (`line` 0 for a symlink) |
 | `blob`, `mode` | `cold` only: the file's blob id and git mode; `--restore` reads the blob first, so a binary comes back byte for byte and an executable keeps its bit |
 | `restore_from` | `cold` only: a commit that holds `archive_path`: the merge base with the upstream when that holds the file (already published), else HEAD. A shared checkout's HEAD may be a local commit that a commit hook rebases before pushing, which orphans it; the blob survives that rebase, so it is read first |
+
+## Legacy archive folders (`--migrate`)
+
+Before this layout, files were archived by hand into nested folders beside their originals: `handoffs/archive/`,
+`<workstream>/archive/`, `handoff_docs/archived/`. `--migrate` moves such files into the layout. Each file's original
+path is its legacy path without the deepest `archive`, `archived` or `_archive` segment (never the first segment, nor
+the file name): `a/handoffs/archive/x.md` was `a/handoffs/x.md`, so it goes to `archive/a/handoffs/x.md` (the default
+layout). A `migrate` event goes in the original directory's manifest, with the legacy path in `from`. A folder argument
+stands for every tracked file under it, and subfolders keep their place below the original.
+
+Everything else is an archive run: the same refusals (an untracked, dirty or start-doc file; a live reference, unless
+`--cross-owner rewrite`, which points it at the new path), one commit, and the same undo. It also refuses a path with
+no legacy segment, a path already under the archive root, two legacy files with the same original in one run, an
+original path that is live again (the mirror would then stand for two files), and a mirror that already exists. After the commit lands, a run removes the directories its moves emptied, so a migrated legacy folder,
+or a retired role's directory, does not linger on disk. A history document that still names the legacy path resolves
+it with `shoal refs --resolve <legacy path>`, which finds the event by its `from`.
 
 ## One commit, or nothing
 
