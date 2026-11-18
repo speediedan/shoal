@@ -50,11 +50,19 @@ import standalone  # noqa: E402
 
 ROOTS_V = 1
 REFS_V = 1
-TEXT_EXT = {".md", ".sh", ".py", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".txt", ".cfg", ".ini"}
+# data tables too: a .csv or .tsv field that records a path (a data_dir column) is a reference a generator follows;
+# TOKEN already stops at commas, tabs and quotes, so a field is a token
+TEXT_EXT = {".md", ".sh", ".py", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".txt", ".cfg", ".ini", ".csv", ".tsv"}
 # the characters a path uses, so link syntax, backticks, quotes and brackets all delimit one
 TOKEN = re.compile(r"[A-Za-z0-9_.~/+@%-]*[A-Za-z0-9_/]")
 MD_LINK = re.compile(r"\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 FRONT = re.compile(r"^(status|keep)\s*:\s*(.+?)\s*$", re.I | re.M)
+
+
+def text_ext(values: dict) -> set[str]:
+    """The extensions read for references: TEXT_EXT plus the repository's `[refs] text_ext` (lifecycle values)."""
+    extra = {e.lower() if e.startswith(".") else "." + e.lower() for e in values.get("refs", {}).get("text_ext", []) if e}
+    return TEXT_EXT | extra
 
 
 # ---- roots -----------------------------------------------------------------------------
@@ -354,6 +362,7 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
     lc = lifecycle.load(repo.root)
     history = list(history or lc["values"]["tiers"]["history"])
     exclude = list(exclude or lc["values"]["tiers"]["exclude"])
+    exts = text_ext(lc["values"])
     min_age_days = lc["values"]["checkpoint"]["min_age_days"] if min_age_days is None else min_age_days
     inside = (lambda p: p.startswith(d + "/")) if d else (lambda p: True)
 
@@ -385,7 +394,7 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
             root_paths.setdefault(t, []).append(f"target of {r}")
 
     referrers = sorted(p for p in repo.mode if (scope == "repo" or inside(p)) and repo.mode[p] != "120000"
-                       and posixpath.splitext(p)[1] in TEXT_EXT and tier(p) != "excluded")
+                       and posixpath.splitext(p)[1].lower() in exts and tier(p) != "excluded")
     edges = edges_to(repo, files, referrers, tier)
     dangling: list[dict] = []
     in_dir = set(files)
@@ -435,7 +444,7 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
     now = now if now is not None else datetime.datetime.now(datetime.timezone.utc).timestamp()
     out_files, candidates_out = [], []
     for p in files:
-        text = repo.read(p) if posixpath.splitext(p)[1] in TEXT_EXT else ""
+        text = repo.read(p) if posixpath.splitext(p)[1].lower() in exts else ""
         front = {k.lower(): v for k, v in FRONT.findall("\n".join(text.splitlines()[:12]))}
         es = edges[p]
         if p in root_paths:

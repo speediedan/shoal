@@ -197,9 +197,9 @@ def _spans(plan: Plan, targets: list[str], repo: refs.Repo | None = None, skip: 
             return "excluded"
         return "history" if refs._matches(p, tiers["history"]) else "live"
 
-    out_of = set(targets) | set(skip)
+    out_of, exts = set(targets) | set(skip), refs.text_ext(plan.lc["values"])
     referrers = sorted(p for p in repo.mode if repo.mode[p] != "120000"
-                       and posixpath.splitext(p)[1] in refs.TEXT_EXT and tier(p) != "excluded" and p not in out_of)
+                       and posixpath.splitext(p)[1].lower() in exts and tier(p) != "excluded" and p not in out_of)
     return [s for s in refs.reference_spans(repo, targets, referrers, tier, plan.dirs) if s["file"] not in out_of]
 
 

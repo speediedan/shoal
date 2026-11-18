@@ -39,6 +39,8 @@ DEFAULTS: dict[str, dict] = {
     "cold": {"warm_days": 90, "after_checkpoints": 2},
     "instructions": {"every_days": 14},
     "hooks": {"commit": "", "on_retire": ""},
+    # extensions read for references beyond refs.TEXT_EXT (which already holds .csv and .tsv), e.g. [".rst", ".dat"]
+    "refs": {"text_ext": []},
 }
 CHOICES = {("checkpoint", "archive"): ("auto", "propose", "off"),
            ("checkpoint", "cross_owner"): ("notify", "rewrite", "keep")}
