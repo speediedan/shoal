@@ -115,13 +115,17 @@ def probe(path: str, now: float | None = None) -> dict:
     out["consolidate"] = sorted(({"path": p, "days_since_change": age.get(p), "bytes": size.get(p, 0)} for p in aux),
                                 key=lambda x: -(x["days_since_change"] or 0))
 
-    # cold candidates: the directory's manifest, latest event per original path
+    # cold candidates: every manifest under the directory's archive mirror (a subdirectory's files keep their own
+    # manifest), latest event per original path
     plan = archive.Plan(path)
     mpath = plan.manifest_path(posixpath.join(d, "x") if d else "x")
+    top, name = posixpath.dirname(mpath), posixpath.basename(mpath)
+    manifests = sorted(p for p in repo.mode if posixpath.basename(p) == name and (p == mpath or p.startswith(top + "/")))
     latest: dict[str, dict] = {}
-    for e in archive.read_manifest(os.path.join(repo.root, mpath)):
-        if e.get("path"):
-            latest[e["path"]] = e
+    for m in manifests:
+        for e in archive.read_manifest(os.path.join(repo.root, m)):
+            if e.get("path"):
+                latest[e["path"]] = e
     warm = {p: e for p, e in latest.items() if e.get("event") in ("archive", "migrate")
             and e.get("archive_path") in repo.mode}
     named = refs.edges_to(repo, [e["archive_path"] for e in warm.values()],

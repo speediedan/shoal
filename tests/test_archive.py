@@ -13,7 +13,10 @@
 - a root's companion log (`<stem>_log.md`) is live in `refs` even when nothing links it;
 - another host's start-doc roots are honoured, and a host that cannot answer refuses unless `--force`;
 - going cold records the blob and mode: a binary and an executable come back exactly, and an orphaned `restore_from`
-  (a rebase rewrote that commit) still restores by blob; a hook template's other braces are left as written.
+  (a rebase rewrote that commit) still restores by blob; a hook template's other braces are left as written;
+- `--migrate` moves a legacy nested archive folder (or a file in one) to the mirror of each file's original path with
+  `migrate` events naming the legacy path in `from`, refusing live references unless rewritten, a path with no legacy
+  segment, an original that is live again, and a mirror that already exists; `refs --resolve` finds it by `from`.
 
 Synthetic paths and ids only."""
 from __future__ import annotations
@@ -346,6 +349,49 @@ assert ev[f"{RW}/f.md"]["refs"]["rewritten"] == [{"file": "proj/other/f_link.md"
                                                   "to": f"../../{A}/f.md"}], ev[f"{RW}/f.md"]
 assert git("status", "--porcelain") == ""
 print("rewrite ok")
+
+# --migrate: a legacy nested archive folder moves to the mirror of each file's original path, with migrate events
+LG = "proj/design/lane2/handoffs/archive"
+write(f"{LG}/h1.md", "h1\n")
+write(f"{LG}/deep/h2.md", "h2\n")
+write("proj/design/lane2/handoffs/live_h3.md", "h3\n")
+write("proj/other/cites_start.md", f"Old handoff: [h1](../design/lane2/handoffs/archive/h1.md).\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a legacy archive folder")
+before = state()
+rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive")
+assert rc == 1 and "is still named by live documents" in out["refused"] and state() == before, out
+rc, out = archive("--migrate", "proj/design/lane2/handoffs/live_h3.md")
+assert rc == 1 and "not in a legacy archive folder" in out["refused"], out
+rc, out = archive("--migrate", "--restore", f"{LG}/h1.md")
+assert rc == 1 and "not with --restore" in out["refused"], out
+rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive", "--cross-owner", "rewrite", "--reason", "legacy")
+assert rc == 0 and out["ok"], out
+M = "archive/proj/design/lane2/handoffs"
+assert open(os.path.join(REPO, M, "h1.md")).read() == "h1\n"
+assert open(os.path.join(REPO, M, "deep/h2.md")).read() == "h2\n"
+assert not os.path.exists(os.path.join(REPO, LG)), "the emptied legacy folder is gone"
+ev = [json.loads(x) for x in open(os.path.join(REPO, M, "MANIFEST.jsonl"))]
+assert ev == [dict(ev[0], event="migrate", path="proj/design/lane2/handoffs/h1.md", **{"from": f"{LG}/h1.md"},
+                   archive_path=f"{M}/h1.md", reason="legacy")], ev
+deep = [json.loads(x) for x in open(os.path.join(REPO, M, "deep", "MANIFEST.jsonl"))]
+assert deep[0]["path"] == "proj/design/lane2/handoffs/deep/h2.md" and deep[0]["from"] == f"{LG}/deep/h2.md", deep
+assert f"../../{M}/h1.md" in open(os.path.join(REPO, "proj/other/cites_start.md")).read(), "the live link follows"
+assert git("status", "--porcelain") == "" and "migrate: " in git("log", "-1", "--format=%s")
+r = subprocess.run([sys.executable, os.path.join(SHOALD, "cli.py"), "refs", "--resolve", f"{LG}/h1.md", "--json"],
+                   env=ENV, capture_output=True, text=True, cwd=REPO)
+res = json.loads(r.stdout)
+assert res["via"] == "from" and res["state"] == "warm" and res["archive_path"] == f"{M}/h1.md", res
+write("proj/design/lane2/handoffs/archive/h1.md", "again\n")
+write("proj/design/lane2/handoffs/h4.md", "live\n")
+write("proj/design/lane2/handoffs/archive/h4.md", "legacy h4\n")
+git("add", "-A")
+git("commit", "-q", "-m", "a legacy copy whose original is live again")
+rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive/h4.md")
+assert rc == 1 and "is live again" in out["refused"], out
+rc, out = archive("--migrate", "proj/design/lane2/handoffs/archive/h1.md")
+assert rc == 1 and "already exists in the archive" in out["refused"], out
+print("migrate ok")
 
 subprocess.run(["rm", "-rf", T], check=True)
 print("test_archive OK")
