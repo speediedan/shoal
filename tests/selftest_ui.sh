@@ -3775,8 +3775,20 @@ env $AE $H freeze off --shoal $SID --no-wake >/dev/null 2>&1 || fail "freeze off
 ! env $AE $H ui act-plan offline --scope host:no-such-host --state on --json >/dev/null 2>&1 || fail "a scope with no shoal planned something"
 OUT=$(env $AE $H ui act-plan next --shoal $SID --role cl --json) || fail "act-plan next :: $OUT"
 grep -q '"kind": "shoal-act-view"' <<<"$OUT" && grep -q 'next for cl' <<<"$OUT" || fail "next view :: $(head -c 400 <<<"$OUT")"
+LONG_ASK="May I squash-merge example/repo PR 948 (closes 934 and 986), pinned to head ed8d99ca9ef097ca55b3f428f10d638d12e3bfbc, after verifying its green checks and the gate that follows them? Defer keeps it open for another pass."
+env $AE $H queue --shoal $SID --slug cl --ask "$LONG_ASK" --no-sync >/dev/null 2>&1 || fail "record a long ask"
 OUT=$(env $AE $H ui act-plan asks --shoal $SID --json) || fail "act-plan asks :: $OUT"
 python3 -c 'import json,sys;d=json.loads(sys.argv[1]);assert d["kind"]=="shoal-act-view" and isinstance(d["asks"],list),d' "$OUT" || fail "asks view"
+# the Asks view reads each ask in full (the status row cuts one at 160 characters for its table cell)
+python3 - "$OUT" "$LONG_ASK" <<'PYASK' || fail "asks view: the ask in full"
+import json, sys
+d, want = json.loads(sys.argv[1]), sys.argv[2]
+row = next(r for r in d["asks"] if r["role"] == "cl")
+assert want in row["asks"] and len(want) > 160, row["asks"]
+assert len(row["options"]) == len(row["asks"]) == len(row["links"]), row
+PYASK
+N_ASK=$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);r=next(r for r in d["asks"] if r["role"]=="cl");print(r["asks"].index(sys.argv[2])+1)' "$OUT" "$LONG_ASK")
+env $AE $H queue --shoal $SID --slug cl --answered "$N_ASK" --no-sync >/dev/null 2>&1 || fail "drop the long ask again"
 OUT=$(env $AE $H ui act-plan roles --shoal $SID --json) || fail "act-plan roles :: $OUT"
 python3 -c 'import json,sys;d=json.loads(sys.argv[1]);s=d["shoals"][0];assert d["kind"]=="shoal-act-roles" and "cl" in [r["slug"] for r in s["roles"]] and "parked" not in [r["slug"] for r in s["roles"]],d' "$OUT" \
   || fail "roles view (roles with a session only) :: $OUT"

@@ -229,7 +229,8 @@ asks to re-verify, drop or raise them as prompted question sets (at most four qu
 and delivers the deferred pages as one summary. A headless role (a `codex exec` or `muse exec` turn) has no question
 tool, so its brief (`briefs.raise_clause`) has it keep the asks recorded instead: the viewer's Asks view shows each one
 with the answer set `shoal asks` would put to the question tool (`worker.ask_options`: grant, defer, delegate review and
-deny for a merge), and the maintainer's choice reaches the role as mail with a wake, `re ask <n>: <choice>.`. The
+deny for a merge), and the maintainer's answers reach the role as mail with a wake, `re ask <n>: <choice>. <note>` a
+line per answered ask, every ask's answer sent at once from the role's Submit answers (`model.batchAnswerText`). The
 restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question. Nor does a headless turn run a waiter: a background command ends with its exec process, so its JOBS clause (`briefs.h4_disciplines`) records a `job:` wait and ends the turn for the watcher to wake it on the verdict, where a Claude role follows its job with an in-session `job wait` (a Codex role's in-turn waiters each ended `exit -1`).
 
 **Signed standing grants** (`features.grants`). A `grant` event from `user` carries an ssh
