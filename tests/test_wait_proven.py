@@ -119,6 +119,12 @@ class AgentState(unittest.TestCase):
         self.assertEqual((s["group"], s["state"]), ("needs-you", "asked"))
         self.assertTrue(s["detail"].startswith("also waiting remote-ci; Refresh"), s["detail"])
 
+    def test_a_turn_running_reads_working_over_an_ask(self):
+        s = self.state(role_status="waiting", sub="remote-ci", q={"asks": ["Merge 95?"]}, sess="working")
+        self.assertEqual((s["group"], s["state"], s["detail"]), ("working", "working", "asks you: Merge 95?"))
+        s = self.state(role_status="waiting", sub="remote-ci", q={"asks": ["Merge 95?"]}, sess="idle")
+        self.assertEqual((s["group"], s["state"]), ("needs-you", "asked"), "back to needs you once the turn ends")
+
     def test_the_ledger_explains_a_stop_claude_reads_as_blocked(self):
         f = ui_status.ledger_explains_stop
         both = {"next": ["a#1:fix", "a#2:fix"], "next_blocked": {"a#1": "upstream:gh-issue:o/r#2", "a#2": "hold:x"}}
