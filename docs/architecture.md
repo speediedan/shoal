@@ -1198,7 +1198,14 @@ the tests hold them to 1,300 and 2,400.
 
 The lattice opens in depth (`depth.js` `DEFAULT_DEPTH`, iso; the `depth` prop still takes `flat`, `tilt` or `iso`), and
 `d` cycles iso, flat, tilt (`DEPTH_CYCLE`), so one press from the opening view is flat; the legend's hint lists the
-cycle. The bowl opens turned far round to the side, at -14 degrees tilt and -70 turn (`BOWL_HOME_TILT`,
+cycle. The global view opens turned round from the iso preset (2026-11-18, the view the maintainer orbited to and asked
+for): `GLOBAL_HOME` adds 95 degrees of yaw and 10 of pitch to the orbit there (`camera(name, yawTurn, orbit, global)`),
+so an orbit of zero is that view and `orbitBy` holds the pitch range with its lift counted; roles keep their places
+from the preset's eye. A fit of the global depth view is framed as that screenshot was (`GLOBAL_FRAME`: zoomed out to
+0.75 about the canvas's middle, then moved up and left by 0.056 and 0.138 of the canvas, so the floor and the shadows
+show), at the start and on `f`, `d` and a drill back. A turn by key (the arrows' orbit, `,` and `.`) re-projects at the
+zoom and pan the view has and leaves auto-fit off (`main.js` `turned`): it used to call `setDepth`, whose refit to the
+turned scene's extent zoomed in on every press. The bowl opens turned far round to the side, at -14 degrees tilt and -70 turn (`BOWL_HOME_TILT`,
 `BOWL_HOME_TURN`; the view the maintainer orbited to from the old opening, 10 and -40, matched on the rim's aspect and
 lean and where you and the bottom sit), with room to orbit on past it: the tilt runs -30 to 64, the turn -78 to 78, and
 the two together at most 78 degrees off the line of sight (`BOWL_OFF_AXIS_MAX`). Your lean toward the camera far round

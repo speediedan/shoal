@@ -90,7 +90,9 @@ you, per-shoal throughput and per-host load.
   (auth, then a question, a prompt, a design call, an empty queue, a stalled session), then the roles spiral back by what
   they are doing (a turn, their own job, a hand-over, waiting on others, idle with work queued, idle), then by how fresh
   their last write is. A role round the back is seen through the sphere, fainter. `,` and `.`
-  turn the camera 15 degrees. The arrow keys orbit it 8 degrees a press: left and right turn it round as `,` and `.`
+  turn the camera 15 degrees. The global view opens 95 degrees round from the iso preset and 10 degrees higher (the
+  view the maintainer picked, 2026-11-18), a fit framed zoomed out to 0.75 and moved up and left so the floor shows.
+  A turn by key keeps the zoom and pan. The arrow keys orbit it 8 degrees a press: left and right turn it round as `,` and `.`
   do, up and down raise and lower it (its pitch held between 24 and 80 degrees, so the planes never go edge-on);
   shift with an arrow pans, as a plain arrow does in flat. The projection (`depth.js`) runs on the layout before the scene, only on a data tick or
   a key, never on a timer; at the low and off motion tiers on a CPU renderer the view stays flat.

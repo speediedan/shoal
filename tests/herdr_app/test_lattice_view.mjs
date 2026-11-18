@@ -1953,14 +1953,16 @@ test("2026-11-12: the arrows orbit the camera, kept in range; the bowl never fli
       const held = D.orbitBy(name, ask, 0, 0, true);
       assert.ok(offAxis(held) >= floor - 1e-9 && near(offAxis(held), offAxis(ask)), "a stored orbit is held to what the camera shows");
     }
-    // global: the pitch is held in its range, the yaw goes round freely, and `,` and `.` add to it as before
+    // global: the pitch is held in its range, the yaw goes round freely, and `,` and `.` add to it as before; the
+    // orbit is on top of the view's opening turn (GLOBAL_HOME)
+    const home = D.GLOBAL_HOME[name] ?? { x: 0, y: 0 };
     let g = { x: 0, y: 0 };
     for (let i = 0; i < 20; i++) g = D.orbitBy(name, g, D.ORBIT_STEP, D.ORBIT_STEP, false);
-    const gc = D.camera(name, 0.3, g);
+    const gc = D.camera(name, 0.3, g, true);
     assert.ok(Math.abs(gc.pitch - D.PITCH_RANGE[1]) < 1e-12 && Math.abs(g.x) <= Math.PI + 1e-12);
-    assert.ok(Math.abs(gc.yaw - (D.CAMERAS[name].yaw + 0.3 + g.x)) < 1e-12 && Math.abs(gc.spin - (D.CAMERAS[name].yaw + 0.3)) < 1e-12);
+    assert.ok(Math.abs(gc.yaw - (D.CAMERAS[name].yaw + 0.3 + home.x + g.x)) < 1e-12 && Math.abs(gc.spin - (D.CAMERAS[name].yaw + 0.3)) < 1e-12);
     for (let i = 0; i < 40; i++) g = D.orbitBy(name, g, 0, -D.ORBIT_STEP, false);
-    assert.ok(Math.abs(D.camera(name, 0, g).pitch - D.PITCH_RANGE[0]) < 1e-12, "the planes never go edge-on");
+    assert.ok(Math.abs(D.camera(name, 0, g, true).pitch - D.PITCH_RANGE[0]) < 1e-12, "the planes never go edge-on");
   }
   // the global scene draws at any orbit
   const lay = L.layoutGraph(global);
@@ -2673,4 +2675,27 @@ test("2026-11-15: you can be dragged: along the floor under the pointer, and up 
   const src = readFileSync(join(MOD, "main.js"), "utf8");
   assert.match(src, /you: this\.youPress\(lp\)/, "a press on you starts dragging you");
   assert.match(src, /k === "y"\) this\.setYouOffset\(\{ x: 0, y: 0, z: 0 \}/, "y puts you back");
+});
+
+test("2026-11-18: the global view opens at the maintainer's view, framed as asked; a turn by key keeps the zoom", () => {
+  const DEG = Math.PI / 180, near = (a, b) => Math.abs(a - b) < 1e-12;
+  // iso opens 95 degrees round and 10 higher in the global view; the bowl and the tilt preset keep their opening views
+  const c = D.camera("iso", 0, { x: 0, y: 0 }, true), p = D.CAMERAS.iso;
+  assert.ok(near(c.yaw, p.yaw + 95 * DEG) && near(c.pitch, p.pitch + 10 * DEG) && near(c.spin, p.yaw), "the opening turn is an orbit");
+  assert.ok(near(D.camera("iso").yaw, p.yaw) && near(D.camera("tilt", 0, null, true).yaw, D.CAMERAS.tilt.yaw), "only the global iso view turns");
+  assert.ok(D.bowlTurn(D.camera("iso")) === D.BOWL_HOME_TURN, "the bowl's opening view is its own");
+  assert.ok(c.pitch > D.PITCH_RANGE[0] && c.pitch < D.PITCH_RANGE[1], "room to orbit on either way");
+  // one arrow up from the opening view raises it by a step, as from any view
+  assert.ok(near(D.camera("iso", 0, D.orbitBy("iso", { x: 0, y: 0 }, 0, D.ORBIT_STEP, false), true).pitch, c.pitch + D.ORBIT_STEP));
+  // framed: a fit zoomed out about the canvas's middle, then moved up and to the left
+  const fr = D.GLOBAL_FRAME.iso;
+  assert.ok(fr.zoom > 0.5 && fr.zoom < 1 && fr.dx < 0 && fr.dy < 0 && !D.GLOBAL_FRAME.tilt);
+  // the mod: a turn by key re-projects at the zoom and pan it has, and leaves auto-fit off; a fit frames the global view
+  const src = readFileSync(join(MOD, "main.js"), "utf8");
+  assert.match(src, /this\.yawTurn \+= k === "," \? -YAW_STEP : YAW_STEP; this\.turned\(cx\);/, ", and . turn without a refit");
+  assert.match(src, /this\.orbit = orbitBy\(this\.depth, this\.orbit, dx, dy, !this\.vm\?\.global\);\n      this\.turned\(cx\);/, "the arrows turn without a refit");
+  const turned = src.slice(src.indexOf("  turned(cx) {"), src.indexOf("  /** `f`: a fresh full layout"));
+  assert.ok(turned.includes("this.autoFit = false;") && !turned.includes("this.fit("), "a turn never refits");
+  assert.match(src, /camera\(this\.depthNow, this\.yawTurn, this\.orbit, !!this\.vm\?\.global\)/, "the global view's camera has its opening turn");
+  assert.match(src, /const fr = this\.vm\.global && GLOBAL_FRAME\[this\.depthNow\];/, "a fit frames the global view");
 });

@@ -31,10 +31,12 @@ const doc = JSON.parse(readFileSync(opt("doc", join(MOD, "fixtures", "graph-v1.j
 const vm = M.buildModel(doc, opt("view", "global"));
 const [oh, ov] = String(opt("orbit", "0,0")).split(",").map((v) => (Number(v) || 0) * Math.PI / 180);
 const orbit = D.orbitBy(opt("depth", "flat"), null, oh, ov ?? 0, !vm.global);
-const lay = D.projectLayout(vm, L.layoutGraph(vm), D.camera(opt("depth", "flat"), Number(opt("yaw", 0)) * Math.PI / 180, orbit));
+const lay = D.projectLayout(vm, L.layoutGraph(vm), D.camera(opt("depth", "flat"), Number(opt("yaw", 0)) * Math.PI / 180, orbit, vm.global));
 const CW = W - RAIL;
-// the same fit as the mod's `f`: every node, label and ring inside the canvas
-const tf = S.fitScene(vm, lay, { width: CW, height: H }, { pad: 24, top: 48, kMax: 1.6 });
+// the same fit as the mod's `f`: every node, label and ring inside the canvas, then the global view's frame
+const fr = vm.global && D.GLOBAL_FRAME[opt("depth", "flat")];
+const fitted = S.fitScene(vm, lay, { width: CW, height: H }, { pad: 24, top: 48, kMax: 1.6 });
+const tf = fr ? G.panBy(G.zoomAt(fitted, { x: CW / 2, y: H / 2 }, fr.zoom), fr.dx * CW, fr.dy * H) : fitted;
 const pin = opt("pin", null);
 const sc = S.buildScene(vm, lay, { width: CW, height: H, tf, selected: pin, hover: opt("hover", null), motion: opt("motion", "full") });
 const P = M.PALETTE;

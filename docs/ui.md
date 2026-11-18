@@ -767,7 +767,9 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far wall, with smaller
   heads there, so they run away from you into the bowl. A role that needs you or asks you pulses in depth as in flat
   (breathing at `full`, blinking at `balanced`, still at `low` and `off`).
-  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press). The bowl opens turned far round to the side
+  - **Keys in depth:** the arrow keys orbit the camera (8 degrees a press), keeping the zoom (only the wheel, `+`
+    and `-`, and a fit change it). The global view opens turned 95 degrees round and 10 degrees higher than the iso
+    preset, framed a little zoomed out and up, the view the maintainer picked (2026-11-18); `f` frames it again. The bowl opens turned far round to the side
     (-14 degrees tilt, -70 turn), with you floating out in front of its opening. Up and down raise and lower the
     camera (-30 to 64 degrees), and left and right take it round the bowl's side (-78 to 78 degrees), together never
     more than 78 degrees off the bowl's axis: a press that would pass a limit goes to it and no further, so the bowl
