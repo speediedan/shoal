@@ -38,6 +38,23 @@ assert.equal(M.parseUsage({ code: 1, stdout: JSON.stringify(doc) }), null, "a fa
 assert.equal(M.parseUsage({ code: 0, stdout: "not json" }), null);
 assert.equal(M.parseUsage(null), null);
 assert.deepEqual(M.usageMachines([{ active: true, machine: "lane-b" }], ["lane-a", "lane-b"]), ["lane-b", "lane-a", null], "the space in view first, then the rest");
+// a host whose cache no feed refreshes answers too: a day-old codex and three `not collected yet`. The bar takes the
+// machine with the most accounts read, then the freshest, not the first to answer (2026-11-18: `claude ?` on the bar)
+const acct = (provider, { error = "", stale = false, pct = 10 } = {}) =>
+  ({ provider, stale, error, rows: error ? [] : [{ windows: [{ name: "5h", used_percent: pct }] }] });
+const cold = M.usageRows({ accounts: [acct("codex", { stale: true }), acct("claude", { error: "not collected yet", stale: true }),
+  acct("claude-2", { error: "not collected yet", stale: true })] });
+const live = M.usageRows({ accounts: [acct("codex"), acct("claude"), acct("claude-2")] });
+const half = M.usageRows({ accounts: [acct("codex"), acct("claude", { stale: true }), acct("claude-2", { error: "HTTP 401", stale: true })] });
+assert.deepEqual(M.usageScore(cold), [1, 0]);
+assert.deepEqual(M.usageScore(live), [3, 3]);
+assert.ok(M.usageComplete(live) && !M.usageComplete(cold) && !M.usageComplete(half) && !M.usageComplete([]));
+assert.equal(M.bestUsage([cold, null, live]), live, "the cold host first in order still loses");
+assert.equal(M.bestUsage([cold, half]), half, "more accounts read wins");
+const halfFresh = M.usageRows({ accounts: [acct("codex"), acct("claude"), acct("claude-2", { error: "HTTP 401", stale: true })] });
+assert.equal(M.bestUsage([half, halfFresh]), halfFresh, "as many read: the fresher wins");
+assert.equal(M.bestUsage([live, M.usageRows({ accounts: [acct("codex"), acct("claude"), acct("claude-2")] })]), live, "a tie keeps the earlier");
+assert.equal(M.bestUsage([null, []]), null, "no machine has rows: the bar keeps its last good rows");
 
 // Ctrl+Alt+N: the needs-you agents in the pulse's order (auth, asks, grants, the rest; the longest unchanged first), wrapping
 const ag = [
