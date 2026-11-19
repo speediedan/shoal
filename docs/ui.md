@@ -801,7 +801,9 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
     at a glance. **Zoom** with - and + (or the keys), **Fit** (0) puts the whole tree in view, and `n` switches the
     drawing; the choice of drawing is remembered.
   - **Hover** an item for its status, role and place, blocker, parent, sub-issues, assignees, labels, PRs, last update
-    and a body excerpt. **Click** it to select it: the side panel (its x, or Esc, closes it) has **Open on GitHub**,
+    and a body excerpt. The card stays on screen: beside the item, flipped up near the bottom of the view, inside its
+    edges, and scrolling when taller than the room it has; move onto it to read or scroll it. **Click** it to select
+    it: the side panel (its x, or Esc, closes it) has **Open on GitHub**,
     and **Offer to a role** (an item no role holds: the actions dialog's Offer, filled in) or **Move to a role** (an
     item another role holds: that role's Queue opens with it picked; place it and the plan transfers it), each a list of
     the roles to pick from. Both preview and confirm.

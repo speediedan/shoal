@@ -312,6 +312,64 @@ export function hoverLines(n) {
   return rows;
 }
 
+export const HOVER = { w: 320, gap: 8, margin: 8, minH: 60 };
+
+/** About how tall the hover card for `n` draws at width `w` (padding, a title, each row's wrapped value, the excerpt),
+ * for choosing its side; `placeHover` caps the card to the room it has whatever this says. */
+export function hoverHeight(n, w = HOVER.w) {
+  const wrap = (text, px, avail) => Math.max(1, Math.ceil((str(text).length * px * 0.56) / Math.max(40, avail)));
+  const line = 16, gap = 4;
+  let h = 22 + wrap(`${str(n?.key)}  ${str(n?.title)}`, 11.5, w - 20) * line;
+  for (const [, v] of hoverLines(n ?? {})) h += gap + wrap(v, 11.5, w - 20 - 78) * line;
+  if (n?.excerpt) h += gap + wrap(str(n.excerpt).slice(0, 220), 11, w - 20) * 15;
+  return h;
+}
+
+/**
+ * Where the hover card goes for an `item` box {x, y, w, h}, inside the `view` {x, y, width, height} (the part of the
+ * canvas on screen; both in canvas coordinates), for a card `w` wide and about `h` tall. Beside the item (right, else
+ * left), its top level with the item's, flipped to end level with the item's bottom when it would run past the view's
+ * bottom; with no room on either side, below the item, flipped above it likewise. Then clamped inside the view, and
+ * `maxH` is the room from its top to the view's bottom: a card taller than that scrolls inside. Returns {x, y, w, maxH}.
+ */
+export function placeHover(item, view, w = HOVER.w, h = 200, margin = HOVER.margin, gap = HOVER.gap) {
+  const fin = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+  const left = fin(view?.x, 0) + margin, top = fin(view?.y, 0) + margin;
+  const right = left + Math.max(0, fin(view?.width, 800) - 2 * margin), bottom = top + Math.max(0, fin(view?.height, 600) - 2 * margin);
+  const cw = Math.max(0, Math.min(w, right - left));
+  const ch = Math.max(0, Math.min(h, bottom - top));
+  const fitsRight = item.x + item.w + gap + cw <= right, fitsLeft = item.x - gap - cw >= left;
+  let x, y;
+  if (fitsRight || fitsLeft) {
+    x = fitsRight ? item.x + item.w + gap : item.x - gap - cw;
+    y = item.y;
+    if (y + ch > bottom) y = item.y + item.h - ch;
+  } else {
+    x = item.x;
+    y = item.y + item.h + gap;
+    if (y + ch > bottom) y = item.y - gap - ch;
+  }
+  x = Math.min(Math.max(x, left), Math.max(left, right - cw));
+  y = Math.min(Math.max(y, top), Math.max(top, bottom - ch));
+  return { x, y, w: cw, maxH: Math.max(Math.min(HOVER.minH, bottom - top), bottom - y) };
+}
+
+/** An element's box in the window from a pointer move over it: {x, y} its origin (the pointer's window position less
+ * its position in the element), {width, height} its size. Null when the event lacks any of it. */
+export function boxOf(e) {
+  const p = e?.position, l = e?.local_position, b = e?.bounds;
+  const n = (v) => typeof v === "number" && Number.isFinite(v);
+  if (!p || !l || !n(p.x) || !n(p.y) || !n(l.x) || !n(l.y)) return null;
+  return { x: p.x - l.x, y: p.y - l.y, width: n(b?.width) ? b.width : null, height: n(b?.height) ? b.height : null };
+}
+
+/** The part of the canvas on screen, in canvas coordinates, from the window boxes (`boxOf`) of the scrolling view and of
+ * the canvas inside it: the view's size at the view's offset from the canvas. `fallback` until both are known. */
+export function visibleRect(viewBox, canvasBox, fallback) {
+  if (!viewBox || !canvasBox || viewBox.width === null || viewBox.height === null) return fallback;
+  return { x: viewBox.x - canvasBox.x, y: viewBox.y - canvasBox.y, width: viewBox.width, height: viewBox.height };
+}
+
 /**
  * What a selected item offers: open it on GitHub, and per role either Offer (an item no role holds: it goes into that
  * role's queue through an offer) or Move (another role holds it: that role's Queue opens with it picked, and the plan

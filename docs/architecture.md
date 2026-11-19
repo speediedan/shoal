@@ -1680,7 +1680,11 @@ and the contract are in [`ui.md`](ui.md).
   (`blocked_hold` of them on a hold) and `unqueued`; the mod reads a board from an older shoal by its `work`.
   The board is the root; the model puts prerequisites below (each item a layer below its parent and below every item it
   blocks, a blocks edge rising from the blocker into what it unblocks), wraps a wide layer into rows,
-  and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details; a click
+  and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details in a card
+  placed by `placeHover` inside the part of the canvas on screen (`visibleRect`, from the window boxes the pointer's
+  moves report for the scrolling view and the canvas): beside the item, flipped to end level with its bottom near the
+  view's bottom, above or below it when neither side has room, clamped inside, and capped to the room left with an
+  internal scroll; it stays a moment after the pointer leaves the item, and while the pointer is on it. A click
   selects it (the side panel closes on its x or Esc) for Open on GitHub, Offer to a role (the actions dialog, its
   `item` prefilled; the role picked from a list) or Move to a role (that
   role's Queue, with `pick` set, so the plan transfers it). The metrics panel shows the rail card's counts, closes in
