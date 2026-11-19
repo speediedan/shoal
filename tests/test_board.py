@@ -38,10 +38,60 @@ ROWS = [{"slug": "core", "active": "example/app#2:fix",
 class BoardTests(unittest.TestCase):
     def test_role_work_active_first_then_queue_place(self):
         w = ui_board.role_work(ROWS)
-        self.assertEqual(w["app#2"], {"work": "active", "role": "core", "pos": 0, "blocker": ""})
-        self.assertEqual(w["app#3"]["work"], "queued")
-        self.assertEqual((w["app#4"]["work"], w["app#4"]["pos"]), ("queued-blocked", 2))
+        self.assertEqual(w["app#2"], {"work": "active", "role": "core", "pos": 0, "blocker": "", "state": "in-progress",
+                                      "why": "working", "on": "", "inferred": False})
+        self.assertEqual((w["app#3"]["work"], w["app#3"]["state"]), ("queued", "queued"))
+        self.assertEqual((w["app#4"]["work"], w["app#4"]["pos"], w["app#4"]["state"], w["app#4"]["why"]),
+                         ("queued", 2, "blocked", "hold"))
         self.assertEqual(ui_board.short_key("Owner/Repo#12:fix"), "repo#12")
+
+    def test_progress_an_active_item_by_its_roles_wait(self):
+        p = lambda sub, target="", **kw: ui_board.progress(wait={"sub": sub, "target": target, **kw}, status="wait")  # noqa: E731
+        self.assertEqual(ui_board.progress(status="active")["state"], "in-progress")
+        for sub, why in (("local-ci", "ci"), ("remote-ci", "ci"), ("research-proto", "research"), ("research-window", "window")):
+            self.assertEqual((p(sub, "job:x")["state"], p(sub, "job:x")["why"]), ("in-progress", why), sub)
+        self.assertEqual(p("local-ci", "lease:gpu")["why"], "lease", "its run waits for a lease: still its own work")
+        self.assertEqual((p("user-auth")["state"], p("user-auth")["why"]), ("blocked", "maintainer"))
+        self.assertEqual(p("upstream", "gh-issue:example/lib#7"), {"state": "blocked", "why": "upstream", "on": "lib#7",
+                                                                    "inferred": False})
+        self.assertEqual(p("session-blocked", blocked_on="peer:example/app#9")["on"], "app#9")
+        self.assertEqual(p("session-blocked", blocked_on="peer")["on"], "peer", "a peer named without an item")
+
+    def test_progress_a_queued_item_by_its_recorded_blocker(self):
+        def got(b, stale=""):
+            r = ui_board.progress(b, stale)
+            return r["state"], r["why"], r["on"], r["inferred"]
+        self.assertEqual(got(""), ("queued", "", "", False))
+        self.assertEqual(got("peer:example/app#9"), ("blocked", "issue", "app#9", False))
+        self.assertEqual(got("peer:example/app#9", "resolved"), ("queued", "", "", False), "a cleared blocker frees it")
+        self.assertEqual(got("peer:example/app#9", "expired")[0], "blocked", "past its daily look it is still a blocker")
+        self.assertEqual(got("upstream:gh-pr:example/lib#3"), ("blocked", "upstream", "lib#3", False))
+        self.assertEqual(got("ask:merge order"), ("blocked", "maintainer", "", False))
+        self.assertEqual(got("lease:gpu"), ("in-progress", "lease", "gpu", False))
+        self.assertEqual(got("job:suite12"), ("in-progress", "job", "job:suite12", False))
+        self.assertEqual(got("gh-run:example/app:123"), ("in-progress", "ci", "gh-run:example/app:123", False))
+        self.assertEqual(got("time:2030-01-01T02:00:00Z")[:2], ("in-progress", "window"))
+        # free text: a hold that describes the item's own run reads in progress (inferred); any other names nothing
+        own = {"hold:PR 12 head 1a2b re-merged main: hosted 123456789 running, then approve its gate": "ci",
+               "hold:job x12 on the GPU host runs slices 1-3, waiter w12": "job",
+               "hold:run12-main queued on cpu-light (yields to the gate)": "job",
+               "hold:selection jobs s12a/s12b, watched by local job w12": "job",
+               "hold:suite job s12 waits for the cpu-heavy lease": "ci"}
+        for b, why in own.items():
+            self.assertEqual(got(b)[:2] + (got(b)[3],), ("in-progress", why, True), b)
+        for b in ("hold:step 2 needs another repository to publish its model specs first",
+                  "hold:the service key is still untrusted (re-checked at 18:15Z)",
+                  "hold:design follows the stack merge; re-check whether the override settles it"):
+            self.assertEqual(got(b), ("blocked", "hold", "", False), b)
+
+    def test_state_labels_for_the_text_view(self):
+        lab = lambda **kw: ui_board.state_label(dict({"state": "", "why": "", "on": "", "inferred": False}, **kw))  # noqa: E731
+        self.assertEqual(lab(state="in-progress", why="ci"), "in progress: ci")
+        self.assertEqual(lab(state="in-progress", why="job", inferred=True), "in progress: job?")
+        self.assertEqual(lab(state="blocked", why="issue", on="app#9"), "blocked on app#9")
+        self.assertEqual(lab(state="blocked", why="upstream", on="lib#3"), "blocked: upstream lib#3")
+        self.assertEqual(lab(state="blocked", why="hold"), "blocked: hold")
+        self.assertEqual(lab(state="not-queued"), "not queued")
 
     def test_graph_nodes_edges_and_an_off_board_parent(self):
         with tempfile.TemporaryDirectory() as d:
@@ -49,14 +99,16 @@ class BoardTests(unittest.TestCase):
         nodes = {n["key"]: n for n in b["nodes"]}
         self.assertEqual(set(nodes), {"app#1", "app#2", "app#3", "app#4", "app#5", "app#99"}, "another board's item stays out")
         self.assertTrue(nodes["app#99"]["off_board"])
-        self.assertEqual((nodes["app#4"]["work"], nodes["app#4"]["blocker"]), ("queued-blocked", "hold: waits on #3"))
-        self.assertEqual(nodes["app#1"]["work"], "unqueued")
+        self.assertEqual((nodes["app#4"]["state"], nodes["app#4"]["blocker"]), ("blocked", "hold: waits on #3"))
+        self.assertEqual((nodes["app#1"]["work"], nodes["app#1"]["state"]), ("unqueued", "not-queued"))
+        self.assertEqual(nodes["app#99"]["state"], "not-queued", "an off-board parent no role holds")
         self.assertEqual(sorted((e["from"], e["to"], e["kind"]) for e in b["edges"]),
                          [("app#1", "app#2", "parent"), ("app#1", "app#3", "parent"), ("app#3", "app#4", "blocks"),
                           ("app#99", "app#5", "parent")])
         m = b["metrics"]
         self.assertEqual((m["open"], m["done"], m["total"], m["pct_done"]), (5, 4, 9, 44))
-        self.assertEqual((m["active"], m["queued"], m["queued_blocked"], m["unqueued"], m["dep_blocked"]), (1, 1, 1, 2, 1))
+        self.assertEqual((m["in_progress"], m["queued"], m["blocked"], m["blocked_hold"], m["unqueued"], m["dep_blocked"]),
+                         (1, 1, 1, 1, 2, 1))
         self.assertFalse(b["closed"])
         self.assertEqual(ui_board.board_graph("sid", None, ROWS, NOW), [])
 
@@ -73,7 +125,7 @@ class BoardTests(unittest.TestCase):
         s = ui_board.series(hist, NOW, days=5)
         self.assertEqual(s["closed"], [0, 2, 3, 0, 0], "from the reading before the window: 1->3, then 3->6")
         self.assertEqual(s["open"], [12, 10, 8, 8, 8])
-        m = ui_board.board_metrics([{"work": "unqueued", "blocked_by": [], "sub_issues": 0}] * 8, 6, hist, NOW)
+        m = ui_board.board_metrics([{"work": "unqueued", "state": "not-queued", "blocked_by": [], "sub_issues": 0}] * 8, 6, hist, NOW)
         self.assertEqual((m["closed_7d"], m["eta_days"]), (5, 11))
         self.assertIsNone(ui_board.board_metrics([], 0, [], NOW)["eta_days"])
 

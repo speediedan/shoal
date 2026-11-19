@@ -745,8 +745,12 @@ check "BLOCKER must be another role" $Q --slug tl --idle --blocked app#9602=tl:a
 check "ITEM=BLOCKER" $Q --slug tl --idle --blocked app#9602
 check "idle with unblocked next items (app#9603)" $Q --slug tl --idle --blocked app#9602=up:app#9301
 check "status=idle" $Q --slug tl --idle --blocked app#9602=up:app#9301 --blocked "app#9603=hold:design pending"
+# a free-text hold names nothing: the write and `next` say what to record instead (an issue, an ask, its own run)
+grep -q "note: app#9603: a hold is free text" "$S/last_check.out" || fail "a hold written without the advice :: $(cat "$S/last_check.out")"
 check "BLOCKING tl .* on app#9301" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
 check "NEXT BLOCKED app#9603 <- hold:design pending" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
+grep -q "HOLD UNREFERENCED app#9603: a hold is free text" "$S/last_check.out" || fail "next did not name the unreferenced hold"
+! grep -q "HOLD UNREFERENCED app#9602" "$S/last_check.out" || fail "a peer blocker read as unreferenced"
 # blockers carry forward to the next write; clearing one re-opens the gate
 check "status=idle" $Q --slug tl --idle
 [ "$(rc_of $Q --slug tl --idle --blocked app#9603=)" = 3 ] || fail "idle accepted after clearing a blocker"
@@ -1126,13 +1130,21 @@ grep -q "BLOCKER STALE app#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT
 check "tl blocker-resolved step1:wake" $H health --spec "$SPEC" --instance a --dry-run
 OUT=$(env LEASE_STUB=held $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "blocker-resolved" <<<"$OUT" || fail "a blocker still held read as cleared :: $OUT"
+# the item's own run (job, hosted run, gate, window) is a checkable blocker as well: malformed is refused, one that has
+# already ended is refused, a pending one parks the item and prints as recorded (normalized)
+check "gh-run target 'nope' is not" $Q --slug tl --idle --blocked "app#9902=gh-run:nope"
+check "already cleared" $Q --slug tl --idle --blocked "app#9902=time:2020-01-01T00:00:00Z"
+check "status=idle" $Q --slug tl --idle --blocked "app#9902=time:2099-01-01T00:00"
+check "NEXT BLOCKED app#9902 <- time:2099-01-01T00:00:00Z" $NX --slug tl
+! grep -q "HOLD UNREFERENCED" "$S/last_check.out" || fail "a run blocker read as an unreferenced hold"
 python3 - "$SHOALD" <<'PY2' || fail "cleared() let through something that is not news"
 import sys; sys.path.insert(0, sys.argv[1])
 import blockers
-q = {"next_blocked": {"a#1": "up:a#9", "a#2": "upstream:gh-pr:a#8", "a#3": "lease:gpu", "a#4": "ask:scope", "a#5": "hold:x", "a#6": "up:a#7"}}
+q = {"next_blocked": {"a#1": "up:a#9", "a#2": "upstream:gh-pr:a#8", "a#3": "lease:gpu", "a#4": "ask:scope", "a#5": "hold:x", "a#6": "up:a#7",
+                      "a#7": "job:suite"}}
 stale = {"a#1": "resolved: done", "a#2": "resolved: merged", "a#3": "resolved: free", "a#4": "resolved: no ask recorded",
-         "a#5": "expired: old", "a#6": "expired: untakeable"}
-assert sorted(blockers.cleared(stale, q)) == ["a#1", "a#2", "a#3"], blockers.cleared(stale, q)
+         "a#5": "expired: old", "a#6": "expired: untakeable", "a#7": "resolved: unit exited rc=0"}
+assert sorted(blockers.cleared(stale, q)) == ["a#1", "a#2", "a#3", "a#7"], blockers.cleared(stale, q)
 PY2
 python3 - "$SPEC" <<'PY2'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"].pop("blockers",None); json.dump(d,open(p,"w"),indent=1)

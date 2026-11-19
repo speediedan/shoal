@@ -870,6 +870,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                   f"{why_stale}): "
                                   f"pop one (`queue --active <item>`) or record why each cannot start "
                                   f"(`queue --blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
+                                  f"<its own run: job:<name>|gh-run:<owner/repo>:<id>|az-build:<id>|time:<ISO UTC>>|"
                                   f"hold:<why>`); a busy lease is a wait on `lease:<key>`, never idle"})
             # a blocker that cleared is news, unlike the rest of parked-work: nothing else wakes the role, and without
             # this a wake_off spec reaches the maintainer 3 h later for a look that needs only the role. The wake says to

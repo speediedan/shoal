@@ -14,6 +14,9 @@ and is checked by kind:
 - `<role>:<repo#n>`: resolved once the named item is done; expires after `peer_ttl_min`.
 - `upstream:<target>`, `lease:<key>`: resolved when the provider says the target is no longer
   pending (docs/providers.md); expires after `peer_ttl_min`.
+- `job:<name>`, `gh-run:<owner/repo>:<id>`, `az-build:<id>`, `time:<ISO UTC>` (kind `run`): the item's
+  own work, running or scheduled there (its PR's CI, a gate, a research job, a window). Not a dependency:
+  the item is in progress and resumes when the run ends. Checked by its provider like `upstream`.
 - `ask:..` / `user:..`: live only while the queue records an ask (`queue --ask`); a maintainer-shaped
   blocker with no raised ask is a hold nobody was asked about.
 - `hold:<why>`: unverifiable, so it expires after `hold_ttl_min` and must be re-verified; one kept
@@ -33,6 +36,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULTS = {"hold_ttl_min": 240.0, "peer_ttl_min": 720.0, "hold_page_min": 720.0, "proven_max_min": 1440.0}
 ASK_KINDS = ("ask", "user")
+# a bare provider target names the item's own run (kind `run`): what most free-text holds said in prose (measured
+# 2026-11-19: 80 of the 118 distinct holds recorded that day named the item's own job, hosted run or gate), which the
+# board then read as blocked
+RUN_KINDS = ("job", "gh-run", "az-build", "time")
 
 
 def cfg(spec) -> dict | None:
@@ -47,12 +54,14 @@ def cfg(spec) -> dict | None:
 
 
 def kind(blocker: str) -> str:
-    """role | ask | upstream | lease | hold (anything unprefixed reads as a hold)."""
+    """role | ask | upstream | lease | run | hold (anything unprefixed reads as a hold)."""
     head = (blocker or "").split(":", 1)[0]
     if head in ASK_KINDS:
         return "ask"
     if head in ("upstream", "lease", "hold"):
         return head
+    if head in RUN_KINDS:
+        return "run"
     return "role" if ":" in (blocker or "") else "hold"
 
 
@@ -100,7 +109,7 @@ def provider_target(blocker: str) -> str:
     """The provider target a checkable blocker names ('' when none): `lease:<key>` as is,
     `upstream:<kind>:<ref>` as `<kind>:<ref>`, and a loose `upstream:<repo#n>` as a gh-issue."""
     k = kind(blocker)
-    if k == "lease":
+    if k in ("lease", "run"):
         return blocker
     if k == "upstream":
         rest = blocker.split(":", 1)[1] if ":" in blocker else ""
@@ -141,7 +150,7 @@ def check(spec, view, slug: str, q: dict, item_k: str, blocker: str, meta: dict 
             ttl = c["proven_max_min"]
         else:
             ttl = c["peer_ttl_min"]
-    elif k in ("upstream", "lease"):
+    elif k in ("upstream", "lease", "run"):
         target = provider_target(blocker)
         ttl = c["peer_ttl_min"]
         if live and target:
@@ -181,7 +190,7 @@ def cleared(stale_nb: dict[str, str], q: dict) -> dict[str, str]:
     doing, so neither says that anything changed."""
     nb = q.get("next_blocked") or {}
     return {k: why for k, why in stale_nb.items()
-            if why.startswith("resolved:") and kind(nb.get(k, "")) in ("role", "upstream", "lease")}
+            if why.startswith("resolved:") and kind(nb.get(k, "")) in ("role", "upstream", "lease", "run")}
 
 
 def long_holds(spec, q: dict | None) -> list[tuple[str, str, str, float, int]]:

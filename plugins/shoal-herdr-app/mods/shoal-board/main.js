@@ -4,14 +4,17 @@
 // A thin View over model.js. It reads `shoal ui board --json` (this host's board digest and the roles' queues; no model
 // turn, no board read of its own) from the first machine that has a digest, on a timer and on Refresh. Above the graph,
 // the board's metrics: the rail card's counts and two trends (open items, closes a day). The graph has the board at
-// the top and every open item below what it hangs from (its parent issue, its open blockers), drawn by where it stands
-// with the roles: in progress, queued (its place in the queue), queued but blocked, or not queued.
+// the top and every open item below what it hangs from (its parent issue, its open blockers), drawn by where the issue
+// stands: in progress (worked, or its own CI, job or research running), queued (its place in the queue), blocked (on
+// an issue, upstream or the maintainer; dashed when only a free-text hold says so), or not queued.
 //
 // Two drawings: cards (each item's key, where it stands and its title) and nodes (a shape per repo, its number under
 // it, so the relationships read at a glance), each at a zoom (- and +, or Fit for the whole tree; keys - + 0, n for
-// the drawing). Hover an item for its details. Click it to select it: the side panel (x or Esc closes it) opens it on
-// GitHub, or hands it to a role through the actions dialog (Offer for an item no role holds; Move, through the
-// role's Queue, for one another role holds), picked from a list, which previews and confirms as everywhere else.
+// the drawing). Hover an item for its details: the card sits beside it inside the part of the graph on screen, flipped
+// up near the bottom, and scrolls when taller than the room it has. Click it to select it: the side panel (x or Esc
+// closes it) opens it on GitHub, or hands it to a role through the actions dialog (Offer for an item no role holds;
+// Move, through the role's Queue, for one another role holds), picked from a list, which previews and confirms as
+// everywhere else.
 // Nothing here writes.
 //
 // props:
@@ -24,8 +27,8 @@ import { h_flex, v_flex, Link } from "gpui-base";
 import { exec, props, theme, machines, shared, nextCommand, openOverlay } from "herdr";
 import {
   parseReply, boardArgv, pickView, layout, edgeCmds, arrowCmds, nodeStyle, hoverLines, itemActions, actionOverlay,
-  tiles, sparkPoints, withAlpha, palette, WORK_LABEL, DIMS, ZOOM, scaleDims, stepZoom, fitZoom, repoShapes, shapeCmds,
-  shapeCentre,
+  tiles, sparkPoints, withAlpha, palette, STATE_LABEL, DIMS, ZOOM, scaleDims, stepZoom, fitZoom, repoShapes, shapeCmds,
+  shapeCentre, HOVER, hoverHeight, placeHover, visibleRect, boxOf,
 } from "./model.js";
 
 const UI = "Geist";
@@ -62,7 +65,11 @@ export default class Board extends View {
     this.want = { shoal: typeof p.shoal === "string" ? p.shoal : null, board: null };
     this.doc = null;
     this.from = null; // the machine the boards were read on: actions run there
-    this.hover = null;
+    this.hover = null; // the item whose card shows
+    this.overNode = null; // the item under the pointer
+    this.onCard = false; // the pointer is on the card: it stays, so its text can be read and scrolled
+    this.viewBox = null; // the window bounds of the scrolling graph and of the canvas in it, from the pointer's moves:
+    this.canvasBox = null; // together they say which part of the canvas is on screen
     this.selected = null;
     this.size = { width: 1200, height: 800 };
     this.mode = recall("mode") === "nodes" ? "nodes" : "cards";
@@ -253,15 +260,15 @@ export default class Board extends View {
 
   legend(c, board = null) {
     const swatch = (k, label) => {
-      const s = nodeStyle({ work: k, role: "", pos: 1 }, c);
+      const s = nodeStyle({ state: k, why: k === "blocked" ? "issue" : "", role: "", pos: 1 }, c);
       return h_flex().gap(5).items_center().child(div().w(14).h(10).rounded(3).bg(s.fill).border_1().border_color(s.border))
         .child(div().text_size(11).text_color(c.muted).child(label));
     };
     const line = (color, label) => h_flex().gap(5).items_center().child(div().w(16).h(2).bg(color))
       .child(div().text_size(11).text_color(c.muted).child(label));
     const row = h_flex().id("legend").gap(14).flex_wrap().items_center()
-      .child(swatch("active", WORK_LABEL.active)).child(swatch("queued", "queued (#: its place)"))
-      .child(swatch("queued-blocked", WORK_LABEL["queued-blocked"])).child(swatch("unqueued", WORK_LABEL.unqueued))
+      .child(swatch("in-progress", "in progress (its CI or job too)")).child(swatch("queued", "queued (#: its place)"))
+      .child(swatch("blocked", "blocked (dashed: a free-text hold)")).child(swatch("not-queued", STATE_LABEL["not-queued"]))
       .child(line(c.edge, "sub-issue")).child(line(c.dep, "unblocks"));
     if (this.mode === "nodes" && board) {
       for (const [repo, shape] of Object.entries(repoShapes(board))) {
@@ -278,7 +285,7 @@ export default class Board extends View {
     const t = (px) => Math.max(8, px * d.scale);
     const box = v_flex().id(`n-${n.key}`).absolute().left(n.x).top(n.y).w(d.w).h(d.h).px(9 * d.scale).py(6 * d.scale).gap(2)
       .rounded(8).bg(s.fill).border_color(on ? c.accent : s.border).cursor_pointer()
-      .on_hover((h, cx) => { if (h) this.hover = n.key; else if (this.hover === n.key) this.hover = null; cx.notify(); })
+      .on_hover((h, cx) => this.hoverItem(n.key, h, cx))
       .on_click((_e, cx) => { this.selected = on ? null : n.key; cx.notify(); })
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(t(11)).text_color(s.tone).child(n.key))
@@ -312,17 +319,45 @@ export default class Board extends View {
     const s = nodeStyle(n, c);
     const num = String(n.key).split("#")[1] ?? n.key;
     return div().id(`h-${n.key}`).absolute().left(n.x).top(n.y).w(d.w).h(d.h).cursor_pointer()
-      .on_hover((h, cx) => { if (h) this.hover = n.key; else if (this.hover === n.key) this.hover = null; cx.notify(); })
+      .on_hover((h, cx) => this.hoverItem(n.key, h, cx))
       .on_click((_e, cx) => { this.selected = this.selected === n.key ? null : n.key; this.menu = null; cx.notify(); })
       .child(div().absolute().left(0).w(d.w).top(2 * d.r + 6 * d.scale).flex().justify_center()
         .font_family(MONO).text_size(Math.max(8, 10.5 * d.scale)).text_color(s.tone).child(`#${num}`));
   }
 
+  /** The pointer entered or left an item. Leaving, the card stays a moment, so the pointer can cross onto it. */
+  hoverItem(key, on, cx) {
+    if (on) {
+      this.overNode = key;
+      this.hover = key;
+      cx.notify();
+      return;
+    }
+    if (this.overNode === key) this.overNode = null;
+    this.settleHover(cx);
+  }
+
+  /** The card goes once the pointer is on neither it nor its item (after a short delay where a timer is at hand). */
+  settleHover(cx) {
+    const settle = (cx2) => {
+      if (this.onCard || this.overNode === this.hover) return;
+      this.hover = this.overNode;
+      cx2?.notify();
+    };
+    if (cx.timer?.after) cx.timer.after(250, (cx2) => settle(cx2));
+    else settle(cx);
+  }
+
   hoverCard(n, c, lay) {
     const rows = hoverLines(n);
-    const left = Math.min(n.x + lay.dims.w + 8, Math.max(0, lay.width - 330));
-    const card = v_flex().id("hover-card").absolute().left(left).top(n.y).w(320).p(10).gap(4).rounded(10)
-      .bg(c.raised).border_1().border_color(c.border).text_size(11.5)
+    const d = lay.dims;
+    // the part of the canvas on screen; until the pointer has reported it, the graph's view unscrolled
+    const view = visibleRect(this.viewBox, this.canvasBox,
+      { x: -24, y: 0, width: this.graphWidth() + 48, height: Math.max(200, this.size.height - TOP_H) });
+    const box = placeHover({ x: n.x, y: n.y, w: d.w, h: d.h }, view, HOVER.w, hoverHeight(n, HOVER.w));
+    const card = v_flex().id("hover-card").absolute().left(box.x).top(box.y).w(box.w).max_h(box.maxH).overflow_y_scrollbar()
+      .p(10).gap(4).rounded(10).bg(c.raised).border_1().border_color(c.border).text_size(11.5)
+      .on_hover((h, cx) => { this.onCard = h; if (!h) this.settleHover(cx); })
       .child(div().font_semibold().text_color(c.ink).child(`${n.key}  ${n.title || ""}`.trim()));
     for (const [k, v] of rows) {
       card.child(h_flex().gap(8).items_start().child(div().w(70).flex_none().text_color(c.dim).child(k))
@@ -377,7 +412,12 @@ export default class Board extends View {
   graph(view, c) {
     const lay = layout(view.board, this.graphWidth(), this.dims());
     const d = lay.dims, t = (px) => Math.max(8, px * d.scale);
-    const canvas = div().id("canvas").relative().w(lay.width).h(lay.height + 24).flex_none();
+    const canvas = div().id("canvas").relative().w(lay.width).h(lay.height + 24).flex_none()
+      .on_mouse_move((e, cx) => {
+        this.canvasBox = boxOf(e) ?? this.canvasBox;
+        // a card hidden by a scroll comes back on the item under the pointer once it moves
+        if (!this.hover && this.overNode && !this.onCard) { this.hover = this.overNode; cx.notify(); }
+      });
     const draw = (kind) => lay.edges.filter((e) => (kind === "blocks" ? e.kind === "blocks" : e.kind !== "blocks"));
     const tree = draw("tree").flatMap(edgeCmds);
     if (tree.length) canvas.child(path(tree, withAlpha(c.edge, 0.75), { width: 1.4 }));
@@ -429,7 +469,11 @@ export default class Board extends View {
     root.child(top);
     if (!view.board) return root;
     const body = h_flex().flex_1().min_h(0)
-      .child(div().id("graph").flex_1().min_w(0).min_h(0).overflow_y_scrollbar().px(24).pb(24).child(this.graph(view, c)));
+      .child(div().id("graph").flex_1().min_w(0).min_h(0).overflow_y_scrollbar().px(24).pb(24)
+        .on_mouse_move((e) => { this.viewBox = boxOf(e) ?? this.viewBox; })
+        // the graph scrolling under a card leaves it beside nothing: it goes, and the next item hovered brings one back
+        .on_scroll_wheel((_e, cx) => { if (this.hover && !this.onCard) { this.hover = null; cx.notify(); } })
+        .child(this.graph(view, c)));
     const sel = this.selected && (view.board.nodes ?? []).find((n) => n.key === this.selected);
     if (sel) body.child(this.side(sel, view, c));
     return root.child(body);

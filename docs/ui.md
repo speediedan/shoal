@@ -790,19 +790,25 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
     ("unblocks" in the legend). A parent or blocker not
     open on the board is drawn dashed, `off board`. Items with no parent, sub-issue or blocker on the board are in a
     grid below the graph, in progress and queued first. The root reads `closed` once nothing on the board is open.
-  - **Where each item stands:** in progress (amber, `▶ role`), queued (blue, `role #n`: its place in that role's
-    queue), queued but blocked (blue with a dashed red border, `⛔ role #n`), not queued (gray).
+  - **Where each issue stands:** in progress (amber, `▶ role`, or `▶ CI · role` and the like while its own CI, job,
+    research or window runs: a role waiting on its own work is progress), queued (blue, `role #n`: its place in that
+    role's queue), blocked (red border: `⛔ #923` on another issue, `⛔ upstream`, `⛔ maintainer`; dashed, `⛔ hold`,
+    when only a free-text hold says so and nothing is named), not queued (gray). The hover card says it in full
+    (`in progress: CI`, `blocked on #923`, `blocked: free-text hold`), and `(read from its hold)` when a hold's words
+    were what showed the item's own run.
   - **Cards or Nodes:** the toolbar switches between the cards (key, where it stands, title) and nodes: a shape per
     repo (named in the legend), its issue number under it, colored and outlined as the cards are, for the relationships
     at a glance. **Zoom** with - and + (or the keys), **Fit** (0) puts the whole tree in view, and `n` switches the
     drawing; the choice of drawing is remembered.
   - **Hover** an item for its status, role and place, blocker, parent, sub-issues, assignees, labels, PRs, last update
-    and a body excerpt. **Click** it to select it: the side panel (its x, or Esc, closes it) has **Open on GitHub**,
+    and a body excerpt. The card stays on screen: beside the item, flipped up near the bottom of the view, inside its
+    edges, and scrolling when taller than the room it has; move onto it to read or scroll it. **Click** it to select
+    it: the side panel (its x, or Esc, closes it) has **Open on GitHub**,
     and **Offer to a role** (an item no role holds: the actions dialog's Offer, filled in) or **Move to a role** (an
     item another role holds: that role's Queue opens with it picked; place it and the plan transfers it), each a list of
     the roles to pick from. Both preview and confirm.
-  - **Metrics** above the graph: open (and its change over 14 days), done (percent and count), in progress, queued
-    (and blocked), not queued (and how many wait on a blocker), closed in 7 days, the days until none are open at that
+  - **Metrics** above the graph: open (and its change over 14 days), done (percent and count), in progress, queued,
+    blocked (and how many on a free-text hold), not queued (and how many wait on a blocker), closed in 7 days, the days until none are open at that
     pace, and 14-day trends of open items and closes a day. The trends come from `board_history.jsonl`, written with
     each digest, so they fill in from the first digest after an upgrade.
 - **Status while attached.** A role card reports its state to the agents list through OSC 7501 (`kind` picks the badge: `?` a

@@ -359,7 +359,6 @@ def native_cache_paths(sid: str) -> list[str]:
 def status_state(row: dict) -> tuple[str, str]:
     """Best-effort (class, event) from a status row when no native observation exists for the role.
     Same vocabulary as role_time; `state.source` says it is a status reading."""
-    import blockers
     import role_time as rt
     reasons = set((row.get("can_progress") or {}).get("reasons") or [])
     role_status, sub, sess = row.get("status") or "", row.get("sub") or "", row.get("session") or ""
@@ -383,7 +382,7 @@ def status_state(row: dict) -> tuple[str, str]:
     if row.get("active") or (nxt and any(not n.get("blocker") or n.get("stale") for n in nxt)):
         return "wait", "self"
     if nxt:
-        kinds = {rt.BLOCKER_EVENT.get(blockers.kind(n.get("blocker") or ""), "hold") for n in nxt}
+        kinds = {rt.blocker_event(n.get("blocker") or "") for n in nxt}
         return "wait", kinds.pop() if len(kinds) == 1 else "mixed"
     if row.get("asks"):
         return "wait", "refill"

@@ -202,8 +202,16 @@ queue event (`next_blocked_meta`: `since` it was last recorded, `first` it block
 re-records), and `shoal/blockers.py` judges it by kind. `<role>:<repo#n>` clears once that item is
 done; `upstream:<target>` and `lease:<key>` clear when their provider says the target is no longer
 pending (an upstream `gh-pr` target stays pending while the PR is open, whatever its checks say); `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
+a bare provider target, `job:<name>`, `gh-run:<owner/repo>:<id>`, `az-build:<id>` or `time:<ISO UTC>` (kind
+`run`), is the item's own run (its PR's CI, a gate, a research job or window): not a dependency, so the board reads the
+item in progress, and it clears, waking the role once, when its provider says the run ended. `queue` normalizes it and
+refuses a malformed one.
 `hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
-after `peer_ttl_min`. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
+after `peer_ttl_min`. A hold is free text naming nothing shoal or the board can follow (measured 2026-11-19: 80 of
+the 118 distinct holds recorded that day described the item's own job, hosted run or gate, and the board read every
+one as blocked), so `queue` notes each hold it records and `next` prints `HOLD UNREFERENCED`: name another issue
+(`<role>:<repo#n>`, `upstream:gh-issue:..`), the maintainer (`ask`), or the item's own run instead; work the item needs
+that has no issue yet is done within the item, or filed as an issue of its own and referenced. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
 STALE`, the idle gate and `parked-work` treat its item as free, `blocker-resolved` wakes the role once if a role or provider blocker cleared, and recording a blocker that has
 already cleared is refused. So is a `<role>:<repo#n>` blocker naming a `fill=assigned` or `fill=none`
 role that holds no offer, handoff or claim for the item: nothing could ever end that wait (FM-4). Re-recording a blocker is its re-verification. A hold kept past
@@ -534,7 +542,7 @@ and pages only when the restart fails.
 | `wait-expired` (`waitdiscipline`) | a waiting status past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
-| `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:` or `lease:` blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
+| `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:`, `lease:` or own-run (`job:`, `gh-run:`, `az-build:`, `time:`) blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
 | `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
 | `asks-unraised` | the maintainer is online and a role holds open asks while at a quiet boundary with no question open, 10 min after its last write (an ask recorded before a CI wait otherwise showed as needs-you with nothing to answer); keyed by its asks, so a new ask raises again. The wake keeps the role's recorded wait (no user-auth wait over it). Never for a headless role (Codex, Muse: no question tool; its asks are answered from the Asks view) | wake, again at 120 min |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
@@ -1751,10 +1759,26 @@ and the contract are in [`ui.md`](ui.md).
   in view, else `ui app-board`). It reads `shoal ui board --json` from the first machine with a board digest: per shoal
   and board, the digest's open items as nodes and `parent` (issue to sub-issue) and `blocks` (open blocker to the item)
   edges, a parent or blocker not open on the board kept as an `off_board` node. Each node's `work` comes from the status
-  rows: `active` (a role's active item), `queued` at its `pos`, `queued-blocked` (a recorded blocker) or `unqueued`.
+  rows: `active` (a role's active item), `queued` at its `pos`, or `unqueued`. Its `state` is the issue's own
+  (`ui_board.progress`, from what the role recorded, no other reads): `in-progress` for the active item of a role that
+  works or waits on its own run (`why`: working, ci, research, window, lease) and for a queued item whose blocker is
+  its own run (`job:`, `gh-run:`, `az-build:`, `time:`, `lease:`); `blocked` only on something outside its own work,
+  with `why` `issue` (`on` the item: a peer's `<role>:<repo#n>`, a `session-blocked` wait), `upstream` (an `upstream:`
+  blocker or wait), `maintainer` (an `ask`/`user` blocker, a `user-*` wait) or `hold` (a free-text hold naming
+  nothing); `queued` (nothing recorded against it, or a blocker that cleared); `not-queued`. A free-text hold whose
+  words describe the item's own run (CI, hosted, a gate, a job, queued, running) reads in progress with `inferred` set,
+  for holds written before the run forms existed (measured 2026-11-19 on two live boards: the 7 issues the maintainer
+  listed as wrongly blocked, each a role waiting on its own CI, gate or job, read in progress; the holds describing
+  real blocks, an upstream key and a hub publish, stay blocked). The card draws a block on a hold dashed and one on a named issue, upstream or the maintainer
+  solid, and says what an in-progress item runs (`▶ CI · role`). Metrics count `in_progress`, `queued`, `blocked`
+  (`blocked_hold` of them on a hold) and `unqueued`; the mod reads a board from an older shoal by its `work`.
   The board is the root; the model puts prerequisites below (each item a layer below its parent and below every item it
   blocks, a blocks edge rising from the blocker into what it unblocks), wraps a wide layer into rows,
-  and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details; a click
+  and puts items in no dependency in a grid of their own below the graph. Hover shows an item's details in a card
+  placed by `placeHover` inside the part of the canvas on screen (`visibleRect`, from the window boxes the pointer's
+  moves report for the scrolling view and the canvas): beside the item, flipped to end level with its bottom near the
+  view's bottom, above or below it when neither side has room, clamped inside, and capped to the room left with an
+  internal scroll; it stays a moment after the pointer leaves the item, and while the pointer is on it. A click
   selects it (the side panel closes on its x or Esc) for Open on GitHub, Offer to a role (the actions dialog, its
   `item` prefilled; the role picked from a list) or Move to a role (that
   role's Queue, with `pick` set, so the plan transfers it). The metrics panel shows the rail card's counts, closes in

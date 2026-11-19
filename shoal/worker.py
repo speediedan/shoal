@@ -40,6 +40,16 @@ from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, queue_next_max, Ledger, Ledger
 from roles import ShoalSpec, find_spec, mail_read_since, state_dir  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
+# the item's own run as a next-item blocker (blockers.RUN_KINDS): the board reads it in progress, not blocked
+RUN_FORMS = "job:<name>, gh-run:<owner/repo>:<id>, az-build:<id> or time:<ISO UTC>"
+# a free-text hold names nothing shoal can check, and the board can only read it as blocked (measured 2026-11-19: most
+# holds described the item's own CI or job, and one described work that belonged in the issue itself or in an issue of
+# its own), so `queue` and `next` say what to record instead
+HOLD_ADVICE = ("a hold is free text, so the board shows the item blocked on nothing it can name. Record what it "
+               "waits on instead: another issue (`<role>:<repo#n>`, or `upstream:gh-issue:<owner/repo>#<n>` outside "
+               "the shoal), the maintainer (`ask` with `--ask`), or the item's own run (" + RUN_FORMS + ", "
+               "`lease:<key>`), which reads as in progress. Work the item needs that has no issue yet is done "
+               "within the item, or filed as an issue of its own and referenced")
 
 
 def now_iso() -> str:
@@ -436,16 +446,21 @@ def cmd_next(a) -> int:
     if held:
         out.append(f"HELD-UNSCHEDULED {', '.join(held)}: you hold these claims but your queue does not list them "
                    f"(schedule them, or release them with --kind handoff|blocked so another role can take them)")
+    import blockers as _bl
     try:
-        import blockers as _bl
         stale_nb = _bl.stale(spec, view, slug, q or {})
     except Exception:  # noqa: BLE001 - a blocker check never breaks `next`
         stale_nb = {}
+    holds = []
     for k, v in sorted(((q or {}).get("next_blocked") or {}).items()):
         out.append(f"NEXT BLOCKED {k} <- {v}")
+        if _bl.kind(v) == "hold" and k not in stale_nb:
+            holds.append(k)
         if k in stale_nb:
             out.append(f"BLOCKER STALE {k} <- {v} ({stale_nb[k]}): start the item, or re-verify the blocker and "
                        f"record it again (`--blocked {k}=<blocker>`); a stale blocker does not let you idle")
+    if holds:
+        out.append(f"HOLD UNREFERENCED {', '.join(holds)}: {HOLD_ADVICE}. Re-record it at this boundary if one fits")
     for b in view.blocked_by(slug):
         mine = b["item"] and item_key(b["item"]) in {item_key(x) for x in [active] + nxt if x}
         out.append(f"BLOCKING {b['role']} since {b['since']} on {b['item'] or '(item unnamed)'}"
@@ -702,6 +717,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     # peer BLOCKING) and are what lets a role sleep with a non-empty next.
     nb = {item_key(k): v for k, v in (prev.get("next_blocked") or {}).items()}
     recorded: set[str] = set()
+    holds: list[str] = []
+    import blockers as _bl
     for spec_b in a.blocked or []:
         item, sep, blocker = spec_b.partition("=")
         if not sep or not item.strip():
@@ -709,11 +726,21 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             return 3
         blocker = blocker.strip()
         who = blocker.split(":", 1)[0]
-        if blocker and who not in ("ask", "user", "upstream", "lease", "hold"):
+        if blocker and who in _bl.RUN_KINDS:
+            # the item's own run: a checkable provider target, so the board reads the item in progress and the
+            # blocker clears itself when the run ends
+            import providers
+            blocker, err = providers.normalize(blocker)
+            if err:
+                print(f"ERROR: --blocked {spec_b}: {err}")
+                return 3
+        elif blocker and who not in ("ask", "user", "upstream", "lease", "hold"):
             if spec.role(who) is None or who == slug:
                 print(f"ERROR: --blocked {spec_b}: BLOCKER must be another role (<role>:<repo#n>), ask[:..], "
-                      f"upstream:<target>, lease:<key> or hold:<why>")
+                      f"upstream:<target>, lease:<key>, the item's own run ({RUN_FORMS}) or hold:<why>")
                 return 3
+        if blocker and _bl.kind(blocker) == "hold":
+            holds.append(item_key(item))
         if blocker:
             nb[item_key(item)] = blocker
             recorded.add(item_key(item))
@@ -723,7 +750,6 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
     nb = {k: v for k, v in nb.items() if k in {item_key(x) for x in nxt}}
     # verified blockers (features.blockers): a blocker recorded now must hold now, and one carried
     # forward that has resolved or expired no longer parks its item
-    import blockers as _bl
     bcfg = _bl.cfg(spec)
     nb_meta = _bl.next_meta(prev, nb, recorded, now_iso()) if bcfg is not None else {}
     stale_nb: dict[str, str] = {}
@@ -755,7 +781,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         print(f"ERROR: idle with unblocked next items ({', '.join(unblocked)}): idle is only for an empty queue or "
               f"one whose every next item has a recorded blocker{stale_txt}. Pop one (`--active <item>`), or record "
               f"why each cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
-              f"hold:<why>`); a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle "
+              f"<its own run: {RUN_FORMS}>|hold:<why>`); a busy lease is a wait (`--wait local-ci --target lease:<key>`), never idle "
               f"(nothing written)")
         return 3
     if role_status == "waiting" and a.wait != "local-ci" and unblocked and view.freeze() is None \
@@ -768,7 +794,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
         print(f"ERROR: waiting ({a.wait}) with unblocked next items ({', '.join(unblocked)}){stale_txt}: stack "
               f"rather than stall, as parked-work would ask you to. Pop one (`--active <item>`), or record why each "
               f"cannot start (`--blocked ITEM=<role>:<repo#n>|ask:..|upstream:<target>|lease:<key>|"
-              f"hold:<why>`) (nothing written)")
+              f"<its own run: {RUN_FORMS}>|hold:<why>`) (nothing written)")
         return 3
     if a.restart_ready and role_status == "active":
         print("ERROR: --restart-ready marks a quiet boundary: idle or waiting, never with an active item "
@@ -891,6 +917,8 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
                     print(line)
         except Exception:  # noqa: BLE001
             pass
+    if holds:
+        print(f"note: {', '.join(sorted(holds))}: {HOLD_ADVICE}")
     if role_status == "active":
         print("note: status ACTIVE means you keep working in this turn. The LAST write of every turn is a sleep "
               "status: `queue --wait <sub> --holder .. --target ..` (arm the waiter first) or `queue --idle`, or "
@@ -1044,8 +1072,10 @@ def add_parsers(sub) -> None:
                                                           "blocker: pop it or record it with --blocked)")
     p.add_argument("--blocked", action="append", default=[],
                    help="ITEM=BLOCKER for a next item that cannot start yet. BLOCKER is <role>:<repo#n> (a peer; it "
-                        "sees BLOCKING), ask[:<what>] (your raised maintainer ask), upstream:<target>, lease:<key> or "
-                        "hold:<why>; ITEM= (empty) clears it. Recorded blockers persist while the item stays in next")
+                        "sees BLOCKING), ask[:<what>] (your raised maintainer ask), upstream:<target>, lease:<key>, "
+                        "the item's own run (job:<name>, gh-run:<owner/repo>:<id>, az-build:<id>, time:<ISO UTC>) or "
+                        "hold:<why> (free text: name an issue, an ask or a run instead when there is one); ITEM= "
+                        "(empty) clears it. Recorded blockers persist while the item stays in next")
     p.add_argument("--done", action="append", help="repo#n:verb completed at this boundary (repeatable)")
     p.add_argument("--url", default="", help="evidence URL for --done")
     p.add_argument("--sha", default="")

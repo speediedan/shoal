@@ -18,15 +18,15 @@ const BOARD = {
   id: "example/1", title: "Example board", open: 6, done: 4, closed: false,
   nodes: [
     node("app#1", { sub_issues: 2, pos_board: 1 }),
-    node("app#2", { parent: "app#1", work: "active", role: "core", pos_board: 2 }),
-    node("app#3", { parent: "app#1", work: "queued", role: "core", pos: 1, pos_board: 3 }),
-    node("app#4", { blocked_by: ["app#3"], work: "queued-blocked", role: "docs", pos: 2, blocker: "hold: waits on #3", pos_board: 4 }),
+    node("app#2", { parent: "app#1", work: "active", state: "in-progress", why: "working", role: "core", pos_board: 2 }),
+    node("app#3", { parent: "app#1", work: "queued", state: "queued", role: "core", pos: 1, pos_board: 3 }),
+    node("app#4", { blocked_by: ["app#3"], work: "queued", state: "blocked", why: "hold", role: "docs", pos: 2, blocker: "hold: waits on #3", pos_board: 4 }),
     node("app#5", { pos_board: 5 }),
-    node("app#6", { work: "queued", role: "docs", pos: 1, pos_board: 6 }),
+    node("app#6", { work: "queued", state: "queued", role: "docs", pos: 1, pos_board: 6 }),
   ],
   edges: [{ from: "app#1", to: "app#2", kind: "parent" }, { from: "app#1", to: "app#3", kind: "parent" },
           { from: "app#3", to: "app#4", kind: "blocks" }],
-  metrics: { open: 6, done: 4, total: 10, pct_done: 40, active: 1, queued: 2, queued_blocked: 1, unqueued: 2, dep_blocked: 1,
+  metrics: { open: 6, done: 4, total: 10, pct_done: 40, in_progress: 1, queued: 2, blocked: 1, blocked_hold: 1, unqueued: 2, dep_blocked: 1,
              epics: 1, closed_7d: 3, close_rate_7d: 0.43, open_change_14d: -2, eta_days: 14,
              series: { days: 14, open: [null, null, 8, 8, 7, 6], closed: [0, 0, 0, 1, 1, 1] } },
 };
@@ -101,21 +101,45 @@ test("layout: the board at the top, the tree below it, items in no dependency in
   assert.ok(narrow.nodes.every((n) => n.x + M.NODE.w <= narrow.width));
 });
 
-test("styles: in progress, queued with its place, queued and blocked, not queued, off board", () => {
+test("styles: in progress (and what runs), queued with its place, blocked on what, not queued, off board", () => {
   const c = M.palette({});
   const s = (o) => M.nodeStyle(node("x#1", o), c);
-  assert.equal(s({ work: "active", role: "core" }).badge, "▶ core");
-  assert.equal(s({ work: "queued", role: "core", pos: 2 }).badge, "core #2");
-  const blocked = s({ work: "queued-blocked", role: "docs", pos: 1 });
-  assert.ok(blocked.dashed && blocked.badge.includes("docs #1") && blocked.border === c.blocked);
+  assert.equal(s({ state: "in-progress", why: "working", role: "core" }).badge, "▶ core");
+  assert.equal(s({ state: "in-progress", why: "ci", role: "core" }).badge, "▶ CI · core", "what runs comes first: the role may be cut");
+  assert.equal(s({ state: "queued", role: "core", pos: 2 }).badge, "core #2");
+  const onIssue = s({ state: "blocked", why: "issue", on: "x#9", role: "docs", pos: 1 });
+  assert.ok(!onIssue.dashed && onIssue.badge === "⛔ #9" && onIssue.border === c.blocked, "an issue in its own repo reads #n");
+  assert.equal(s({ state: "blocked", why: "issue", on: "lib#9" }).badge, "⛔ lib#9");
+  assert.equal(s({ state: "blocked", why: "maintainer" }).badge, "⛔ maintainer");
+  const hold = s({ state: "blocked", why: "hold" });
+  assert.ok(hold.dashed && hold.badge === "⛔ hold", "a free-text hold is dashed: it names nothing");
   assert.equal(s({}).badge, "not queued");
   assert.equal(s({ off_board: true }).badge, "off board");
-  assert.notEqual(s({ work: "active" }).border, s({ work: "queued" }).border);
+  assert.notEqual(s({ state: "in-progress" }).border, s({ state: "queued" }).border);
+  // a board from a machine whose shoal predates `state` reads by `work`
+  assert.equal(M.stateOf({ work: "queued-blocked" }), "blocked");
+  assert.equal(M.stateOf({ work: "active" }), "in-progress");
+  assert.equal(M.stateOf({}), "not-queued");
+});
+
+test("state text: in progress and on what, blocked and on what", () => {
+  const t = (o) => M.stateText(node("app#1", o));
+  assert.equal(t({ state: "in-progress", why: "working" }), "in progress");
+  assert.equal(t({ state: "in-progress", why: "ci" }), "in progress: CI");
+  assert.equal(t({ state: "in-progress", why: "window" }), "in progress: research window");
+  assert.equal(t({ state: "blocked", why: "issue", on: "app#923" }), "blocked on #923");
+  assert.equal(t({ state: "blocked", why: "issue", on: "lib#5" }), "blocked on lib#5");
+  assert.equal(t({ state: "blocked", why: "upstream", on: "lib#79" }), "blocked upstream: lib#79");
+  assert.equal(t({ state: "blocked", why: "maintainer" }), "blocked: maintainer");
+  assert.equal(t({ state: "blocked", why: "hold" }), "blocked: free-text hold");
+  assert.equal(t({ state: "not-queued" }), "not queued");
+  const inferred = Object.fromEntries(M.hoverLines(node("app#1", { state: "in-progress", why: "ci", inferred: true })));
+  assert.equal(inferred.status, "in progress: CI (read from its hold)");
 });
 
 test("hover lines: only what the item has", () => {
   const lines = Object.fromEntries(M.hoverLines(BOARD.nodes[3]));
-  assert.equal(lines.status, "queued, blocked");
+  assert.equal(lines.status, "blocked: free-text hold");
   assert.equal(lines.role, "docs, #2 in its queue");
   assert.equal(lines.blocker, "hold: waits on #3");
   assert.equal(lines["blocked by"], "app#3");
@@ -140,7 +164,12 @@ test("metrics: tiles and sparklines", () => {
   const t = Object.fromEntries(M.tiles(BOARD.metrics).map((x) => [x.id, x]));
   assert.equal(t.open.note, "-2 in 14 days");
   assert.equal(t.done.value, "40%");
-  assert.equal(t.queued.note, "+1 blocked");
+  assert.equal(t.blocked.value, "1");
+  assert.equal(t.blocked.note, "1 on a free-text hold");
+  assert.equal(t.active.value, "1");
+  // a board from a machine whose shoal predates `state`
+  const legacy = Object.fromEntries(M.tiles({ ...BOARD.metrics, in_progress: undefined, blocked: undefined, active: 3, queued_blocked: 2 }).map((x) => [x.id, x]));
+  assert.deepEqual([legacy.active.value, legacy.blocked.value], ["3", "2"]);
   assert.equal(t.eta.value, "14 d");
   assert.equal(M.tiles({ ...BOARD.metrics, eta_days: null, close_rate_7d: 0 }).find((x) => x.id === "eta").value, "–");
   const pts = M.sparkPoints(BOARD.metrics.series.open, 100, 40);
@@ -190,6 +219,51 @@ test("nodes: a shape per repo by first appearance, closed outlines, a smaller ce
   const n = lay.nodes.find((x) => x.key === "app#2");
   const o = M.shapeCentre(n, lay.dims);
   assert.ok(o.x === n.x + lay.dims.w / 2 && o.y > n.y && o.y < n.y + lay.dims.h);
+});
+
+test("hover card: beside the item, flipped up near the view's bottom, kept inside, scrolling when taller than the room", () => {
+  const view = { x: 0, y: 0, width: 1000, height: 600 };
+  const item = { x: 100, y: 100, w: 184, h: 54 };
+  const right = M.placeHover(item, view, 320, 200);
+  assert.deepEqual([right.x, right.y, right.w], [100 + 184 + 8, 100, 320], "right of it, level with its top");
+  assert.ok(right.maxH >= 200);
+  // near the bottom: it ends level with the item's bottom instead of running off
+  const low = M.placeHover({ ...item, y: 520 }, view, 320, 200);
+  assert.equal(low.y, 520 + 54 - 200);
+  assert.ok(low.y + 200 <= 600 - 8);
+  // near the right edge: left of it
+  const edge = M.placeHover({ ...item, x: 760 }, view, 320, 200);
+  assert.equal(edge.x, 760 - 8 - 320);
+  // no room on either side: below it, else above it
+  const narrow = { x: 0, y: 0, width: 400, height: 600 };
+  assert.equal(M.placeHover({ ...item, x: 20, y: 50 }, narrow, 320, 200).y, 50 + 54 + 8);
+  assert.equal(M.placeHover({ ...item, x: 20, y: 450 }, narrow, 320, 200).y, 450 - 8 - 200);
+  // taller than the view: top of the view, capped to its room, scrolling inside
+  const tall = M.placeHover({ ...item, y: 300 }, view, 320, 2000);
+  assert.equal(tall.y, 8);
+  assert.equal(tall.maxH, 600 - 16);
+  // the view is the part of a scrolled canvas on screen: an item near the canvas's bottom keeps its card on screen
+  const scrolled = { x: -24, y: 900, width: 1048, height: 600 };
+  for (const y of [900, 1300, 1446]) {
+    const b = M.placeHover({ x: 16, y, w: 184, h: 54 }, scrolled, 320, M.hoverHeight(BOARD.nodes[3]));
+    assert.ok(b.y >= 908 && b.y + Math.min(b.maxH, M.hoverHeight(BOARD.nodes[3])) <= 1492, `${y}: ${JSON.stringify(b)}`);
+    assert.ok(b.x >= -16 && b.x + b.w <= 1016, `${y}: ${JSON.stringify(b)}`);
+    assert.ok(b.y + b.maxH <= 1492, "never past the view's bottom, whatever the estimate");
+  }
+  // a view narrower than the card: the card narrows to it
+  assert.equal(M.placeHover(item, { x: 0, y: 0, width: 200, height: 600 }, 320, 100).w, 184);
+  // the estimate grows with what the card says
+  assert.ok(M.hoverHeight(node("a#1", { excerpt: "x".repeat(220) })) > M.hoverHeight(node("a#1")));
+});
+
+test("the visible part of the canvas, from the pointer's moves over the view and the canvas", () => {
+  const ev = (px, py, lx, ly, w, h) => ({ position: { x: px, y: py }, local_position: { x: lx, y: ly }, bounds: { x: 0, y: 0, width: w, height: h } });
+  const view = M.boxOf(ev(500, 700, 460, 400, 1048, 600)); // the view's origin at (40, 300) in the window
+  const canvas = M.boxOf(ev(500, 700, 436, 1400, 1000, 2400)); // scrolled 1000 down, inside 24 px of padding
+  assert.deepEqual(M.visibleRect(view, canvas, null), { x: -24, y: 1000, width: 1048, height: 600 });
+  const fb = { x: 0, y: 0, width: 1, height: 1 };
+  assert.equal(M.visibleRect(null, canvas, fb), fb, "until the pointer has moved, the fallback");
+  assert.equal(M.boxOf({ position: { x: 1, y: 1 } }), null);
 });
 
 test("public gate: the module holds no local paths or host names", () => {
