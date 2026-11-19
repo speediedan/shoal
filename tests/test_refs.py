@@ -68,6 +68,12 @@ write(f"{D}/kept.md", "keep: evidence for an open question\n\nkept\n")
 # outside Markdown the reason may sit in a comment after the shebang; in Markdown `# keep:` is a heading, not a keep
 write(f"{D}/kept.sh", "#!/usr/bin/env bash\n# keep: reruns the open gate\necho ok\n")
 write(f"{D}/heading.md", "# keep: a heading, not a reason\n")
+# the other markers, repeated ones too, in extensions the repository adds; `.mdx` is Markdown, so its heading is not one
+write(".shoal/lifecycle.toml", '[refs]\ntext_ext = [".sql", ".js", ".mdx"]\n')
+write(f"{D}/kept.sql", "-- keep: the schema the gate loads\nselect 1;\n")
+write(f"{D}/kept.js", "#!/usr/bin/env node\n/// keep: the page the dashboard serves\n")
+write(f"{D}/kept.ini", ";; keep: the agent's pool settings\n[pool]\n")
+write(f"{D}/heading.mdx", "## keep: a heading, not a reason\n")
 write(f"{D}/other_start.md", "# a parked role's start doc\n")
 write(f"{D}/other2.md", "# the target of a symlinked start doc\n")
 write(f"{D}/ext.md", "named from outside\n")
@@ -114,12 +120,15 @@ cls = {os.path.basename(f["path"]): f["class"] for f in r["files"]}
 want = {"lane_start.md": "root", "other_start.md": "root", "link_start.md": "root", "other2.md": "root",
         "aux.md": "live", "deep.md": "live", "lane_log.md": "live", "ext.md": "live",
         "old.md": "history-only", "sup.md": "superseded", "orphan.md": "unreferenced", "fresh.md": "unreferenced",
-        "kept.md": "unreferenced", "kept.sh": "unreferenced", "heading.md": "unreferenced"}
+        "kept.md": "unreferenced", "kept.sh": "unreferenced", "heading.md": "unreferenced",
+        "kept.sql": "unreferenced", "kept.js": "unreferenced", "kept.ini": "unreferenced", "heading.mdx": "unreferenced"}
 assert cls == want, {k: (cls.get(k), v) for k, v in want.items() if cls.get(k) != v}
 cand = {os.path.basename(p) for p in r["candidates"]}
-assert cand == {"old.md", "sup.md", "orphan.md", "heading.md"}, cand  # fresh.md is under the age floor; kept.md says why it stays
+assert cand == {"old.md", "sup.md", "orphan.md", "heading.md", "heading.mdx"}, cand  # fresh.md is under the age floor; kept.md says why it stays
 keeps = {os.path.basename(f["path"]): f.get("keep") for f in r["files"] if f.get("keep")}
-assert keeps == {"kept.md": "evidence for an open question", "kept.sh": "reruns the open gate"}, keeps
+assert keeps == {"kept.md": "evidence for an open question", "kept.sh": "reruns the open gate",
+                 "kept.sql": "the schema the gate loads", "kept.js": "the page the dashboard serves",
+                 "kept.ini": "the agent's pool settings"}, keeps
 assert [os.path.basename(x) for x in r["untracked"]] == ["untracked.md"], r["untracked"]
 assert [x["target"] for x in r["dangling"]] == ["proj/design/lane/missing.md"], r["dangling"]
 assert not r["ok"] and r["v"] == 1, r
