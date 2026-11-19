@@ -11,6 +11,8 @@ so rules and CI infrastructure can be tuned against a number that does not rewar
   PR size bucket, so many small PRs do not look efficient just because each one is cheap.
 - **Guardrails** sit beside every ratio: rerun share, failed gates, reverted PRs and CI jobs that did
   sustained CPU work without a lease (`unleased_cpu` on a local job record, when present).
+- **Sources** (`by_source`) keep the day's seconds per CI source, so the weekly review
+  (`efficiency_review.py`, which reads only these rows) can rank where the time went.
 
 Only GitHub is read here (`gh api`, as ci_wait reads it): the search API for the PRs merged over
 a run of days (one paced query per week of days) and each PR's file list (cached: a merged PR does
@@ -345,10 +347,38 @@ def repo_day(repo, day, records, prs, cfg_repo, exclude, bounds, gh_ok=True, now
     row = {"v": ROW_V, "kind": "repo", "repo": repo, "day": day,
            "computed_at": round(time.time() if now is None else float(now), 1),
            "merged": merged, "ci": ci, "guardrails": guard, "prs": pr_rows,
+           "by_source": by_source(gh, az, lj, ll),
            "sources": {"github": "ok" if gh_ok else "error", "ci_wait_records": len(records)}}
     row["ratios"] = ratios(row)
     row["by_bucket"] = by_bucket(pr_rows, bounds)
     return row
+
+
+def by_source(gh, az, lj, ll):
+    """{source: seconds} for one day, the ledger `efficiency review` ranks waste from. A source is a
+    kind and a name: `github run` / `github queue` / `github rerun` per counted workflow and job,
+    `gate wait` / `gate run` per pipeline, `local lease wait` / `local run` per host (a job record
+    with no host ran on the collecting host: `local`), and `direct hold` per lease key and host."""
+    out = {}
+
+    def add(k, v):
+        if v:
+            out[k] = round(out.get(k, 0.0) + float(v), 1)
+    for r in gh:
+        name = f"{r.get('workflow') or '?'} / {r.get('job') or '?'}"
+        add(f"github run: {name}", r.get("run_s"))
+        add(f"github queue: {name}", r.get("queue_s"))
+        if int(r.get("attempt") or 1) > 1:
+            add(f"github rerun: {name}", r.get("run_s"))
+    for r in az:
+        add(f"gate wait: {r.get('pipeline') or '?'}", r.get("gate_wait_s"))
+        add(f"gate run: {r.get('pipeline') or '?'}", r.get("run_s"))
+    for r in lj:
+        add(f"local lease wait: {r.get('host') or 'local'}", r.get("lease_wait_s"))
+        add(f"local run: {r.get('host') or 'local'}", r.get("run_s"))
+    for r in ll:
+        add(f"direct hold: {r.get('lease_key') or '?'} on {r.get('host') or 'local'}", r.get("held_s"))
+    return out
 
 
 def ratios(row):
@@ -502,12 +532,13 @@ def shoal_ratios(rt, lines, min_coverage=MIN_COVERAGE):
     journal could not classify most of the eligible time: an observer down, a source missing) every
     ratio but coverage is None, not a number that reads as idle or as fast."""
     cov = _coverage(rt)
-    none = {"ci_lease_share": None, "lines_per_role_ci_wait_hour": None, "AAR": None, "RWF": None,
+    none = {"ci_lease_share": None, "lease_share": None, "lines_per_role_ci_wait_hour": None, "AAR": None, "RWF": None,
             "coverage": _round(cov)}
     if cov is None or cov < min_coverage or cov <= 0:
         return none
     ci_s = sum(rt["waits"].get(e, 0) for e in CI_WAITS + LEASE_WAITS)
     return {"ci_lease_share": _round(ci_s / rt["T_e"]),
+            "lease_share": _round(sum(rt["waits"].get(e, 0) for e in LEASE_WAITS) / rt["T_e"]),
             "lines_per_role_ci_wait_hour": _ratio(lines, ci_s, 3600) if lines is not None else None,
             "AAR": _round((rt["work_s"] + rt["wait_s"]) / rt["delta_s"]) if rt["delta_s"] else None,
             "RWF": _round(rt["work_s"] / rt["T_e"]),
@@ -611,9 +642,14 @@ def rollup(rows, days, all_rows=None, bounds=DEFAULT_BUCKETS, min_coverage=MIN_C
         if r.get("day") not in days:
             continue
         if r["kind"] == "repo":
-            a = out["repos"].setdefault(r["repo"], {"days": 0, "github_days": 0, "prs": [], "ci": {}, "ci_paired": {},
-                                                    "guard": {}})
+            a = out["repos"].setdefault(r["repo"], {"days": 0, "github_days": 0, "source_days": 0, "source_heads": 0,
+                                                    "prs": [], "ci": {}, "ci_paired": {}, "guard": {}, "by_source": {}})
             a["days"] += 1
+            if "by_source" in r:  # rows written before sources were kept have none
+                a["source_days"] += 1
+                a["source_heads"] += r["ci"].get("pr_heads") or 0
+                for k, v in r["by_source"].items():
+                    a["by_source"][k] = a["by_source"].get(k, 0.0) + v
             sums = [a["ci"]]
             if r.get("merged") is not None:
                 a["github_days"] += 1
@@ -625,7 +661,7 @@ def rollup(rows, days, all_rows=None, bounds=DEFAULT_BUCKETS, min_coverage=MIN_C
                 for k, sub in (("push_to_complete_s", "sum"), ("gate_wait_s", "sum")):
                     c[k] = c.get(k, 0) + ((r["ci"].get(k) or {}).get(sub) or 0)
             g = r.get("guardrails") or {}
-            for k in ("failed_gates", "gate_approvals_failed", "unleased_cpu_jobs", "unleased_cpu_observed"):
+            for k in ("failed_gates", "gate_approvals_failed", "reverts_merged", "unleased_cpu_jobs", "unleased_cpu_observed"):
                 a["guard"][k] = a["guard"].get(k, 0) + (g.get(k) or 0)
         elif r["kind"] == "shoal":
             a = out["shoals"].setdefault(r["shoal"], {"days": 0, "low_coverage_days": 0, "rt": None, "lines": None,
@@ -638,7 +674,8 @@ def rollup(rows, days, all_rows=None, bounds=DEFAULT_BUCKETS, min_coverage=MIN_C
             if rt and r.get("merged_lines") is not None:
                 a["lines_paired"] = (a["lines_paired"] or 0) + r["merged_lines"]
             if rt:
-                t = a["rt"] or {"delta_s": 0, "T_e": 0, "work_s": 0, "wait_s": 0, "unknown_s": 0, "waits": {}}
+                t = a["rt"] or {"delta_s": 0, "T_e": 0, "work_s": 0, "wait_s": 0, "unknown_s": 0, "waits": {}, "days": 0}
+                t["days"] += 1
                 for k in ("delta_s", "T_e", "work_s", "wait_s", "unknown_s"):
                     t[k] += rt.get(k) or 0
                 for e, v in (rt.get("waits") or {}).items():
@@ -824,7 +861,7 @@ def line(r):
 
 
 def add_parser(sub):
-    p = sub.add_parser("efficiency", help="CI efficiency: merged work per unit of CI and wait overhead")
+    p = sub.add_parser("efficiency", help="CI efficiency: merged work per unit of CI and wait overhead, and its weekly review")
     s = p.add_subparsers(dest="efficiency_cmd", required=True)
     o = s.add_parser("snapshot", help="compute one row per repository (and shoal) per UTC day into the JSONL")
     o.add_argument("--spec", required=True, help="the spec carrying features.ci_wait (its repositories)")
@@ -840,4 +877,6 @@ def add_parser(sub):
     o.add_argument("--prom-out", default="", help="write Prometheus text here (atomically)")
     o.add_argument("--json", action="store_true", help="print the new rows as JSON")
     o.set_defaults(func=cmd_snapshot)
+    import efficiency_review
+    efficiency_review.add_parsers(s)
     return s
