@@ -58,9 +58,12 @@ map.
      checks say.
    - `ask:`/`user:`: is an ask recorded in the queue, and has the maintainer answered elsewhere?
      (Read the role's harness question history.)
+   - `job:`, `gh-run:`, `az-build:`, `time:`: the item's own run. Is it still running or scheduled?
+     One that ended clears itself and wakes the role; the item is then free.
    - `hold:<why>`: re-check the claim it makes. A hold that names the maintainer is an ask
-     nobody raised. A hold that names a peer item is a role blocker in disguise. A hold on a
-     finished item is a finished item.
+     nobody raised. A hold that names a peer item is a role blocker in disguise. A hold that
+     describes the item's own CI, gate or job is a run blocker in disguise (the board reads it
+     blocked unless its words say so). A hold on a finished item is a finished item.
 2. **Finished items:** any item in `next` that is done (by anyone) or closed must be dropped.
 3. **Exhausted?** Compare the digest's rows for the role, plus your own read of its brief, against
    the board.
