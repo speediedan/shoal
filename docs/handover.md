@@ -42,6 +42,24 @@ on the role's own host, optionally moving it to another model or provider (also 
   unless given, go back to the provider's defaults, and the old provider's incarnations are not auto-pruned
   (`prune-incarnations` removes them by hand).
 
+### A role that is not restart-ready
+
+A role that cannot reach a boundary by itself (its provider's usage limit failing every turn, a stuck session, a move
+the maintainer orders now) is recovered from its conversation log before `--force`, so the new session starts from what
+the old one actually did:
+
+1. **Find the last real work.** The session's log: Claude `~/.claude*/projects/<dir>/<session>.jsonl`, Codex
+   `~/.codex/sessions/<y>/<m>/<d>/rollout-*-<thread>.jsonl` (its last `task_complete` without an `error`, and the
+   last assistant message), Muse/opencode their session view. Compare it with the start doc's `Last updated` and the
+   role's latest ledger writes (`queue`, `state`, `claim`, `done`).
+2. **Reconcile.** Write into the start doc whatever the log shows after its last update (a PR opened, a job started, a
+   claim released). When the doc is current to the last real work, leave it.
+3. **Note what happened since.** CI verdicts, mail and asks that arrived after the last real work go in `--note`, with
+   any mismatch between the doc and the ledger (an active item, the queue), so the new session checks them first.
+4. **Check the target.** `shoal accounts` on the role's host; `--keepalive` refreshes a lapsed Claude sign-in.
+5. **Hand off.** `shoal handoff --only <role> [--ecosystem E --account A --model M --effort X] --force --note "..."`,
+   dry run first, then confirm the new session, its watcher and its first ledger write.
+
 ## Standalone sessions (opt-in)
 
 A session saved in the viewer registry (`shoal ui pick --save`) opts in with its start doc:

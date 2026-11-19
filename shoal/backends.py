@@ -536,6 +536,27 @@ def _labels_only_waiters(state: dict, slug: str = "") -> bool:
     return True
 
 
+# a `queued` count is work only while something can still start it: a running task, or a state written this recently.
+# Measured 2026-11-19: it-tune's job ended its turn `blocked` at 05:13Z with tasks 0, its one shell done and queued 1,
+# and that state file stayed unchanged for 12 h, so every wake (the maintainer's answer to its asks included) was
+# deferred as "background work in flight" every two minutes from 16:37Z on.
+QUEUED_STALE_S = 1800.0
+
+
+def work_in_flight(state: dict) -> bool:
+    """True when a Claude job has work in flight that would end on its own: a running task or kind, or a queued count
+    that is not left over (`QUEUED_STALE_S`)."""
+    fl = (state or {}).get("inFlight") or {}
+    if not isinstance(fl, dict):
+        return False
+    if int(fl.get("tasks") or 0) or fl.get("kinds"):
+        return True
+    if not int(fl.get("queued") or 0):
+        return False
+    running = any(isinstance(t, dict) and not t.get("doneAt") for t in state.get("fan") or [])
+    return running or float(state.get("_age_s") or 0) < QUEUED_STALE_S
+
+
 # `claude --bg --resume` right after `claude stop` still finds the session running and forks a copy;
 # measured 2026-10-20: forked with the pid gone for 1 s, continued in place 4 s later
 RESUME_SETTLE_S = 6.0
@@ -919,8 +940,7 @@ class ClaudeBackend(Backend):
             return self._resume(row, full, RESUMED_NOTE + text, dry_run)
         else:
             live = claude_liveness(row)
-            fl = claude_job_state(row).get("inFlight") or {}
-            busy_fl = isinstance(fl, dict) and (int(fl.get("tasks") or 0) or int(fl.get("queued") or 0) or fl.get("kinds"))
+            busy_fl = work_in_flight(claude_job_state(row))
             if live == "busy":
                 why = "mid-turn"
             elif claude_prompt_open(row, full) and not through_question:

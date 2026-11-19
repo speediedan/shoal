@@ -1676,6 +1676,16 @@ rows(pid=9, tempo="idle")
 assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("stop+resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
 rows(pid=9, tempo="idle", inFlight={"tasks": 1, "queued": 0, "kinds": ["local_bash"]})
 assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", be.deliver(spec, r, "bbbb2222-0000", "w")
+# a queued count left over in a job idle at its prompt is not work: it-tune's (tasks 0, its one shell done, queued 1,
+# the state unchanged 12 h) deferred every wake, the maintainer's answer to its asks included (2026-11-19)
+done_fan = [{"kind": "shell", "label": "until bash q.sh; do sleep 120; done", "doneAt": 1}]
+rows(pid=9, tempo="blocked", inFlight={"tasks": 0, "queued": 1, "kinds": []}, fan=done_fan, age_s=43000)
+assert be.deliver(spec, r, "bbbb2222-0000", "w").startswith("stop+resume"), be.deliver(spec, r, "bbbb2222-0000", "w")
+rows(pid=9, tempo="blocked", inFlight={"tasks": 0, "queued": 1, "kinds": []}, fan=done_fan, age_s=60)
+assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", "a fresh queued count may still start"
+rows(pid=9, tempo="blocked", inFlight={"tasks": 0, "queued": 1, "kinds": []}, fan=[{"kind": "shell", "label": "x"}], age_s=43000)
+assert be.deliver(spec, r, "bbbb2222-0000", "w") == "deferred (background work in flight)", "a task still running"
+assert not backends.work_in_flight({}) and not backends.work_in_flight({"inFlight": {"tasks": 0, "queued": 0}})
 # only its own job or CI waiters in flight: they held every wake for hours, so the wake stops and resumes the session
 # (the jobs run on; its recorded waits and the detached watcher cover them)
 wait_fan = [{"kind": "shell", "label": f"python3 shoal/cli.py job wait --shoal {spec.sid} --slug up --name t1"}]

@@ -43,6 +43,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -330,9 +331,11 @@ CLAUDE_TEMPO = {"active": "busy", "idle": "idle", "blocked": "blocked"}
 
 
 def claude_job_state(row: dict) -> dict:
-    """The job's state file ({} when unknown). A row may carry `tempo`/`inFlight` itself (tests)."""
+    """The job's state file ({} when unknown), with `_age_s`: seconds since the file was last written. A row may carry
+    `tempo`/`inFlight` (and `age_s`) itself (tests)."""
     if row.get("tempo"):
-        return {"tempo": row["tempo"], "inFlight": row.get("inFlight") or {}, "fan": row.get("fan") or []}
+        return {"tempo": row["tempo"], "inFlight": row.get("inFlight") or {}, "fan": row.get("fan") or [],
+                "_age_s": float(row.get("age_s") or 0)}
     from backends import fake_sessions
     if fake_sessions() is not None:  # tests: never read the host's real job files
         return {}
@@ -340,10 +343,14 @@ def claude_job_state(row: dict) -> dict:
     if not jid or not re.fullmatch(r"[0-9a-f]{6,64}", jid):
         return {}
     from backends import job_base
+    path = os.path.join(job_base(jid), "jobs", jid, "state.json")
     try:
-        with open(os.path.join(job_base(jid), "jobs", jid, "state.json")) as fh:
+        with open(path) as fh:
             st = json.load(fh)
-        return st if isinstance(st, dict) else {}
+        if not isinstance(st, dict):
+            return {}
+        st["_age_s"] = max(0.0, time.time() - os.path.getmtime(path))
+        return st
     except (OSError, ValueError):
         return {}
 
@@ -591,11 +598,12 @@ def limit_until_sid(sid: str, account: str | None = None) -> str:
 def claude_background(role) -> int:
     """How many background tasks (shells, monitors, subagents) a Claude role's job has in flight, from the listing
     `claude_busy` last read: each one re-invokes the session when it ends, so a stop while any runs does not hold."""
-    from backends import claude_find
+    from backends import claude_find, work_in_flight
     e = claude_find(_CLAUDE_ROWS, role.session) if role.session else None
-    fl = (claude_job_state(e).get("inFlight") or {}) if e else {}
-    try:
-        return int(fl.get("tasks") or 0) + int(fl.get("queued") or 0) if isinstance(fl, dict) else 0
+    st = claude_job_state(e) if e else {}
+    fl = st.get("inFlight") or {}
+    try:  # a left-over queued count is not work (backends.QUEUED_STALE_S)
+        return int(fl.get("tasks") or 0) + int(fl.get("queued") or 0) if isinstance(fl, dict) and work_in_flight(st) else 0
     except (TypeError, ValueError):
         return 0
 
