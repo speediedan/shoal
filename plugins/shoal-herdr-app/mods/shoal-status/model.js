@@ -74,8 +74,35 @@ export function parseUsage(reply) {
 }
 
 /**
+ * How good one machine's usage rows are: [entries with a reading, of them not stale]. A host that keeps no live meter (no
+ * UI feed refreshes its cache) answers with rows too, stale or `not collected yet` errors: 2026-11-18 the bar showed
+ * `claude ?` while the space in view was on a machine whose cache was 22 h old.
+ */
+export function usageScore(rows) {
+  const read = arr(rows).filter((u) => !u?.error && arr(u?.windows).length);
+  return [read.length, read.filter((u) => !u.stale).length];
+}
+
+/** Every row read and fresh: nothing another machine could improve on. */
+export function usageComplete(rows) {
+  const [read, fresh] = usageScore(rows);
+  return arr(rows).length > 0 && read === arr(rows).length && fresh === read;
+}
+
+/** The best of several machines' rows (each null for no answer): most entries read, then most fresh; the earlier on a tie. */
+export function bestUsage(candidates) {
+  let best = null, bs = [-1, -1];
+  for (const rows of arr(candidates)) {
+    if (!arr(rows).length) continue;
+    const s = usageScore(rows);
+    if (s[0] > bs[0] || (s[0] === bs[0] && s[1] > bs[1])) [best, bs] = [rows, s];
+  }
+  return best;
+}
+
+/**
  * Where usage may be read, in order: the machine of the space in view, the other machines, this computer (null). Not every
- * host keeps the usage cache, and one without it answers with no accounts, so the first that has rows wins.
+ * host keeps a live usage cache, so each is asked until one is complete (usageComplete) and the best answer wins (bestUsage).
  */
 export function usageMachines(spaces, machineNames) {
   const active = arr(spaces).find((s) => s?.active)?.machine;
