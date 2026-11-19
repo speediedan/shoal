@@ -586,7 +586,7 @@ copy that appears. Modes:
 
 | `direct_wake` | a session with no worker | a live session idle at its prompt, nothing in flight | anything else (mid-turn, at a question, background work in flight) |
 | --- | --- | --- | --- |
-| `idle` (default) | resumed directly | stopped, then resumed directly (also when everything in flight is only its own waiters) | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
+| `idle` (default) | resumed directly | stopped, then resumed directly (also when everything in flight is only its own waiters, or the only sign of work is a `queued` count left in a job state unchanged for 30 min with no task running: `backends.work_in_flight`) | deferred: delivered at a later tick (work in flight wakes the session itself when it ends) |
 | `dead` | resumed directly | deferred (a live worker is never stopped) | deferred |
 
 Under `idle` a Claude watcher is detached (`--wake direct`) and delivers each wake through the same
