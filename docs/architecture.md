@@ -1263,6 +1263,40 @@ opening, and the far wall rises 22 degrees past the equator (`BOWL_FAR_EXTRA`, f
 inside is seen (`bowlReach`). Where the fold of the lip's shade lands on wall the near wall hides, its edge runs just
 inside the rim instead (`rimShade`), so the shade never spills over the shell.
 
+**The bowl's shade grows in, soft; you are magenta; roles sit inside their lunes (2026-11-18).** The maintainer saw
+the bowl's dark side switch on all at once at one angle, with a hard edge. Swept a degree at a time over the bowl's
+tilt and turn, it had two causes. `sphere.js` `bowlFrame` set the cut's height `h` to 0 (a hemisphere) whenever the
+leaning cut's lean clamped at nothing, with the axis within about 13 degrees of the line of sight, though the leaning
+cut leaves the rim `BOWL_FAR_EXTRA` (29 degrees) past the equator there: the whole cut jumped as an orbit crossed that
+angle, and the share of the inside in the lip's shade fell from about 0.5 to 0.24 in one degree. Now a cut with no lean
+is square to the axis at that same height (`h = cos(max(toward + kappa, pi/2 - BOWL_FAR_EXTRA))`), so the cut moves
+with the camera continuously. And the shade was one path under one linear gradient across its bounding box, dark at
+the rim: along most of its edge (the fold of the rim through the light) it stood at 20 to 40 percent alpha, a step of up
+to 40 of 255 levels between points 2 px apart. It is now a soft shadow (`rimShadeLayers`): `BOWL_SHADE_LAYERS` (14)
+nested layers out from the rim, layer k reaching a fraction `s_k` of the way along the great circle from each facing rim
+point to its fold (the rim point, its fold and the light's line lie in one plane through the middle), their alphas
+solved by `shadowLayers` for a falloff from `BOWL.shade` (0.34) under the rim to nothing at the geometric edge, each 5 to
+8 of 255. The sampler replays it exactly: `rimShadeRho` finds a wall point's fraction by meeting the plane through it and
+the light's line with the rim, and `bowlColorAt` blends the layers that reach it. The facing arc grows from a single
+point as the first rim point turns to the light, so the shade grows in, and when the whole rim faces the light it is
+drawn round the whole rim instead of not at all. A layer is six to eight path commands (its rim side as arcs of the
+rim's exact ellipse, its far edge in quarter turns), at most 112 in all, so the bowl's own paths stay under 500 at
+every orbit and the lite scene keeps every layer. The facing arc is memoized on the frame, so the label inks' samples
+no longer rebuild it, and a bowl renders a few ms faster than before. Near the axis the outer wall's top now shows all
+round the lip as a thin ring (`crescentCmds`), drawn as the lip's outer ellipse and the outline wound the other way
+(one loop of the edge, closed the short way, had filled the whole opening with the shell's tint, as it did already
+wherever the facing edge ran more than half way round). The tests sweep the camera a degree at a time and hold the
+shade's share and mean darkness to under 2 and 1 percent a degree (0.27 and 0.09 before), a layer's edge to 3 of 255
+(4 with the wall's own gradient), and any step to 8. You are always magenta (`model.js` `nodeVisual`, `P.magenta`, the
+needs-you color, the rail's), not the ink grey with nothing open, so the glass you no longer vanishes into the grey
+glass bowl, and the glass ball's body is colored glass (`YOU_BODY`: 62 to 95 percent of your color, deepened at the far
+limb) with its shading, highlight and shadow as before; the count badge says how much is open. Magenta is at least 33
+apart in Lab from every host color and pastel (the rose host the nearest); a green you would be 22 from the mint pastel.
+And a role in the bowl sits at least `LUNE_MARGIN` (0.2) of its lune's width in azimuth from either edge (`depth.js`
+`luneInner`, with two or more hosts): its sector of the flat view is clamped into that, and the clear-place search
+across a lune keeps to it, so the lune under a role plainly is its host's (before, roles came within 6 percent of a
+lune's width of the line between two hosts). Their order across the lune is the flat view's, as before.
+
 The global view floats you among the globes: `projectLayout` puts your world point at the height halfway between the
 globes' middles, over the hub (your place in the layout, between the shoals), moved `YOU_FORWARD` (0.7) globe radii
 toward the opening camera along the floor, so you sit just in front of the line between the globes; it keeps your

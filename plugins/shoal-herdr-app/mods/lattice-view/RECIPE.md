@@ -13,8 +13,8 @@ you, per-shoal throughput and per-host load.
 - **Canvas** (left, fills the pane): a near-black violet to navy gradient (`#14111a` to
   `#03050b`, 165 degrees) with a cool navy wash and a soft bloom behind the hub. Header top left in
   Geist Mono 11px: `LATTICE > all shoals`, counts below in `#8c8c8c` 9.5px.
-- **Global view:** shoals on a ring around the `you` hub (22px ring, magenta `#ff4f9a` with a count
-  badge when asks or grants are open). Each shoal is a translucent disc in a pastel tint (olive
+- **Global view:** shoals on a ring around the `you` hub (22px ring, always magenta `#ff4f9a`, the needs-you color,
+  so you stand apart from every globe and host color; a count badge when asks or grants are open). Each shoal is a translucent disc in a pastel tint (olive
   `#b0b070`, mint `#50d090`, teal `#70b090`, ...), its name above, `N need you` in
   magenta. Roles sit on a ring inside; hovering the middle of the disc shows the shoal's status. External writers (dashed circles) sit
   outside, an aliased one beside its home role with no label of its own (the alias tether says
@@ -108,8 +108,9 @@ you, per-shoal throughput and per-host load.
   just above the camera at the old opening view (10 and -40), above and behind the opening now, so as the camera orbits
   the light and the shadows turn with the bowl; every shadow in the bowl is the ray from it through the caster, meeting
   the wall (`bowlCast`). You are nearer the camera than the middle (orbited far round the side, leaning further toward
-  it), so from an oblique angle you stand visibly off the wall behind you: you are a small glass ball (about 90 path
-  commands: a clear body graded to a deep limb, twelve faint layers rounding it toward the light, a highlight toward
+  it), so from an oblique angle you stand visibly off the wall behind you: you are a small magenta glass ball (about 90 path
+  commands: a body of colored glass, a veil of your color on the lit side graded to it deepened at the far limb
+  (`sphere.js` `YOU_BODY`), so you read apart from the grey glass bowl, twelve faint layers rounding it toward the light, a highlight toward
   the light, a crescent of gathered light inside the far limb, a lit rim and a dark hairline; at `full` your halo
   breathes behind it), your soft shadow falls on the wall where the light's ray through you meets it (below you at the
   opening view, further off as the camera orbits round, and not drawn where it would land outside the opening; roles
@@ -118,17 +119,24 @@ you, per-shoal throughput and per-host load.
   from you down the axis to a small ring at the bottom. An edge from you
   is a tapered ribbon (five commands), wide and bright at you and thinner and dimmer at the far wall by the two ends'
   perspective, and an arrowhead is sized with the node it is at, so the edge reads as running away, into the bowl. A
-  role keeps its place on the surface as the camera orbits (where the preset puts it), moved along its meridian only to
+  role keeps its place on the surface as the camera orbits (where the preset puts it), at least `LUNE_MARGIN` (a fifth
+  of its lune's width) in azimuth from either edge of its lune when there are two hosts or more (`depth.js`
+  `luneInner`), so the lune under it plainly is its host's, moved along its meridian only to
   stay in view, clear of you, or clear of a role placed before it (at the preset's view, if no place on its meridian is
-  clear, to the nearest clear place on its lune). The cut is a slanted
-  plane: the far wall rises 29 degrees past a hemisphere's rim (so more of the back shows), the near wall is cut lower, but
+  clear, to the nearest clear place on its lune, inside those margins). The cut is a slanted
+  plane: the far wall rises 29 degrees past a hemisphere's rim (so more of the back shows; seen within about 13 degrees
+  of its axis, where no lean is needed, the cut is square to the axis at that same height, so the cut and the shade
+  move on smoothly through that angle), the near wall is cut lower, but
   short of where the camera would see over it by up to 26 degrees seen from the side (17 from in front, held where the
   bottom would come within 0.84 of the rim: about 25 at the opening view), so the sphere's outer wall shows as a shell
   beside the opening, from its top round to its bottom. The wall has a thickness, so the
   opening has a lip: a lit band between the rim (a turned ellipse) and its outer edge. Everything inside the rim is
   the inner surface, opaque (it hides its own floor behind it) and lit as a hollow is: the light pools where it falls
   brightest (16 faint layers over a smooth linear sweep, so no band shows), the wall under the lip on the light's side
-  is in its shade (the ray past each rim point meets the wall at the shade's edge), and 18 faint caps round the bottom
+  is in its shade (the ray past each rim point meets the wall at the shade's edge), a soft shadow of 14 nested layers
+  out from the rim (`rimShadeLayers`, 5 to 8 of 255 each), darkest (34 percent) under the rim and falling off to
+  nothing at that edge, so no edge shows; it grows in from a point under the rim as the first rim point turns to the
+  light, so it never switches on at an angle, and 18 faint caps round the bottom
   (6 of 255 each) darken it smoothly toward the bottom, so no ring of shading shows. Four faint rings of latitude and
   eight faint meridians stay as guides (orbited far round the side, a ring the cut would break is left out). The bowl
   stands over its own floor, square to its axis, and casts its shadow there from the same light. The hosts' lunes,
@@ -306,6 +314,16 @@ you, per-shoal throughput and per-host load.
   one and a half levels; 1 of 255 would need about 90 layers for the same light. A linear gradient has
   no steps at all, so a sweep over the rim toward the lit spot now gives half that light and 16
   layers at 2 of 255 the pooling (six commands a layer, the cheapest smooth light there is).
+- The lip's shade was one path under one linear gradient across its bounds (2026-11-18): a gradient runs straight and
+  the shade's edge curves, so most of that edge stood at 20 to 40 percent alpha, a step of up to 40 of 255 levels. Its
+  layers now follow the fold, each reaching a fraction of the way from a rim point to where the light's ray past it
+  meets the wall, so they fall to nothing at the edge; 14 at 5 to 8 of 255 (solved over the inside's middle tone,
+  `#4e5662`: over a lighter one the 8-bit rounding lumped two into one of 9 to 11) cost at most 112 commands (the rim
+  side as arcs of the rim's ellipse, the far edge in quarter turns) and keep the bowl's own paths under 500 at every
+  orbit. A timing wrapper around `check_depth` on a loaded host gave the fixture's bowl 26 to 37 ms a render, 3 to 7
+  less than before (the shade's arc is memoized on the frame; label inks had rebuilt it at every sample), and 12 of 12
+  native checks pass in iso, tilt and orbited 40, 70 and 120 round. And a cut whose lean clamps at nothing keeps the
+  height the leaning cut has there (`sin BOWL_FAR_EXTRA`), or the cut and every shade in the bowl jump at that angle.
 - You in the bowl read as drawn on its wall whatever the depth math said: a flat ring with a
   two-step halo showed bands and no depth. What separates a thing from a wall behind it is a
   shadow attached to it, offset by how far in front it is: lit from the opening the shadow fell

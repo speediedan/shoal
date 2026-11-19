@@ -1430,7 +1430,7 @@ test("2026-11-10: per shoal in depth, the cutout sphere: you at its middle, a lu
     assert.equal(washes.length, hosts.length);
     assert.equal(new Set(washes.map((it) => it.bg.color)).size, hosts.length, "each host its own color");
     assert.ok(["bowl-in", "bowl-lip", "bowl-grid"].every((id) => sc.items.some((it) => it.id === id)));
-    assert.ok(["bowl-lip-face", "bowl-lip-out", "bowl-shell", "bowl-rings", "bowl-shade"].every((id) => sc.items.some((it) => it.id === id)), "the opening: a lip, the near wall's outside, rings, the lip's shade");
+    assert.ok(["bowl-lip-face", "bowl-lip-out", "bowl-shell", "bowl-rings", "bowl-shade-0"].every((id) => sc.items.some((it) => it.id === id)), "the opening: a lip, the near wall's outside, rings, the lip's shade");
     assert.ok(!sc.items.some((it) => it.id.startsWith("band-slab-") || it.id.startsWith("band-rim-")));
     // the outline: every lune stays inside the sphere's silhouette, and the whole bowl is a small part of the budget
     for (const b of pa.bands) {
@@ -1762,8 +1762,9 @@ test("2026-11-13: the bowl's inside is smooth: fine glow layers and fine depth c
     assert.ok(caps.every((t, i) => t < low && (i === 0 || t < caps[i - 1])), "nested, whole");
     assert.equal(SP.bowlDepthAt(fr, fr.pole), SP.BOWL_DEPTH, "the bottom under every cap");
     assert.equal(SP.bowlDepthAt(fr, SP.bowlPoint(fr, low - 0.01, 0.5)), 0, "the wall by the rim under none");
-    // across the inside, along lines every way, the color steps by at most three of 255 between neighboring points (on
-    // the same side of the lip's shade, whose edge is a shadow's edge): no cap's edge shows; and the bottom is darker
+    // across the inside, along lines every way, the color steps by at most three of 255 between neighboring points
+    // (under as many of the lip's shade's layers: their own steps are held to the same in the soft-shade test below):
+    // no cap's edge shows; and the bottom is darker
     const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
     let worst = 0, lit = 0;
     for (const ang of [0, 0.7, 1.4, 2.1, 2.8]) {
@@ -1771,7 +1772,7 @@ test("2026-11-13: the bowl's inside is smooth: fine glow layers and fine depth c
       for (let i = -150; i <= 150; i++) {
         const p = { x: fr.rim.cx + (i / 150) * fr.rim.w * Math.cos(ang), y: fr.rim.cy + (i / 150) * fr.rim.h * Math.sin(ang) };
         if (SP.rimNorm(fr, p) > 0.995) { prev = null; continue; }
-        const u = SP.bowlSurfaceAt(fr, p.x, p.y), key = SP.inRimShade(fr, u);
+        const u = SP.bowlSurfaceAt(fr, p.x, p.y), key = SP.rimShadeAt(fr, u).length;
         const c = rgb(SP.bowlColorAt(fr, p.x, p.y, null));
         if (prev && prev.key === key) worst = Math.max(worst, ...c.map((v, k) => Math.abs(v - prev.c[k])));
         lit = Math.max(lit, c[0]);
@@ -2050,14 +2051,14 @@ test("2026-11-12: in the bowl you are a small glass ball, finely graded, lit fro
     const [, x0, y0] = it.cmds[0], [, rx, , , , , x1, y1] = it.cmds[1], cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
     assert.ok(Math.hypot(cx - at.x, cy - at.y) + rx <= at.r + 1e-6, `${it.id} inside the ball`);
   }
-  // lit from the bowl's one light, as it is seen from you (2026-11-13): the highlight toward it, the body clear there and
-  // deep at the far limb
+  // lit from the bowl's one light, as it is seen from you (2026-11-13): the highlight toward it, the body lighter there
+  // and deep at the far limb (2026-11-18: colored glass, your color, not clear glass)
   const Ly = SP.bowlLightDir(pa.bowl.frame, pa.bowl.you), lc = SP.lightOf(Ly);
   assert.ok(Math.hypot(pa.bowl.youLight.x - Ly.x, pa.bowl.youLight.y - Ly.y, pa.bowl.youLight.z - Ly.z) < 1e-12, "the light from you");
   const spec = glass.filter((it) => it.id.includes("-spec")).at(-1), sx = (spec.cmds[0][1] + spec.cmds[1][6]) / 2, sy = spec.cmds[0][2];
   assert.ok(Math.hypot(sx - (at.x + 0.52 * at.r * lc.x), sy - (at.y + 0.52 * at.r * lc.y)) < 1e-6 && (sx - at.x) * lc.x + (sy - at.y) * lc.y > 0.1 * at.r * Math.hypot(lc.x, lc.y) && alphaOf(spec.bg.color) > 0.5, "a bright highlight toward the light");
   const body = glass[0];
-  assert.ok(body.bg.kind === "linear" && alphaOf(body.bg.from) < 0.2 && alphaOf(body.bg.to) > 0.5, "clear on the lit side, deep at the far limb");
+  assert.ok(body.bg.kind === "linear" && alphaOf(body.bg.from) < alphaOf(body.bg.to) && alphaOf(body.bg.to) > 0.8, "lighter on the lit side, deep at the far limb");
   assert.ok(Math.cos(((body.bg.angle - 90) * Math.PI) / 180 - Math.atan2(-lc.y, -lc.x)) > 0.99, "graded along the light");
   // outside the bowl (flat, and the global view) you keep your ring and halo
   for (const [vm, lay] of [[alpha, L.layoutGraph(alpha)], [global, D.projectLayout(global, L.layoutGraph(global), D.camera("tilt"))]]) {
@@ -2698,4 +2699,186 @@ test("2026-11-18: the global view opens at the maintainer's view, framed as aske
   assert.ok(turned.includes("this.autoFit = false;") && !turned.includes("this.fit("), "a turn never refits");
   assert.match(src, /camera\(this\.depthNow, this\.yawTurn, this\.orbit, !!this\.vm\?\.global\)/, "the global view's camera has its opening turn");
   assert.match(src, /const fr = this\.vm\.global && GLOBAL_FRAME\[this\.depthNow\];/, "a fit frames the global view");
+});
+
+// 2026-11-18: the bowl's lip shade grew in and out with a jump. Measured over a sweep of the bowl's tilt and turn, a
+// degree at a time: at about 13 degrees off the axis the cut dropped from 29 degrees past the equator to a hemisphere
+// (its lean clamped at nothing, h set to 0), and the share of the inside in the shade fell from 0.505 to 0.237 between
+// two neighboring degrees (tilt 0, turn -13 to -12), back up at +13; and the shade was one path under one linear
+// gradient across its bounds, so most of its edge was a step of 20 to 40 percent alpha (40 of 255 levels between two
+// points 2 px apart on a host's lune). These hold the shade continuous in the camera and soft at its edge.
+const bowlSweep = (fn) => {
+  const DEG = Math.PI / 180;
+  for (const tilt of [-30, -14, 0, 8, 30, 64]) {
+    let prev = null;
+    for (let turn = -78; turn <= 78; turn++) {
+      if (!D.bowlInView(tilt * DEG, turn * DEG)) { prev = null; continue; }
+      prev = fn(SP.bowlFrame(tilt * DEG, SP.BOWL_DIST, turn * DEG), `tilt ${tilt} turn ${turn}`, prev) ?? null;
+    }
+  }
+};
+// the share of the inside (seen well inside the rim) in the shade's geometric extent, and its mean darkness as drawn
+const shadeOver = (fr, N = 36) => {
+  let n = 0, inside = 0, dark = 0;
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const x = fr.rim.cx + fr.rim.w * ((2 * i) / (N - 1) - 1), y = fr.rim.cy + fr.rim.h * ((2 * j) / (N - 1) - 1);
+    if (SP.rimNorm(fr, { x, y }) > 0.97) continue;
+    const u = SP.bowlSurfaceAt(fr, x, y);
+    if (!u) continue;
+    n++;
+    if (SP.rimShadeRho(fr, u) <= 1) inside++;
+    dark += 1 - SP.rimShadeAt(fr, u).reduce((t, l) => t * (1 - l.alpha), 1);
+  }
+  return { share: inside / n, dark: dark / n };
+};
+
+test("2026-11-18: the bowl's cut and its lip shade change continuously as the camera orbits: no angle switches the shade on", () => {
+  let worstShare = 0, worstDark = 0, worstH = 0, seen = 0;
+  bowlSweep((fr, at, prev) => {
+    const m = shadeOver(fr), h = fr.cut.h, on = SP.rimShadeLayers(fr, 0, 0, 1).length > 0;
+    // the cut: seen near its axis, square to it with the rim BOWL_FAR_EXTRA past the equator, as a leaning cut leaves it
+    if (Math.acos(-fr.pole.z) < 10 * Math.PI / 180) assert.ok(Math.abs(h - Math.sin(SP.BOWL_FAR_EXTRA)) < 1e-9, `${at}: the far wall kept up (h ${h.toFixed(3)})`);
+    if (prev) {
+      worstShare = Math.max(worstShare, Math.abs(m.share - prev.m.share));
+      worstDark = Math.max(worstDark, Math.abs(m.dark - prev.m.dark));
+      worstH = Math.max(worstH, Math.abs(h - prev.h));
+      // where it first shows, it grows in from nothing
+      if (on && !prev.on) assert.ok(m.share < 0.01, `${at}: the shade grows in from nothing (${m.share.toFixed(3)})`);
+    }
+    if (m.share > 0.2) seen++;
+    return { m, h, on };
+  });
+  assert.ok(seen > 100, "the sweep sees the shade large");
+  assert.ok(worstShare < 0.02, `a degree's orbit moves the shade's share of the inside by under 2 percent (${worstShare.toFixed(4)}; 0.27 before)`);
+  assert.ok(worstDark < 0.01, `and its mean darkness by under 1 percent (${worstDark.toFixed(4)})`);
+  assert.ok(worstH < 0.02, `and the cut's height by under 0.02 (${worstH.toFixed(4)}; 0.485 before)`);
+});
+
+test("2026-11-18: the lip's shade is soft: fine layers from dark under the rim to nothing at its edge, no step", () => {
+  const tone = SP.rimShadeTone(), rgb = SP.rgb8;
+  // darkest under the rim, BOWL.shade there; nothing at or past the geometric shadow's edge (rho 1)
+  assert.ok(tone.length >= 12 && tone.length <= SP.BOWL_SHADE_LAYERS, `${tone.length} layers`);
+  assert.ok(tone.every((l, i) => l.s <= 1 && (i === 0 || l.s < tone[i - 1].s)), "nested, all inside the geometric edge");
+  const full = 1 - tone.reduce((t, l) => t * (1 - Math.round(l.alpha * 255) / 255), 1);
+  assert.ok(Math.abs(full - SP.BOWL.shade) < 0.06, `as dark as BOWL.shade under the rim (${full.toFixed(3)})`);
+  assert.ok(tone.every((l) => l.alpha <= 12 / 255), "each layer a few of 255");
+  const DEG = Math.PI / 180;
+  let worst = 0, worstLayer = 0, layerSteps = 0, fine = 0;
+  for (const [tilt, turn] of [[-14, -70], [-14, -40], [-14, -14], [0, 0], [-14, 30], [30, 40], [64, 0], [-30, 60]]) {
+    const fr = SP.bowlFrame(tilt * DEG, SP.BOWL_DIST, turn * DEG), layers = SP.rimShadeLayers(fr, 0, 0, 1);
+    // drawn as the sampler sees it: each layer's far edge where rho is that layer's reach (or held just inside the rim,
+    // where the near wall hides the wall it would fall on), in a handful of path commands
+    layers.forEach((l, k) => {
+      assert.ok(l.cmds.length <= 10, `tilt ${tilt} turn ${turn}: a layer in ${l.cmds.length} commands`);
+      const cs = l.cmds.filter((c) => c[0] === "C"), back = cs.slice(cs.length - Math.ceil(cs.length / 2), -1);
+      for (const c of back) {
+        const p = { x: c[5], y: c[6] };
+        if (SP.rimNorm(fr, p) > 0.99) continue;
+        const rho = SP.rimShadeRho(fr, SP.bowlSurfaceAt(fr, p.x, p.y));
+        assert.ok(Math.abs(rho - l.s) < 0.03, `tilt ${tilt} turn ${turn} layer ${k}: its edge at rho ${rho.toFixed(3)}, not ${l.s.toFixed(3)}`);
+      }
+    });
+    // across the inside, along lines every way (300 points across the rim, about 2 px apart), over the bare wall and
+    // hosts' washes, under as many depth caps: one layer's edge steps the color by three of 255 or less (four, with the
+    // wall's own light changing between the two points), and no two neighbors differ by more than eight (a thin shade by
+    // the rim falls off within a few px; 40 before)
+    for (const tint of [null, M.HOST_COLORS[0], M.HOST_COLORS[1]]) for (const ang of [0, 0.7, 1.4, 2.1, 2.8]) {
+      let prev = null;
+      for (let i = -150; i <= 150; i++) {
+        const p = { x: fr.rim.cx + (i / 150) * fr.rim.w * Math.cos(ang), y: fr.rim.cy + (i / 150) * fr.rim.h * Math.sin(ang) };
+        if (SP.rimNorm(fr, p) > 0.97) { prev = null; continue; }
+        const u = SP.bowlSurfaceAt(fr, p.x, p.y), c = rgb(SP.bowlColorAt(fr, p.x, p.y, tint));
+        const cur = { c, deep: SP.bowlDepthAt(fr, u), n: SP.rimShadeAt(fr, u).length };
+        if (prev && prev.deep === cur.deep) {
+          const step = Math.max(...c.map((v, j) => Math.abs(v - prev.c[j])));
+          worst = Math.max(worst, step);
+          if (Math.abs(prev.n - cur.n) === 1) { worstLayer = Math.max(worstLayer, step); layerSteps++; if (step <= 3) fine++; }
+        }
+        prev = cur;
+      }
+    }
+  }
+  assert.ok(worstLayer <= 4 && fine >= 0.97 * layerSteps && layerSteps > 500, `a layer's edge steps by at most 4 of 255 (${worstLayer}), nearly always 3 (${fine} of ${layerSteps})`);
+  assert.ok(worst <= 8, `no step over 8 of 255 anywhere in the shade (${worst})`);
+});
+
+test("2026-11-18: the bowl draws its soft shade in budget, every layer in the lite scene too", () => {
+  const DEG = Math.PI / 180, la = L.layoutGraph(alpha);
+  for (const [ox, oy] of [[0, 0], [40, 0], [70, 14], [120, 0], [148, 60], [-8, -16]]) {
+    const pa = D.projectLayout(alpha, la, D.camera("iso", 0, D.orbitBy("iso", null, ox * DEG, oy * DEG, true)));
+    for (const lite of [false, true]) {
+      const sc = S.buildScene(alpha, pa, { width: 1400, height: 860, tf: G.identity(), motion: "full", lite });
+      const shade = sc.items.filter((it) => it.id.startsWith("bowl-shade-"));
+      assert.equal(shade.length, SP.rimShadeLayers(pa.bowl.frame, 0, 0, 1).length, `${ox},${oy}: every layer drawn${lite ? ", lite too" : ""}`);
+      assert.ok(cmdCount(shade) <= 10 * SP.BOWL_SHADE_LAYERS, `${ox},${oy}: the shade in ${cmdCount(shade)} commands`);
+      const bowl = sc.items.filter((it) => it.t === "path" && it.id.startsWith("bowl-") && !it.id.startsWith("bowl-shadow-"));
+      assert.ok(cmdCount(bowl) <= 500, `${ox},${oy}: the bowl in ${cmdCount(bowl)} commands`);
+      assert.ok(cmdCount(sc.items.filter((it) => it.t === "path")) <= BUDGET.shoal, `${ox},${oy}: the scene in budget`);
+    }
+  }
+});
+
+test("2026-11-18: you are magenta, the needs-you color, in every view, and stand apart from the globes, the hosts and the bowl", () => {
+  // with nothing open too (you were the ink grey then: a grey glass ball in the grey glass bowl)
+  const calm = structuredClone(doc);
+  for (const n of calm.nodes) if (n.kind === "user") n.work = { ...(n.work ?? {}), asks_open: 0, grants_pending: 0 };
+  for (const vm of [M.buildModel(calm, "global"), M.buildModel(calm, A), global, alpha]) {
+    assert.equal(vm.nodes.find((n) => n.kind === "user").visual.color, M.PALETTE.magenta, `${vm.view}: you are magenta`);
+  }
+  // clearly apart from every host's color and every shoal's pastel (the nearest, the rose host, is 33 apart in Lab; a
+  // green you would be 22 from the mint pastel and 25 from the green host)
+  for (const c of [...M.HOST_COLORS, ...M.PASTELS]) assert.ok(deltaE(M.PALETTE.magenta, c) > 30, `apart from ${c}`);
+  // in the bowl the glass ball's body is your color: its middle, as drawn over the wall behind you, far from that wall
+  for (const cam of [D.camera("iso"), D.camera("tilt", 0, D.orbitBy("tilt", null, 0.7, 0.3, true))]) {
+    const pa = D.projectLayout(alpha, L.layoutGraph(alpha), cam), fr = pa.bowl.frame;
+    const sc = S.buildScene(alpha, pa, { width: 1000, height: 700, tf: G.identity(), motion: "off" });
+    const user = alpha.nodes.find((n) => n.kind === "user"), body = sc.items.find((it) => it.id === `you-glass-body-${user.id}`);
+    const p = pa.pos.get(user.id), nx = p.x / pa.bowl.R, ny = p.y / pa.bowl.R, b = S.bowlHostAt(fr, pa.bands, nx, ny);
+    const wall = SP.bowlColorAt(fr, nx, ny, b?.color ?? null);
+    const mid = SP.over(wall, G.withAlpha(G.mix(body.bg.from.slice(0, 7), body.bg.to.slice(0, 7), 0.5), (alphaOf(body.bg.from) + alphaOf(body.bg.to)) / 2));
+    assert.ok(deltaE(mid, wall) > 30, `${cam.name}: the ball (${mid}) reads apart from the wall behind it (${wall}): ${deltaE(mid, wall).toFixed(0)}`);
+    const [, a0, b0] = labOf(mid);
+    assert.ok(Math.hypot(a0, b0) > 30 && a0 > 20, `${cam.name}: a saturated magenta (${mid}: chroma ${Math.hypot(a0, b0).toFixed(0)})`);
+  }
+});
+
+test("2026-11-18: in the bowl every role sits well inside its own host's lune, LUNE_MARGIN of its width from either edge", () => {
+  const DEG = Math.PI / 180, TAU = 2 * Math.PI;
+  // the fixture's roles as templates, their CI job hosts dropped (a host that only runs jobs gets a lune of its own)
+  const tmpl = doc.nodes.filter((n) => n.kind === "role" && n.shoal === A).map((n) => {
+    const { job_host: _h, job: _j, ...state } = n.state ?? {};
+    return { ...n, state };
+  });
+  const shoalWith = (counts) => {
+    const d = structuredClone(doc);
+    d.nodes = d.nodes.filter((n) => !(n.kind === "role" && n.shoal === A));
+    d.hosts = counts.map((_, h) => ({ id: `host:host-${h}`, name: `host-${h}`, home: h === 0 }));
+    let k = 0;
+    counts.forEach((c, h) => { for (let j = 0; j < c; j++, k++) d.nodes.push({ ...structuredClone(tmpl[k % tmpl.length]), id: `${A}:r${h}-${j}`, slug: `r${h}-${j}`, label: `r${h}-${j}`, host: `host-${h}` }); });
+    const ids = new Set(d.nodes.map((n) => n.id));
+    d.edges = d.edges.filter((e) => ids.has(e.src) && ids.has(e.dst));
+    return d;
+  };
+  assert.ok(D.LUNE_MARGIN >= 0.15 && D.LUNE_MARGIN < 0.5);
+  let checked = 0, least = Infinity;
+  for (const counts of [[1], [5], [1, 1], [2, 1], [6, 1], [3, 3], [1, 6], [1, 1, 1], [4, 2, 1], [2, 2, 2], [5, 1, 1], [1, 6, 2]]) {
+    const vm = M.buildModel(shoalWith(counts), A), la = L.layoutGraph(vm);
+    for (const [ox, oy] of [[0, 0], [-8, 0], [40, 0], [80, 40], [120, 0], [0, 60], [-40, -30], [148, 0]]) for (const name of ["tilt", "iso"]) for (const yaw of [0, 1.1]) {
+      const pa = D.projectLayout(vm, la, D.camera(name, yaw, D.orbitBy(name, null, ox * DEG, oy * DEG, true))), fr = pa.bowl.frame;
+      assert.equal(pa.bands.length, counts.length);
+      for (const [id, s] of pa.surfaceOf) {
+        const b = pa.bands.find((x) => x.host === s.host), w = b.a1 - b.a0;
+        assert.equal(s.host, vm.byId.get(id).host, `${id}: on its own host's lune`);
+        if (counts.length < 2) continue;
+        const off = ((s.phi - b.a0) % TAU + TAU) % TAU, edge = Math.min(off, w - off);
+        least = Math.min(least, edge / w);
+        assert.ok(off <= w + 1e-9 && edge >= D.LUNE_MARGIN * w - 1e-9, `${counts} ${name} ${ox},${oy} yaw ${yaw}: ${id} ${(edge / DEG).toFixed(1)} degrees from its lune's edge (${(w / DEG).toFixed(0)} wide)`);
+        // and the lune seen under it on screen is its host's
+        const q = SP.bowlProject(fr, SP.bowlPoint(fr, s.theta, s.phi));
+        assert.equal(S.bowlHostAt(fr, pa.bands, q.x, q.y)?.host, s.host, `${id}: its host's lune under it`);
+        checked++;
+      }
+    }
+  }
+  assert.ok(checked > 1000 && least >= D.LUNE_MARGIN - 1e-9, `${checked} placements, the least ${least.toFixed(3)} of a lune's width from its edge`);
 });

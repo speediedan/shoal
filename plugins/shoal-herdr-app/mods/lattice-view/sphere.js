@@ -334,14 +334,18 @@ export function bowlFrame(alpha, d = BOWL_DIST, beta = BOWL_TURN) {
   // line of sight keeps none when acos(h) >= toward + acos(1 / d) (kappa, less the margin). Its normal leans
   // `lean` from the bowl's up toward the camera, so the rim's polar angle runs from pi - tilt - kappa on the near side to
   // that plus 2 lean on the far side: the lean that keeps the far wall up to BOWL_FAR_EXTRA past the equator (a little
-  // over a hemisphere's rim) cuts away only the near wall. A camera that already sees all of that inside keeps it whole.
+  // over a hemisphere's rim) cuts away only the near wall. A camera that already sees all of that inside (the axis
+  // within about 13 degrees of the line of sight) needs no lean: the cut is square to the axis, the rim BOWL_FAR_EXTRA
+  // past the equator all round, which is where the leaning cut leaves it as its lean comes down to nothing. (Until
+  // 2026-11-18 it dropped to a hemisphere there, h 0: the whole cut, and with it the lip's shade, jumped as an orbit
+  // crossed that angle, the shade from half the inside to a quarter of it in one degree.)
   const tilt = Math.acos(Math.max(-1, Math.min(1, -pole.z)));
   const side = Math.hypot(pole.x, pole.y) > 1e-9 ? unit({ x: -pole.x, y: -pole.y, z: 0 }) : { x: 0, y: -1, z: 0 };
   const cutAt = (margin) => {
     const kappa = Math.acos(1 / d) - margin;
     const lean = Math.max(0, (tilt + kappa - Math.PI / 2 + BOWL_FAR_EXTRA) / 2), toward = tilt - lean;
     const n = comb(Math.cos(toward), { x: 0, y: 0, z: 1 }, Math.sin(toward), side);
-    const h = lean > 0 ? Math.cos(toward + kappa) : 0;
+    const h = Math.cos(Math.max(toward + kappa, Math.PI / 2 - BOWL_FAR_EXTRA));
     const f1 = unit(comb(1, e1, -dot(e1, n), n));
     const f2 = unit(comb(1, e2, -dot(e2, n), n, -dot(e2, f1), f1));
     const rho = Math.sqrt(1 - h * h), c = comb(h, n);
@@ -459,8 +463,8 @@ export function bowlRing(fr, phi, k) {
 // A circle on the bowl projects to an ellipse in perspective too, but not at an even pace round it: eighth turns keep
 // each cubic within a fraction of a pixel of it.
 const EIGHTH = Math.PI / 4;
-function bowlArc(cmds, fr, cx, cy, R, point, tangent, a, b) {
-  const n = Math.max(1, Math.ceil(Math.abs(b - a) / EIGHTH - 1e-9));
+function bowlArc(cmds, fr, cx, cy, R, point, tangent, a, b, step = EIGHTH) {
+  const n = Math.max(1, Math.ceil(Math.abs(b - a) / step - 1e-9));
   for (let i = 0; i < n; i++) {
     const t0 = a + ((b - a) * i) / n, t1 = a + ((b - a) * (i + 1)) / n;
     const at = (t) => { const s = bowlProject(fr, point(t)); return { x: cx + R * s.x, y: cy + R * s.y }; };
@@ -555,21 +559,36 @@ export function lipCmds(fr, cx, cy, R) {
 }
 
 /** The near wall's outside, where the cut leaves its top facing the camera: a thin crescent between the lip's outer
- * edge and the outer wall's outline on screen (a circle about the middle), or none. */
+ * edge and the outer wall's outline on screen (a circle about the middle), a thin ring between them when all of the
+ * edge faces the camera (seen near the axis), or none. */
 export function crescentCmds(fr, cx, cy, R) {
   const { c, h, f1, f2 } = fr.cut, Ro = fr.outer, rho = Math.sqrt(Ro * Ro - h * h), d = fr.d;
   // the lip's outer edge c + rho (cos psi f1 + sin psi f2) faces the camera where its z > Ro^2 / d
-  const A = Math.hypot(f1.z, f2.z), psi0 = Math.atan2(f2.z, f1.z), k = (Ro * Ro / d - c.z) / (rho * A);
+  const A = Math.hypot(f1.z, f2.z), psi0 = Math.atan2(f2.z, f1.z), k = A > 1e-12 ? (Ro * Ro / d - c.z) / (rho * A) : (Ro * Ro / d > c.z ? Infinity : -Infinity);
   if (!(k < 1 - 1e-6)) return [];
   const del = Math.acos(Math.max(-1, k));
   const point = (p) => comb(1, c, rho * Math.cos(p), f1, rho * Math.sin(p), f2);
   const tangent = (p) => comb(-rho * Math.sin(p), f1, rho * Math.cos(p), f2);
+  const rs = (Ro * d) / Math.sqrt(d * d - Ro * Ro), TAU = 2 * Math.PI;
+  const ang = (u) => { const s = bowlProject(fr, u); return Math.atan2(s.y, s.x); };
+  const outline = (t) => ({ x: cx + R * rs * Math.cos(t), y: cy + R * rs * Math.sin(t) }), outlineT = (t) => ({ x: -R * rs * Math.sin(t), y: R * rs * Math.cos(t) });
+  if (del >= Math.PI - 1e-9) {
+    // the whole edge faces the camera: a ring, the edge (its exact ellipse, fr.lip) and the outline the other way round
+    // (2026-11-18: one loop of the edge closed on itself filled the whole opening with the shell's tint)
+    const e = fr.lip, ring = conjugateEllipseCmds(cx + R * e.cx, cy + R * e.cy, { x: R * e.a.x, y: R * e.a.y }, { x: R * e.b.x, y: R * e.b.y });
+    const turn = e.a.x * e.b.y - e.a.y * e.b.x > 0 ? 1 : -1, q = outline(0);
+    const cmds = [...ring, ["M", q.x, q.y]];
+    arc(cmds, outline, outlineT, 0, -turn * TAU);
+    cmds.push(["Z"]);
+    return cmds;
+  }
   const cmds = [startAt(fr, cx, cy, R, point(psi0 - del))];
   bowlArc(cmds, fr, cx, cy, R, point, tangent, psi0 - del, psi0 + del);
-  // back along the outline, the short way, from where the edge leaves it to where it met it
-  const rs = (Ro * d) / Math.sqrt(d * d - Ro * Ro), p1 = bowlProject(fr, point(psi0 + del)), p0 = bowlProject(fr, point(psi0 - del));
-  const a1 = Math.atan2(p1.y, p1.x), a0 = Math.atan2(p0.y, p0.x), sweep = ((a0 - a1 + 3 * Math.PI) % (2 * Math.PI)) - Math.PI;
-  arc(cmds, (t) => ({ x: cx + R * rs * Math.cos(t), y: cy + R * rs * Math.sin(t) }), (t) => ({ x: -R * rs * Math.sin(t), y: R * rs * Math.cos(t) }), a1, a1 + sweep);
+  // back along the outline from where the edge leaves it to where it met it, over the turn the edge made (the short way
+  // only when the edge made the short way: 2026-11-18, a long edge closed the short way filled the opening)
+  const a1 = ang(point(psi0 + del)), a0 = ang(point(psi0 - del)), am = ang(point(psi0));
+  const fwd = ((a1 - a0) % TAU + TAU) % TAU, travel = ((am - a0) % TAU + TAU) % TAU <= fwd ? fwd : fwd - TAU;
+  arc(cmds, outline, outlineT, a1, a1 - travel);
   cmds.push(["Z"]);
   return cmds;
 }
@@ -654,37 +673,140 @@ export function ballShadow(Lp, at, rb, c, n) {
 
 /** The inside's shade from its own lip: the light comes in through the opening from above, so the wall under the lip on
  * the light's side is out of it, a crescent under the rim. The part of the rim facing the light (r . l > 0) casts it: its
- * shadow edge is where the ray from the light past each rim point meets the wall again, r - 2 (r . l) l, l the way from r
- * to the light. One closed path, rim arc out and shadow edge back, and the screen line its gradient runs along, dark at
- * the rim. */
-export function rimShade(fr, cx, cy, R) {
+ * shadow's edge is where the ray from the light past each rim point r meets the wall again, its fold r - 2 (r . l) l, l
+ * the way from r to the light. Between the two runs the great circle through r, its fold and the light's line (they lie
+ * in one plane through the middle), so a point of the shade is a fraction rho of the way along it from r to the fold: 0
+ * at the rim, 1 at the geometric shadow's edge. The shade is drawn as a soft shadow is (shadowLayers): nested layers out
+ * from the rim, layer k out to rho = s_k, each adding a little alpha, darkest under the rim and falling off smoothly to
+ * nothing at the geometric edge, so no edge shows. The arc grows from
+ * nothing as a rim point first turns to face the light, so the shade grows in as the camera orbits, never all at once
+ * (2026-11-18: it was one path under one linear gradient across its bounds, so most of its edge was a step of 20 to 40
+ * percent alpha). Memoized on the frame: {mid, del, cut, ct, edgeAt}, or null where no rim point faces the light. */
+function shadeArc(fr) {
+  if (fr.shadeArc !== undefined) return fr.shadeArc;
   const L = bowlLightDir(fr), { f1, f2 } = fr.cut, [cut, ct] = cutCircle(fr);
   // the arc of the rim that faces the light: about the way to it from the middle, out to where each rim point's own
-  // way to the light grazes it (so the shadow edge leaves the rim there), found by bisection
+  // way to the light grazes it (so the shadow edge leaves the rim there), found by bisection; the whole rim when every
+  // point of it faces the light
   const psi0 = Math.atan2(dot(f2, L), dot(f1, L)), faces = (p) => { const u = cut(p); return dot(u, bowlLightDir(fr, u)) > 0; };
-  if (!faces(psi0) || faces(psi0 + Math.PI)) return null;
+  if (!faces(psi0)) return (fr.shadeArc = null);
   const reach = (dir) => {
     let lo = 0, hi = Math.PI;
+    if (faces(psi0 + dir * hi)) return hi;
     for (let i = 0; i < 26; i++) { const mid = (lo + hi) / 2; if (faces(psi0 + dir * mid)) lo = mid; else hi = mid; }
     return lo;
   };
   const a0 = reach(-1), a1 = reach(1), mid = psi0 + (a1 - a0) / 2, del = (a0 + a1) / 2;
   const fold = (u) => { const l = bowlLightDir(fr, u); return comb(1, u, -2 * Math.max(0, dot(u, l)), l); };
-  // where the fold lands on wall the near wall hides (orbited round the side, a low cut), the edge runs along the rim
+  // where an edge lands on wall the near wall hides (orbited round the side, a low cut), it runs along the rim
   // instead, on the wall seen just inside it, so the shade never spills over the outside
   const { cx: rx, cy: ry } = fr.rim;
-  const edge = (p) => {
-    const w = fold(cut(p)), s = bowlProject(fr, w), rn = rimNorm(fr, s);
+  const edgeAt = (p, s) => {
+    const r = cut(p), w = slerp(r, fold(r), s), q = bowlProject(fr, w), rn = rimNorm(fr, q);
     if (rn <= 0.999) return w;
-    return bowlSurfaceAt(fr, rx + ((s.x - rx) * 0.999) / rn, ry + ((s.y - ry) * 0.999) / rn) ?? w;
+    return bowlSurfaceAt(fr, rx + ((q.x - rx) * 0.999) / rn, ry + ((q.y - ry) * 0.999) / rn) ?? w;
   };
-  const edgeT = (p) => comb(5e3, edge(p + 1e-4), -5e3, edge(p - 1e-4));
-  const cmds = [startAt(fr, cx, cy, R, cut(mid - del))];
-  bowlArc(cmds, fr, cx, cy, R, cut, ct, mid - del, mid + del);
-  bowlArc(cmds, fr, cx, cy, R, edge, edgeT, mid + del, mid - del);
+  // how wide it is on screen (sphere radii): the most, over its arc, from a rim point to its edge
+  let width = 0;
+  for (let i = 1; i < 8; i++) {
+    const p = mid - del + (2 * del * i) / 8, q = bowlProject(fr, cut(p)), e = bowlProject(fr, edgeAt(p, 1));
+    width = Math.max(width, Math.hypot(e.x - q.x, e.y - q.y));
+  }
+  return (fr.shadeArc = { mid, del, cut, ct, edgeAt, fold, width });
+}
+/** The lip's shade's width on screen (sphere radii from the rim to its edge, at most over its arc), 0 with none. */
+export const rimShadeWidth = (fr) => shadeArc(fr)?.width ?? 0;
+// the point a fraction s of the way along the great circle from unit vector a to unit vector b (past b for s over 1)
+function slerp(a, b, s) {
+  const om = Math.acos(Math.max(-1, Math.min(1, dot(a, b))));
+  if (om < 1e-6) return a;
+  const k = Math.sin(om);
+  return comb(Math.sin((1 - s) * om) / k, a, Math.sin(s * om) / k, b);
+}
+// one closed path: the rim arc out, the edge at rho = s back. The rim arc is drawn on the rim's own ellipse (its image is
+// exact, so a cubic a quarter of the ellipse's turn stays within a hundredth of a pixel of it) and the edge in quarter
+// turns of the rim (a faint layer's edge a pixel off shows nothing), so each layer is about six path commands.
+function shadeCmds(fr, g, cx, cy, R, s) {
+  const edge = (p) => g.edgeAt(p, s), edgeT = (p) => comb(5e3, edge(p + 1e-4), -5e3, edge(p - 1e-4));
+  const cmds = [startAt(fr, cx, cy, R, g.cut(g.mid - g.del))];
+  rimEllipseArc(cmds, fr, cx, cy, R, g.cut, g.mid - g.del, g.mid + g.del);
+  bowlArc(cmds, fr, cx, cy, R, edge, edgeT, g.mid + g.del, g.mid - g.del, 2 * EIGHTH);
   cmds.push(["Z"]);
-  const from = bowlProject(fr, cut(mid)), to = bowlProject(fr, edge(mid));
-  return { cmds, angle: angleOf(to.x - from.x, to.y - from.y) };
+  return cmds;
+}
+// the rim from the cut circle's angle p0 to p1 (the way through their middle), as arcs of its ellipse on screen
+function rimEllipseArc(cmds, fr, cx, cy, R, cut, p0, p1) {
+  const { cx: mx, cy: my, a, b } = fr.rim, det = a.x * b.y - a.y * b.x;
+  const tOf = (p) => { const q = bowlProject(fr, cut(p)), x = q.x - mx, y = q.y - my; return Math.atan2((a.x * y - a.y * x) / det, (x * b.y - y * b.x) / det); };
+  const TAU = 2 * Math.PI, t0 = tOf(p0), tm = tOf((p0 + p1) / 2);
+  // which way round the ellipse runs from p0 to p1: the way that passes its middle
+  const fwd = ((tm - t0) % TAU + TAU) % TAU, span = 2 * Math.abs(Math.abs(p1 - p0) >= TAU - 1e-9 ? Math.PI : fwd <= Math.PI ? fwd : fwd - TAU);
+  const dir = fwd <= Math.PI ? 1 : -1, n = Math.max(1, Math.ceil(span / (2 * EIGHTH) - 1e-9)), dt = (dir * span) / n, k = (4 / 3) * Math.tan(dt / 4);
+  const at = (t) => ({ x: cx + R * (mx + a.x * Math.cos(t) + b.x * Math.sin(t)), y: cy + R * (my + a.y * Math.cos(t) + b.y * Math.sin(t)) });
+  const d = (t) => ({ x: R * (-a.x * Math.sin(t) + b.x * Math.cos(t)), y: R * (-a.y * Math.sin(t) + b.y * Math.cos(t)) });
+  for (let i = 0; i < n; i++) {
+    const s0 = t0 + dt * i, s1 = t0 + dt * (i + 1), p = at(s0), q = at(s1), u = d(s0), v = d(s1);
+    cmds.push(["C", p.x + k * u.x, p.y + k * u.y, q.x - k * v.x, q.y - k * v.y, q.x, q.y]);
+  }
+}
+/** The lip's geometric shade (out to its shadow's edge, rho 1): one closed path, rim arc out and shadow edge back, and
+ * the screen line from the rim's middle to the edge's; null where no rim point faces the light. */
+export function rimShade(fr, cx, cy, R) {
+  const g = shadeArc(fr);
+  if (!g) return null;
+  const from = bowlProject(fr, g.cut(g.mid)), to = bowlProject(fr, g.edgeAt(g.mid, 1));
+  return { cmds: shadeCmds(fr, g, cx, cy, R, 1), angle: angleOf(to.x - from.x, to.y - from.y) };
+}
+/** How many layers the lip's shade is drawn in (six to eight path commands each; the lite scene keeps them all, as it
+ * does every shadow's), each a step of two or three of the 8-bit levels on the wall under it, as the floor shadows'
+ * SHADOW_STEP: at most 112 commands, which keeps the bowl's own paths under 500 at every orbit. */
+export const BOWL_SHADE_LAYERS = 14;
+// the wall color the shade's layers are solved over: the inside's middle tone, over which the 14 layers come out even,
+// five to eight of 255 each (over a lighter one, the 8-bit rounding lumped two into one of 9 to 11)
+const SHADE_UNDER = "#4e5662";
+/** The shade's layers, outermost first: {s, alpha}, s its reach as a fraction rho of the way from the rim to the
+ * geometric shadow's edge: the falloff of a soft shadow (shadowAt, its penumbra BOWL.shadeSoft) fitted inside that
+ * edge, darkest under the rim (BOWL.shade there, under the 0.45 of the gradient it replaced, so the shade spreads
+ * without the large dark region that had) and nothing at its geometric edge. */
+export const rimShadeTone = () => {
+  const k = 1 + BOWL.shadeSoft;
+  return shadowLayers(BOWL.shade, BOWL.shadeSoft, BOWL_SHADE_LAYERS, SHADE_UNDER, BOWL_SHADE).map((l) => ({ s: l.s / k, alpha: l.alpha }));
+};
+/** The lip's shade as drawn: its layers, outermost first, {cmds, alpha}; none where no rim point faces the light. */
+export function rimShadeLayers(fr, cx, cy, R) {
+  const g = shadeArc(fr);
+  if (!g) return [];
+  return rimShadeTone().map((l) => ({ cmds: shadeCmds(fr, g, cx, cy, R, l.s), alpha: l.alpha, s: l.s }));
+}
+/** Where a point u of the inner surface is in the lip's shade: rho, the fraction of the way it lies from the rim point
+ * that shades it to that point's fold, along their great circle (0 at the rim, 1 at the geometric edge), or Infinity
+ * out of it. The great circle through u in the plane of the light's line meets the rim at the point that shades it. */
+export function rimShadeRho(fr, u) {
+  const g = shadeArc(fr);
+  if (!g) return Infinity;
+  const m = cross(bowlLightAt(fr), u), ml = len(m);
+  if (ml < 1e-9) return Infinity;
+  const { c, rho, f1, f2 } = fr.cut, A = (rho * dot(m, f1)) / ml, B = (rho * dot(m, f2)) / ml, C = dot(m, c) / ml, AB = Math.hypot(A, B);
+  if (AB < 1e-12 || Math.abs(C) > AB) return Infinity;
+  const base = Math.atan2(B, A), off = Math.acos(-C / AB), TAU = 2 * Math.PI;
+  let best = Infinity;
+  for (const p of [base + off, base - off]) {
+    const dp = ((p - (g.mid - g.del)) % TAU + TAU) % TAU;
+    if (dp > 2 * g.del + 1e-9) continue;
+    const r = g.cut(p), w = g.fold(r), om = Math.acos(Math.max(-1, Math.min(1, dot(r, w))));
+    if (om < 1e-9) continue;
+    // u on the great circle from r toward w (not behind r)
+    const tw = comb(1, w, -dot(r, w), r), tu = comb(1, u, -dot(r, u), r);
+    if (dot(tw, tu) <= 0) continue;
+    best = Math.min(best, Math.acos(Math.max(-1, Math.min(1, dot(r, u)))) / om);
+  }
+  return best;
+}
+/** How dark the lip's shade makes a point u of the inner surface: its layers that reach it, blended. */
+export function rimShadeAt(fr, u) {
+  const rho = rimShadeRho(fr, u);
+  if (!Number.isFinite(rho)) return [];
+  return rimShadeTone().filter((l) => rho <= l.s);
 }
 /** Whether a point of the inner surface is out of the light: it faces away from it, or the wall is in the way. */
 export function inRimShade(fr, u) {
@@ -849,8 +971,9 @@ export function bowlFloor(fr, n = 10, half = 2.4) {
 /** The bowl's look: the inside's base (opaque, so the floor does not show through the bowl), each glow layer's alpha (2
  * of 255, so the step at a layer's edge is under one and a half of the 255 color levels between the base and the light,
  * and does not show), the sweep's, a host's wash over it (strong enough that two hosts read apart, light enough that
- * edges over it read), each depth cap's (5 of 255), a host's outline, the lip's shade under it at the rim and at its edge. */
-export const BOWL = { glow: 2 / 255, sweep: 0.46, wash: 0.17, deep: 6 / 255, outline: 0.75, shade: 0.45, shadeEdge: 0 };
+ * edges over it read), each depth cap's (5 of 255), a host's outline, the lip's shade at its darkest (under the rim) and
+ * its penumbra (shadowAt's soft: 1 spreads the falloff over the whole way from the rim to the geometric edge). */
+export const BOWL = { glow: 2 / 255, sweep: 0.46, wash: 0.17, deep: 6 / 255, outline: 0.75, shade: 0.34, shadeSoft: 1 };
 const BOWL_BASE = "#252c38", BOWL_LIT = "#e6ebf0", BOWL_SHADE = "#01040a";
 /** What the eye sees at a point inside the bowl (nx, ny: radii from its middle), in a host's tint: the layers the
  * scene draws there, blended in order. */
@@ -864,12 +987,9 @@ export function bowlColorAt(fr, nx, ny, tint, under = "#1d2a3c") {
   }
   out = over(out, withAlpha(BOWL_LIT, BOWL.sweep * bowlSweep(fr).at(nx, ny)));
   if (tint) out = over(out, withAlpha(tint, BOWL.wash));
-  const u = bowlSurfaceAt(fr, nx, ny), sh = rimShade(fr, 0, 0, 1);
+  const u = bowlSurfaceAt(fr, nx, ny);
   if (u) for (let i = bowlDepthAt(fr, u); i > 0; i--) out = over(out, withAlpha(BOWL_SHADE, BOWL.deep));
-  if (u && sh && inRimShade(fr, u)) {
-    const t = gradientAt(sh.cmds, sh.angle, nx, ny);
-    out = over(out, withAlpha(BOWL_SHADE, BOWL.shade + (BOWL.shadeEdge - BOWL.shade) * t));
-  }
+  if (u) for (const l of rimShadeAt(fr, u)) out = over(out, withAlpha(BOWL_SHADE, l.alpha));
   return out;
 }
 export { BOWL_BASE, BOWL_LIT, BOWL_SHADE };
@@ -877,14 +997,19 @@ export { BOWL_BASE, BOWL_LIT, BOWL_SHADE };
 // ---- you, in the bowl: a small glass ball
 //
 // You float in front of the bowl's inside, so you are drawn as a thing in front of it, not a ring on it: a glass ball lit
-// by the bowl's one light from where it hangs as seen from you (bowlLightDir: up and a little left at the opening view). Its body is clear glass, a linear gradient from nearly
-// clear on the lit side to a deeper tint at the far limb (no steps at all), with the wall showing through; the limb
+// by the bowl's one light from where it hangs as seen from you (bowlLightDir: up and a little left at the opening view). Its body is
+// colored glass, a linear gradient from a light veil of your color on the lit side to that color deepened at the far
+// limb (no steps at all), so you read in your own color, not as a grey ball of the bowl's glass (2026-11-18: the body
+// was nearly clear, 6 to 72 percent of a deepened tint, and the hub's color grey with nothing open, so you blended
+// into the bowl); the limb
 // darkens in three soft strokes (glass is most reflective at a grazing angle); YOU_GLASS circles shrinking toward the
 // lit point each add a little light, so it rounds smoothly (each step under 2 percent, about 3 of 255 levels: no band shows);
 // then a specular highlight where the light strikes, the light the glass gathers glowing low on the far side inside
 // the limb, a limb stroked light to dark, and a dark hairline outside it, so it stands off the wall behind it. About
 // 92 path commands (YOU_GLASS_CMDS).
 export const YOU_GLASS = 12;
+/** The body's gradient: its alpha on the lit side and at the far limb, and how far the far limb's color is deepened. */
+export const YOU_BODY = { lit: 0.62, dark: 0.95, deep: 0.4 };
 export const YOU_GLASS_CMDS = 4 * (YOU_GLASS + 10) + 4;
 const circle = (x, y, r) => [["M", x + r, y], ["A", r, r, 0, false, true, x - r, y], ["A", r, r, 0, false, true, x + r, y], ["Z"]];
 /** The glass ball's paths at (x, y), radius r, in `tint`, `op` its opacity (a faded you fades it), lit from `light` (the
@@ -892,9 +1017,9 @@ const circle = (x, y, r) => [["M", x + r, y], ["A", r, r, 0, false, true, x - r,
 export function glassBall(id, x, y, r, tint, op = 1, light = LIGHT) {
   const LIGHT = lightOf(light);
   const away = angleOf(-LIGHT.x, -LIGHT.y), fill = (color, a) => ({ kind: "solid", color: withAlpha(color, a * op) });
-  const deep = mix(tint, "#050b17", 0.72), lit = mix(tint, "#ffffff", 0.62);
+  const deep = mix(tint, "#050b17", YOU_BODY.deep), lit = mix(tint, "#ffffff", 0.62);
   const path = (part, cmds, bg, stroke = 0) => ({ t: "path", id: `you-glass-${part}-${id}`, fill: !stroke, ...(stroke ? { width: stroke } : {}), cmds, bg });
-  const paths = [path("body", circle(x, y, r), { kind: "linear", angle: away, from: withAlpha(mix(tint, "#ffffff", 0.3), 0.06 * op), to: withAlpha(deep, 0.72 * op) })];
+  const paths = [path("body", circle(x, y, r), { kind: "linear", angle: away, from: withAlpha(mix(tint, "#ffffff", 0.1), YOU_BODY.lit * op), to: withAlpha(deep, YOU_BODY.dark * op) })];
   // the limb: darker toward the edge, soft
   [[0.89, 0.22, 0.14], [0.94, 0.12, 0.2], [0.975, 0.05, 0.28]].forEach(([k, w, a], i) => paths.push(path(`limb${i}`, circle(x, y, k * r), fill(deep, a), Math.max(0.6, w * r))));
   // the roundness: homothetic about the lit point, so each lies inside the one before and inside the ball

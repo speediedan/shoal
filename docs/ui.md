@@ -761,9 +761,12 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   bottom, and the far wall rises well past the rim of a hemisphere, so you see more of the back and the outside. The
   bowl has its own lamp, fixed to the bowl above and behind the opening, so it shines in through the opening onto the
   bottom and the bowl's shadow falls on the floor to its right; the inside darkens smoothly toward the bottom (no rings
-  of shading; faint rings of latitude stay as guides). You are a small glass ball lit from that lamp; your soft shadow falls on the
+  of shading; faint rings of latitude stay as guides), and the wall under the lip on the lamp's side is in a soft shade
+  that grows in gradually as you orbit and fades to nothing at its edge. You are a small magenta glass ball (always
+  magenta, the needs-you color, so you stand out against the bowl and every host's color) lit from that lamp; your soft shadow falls on the
   wall where its rays put it, so you read as floating in front of the wall (the roles and arrows cast none). The hosts' regions share the whole inside of the bowl in clearly different colors (azure, then amber, green,
-  rose and on), each host's roles sit on its region behind you, where the inside is seen and clear of one another, and
+  rose and on), each host's roles sit on its region behind you, well inside it (a fifth of its width from either edge,
+  so which host a role runs on reads at a glance), where the inside is seen and clear of one another, and
   the arrows, light cores
   over dark casings, taper from you as they go: wide and bright at you, thin and dimmer at the far wall, with smaller
   heads there, so they run away from you into the bowl. A role that needs you or asks you pulses in depth as in flat
