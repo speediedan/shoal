@@ -577,6 +577,11 @@ $H queue --shoal $SID --spec "$SPEC" --slug tl --active app#9201:fix --next "" -
 kill $TLW 2>/dev/null || true
 check "up wait-resolved step1:wake" env SHOAL_HEALTH_SHIFT_MIN=27 $H health --spec "$SPEC" --instance a
 check "up wait-validity step1:wake" env SHOAL_HEALTH_SHIFT_MIN=91 $H health --spec "$SPEC" --instance b --dry-run
+# the wake had no effect: a context restart at the wait, not a page
+check "up wait-resolved step2:restart -> woken 1x without effect: would restart" \
+    env SHOAL_HEALTH_SHIFT_MIN=95 $H health --spec "$SPEC" --instance a --dry-run
+# up acts on its resolved wait, so no later (real) quorum run restarts it in this fake world
+$H queue --shoal $SID --spec "$SPEC" --slug up --active $I2 --no-sync >/dev/null
 echo "2026-01-01T00:00:00Z" > /tmp/$SID/tick-health-b
 check "user peer-dead" $H health --spec "$SPEC" --instance a --dry-run
 

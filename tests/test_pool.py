@@ -419,7 +419,12 @@ esac
 
 
 class Budget(unittest.TestCase):
-    def test_overrun_pages_once_and_never_kills(self):
+    """The CI budget of a lease-holding job: told past it while progressing, stopped when stalled or at the cap, a page
+    only when a stop fails; a job holding no lease has none."""
+
+    def run_check(self, meta, probes, lease_rows=(), granted="", feature=None, times=(NOW,)):
+        """budget_check once per `times` entry, the unit read from `probes` (one dict per unit_probe call, the last
+        repeated). Returns (emit, led, page, stop, wake, stdout)."""
         import argparse
         import contextlib
         import io
@@ -427,33 +432,126 @@ class Budget(unittest.TestCase):
         import jobs
         import pool_cli
         a = argparse.Namespace(sid="budgettest", slug="r1", name="suite")
-        a._pool_feature = pool.feature(None)
-        start = iso(NOW - 100 * 60)
-        meta = {"unit": "shoal-budgettest-r1-suite", "name": "suite", "slug": "r1", "class": "ci", "started_utc": start}
+        a._pool_feature = feature or pool.feature(None)
         spec = MagicMock()
         spec.role.return_value = object()
-        with tempfile.TemporaryDirectory() as d, \
-                patch.object(pool_cli.time, "time", return_value=NOW), patch.object(jobs, "_emit") as emit, \
+        seq = list(probes)
+        lease = {"ok": True, "leases": [dict(r, held=True) for r in lease_rows], "queue": []}
+        clock = iter(times)
+        with patch.object(pool_cli.time, "time", side_effect=lambda: now[0]), patch.object(jobs, "_emit") as emit, \
                 patch.object(pool_cli, "save_meta"), patch("roles.ShoalSpec.load", return_value=spec), \
                 patch("ledger.Ledger") as led, patch("health.page_user") as page, \
-                patch.object(jobs, "_systemctl") as ctl, contextlib.redirect_stdout(io.StringIO()) as out:
-            pool_cli.budget_check(a, meta["unit"], meta, "")
-            pool_cli.budget_check(a, meta["unit"], meta, "")       # once per run
-            self.assertIn("JOB-OVERRUN", out.getvalue())
-            self.assertEqual(emit.call_count, 1)
-            self.assertEqual(emit.call_args.args[2], "overrun")
-            self.assertEqual(page.call_count, 1)
-            led.return_value.append.assert_called_once()
-            self.assertEqual(led.return_value.append.call_args.kwargs["to"], "r1")
-            ctl.assert_not_called()                                 # never a kill
-            # a research job has no budget; a placed CI job's budget starts at its lease grant
-            for m in (dict(meta, **{"class": "research"}), dict(meta, placement={"host": "a"}),
-                      dict(meta, placement={"host": "a"}, lease_granted=iso(NOW - 10 * 60))):
-                pool_cli.budget_check(a, m["unit"], m, "")
-            self.assertEqual(emit.call_count, 1)
-            rerun = dict(meta, placement={"host": "a"}, started_utc=iso(NOW - 99 * 60))   # a later run pages again
-            pool_cli.budget_check(a, meta["unit"], rerun, iso(NOW - 95 * 60))
-            self.assertEqual(emit.call_count, 2)
+                patch("health.request_wake") as wake, patch.object(pool_cli, "_stop") as stop, \
+                patch.object(pool_cli, "unit_probe", side_effect=lambda *_: seq.pop(0) if len(seq) > 1 else seq[0]), \
+                patch.object(pool_cli, "_log_tail", return_value="last line"), \
+                patch("resource_usage.lease_observation", return_value=lease), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            now = [NOW]
+            for t in clock:
+                now[0] = t
+                a._budget_last = 0
+                pool_cli.budget_check(a, meta["unit"], meta, granted)
+        return emit, led, page, stop, wake, out.getvalue()
+
+    def meta(self, **kw):
+        return dict({"unit": "shoal-budgettest-r1-suite", "name": "suite", "slug": "r1", "class": "ci",
+                     "started_utc": iso(NOW - 200 * 60)}, **kw)
+
+    def unit(self, cpu_s, log=100, active=True):
+        return {"active": active, "cpu_ns": int(cpu_s * 1e9), "pids": [42, 43], "log_bytes": log}
+
+    def test_no_lease_no_budget(self):
+        # a hosted-CI watcher holds no lease: 200 min in, nothing is said or stopped (it used to page the maintainer)
+        emit, led, page, stop, _w, _o = self.run_check(self.meta(), [self.unit(1)], lease_rows=())
+        emit.assert_not_called(); page.assert_not_called(); stop.assert_not_called()
+        # a research job never has a budget, whatever it holds
+        rows = [{"key": "cpu-heavy", "pid": 43, "since": iso(NOW - 150 * 60)}]
+        emit, *_ = self.run_check(self.meta(**{"class": "research"}), [self.unit(1)], lease_rows=rows)
+        emit.assert_not_called()
+
+    def test_progressing_is_told_once_no_page(self):
+        rows = [{"key": "cpu-heavy", "pid": 43, "since": iso(NOW - 100 * 60)}]   # the budget counts from the grant
+        m = self.meta()
+        times = (NOW - 25 * 60, NOW - 5 * 60, NOW, NOW + 60)
+        units = [self.unit(10), self.unit(400, 200), self.unit(700, 300), self.unit(760, 400)]
+        emit, led, page, stop, wake, out = self.run_check(m, units, lease_rows=rows, times=times)
+        self.assertEqual([c.args[2] for c in emit.call_args_list], ["overrun"])
+        led.return_value.append.assert_called_once()
+        self.assertEqual(led.return_value.append.call_args.kwargs["to"], "r1")
+        page.assert_not_called(); stop.assert_not_called(); wake.assert_not_called()
+        self.assertIn("still progressing", out)
+        # within the budget nothing is said; before the stall window nothing is even sampled
+        m2 = self.meta()
+        emit, *_ = self.run_check(m2, [self.unit(1)], lease_rows=[dict(rows[0], since=iso(NOW - 30 * 60))])
+        emit.assert_not_called()
+        self.assertNotIn("progress", m2)
+
+    def test_stalled_is_stopped_and_role_woken(self):
+        rows = [{"key": "gpu", "pid": 42, "since": iso(NOW - 110 * 60)}]
+        times = (NOW - 21 * 60, NOW)
+        units = [self.unit(500, 900), self.unit(510, 900), self.unit(510, 900, active=False)]
+        m = self.meta()
+        emit, led, page, stop, wake, out = self.run_check(m, units, lease_rows=rows, times=times)
+        stop.assert_called_once()
+        self.assertEqual([c.args[2] for c in emit.call_args_list], ["overrun-stopped"])
+        wake.assert_called_once()
+        page.assert_not_called()
+        self.assertIn("STOPPED: no progress for 20 min", led.return_value.append.call_args.kwargs["text"])
+        self.assertIn("last line", led.return_value.append.call_args.kwargs["text"])
+        self.assertTrue(m["overrun_stop"]["stopped"])
+        # once per run: a later poll of the same run does nothing
+        emit2, *_ = self.run_check(m, [self.unit(510)], lease_rows=rows)
+        emit2.assert_not_called()
+
+    def test_cap_and_failed_stop(self):
+        # progressing but at 2x the budget: stopped; it would not stop, so the maintainer is paged
+        rows = [{"key": "cpu-heavy", "pid": 42, "since": iso(NOW - 181 * 60)}]
+        times = (NOW - 21 * 60, NOW)
+        emit, led, page, stop, wake, _o = self.run_check(self.meta(), [self.unit(100), self.unit(900, 500)],
+                                                         lease_rows=rows, times=times)
+        stop.assert_called_once()
+        page.assert_called_once()
+        self.assertIn("2x its 90 min budget", led.return_value.append.call_args.kwargs["text"])
+        # ci_autostop off: the old rule, one message and never a stop
+        f = pool.feature(type("S", (), {"features": {"placement": {"ci_autostop": False}}})())
+        self.assertFalse(f["ci_autostop"])
+        emit, led, page, stop, _w, _o = self.run_check(self.meta(), [self.unit(100), self.unit(100)], lease_rows=rows,
+                                                       feature=f, times=times)
+        stop.assert_not_called(); page.assert_not_called()
+        self.assertEqual([c.args[2] for c in emit.call_args_list], ["overrun"])
+
+    def test_placed_job_counts_from_its_grant(self):
+        units = [self.unit(1)]
+        emit, *_ = self.run_check(self.meta(placement={"host": "a"}), units)          # still queued for its lease
+        emit.assert_not_called()
+        emit, *_ = self.run_check(self.meta(placement={"host": "a"}, lease_granted=iso(NOW - 10 * 60)), units)
+        emit.assert_not_called()
+        emit, *_ = self.run_check(self.meta(placement={"host": "a"}), [self.unit(1), self.unit(500, 500)],
+                                  granted=iso(NOW - 95 * 60), times=(NOW - 60, NOW))
+        self.assertEqual([c.args[2] for c in emit.call_args_list], ["overrun"])
+
+    def test_stalled_rule(self):
+        import pool_cli
+        w = 1200
+        self.assertFalse(pool_cli.stalled([[NOW - 600, 0, 1], [NOW, 0, 1]], NOW, w, 30))       # no sample old enough
+        self.assertTrue(pool_cli.stalled([[NOW - 1300, 0, 1], [NOW, int(29e9), 1]], NOW, w, 30))
+        self.assertFalse(pool_cli.stalled([[NOW - 1300, 0, 1], [NOW, int(31e9), 1]], NOW, w, 30))   # CPU used
+        self.assertFalse(pool_cli.stalled([[NOW - 1300, 0, 1], [NOW, 0, 2]], NOW, w, 30))          # log grew
+        self.assertFalse(pool_cli.stalled([[NOW - 1300, None, 1], [NOW, 0, 1]], NOW, w, 30))       # CPU unreadable
+
+
+class Orphan(unittest.TestCase):
+    def test_provider_orphan_verdict_reaches_the_view(self):
+        o = {"reason": "build 2169 completed (failed)", "since": iso(NOW - 40 * 60), "action": "would remove"}
+        h = hosts(probe("a", gpus=[("G1", "nvidia", 24)],
+                        leases=[holder("gpu", "azure-2169", 3600, orphan=o), holder("cpu-heavy", "azure-2169", 3600)]))
+        self.assertEqual(h[0]["holders"][0]["orphan"], o)
+        v = pool.host_view(h[0], NOW, pool.Estimator(), {})
+        self.assertEqual(v["holders"][0]["orphan"], o)
+        import pool_cli
+        self.assertEqual(pool_cli.orphan_text(o), f"build 2169 completed (failed); since {o['since']}; would remove")
+        plain = hosts(probe("a", gpus=[("G1", "nvidia", 24)], leases=[holder("gpu", "x", 60)]))
+        self.assertNotIn("orphan", pool.host_view(plain[0], NOW, pool.Estimator(), {})["holders"][0])
 
 
 class ProbeErrors(unittest.TestCase):

@@ -32,7 +32,10 @@ import re
 ALL = "all"
 VENDORS = ("any", "nvidia", "amd")
 DEFAULTS = {"margin_s": 180.0, "staging_s": 120.0, "max_moves": 2, "max_age_s": 120.0,
-            "interval_s": 120.0, "default_est_s": 1800.0, "ci_budget_min": 90.0}
+            "interval_s": 120.0, "default_est_s": 1800.0, "ci_budget_min": 90.0,
+            # past the budget: stop a CI job after this long without progress (CPU under ci_idle_cpu_s, its log
+            # unchanged), or once it reaches ci_cap_x times the budget (pool_cli.budget_check)
+            "ci_stall_min": 20.0, "ci_idle_cpu_s": 30.0, "ci_cap_x": 2.0}
 CLASSES = ("ci", "research")
 FUTURE_SKEW_S = 30.0       # a probe dated further ahead than this is as untrustworthy as a stale one
 PRIOR_WEIGHT = 2.0         # the --est prior counts as this many observed runs
@@ -45,12 +48,15 @@ CPU_ONLY_ENV = {"CUDA_VISIBLE_DEVICES": "", "ROCR_VISIBLE_DEVICES": "", "HIP_VIS
 
 def feature(spec) -> dict:
     """features.placement: false/absent (off), true (on, defaults), or {"enabled": true, "margin_s",
-    "staging_s", "max_moves", "interval_s", "max_age_s", "ci_budget_min"}. Only queue transfers need it
-    on; `job run --place` and the CI runtime budget (`ci_budget_min`, 0 = none) work without it."""
+    "staging_s", "max_moves", "interval_s", "max_age_s", "ci_budget_min", "ci_stall_min", "ci_idle_cpu_s", "ci_cap_x",
+    "ci_autostop"}. Only queue transfers need it on; `job run --place` and the CI runtime budget (`ci_budget_min`,
+    0 = none; `ci_autostop`, default on, stops a stalled or capped CI job) work without it."""
     v = (getattr(spec, "features", {}) or {}).get("placement")
-    out = dict(DEFAULTS, enabled=bool(v))
+    out = dict(DEFAULTS, enabled=bool(v), ci_autostop=True)
     if isinstance(v, dict):
         out["enabled"] = bool(v.get("enabled", True))
+        if isinstance(v.get("ci_autostop"), bool):
+            out["ci_autostop"] = v["ci_autostop"]
         for k in DEFAULTS:
             if isinstance(v.get(k), (int, float)) and v[k] >= 0:
                 out[k] = v[k]
@@ -286,6 +292,8 @@ def occupancy(lease: dict) -> tuple[list[dict], list[dict]]:
         h["devices"] = _merge_devices(h["devices"], dev)
         h["cpu"] = h["cpu"] or cpu
         h["keys"].append(key)
+        if isinstance(row.get("orphan"), dict):  # the provider attests its owner is gone (an abandoned CI build)
+            h["orphan"] = row["orphan"]
     tickets: dict = {}
     for i, row in enumerate((lease or {}).get("queue") or []):
         if not isinstance(row, dict):
@@ -633,7 +641,8 @@ def host_view(host: dict, now: float, est: Estimator, known: dict, planned=(), m
     alltix = sorted(list(tickets) + list(planned), key=lambda t: t["order"])
     res, drain = simulate(host, holders, alltix, now)
     hv = [{"name": h["name"], "keys": h.get("keys", []), "elapsed_s": h.get("elapsed_s", 0.0),
-           "remaining_s": h["remaining_s"], "external": h["external"], "est_source": h["est"]["source"]}
+           "remaining_s": h["remaining_s"], "external": h["external"], "est_source": h["est"]["source"],
+           **({"orphan": h["orphan"]} if h.get("orphan") else {})}
           for h in holders]
     qv = [{"id": t["id"], "name": t.get("name", t["id"]), "ticket": t.get("ticket"), "cpu": bool(t.get("cpu")),
            "gpu": (ALL if t["devices"] == ALL else ("one" if t.get("one") else ("none" if not t["devices"] else "some"))),

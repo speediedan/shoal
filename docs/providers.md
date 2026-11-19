@@ -23,7 +23,10 @@ periodic validity check.
 
 - **`<lease>`:** `{"key": str, "held": bool}`, plus, when held: `"holder"` (who took it, free
   text), `"pid"` (int or null), `"since"` (ISO-8601), `"cmd"` (str or null) and `"container"`
-  (bool).
+  (bool). Optionally `"orphan"`: `{"reason": str, "since": ISO-8601, "action": str}` when the provider
+  knows the holder's owner is gone (an abandoned CI build whose container still holds the lock): why,
+  when the owner ended, and what its reaper did or will do. `pool status` shows it, and the health
+  quorum pages (`lease-orphan`, under `features.health.watch_leases`) when it outlives the reaper's window.
 - **`<waiter>`:** `{"key": str, "waiter": str, "since": str}`. The queue may be empty when the
   mechanism cannot enumerate waiters (for example a `flock`).
 

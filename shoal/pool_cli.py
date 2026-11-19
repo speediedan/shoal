@@ -807,47 +807,195 @@ def supervise(a, unit: str, meta: dict, granted: str) -> str | None:
     return "moved" if target is not None and transfer(a, unit, meta, adv, target, _considered(res, now)) else None
 
 
-def budget_check(a, unit: str, meta: dict, granted: str) -> None:
-    """A CI job past its runtime budget (`features.placement.ci_budget_min`, default 90 min; counted from
-    `lease_granted`, or from the unit's start when no lease is used) gets one `overrun` event and one page,
-    to its role (a ledger msg) and to the user (the health page path). The job is never killed."""
+def orphan_text(o: dict) -> str:
+    """A provider's orphan verdict in one line: `{"reason", "since", "action"}` (each optional)."""
+    return "; ".join(str(x) for x in (o.get("reason") or "owner gone", f"since {o['since']}" if o.get("since") else "",
+                                      o.get("action") or "") if x)
+
+
+def _job_log(sid: str, meta: dict, unit: str) -> str:
     import jobs
-    if str(meta.get("class") or "ci") != "ci" or meta.get("overrun_paged") == meta.get("started_utc"):
-        return
-    if meta.get("placement"):
-        start = meta.get("lease_granted") or (granted or "").strip()
-        if not start:
-            return  # still queued for its lease: the budget has not started
-    else:
-        start = meta.get("started_utc")
-    t0 = pool._epoch(start)
-    if not hasattr(a, "_pool_feature"):
-        a._pool_feature = _spec_feature(a.sid)
-    budget = float(a._pool_feature.get("ci_budget_min") or 0)
-    if t0 is None or not budget or time.time() - t0 < budget * 60:
-        return
-    meta["overrun_paged"] = meta.get("started_utc")
+    return jobs.remote_paths(unit)["log"] if meta.get("host") else jobs.paths(sid, unit)["log"]
+
+
+def unit_probe(sid: str, meta: dict, unit: str) -> dict:
+    """A job's unit where it runs, in one call (one ssh for a remote job): {"active", "cpu_ns", "pids", "log_bytes"},
+    {} when unreadable. `cpu_ns` is systemd's CPU accounting over the unit's whole process tree."""
+    import jobs
+    u = shlex.quote(f"{unit}.service")
+    log = _job_log(sid, meta, unit)
+    lg = log if log.startswith("~/") else shlex.quote(log)  # a remote log under ~ is expanded by its shell
+    script = (f"systemctl --user show {u} -p ActiveState -p CPUUsageNSec; "
+              f"cg=$(systemctl --user show {u} -p ControlGroup --value); "
+              f"echo PIDS=$(cat /sys/fs/cgroup$cg/cgroup.procs 2>/dev/null | tr '\\n' ' '); "
+              f"echo LOG=$(stat -c %s {lg} 2>/dev/null)")
     try:
-        save_meta(a.sid, unit, meta)
-    except OSError:
-        pass
-    slug = meta.get("slug") or a.slug or "?"
-    where = f" on {meta['host']}" if meta.get("host") else ""
-    text = (f"job {meta.get('name') or unit} ({unit}{where}) overran its CI budget: "
-            f"{(time.time() - t0) / 60:.0f} min since {start} > {budget:g} min. It keeps running (never killed); "
-            f"split it, run it as --class research inside a reservation, or raise features.placement.ci_budget_min.")
-    print(f"{jobs.now_iso()} JOB-OVERRUN {unit}: {text}")
-    jobs._emit(a.sid, slug, "overrun", text[:200], {"budget_min": budget, "since": start})
+        r = (jobs._ssh(meta["host"], script, timeout=30) if meta.get("host") else
+             subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30))
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    kv = dict(line.partition("=")[::2] for line in (r.stdout or "").splitlines() if "=" in line)
+    if "ActiveState" not in kv:
+        return {}
+    cpu, size = kv.get("CPUUsageNSec", ""), kv.get("LOG", "")
+    return {"active": kv["ActiveState"] == "active", "cpu_ns": int(cpu) if cpu.isdigit() else None,
+            "pids": [int(x) for x in kv.get("PIDS", "").split() if x.isdigit()],
+            "log_bytes": int(size) if size.isdigit() else None}
+
+
+def lease_since(meta: dict, granted: str, pids: list[int]) -> str:
+    """When the job got its lease, "" for a job that holds none. A placed job records its grant; any other job holds a
+    lease when a process of its unit is a holder in the lease provider's status, whose `since` is the grant."""
+    if meta.get("placement"):
+        return meta.get("lease_granted") or (granted or "").strip()
+    if not pids:
+        return ""
+    if meta.get("host"):
+        lease = (remote_probe(meta["host"]) or {}).get("lease") or {}
+    else:
+        import resource_usage
+        lease = resource_usage.lease_observation(config.lease_cmd())
+    mine = [str(r["since"]) for r in lease.get("leases") or []
+            if isinstance(r, dict) and r.get("held") and r.get("pid") in pids and r.get("since")]
+    return min(mine, key=lambda s: pool._epoch(s) or 0) if mine else ""
+
+
+def stalled(samples: list, now: float, window_s: float, idle_cpu_s: float) -> bool:
+    """No progress over the last `window_s`: since the newest sample at least that old, the unit used under `idle_cpu_s`
+    of CPU and its log did not grow. False until such a sample exists or when CPU was not readable."""
+    old = [s for s in samples if now - s[0] >= window_s]
+    if not old:
+        return False
+    _t0, cpu0, log0 = old[-1]
+    _t1, cpu1, log1 = samples[-1]
+    if cpu0 is None or cpu1 is None:
+        return False
+    return (cpu1 - cpu0) / 1e9 < idle_cpu_s and (log0 is None or log1 is None or log1 <= log0)
+
+
+def _log_tail(sid: str, meta: dict, unit: str, n: int = 12) -> str:
+    import jobs
+    try:
+        if meta.get("host"):
+            return (jobs._ssh(meta["host"], f"tail -n {n} {_job_log(sid, meta, unit)}", timeout=30).stdout or "").strip()
+        with open(_job_log(sid, meta, unit), "rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - 4096))
+            return b"\n".join(fh.read().splitlines()[-n:]).decode("utf-8", "replace").strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _tell_role(sid: str, slug: str, text: str, wake: bool = False) -> None:
+    """A ledger `health` msg to the job's role and, with `wake`, a health wake."""
     try:
         from ledger import Ledger, SYSTEM_WRITER
         from roles import ShoalSpec, find_spec
         import health
-        spec = ShoalSpec.load(find_spec(a.sid, ""))
-        if spec.role(slug) is not None:
-            Ledger(spec.sid, root=spec.ledger_dir).append(SYSTEM_WRITER, "msg", to=slug, kind="health", text=text[:500])
-        health.page_user(spec, text, {})
-    except Exception as exc:  # noqa: BLE001 - a page that cannot be delivered never stops the waiter
-        print(f"(overrun page not delivered: {str(exc)[:160]})")
+        spec = ShoalSpec.load(find_spec(sid, ""))
+        if spec.role(slug) is None:
+            return
+        Ledger(spec.sid, root=spec.ledger_dir).append(SYSTEM_WRITER, "msg", to=slug, kind="health", text=text[:900])
+        if wake:
+            health.request_wake(spec, slug, text[:400], "job-stopped")
+    except Exception as exc:  # noqa: BLE001 - a message that cannot be delivered never stops the waiter
+        print(f"(job message not delivered: {str(exc)[:160]})")
+
+
+def _save(a, unit: str, meta: dict) -> None:
+    try:
+        save_meta(a.sid, unit, meta)
+    except OSError:
+        pass
+
+
+def budget_check(a, unit: str, meta: dict, granted: str) -> None:
+    """The CI runtime budget (`features.placement.ci_budget_min`, default 90 min) of a `ci` job that holds a lease,
+    counted from its grant. A job holding no lease (a watcher of hosted CI, a plain script) occupies nothing others
+    wait for, so it has no budget. Past the budget the job's progress is read from its unit (CPU and log growth):
+    - progressing: one `overrun` event and one message to its role, no page;
+    - no progress for `ci_stall_min` (20) minutes, or still running at `ci_cap_x` (2) times the budget: the unit is
+      stopped, which frees its lease for the queue, and its role is woken with the reason and the log's tail
+      (`overrun-stopped`). The maintainer is paged only when the stop fails.
+    `ci_autostop: false` keeps one message and never stops. Read at most once a minute."""
+    import jobs
+    run = meta.get("started_utc")
+    if str(meta.get("class") or "ci") != "ci" or (meta.get("overrun_stop") or {}).get("run") == run:
+        return
+    now = time.time()
+    if now - float(getattr(a, "_budget_last", 0) or 0) < 60:
+        return
+    a._budget_last = now
+    if not hasattr(a, "_pool_feature"):
+        a._pool_feature = _spec_feature(a.sid)
+    f = a._pool_feature
+    budget = float(f.get("ci_budget_min") or 0)
+    if not budget:
+        return
+    if meta.get("placement") and not (meta.get("lease_granted") or (granted or "").strip()):
+        return  # still queued for its lease: the budget has not started
+    window = float(f.get("ci_stall_min", 20.0)) * 60
+    st = unit_probe(a.sid, meta, unit)
+    if not st.get("active"):
+        return
+    start = lease_since(meta, granted, st.get("pids") or [])
+    t0 = pool._epoch(start) if start else None
+    if t0 is None:
+        return  # holds no lease: nothing waits behind it
+    elapsed = now - t0
+    if elapsed < budget * 60 - window:
+        return
+    # progress samples from a window before the budget, so a stall is known at the budget
+    prog = [s for s in meta.get("progress") or [] if s and s[0] >= t0 and now - s[0] <= window + 900]
+    prog.append([now, st.get("cpu_ns"), st.get("log_bytes")])
+    meta["progress"] = prog
+    if elapsed < budget * 60:
+        _save(a, unit, meta)
+        return
+    slug = meta.get("slug") or a.slug or "?"
+    where = f" on {meta['host']}" if meta.get("host") else ""
+    name = meta.get("name") or unit
+    cap_x = float(f.get("ci_cap_x", 2.0))
+    idle_s = float(f.get("ci_idle_cpu_s", 30.0))
+    autostop = bool(f.get("ci_autostop", True))
+    reason = ""
+    if stalled(prog, now, window, idle_s):
+        reason = f"no progress for {window / 60:.0f} min (under {idle_s:g} s of CPU, log unchanged)"
+    elif elapsed >= cap_x * budget * 60:
+        reason = f"still running at {elapsed / 60:.0f} min, {cap_x:g}x its {budget:g} min budget"
+    if reason and autostop:
+        _stop(meta, unit)
+        alive = unit_probe(a.sid, meta, unit).get("active")
+        meta["overrun_stop"] = {"run": run, "ts": jobs.now_iso(), "reason": reason, "stopped": not alive}
+        _save(a, unit, meta)
+        tail = _log_tail(a.sid, meta, unit)
+        text = (f"job {name} ({unit}{where}) was STOPPED: {reason}, {elapsed / 60:.0f} min after its lease grant at "
+                f"{start}. Its lease is free for the queue. Re-run it, split it, or run it as --class research if it is "
+                f"long by nature." + (f" Log tail:\n{tail}" if tail else ""))
+        print(f"{jobs.now_iso()} JOB-OVERRUN-STOPPED {unit}: {reason}")
+        jobs._emit(a.sid, slug, "overrun-stopped", text[:200], {"budget_min": budget, "since": start, "reason": reason})
+        if alive:
+            try:
+                import health
+                from roles import ShoalSpec, find_spec
+                health.page_user(ShoalSpec.load(find_spec(a.sid, "")), f"job {name} ({unit}{where}) could not be "
+                                 f"stopped ({reason}) and still holds its lease", {})
+            except Exception as exc:  # noqa: BLE001 - a page that cannot be delivered never stops the waiter
+                print(f"(stop-failed page not delivered: {str(exc)[:160]})")
+        _tell_role(a.sid, slug, text, wake=True)
+        return
+    if meta.get("overrun_paged") == run:
+        _save(a, unit, meta)
+        return
+    meta["overrun_paged"] = run
+    _save(a, unit, meta)
+    text = (f"job {name} ({unit}{where}) is past its CI budget: {elapsed / 60:.0f} min since its lease grant at {start} "
+            f"> {budget:g} min, still progressing. " +
+            (f"It is stopped after {window / 60:.0f} min without progress or at {cap_x * budget:g} min: split it, or run "
+             f"it as --class research." if autostop else "It keeps running (ci_autostop is off)."))
+    print(f"{jobs.now_iso()} JOB-OVERRUN {unit}: {text}")
+    jobs._emit(a.sid, slug, "overrun", text[:200], {"budget_min": budget, "since": start})
+    _tell_role(a.sid, slug, text)
 
 
 def _claim(meta: dict) -> bool:
@@ -1027,7 +1175,8 @@ def cmd_status(a) -> int:
                   f"until {r.get('until')} (out of the CI pool)")
         for x in v.get("holders", []):
             print(f"  holder {x['name']} [{','.join(x['keys'])}] {'external ' if x['external'] else ''}"
-                  f"elapsed {_fmt_in(x['elapsed_s'])} remaining {_fmt_in(x['remaining_s'])} ({x['est_source']})")
+                  f"elapsed {_fmt_in(x['elapsed_s'])} remaining {_fmt_in(x['remaining_s'])} ({x['est_source']})"
+                  + (f"  ORPHAN: {orphan_text(x['orphan'])}" if x.get("orphan") else ""))
         for q in v.get("queue", []):
             print(f"  queued {q.get('ticket') or '-'} {q['name']} gpu={q['gpu']} cpu-heavy={'yes' if q['cpu'] else 'no'} "
                   f"start {_fmt_in(q['start'] - s['now'])} finish {_fmt_in(q['finish'] - s['now'])}")

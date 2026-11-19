@@ -61,8 +61,11 @@ the command in that host's lease with the right scope, and prints `JOB-PLACED`. 
 `--place <host>` for exact-hardware comparisons. Follow it with `job wait` and a `job:<name>` target as
 below; the job may move to another host while still queued (`JOB-MOVED`), and its waiter follows it.
 
-**CI jobs have a runtime budget** (90 min by default, from the lease grant). Past it you are paged once
-(`JOB-OVERRUN`); the job keeps running. Split a long suite, or run long experiments as
+**CI jobs that hold a lease have a runtime budget** (90 min by default, from the lease grant). Past it
+you are told once (`JOB-OVERRUN`) while the job progresses. A job with no progress for 20 min (idle CPU,
+log unchanged), or still running at twice the budget, is stopped to free its lease, and you are woken
+with the reason and its log's tail (`JOB-OVERRUN-STOPPED`): re-run it, split it, or run it as research.
+A job that holds no lease (a hosted-CI watcher) has no budget. Split a long suite, or run long experiments as
 `--class research` inside a reservation your role owns. The operator (or you, where your grants allow)
 takes one with `shoal pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy --for
 <shoal>/<you> --until <ISO|job:<name>>`; a research job outside a reservation is refused. Release a
