@@ -2,6 +2,13 @@
 
 This file can also run standalone on a compute host without installing SHOAL.
 It never acquires a lease, changes a host mode, or migrates a session.
+
+`watch` runs two paths. The full sample (GPUs, the lease provider, memory; subprocesses allowed) runs every
+`--interval` seconds (15) in its own thread and appends to `events-YYYYMMDD.jsonl`. The fast path runs every
+`--fast-interval` seconds (2) and reads files only, so it keeps recording while the host is too short of memory to
+start a process: memory PSI, MemAvailable/SwapFree/Dirty, per-cgroup memory and the top processes by RSS, appended
+to `fast-YYYYMMDD.jsonl` (format: FastSampler.record). The journal gets a start line, errors and a summary every
+`--summary-min` minutes, never each sample.
 """
 from __future__ import annotations
 
@@ -20,6 +27,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -102,6 +110,268 @@ def memory_observation(path="/proc/meminfo"):
         return {"total_bytes": fields.get("MemTotal"), "available_bytes": fields.get("MemAvailable")}
     except (OSError, ValueError, IndexError):
         return {"total_bytes": None, "available_bytes": None}
+
+
+# ---- fast path: memory forensics from files only ---------------------------------------------------
+
+MIB = 1024 ** 2
+FAST_INTERVAL = 2.0     # seconds between fast records (0 turns the fast path off)
+FAST_RETAIN_DAYS = 7    # compressed fast days kept (a busy host: about 100 MiB plain for today, 4 MiB a day gzipped)
+FAST_MIN_MIB = 128      # an app.slice unit using less is folded into the record's `rest`
+SUMMARY_MIN = 15.0      # minutes between journal summaries
+TOP_PROCS = 5
+DOCKER_RESCAN_S = 30.0  # how often the cgroup tree is walked for docker-*.scope cgroups
+
+
+def _read_text(path):
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _mib(n):
+    return None if n is None else round(n / MIB)
+
+
+def psi_memory(proc="/proc"):
+    """/proc/pressure/memory as {"some10", "some60", "full10", "full60"} (percent); {} when unreadable."""
+    out = {}
+    for line in (_read_text(os.path.join(proc, "pressure", "memory")) or "").splitlines():
+        kind, *fields = line.split()
+        vals = dict(f.split("=", 1) for f in fields if "=" in f)
+        for avg in ("avg10", "avg60"):
+            try:
+                out[f"{kind}{avg[3:]}"] = float(vals[avg])
+            except (KeyError, ValueError):
+                pass
+    return out
+
+
+def meminfo_fast(proc="/proc"):
+    """MemAvailable, SwapFree and Dirty from meminfo, in MiB (a missing field is absent)."""
+    want = {"MemAvailable": "avail_mib", "SwapFree": "swap_free_mib", "Dirty": "dirty_mib"}
+    out = {}
+    for line in (_read_text(os.path.join(proc, "meminfo")) or "").splitlines():
+        key, _, rest = line.partition(":")
+        if key in want:
+            try:
+                out[want[key]] = _mib(int(rest.split()[0]) * 1024)
+            except (IndexError, ValueError):
+                pass
+    return out
+
+
+def cgroup_memory(path):
+    """One cgroup's memory in MiB: `cur` (memory.current), `peak` (memory.peak, when the kernel has it), `anon` and
+    `file` (memory.stat), and `oom` (memory.events oom_kill, a running count). None when memory.current is
+    unreadable (no memory controller there, or the cgroup is gone)."""
+    cur = _read_text(os.path.join(path, "memory.current"))
+    try:
+        out = {"cur": _mib(int(cur))}
+    except (TypeError, ValueError):
+        return None
+    peak = _read_text(os.path.join(path, "memory.peak"))
+    if peak and peak.strip().isdigit():
+        out["peak"] = _mib(int(peak))
+    for line in (_read_text(os.path.join(path, "memory.stat")) or "").splitlines():
+        k, _, v = line.partition(" ")
+        if k in ("anon", "file") and v.strip().isdigit():
+            out[k] = _mib(int(v))
+    for line in (_read_text(os.path.join(path, "memory.events")) or "").splitlines():
+        k, _, v = line.partition(" ")
+        if k == "oom_kill" and v.strip().isdigit():
+            out["oom"] = int(v)
+    return out
+
+
+_USER_MGR = re.compile(r"^user\.slice/user-(\d+)\.slice/user@\1\.service/")
+
+
+def short_cg(path):
+    """A cgroup path below the root as records write it: `user.slice/user-<uid>.slice/user@<uid>.service/` becomes
+    `user@<uid>/`, which keeps a record about half as long; anything else is unchanged."""
+    return _USER_MGR.sub(lambda m: f"user@{m.group(1)}/", path.strip("/"))
+
+
+def top_processes(proc="/proc", n=TOP_PROCS):
+    """The `n` processes with the largest RSS (from /proc/<pid>/statm), each with its uid, comm and cgroup path.
+    No command lines are read."""
+    page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+    rows = []
+    try:
+        entries = [e.name for e in os.scandir(proc) if e.name.isdigit()]
+    except OSError:
+        return []
+    for pid in entries:
+        statm = _read_text(os.path.join(proc, pid, "statm"))
+        try:
+            rows.append((int(statm.split()[1]) * page, pid))
+        except (AttributeError, IndexError, ValueError):
+            continue  # gone, or a kernel thread
+    out = []
+    for rss, pid in sorted(rows, reverse=True)[:n]:
+        cg = ""
+        for line in (_read_text(os.path.join(proc, pid, "cgroup")) or "").splitlines():
+            if line.startswith("0::"):
+                cg = short_cg(line[3:].strip())
+        try:
+            uid = os.stat(os.path.join(proc, pid)).st_uid
+        except OSError:
+            uid = None
+        out.append({"pid": int(pid), "uid": uid, "rss_mib": _mib(rss),
+                    "comm": (_read_text(os.path.join(proc, pid, "comm")) or "").strip()[:32], "cg": cg})
+    return out
+
+
+class FastSampler:
+    """The fast path's state: which cgroups to read, the open summary window and the errors already logged.
+
+    One record per tick, a JSON line in `<directory>/<host>/fast-YYYYMMDD.jsonl`:
+
+        {"v": 1, "type": "fast_sample", "host": H, "ts": <epoch s>,
+         "psi": {"some10", "some60", "full10", "full60"},               # /proc/pressure/memory, percent
+         "mem": {"avail_mib", "swap_free_mib", "dirty_mib"},             # /proc/meminfo
+         "cg": {"<cgroup path below the root, short_cg>": {"cur", "peak", "anon", "file", "oom"}, ...},
+         "rest": {"n": <units folded>, "cur": <their MiB>},              # small app.slice units
+         "top": [{"pid", "uid", "rss_mib", "comm", "cg"}, ...],          # largest RSS first
+         "errors": [...]}                                                # only when a read failed
+
+    Sizes are MiB (rounded), `oom` is memory.events' running oom_kill count, and a field that could not be read is
+    absent, never zero. `cg` always holds `system.slice`, every `user.slice/user-<uid>.slice` and every
+    `docker-*.scope` under user.slice (rootless containers of any uid); a unit under a user manager's `app.slice` is
+    listed while it uses at least `min_mib` and is otherwise counted in `rest`. Closed days are gzipped by the first
+    record of a new UTC day and compressed days older than `retain_days` are removed (compact_events)."""
+
+    def __init__(self, host, directory, proc="/proc", cgroup_root="/sys/fs/cgroup", retain_days=FAST_RETAIN_DAYS,
+                 min_mib=FAST_MIN_MIB):
+        self.host, self.dir = host, Path(directory) / host
+        self.proc, self.root = proc, cgroup_root
+        self.retain_days, self.min_mib = retain_days, min_mib
+        self._docker, self._docker_at = [], None
+        self._oom_prev = {}  # cgroup path -> the oom_kill count last read
+        self.logged = set()
+        self.reset_window()
+
+    def reset_window(self):
+        self.win = {"samples": 0, "full_samples": 0, "errors": 0, "avail_min_mib": None, "swap_free_min_mib": None,
+                    "some10_max": None, "full10_max": None, "max_cg": None, "oom_kills": {}}
+
+    def docker_scopes(self, now):
+        if self._docker_at is None or now - self._docker_at >= DOCKER_RESCAN_S:
+            found = []
+            for dirpath, dirnames, _files in os.walk(os.path.join(self.root, "user.slice")):
+                for d in [d for d in dirnames if d.startswith("docker-") and d.endswith(".scope")]:
+                    found.append(os.path.relpath(os.path.join(dirpath, d), self.root))
+                    dirnames.remove(d)  # a container's own cgroups are its business
+            self._docker, self._docker_at = sorted(found), now
+        return self._docker
+
+    def cgroups(self, now):
+        """[(path below the root, always listed)] for this tick."""
+        out = [("system.slice", True)]
+        users = sorted(glob_dirs(os.path.join(self.root, "user.slice"), "user-*.slice"))
+        for u in users:
+            out.append((f"user.slice/{u}", True))
+            for mgr in sorted(glob_dirs(os.path.join(self.root, "user.slice", u), "user@*.service")):
+                base = f"user.slice/{u}/{mgr}/app.slice"
+                out += [(f"{base}/{unit}", False) for unit in sorted(glob_dirs(os.path.join(self.root, base), "*"))]
+        seen = {p for p, _ in out}
+        out += [(p, True) for p in self.docker_scopes(now) if p not in seen]
+        return out
+
+    def record(self, now=None):
+        now = time.time() if now is None else now
+        rec = {"v": 1, "type": "fast_sample", "host": self.host, "ts": round(now, 1),
+               "psi": psi_memory(self.proc), "mem": meminfo_fast(self.proc), "cg": {}, "rest": {"n": 0, "cur": 0}}
+        errors = []
+        if not rec["psi"]:
+            errors.append("psi: /proc/pressure/memory unreadable")
+        if not rec["mem"]:
+            errors.append("meminfo unreadable")
+        try:
+            for path, always in self.cgroups(now):
+                m = cgroup_memory(os.path.join(self.root, path))
+                if m is None:
+                    continue
+                if always or (m["cur"] or 0) >= self.min_mib:
+                    rec["cg"][short_cg(path)] = m
+                else:
+                    rec["rest"]["n"] += 1
+                    rec["rest"]["cur"] += m["cur"] or 0
+        except OSError as exc:
+            errors.append(f"cgroups: {exc}")
+        if not rec["cg"]:
+            errors.append(f"no cgroup memory readable under {self.root}")
+        rec["top"] = top_processes(self.proc)
+        if errors:
+            rec["errors"] = errors
+        self.new_ooms = self._fold(rec)
+        return rec
+
+    def _fold(self, rec):
+        w = self.win
+        w["samples"] += 1
+        w["errors"] += len(rec.get("errors") or [])
+        for key, field in (("avail_min_mib", "avail_mib"), ("swap_free_min_mib", "swap_free_mib")):
+            v = rec["mem"].get(field)
+            if v is not None and (w[key] is None or v < w[key]):
+                w[key] = v
+        for key, field in (("some10_max", "some10"), ("full10_max", "full10")):
+            v = rec["psi"].get(field)
+            if v is not None and (w[key] is None or v > w[key]):
+                w[key] = v
+        new_ooms = {}
+        for path, m in rec["cg"].items():
+            # the largest unit or container (a slice that only sums its children is not a culprit)
+            if path.startswith("user@") and (w["max_cg"] is None or (m["cur"] or 0) > w["max_cg"]["cur_mib"]):
+                w["max_cg"] = {"path": path, "cur_mib": m["cur"] or 0}
+            if "oom" in m:
+                before = self._oom_prev.get(path)
+                if before is not None and m["oom"] > before:
+                    new_ooms[path] = m["oom"] - before
+                    w["oom_kills"][path] = w["oom_kills"].get(path, 0) + m["oom"] - before
+                self._oom_prev[path] = m["oom"]
+        return new_ooms
+
+    def write(self, rec):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        day = dt.datetime.fromtimestamp(rec["ts"], dt.timezone.utc).strftime("%Y%m%d")
+        target = self.dir / f"fast-{day}.jsonl"
+        if not target.exists():
+            compact_events(self.dir, day, self.retain_days, prefix="fast-")
+        with target.open("a") as out:
+            out.write(json.dumps(rec, separators=(",", ":")) + "\n")
+
+    def tick(self, now=None):
+        rec = self.record(now)
+        self.write(rec)
+        for e in rec.get("errors") or []:
+            if e not in self.logged:  # each distinct error once; the summary counts the rest
+                self.logged.add(e)
+                log({"fast_path_error": e})
+        if self.new_ooms:  # rare and decisive: said at once, not only in the next summary
+            log({"oom_kill": {"ts": rec["ts"], "cgroups": self.new_ooms, "mem": rec["mem"], "psi": rec["psi"]}})
+        return rec
+
+    def summary(self, window_min):
+        out = dict(self.win, window_min=round(window_min, 1))
+        self.reset_window()
+        return {"resources_summary": out}
+
+
+def glob_dirs(path, pattern):
+    import fnmatch
+    try:
+        return [e.name for e in os.scandir(path) if e.is_dir(follow_symlinks=False) and fnmatch.fnmatch(e.name, pattern)]
+    except OSError:
+        return []
+
+
+def log(value):
+    """One journal line (the service's stdout): start, errors and summaries only."""
+    print(json.dumps(value, sort_keys=True), flush=True)
 
 
 def lease_observation(command):
@@ -242,19 +512,20 @@ def _atomic_write(path, text):
 RETAIN_DAYS = 90
 
 
-def _day_of(name, suffix):
-    stem = name[len("events-"):-len(suffix)]
+def _day_of(name, suffix, prefix="events-"):
+    stem = name[len(prefix):-len(suffix)]
     return stem if len(stem) == 8 and stem.isdigit() else None
 
 
-def compact_events(directory, today, retain_days=RETAIN_DAYS):
+def compact_events(directory, today, retain_days=RETAIN_DAYS, prefix="events-"):
     """Gzip every closed day's event file (any day before `today`, YYYYMMDD) and remove compressed
     days older than `retain_days`. A late append to a day already compressed becomes one more gzip
     member, which readers take as part of the same file. The compressed file is replaced
-    atomically, so a crash leaves either the old pair or the new file, never a torn member."""
+    atomically, so a crash leaves either the old pair or the new file, never a torn member.
+    `prefix` picks the stream (`events-` samples, `fast-` fast-path records)."""
     directory = Path(directory)
-    for plain in sorted(directory.glob("events-*.jsonl")):
-        day = _day_of(plain.name, ".jsonl")
+    for plain in sorted(directory.glob(f"{prefix}*.jsonl")):
+        day = _day_of(plain.name, ".jsonl", prefix)
         if day is None or day >= today:
             continue
         gz = plain.with_name(plain.name + ".gz")
@@ -270,8 +541,8 @@ def compact_events(directory, today, retain_days=RETAIN_DAYS):
         os.replace(tmp, gz)
         plain.unlink()
     cutoff = (dt.datetime.strptime(today, "%Y%m%d") - dt.timedelta(days=retain_days)).strftime("%Y%m%d")
-    for gz in sorted(directory.glob("events-*.jsonl.gz")):
-        day = _day_of(gz.name, ".jsonl.gz")
+    for gz in sorted(directory.glob(f"{prefix}*.jsonl.gz")):
+        day = _day_of(gz.name, ".jsonl.gz", prefix)
         if day is not None and day < cutoff:
             gz.unlink()
 
@@ -497,46 +768,116 @@ def role_time_specs(a):
     return kept
 
 
+def full_sample(a):
+    """One full sample: appended to the event stream, projected to Prometheus text, and the per-sample extras."""
+    s = snapshot(a.host, a.lease_command, a.session_ready.split(",") if a.session_ready else ())
+    append_sample(a.directory, s, a.retain_days)
+    if getattr(a, "prom_out", ""):
+        text = render_prometheus(s)
+        # cross-host imbalance over compatible demand rides the same file where the pool
+        # planner is importable; a copied standalone sampler simply skips it
+        try:
+            import pool_metrics
+            text += pool_metrics.render(s["ts"], s["host"])
+        except Exception:  # noqa: BLE001 - telemetry extras never stop the sampler
+            pass
+        _atomic_write(a.prom_out, text)
+    if config is not None:
+        # research reservations expire at --until even when nobody probes the pool
+        try:
+            import pool_reserve
+            pool_reserve.expire(s["ts"])
+        except Exception as exc:  # noqa: BLE001 - never stops the sampler
+            print(json.dumps({"reservation_expiry_error": str(exc)[:200]}), file=sys.stderr, flush=True)
+    for spec_path in role_time_specs(a):
+        # role-time native status rides this loop on hosts that run sessions; a copied
+        # standalone sampler (no shoal package beside it) simply skips it
+        try:
+            import role_time_adapters
+            from roles import ShoalSpec
+            role_time_adapters.write_native_cache(ShoalSpec.load(spec_path), now=s["ts"])
+        except Exception as exc:  # noqa: BLE001 - telemetry extras never stop the sampler
+            print(json.dumps({"role_time_native_status_error": str(exc)[:200],
+                              "spec": spec_path}), file=sys.stderr, flush=True)
+    return s
+
+
+def watch(a, stop=None):
+    """The `watch` loop: full samples every `interval` in a thread, fast records every `fast_interval` here, and a
+    journal summary every `summary_min`. `stop()` true ends it (tests); a failed full sample ends it with the
+    exception, as before, so systemd restarts the service."""
+    stop = stop or (lambda: False)
+    fast_s = float(getattr(a, "fast_interval", FAST_INTERVAL) or 0)
+    fast = (FastSampler(a.host, a.directory, getattr(a, "proc_root", "/proc"),
+                        getattr(a, "cgroup_root", "/sys/fs/cgroup"), getattr(a, "fast_retain_days", FAST_RETAIN_DAYS),
+                        getattr(a, "fast_min_mib", FAST_MIN_MIB)) if fast_s > 0 else None)
+    summary_s = float(getattr(a, "summary_min", SUMMARY_MIN) or 0) * 60
+    log({"resources_watch_start": {"host": a.host, "directory": str(a.directory), "interval_s": a.interval,
+                                   "fast_interval_s": fast_s, "summary_min": summary_s / 60}})
+    failed, done = [], threading.Event()
+    counts = {"full": 0}
+
+    def full_loop():
+        while not done.is_set():
+            t0 = time.monotonic()
+            try:
+                full_sample(a)
+                counts["full"] += 1
+            except BaseException as exc:  # noqa: BLE001 - handed to the main loop, which exits with it
+                failed.append(exc)
+                done.set()
+                return
+            done.wait(max(0.0, a.interval - (time.monotonic() - t0)))
+    worker = threading.Thread(target=full_loop, name="full-sample", daemon=True)
+    worker.start()
+    start = last_summary = time.monotonic()
+    nxt = start
+    try:
+        while not stop() and not failed:
+            now = time.monotonic()
+            if fast is not None and now >= nxt:
+                try:
+                    fast.tick()
+                except Exception as exc:  # noqa: BLE001 - a failed fast record never stops the sampler
+                    if str(exc) not in fast.logged:
+                        fast.logged.add(str(exc))
+                        log({"fast_path_error": str(exc)[:200]})
+                nxt = max(nxt + fast_s, now)
+            if summary_s and now - last_summary >= summary_s:
+                if fast is not None:
+                    s = fast.summary((now - last_summary) / 60)
+                    s["resources_summary"]["full_samples"] = counts["full"]
+                else:
+                    s = {"resources_summary": {"window_min": round((now - last_summary) / 60, 1),
+                                               "full_samples": counts["full"]}}
+                counts["full"] = 0
+                log(s)
+                last_summary = now
+            wake = nxt if fast is not None else now + 1.0
+            if summary_s:
+                wake = min(wake, last_summary + summary_s)
+            done.wait(max(0.05, wake - time.monotonic()))
+    finally:
+        done.set()
+        worker.join(timeout=max(10.0, a.interval))
+    if failed:
+        raise failed[0]
+    return 0
+
+
 def execute(a):
-    if a.resource_cmd in ("sample", "watch"):
-        while True:
-            s = snapshot(a.host, a.lease_command, a.session_ready.split(",") if a.session_ready else ())
-            append_sample(a.directory, s, a.retain_days)
-            if getattr(a, "prom_out", ""):
-                text = render_prometheus(s)
-                # cross-host imbalance over compatible demand rides the same file where the pool
-                # planner is importable; a copied standalone sampler simply skips it
-                try:
-                    import pool_metrics
-                    text += pool_metrics.render(s["ts"], s["host"])
-                except Exception:  # noqa: BLE001 - telemetry extras never stop the sampler
-                    pass
-                _atomic_write(a.prom_out, text)
-            if config is not None:
-                # research reservations expire at --until even when nobody probes the pool
-                try:
-                    import pool_reserve
-                    pool_reserve.expire(s["ts"])
-                except Exception as exc:  # noqa: BLE001 - never stops the sampler
-                    print(json.dumps({"reservation_expiry_error": str(exc)[:200]}), file=sys.stderr, flush=True)
-            for spec_path in role_time_specs(a):
-                # role-time native status rides this loop on hosts that run sessions; a copied
-                # standalone sampler (no shoal package beside it) simply skips it
-                try:
-                    import role_time_adapters
-                    from roles import ShoalSpec
-                    role_time_adapters.write_native_cache(ShoalSpec.load(spec_path), now=s["ts"])
-                except Exception as exc:  # noqa: BLE001 - telemetry extras never stop the sampler
-                    print(json.dumps({"role_time_native_status_error": str(exc)[:200],
-                                      "spec": spec_path}), file=sys.stderr, flush=True)
-            print(json.dumps(s), flush=True)
-            if a.resource_cmd == "sample":
-                return 0
-            time.sleep(a.interval)
+    if a.resource_cmd == "sample":
+        print(json.dumps(full_sample(a)), flush=True)
+        return 0
+    if a.resource_cmd == "watch":
+        return watch(a)
     if a.resource_cmd == "install":
         argv = [sys.executable, str(Path(__file__).resolve()), "watch", "--directory", a.directory,
                 "--host", a.host, "--lease-command", a.lease_command, "--interval", str(a.interval),
-                "--session-ready", a.session_ready]
+                "--session-ready", a.session_ready,
+                "--fast-interval", str(getattr(a, "fast_interval", FAST_INTERVAL)),
+                "--fast-retain-days", str(getattr(a, "fast_retain_days", FAST_RETAIN_DAYS)),
+                "--summary-min", str(getattr(a, "summary_min", SUMMARY_MIN))]
         if getattr(a, "prom_out", ""):
             argv += ["--prom-out", a.prom_out]
         for spec_path in getattr(a, "role_time_spec", []) or []:
@@ -598,7 +939,18 @@ def add_parser(sub):
             q.add_argument("--retain-days", type=positive, default=RETAIN_DAYS,
                            help="days compressed daily event files are kept")
         if name in ("watch", "install"):
-            q.add_argument("--interval", type=positive, default=15)
+            q.add_argument("--interval", type=positive, default=15, help="seconds between full samples (GPU, leases)")
+            q.add_argument("--fast-interval", type=float, default=FAST_INTERVAL,
+                           help="seconds between fast-path records (memory PSI, cgroups, top RSS; files only); 0 = off")
+            q.add_argument("--fast-retain-days", type=positive, default=FAST_RETAIN_DAYS,
+                           help="days compressed fast-path files are kept")
+            q.add_argument("--summary-min", type=float, default=SUMMARY_MIN,
+                           help="minutes between journal summaries (no sample is echoed); 0 = none")
+        if name == "watch":
+            q.add_argument("--fast-min-mib", type=float, default=FAST_MIN_MIB,
+                           help="an app.slice unit below this many MiB is folded into the record's rest")
+            q.add_argument("--proc-root", default="/proc", help=argparse.SUPPRESS)
+            q.add_argument("--cgroup-root", default="/sys/fs/cgroup", help=argparse.SUPPRESS)
         if name == "install":
             q.add_argument("--dry-run", action="store_true")
             q.add_argument("--enable", action="store_true")

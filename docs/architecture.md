@@ -1949,6 +1949,16 @@ configured lease-provider contract. GPU UUIDs join device observations to leases
 GPU holds reserve all devices, shared global gates defer ownership to individual device claims,
 and cpu-heavy is a separate host CPU/memory isolation scope. Raw command lines are not collected.
 
+`watch` runs two paths: the full sample above every `--interval` (15 s) in its own thread, and a fast path
+every `--fast-interval` (2 s) that reads files only (memory PSI, `MemAvailable`/`SwapFree`/`Dirty`, per-cgroup
+`memory.current`/`memory.peak`/anon/file/`oom_kill` for `system.slice`, each user slice, the units under each user
+manager's `app.slice` and every `docker-*.scope` under any user tree, and the top five processes by RSS with their
+cgroup), so it keeps recording through a memory wedge that stops process creation (measured 2026-11-19: the
+15-second sampler had no per-cgroup memory or PSI when a host livelocked). Fast records go to
+`fast-YYYYMMDD.jsonl` beside the events, gzipped when the day closes and kept `--fast-retain-days` (7); the format
+is in [resource telemetry](resources.md). The service's journal gets only its start, errors, an `oom_kill` line
+when a cgroup's count rises and a summary every `--summary-min` (15), never each sample.
+
 Daily JSONL contains resource samples and explicitly observed acquisition/release edges. Start
 metadata is retained; release is bounded between successful observations. Failed probes cannot
 close a lease. Short leases between samples can be missed. Reports time-weight per-device GPU
