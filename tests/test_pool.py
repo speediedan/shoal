@@ -539,6 +539,29 @@ class Budget(unittest.TestCase):
         self.assertFalse(pool_cli.stalled([[NOW - 1300, 0, 1], [NOW, 0, 2]], NOW, w, 30))          # log grew
         self.assertFalse(pool_cli.stalled([[NOW - 1300, None, 1], [NOW, 0, 1]], NOW, w, 30))       # CPU unreadable
 
+    def test_unleased_cpu_work_gets_the_budget(self):
+        # a full CPU suite run with no lease (2026-11-19: 2 h 20 min on a saturated host) is CI work: its role is told
+        # once to use the pool's lease, and the budget counts from its start
+        times = (NOW - 11 * 60, NOW, NOW + 60)
+        busy = [self.unit(0), self.unit(2.5 * 660), self.unit(2.5 * 720)]
+        m = self.meta(started_utc=iso(NOW - 60 * 60))
+        emit, led, page, stop, _w, out = self.run_check(m, busy, lease_rows=(), times=times)
+        self.assertEqual([c.args[2] for c in emit.call_args_list], ["unleased-cpu"], "told once, not yet past the budget")
+        self.assertIn("--cpu-light --place auto", led.return_value.append.call_args.kwargs["text"])
+        self.assertEqual(m["unleased_cpu"]["run"], m["started_utc"])
+        page.assert_not_called(); stop.assert_not_called()
+        # past the budget from its start, still progressing: the overrun message follows, never a page
+        m2 = self.meta(started_utc=iso(NOW - 100 * 60))
+        emit, _l, page, stop, _w, _o = self.run_check(m2, busy[:2], lease_rows=(), times=times[:2])
+        self.assertEqual([c.args[2] for c in emit.call_args_list], ["unleased-cpu", "overrun"])
+        page.assert_not_called(); stop.assert_not_called()
+        # a watcher of hosted CI (a twentieth of a core) stays exempt
+        emit, *_ = self.run_check(self.meta(), [self.unit(0), self.unit(30)], lease_rows=(), times=times[:2])
+        emit.assert_not_called()
+        # a 10 min window must pass before anything is judged
+        emit, *_ = self.run_check(self.meta(), [self.unit(0), self.unit(900)], lease_rows=(), times=(NOW - 300, NOW))
+        emit.assert_not_called()
+
 
 class Orphan(unittest.TestCase):
     def test_provider_orphan_verdict_reaches_the_view(self):

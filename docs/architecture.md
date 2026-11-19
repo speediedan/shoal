@@ -450,8 +450,11 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
 - **Job class and runtime budget.** `job run --class ci|research` (default `ci`, placed or not). A
   `ci` job that holds a lease has a runtime budget, `features.placement.ci_budget_min` (default 90; 0
   turns it off), counted from its grant: a placed job's `lease_granted`, any other job's `since` on the
-  lease provider's row whose holder pid is in the job's unit. A job holding no lease (a watcher of hosted
-  CI, a plain script) has no budget: nothing waits behind it. From one stall window before the budget,
+  lease provider's row whose holder pid is in the job's unit. A job holding no lease that uses
+  `ci_unleased_cores` (2) or more cores over `ci_unleased_min` (10) minutes is CPU work all the same: it gets the
+  budget from its unit's start, one `JOB-UNLEASED-CPU` / `unleased-cpu` event, and one msg telling its role to run CPU
+  suites on the pool's lease (`--cpu-light --place auto`). A job holding no lease and using next to no CPU (a watcher
+  of hosted CI) has no budget: nothing waits behind it. From one stall window before the budget,
   `job wait` samples the unit once a minute at most (systemd's `CPUUsageNSec` over its process tree and
   its log's size, over one ssh for a remote job). Past the budget a job still progressing gets one
   `JOB-OVERRUN`, an `overrun` event and a ledger `health` msg to its role, never a page. A job with no
@@ -979,8 +982,9 @@ names one.
   `Checkpoint.Approval` record, where a serial gate queues) or, with no approval, queue to first job
   start, plus run time. Builds link to their PR head through `triggerInfo` (`sourceVersion` is the
   merge commit). `az` runs under `bash -lc`, so its credential stays in the login environment.
-- **Local CI**: `shoal job` records (a placed job's lease wait before `lease_granted` and run time
-  after it; the repository is the placement record's, else matched from the working directory by
+- **Local CI**: `shoal job` records (a job's lease wait before `lease_granted` and run time after it: a placed job
+  records its grant, an unplaced one gets it from its waiter's budget check once a process of its unit holds a lease;
+  `unleased_cpu` marks one that did CPU work with none; the repository is the placement record's, else matched from the working directory by
   `local.paths`, else unattributed) and the resource sampler's observed lease reservations (direct
   test runs; the holder is matched to a repository by `local.holders`; a holder naming the gate's
   own build is marked `gate` and not counted twice). Research jobs are not CI.

@@ -251,8 +251,9 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
 - A `ci` job (the default `--class`) that holds a lease and runs past `features.placement.ci_budget_min`
   (90 min from its grant) tells its role once (`JOB-OVERRUN`) while it progresses; with no progress for 20
   min, or at twice the budget, it is stopped and its role woken (`JOB-OVERRUN-STOPPED`). You are paged only
-  if the stop fails; `ci_autostop: false` never stops. A job holding no lease has no budget. Long research
-  runs use `--class research`.
+  if the stop fails; `ci_autostop: false` never stops. A job holding no lease has no budget unless it does
+  CPU work (2+ cores over 10 min): then it is budgeted from its start and its role told to use
+  `--cpu-light --place auto`. Long research runs use `--class research`.
 - A host whose probe fails or is stale is ineligible, never an error: check it with
   `ssh <route> shoal pool probe --json`.
 - **Trial before rollout.** Point a route's `cli` at a pre-release checkout on that host, so the trial
