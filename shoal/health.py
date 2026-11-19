@@ -15,11 +15,13 @@ boundary), so a new instance restarts the ladder and one instance never escalate
 
   condition          evidence                                   ladder (minutes since evidence)
   unacked-work       open offer to an idle role (or --now) newer than its queue version   wake@10 wake@30 page@60
-  wait-resolved      a machine-checkable wait target is no longer pending                  wake@15 page@60
+  wait-resolved      a machine-checkable wait target is no longer pending                  wake@15 restart@60
   asks-on-return     the maintainer came back; a role holding asks has not written since    wake@3 (once a return)
   blocker-resolved   a next item's role or provider blocker cleared                         wake@0
-  wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V page@3V
-                     (not a target its provider confirms pending, under wait discipline)
+  wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V restart@3V
+                     (not a target its provider confirms pending, under wait discipline; a restart is held
+                     mid-turn, and pages only when it fails)
+  lease-orphan       (watch_leases) a lease its provider marks orphaned, since its owner ended   page@30
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
   stale-active       status active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
@@ -58,7 +60,9 @@ _ENV = config.tool_env()
 PEER_STALE_MIN = 15
 LADDERS = {
     "unacked-work": [(10, "wake"), (30, "wake"), (60, "page")],
-    "wait-resolved": [(15, "wake"), (60, "page")],
+    # a role that slept through its wake on a resolved wait is handed to a fresh session at that wait: a page asked the
+    # maintainer to do what the quorum can (2026-11-18); a page only when the restart fails
+    "wait-resolved": [(15, "wake"), (60, "restart")],
     "watcher-dead": [(10, "wake"), (40, "page")],
     "stale-active": [(90, "wake"), (180, "page")],
     # features.waitdiscipline (architecture doc §3.5, §6): no wait is silent past its rescan,
@@ -78,6 +82,9 @@ LADDERS = {
     # features.health.watch_checkouts: a shared checkout that cannot take its upstream. Sessions then route around it
     # and it only gets worse, so it is a page, after an hour so that one in use mid-rebase stays quiet
     "checkout-stuck": [(60, "page")],
+    # features.health.watch_leases: a lease its provider marks orphaned, counted from when its owner ended. The provider's
+    # reaper frees one within minutes (say a 5 min grace, run every 5 min), so still held at 30 is the reaper failing
+    "lease-orphan": [(30, "page")],
     # bounded context (context.py): a role past its limit that marked a quiet boundary `--restart-ready` is
     # handed to a fresh session; `auto` mode does it from here, `page` (the default) asks the operator
     "context-restart": [(0, "page")],
@@ -93,6 +100,9 @@ LADDERS = {
     "quota-handoff": [(0, "restart")],
 }
 CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
+# wakes without effect on these end in a context restart at the role's recorded wait, not a page (a page only when the
+# restart fails); held while the session is mid-turn
+RESTART_NOT_PAGE = ("wait-resolved", "wait-validity")
 ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after this
 
 
@@ -784,7 +794,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                         detail += (f"; still running: {', '.join('job:' + x for x in sib)}. Act on the finished one, then "
                                    f"re-point your wait at one still running (`queue --wait local-ci --target job:{sib[0]}`)")
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
-                            "detail": detail, "first_seen": True})
+                            "detail": detail, "first_seen": True, "between": between})
             # `upstream` waits resolve through their target (wait-resolved), not a periodic re-verify.
             # The ladder is keyed by the target, so re-declaring the same wait keeps escalating: keyed
             # by the boundary, every rewrite restarted it at step 1 and it never paged (measured
@@ -796,7 +806,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                     out.append({"slug": slug, "condition": "wait-validity",
                                 "key": f"validity:{target}" if target else f"validity:{boundary}",
                                 "since": boundary, "detail": f"waiting {a:.0f}m on {sub} ({target or 'no target'}{seen}); "
-                                f"re-verify the wait is still valid"})
+                                f"re-verify the wait is still valid", "between": between})
         # watcher
         # a detached (--wake direct) watcher outlives its session's worker and resumes the session when
         # work arrives: a retired worker is dormant, and waking it only to re-arm cost a cold turn
@@ -1215,6 +1225,38 @@ def watched_checkouts(spec: ShoalSpec, dry_run: bool = False) -> list[dict]:
     return out
 
 
+def orphaned_leases(spec: ShoalSpec, lease: dict | None = None) -> list[dict]:
+    """features.health.watch_leases: a lease on this host its provider marks `orphan` (the holder's owner is gone, such as
+    an abandoned CI build whose container still holds the lock). The provider's own reaper should free it within minutes,
+    so one that outlives `lease-orphan`'s ladder since the owner ended is the reaper failing: a page. Turn it on in one
+    spec per host, or each quorum pages about the same lease. `lease`: the provider's status (tests)."""
+    if not health_cfg(spec).get("watch_leases"):
+        return []
+    if lease is None:
+        import resource_usage
+        lease = resource_usage.lease_observation(config.lease_cmd())
+    import pool
+    out: dict[str, dict] = {}
+    for row in lease.get("leases") or []:
+        o = row.get("orphan") if isinstance(row, dict) and row.get("held") else None
+        if not isinstance(o, dict):
+            continue
+        key = f"{row.get('holder') or 'unattributed'}:{row.get('pid')}"
+        if key in out:
+            out[key]["keys"].append(str(row.get("key")))
+            continue
+        t = pool._epoch(o.get("since")) if o.get("since") else None
+        since = iso(datetime.datetime.fromtimestamp(t, datetime.timezone.utc)) if t is not None else iso()
+        out[key] = {"slug": f"host:{config.server()}", "condition": "lease-orphan", "key": key, "since": since,
+                    "first_seen": t is None, "keys": [str(row.get("key"))], "orphan": o, "holder": row.get("holder")}
+    for c in out.values():
+        o = c.pop("orphan")
+        c["detail"] = (f"lease {','.join(c.pop('keys'))} is held by {c.pop('holder')}, whose owner is gone "
+                       f"({o.get('reason') or 'no reason given'}; {o.get('action') or 'no action recorded'}). Everything "
+                       f"queued behind it waits: the provider's reaper did not free it, so free it by hand")
+    return list(out.values())
+
+
 def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list[dict]:
     """Multi-host liveness of whole hosts. Every host with a live local role writes a `host-beat` system
     event at most every `host_beat_min` (its quorum is alive); home raises `host-silent` for another host
@@ -1342,6 +1384,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     conds = evaluate(spec, view, claude_busy())
     conds += host_beats(spec, led, state, dry_run)
     conds += watched_checkouts(spec, dry_run)
+    conds += orphaned_leases(spec)
     if not dry_run and is_local_any(spec) and health_cfg(spec).get("context_snapshot", True):
         try:
             # one context-cost snapshot per host per UTC day (context_cost.py): the first run after midnight writes it
@@ -1389,7 +1432,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
         a = age_min(lad["since"]) or 0.0
         if c["condition"] == "wait-validity":
             v = float(health_cfg(spec).get("validity_wake_min", 90))
-            steps = [(0, "wake"), (v, "wake"), (2 * v, "page")]
+            steps = [(0, "wake"), (v, "wake"), (2 * v, "restart")]
         elif c["condition"] == "turn-ended-active":
             m = float((continuation_cfg(spec) or {}).get("after_min", 5))
             steps = [(m, "wake"), (m + 30, "wake"), (m + 90, "page")]
@@ -1415,6 +1458,12 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     lad["held"] = until_r
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
                                  f"held (usage limit until {until_r})"))
+                break
+            if action == "restart" and c["condition"] in RESTART_NOT_PAGE and c.get("between") is False:
+                # mid-turn the role may be acting on it right now: a restart would cut that turn short
+                if lad.get("quiet") != "mid-turn":
+                    lad["quiet"] = "mid-turn"
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:restart", "held (mid-turn)"))
                 break
             client = restart_client(role_) if action == "restart" else ""
             if client:
@@ -1494,7 +1543,12 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ch = context_restart(spec, spec_path, role_, dry_run, moved[:1])
                 if moved and not ch.startswith("FAILED"):
                     ch += f"; {moved[1]}"
-            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck"):
+                if ch.startswith("FAILED") and c["condition"] in RESTART_NOT_PAGE:
+                    ch += "; " + page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect; "
+                                                 f"its restart {ch})", state, dry_run)
+                elif c["condition"] in RESTART_NOT_PAGE:
+                    ch = f"woken {lad['step']}x without effect: {ch}"
+            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)

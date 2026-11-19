@@ -643,6 +643,24 @@ with tempfile.TemporaryDirectory() as td:
     got = health.watched_checkouts(wc, dry_run=True)
     assert [(c["condition"], c["key"]) for c in got] == [("checkout-stuck", "diverged:" + b)] and got[0]["slug"] == "host:hostA", got
     assert health.LADDERS["checkout-stuck"] == [(60, "page")]
+# a lease its provider marks orphaned (an abandoned CI build's container still holds it) is a page once the reaper's
+# window has passed, one per holder across its keys, counted from when its owner ended; off unless watch_leases
+o = {"reason": "build 2169 completed (failed)", "since": "2026-11-18T14:05:22-08:00", "action": "would remove"}
+lease = {"ok": True, "queue": [], "leases": [
+    {"key": "gpu", "held": True, "holder": "azure-2169", "pid": 7, "orphan": o},
+    {"key": "cpu-heavy", "held": True, "holder": "azure-2169", "pid": 7, "orphan": o},
+    {"key": "gpu@G1", "held": True, "holder": "local-suite", "pid": 8},
+    {"key": "cpu-light", "held": False}]}
+lw = ShoalSpec.load(sys.argv[2])
+assert health.orphaned_leases(lw, lease) == [], "off when unset"
+lw.features = {"health": {"watch_leases": True}}
+got = health.orphaned_leases(lw, lease)
+assert [(c["condition"], c["key"], c["slug"], c["since"]) for c in got] == [
+    ("lease-orphan", "azure-2169:7", "host:hostA", "2026-11-18T22:05:22Z")], got
+assert "gpu,cpu-heavy" in got[0]["detail"] and "would remove" in got[0]["detail"], got
+assert health.LADDERS["lease-orphan"] == [(30, "page")]
+# an ignored wake on a resolved or unverifiable wait ends in a context restart, not a page
+assert health.LADDERS["wait-resolved"][-1][1] == "restart" and set(health.RESTART_NOT_PAGE) == {"wait-resolved", "wait-validity"}
 single.home = "hostA"
 n0 = len(led.events(reload=True))
 assert health.host_beats(single, led, {}, dry_run=False) == [] and len(led.events(reload=True)) == n0, "beat written"

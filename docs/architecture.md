@@ -410,7 +410,8 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   Home runs it in process and over each route's ssh (20 s timeout, cached 20 s). A failed or stale
   probe (older than 120 s by home's receive time, so a skewed remote clock does not age it) makes the
   host ineligible, never an error; its reason is one line (a shoal too old to know `pool probe` reads
-  `shoal on <host> has no pool probe (update its checkout)`).
+  `shoal on <host> has no pool probe (update its checkout)`). A held row's `orphan` verdict (the
+  provider contract) rides with its holder, and `pool status` marks that holder `ORPHAN: <reason>`.
 - **Demand.** `--needs cpu|gpu[:N][:vendor][:vramGiB]` (a GPU job with no vendor keeps its home host's
   vendor; above one GPU is the whole host), `--cpu-heavy`, `--memory-gib`, `--ci-env NAME`,
   `--repo PATH [--ref SHA]` (default the checkout's HEAD), `--est MIN` (the duration prior),
@@ -447,10 +448,18 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   `<data_root>/<id>/jobs/<unit>.out`, appends the run to the history and removes a successful run's
   worktree. Each placement is a `placed` telemetry event.
 - **Job class and runtime budget.** `job run --class ci|research` (default `ci`, placed or not). A
-  `ci` job has a runtime budget, `features.placement.ci_budget_min` (default 90; 0 turns it off),
-  counted from `lease_granted`, or from the unit's start when no lease is used. Past it, `job wait`
-  prints `JOB-OVERRUN`, emits an `overrun` event and pages once per run: a ledger `health` msg to the
-  owning role and the user page path (`health.page_user`). It never kills the job. The planner uses the
+  `ci` job that holds a lease has a runtime budget, `features.placement.ci_budget_min` (default 90; 0
+  turns it off), counted from its grant: a placed job's `lease_granted`, any other job's `since` on the
+  lease provider's row whose holder pid is in the job's unit. A job holding no lease (a watcher of hosted
+  CI, a plain script) has no budget: nothing waits behind it. From one stall window before the budget,
+  `job wait` samples the unit once a minute at most (systemd's `CPUUsageNSec` over its process tree and
+  its log's size, over one ssh for a remote job). Past the budget a job still progressing gets one
+  `JOB-OVERRUN`, an `overrun` event and a ledger `health` msg to its role, never a page. A job with no
+  progress for `ci_stall_min` (20 min: under `ci_idle_cpu_s`, 30 s, of CPU and its log unchanged), or
+  still running at `ci_cap_x` (2) times the budget, is stopped, which frees its lease for the queue:
+  `JOB-OVERRUN-STOPPED`, an `overrun-stopped` event, and a msg plus a health wake to its role naming the
+  reason and the log's tail. The maintainer is paged only when the stop leaves the unit active.
+  `ci_autostop: false` keeps the message and never stops. The planner uses the
   budget as a soft ceiling on a CI job's predicted end (within the budget the prediction ends by the
   budget plus the tail floor; past it the ordinary overrun tail applies). A `research` job has no budget.
 - **Research waits.** A role waiting on a research or prototyping run declares `research-proto`, not
@@ -508,8 +517,13 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | condition | evidence | ladder (minutes) |
 | --- | --- | --- |
 | `unacked-work` | an unacknowledged operational request in any status, an offer to an idle role, a `--now` offer, or an outstanding wake request | wake 10, wake 30, page 60 |
-| `wait-resolved` | a checkable wait target is no longer pending; a `job:` wait whose job ended while the role's other jobs run here names them (`jobs.running_siblings`), so the role re-points its wait | wake 15, page 60 |
-| `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, page, one interval apart |
+| `wait-resolved` | a checkable wait target is no longer pending; a `job:` wait whose job ended while the role's other jobs run here names them (`jobs.running_siblings`), so the role re-points its wait | wake 15, restart 60 |
+| `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, restart, one interval apart |
+| `lease-orphan` (when `watch_leases` is on) | a lease its provider marks `orphan` (the holder's owner is gone, such as an abandoned CI build whose container still holds the lock), one per holder, counted from when the owner ended; the provider's reaper had its window | page 30 |
+
+The `restart` step of `wait-resolved` and `wait-validity` (`RESTART_NOT_PAGE`) hands a role that slept through its
+wakes to a fresh session at its recorded wait, as `context_restart` does; it is held while the session is mid-turn,
+and pages only when the restart fails.
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
 | `turn-ended-active` (`continuation`) | status `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `checkout-stuck` (when `watch_checkouts` lists it) | a shared checkout has an operation left in progress, a local file differing from one its upstream changed, or commits on both sides; behind alone is not stuck | page 60 |
@@ -605,6 +619,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | `rearm` | on | `watcher-dead` on a **detached** watcher (Claude `direct`, opencode `send:`, muse/codex `exec:`) is answered by the quorum starting the watcher itself, no wake; only an in-session (`exit`) watcher needs its role woken. A watcher re-armed within 15 min that is dead again climbs the ladder. Each arm counts fetch failures from zero, so a re-arm during an outage gets its full five attempts |
 | `autopark` (a top-level feature) | off | a `fill=assigned` role holding nothing and quiet for `after_min` (default 60; `true`, or `{"after_min": 60, "exempt": ["<role>"]}`) is parked by the quorum `--until offer:<role>`, and the next offer to it relaunches it from its start doc. So an empty-queue episode costs at most that grace of `wait:assignment`, and parked time is excluded. It stays out for a queue, offer, claim or ask, a status other than idle, a message or session activity newer than the grace (direct chat writes nothing to the ledger), a turn, a `blocked` Claude row (a request may sit in its job's `needs`), an attached client or interactive session (`claude attach` for Claude, `session_held` for the others), a running job, a condition raised this run, an incomplete start doc, or a freeze. At most one park per quorum run. Only an offer relaunches: a `msg --wake` to a parked role does not. A park or relaunch changes the shoal's viewable roles, so the app rebuilds its roles tabs |
 | `watch_checkouts` | off | paths of shared checkouts this host's quorum watches for `checkout-stuck`, each fetched per tick. List them on one spec, or each quorum pages about the same checkout. A path that is not a checkout on a host is skipped there |
+| `watch_leases` | off | this host's quorum reads the lease provider's status each tick for `lease-orphan`. Turn it on in one spec per host, or each quorum pages about the same lease |
 | `offline_hold` | `parked-work`, `hold-long`, `blocking-unscheduled` | these do not wake while the maintainer is offline (the step waits; pages were already deferred) |
 | `rewake_min` | 720 | `parked-work` and `hold-long` wake once per item set or hold in this window; a re-opened instance on the same evidence is skipped |
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
