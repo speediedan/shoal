@@ -374,7 +374,7 @@ work only offers to them or to `*`; `fill=none` roles never claim.
 | --- | --- | --- | --- |
 | `ledger-watch` | setsid-detached (Claude: `--wake direct`; opencode: `--wake send:<own id>`; muse/codex: `--wake exec:<own id>`), or an in-session background command (Claude under `direct_wake: dead`: `--wake exit`) | its own session, for work only | sidecar pid; health `watcher-dead` |
 | wait waiter (CI, lease, job) | an in-session background command, head-pinned, with verdict lines | its own session | a missing verdict; health `wait-resolved`, `wait-validity` |
-| job unit and `job wait` | a `systemd-run --user` transient unit with a `MemoryHigh` cap | its own session, through the waiter | `JOB-VERDICT` line; unit state; on another host, `HOST-REBOOTED` when its boot id changed under the job |
+| job unit and `job wait` | a `systemd-run --user` transient unit in `shoal-jobs.slice`, with a `MemoryHigh` cap and a `MemoryMax` ceiling | its own session, through the waiter | `JOB-VERDICT` line (`result=oom-kill` when a memory ceiling killed it); unit state; on another host, `HOST-REBOOTED` when its boot id changed under the job |
 | `health-a`, `health-b` | systemd user timers | roles (through adapters), the maintainer | each checks the other's tick |
 | lanes, pipeline, digest, reconcile, weekly report | systemd user timers | the health adapters (sensor fires) | `/tmp/<id>/tick-<job>` older than three intervals |
 
@@ -388,7 +388,26 @@ survives that. With `--on user@host` (or a `[hosts.<server>]` name, whose route'
 file under `~/shoal-jobs` there; the local meta records the host and `wait`, `status` and `stop` follow it
 over ssh; the remote cwd, checkout, venv and any lease wrapping are the caller's to have in place: this
 moves compute, not state), which is how a serialized local resource (`cpu-heavy`, the one big GPU) is
-relieved by an idle second host without moving any role. Watchers stay small and idempotent: re-arming
+relieved by an idle second host without moving any role.
+
+**Job memory ceilings.** Every job unit, local, `--on` or placed, has a `MemoryMax` (default 16G) and runs in the
+user slice `shoal-jobs.slice`, whose `MemoryHigh` (18G) throttles and `MemoryMax` (20G) OOM-kills inside the slice, so
+all lane jobs on a host together stay well below its RAM (measured 2026-11-19: lane jobs held 25 to 32 GiB beside a
+21 to 27 GiB container build on a 62.6 GiB host with no ceiling anywhere, and the kernel livelocked for about 22
+minutes). The per-job value is `job run --memory-max`, else `[jobs] memory_max` in the host config, else
+`features.placement.job_memory_max`; the slice's are `[jobs] slice_memory_high` / `slice_memory_max`, else
+`features.placement.jobs_slice_memory_high` / `jobs_slice_memory_max`. Values are systemd sizes (`16G`, `512M`,
+`25%`; a bare number is GiB); 0 or empty turns that ceiling off, and with both slice values off a job runs outside the
+slice. The slice unit file is written under the user's systemd config dir on whichever host runs the job (over the
+same ssh call for `--on` and remote placements) when it is missing, or when it carries shoal's marker line and its
+limits changed, followed by one `daemon-reload`; a file without the marker is the operator's and is left alone
+(`SHOAL_SYSTEMD_USER_DIR` redirects it, without a reload, for the selftests). An `ExecStopPost` records the unit's
+`$SERVICE_RESULT` in `<unit>.result` beside its rc file, because a collected transient unit forgets its result and the
+OOM stop kills the exit-code wrapper too: `job wait` then prints `JOB-VERDICT <unit> result=oom-kill exit=<rc|->`
+with the ceilings the job ran under and what to change, instead of `UNIT-GONE-NO-STATUS`. The job meta records the
+effective `memory_max` and `slice`.
+
+Watchers stay small and idempotent: re-arming
 never duplicates a side effect. A
 `killed` notification is itself a wake: the role runs `next`, acts, re-arms and proves the new pid.
 
@@ -1044,8 +1063,9 @@ with `next_max`), `health` (`validity_wake_min`, `page`, `direct_wake`), `contin
 `waitdiscipline` (`rescan_cap_min`), `jobs`, `digest`, and
 `matcher` (`live`, `model`, `free_recheck_min`, `stale_hours`, `go_fallbacks`, `paid_fallback`,
 `private_repos`), `placement` (`true`, or an object with `margin_s`, `staging_s`, `max_moves`, `interval_s`,
-`max_age_s`: queue transfers of placed jobs, section 6, off until a manual trial passes; and `ci_budget_min`, the CI
-job runtime budget, read whether or not transfers are on), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-1 pruning of old
+`max_age_s`: queue transfers of placed jobs, section 6, off until a manual trial passes; `ci_budget_min`, the CI
+job runtime budget, and `job_memory_max`, `jobs_slice_memory_high`, `jobs_slice_memory_max`, the job memory ceilings,
+all read whether or not transfers are on), and `prune` (`true`, or `{"enabled": true, "delete": false}`: automatic N-1 pruning of old
 incarnations, section 7; retirement condition: fold into the default after two clean weeks). An absent flag leaves the
 component off.
 

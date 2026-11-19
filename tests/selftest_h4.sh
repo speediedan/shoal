@@ -139,6 +139,8 @@ if ! have_systemd; then
   echo "SKIP 6 job units (live): $(skip_reason)"
 else
 check "JOB-STARTED" $H job run --shoal $SID --slug tl --name ok --memory-high 1G -- bash -c 'echo job-ok-output; sleep 2'
+[ "$(systemctl --user show shoal-$SID-tl-ok.service -p Slice --value)" = shoal-jobs.slice ] || fail "job unit not in shoal-jobs.slice"
+grep -qx "MemoryMax=20G" "$SHOAL_SYSTEMD_USER_DIR/shoal-jobs.slice" || fail "shoal-jobs.slice not written to the scratch unit dir"
 check "JOB-ALREADY-RUNNING" $H job run --shoal $SID --slug tl --name ok -- true
 check "result=success exit=0" $H job wait --shoal $SID --slug tl --name ok --poll 1
 check "job-ok-output" $H job wait --shoal $SID --slug tl --name ok --poll 1   # re-armed waiter: same verdict
@@ -228,6 +230,7 @@ import providers; print(providers.resolve('lease:gpu', 'tl', 'x')[0])")
 
 echo "== 6c pool placement: job run --place over two fake hosts (probe over an ssh stub, dry-run, live, transfer)"
 python3 "$TESTD/test_pool.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_pool.py"; fail "pool planner unit tests (tests/test_pool.py)"; }
+python3 "$TESTD/test_job_memory.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_job_memory.py"; fail "job memory ceilings (tests/test_job_memory.py)"; }
 pool_clean() { have_systemd && systemctl --user stop 'shoal-pooltest-*' 2>/dev/null; rm -rf /tmp/pooltest; }
 pool_clean
 PL="$S/pool"; mkdir -p "$PL/home-data" "$PL/far-data" "$PL/far-home" "$PL/bin" "$PL/rc"

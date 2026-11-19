@@ -32,6 +32,9 @@ when neither is importable the file is skipped with one warning on stderr.
   ledger_pull_min (none)                                     0 (minutes between the graph feed's pulls of this host's
                                                                  ledger clone; 0: it never pulls, as a host running roles
                                                                  needs no extra pull)
+  jobs.memory_max, jobs.slice_memory_high, jobs.slice_memory_max (none)
+                                                             the spec's features.placement values, else 16G, 18G, 20G
+                                                                 (lane job memory ceilings; 0 or "": off)
 
 `lease_cmd` falls back to `GPU_LEASE_CMD` when `SHOAL_LEASE_CMD` is unset.
 
@@ -361,6 +364,18 @@ def ci_envs() -> dict[str, dict]:
         out[str(name)] = {"python": _path(str(e.get("python") or "")),
                           "repos": [str(x) for x in repos] if isinstance(repos, list) else []}
     return out
+
+
+def jobs_memory() -> dict:
+    """`[jobs]` in the host config: this host's lane job memory ceilings, as given (`memory_max`, a job unit's
+    MemoryMax; `slice_memory_high` and `slice_memory_max`, the shared `shoal-jobs.slice`). Only the keys present;
+    pool.memory_size reads the values, and they win over the spec's features.placement."""
+    v = file_values().get("jobs") or {}
+    if not isinstance(v, dict):
+        return {}
+    keys = {"memory_max": "job_memory_max", "slice_memory_high": "jobs_slice_memory_high",
+            "slice_memory_max": "jobs_slice_memory_max"}
+    return {keys[k]: v[k] for k in keys if k in v}
 
 
 def summary() -> dict:

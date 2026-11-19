@@ -36,6 +36,11 @@ DEFAULTS = {"margin_s": 180.0, "staging_s": 120.0, "max_moves": 2, "max_age_s": 
             # past the budget: stop a CI job after this long without progress (CPU under ci_idle_cpu_s, its log
             # unchanged), or once it reaches ci_cap_x times the budget (pool_cli.budget_check)
             "ci_stall_min": 20.0, "ci_idle_cpu_s": 30.0, "ci_cap_x": 2.0}
+# Lane job memory ceilings (jobs.py): each job unit's MemoryMax and the shared `shoal-jobs.slice` every job unit runs in
+# (MemoryHigh throttles the slice, MemoryMax OOM-kills inside it). systemd sizes ("16G", "512M", "25%" of RAM); a bare
+# number is GiB; 0 or "" turns that ceiling off. features.placement sets them per group, `[jobs]` in the host config
+# per host (the host wins), and `job run --memory-max` per job.
+MEMORY_DEFAULTS = {"job_memory_max": "16G", "jobs_slice_memory_high": "18G", "jobs_slice_memory_max": "20G"}
 CLASSES = ("ci", "research")
 FUTURE_SKEW_S = 30.0       # a probe dated further ahead than this is as untrustworthy as a stale one
 PRIOR_WEIGHT = 2.0         # the --est prior counts as this many observed runs
@@ -49,10 +54,11 @@ CPU_ONLY_ENV = {"CUDA_VISIBLE_DEVICES": "", "ROCR_VISIBLE_DEVICES": "", "HIP_VIS
 def feature(spec) -> dict:
     """features.placement: false/absent (off), true (on, defaults), or {"enabled": true, "margin_s",
     "staging_s", "max_moves", "interval_s", "max_age_s", "ci_budget_min", "ci_stall_min", "ci_idle_cpu_s", "ci_cap_x",
-    "ci_autostop"}. Only queue transfers need it on; `job run --place` and the CI runtime budget (`ci_budget_min`,
-    0 = none; `ci_autostop`, default on, stops a stalled or capped CI job) work without it."""
+    "ci_autostop", "job_memory_max", "jobs_slice_memory_high", "jobs_slice_memory_max"}. Only queue transfers need it
+    on; `job run --place`, the CI runtime budget (`ci_budget_min`, 0 = none; `ci_autostop`, default on, stops a stalled
+    or capped CI job) and the job memory ceilings (MEMORY_DEFAULTS) work without it."""
     v = (getattr(spec, "features", {}) or {}).get("placement")
-    out = dict(DEFAULTS, enabled=bool(v), ci_autostop=True)
+    out = dict(DEFAULTS, enabled=bool(v), ci_autostop=True, **MEMORY_DEFAULTS)
     if isinstance(v, dict):
         out["enabled"] = bool(v.get("enabled", True))
         if isinstance(v.get("ci_autostop"), bool):
@@ -60,7 +66,32 @@ def feature(spec) -> dict:
         for k in DEFAULTS:
             if isinstance(v.get(k), (int, float)) and v[k] >= 0:
                 out[k] = v[k]
+        for k in MEMORY_DEFAULTS:
+            if k in v and memory_size(v[k]) is not None:
+                out[k] = memory_size(v[k])
     return out
+
+
+def memory_size(v) -> str | None:
+    """A memory ceiling as systemd takes it: "" (off) for 0, "0", "", None or false; "<n>G" for a bare number
+    (GiB); a size with a K/M/G/T suffix or a percentage as given; "infinity" as off. None when unreadable."""
+    if v is None or v is False or v == "":
+        return ""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return "" if v <= 0 else f"{v:g}G"
+    s = str(v).strip()
+    if s in ("0", "infinity"):
+        return ""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([KMGT]?)|(\d+(?:\.\d+)?)%", s, re.I)
+    if not m:
+        return None
+    if m.group(3) is not None:
+        return "" if float(m.group(3)) <= 0 else s
+    if float(m.group(1)) <= 0:
+        return ""
+    return m.group(1) + m.group(2).upper() if m.group(2) else m.group(1) + "G"
 
 
 def options(opts: dict | None = None) -> dict:

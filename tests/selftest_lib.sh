@@ -40,6 +40,8 @@ shoal_test_setup() {
   export SHOAL_DATA_ROOT="$s/data"
   # anything shoal spawns itself (the quorum re-arming a watcher) runs THIS checkout, never the live install
   export SHOAL_ROUTE_CACHE="$s/route-cache"   # never the live viewer's route cache
+  # a job unit's shared memory slice file goes to scratch, never the user's systemd dir (no daemon-reload then)
+  export SHOAL_SYSTEMD_USER_DIR="$s/systemd-user"
   export SHOAL_CLI="python3 $(cd "$(dirname "${BASH_SOURCE[0]}")/../shoal" && pwd)/cli.py"
   # never touch the real harness skill homes: upgrade syncs skills into these
   export SHOAL_SKILL_HOMES="$s/skillhomes/a:$s/skillhomes/b"; mkdir -p "$s/skillhomes/a" "$s/skillhomes/b"

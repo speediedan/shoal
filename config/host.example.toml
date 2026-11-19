@@ -98,6 +98,15 @@
 # python = "/path/to/venvs/<name>/bin/python"
 # repos = ["<owner>/<repo>"]
 
+# Memory ceilings for lane jobs (`shoal job run`) on this host: each job unit's MemoryMax, and the shared
+# `shoal-jobs.slice` every job unit runs in (MemoryHigh throttles the slice, MemoryMax OOM-kills inside it). systemd
+# sizes ("16G", "512M", "25%" of RAM; a bare number is GiB); 0 or "" turns a ceiling off. These win over the spec's
+# features.placement values. Default: 16G per job, 18G high and 20G max for the slice.
+# [jobs]
+# memory_max = "16G"
+# slice_memory_high = "18G"
+# slice_memory_max = "20G"
+
 # Repositories whose .shoal/lifecycle.toml [hooks] this host runs (docs/lifecycle.md). Hooks are code
 # execution from repository content, so they are ignored for any repository not listed. Default: []
 # [lifecycle]
