@@ -31,6 +31,50 @@ clone each time, so a group added, moved here or retired is followed without tou
 `--role-time-spec <spec>` (repeatable) adds a spec by path; `--no-role-time-live` keeps only those.
 A copied standalone sampler refreshes none. `install` carries these flags into the generated unit.
 
+## The fast path (memory forensics)
+
+`watch` also runs a fast path every `--fast-interval` seconds (default 2; 0 turns it off) that reads files only,
+no subprocess, so it keeps recording when the host is too short of memory to start one. The full sample above
+(GPUs, the lease provider) keeps its own `--interval` in a separate thread, so a slow provider never delays it.
+Each fast record is one compact JSON line in `<data_root>/_resources/<host>/fast-YYYYMMDD.jsonl`:
+
+```json
+{"v":1,"type":"fast_sample","host":"<host>","ts":1800000000.0,
+ "psi":{"some10":12.5,"some60":4.0,"full10":6.25,"full60":2.0},
+ "mem":{"avail_mib":2048,"swap_free_mib":1,"dirty_mib":50},
+ "cg":{"system.slice":{"cur":900,"peak":1200,"anon":300,"file":500,"oom":0},
+       "user.slice/user-1000.slice":{"cur":30000,"anon":28000,"file":1500,"oom":0},
+       "user@1000/app.slice/<unit>.service":{"cur":14700,"peak":15000,"anon":14000,"file":600,"oom":0},
+       "user@1001/user.slice/docker-<id>.scope":{"cur":25000,"anon":24000,"file":800,"oom":0}},
+ "rest":{"n":24,"cur":796},
+ "top":[{"pid":4242,"uid":1000,"rss_mib":14700,"comm":"pytest","cg":"user@1000/app.slice/<unit>.service"}]}
+```
+
+- `psi`: `/proc/pressure/memory`, `some` and `full` over 10 and 60 s, in percent.
+- `mem`: `MemAvailable`, `SwapFree` and `Dirty` from `/proc/meminfo`, in MiB.
+- `cg`: per cgroup, below the cgroup root, with `user.slice/user-<uid>.slice/user@<uid>.service/` written
+  `user@<uid>/`: `cur` (`memory.current`), `peak` (`memory.peak`, when the kernel has it), `anon` and `file`
+  (`memory.stat`), in MiB, and `oom`, the running `oom_kill` count from `memory.events`. It always holds
+  `system.slice`, each `user.slice/user-<uid>.slice` and every `docker-*.scope` under any user's tree (a rootless
+  container of another uid among them; its own inner cgroups are not walked). A unit under a user manager's
+  `app.slice` is listed while it uses at least `--fast-min-mib` (128), and otherwise counted in `rest` (`n` units,
+  `cur` MiB together).
+- `top`: the five processes with the largest RSS (`/proc/<pid>/statm`), with uid, `comm` and cgroup. No command
+  line is read.
+- `errors`: present only when a read failed. A value that could not be read is absent, never zero.
+
+The first record of a new UTC day gzips the closed days (`fast-YYYYMMDD.jsonl.gz`) and removes compressed days
+older than `--fast-retain-days` (default 7). On a busy host a day is about 100 MiB plain and 4 MiB gzipped.
+Fast records are not resource events: `report`, `balance` and the pool's probe read only `events-*`.
+
+The service's journal gets a start line, each distinct error once, an `oom_kill` line as soon as a cgroup's
+`oom_kill` count rises, and one `resources_summary` line every `--summary-min` minutes (default 15; 0 for none):
+samples taken, the lowest `MemAvailable` and `SwapFree`, the highest `some` and `full` avg10, the largest unit or
+container, and the OOM kills in the window. No sample is echoed (the earlier sampler printed each one, about
+4,600 lines a day). `--proc-root` and `--cgroup-root` point the fast path at a planted tree (tests).
+
+## Service
+
 `install --enable` reloads systemd, enables the service and restarts it, so a reinstall (new flags, a moved
 checkout) replaces a running sampler instead of leaving the old process in place. The default cadence is 15 seconds. The service is `shoal-resources.service`, shared across groups.
 Its dry run prints the exact unit before installation. Hardware observations use stable NVIDIA UUIDs
