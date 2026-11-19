@@ -141,3 +141,14 @@
 # provider = "claude"
 # env = { CLAUDE_CONFIG_DIR = "~/.claude-2" }
 # badge = "2"              # optional: the mark on its card icon (default: the name's trailing digits)
+
+# CI efficiency rows (`shoal efficiency snapshot`, shoal/efficiency.py): merged lines per unit of CI cost, per repository
+# and UTC day, and per shoal from the role-time journal. Every key is optional.
+# [efficiency]
+# out = "/path/to/efficiency.jsonl"      # default <data_root>/_efficiency/efficiency.jsonl
+# cache_dir = "/path/to/cache"           # merged PR file lists (default: beside `out`)
+# store = "/path/to/_ci_wait"            # the ci-wait store (default <data_root>/_ci_wait)
+# role_time_dir = "/path/to/role-time"   # the role-time observer's --state-dir (default: each shoal's state dir)
+# exclude = ["*.lock", "vendored/*"]     # replaces the default exclusion globs (fnmatch: `*` crosses `/`)
+# buckets = [50, 500]                    # PR size bucket bounds, in counted changed lines
+# min_coverage = 0.5                     # a shoal's role-time ratios need this share of eligible time classified

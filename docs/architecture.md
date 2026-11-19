@@ -1010,6 +1010,59 @@ phase, `shoal_ci_wait_head_run_seconds` (source `gate` or `github_hosted`, stat 
 carry a SHA or PR number. The weekly report (`telemetry/shoal_report.py`) adds one line per
 configured repository from the same store, with no provider call.
 
+### CI efficiency (`shoal efficiency snapshot`)
+
+`shoal/efficiency.py` turns the ci-wait store and the role-time journal into one row per repository
+and UTC day, and one per shoal and day, so CI rules and infrastructure are tuned against a number that
+does not reward splitting work or skipping checks.
+
+- **Throughput** is merged code lines: additions plus deletions of the PRs merged that UTC day, less
+  paths matching exclusion globs (lockfiles, pinned CI requirements, notebooks, generated code,
+  vendored trees; fnmatch, so `*` crosses `/`; `[efficiency] exclude` replaces the list). A PR count
+  is never a throughput number on its own. The merged PRs come from one GitHub search per week of
+  days (the query reads a day either side and keeps the merges inside the UTC days), paced for the
+  search rate limit and retried after a backoff; each PR's file list comes from the files endpoint
+  and is cached for good beside the rows, since a merged PR does not change. A file list read only in
+  part is not counted (nor cached), and the row says how many PRs it could not count.
+- **Cost** is the day's CI from the ci-wait store: job-minutes (counted GitHub jobs, gate builds,
+  local `shoal job` runs and direct lease holds, whatever became of the change) and CI wait (push to
+  CI complete per PR head that completed that day, plus local CI lease wait and run). Each merged PR
+  also carries its own CI: every PR head the store saw for it, on any day.
+- **Ratios** divide sums: lines per CI wait hour, lines per CI job-minute and job-minutes per merged
+  PR, and again per PR size bucket (`[efficiency] buckets`, default under 50, 50 to 500, 500 or more
+  counted lines) as the median over the bucket's PRs of each PR's own lines per CI cost, so many small
+  PRs do not look efficient just because each is cheap. No CI minutes at all reads as not measured,
+  never as free.
+- **Guardrails** sit beside every ratio: rerun share (PR head minutes on attempts after the first),
+  failed gate builds and gate approvals, merged reverts and PRs some later merge says it reverts
+  (`Reverts <owner>/<name>#N`), and local CI jobs that did sustained CPU work without a lease (the
+  job record's `unleased_cpu`; `unleased_cpu_observed` counts the records new enough to say).
+- **Per shoal** (`--role-time-spec`, repeatable): the day's role time read from the observer's
+  journal (`<role-time-dir>/<sid>/role-time-observations.jsonl`, else the shoal's state directory)
+  the way `role-time report` reads it, with closed segments more than two days before the first day
+  skipped and one difference: a role a segment header leaves out stopped being a member when that
+  segment opened (the report keeps an older open span, charging a role removed from the spec as
+  unknown ever after). The row holds work, wait and unknown seconds, the local-CI, remote-CI and
+  lease waits, and the ratios: CI and lease share of eligible role time, AAR, RWF, coverage and the
+  merged lines of the shoal's repositories (its spec's `repos`, else its ci-wait ones) per role CI
+  and lease wait hour. Below `[efficiency] min_coverage` (default 0.5) the ratios are empty, not 0;
+  a repository with no counted row that day is listed in `repos_uncounted`.
+
+`shoal efficiency snapshot --spec S [--day D] [--backfill N] [--role-time-spec R ...]` computes the N
+days ending with D (default yesterday) for every repository in the spec's `features.ci_wait.repos`
+(`--repo` narrows), replaces those days' rows in the JSONL (`--out`, else `[efficiency] out`, else
+`<data_root>/_efficiency/efficiency.jsonl`) and prints one line per row (`--json` for the rows). A
+day GitHub cannot give keeps a stored row that has its merges, else gets a row with `merged` empty,
+and the command exits 1. Rollups over a window (`efficiency.rollup`) pair lines with the cost of
+the same days only, and leave a shoal's low-coverage days out of its ratios. `--prom-out F` writes
+gauges for the last stored day and the seven days ending there (`shoal_efficiency_merged_lines`,
+`_merged_prs`, `_lines_per_ci_wait_hour`, `_lines_per_job_minute`, `_job_minutes_per_merged_pr`,
+`_ci_job_minutes`, `_ci_wait_seconds`, the guardrails `_rerun_share`, `_failed_gates`,
+`_reverted_prs` and `_unleased_cpu_jobs`, per size bucket `_merged_prs_by_size`,
+`_bucket_lines_per_job_minute` and `_bucket_lines_per_ci_wait_hour`, per shoal `_ci_lease_share`,
+`_aar`, `_role_work_fraction`, `_role_time_coverage` and `_lines_per_role_ci_wait_hour`); labels are
+repository, shoal, window and bucket, never a PR number, title or SHA.
+
 ## 10. Live upgrades
 
 `shoal upgrade --spec <spec> [--pull] [--dry-run]` says how each change reaches a running group before it

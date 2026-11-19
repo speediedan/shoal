@@ -214,7 +214,14 @@ export S=<id> SPEC=<path to the group's spec>
 shoal report --spec $SPEC --gen <generation>
 shoal report --spec $SPEC --hours 168
 shoal kill-audit --no-record
+shoal ci-wait report --spec $SPEC --since <ISO time>       # CI wait by repository over a window
+shoal efficiency snapshot --spec $SPEC                       # yesterday's CI efficiency rows (merged lines per CI cost)
+shoal efficiency snapshot --spec $SPEC --backfill 14 --role-time-spec $SPEC --role-time-dir <observer state dir> \
+  --out <dir>/efficiency.jsonl --prom-out <textfile dir>/shoal_efficiency.prom   # a backfill, with per-shoal role time
 ```
+
+`efficiency snapshot` reads GitHub (`gh api`, paced for the search rate limit) and the local ci-wait store and
+role-time journal; it exits 1 when GitHub could not give a day's merges (a stored row for that day is kept).
 
 ## Jobs
 
