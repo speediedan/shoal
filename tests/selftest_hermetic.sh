@@ -14,7 +14,10 @@
 set -u
 TESTD="$(cd "$(dirname "$0")" && pwd)"
 SUITE="${1:?usage: selftest_hermetic.sh SUITE [args...]}"; shift
+. "$TESTD/selftest_lib.sh"
 STUBS="$(mktemp -d "${TMPDIR:-/tmp}/shoal-stubs-XXXXXX")"
+# the stubs and their call log go on exit, kept (and named) when the suite failed or a stub was called
+trap 'shoal_scratch_exit $? "$STUBS"' EXIT
 CALLS="$STUBS/calls.log"
 : > "$CALLS"
 for t in gh az opencode openchamber claude muse codex; do
@@ -37,7 +40,6 @@ JUSTIFIED='^network tool called: [^ ]*/(openchamber status|gh auth status)$'
 leaks=$(grep -cvE "$JUSTIFIED" "$CALLS" || true)
 echo "== hermetic $SUITE: rc=$rc, network tool calls: $hits (in suite output: $out_hits; unjustified: $leaks)"
 sed "s#$STUBS/##" "$CALLS" | sort | uniq -c | sort -rn
-rm -rf "$STUBS"
 [ "$rc" = 0 ] || exit "$rc"
 [ "$leaks" = 0 ] || exit 3
 exit 0

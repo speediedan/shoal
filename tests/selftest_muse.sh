@@ -16,6 +16,7 @@ SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 S="${1:-${TMPDIR:-/tmp}/shoal-muse-selftest-$$}"
 exec 9>"/tmp/shoal-selftest-muse.lock"; flock -w 600 9 || { echo "SELFTEST FAIL: another muse selftest holds the lock" >&2; exit 1; }
 rm -rf "$S"; mkdir -p "$S"
+trap 'shoal_scratch_exit $? "$S"' EXIT
 shoal_test_setup "$S"
 export SHOAL_MUSE_STATE="$S/muse-state" FAKE_MUSE_LOG="$S/muse-calls.jsonl"
 H="python3 $SHOALD/cli.py"; export SHOALD PYTHONPATH="$SHOALD"

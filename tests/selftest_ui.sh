@@ -21,7 +21,7 @@ export SHOAL_SPEC="$SPEC"
 H="python3 $SHOALD/cli.py"
 fail() { echo "SELFTEST FAIL: $*" >&2; exit 1; }
 BGPIDS=()
-trap 'kill "${BGPIDS[@]}" 2>/dev/null' EXIT
+trap 'rc=$?; kill "${BGPIDS[@]}" 2>/dev/null; shoal_scratch_exit $rc "$S"' EXIT
 check() { local pat=$1; shift; local out; out=$("$@" 2>&1 || true); grep -q -- "$pat" <<<"$out" || fail "expected '$pat' in: $* :: $(tail -c 800 <<<"$out")"; }
 
 git init -q --bare "$S/remote/q.git"; git clone -q "$S/remote/q.git" "$A" 2>/dev/null

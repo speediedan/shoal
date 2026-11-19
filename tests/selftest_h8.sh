@@ -14,6 +14,7 @@ S="${1:-${TMPDIR:-/tmp}/shoal-h8-selftest-$$}"
 # are fixed, so two concurrent runs (another checkout or worktree, or `upgrade`) clobber each other
 exec 9>"/tmp/shoal-selftest-h8selftest.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another h8selftest run holds the lock" >&2; exit 1; }
 rm -rf "$S" /tmp/h8selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
+trap 'shoal_scratch_exit $? "$S"' EXIT
 shoal_test_setup "$S"
 ROOT="$S/root"
 SID=h8selftest; SPEC="$ROOT/shoals/$SID/shoal.json"; A="$S/cloneA"

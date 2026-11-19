@@ -18,6 +18,7 @@ SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 exec 9>"/tmp/shoal-selftest-t1shoal.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another t1shoal run holds the lock" >&2; exit 1; }
 S="${1:-${TMPDIR:-/tmp}/shoal-selftest-$$}"
 rm -rf "$S"; mkdir -p "$S/root" "$S/data" "$S/remote"
+trap 'shoal_scratch_exit $? "$S"' EXIT
 shoal_test_setup "$S"
 ROOT="$S/root"
 SPEC="$ROOT/shoals/t1shoal/shoal.json"; A="$S/cloneA"; B="$S/cloneB"

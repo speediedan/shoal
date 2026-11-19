@@ -18,7 +18,7 @@ exec 9>"/tmp/shoal-selftest-h4selftest.lock"; flock -w 1800 9 || { echo "SELFTES
 # background watchers this test starts must never outlive it (a stray one shares the
 # sidecar and silently swallows the next run's wakes)
 cleanup() { pkill -f -- '(cli\.py|shoal) ledger-watch --shoal h4selftest' 2>/dev/null || true; }
-trap cleanup EXIT
+trap 'rc=$?; cleanup; shoal_scratch_exit $rc "$S"' EXIT
 cleanup
 rm -rf "$S" /tmp/h4selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
 shoal_test_setup "$S"
