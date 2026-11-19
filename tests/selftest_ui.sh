@@ -3318,8 +3318,13 @@ elif me == "hc" and args[:1] == ["get"]:
     t = st["terms"].get(args[1]) or {}
     fg = os.environ.get("STUB_FG_" + args[1])
     argv = fg.split() if fg else ["/usr/bin/python3", "/x/shoal/cli.py", "view"]
-    print(json.dumps({"address": args[1], "labels": t.get("labels", {}),
-                      "foreground": {"name": os.path.basename(argv[0]), "argv": argv}}))
+    doc = {"address": args[1], "labels": t.get("labels", {}), "foreground": {"name": os.path.basename(argv[0]), "argv": argv}}
+    # the terminal's own program (herdr-core puts a shell there for a lost one) and its creation time, when a test sets them
+    if os.environ.get("STUB_TARGV_" + args[1]):
+        doc["argv"] = os.environ["STUB_TARGV_" + args[1]].split()
+    if os.environ.get("STUB_CREATED_" + args[1]):
+        doc["created_ms"] = int(os.environ["STUB_CREATED_" + args[1]])
+    print(json.dumps(doc))
 elif me == "hc" and args[:1] == ["label"]:
     for kv in args[2:]:
         if "=" in kv:
@@ -3421,6 +3426,75 @@ do = [(l[2], json.loads(l[3])) for l in map(json.loads, open(sys.argv[1])) if l[
 assert ("pane.close", {"pane": sys.argv[2]}) in do, do
 assert not any(a.get("pane") == sys.argv[3] for _, a in do), do
 PY8
+# after a reboot the quiet sync heals cards too: a bare shell whose terminal predates the boot, or that still carries a
+# card's status labels, is replaced; a shell left with `q` this boot waits for app-open; a pane taken over (its card
+# gone, another program in front) keeps running, relabelled, with a fresh card beside it; nothing else is touched
+env $AENV python3 - "$SHOALD" "$S" "$SID" "$ROOT" <<'PY8b' || fail "app-sync heals cards after a reboot"
+import json, os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app
+S, sid, root = sys.argv[2:5]
+st_path, log_path = os.environ["STUB_APP_STATE"], os.environ["STUB_APP_LOG"]
+boot = ui_app.boot_ms()
+assert boot and boot < 10 ** 13, boot
+def term(label):  # the live terminal with that label (a closed pane's terminal keeps its labels in the stub)
+    st = json.load(open(st_path))
+    live = [x["terminal"] for sp in st["spaces"] if sp["name"] == sid for tb in sp["tabs"] for x in tb["terminals"]]
+    return next(t for t in live if st["terms"][t]["labels"].get("shoal.pane") == label)
+def run(env, sync=True):
+    for k in [k for k in os.environ if k.startswith(("STUB_FG_", "STUB_TARGV_", "STUB_CREATED_"))]:
+        del os.environ[k]
+    os.environ.update(env)
+    open(log_path, "w").close()
+    rc, out = ui_app.open_app("local", focus=False, sync=sync, ledger_root=root, standalone=False)
+    assert rc == 0, out
+    do = [(l[2], json.loads(l[3])) for l in map(json.loads, open(log_path)) if l[:2] == ["herdr-app", "do"]]
+    keys = [l for l in map(json.loads, open(log_path)) if l[:1] == ["hc"] and l[1:2] in (["send"], ["keys"], ["kill"], ["interrupt"])]
+    assert not keys, keys
+    return out, do
+cl, ov = term(f"{sid}/cl"), term(f"{sid}/overview")
+after = str(boot + 60_000)
+# a card left with `q` this boot (no status labels): the sync leaves the shell, app-open restores it
+out, do = run({f"STUB_FG_{cl}": "-bash", f"STUB_CREATED_{cl}": after})
+assert not do and not any("restart" in x for x in out), (out, do)
+# the same pane restored by herdr-core after a reboot (created before the boot): the sync replaces it
+out, do = run({f"STUB_FG_{cl}": "-bash", f"STUB_CREATED_{cl}": "1000", f"STUB_FG_{ov}": "-bash"})
+assert f"{sid}/roles: restart {sid}/cl (its pane is a bare shell)" in out, out
+assert ("pane.close", {"pane": "p" + cl}) in do and any(c == "pane.split" and a["pane"] == "p" + cl for c, a in do), do
+assert not any(a.get("pane") == "p" + ov for _, a in do), "a shell left with q this boot (no created time, no labels) was kept"
+# a card that died under its shell this boot (its status labels still set) is replaced too
+cl = term(f"{sid}/cl")
+ui_app.hc_label(cl, {"shoal.state": "working", "shoal.group": "working"})
+out, do = run({f"STUB_FG_{cl}": "-bash", f"STUB_CREATED_{cl}": after})
+assert ("pane.close", {"pane": "p" + cl}) in do, (out, do)
+# taken over: its card gone (the terminal's own program is a shell) and `claude agents` in front, stale labels left
+cl = term(f"{sid}/cl")
+ui_app.hc_label(cl, {"shoal.state": "working", "shoal.group": "working", "shoal.attached": "1", "shoal.detail": "x"})
+for sync in (True, False):
+    t = term(f"{sid}/cl")
+    out, do = run({f"STUB_FG_{t}": "claude agents", f"STUB_TARGV_{t}": "/bin/bash", f"STUB_CREATED_{t}": after}, sync)
+    assert any("add " + f"{sid}/cl (its pane was taken over" in x for x in out), out
+    labels = json.load(open(st_path))["terms"][t]["labels"]
+    assert labels.get("shoal.pane") == "" and labels.get("shoal.pane.taken") == f"{sid}/cl", labels
+    assert not any(labels.get(k) for k in ("shoal.state", "shoal.group", "shoal.attached", "shoal.detail")), labels
+    assert not any(c in ("pane.close", "tab.close") and a.get("pane", "") == "p" + t for c, a in do), do
+    assert [c for c, _ in do] == ["pane.split"] and do[0][1]["pane"] == "p" + t, do
+    assert term(f"{sid}/cl") != t, "the fresh card carries the label"
+    # put the label back for the explicit open's turn (the taken pane stays in the tab)
+    ui_app.hc_label(term(f"{sid}/cl"), {"shoal.pane": ""})
+    ui_app.hc_label(t, {"shoal.pane": f"{sid}/cl", "shoal.pane.taken": ""})
+# a client attached under a live card (its terminal still runs the card) is not taken over, nor is an unlabelled shell
+t = term(f"{sid}/cl")
+out, do = run({f"STUB_FG_{t}": "claude --resume abc", f"STUB_TARGV_{t}": "/x/shoal-ui view s r --stub", f"STUB_CREATED_{t}": after})
+assert not do, (out, do)
+st = json.load(open(st_path))
+live = [x["terminal"] for sp in st["spaces"] if sp["name"] == sid for tb in sp["tabs"] for x in tb["terminals"]]
+spare = next(tt for tt in live if not st["terms"][tt]["labels"].get("shoal.pane"))  # a fresh card the test unlabelled
+out, do = run({f"STUB_FG_{spare}": "-bash", f"STUB_CREATED_{spare}": "1000", f"STUB_TARGV_{spare}": "/bin/bash",
+               f"STUB_FG_{t}": "claude --resume abc", f"STUB_TARGV_{t}": "/x/shoal-ui view s r --stub"})
+assert not any(a.get("pane") == "p" + spare for _, a in do), do
+print("app-sync reboot heal ok")
+PY8b
 # a remote host: its route becomes an app machine and its plan comes over ssh
 cp "$SHOAL_CONFIG" "$S/host-app.toml"; printf '\n[hosts.lane-b]\nssh = "u@lane-b.invalid"\nresolve = "dns"\n' >> "$S/host-app.toml"
 env $AENV $H ui app-plan --json --no-standalone --ledger-root "$ROOT" > "$S/plan-b.json" || fail "app-plan for the remote stub"

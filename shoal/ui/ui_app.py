@@ -14,8 +14,9 @@ adapter splits the work the way the data lives:
   Read-only.
 - **reconcile** (`app-open`, where the app runs): reads the plan (in process for this host, over the route for
   another), compares it with `herdr-app ls`, and adds what is missing with `herdr-app do`. A pane is replaced only
-  when its terminal came back as a bare shell; anything else in a pane is left as it is. Nothing is typed into a
-  pane, no session is resumed, no role is woken.
+  when its terminal came back as a bare shell; a labelled pane someone took over (its card gone, another program in
+  front) gets its label moved to `shoal.pane.taken` and a fresh card beside it. Nothing is typed into a pane, no pane
+  that runs anything but a card or a bare shell is closed, no session is resumed, no role is woken.
 - **report** (`card_report`): a role card in a herdr-core terminal prints its own OSC 7501 status, so the app's
   agents list, space and tab dots, sounds and toasts follow the role. The 0.9.3 feeder's socket push is not used.
 
@@ -59,6 +60,8 @@ MOD_DIR = os.path.join(REPO, "plugins", "shoal-herdr-app", "mods")
 REPORT_APP = "shoal"
 # the plan's own label on each terminal it starts, so a later reconcile finds the pane again
 PANE_LABEL = "shoal.pane"
+# where PANE_LABEL goes when a person took the pane over (its card gone, another program in front): kept for the record
+TAKEN_LABEL = "shoal.pane.taken"
 FEED_FRESH_S = 60
 STARVED_AFTER_S = 7200
 ROLE_TAB = re.compile(r"^roles( \d+)?$")
@@ -540,7 +543,20 @@ def plan(ids: list[str] | None = None, ledger_root: str = "", standalone: bool =
         notes.append(f"graph feed not running here: lattice tabs poll `ui graph` slowly (`shoal ui app-install` "
                      f"starts {FEED_UNIT})")
     return {"v": PLAN_V, "kind": "shoal-app-plan", "host": ui_launch.this_server(), "feed": feed,
-            "spaces": spaces, "notes": notes, "programs": programs}
+            "spaces": spaces, "notes": notes, "programs": programs, "boot_ms": boot_ms()}
+
+
+def boot_ms(stat: str = "/proc/stat") -> int | None:
+    """When this host booted (epoch ms, from `btime`), so a reconcile can tell a terminal herdr-core restored after a
+    reboot (created before it) from one started since; None when unreadable."""
+    try:
+        with open(stat) as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return int(line.split()[1]) * 1000
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 # The app draws a pane's icon from its program table, found by the agent's reported `app`. A card reports its role's or
@@ -761,6 +777,17 @@ def seat_ids(argv) -> tuple[str, str] | None:
     return (argv[i + 1], argv[j + 1]) if i + 1 < len(argv) and j + 1 < len(argv) else None
 
 
+def _is_shell(argv) -> bool:
+    import ui_herdr
+    argv = [str(x) for x in argv or []]
+    return bool(argv) and os.path.basename(argv[0]).lstrip("-") in ui_herdr.SHELLS and all(x.startswith("-") for x in argv[1:])
+
+
+# the labels a card keeps on its terminal while it runs; one leaving with `q` clears the status ones on its way out
+CARD_LABELS = ("shoal.attached", "shoal.need", "shoal.asks", "shoal.asks-badge", "shoal.group", "shoal.state",
+               "shoal.detail")
+
+
 def foreground_kind(t: dict) -> str:
     """'shell' (an idle shell: the pane may be replaced), 'card' (a shoal card, dash, tail or view), or 'other'
     (anything else, such as an attached harness client: never replaced). The same allowlist as 0.9.3."""
@@ -793,7 +820,9 @@ class Reconciler:
     def __init__(self, machine: str | None, dry_run: bool = False):
         self.machine = machine or None
         self.dry_run = dry_run
+        self.rebuilt = False
         self.out: list[str] = []
+        self.boot_ms: int | None = None  # the machine's boot time, from its plan (apply)
         self.mods = {m for m in MODS if os.path.exists(os.path.join(app_home(), "mods", m))}
 
     def say(self, line: str) -> None:
@@ -894,6 +923,7 @@ class Reconciler:
         one in use (an attached session, or anything else that is not a card), or one that cannot be read (a machine out of
         reach, whose tabs may hold anything), keeps every tab as it is. The quiet `sync` leaves a space with no roles tab
         alone: someone closed them. True when it dealt with the roles tabs."""
+        self.rebuilt = False  # True only when the tabs were (or, in a dry run, would be) closed and made again
         planned = [t for t in s["tabs"] if ROLE_TAB.match(t["name"]) and not t.get("mod")]
         existing = [t for t in got.get("tabs", []) if ROLE_TAB.match(t.get("name") or "")]
         if not planned and not existing:
@@ -924,6 +954,7 @@ class Reconciler:
                 self.say(f"{s['name']}: roles changed, but a card is in use: tabs left as they are until it is detached")
             return True
         self.say(f"{s['name']}: lay the roles out again ({len(planned)} tab(s))")
+        self.rebuilt = True
         if self.dry_run:
             return True
         for tab in existing:
@@ -975,14 +1006,38 @@ class Reconciler:
         if tab is not None:
             app_do("tab.select", {"id": tab["id"]})
 
-    def _gaps(self, space: dict, tab_doc: dict, tab: dict, moved_only: bool = False) -> None:
+    def _restored(self, t: dict) -> bool:
+        """The terminal predates the machine's boot: herdr-core restored it after a reboot, so no card survived in it."""
+        created = t.get("created_ms")
+        return isinstance(created, (int, float)) and bool(self.boot_ms) and created < self.boot_ms
+
+    def _card_gone(self, t: dict) -> bool:
+        """Whatever runs in the pane now, the card that was started in it is gone: the terminal came back after a
+        reboot, or its own program is a bare shell (herdr-core's replacement for a lost program; shoal starts every card
+        as the terminal's program)."""
+        return self._restored(t) or ("argv" in t and _is_shell(t.get("argv")))
+
+    def _gaps(self, space: dict, tab_doc: dict, tab: dict, sync: bool = False, add: bool = True) -> None:
         """Fill one existing terminal tab: a planned pane with no live terminal gets one; a planned pane whose
         terminal came back as a bare shell (a lost terminal, or a card left with `q`) is replaced, and so is a
         standalone card at its own screen that still shows the harness or session it was opened with after its seat
         moved (measured 2026-11-10: a seat handed from Codex to Claude kept its Codex card on another machine's app
-        until the tab was rebuilt by hand). A card with a harness client open in it is left as it is."""
+        until the tab was rebuilt by hand). A card with a harness client open in it is left as it is.
+
+        A labelled pane someone took over (its card gone, by `_card_gone`, and another program in front: measured
+        2026-11-19, `claude agents` typed into a seat's pane that came back as a shell after a reboot, so the seat had no
+        card and left the agents list) keeps running untouched: its `shoal.pane` label moves to `shoal.pane.taken`, the
+        card's stale status labels are cleared, and a fresh card is split in beside it. Its foreground may be the parent
+        of a harness's background daemon, so it is never typed into, closed or restarted.
+
+        The quiet `sync` adds no missing pane (one you closed stays closed) and replaces a bare shell only when its card
+        did not leave by itself: its terminal predates the machine's boot (restored after a reboot) or still carries the
+        status labels a card clears when it is left with `q` (it died under the shell). `add=False` (a roles tab held
+        as it is because a card in it is in use) repairs panes in place and adds none."""
         have: dict[str, tuple[str, str]] = {}
         moved: set[str] = set()
+        taken: dict[str, tuple[str, str]] = {}  # label -> (pane, terminal)
+        lost: set[str] = set()
         panes = []
         for x in tab_doc.get("terminals", []):
             try:
@@ -990,23 +1045,45 @@ class Reconciler:
             except AppError:
                 continue
             panes.append(x["pane"])
-            lab = (t.get("labels") or {}).get(PANE_LABEL)
-            if lab:
-                have[lab] = (x["pane"], foreground_kind(t))
-                want = next((p for p in tab["panes"] if p["label"] == lab), None)
-                if want is not None and seat_ids((t.get("foreground") or {}).get("argv") or []) not in \
-                        (None, seat_ids(want["argv"])):
-                    moved.add(lab)
-        # the quiet sync replaces only a moved seat's card: a missing pane or a shell left with `q` waits for app-open
-        missing = [] if moved_only else [p for p in tab["panes"] if p["label"] not in have]
-        stale = [p for p in tab["panes"] if p["label"] in moved or (not moved_only and have.get(p["label"], ("", ""))[1] == "shell")]
+            labels = t.get("labels") or {}
+            lab = labels.get(PANE_LABEL)
+            if not lab:
+                continue
+            kind = foreground_kind(t)
+            if kind == "other" and self._card_gone(t) and any(p["label"] == lab for p in tab["panes"]):
+                taken[lab] = (x["pane"], x["terminal"])
+                continue
+            have[lab] = (x["pane"], kind)
+            if kind == "shell" and (self._restored(t) or any(labels.get(k) for k in CARD_LABELS)):
+                lost.add(lab)
+            want = next((p for p in tab["panes"] if p["label"] == lab), None)
+            if want is not None and seat_ids((t.get("foreground") or {}).get("argv") or []) not in \
+                    (None, seat_ids(want["argv"])):
+                moved.add(lab)
+        missing = [] if sync or not add else [p for p in tab["panes"] if p["label"] not in have and p["label"] not in taken]
+        stale = [p for p in tab["panes"] if p["label"] in moved or (
+            have.get(p["label"], ("", ""))[1] == "shell" and (not sync or p["label"] in lost))]
+        fresh = [p for p in tab["panes"] if p["label"] in taken and p["label"] not in have]
         for p in stale:
             why = "its seat moved to another session" if p["label"] in moved else "its pane is a bare shell"
             self.say(f"{space['name']}/{tab['name']}: restart {p['label']} ({why})")
+        for p in fresh:
+            self.say(f"{space['name']}/{tab['name']}: add {p['label']} (its pane was taken over: left running, "
+                     f"relabelled {TAKEN_LABEL})")
         for p in missing:
             self.say(f"{space['name']}/{tab['name']}: add {p['label']}")
-        if self.dry_run or not (missing or stale):
+        if self.dry_run or not (missing or stale or fresh):
             return
+        for p in fresh:
+            pane, terminal = taken[p["label"]]
+            try:  # the label moves first, so no later pass reads the taken pane as the card again
+                hc_label(terminal, {PANE_LABEL: "", TAKEN_LABEL: p["label"], **{k: "" for k in CARD_LABELS}})
+            except AppError as exc:
+                self.say(f"relabel {terminal}: {exc}")
+                continue
+            new = self._split(pane, "down", p)
+            if not new:
+                self.say(f"{space['name']}/{tab['name']}: no pane for {p['label']} (`shoal ui app-open` adds it)")
         for p in stale:
             pane = have[p["label"]][0]
             new = self._split(pane, "down", p)
@@ -1022,6 +1099,7 @@ class Reconciler:
     def apply(self, doc: dict, focus: bool = True, show: set[str] | None = None, sync: bool = False) -> list[str]:
         """`sync`: the status bar's quiet pass: only roles tabs follow the roles, and what a person closed stays closed."""
         ls = app_ls()
+        self.boot_ms = doc.get("boot_ms") if isinstance(doc.get("boot_ms"), int) else None
         mine = [s for s in ls.get("spaces", []) if (s.get("machine") or None) == self.machine]
         opened = load_opened()
         key = self.machine or "local"
@@ -1050,8 +1128,9 @@ class Reconciler:
             first = first or got["id"]
             tabs = {t.get("name"): t for t in got.get("tabs", [])}
             relaid = s.get("kind") == "shoal" and self._relayout(s, got, built, sync)
+            rebuilt = relaid and self.rebuilt
             for t in s["tabs"]:
-                if relaid and ROLE_TAB.match(t["name"]) and not t.get("mod"):
+                if rebuilt and ROLE_TAB.match(t["name"]) and not t.get("mod"):
                     continue
                 if t["name"] not in tabs:
                     if not sync:
@@ -1060,8 +1139,8 @@ class Reconciler:
                             built[f"{key}/{s['name']}/{t['name']}"] = TABS_V
                 elif t.get("mod"):
                     self._refresh_mod(got["id"], tabs[t["name"]], t, built, s["name"])
-                elif not sync or s.get("kind") == "standalone":
-                    self._gaps(s, tabs[t["name"]], t, moved_only=sync)
+                else:  # held roles tabs (a card in use) are repaired in place, never added to
+                    self._gaps(s, tabs[t["name"]], t, sync=sync, add=not (relaid and ROLE_TAB.match(t["name"])))
                 if t["name"] == "overview" and t["name"] in tabs:
                     self._drop_ledger(s, tabs[t["name"]], t)
             # a lattice tab shoal made here before the top bar's Lattice replaced them: closed, once
@@ -1194,7 +1273,9 @@ def cmd_app_open(a) -> int:
 
 def cmd_app_sync(_a) -> int:
     """One quiet pass over this computer and every machine (the shoal-status mod runs it on a slow timer): roles tabs
-    follow added and removed roles, nothing takes the focus, and a machine out of reach is only noted."""
+    follow added and removed roles, a card whose pane came back as a bare shell after a reboot (or whose card died) is
+    replaced, a taken-over card pane gets a fresh card beside it, nothing takes the focus, and a machine out of reach is
+    only noted."""
     if not app_running():
         return 0
     os.makedirs(os.path.dirname(_state_path()), exist_ok=True)

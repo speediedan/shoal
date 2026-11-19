@@ -838,8 +838,12 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   cards run there, so they keep running when this machine sleeps or the app closes.
 - **Re-running** adds only what is missing. Every terminal it starts carries the label
   `shoal.pane=<label>`; a labelled pane whose terminal came back as a bare shell (a lost terminal comes back
-  as a shell in its last folder, and its command is never run again) is replaced. A pane running anything
-  else, an attached client for example, is left as it is. Spaces of hidden or retired shoals are named, never
+  as a shell in its last folder, and its command is never run again) is replaced. The two-minute `app-sync` does
+  the same for a pane restored after a reboot or whose card died (its status labels still set), so cards come back
+  by themselves; a card you left with `q` stays a shell until `app-open`. A pane running anything
+  else, an attached client for example, is left as it is. One whose card is gone and that you took over (a command
+  typed into the shell it came back as) keeps running untouched: its label moves to `shoal.pane.taken=<label>`, the
+  card's old `shoal.*` status labels are cleared, and a fresh card opens beside it. Spaces of hidden or retired shoals are named, never
   closed.
 - **A new role from the app.** The actions dialog's **New role**, on a shoal, starts a new session as one of its roles:
   a name (slug), a title, its start doc (a `plan_state.md` on the shoal's home host with `## Mission`, `## Current state`

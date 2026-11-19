@@ -1819,7 +1819,16 @@ session, with its `session` tab; the top bar's Lattice opens the global lattice,
 route for another host, which it first adds as a herdr-core machine named after the route), compares it with
 `herdr-app ls`, and adds only what is missing with `herdr-app do`, labelling each terminal it starts
 (`shoal.pane`). A labelled pane whose terminal came back as a bare shell is replaced; any other foreground
-is left alone (the 0.9.3 allowlist). A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
+is left alone (the 0.9.3 allowlist). The quiet `ui app-sync` replaces such a pane too when its card did not leave by
+itself: its terminal predates the machine's boot (herdr-core restored it after a reboot; the plan carries the host's
+`boot_ms`) or still carries the status labels a card clears when it is left with `q`, so a reboot heals without an
+operator (measured 2026-11-19: cards stayed bare shells for 35 minutes until a manual `app-open`); a shell left with
+`q` this boot waits for `app-open`. A labelled pane someone took over (its card gone: the terminal predates the boot or
+its own program is a bare shell, and another program in front, such as `claude agents` typed into a restored pane) is
+never typed into, closed or restarted, since its foreground may be the parent of a harness's background daemon: on
+`app-open` and the sync its `shoal.pane` label moves to `shoal.pane.taken`, the card's stale `shoal.*` status labels are
+cleared, and a fresh card is split in beside it. A roles tab held as it is because a card in it is in use is still
+repaired pane by pane, never added to. A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
 feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
