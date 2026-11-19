@@ -565,7 +565,7 @@ def launch(req: dict, target: dict, unit: str, p: dict, home: str, dry_run: bool
     ns = argparse.Namespace(sid=req["sid"], slug=req["slug"], name=req["name"], on=target["name"] if remote else "",
                             cwd=cwd, env=list(req.get("env") or []) + [f"GPU_LEASE_PROJECT={unit}"],
                             memory_high=req.get("memory_high", ""), memory_max=req.get("memory_max", ""),
-                            dry_run=dry_run, spec="", job_class=req.get("class") or "ci")
+                            job_slice=req.get("job_slice"), dry_run=dry_run, spec="", job_class=req.get("class") or "ci")
     rc = jobs._run_remote(ns, wrapped, unit, p) if remote else jobs._run_local(ns, wrapped, unit, p)
     return rc, info
 
@@ -662,7 +662,7 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
         return 3
     target = next(h for h in hosts if h["name"] == res["host"])
     req = {"sid": a.sid, "slug": a.slug, "name": a.name, "cmd": list(cmd), "env": list(a.env or []),
-           "memory_high": a.memory_high, "memory_max": a.memory_max,
+           "memory_high": a.memory_high, "memory_max": a.memory_max, "job_slice": getattr(a, "job_slice", None),
            "cwd": os.path.abspath(a.cwd or src["path"] or os.getcwd()), "repo_path": src["path"], "url": src["url"],
            "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": a.job_class,
            "stage_home": bool(a.ref and src["url"])}
@@ -679,7 +679,7 @@ def run_placed(a, cmd: list[str], unit: str, p: dict) -> int:
         "submit_ts": now, "submit_utc": utc(now), "moves": 0, "moved": [], "marker": info["marker"],
         "claim": info["claim"], "out": info["out"], "worktree": info["worktree"], "mirror": info.get("mirror", ""),
         "decision": decision,
-        "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
+        "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "job_slice", "cwd", "repo_path", "url", "sha",
                                          "repo", "ci_env", "class", "stage_home")}})
     save_meta(a.sid, unit, meta)
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {res['host']} ({res['reason']}) scope={info['scope']}",
@@ -721,7 +721,7 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
     reason = f"research reservation {res['id']}"
     print(f"PLACEMENT {unit}: {target['name']} ({reason}) scope=reservation" + (f" sha={src['sha'][:12]}" if src["sha"] else ""))
     req = {"sid": a.sid, "slug": a.slug, "name": a.name, "cmd": list(cmd), "env": list(a.env or []),
-           "memory_high": a.memory_high, "memory_max": a.memory_max,
+           "memory_high": a.memory_high, "memory_max": a.memory_max, "job_slice": getattr(a, "job_slice", None),
            "cwd": os.path.abspath(a.cwd or src["path"] or os.getcwd()), "repo_path": src["path"], "url": src["url"],
            "sha": src["sha"], "repo": src["identity"], "ci_env": a.ci_env, "demand": dem, "class": "research",
            "reservation": res, "stage_home": bool(a.ref and src["url"])}
@@ -738,7 +738,7 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
         "priority": a.priority, "submit_ts": now, "submit_utc": utc(now), "moves": 0, "moved": [],
         "max_moves": 0, "reservation": res["id"], "marker": info["marker"], "claim": info["claim"],
         "out": info["out"], "worktree": info["worktree"], "mirror": info.get("mirror", ""), "decision": decision,
-        "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "cwd", "repo_path", "url", "sha",
+        "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "job_slice", "cwd", "repo_path", "url", "sha",
                                          "repo", "ci_env", "class", "stage_home")}})
     save_meta(a.sid, unit, meta)
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {target['name']} ({reason})", {"placement": decision})

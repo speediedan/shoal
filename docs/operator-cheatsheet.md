@@ -268,6 +268,10 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
   if the stop fails; `ci_autostop: false` never stops. A job holding no lease has no budget unless it does
   CPU work (2+ cores over 10 min): then it is budgeted from its start and its role told to use
   `--cpu-light --place auto`. Long research runs use `--class research`.
+- Every job unit has a memory ceiling: `MemoryMax` 16G per job, inside `shoal-jobs.slice` (18G high, 20G max for all
+  lane jobs on the host together). Set them per host under `[jobs]` in the host config, per group in
+  `features.placement`, per job with `--memory-max` (0 or '' turns a ceiling off). A job its ceiling killed ends with
+  `JOB-VERDICT ... result=oom-kill`; `systemctl --user status shoal-jobs.slice` shows the slice's current use.
 - A host whose probe fails or is stale is ineligible, never an error: check it with
   `ssh <route> shoal pool probe --json`.
 - **Trial before rollout.** Point a route's `cli` at a pre-release checkout on that host, so the trial

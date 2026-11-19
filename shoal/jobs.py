@@ -3,10 +3,11 @@
 
 A test suite, GPU render or A/B run launched as a harness background command dies with
 the session and is killed by the Claude harness memory-pressure reaper. As a job unit it
-runs under `systemd-run --user` in its own cgroup with a `MemoryHigh` cap, survives the
-session, and is followed by a tiny in-session waiter that is safe to re-arm:
+runs under `systemd-run --user` in its own cgroup with a `MemoryHigh` cap and a `MemoryMax` ceiling,
+inside the shared `shoal-jobs.slice` whose own ceiling bounds every lane job on the host together,
+survives the session, and is followed by a tiny in-session waiter that is safe to re-arm:
 
-    shoal job run  --shoal H --slug S --name suite [--memory-high 24G] [--cwd DIR] -- pytest -x tests/
+    shoal job run  --shoal H --slug S --name suite [--memory-high 24G] [--memory-max 16G] [--cwd DIR] -- pytest -x tests/
     shoal job run  --shoal H --slug S --name suite --on user@host --cwd /remote/dir -- <lease-wrapped cmd>
     shoal job wait --shoal H --slug S --name suite      # run as the background command; re-arm freely
     shoal job status --shoal H [--slug S]
@@ -19,8 +20,10 @@ wait/status/stop follow it over ssh). The remote cwd and everything the command 
 
 The command runs inside a wrapper that writes its exit code to a status file, because a
 collected transient unit forgets its result. `wait` prints exactly one verdict line on
-every designed exit: JOB-VERDICT <unit> result=success|failed exit=<rc> | UNIT-GONE-NO-STATUS
-| HOST-REBOOTED (another host's boot id changed under the job) | TIMEOUT | NOT-FOUND, followed by the log tail.
+every designed exit: JOB-VERDICT <unit> result=success|failed exit=<rc> | result=oom-kill (its memory
+ceiling was reached) | UNIT-GONE-NO-STATUS | HOST-REBOOTED (another host's boot id changed under the job)
+| TIMEOUT | NOT-FOUND, followed by the log tail. An `ExecStopPost` writes the unit's result
+(`$SERVICE_RESULT`) beside the exit code, so an OOM kill is named even after the unit is collected.
 """
 from __future__ import annotations
 
@@ -89,6 +92,7 @@ def paths(sid: str, unit: str) -> dict[str, str]:
     jdir = os.path.join(data_dir(sid), "jobs")
     sdir = os.path.join(state_dir(sid), "jobs")
     return {"log": os.path.join(jdir, f"{unit}.log"), "rc": os.path.join(sdir, f"{unit}.rc"),
+            "result": os.path.join(sdir, f"{unit}.result"),
             "meta": os.path.join(sdir, f"{unit}.json"), "jdir": jdir, "sdir": sdir,
             # a placed job's grant-time marker, its start claim (a move takes it first) and its outputs
             "granted": os.path.join(sdir, f"{unit}.granted"), "claim": os.path.join(sdir, f"{unit}.claim"),
@@ -100,6 +104,134 @@ def _systemctl(*argv: str) -> subprocess.CompletedProcess:
 
 
 REMOTE_DIR = "~/shoal-jobs"
+
+# ---- memory ceilings ---------------------------------------------------------------------------------
+# Every job unit runs in this user slice: its MemoryHigh/MemoryMax bound all lane jobs on a host together,
+# below the host's RAM, so a few large suites cannot push the host into a kernel livelock (measured
+# 2026-11-19: lane jobs held 25 to 32 GiB beside a 21 to 27 GiB container build on a 62.6 GiB host, no
+# ceiling anywhere, the kernel livelocked about 22 min). The unit file is written on whichever host runs
+# the job, only when missing or when it is one this code wrote and its limits changed.
+JOBS_SLICE = "shoal-jobs.slice"
+SLICE_MARK = "# Written by `shoal job run` (lane job memory ceiling); edit [jobs] in the host config instead."
+
+
+def memory_limits(spec=None) -> dict[str, str]:
+    """{"job_memory_max", "jobs_slice_memory_high", "jobs_slice_memory_max"} as systemd sizes ("" = off): the
+    spec's features.placement values over the defaults, the host config's `[jobs]` over both."""
+    import pool
+    out = {k: pool.feature(spec)[k] for k in pool.MEMORY_DEFAULTS}
+    for k, v in config.jobs_memory().items():
+        size = pool.memory_size(v)
+        if size is None:
+            print(f"(host config [jobs] {k}={v!r} is not a size: kept {out[k] or 'off'})", file=sys.stderr)
+        else:
+            out[k] = size
+    return out
+
+
+def slice_unit_text(high: str, mx: str) -> str:
+    """The `shoal-jobs.slice` unit file for these limits; "" when both are off (no slice then)."""
+    if not (high or mx):
+        return ""
+    return (f"{SLICE_MARK}\n[Unit]\nDescription=SHOAL lane jobs (shared memory ceiling)\n[Slice]\n"
+            + (f"MemoryHigh={high}\n" if high else "") + (f"MemoryMax={mx}\n" if mx else ""))
+
+
+def systemd_user_dir() -> tuple[str, bool]:
+    """(the user unit dir the slice file goes in, whether to daemon-reload after writing it). SHOAL_SYSTEMD_USER_DIR
+    redirects the file (the selftests' scratch dir); the user manager does not read that dir, so it is not reloaded."""
+    override = config.env("SYSTEMD_USER_DIR")
+    if override:
+        return override, False
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "systemd", "user"), True
+
+
+def ensure_slice(high: str, mx: str, unit_dir: str = "", reload: bool | None = None) -> str:
+    """Write `shoal-jobs.slice` on this host when it is missing, or when it carries SLICE_MARK and its limits
+    differ (a file without the mark is the operator's and is left alone), then daemon-reload once. Returns the
+    slice to start job units in ("" when both limits are off)."""
+    text = slice_unit_text(high, mx)
+    if not text:
+        return ""
+    d, rl = systemd_user_dir()
+    d = unit_dir or d
+    rl = rl if reload is None else reload
+    path = os.path.join(d, JOBS_SLICE)
+    try:
+        with open(path) as fh:
+            cur = fh.read()
+    except OSError:
+        cur = None
+    if cur is not None and (cur == text or not cur.startswith(SLICE_MARK)):
+        return JOBS_SLICE
+    try:
+        os.makedirs(d, exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"(could not write {path}: {exc}; {JOBS_SLICE} runs without its ceiling)", file=sys.stderr)
+        return JOBS_SLICE
+    if rl:
+        r = _systemctl("daemon-reload")
+        if r.returncode != 0:
+            print(f"(daemon-reload after writing {JOBS_SLICE} failed: {(r.stderr or '').strip()[-200:]})", file=sys.stderr)
+    return JOBS_SLICE
+
+
+def ensure_slice_script(high: str, mx: str) -> str:
+    """ensure_slice as one shell group, for a job started on another host over ssh ("" when both limits are off).
+    A failed write still starts the job (its own MemoryMax holds); only the slice then has no ceiling."""
+    text = slice_unit_text(high, mx)
+    if not text:
+        return ""
+    return (f'{{ if [ -n "${{SHOAL_SYSTEMD_USER_DIR:-}}" ]; then d=$SHOAL_SYSTEMD_USER_DIR; rl=0; '
+            f'else d="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"; rl=1; fi; f="$d/{JOBS_SLICE}"; '
+            f"c={shlex.quote(text.rstrip(chr(10)))}; "
+            f'if [ ! -e "$f" ] || {{ head -1 "$f" | grep -qxF {shlex.quote(SLICE_MARK)} && [ "$(cat "$f")" != "$c" ]; }}; then '
+            f'mkdir -p "$d" && printf \'%s\\n\' "$c" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f" && '
+            f'if [ "$rl" = 1 ]; then systemctl --user daemon-reload || true; fi; fi; true; }}')
+
+
+def unit_limits(a, slice_name: str) -> list[str]:
+    """The systemd-run options a job unit's memory ceilings add, and the ExecStopPost that records its result."""
+    out = ["--slice", slice_name] if slice_name else []
+    if a.memory_high:
+        out += ["-p", f"MemoryHigh={a.memory_high}"]
+    if a.memory_max:
+        out += ["-p", f"MemoryMax={a.memory_max}"]
+    return out
+
+
+def result_hook(path: str) -> list[str]:
+    """An ExecStopPost writing the unit's `$SERVICE_RESULT $EXIT_CODE $EXIT_STATUS` (`oom-kill killed KILL` when
+    a memory ceiling killed it): a collected transient unit forgets its result, and the wrapper's rc file is never
+    written when the OOM stop kills the wrapper too. `$$` keeps systemd from expanding the variables itself."""
+    return ["-p", f"ExecStopPost=/bin/sh -c 'echo \"$$SERVICE_RESULT $$EXIT_CODE $$EXIT_STATUS\" > \"{path}\"'"]
+
+
+def _slice_limits(a) -> tuple[str, str]:
+    lim = getattr(a, "job_slice", None)
+    if lim is None:
+        lim = memory_limits(None)
+        lim = {"high": lim["jobs_slice_memory_high"], "max": lim["jobs_slice_memory_max"]}
+    return lim.get("high") or "", lim.get("max") or ""
+
+
+def oom_detail(meta: dict) -> str:
+    """The `result=oom-kill` verdict's explanation, naming the ceilings the job ran under."""
+    caps = []
+    if meta.get("memory_max"):
+        caps.append(f"its own MemoryMax={meta['memory_max']}")
+    sl = meta.get("slice") or {}
+    if sl.get("max") or sl.get("high"):
+        caps.append(f"the {JOBS_SLICE} ceiling shared by every lane job on the host (MemoryMax={sl.get('max') or '-'}, "
+                    f"MemoryHigh={sl.get('high') or '-'})")
+    which = " or ".join(caps) or "the host's memory"
+    return (f"killed by the OOM killer: {which} was reached. Re-run with less parallelism or a larger "
+            f"--memory-max, or after the other lane jobs end")
 
 
 def _ssh_argv(host: str) -> list[str]:
@@ -122,7 +254,8 @@ def _ssh(host: str, script: str, timeout: int = 60) -> subprocess.CompletedProce
 def remote_paths(unit: str, home: str = "") -> dict[str, str]:
     """Absolute remote paths (systemd expands no `~`); `home` from remote_home()."""
     base = f"{home}/shoal-jobs" if home else REMOTE_DIR
-    return {"log": f"{base}/{unit}.log", "rc": f"{base}/{unit}.rc", "granted": f"{base}/{unit}.granted",
+    return {"log": f"{base}/{unit}.log", "rc": f"{base}/{unit}.rc", "result": f"{base}/{unit}.result",
+            "granted": f"{base}/{unit}.granted",
             "claim": f"{base}/{unit}.claim", "out": f"{base}/{unit}.out"}
 
 
@@ -135,26 +268,29 @@ def remote_home(host: str) -> str:
 
 
 def remote_state(host: str, unit: str) -> dict[str, str]:
-    """{ActiveState, LoadState, rc, granted, rc_mtime} for a remote unit in one ssh call; {} when
-    unreachable. `granted` is a placed job's grant-time marker (empty until its lease is granted)."""
+    """{ActiveState, LoadState, rc, granted, rc_mtime, boot_id, result} for a remote unit in one ssh call; {}
+    when unreachable. `granted` is a placed job's grant-time marker (empty until its lease is granted); `result`
+    the unit's recorded `$SERVICE_RESULT` line (result_hook)."""
     rp = remote_paths(unit)
     script = (f"systemctl --user show {shlex.quote(unit)}.service "
               f"-p LoadState,ActiveState 2>/dev/null; echo ---; cat {rp['rc']} 2>/dev/null || true; "
               f"echo ---; cat {rp['granted']} 2>/dev/null || true; echo ---; stat -c %Y {rp['rc']} 2>/dev/null || true; "
-              f"echo ---; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true")
+              f"echo ---; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true; "
+              f"echo ---; cat {rp['result']} 2>/dev/null || true")
     try:
         r = _ssh(host, script, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return {}
     if r.returncode != 0:
         return {}
-    parts = (r.stdout.split("---\n") + ["", "", "", "", ""])[:5]
+    parts = (r.stdout.split("---\n") + ["", "", "", "", "", ""])[:6]
     d = {}
     for line in parts[0].splitlines():
         k, _, v = line.partition("=")
         d[k] = v
     d["rc"], d["granted"], d["rc_mtime"] = parts[1].strip(), parts[2].strip(), parts[3].strip()
     d["boot_id"] = parts[4].strip()
+    d["result"] = parts[5].strip()
     return d
 
 
@@ -249,20 +385,19 @@ def _run_remote(a, cmd: list[str], unit: str, p: dict) -> int:
         return 4
     boot_id = st.get("boot_id", "")  # the wait tells a reboot from a local loss by comparing it
     inner = f'"$@"; rc=$?; echo "$rc" > {rp["rc"]}; exit "$rc"'
+    high, mx = _slice_limits(a)
+    slice_sh = ensure_slice_script(high, mx)
     rargv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
              "-p", f"WorkingDirectory={cwd}",
              "-p", f"StandardOutput=append:{rp['log']}", "-p", f"StandardError=append:{rp['log']}"]
-    if a.memory_high:
-        rargv += ["-p", f"MemoryHigh={a.memory_high}"]
-    if a.memory_max:
-        rargv += ["-p", f"MemoryMax={a.memory_max}"]
+    rargv += unit_limits(a, JOBS_SLICE if slice_sh else "") + result_hook(rp["result"])
     for kv in a.env or []:
         rargv += ["-E", kv]
     rargv += ["/bin/bash", "-c", inner, "shoal-job"] + cmd
     launch = " ".join(shlex.quote(x) for x in rargv)
     script = (f"test -d {shlex.quote(cwd)} || {{ echo 'no such remote cwd: {cwd}' >&2; exit 3; }}; "
-              f"mkdir -p {shlex.quote(os.path.dirname(rp['log']))} && rm -rf {rp['rc']} {rp['granted']} {rp['claim']} && "
-              f"printf '\\n### job {unit} start on %s\\n' \"$(date -u +%FT%TZ)\" >> {rp['log']} && {launch}")
+              f"mkdir -p {shlex.quote(os.path.dirname(rp['log']))} && rm -rf {rp['rc']} {rp['result']} {rp['granted']} {rp['claim']} && "
+              f"printf '\\n### job {unit} start on %s\\n' \"$(date -u +%FT%TZ)\" >> {rp['log']} && {slice_sh + ' && ' if slice_sh else ''}{launch}")
     if a.dry_run:
         print(f"[dry-run] ssh {host} {script}")
         return 0
@@ -278,7 +413,7 @@ def _run_remote(a, cmd: list[str], unit: str, p: dict) -> int:
     meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
             "started_utc": now_iso(), "host": host, "log": rp["log"], "rc_file": rp["rc"],
             "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci"),
-            "boot_id": boot_id}
+            "slice": {"name": JOBS_SLICE, "high": high, "max": mx} if slice_sh else {}, "boot_id": boot_id}
     with open(p["meta"], "w") as fh:
         json.dump(meta, fh, indent=1)
     _emit(a.sid, a.slug, "job-start", f"{unit} on {host} {' '.join(cmd)[:100]}")
@@ -302,6 +437,24 @@ def cmd_run(a) -> int:
         _fz = _view.freeze()
     except Exception:  # noqa: BLE001 - no spec/ledger reachable (tests, ad-hoc use): not frozen
         _fz = None
+    try:  # the memory ceilings: --memory-max, else the host config's [jobs], the spec's features.placement, defaults
+        import pool
+        lim = memory_limits(_spec if _view is not None else None)
+        if a.memory_max is None:
+            a.memory_max = lim["job_memory_max"]
+        else:
+            size = pool.memory_size(a.memory_max)
+            if size is None:
+                print(f"ERROR: --memory-max {a.memory_max!r} is not a size (16G, 512M, 25%; 0 or '' for none)")
+                return 1
+            a.memory_max = size
+        a.job_slice = {"high": lim["jobs_slice_memory_high"], "max": lim["jobs_slice_memory_max"]}
+    except Exception as exc:  # noqa: BLE001 - a bad config never blocks a job: run it with the defaults
+        print(f"(job memory ceilings unreadable: {exc}; using the defaults)", file=sys.stderr)
+        import pool
+        a.memory_max = pool.MEMORY_DEFAULTS["job_memory_max"] if a.memory_max is None else (pool.memory_size(a.memory_max) or "")
+        a.job_slice = {"high": pool.MEMORY_DEFAULTS["jobs_slice_memory_high"],
+                       "max": pool.MEMORY_DEFAULTS["jobs_slice_memory_max"]}
     if _fz is not None:
         print(f"JOB-REFUSED: freeze active since {_fz['ts']} ({_fz.get('note') or 'no note'}); "
               f"the maintainer lifts it with `shoal freeze off`")
@@ -331,13 +484,12 @@ def cmd_run(a) -> int:
 def _run_local(a, cmd: list[str], unit: str, p: dict) -> int:
     cwd = os.path.abspath(a.cwd or os.getcwd())
     wrapper = ["/bin/bash", "-c", f'"$@"; rc=$?; echo "$rc" > {shlex.quote(p["rc"])}; exit "$rc"', "shoal-job"]
+    high, mx = _slice_limits(a)
+    slice_name = JOBS_SLICE if slice_unit_text(high, mx) else ""
     argv = ["systemd-run", "--user", "--unit", unit, "--collect", "--quiet",
             "-p", f"WorkingDirectory={cwd}",
             "-p", f"StandardOutput=append:{p['log']}", "-p", f"StandardError=append:{p['log']}"]
-    if a.memory_high:
-        argv += ["-p", f"MemoryHigh={a.memory_high}"]
-    if a.memory_max:
-        argv += ["-p", f"MemoryMax={a.memory_max}"]
+    argv += unit_limits(a, slice_name) + result_hook(p["result"])
     for k in PASS_ENV:
         if os.environ.get(k):
             argv += ["-E", f"{k}={os.environ[k]}"]
@@ -349,7 +501,9 @@ def _run_local(a, cmd: list[str], unit: str, p: dict) -> int:
         return 0
     os.makedirs(p["jdir"], exist_ok=True)
     os.makedirs(p["sdir"], exist_ok=True)
-    for f in (p["rc"], p["granted"]):
+    if slice_name:
+        ensure_slice(high, mx)
+    for f in (p["rc"], p["result"], p["granted"]):
         if os.path.exists(f):
             os.remove(f)
     if os.path.isdir(p["claim"]):
@@ -362,7 +516,8 @@ def _run_local(a, cmd: list[str], unit: str, p: dict) -> int:
         return 2
     meta = {"unit": unit, "shoal": a.sid, "slug": a.slug, "name": a.name, "cmd": cmd, "cwd": cwd,
             "started_utc": now_iso(), "log": p["log"], "rc_file": p["rc"],
-            "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci")}
+            "memory_high": a.memory_high, "memory_max": a.memory_max, "class": getattr(a, "job_class", "ci"),
+            "slice": {"name": JOBS_SLICE, "high": high, "max": mx} if slice_name else {}}
     with open(p["meta"], "w") as fh:
         json.dump(meta, fh, indent=1)
     _emit(a.sid, a.slug, "job-start", f"{unit} {' '.join(cmd)[:120]}")
@@ -465,7 +620,10 @@ def _wait_remote(a, unit: str, meta: dict) -> int:
                     time.sleep(a.poll)
                     continue
                 rc = int(st["rc"]) if (st.get("rc") or "").lstrip("-").isdigit() else None
-                if rc is not None:
+                if (st.get("result") or "").split()[:1] == ["oom-kill"]:
+                    verdict = (f"JOB-VERDICT {unit} result=oom-kill exit={rc if rc is not None else '-'} "
+                               f"({oom_detail(meta)}; see {host} journal for {unit}.service)")
+                elif rc is not None:
                     verdict = f"JOB-VERDICT {unit} result={'success' if rc == 0 else 'failed'} exit={rc}"
                 elif st.get("LoadState") == "not-found" and not meta:
                     verdict = f"JOB-VERDICT {unit} NOT-FOUND (never started there)"
@@ -527,7 +685,11 @@ def _wait_local(a, unit: str, p: dict, meta: dict) -> int:
             if gone == "moving":
                 time.sleep(a.poll)
                 continue
-            if rc is not None:
+            result = (_read(p.get("result")).split() or [st.get("Result") or ""])[0]
+            if result == "oom-kill":
+                verdict = (f"JOB-VERDICT {unit} result=oom-kill exit={rc if rc is not None else '-'} "
+                           f"({oom_detail(meta)}; see `journalctl --user -u {unit}.service`)")
+            elif rc is not None:
                 verdict = f"JOB-VERDICT {unit} result={'success' if rc == 0 else 'failed'} exit={rc}"
             elif st.get("LoadState") == "not-found" and not seen and not os.path.exists(p["meta"]):
                 verdict = f"JOB-VERDICT {unit} NOT-FOUND (never started here)"
@@ -635,7 +797,11 @@ def add_parsers(sub) -> None:
     common(q)
     q.add_argument("--spec", default="", help="the group spec (for the freeze check; found from the id otherwise)")
     q.add_argument("--memory-high", default="24G", help="MemoryHigh cap (throttles, never kills); '' = none")
-    q.add_argument("--memory-max", default="", help="MemoryMax (OOM-kills inside the unit only); default none")
+    q.add_argument("--memory-max", default=None,
+                   help="MemoryMax (OOM-kills inside the unit only; the verdict then reads result=oom-kill). Default: "
+                        "[jobs] memory_max in the host config, else features.placement.job_memory_max, else 16G; "
+                        "0 or '' = none. Every job also runs in shoal-jobs.slice, capped at 18G high / 20G max by "
+                        "default ([jobs] slice_memory_high / slice_memory_max)")
     q.add_argument("--cwd", default="")
     q.add_argument("--on", default="", help="ssh target (user@host): run the unit there instead; "
                                             "--cwd must exist on that host, lease wrapping is the command's job")
