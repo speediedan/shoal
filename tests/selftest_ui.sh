@@ -3437,9 +3437,10 @@ S, sid, root = sys.argv[2:5]
 st_path, log_path = os.environ["STUB_APP_STATE"], os.environ["STUB_APP_LOG"]
 boot = ui_app.boot_ms()
 assert boot and boot < 10 ** 13, boot
-def term(label):
+def term(label):  # the live terminal with that label (a closed pane's terminal keeps its labels in the stub)
     st = json.load(open(st_path))
-    return next(t for t, v in st["terms"].items() if v["labels"].get("shoal.pane") == label)
+    live = [x["terminal"] for sp in st["spaces"] if sp["name"] == sid for tb in sp["tabs"] for x in tb["terminals"]]
+    return next(t for t in live if st["terms"][t]["labels"].get("shoal.pane") == label)
 def run(env, sync=True):
     for k in [k for k in os.environ if k.startswith(("STUB_FG_", "STUB_TARGV_", "STUB_CREATED_"))]:
         del os.environ[k]
