@@ -152,3 +152,7 @@
 # exclude = ["*.lock", "vendored/*"]     # replaces the default exclusion globs (fnmatch: `*` crosses `/`)
 # buckets = [50, 500]                    # PR size bucket bounds, in counted changed lines
 # min_coverage = 0.5                     # a shoal's role-time ratios need this share of eligible time classified
+# experiments = "/path/to/experiments.jsonl"   # `efficiency review`'s experiments log (default: beside `out`)
+# report_dir = "/path/to/reports"        # where the dated review reports go (default: <out dir>/reports)
+# baseline = ["2026-01-05", "2026-01-11"]   # a fixed window every review compares against (default: none)
+# review_seat = "<seat label>"           # wake this saved standalone seat after a review (default: none, off)

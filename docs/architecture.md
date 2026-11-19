@@ -1045,8 +1045,14 @@ does not reward splitting work or skipping checks.
   unknown ever after). The row holds work, wait and unknown seconds, the local-CI, remote-CI and
   lease waits, and the ratios: CI and lease share of eligible role time, AAR, RWF, coverage and the
   merged lines of the shoal's repositories (its spec's `repos`, else its ci-wait ones) per role CI
-  and lease wait hour. Below `[efficiency] min_coverage` (default 0.5) the ratios are empty, not 0;
-  a repository with no counted row that day is listed in `repos_uncounted`.
+  and lease wait hour, and the lease share alone. Below `[efficiency] min_coverage` (default 0.5)
+  the ratios are empty, not 0; a repository with no counted row that day is listed in
+  `repos_uncounted`.
+- **Sources** (`by_source` on a repository row): the day's seconds per source, the ledger the review
+  ranks waste from: `github run`, `github queue` and `github rerun` per counted workflow and job,
+  `gate wait` and `gate run` per pipeline, `local lease wait` and `local run` per host, and `direct
+  hold` per lease key and host. Rows written before sources were kept have none, and a window
+  without them reports a source metric as unknown, not zero.
 
 `shoal efficiency snapshot --spec S [--day D] [--backfill N] [--role-time-spec R ...]` computes the N
 days ending with D (default yesterday) for every repository in the spec's `features.ci_wait.repos`
@@ -1062,6 +1068,41 @@ gauges for the last stored day and the seven days ending there (`shoal_efficienc
 `_bucket_lines_per_job_minute` and `_bucket_lines_per_ci_wait_hour`, per shoal `_ci_lease_share`,
 `_aar`, `_role_work_fraction`, `_role_time_coverage` and `_lines_per_role_ci_wait_hour`); labels are
 repository, shoal, window and bucket, never a PR number, title or SHA.
+
+### CI efficiency review (`shoal efficiency review`, `shoal efficiency experiment`)
+
+`shoal/efficiency_review.py` reads only the snapshot rows and an experiments log (no GitHub, no
+ledger, no model call). `shoal efficiency review [--day D] [--baseline START:END]` compares the seven
+days ending with D (default the newest row) with the seven before and with a fixed baseline window
+(`[efficiency] baseline`), per repository (lines per job-minute and per CI wait hour, job-minutes per
+merged PR and per PR head, mean push to CI complete, gate wait per build, merged lines and job-minutes
+per day, and the guardrails: rerun share, failed gates per gate build, reverts per merged PR, unleased
+CPU jobs per day) and per shoal (CI and lease share, lease share, AAR, RWF, coverage, lines per role
+CI wait hour). It ranks the largest sources of waste in the current window from `by_source`, split
+into CI time and waits, each with minutes per PR head against the previous and baseline windows. It
+writes `efficiency-review-<D>.md` (`--report-dir`, else `[efficiency] report_dir`, else `reports/`
+beside the rows) and prints the path; `--dry-run` prints the report and writes nothing.
+
+The experiments log (`--experiments`, else `[efficiency] experiments`, else `experiments.jsonl`
+beside the rows) holds one line per rule or infrastructure change: its scope (a repository or
+`shoal:<id>`), the metric it should move (`source_minutes_per_head` takes a `source` glob), the
+predicted change (relative, or a value `to` from a value `from`), the UTC day it took effect, and
+optionally its `before` window and the first day of its `after` window. A later line with the same
+`id` replaces it, so a pending change (no date) opens when logged again with its date; `shoal
+efficiency experiment` appends one after checking the metric name. Each review judges every open
+experiment once its after window (the first 14 days from the day after the change) holds three days:
+`keep` when the metric moved the predicted way by at least half the prediction and more than the
+noise floor (10%, `noise` per experiment), `revert` when it moved the other way by more than the
+noise floor, else `inconclusive`; a guardrail of the scope worse by more than its tolerance turns a
+keep into inconclusive, and experiments on one scope whose after windows start within a week of
+each other are marked as overlapping (lines for one change, the same `ref`, are not). The verdict is
+appended to the log (a re-run for the same day replaces its own); it is final once the after window
+holds seven days, or after 28 days open, and a final verdict closes the experiment.
+
+The review wakes no one by default. `--wake-seat <label>` (or `[efficiency] review_seat`) then
+delivers one message to that saved standalone seat on this host, the way an operator handoff asks a
+seat for a checkpoint and only between its turns, asking it to propose at most three experiments
+for the log; the review itself never changes a rule.
 
 ## 10. Live upgrades
 
