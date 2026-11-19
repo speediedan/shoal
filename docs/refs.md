@@ -47,7 +47,7 @@ left out and named in `notes`, rather than resolved against wherever the command
 | Class | Meaning | Archive candidate |
 |---|---|---|
 | `root` | a start doc or brief (`--doc`, `--shoal/--slug`, `--root`), any `--roots` path inside the directory, and the target of a root that is a symlink, wherever the symlink lives and whether its link is relative, absolute or a chain | never |
-| `live` | reachable from a root through live documents inside the directory, or named by a live document (or a symlink) anywhere else in the repository | no |
+| `live` | reachable from a root through live documents inside the directory, or named by a live document (or a symlink) anywhere else in the repository; naming a subdirectory names every file under it (a referrer carries `dir`) | no |
 | `history-only` | named only by history documents: the companion log (`*_log.md`), or what `--history` adds | yes (with `--age-floor-all`, once older than `--min-age-days`) |
 | `superseded` | its front matter says `status: superseded` and nothing live names it | yes (with `--age-floor-all`, once older than `--min-age-days`) |
 | `unreferenced` | nothing names it | yes, once older than `--min-age-days` (default 7, by the commit that added it): a new file is unreferenced until it is linked |

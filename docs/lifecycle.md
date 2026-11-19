@@ -99,6 +99,11 @@ slugs or standalone labels, and `"*"` is everyone else (`propose` when absent). 
 with the age floor on every class (`refs --age-floor-all`) and adds `commands`: the `shoal archive ... --cross-owner
 <cross_owner> --strict` run that archives them, with absolute paths, which the role runs itself (from any directory) after moving any
 durable knowledge up a tier (the protocol's work loop). The checkpoint still moves nothing and makes no model calls.
+
+Two rules keep `auto` inside the role's own directory. A start doc named through a symlink is scoped where its target
+lives, so a role whose spec names a link in a hub directory scans its own directory. And when the scoped directory also
+holds another role's start doc (directly, by a link there, or as the target of a link elsewhere), `auto` falls back to
+`propose` with a note naming those roles: one writer per directory, so split the role into its own directory first.
 `off` skips the lifecycle check.
 
 The probe runs in a child process with a 15-second timeout. A failed scan, a timeout, a header warning or unresolved

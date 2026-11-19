@@ -44,11 +44,22 @@ def probe(path: str) -> dict:
     out["notes"].append("roots cover this host's standalone sessions; other hosts are not read")
     if not known["specs_live"]:
         out["notes"].append("no live spec found: other roles' roots may be missing")
+    # a start doc named through a symlink is read, and scoped, where its target lives
+    doc_path = os.path.realpath(path)
+    scope = os.path.dirname(doc_path)
     auto = mode == "auto"
     if auto:
-        out["effective_mode"] = "auto"
-        out["roles"] = sorted(names)
-    scan = refs.scan(os.path.dirname(path), docs=[path], known_roots=known["roots"], age_floor_all=auto)
+        others = shared_with(known["roots"], scope, names)
+        if others:
+            # a directory that holds another role's start doc is not this role's to archive from (one writer per
+            # directory): propose, and say what would make auto apply
+            auto = False
+            out["notes"].insert(0, f"auto not applied: this start doc's directory also holds the start doc of "
+                                   f"{'; '.join(others)}; split the role into its own directory first")
+        else:
+            out["effective_mode"] = "auto"
+            out["roles"] = sorted(names)
+    scan = refs.scan(scope, docs=[doc_path], known_roots=known["roots"], age_floor_all=auto)
     out["ok"] = doc["ok"] and scan["ok"] and not scan["candidates"] and not doc["warnings"]
     for key in ("candidates", "dangling", "untracked", "deleted"):
         out["counts"][key] = len(scan[key])
@@ -57,8 +68,8 @@ def probe(path: str) -> dict:
     # own try: a failure here is a note, never the loss of the checkpoint's counts and samples
     try:
         import deeppass
-        repo = refs.Repo(os.path.dirname(path))
-        rel = repo.rel(path)
+        repo = refs.Repo(scope)
+        rel = repo.rel(doc_path)
         log = refs.companion_log(rel, repo.mode) if rel else None
         dp = lc["values"]["deep_pass"]
         d = deeppass.due(repo.read(log) if log else "", dp["every_days"], dp["every_restarts"])
@@ -75,6 +86,23 @@ def probe(path: str) -> dict:
         out["commands"] = ["shoal archive " + " ".join(shlex.quote(os.path.join(scan["repo"], c)) for c in scan["candidates"])
                            + f" --cross-owner {policy} --strict --reason {shlex.quote('checkpoint auto')}"]
     return out
+
+
+def shared_with(roots: dict, scope: str, names: set[str]) -> list[str]:
+    """Who else has a start doc in directory `scope`, named there directly or through a symlink there, or a symlink
+    elsewhere whose target is there: every role (slug) or standalone session (label) not in `names`."""
+    import refs
+    others: list[str] = []
+    for p, whos in roots.items():
+        here = {os.path.dirname(os.path.abspath(p)), os.path.dirname(os.path.realpath(p))}
+        if os.path.realpath(scope) not in {os.path.realpath(h) for h in here}:
+            continue
+        for w in whos:
+            if (w.get("slug") or w.get("label")) not in names:
+                text = refs.who_text(w)
+                if text not in others:
+                    others.append(text)
+    return others
 
 
 def run(path: str, timeout: float = TIMEOUT_S) -> dict:

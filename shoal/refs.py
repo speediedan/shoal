@@ -456,6 +456,14 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
                        and posixpath.splitext(p)[1].lower() in exts and tier(p) != "excluded")
     referrers, skipped = readable(repo, referrers, lc["values"])
     edges = edges_to(repo, files, referrers, tier)
+    # a reference to a subdirectory reaches every file under it: a data table's data_dir column, or `runs/r1/`, keeps
+    # the run's files live as surely as naming each one would (the directory rules of reference_spans apply)
+    subdirs = sorted(x for x in repo.dirs if x.startswith(d + "/")) if d else []  # not at the repository root
+    if subdirs:
+        for s in reference_spans(repo, subdirs, referrers, tier, frozenset(subdirs)):
+            for f in files:
+                if f.startswith(s["target"] + "/") and s["file"] != f:
+                    edges[f].append({"file": s["file"], "line": s["line"], "tier": s["tier"], "dir": s["target"]})
     dangling: list[dict] = []
     in_dir = set(files)
 
