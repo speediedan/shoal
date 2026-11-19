@@ -223,6 +223,13 @@ shoal efficiency snapshot --spec $SPEC --backfill 14 --role-time-spec $SPEC --ro
 `efficiency snapshot` reads GitHub (`gh api`, paced for the search rate limit) and the local ci-wait store and
 role-time journal; it exits 1 when GitHub could not give a day's merges (a stored row for that day is kept).
 
+```bash
+shoal efficiency review --baseline <YYYY-MM-DD>:<YYYY-MM-DD> --dry-run   # this week vs last and the baseline, waste ranked
+shoal efficiency review --baseline <start>:<end>                          # writes reports/efficiency-review-<day>.md, judges experiments
+shoal efficiency experiment --id <slug> --scope <owner>/<name> --metric job_minutes_per_head \
+  --predict-change -0.2 --date <YYYY-MM-DD> --ref <owner>/<name>#<n> --change "<what changed>"   # no --date: pending
+```
+
 ## Jobs
 
 ```bash
