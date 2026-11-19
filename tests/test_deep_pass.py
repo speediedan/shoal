@@ -3,7 +3,7 @@
 
 - due: with no `Deep pass` marker in the companion log; by days since the last marker; by the `After ...` snapshots
   below it (restarts); not due inside both cadences; a marker inside the log's text, not a heading, still counts;
-- keep reasons are listed with the days since the file last changed;
+- keep reasons are listed with the days since the file last changed, a script's comment form (`# keep:`) included;
 - consolidation candidates are the live auxiliary files, oldest change first, never the start doc or its log;
 - cold candidates are warm manifest entries at least `[cold] warm_days` old that no live document names, with the
   `shoal archive --cold` command, a subdirectory's manifest included; a younger entry and one a live document still
@@ -101,6 +101,7 @@ write(f"{D}/lane_start.md", f"# lane\n\nLast updated: {utc(NOW)}\n\nSee [old](au
 write(f"{D}/lane_log.md", LOG.format(ts=utc(NOW - 5 * DAY)) + "## Part 2\n\n### After C1\n\n- x\n")
 write(f"{D}/aux_new.md", "new notes\n")
 write(f"{D}/kept.md", "keep: the layout reference other docs cite\n\nbody\n")
+write(f"{D}/kept.sh", "#!/bin/sh\n# keep: the gate this lane still reruns\n")
 for name in ("old", "recent", "ref"):
     write(f"{A}/{name}.md", f"{name}\n")
 ev = [{"ts": utc(NOW - 100 * DAY), "by": "t", "event": "archive", "path": f"{D}/old.md", "archive_path": f"{A}/old.md"},
@@ -125,7 +126,8 @@ r = shoal("lifecycle", "deep-pass", DOC, "--json")
 assert r.returncode == 0, r.stdout + r.stderr
 out = json.loads(r.stdout)
 assert out["due"]["due"] and out["due"]["days_since"] == 5.0 and out["log"] == f"{D}/lane_log.md", out["due"]
-assert [k["path"] for k in out["keep"]] == [f"{D}/kept.md"], out["keep"]
+assert [k["path"] for k in out["keep"]] == [f"{D}/kept.md", f"{D}/kept.sh"], out["keep"]
+assert out["keep"][1]["keep"] == "the gate this lane still reruns", out["keep"]
 assert out["keep"][0]["keep"] == "the layout reference other docs cite" and out["keep"][0]["days_since_change"] == 0.0
 assert [c["path"] for c in out["consolidate"]] == [f"{D}/aux_old.md", f"{D}/aux_new.md"], out["consolidate"]
 assert out["consolidate"][0]["days_since_change"] == 30.0 and out["consolidate"][0]["bytes"] == 10, out["consolidate"]
@@ -136,9 +138,9 @@ assert out["cold_command"] == f"shoal archive --cold {D}/old.md {D}/sub/s.md", o
 print("cold candidates ok")
 
 t = out["trend"]
-assert t == {"live_auxiliary": 2, "kb": t["kb"], "kept": 1, "warm": 4, "cold_candidates": 2}, t
+assert t == {"live_auxiliary": 2, "kb": t["kb"], "kept": 2, "warm": 4, "cold_candidates": 2}, t
 assert out["marker"].startswith("Deep pass ") and out["marker"].endswith(
-    f": 2 live auxiliary, {t['kb']} KB, 1 kept, 4 warm, 2 cold candidates"), out["marker"]
+    f": 2 live auxiliary, {t['kb']} KB, 2 kept, 4 warm, 2 cold candidates"), out["marker"]
 assert out["due"]["previous_trend"].startswith("3 live auxiliary"), out["due"]
 text = shoal("lifecycle", "deep-pass", DOC).stdout
 assert "DUE (5.0 days since (every 3))" in text and "record in the log snapshot: Deep pass " in text, text

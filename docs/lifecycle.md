@@ -91,7 +91,7 @@ Other hosts' standalone roots are not read here, so this is advice rather than a
 archive operation still checks roots across hosts before a move.
 
 For `[checkpoint] archive = "propose"`, the role lists candidates for review or records a `keep: <reason>` in their
-front matter. Roots, live files and untracked files cannot be archive candidates. Resolve untracked work first.
+front matter (a script writes it as a comment, `# keep: <reason>`, after its shebang: [`refs.md`](refs.md)). Roots, live files and untracked files cannot be archive candidates. Resolve untracked work first.
 Keep files another owner's live document references and tell that owner through ledger mail to update its link.
 `archive` is one mode for every role, or a table of modes per role in the shape `context_restart` uses: keys are role
 slugs or standalone labels, and `"*"` is everyone else (`propose` when absent). A pilot is
