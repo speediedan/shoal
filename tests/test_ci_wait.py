@@ -154,8 +154,15 @@ class Local(unittest.TestCase):
                 "started_utc": iso(T0), "rc_file": str(jobs / "missing.rc")}))
             (jobs / "u3.json").write_text(json.dumps({
                 "unit": "u3", "shoal": "s", "name": "x", "cwd": "/elsewhere", "started_utc": iso(T0)}))
+            # an unplaced job its waiter saw holding a lease: its lease wait counts too (it used to read none)
+            (jobs / "u4.json").write_text(json.dumps({
+                "unit": "u4", "shoal": "s", "slug": "lane", "name": "suite", "class": "ci",
+                "cwd": "/home/u/repos/example-repo", "started_utc": iso(T0), "lease_granted": iso(T0 + 120),
+                "unleased_cpu": {}}))
             got = {r["key"]: r for r in cw.local_jobs([str(jobs)], CFG["repos"])}
             self.assertEqual((got["job:s:u1"]["lease_wait_s"], got["job:s:u1"]["run_s"]), (300.0, 600.0))
+            self.assertEqual(got["job:s:u4"]["lease_wait_s"], 120.0)
+            self.assertIsNone(got["job:s:u2"]["lease_wait_s"], "never seen holding a lease: none")
             self.assertEqual(got["job:s:u2"]["repo"], REPO, "attributed by its working directory")
             self.assertIsNone(got["job:s:u2"]["finished"], "still running: no exit-code file")
             self.assertIsNone(got["job:s:u3"]["repo"], "unattributed, never guessed")

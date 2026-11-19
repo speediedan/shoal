@@ -909,10 +909,49 @@ def _save(a, unit: str, meta: dict) -> None:
         pass
 
 
+def unleased_cpu_start(a, unit: str, meta: dict, st: dict, now: float, f: dict) -> str:
+    """The start of a job that holds no lease yet does CPU work: "" while it uses under `ci_unleased_cores` (2) cores
+    over `ci_unleased_min` (10) minutes, its unit's start once it does. Such a job slows every job on its host as a
+    leased suite would, so it gets the CI budget from its start, and its role is told once to run CPU suites on the
+    pool's lease (`--cpu-light --place auto`). Measured 2026-11-19: it-mvp-builder's full CPU suite ran 2 h 20 min
+    unleased on a host at load 23.8 of 24 cores (about 50 min elsewhere), with no budget and no lease accounting.
+    A watcher of hosted CI uses next to no CPU and stays exempt."""
+    run = meta.get("started_utc")
+    if (meta.get("unleased_cpu") or {}).get("run") == run:
+        return run
+    win = float(f.get("ci_unleased_min", 10.0)) * 60
+    cpu = [s for s in meta.get("cpu_samples") or [] if s and now - s[0] <= win + 600]
+    if st.get("cpu_ns") is not None:
+        cpu.append([now, st["cpu_ns"]])
+    meta["cpu_samples"] = cpu
+    old = [s for s in cpu if now - s[0] >= win]
+    if not old or not cpu or old[-1][1] is None:
+        _save(a, unit, meta)
+        return ""
+    cores = (cpu[-1][1] - old[-1][1]) / 1e9 / max(1.0, now - old[-1][0])
+    if cores < float(f.get("ci_unleased_cores", 2.0)):
+        _save(a, unit, meta)
+        return ""
+    meta["unleased_cpu"] = {"run": run, "cores": round(cores, 1)}
+    _save(a, unit, meta)
+    import jobs
+    slug = meta.get("slug") or a.slug or "?"
+    where = f" on {meta['host']}" if meta.get("host") else ""
+    text = (f"job {meta.get('name') or unit} ({unit}{where}) does CPU work ({cores:.1f} cores over {win / 60:.0f} min) "
+            f"without a lease, so it slows every job on its host unaccounted. It now counts against the CI budget from "
+            f"its start ({run}). Start CPU suites on the pool's lease: shoal job run --cpu-light --place auto --repo "
+            f"<checkout> [--ci-env NAME], so the host that finishes first runs them.")
+    print(f"{jobs.now_iso()} JOB-UNLEASED-CPU {unit}: {cores:.1f} cores")
+    jobs._emit(a.sid, slug, "unleased-cpu", text[:200], {"cores": round(cores, 1)})
+    _tell_role(a.sid, slug, text)
+    return run
+
+
 def budget_check(a, unit: str, meta: dict, granted: str) -> None:
     """The CI runtime budget (`features.placement.ci_budget_min`, default 90 min) of a `ci` job that holds a lease,
-    counted from its grant. A job holding no lease (a watcher of hosted CI, a plain script) occupies nothing others
-    wait for, so it has no budget. Past the budget the job's progress is read from its unit (CPU and log growth):
+    counted from its grant, or that does sustained CPU work without one (`unleased_cpu_start`), counted from its start.
+    A job holding no lease and using next to no CPU (a watcher of hosted CI) has no budget. Past the budget the job's
+    progress is read from its unit (CPU and log growth):
     - progressing: one `overrun` event and one message to its role, no page;
     - no progress for `ci_stall_min` (20) minutes, or still running at `ci_cap_x` (2) times the budget: the unit is
       stopped, which frees its lease for the queue, and its role is woken with the reason and the log's tail
@@ -939,9 +978,13 @@ def budget_check(a, unit: str, meta: dict, granted: str) -> None:
     if not st.get("active"):
         return
     start = lease_since(meta, granted, st.get("pids") or [])
+    if start and not meta.get("placement") and not meta.get("lease_granted"):
+        meta["lease_granted"] = start  # an unplaced job's grant, so ci-wait counts its lease wait too
+        _save(a, unit, meta)
+    start = start or unleased_cpu_start(a, unit, meta, st, now, f)
     t0 = pool._epoch(start) if start else None
     if t0 is None:
-        return  # holds no lease: nothing waits behind it
+        return  # holds no lease and does no sustained CPU work: a watcher, nothing waits behind it
     elapsed = now - t0
     if elapsed < budget * 60 - window:
         return
@@ -969,9 +1012,10 @@ def budget_check(a, unit: str, meta: dict, granted: str) -> None:
         meta["overrun_stop"] = {"run": run, "ts": jobs.now_iso(), "reason": reason, "stopped": not alive}
         _save(a, unit, meta)
         tail = _log_tail(a.sid, meta, unit)
-        text = (f"job {name} ({unit}{where}) was STOPPED: {reason}, {elapsed / 60:.0f} min after its lease grant at "
-                f"{start}. Its lease is free for the queue. Re-run it, split it, or run it as --class research if it is "
-                f"long by nature." + (f" Log tail:\n{tail}" if tail else ""))
+        text = (f"job {name} ({unit}{where}) was STOPPED: {reason}, {elapsed / 60:.0f} min after its budget started at "
+                f"{start}. " + ("It held no lease: re-run CPU suites with --cpu-light --place auto. "
+                                 if meta.get("unleased_cpu") else "Its lease is free for the queue. ") +
+                f"Re-run it, split it, or run it as --class research if it is long by nature." + (f" Log tail:\n{tail}" if tail else ""))
         print(f"{jobs.now_iso()} JOB-OVERRUN-STOPPED {unit}: {reason}")
         jobs._emit(a.sid, slug, "overrun-stopped", text[:200], {"budget_min": budget, "since": start, "reason": reason})
         if alive:
@@ -989,7 +1033,7 @@ def budget_check(a, unit: str, meta: dict, granted: str) -> None:
         return
     meta["overrun_paged"] = run
     _save(a, unit, meta)
-    text = (f"job {name} ({unit}{where}) is past its CI budget: {elapsed / 60:.0f} min since its lease grant at {start} "
+    text = (f"job {name} ({unit}{where}) is past its CI budget: {elapsed / 60:.0f} min since its budget started at {start} "
             f"> {budget:g} min, still progressing. " +
             (f"It is stopped after {window / 60:.0f} min without progress or at {cap_x * budget:g} min: split it, or run "
              f"it as --class research." if autostop else "It keeps running (ci_autostop is off)."))
