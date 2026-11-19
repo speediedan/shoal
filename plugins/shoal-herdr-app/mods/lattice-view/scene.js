@@ -14,7 +14,7 @@ import { PALETTE, PASTELS, edgeBuckets, incidentEdges, shortShoal, SHOAL_CARD, B
 import { motionPolicy, flowEdges } from "./motion.js";
 import {
   sphereShade, glassColorAt, LIGHT, lightOf, luneCmds, latitudeCmds, meridianCmds, rimCmds as bowlRimCmds, bowlGlow, bowlShadow, bowlColorAt, BOWL,
-  BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlCaps, bowlPlumb, lipCmds, crescentCmds, rimShade,
+  BOWL_BASE, BOWL_LIT, BOWL_SHADE, BOWL_LIP, bowlRings, bowlCaps, bowlPlumb, lipCmds, crescentCmds, rimShadeLayers,
   rimNorm, bowlSurfaceAt, bowlAzimuth, bowlRimAt, shadowLayers, shadowSteps, bowlCovers, blend8, rgb8, SHADOW_INK, SHADOW_UNDER,
   bowlSweep, glassBall, gradientAt, over, YOU_SHADOW,
 } from "./sphere.js";
@@ -410,9 +410,10 @@ export function buildScene(vm, lay, opts) {
     // shows, sphere.js bowlCaps)
     // lite: every other step of the deepening, each twice as dark
     bowlCaps(fr).filter((_, i) => !lite || i % 2 === 1).forEach((t, i) => items.push({ t: "path", id: `bowl-deep-${i}`, fill: true, cmds: latitudeCmds(fr, o.x, o.y, R, t), bg: solid(withAlpha(BOWL_SHADE, lite ? 2 * BOWL.deep : BOWL.deep)) }));
-    // the lip's shade on the inside: the wall under the lip on the light's side is out of the light
-    const shade = rimShade(fr, o.x, o.y, R);
-    if (shade) items.push({ t: "path", id: "bowl-shade", fill: true, cmds: shade.cmds, bg: { kind: "linear", angle: shade.angle, from: withAlpha(BOWL_SHADE, BOWL.shade), to: withAlpha(BOWL_SHADE, BOWL.shadeEdge) } });
+    // the lip's shade on the inside: the wall under the lip on the light's side is out of the light, a soft shadow in
+    // fine layers out from the rim (sphere.js rimShadeLayers), every one of them in the lite scene too (as every
+    // shadow keeps its layers there: halved, they drew rings)
+    rimShadeLayers(fr, o.x, o.y, R).forEach((l, i) => items.push({ t: "path", id: `bowl-shade-${i}`, fill: true, cmds: l.cmds, bg: solid(withAlpha(BOWL_SHADE, l.alpha)) }));
     // faint guides: four rings of latitude round the bottom (what shows a hollow) and eight meridians down to it
     const yaw = lay.cam?.spin ?? lay.cam?.yaw ?? 0;
     items.push({ t: "path", id: "bowl-rings", fill: false, width: 0.8, bg: solid(withAlpha("#e4edf4", 0.1)), cmds: bowlRings(fr).flatMap((t) => latitudeCmds(fr, o.x, o.y, R, t)) });

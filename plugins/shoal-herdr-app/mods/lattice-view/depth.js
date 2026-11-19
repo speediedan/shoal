@@ -555,6 +555,16 @@ const YOU_CLEAR = 0.06; // a role is moved down the wall until it is this far cl
 const ROLE_CLEAR = 0.07; // and this far clear of every role placed before it
 const MERIDIAN_SEARCH = 20; // and if moving it down does not clear it, this many places up and down its meridian
 const LUNE_SEARCH = 24; // and if none of those does, in the preset's view, this many meridians of its lune
+/** How far from its lune's edges a role sits at least, in azimuth, as a fraction of the lune's width (so a narrow lune
+ * keeps its roles off its edges too): with two or more hosts, which lune a role is on, and so which host it runs on,
+ * reads at a glance (2026-11-18: roles spread across their flat sector, and moved to the clear place nearest where they
+ * were wanted, came within 6 percent of a lune's width of the line between two hosts). One host has no edges. */
+export const LUNE_MARGIN = 0.2;
+/** The azimuths a role on lune b may take: its lune less LUNE_MARGIN of its width at each edge. {lo, hi}. */
+export const luneInner = (b, hosts) => {
+  const m = hosts > 1 ? LUNE_MARGIN * (b.a1 - b.a0) : 0;
+  return { lo: b.a0 + m, hi: b.a1 - m };
+};
 const BOWL_EXT = 1.32; // where outside seats ring the rim, in sphere radii
 const BOWL_GAIN = 1.25; // sizes in the bowl: this much larger than flat, times the perspective scale where they are
 const BOWL_BEHIND = 0.2; // how far behind you, along the line of sight, a role on the inside sits at least
@@ -680,8 +690,11 @@ function projectBowl(vm, lay, cam0) {
     for (const b of bands) {
       const rel = (id) => ((flatAngle(id) + spin - b.s0) % TAU + TAU) % TAU;
       const mine = roles.filter((n) => (n.host ?? "?") === b.host).sort((x, y) => rel(x.id) - rel(y.id) || (x.id < y.id ? -1 : 1));
+      // spread across its sector of the flat view, kept LUNE_MARGIN inside its lune's edges (in the same order)
+      const inner = luneInner(b, bands.length), lo = Math.max(b.s0, inner.lo), hi = Math.min(b.s1, inner.hi);
+      const s0 = lo <= hi ? lo : (inner.lo + inner.hi) / 2, s1 = lo <= hi ? hi : s0;
       mine.forEach((n, j) => {
-        let phi = from?.get(n.id)?.phi ?? b.s0 + ((b.s1 - b.s0) * (j + 0.5)) / mine.length;
+        let phi = from?.get(n.id)?.phi ?? s0 + ((s1 - s0) * (j + 0.5)) / mine.length;
         let theta = from ? Math.min(from.get(n.id).wanted, bowlReach(f, phi, 0.86, bowlBehind(f))) : bowlTheta(f, phi, j, mine.length);
         let u = bowlPoint(f, theta, phi), wanted = theta;
         const want = bowlProject(f, u);
@@ -710,8 +723,8 @@ function projectBowl(vm, lay, cam0) {
           // and in the preset's frame, if none there is clear, the clear place on its lune nearest where it was wanted
           if (!best.ok && !from) {
             for (let a = 0; a < LUNE_SEARCH; a++) {
-              // (inside the lune, a little clear of its edges, so the lune under the role is its host's)
-              const ph = b.a0 + (b.a1 - b.a0) * (0.04 + (0.92 * (a + 0.5)) / LUNE_SEARCH), reach = bowlReach(f, ph, 0.86, bowlBehind(f));
+              // (inside the lune, LUNE_MARGIN clear of its edges, so the lune under the role plainly is its host's)
+              const ph = inner.lo + ((inner.hi - inner.lo) * (a + 0.5)) / LUNE_SEARCH, reach = bowlReach(f, ph, 0.86, bowlBehind(f));
               for (let k = 1; k <= 8; k++) {
                 const th = (reach * k) / 8, w = bowlPoint(f, th, ph), q = bowlProject(f, w), dist = Math.hypot(q.x - want.x, q.y - want.y);
                 if (slack(w) >= 0 && (!best.ok || dist < best.dist)) best = { ok: true, dist, th, ph, w };

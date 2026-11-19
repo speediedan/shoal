@@ -240,10 +240,13 @@ export function nodeVisual(node) {
   const key = stateKey(node);
   const metrics = obj(node?.metrics);
   if (kind === "user") {
+    // you are always magenta, the needs-you color (the rail's, every asking role's), so the hub stands apart from the
+    // globes' pastels and the bowl's grey glass whether or not anything is open (2026-11-18: grey with nothing open, it
+    // vanished into the bowl); the count badge says how much is open
     const work = obj(node.work);
     const grants = Math.max(num(work.grants_pending), arr(work.grants_pending).length);
     const asks = num(work.asks_open) + grants;
-    return { kind, key: "hub", shape: "circle", r: 18, color: asks > 0 ? P.magenta : P.ink, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
+    return { kind, key: "hub", shape: "circle", r: 18, color: P.magenta, fill: 0.06, border: "solid", borderWidth: 2, halo: { period: 3600, from: 0.08, to: 0.28, scale: 2.0 }, badge: asks > 0 ? String(asks) : null, grants, urgency: null, needsYou: false, opacity: 1 };
   }
   if (kind === "writer") {
     // an unknown or removed ledger writer: a small dashed node, quieter than an external
@@ -677,7 +680,7 @@ export function buildModel(doc, view = "global", opts = {}) {
     const roleGrants = all.reduce((t, n) => t + grantsOf(n).length, 0);
     const grants = Math.max(hub.visual.grants ?? 0, roleGrants, shoals.reduce((t, x) => t + x.grants, 0));
     const asks = num(hub.work.asks_open) + grants;
-    hub.visual = { ...hub.visual, grants, color: asks > 0 ? P.magenta : P.ink, badge: asks > 0 ? String(asks) : null };
+    hub.visual = { ...hub.visual, grants, color: P.magenta, badge: asks > 0 ? String(asks) : null };
   }
 
   const shoalsInView = global ? shoals : shoals.filter((s) => s.id === viewId);
