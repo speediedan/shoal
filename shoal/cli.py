@@ -94,6 +94,7 @@ import resource_usage as _resource_usage  # noqa: E402
 import pool_cli as _pool_cli  # noqa: E402
 import role_time as _role_time  # noqa: E402
 import ci_wait as _ci_wait  # noqa: E402
+import efficiency as _efficiency  # noqa: E402
 import prune as _prune  # noqa: E402
 from roles import (ECOSYSTEMS, SHOAL_DATA_ROOT, ShoalSpec, Role, default_spec_path, host_of, is_local,  # noqa: E402
                    home_dir, state_dir, utcnow_iso)
@@ -1403,6 +1404,7 @@ def main(argv: list[str] | None = None) -> int:
     _pool_cli.add_parsers(sub)
     _role_time.add_parser(sub)
     _ci_wait.add_parser(sub)
+    _efficiency.add_parser(sub)
     _prune.add_parser(sub)
     _ui_parsers(sub)
 

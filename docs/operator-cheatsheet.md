@@ -214,6 +214,20 @@ export S=<id> SPEC=<path to the group's spec>
 shoal report --spec $SPEC --gen <generation>
 shoal report --spec $SPEC --hours 168
 shoal kill-audit --no-record
+shoal ci-wait report --spec $SPEC --since <ISO time>       # CI wait by repository over a window
+shoal efficiency snapshot --spec $SPEC                       # yesterday's CI efficiency rows (merged lines per CI cost)
+shoal efficiency snapshot --spec $SPEC --backfill 14 --role-time-spec $SPEC --role-time-dir <observer state dir> \
+  --out <dir>/efficiency.jsonl --prom-out <textfile dir>/shoal_efficiency.prom   # a backfill, with per-shoal role time
+```
+
+`efficiency snapshot` reads GitHub (`gh api`, paced for the search rate limit) and the local ci-wait store and
+role-time journal; it exits 1 when GitHub could not give a day's merges (a stored row for that day is kept).
+
+```bash
+shoal efficiency review --baseline <YYYY-MM-DD>:<YYYY-MM-DD> --dry-run   # this week vs last and the baseline, waste ranked
+shoal efficiency review --baseline <start>:<end>                          # writes reports/efficiency-review-<day>.md, judges experiments
+shoal efficiency experiment --id <slug> --scope <owner>/<name> --metric job_minutes_per_head \
+  --predict-change -0.2 --date <YYYY-MM-DD> --ref <owner>/<name>#<n> --change "<what changed>"   # no --date: pending
 ```
 
 ## Jobs
@@ -251,8 +265,9 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
 - A `ci` job (the default `--class`) that holds a lease and runs past `features.placement.ci_budget_min`
   (90 min from its grant) tells its role once (`JOB-OVERRUN`) while it progresses; with no progress for 20
   min, or at twice the budget, it is stopped and its role woken (`JOB-OVERRUN-STOPPED`). You are paged only
-  if the stop fails; `ci_autostop: false` never stops. A job holding no lease has no budget. Long research
-  runs use `--class research`.
+  if the stop fails; `ci_autostop: false` never stops. A job holding no lease has no budget unless it does
+  CPU work (2+ cores over 10 min): then it is budgeted from its start and its role told to use
+  `--cpu-light --place auto`. Long research runs use `--class research`.
 - Every job unit has a memory ceiling: `MemoryMax` 16G per job, inside `shoal-jobs.slice` (18G high, 20G max for all
   lane jobs on the host together). Set them per host under `[jobs]` in the host config, per group in
   `features.placement`, per job with `--memory-max` (0 or '' turns a ceiling off). A job its ceiling killed ends with

@@ -469,8 +469,11 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
 - **Job class and runtime budget.** `job run --class ci|research` (default `ci`, placed or not). A
   `ci` job that holds a lease has a runtime budget, `features.placement.ci_budget_min` (default 90; 0
   turns it off), counted from its grant: a placed job's `lease_granted`, any other job's `since` on the
-  lease provider's row whose holder pid is in the job's unit. A job holding no lease (a watcher of hosted
-  CI, a plain script) has no budget: nothing waits behind it. From one stall window before the budget,
+  lease provider's row whose holder pid is in the job's unit. A job holding no lease that uses
+  `ci_unleased_cores` (2) or more cores over `ci_unleased_min` (10) minutes is CPU work all the same: it gets the
+  budget from its unit's start, one `JOB-UNLEASED-CPU` / `unleased-cpu` event, and one msg telling its role to run CPU
+  suites on the pool's lease (`--cpu-light --place auto`). A job holding no lease and using next to no CPU (a watcher
+  of hosted CI) has no budget: nothing waits behind it. From one stall window before the budget,
   `job wait` samples the unit once a minute at most (systemd's `CPUUsageNSec` over its process tree and
   its log's size, over one ssh for a remote job). Past the budget a job still progressing gets one
   `JOB-OVERRUN`, an `overrun` event and a ledger `health` msg to its role, never a page. A job with no
@@ -998,8 +1001,9 @@ names one.
   `Checkpoint.Approval` record, where a serial gate queues) or, with no approval, queue to first job
   start, plus run time. Builds link to their PR head through `triggerInfo` (`sourceVersion` is the
   merge commit). `az` runs under `bash -lc`, so its credential stays in the login environment.
-- **Local CI**: `shoal job` records (a placed job's lease wait before `lease_granted` and run time
-  after it; the repository is the placement record's, else matched from the working directory by
+- **Local CI**: `shoal job` records (a job's lease wait before `lease_granted` and run time after it: a placed job
+  records its grant, an unplaced one gets it from its waiter's budget check once a process of its unit holds a lease;
+  `unleased_cpu` marks one that did CPU work with none; the repository is the placement record's, else matched from the working directory by
   `local.paths`, else unattributed) and the resource sampler's observed lease reservations (direct
   test runs; the holder is matched to a repository by `local.holders`; a holder naming the gate's
   own build is marked `gate` and not counted twice). Research jobs are not CI.
@@ -1024,6 +1028,100 @@ phase, `shoal_ci_wait_head_run_seconds` (source `gate` or `github_hosted`, stat 
 `shoal_ci_wait_source_errors_total` and `shoal_ci_wait_last_success_timestamp_seconds`. Labels never
 carry a SHA or PR number. The weekly report (`telemetry/shoal_report.py`) adds one line per
 configured repository from the same store, with no provider call.
+
+### CI efficiency (`shoal efficiency snapshot`)
+
+`shoal/efficiency.py` turns the ci-wait store and the role-time journal into one row per repository
+and UTC day, and one per shoal and day, so CI rules and infrastructure are tuned against a number that
+does not reward splitting work or skipping checks.
+
+- **Throughput** is merged code lines: additions plus deletions of the PRs merged that UTC day, less
+  paths matching exclusion globs (lockfiles, pinned CI requirements, notebooks, generated code,
+  vendored trees; fnmatch, so `*` crosses `/`; `[efficiency] exclude` replaces the list). A PR count
+  is never a throughput number on its own. The merged PRs come from one GitHub search per week of
+  days (the query reads a day either side and keeps the merges inside the UTC days), paced for the
+  search rate limit and retried after a backoff; each PR's file list comes from the files endpoint
+  and is cached for good beside the rows, since a merged PR does not change. A file list read only in
+  part is not counted (nor cached), and the row says how many PRs it could not count.
+- **Cost** is the day's CI from the ci-wait store: job-minutes (counted GitHub jobs, gate builds,
+  local `shoal job` runs and direct lease holds, whatever became of the change) and CI wait (push to
+  CI complete per PR head that completed that day, plus local CI lease wait and run). Each merged PR
+  also carries its own CI: every PR head the store saw for it, on any day.
+- **Ratios** divide sums: lines per CI wait hour, lines per CI job-minute and job-minutes per merged
+  PR, and again per PR size bucket (`[efficiency] buckets`, default under 50, 50 to 500, 500 or more
+  counted lines) as the median over the bucket's PRs of each PR's own lines per CI cost, so many small
+  PRs do not look efficient just because each is cheap. No CI minutes at all reads as not measured,
+  never as free.
+- **Guardrails** sit beside every ratio: rerun share (PR head minutes on attempts after the first),
+  failed gate builds and gate approvals, merged reverts and PRs some later merge says it reverts
+  (`Reverts <owner>/<name>#N`), and local CI jobs that did sustained CPU work without a lease (the
+  job record's `unleased_cpu`; `unleased_cpu_observed` counts the records new enough to say).
+- **Per shoal** (`--role-time-spec`, repeatable): the day's role time read from the observer's
+  journal (`<role-time-dir>/<sid>/role-time-observations.jsonl`, else the shoal's state directory)
+  the way `role-time report` reads it, with closed segments more than two days before the first day
+  skipped and one difference: a role a segment header leaves out stopped being a member when that
+  segment opened (the report keeps an older open span, charging a role removed from the spec as
+  unknown ever after). The row holds work, wait and unknown seconds, the local-CI, remote-CI and
+  lease waits, and the ratios: CI and lease share of eligible role time, AAR, RWF, coverage and the
+  merged lines of the shoal's repositories (its spec's `repos`, else its ci-wait ones) per role CI
+  and lease wait hour, and the lease share alone. Below `[efficiency] min_coverage` (default 0.5)
+  the ratios are empty, not 0; a repository with no counted row that day is listed in
+  `repos_uncounted`.
+- **Sources** (`by_source` on a repository row): the day's seconds per source, the ledger the review
+  ranks waste from: `github run`, `github queue` and `github rerun` per counted workflow and job,
+  `gate wait` and `gate run` per pipeline, `local lease wait` and `local run` per host, and `direct
+  hold` per lease key and host. Rows written before sources were kept have none, and a window
+  without them reports a source metric as unknown, not zero.
+
+`shoal efficiency snapshot --spec S [--day D] [--backfill N] [--role-time-spec R ...]` computes the N
+days ending with D (default yesterday) for every repository in the spec's `features.ci_wait.repos`
+(`--repo` narrows), replaces those days' rows in the JSONL (`--out`, else `[efficiency] out`, else
+`<data_root>/_efficiency/efficiency.jsonl`) and prints one line per row (`--json` for the rows). A
+day GitHub cannot give keeps a stored row that has its merges, else gets a row with `merged` empty,
+and the command exits 1. Rollups over a window (`efficiency.rollup`) pair lines with the cost of
+the same days only, and leave a shoal's low-coverage days out of its ratios. `--prom-out F` writes
+gauges for the last stored day and the seven days ending there (`shoal_efficiency_merged_lines`,
+`_merged_prs`, `_lines_per_ci_wait_hour`, `_lines_per_job_minute`, `_job_minutes_per_merged_pr`,
+`_ci_job_minutes`, `_ci_wait_seconds`, the guardrails `_rerun_share`, `_failed_gates`,
+`_reverted_prs` and `_unleased_cpu_jobs`, per size bucket `_merged_prs_by_size`,
+`_bucket_lines_per_job_minute` and `_bucket_lines_per_ci_wait_hour`, per shoal `_ci_lease_share`,
+`_aar`, `_role_work_fraction`, `_role_time_coverage` and `_lines_per_role_ci_wait_hour`); labels are
+repository, shoal, window and bucket, never a PR number, title or SHA.
+
+### CI efficiency review (`shoal efficiency review`, `shoal efficiency experiment`)
+
+`shoal/efficiency_review.py` reads only the snapshot rows and an experiments log (no GitHub, no
+ledger, no model call). `shoal efficiency review [--day D] [--baseline START:END]` compares the seven
+days ending with D (default the newest row) with the seven before and with a fixed baseline window
+(`[efficiency] baseline`), per repository (lines per job-minute and per CI wait hour, job-minutes per
+merged PR and per PR head, mean push to CI complete, gate wait per build, merged lines and job-minutes
+per day, and the guardrails: rerun share, failed gates per gate build, reverts per merged PR, unleased
+CPU jobs per day) and per shoal (CI and lease share, lease share, AAR, RWF, coverage, lines per role
+CI wait hour). It ranks the largest sources of waste in the current window from `by_source`, split
+into CI time and waits, each with minutes per PR head against the previous and baseline windows. It
+writes `efficiency-review-<D>.md` (`--report-dir`, else `[efficiency] report_dir`, else `reports/`
+beside the rows) and prints the path; `--dry-run` prints the report and writes nothing.
+
+The experiments log (`--experiments`, else `[efficiency] experiments`, else `experiments.jsonl`
+beside the rows) holds one line per rule or infrastructure change: its scope (a repository or
+`shoal:<id>`), the metric it should move (`source_minutes_per_head` takes a `source` glob), the
+predicted change (relative, or a value `to` from a value `from`), the UTC day it took effect, and
+optionally its `before` window and the first day of its `after` window. A later line with the same
+`id` replaces it, so a pending change (no date) opens when logged again with its date; `shoal
+efficiency experiment` appends one after checking the metric name. Each review judges every open
+experiment once its after window (the first 14 days from the day after the change) holds three days:
+`keep` when the metric moved the predicted way by at least half the prediction and more than the
+noise floor (10%, `noise` per experiment), `revert` when it moved the other way by more than the
+noise floor, else `inconclusive`; a guardrail of the scope worse by more than its tolerance turns a
+keep into inconclusive, and experiments on one scope whose after windows start within a week of
+each other are marked as overlapping (lines for one change, the same `ref`, are not). The verdict is
+appended to the log (a re-run for the same day replaces its own); it is final once the after window
+holds seven days, or after 28 days open, and a final verdict closes the experiment.
+
+The review wakes no one by default. `--wake-seat <label>` (or `[efficiency] review_seat`) then
+delivers one message to that saved standalone seat on this host, the way an operator handoff asks a
+seat for a checkpoint and only between its turns, asking it to propose at most three experiments
+for the log; the review itself never changes a rule.
 
 ## 10. Live upgrades
 

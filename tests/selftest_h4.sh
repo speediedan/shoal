@@ -61,6 +61,8 @@ python3 "$TESTD/test_resource_usage.py" || fail "resource usage telemetry and pl
 python3 "$TESTD/test_role_time.py" || fail "role time accounting"
 python3 "$TESTD/test_role_time_adapters.py" || fail "role time adapters"
 python3 "$TESTD/test_ci_wait.py" || fail "ci wait by repository"
+python3 "$TESTD/test_efficiency.py" || fail "ci efficiency snapshot"
+python3 "$TESTD/test_efficiency_review.py" || fail "ci efficiency review"
 python3 "$TESTD/test_pool_metrics.py" || fail "pool imbalance over compatible demand"
 
 echo "== 1 working context: scope derives, migrate converts and removes scope"

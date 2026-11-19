@@ -234,7 +234,9 @@ def _repo_from_holder(holder, rules):
 def local_jobs(meta_dirs, rules):
     """`shoal job` records: a placed job's repo is its placement record's; any other job's comes
     from its working directory by the configured path rules (else it is unattributed). Lease wait
-    is submit to grant (placed jobs only); run time is grant (or start) to its exit-code file."""
+    is submit to grant: a placed job's recorded grant, any other job's `lease_granted` once its waiter saw a process of
+    its unit hold a lease (`pool_cli.lease_since`); a job never seen holding one has none. Run time is grant (or start)
+    to its exit-code file."""
     out = []
     for d in meta_dirs:
         for f in sorted(glob.glob(os.path.join(d, "*.json"))):
@@ -251,7 +253,8 @@ def local_jobs(meta_dirs, rules):
                 continue
             start = _epoch(m.get("started_utc"))
             submit = _epoch(pl.get("submit_ts")) or start
-            granted = _epoch(m.get("lease_granted")) if pl else start
+            leased = bool(pl) or bool(m.get("lease_granted"))
+            granted = _epoch(m.get("lease_granted")) if leased else start
             try:
                 finished = os.path.getmtime(m["rc_file"]) if m.get("rc_file") and os.path.exists(m["rc_file"]) else None
             except OSError:
@@ -260,7 +263,8 @@ def local_jobs(meta_dirs, rules):
                         "role": m.get("slug") or "", "name": m.get("name") or "",
                         "kind": m.get("class") or ("ci" if pl else "plain"), "host": m.get("host") or "",
                         "submit": submit, "granted": granted, "finished": finished,
-                        "lease_wait_s": _dur(submit, granted) if pl else None,
+                        "lease_wait_s": _dur(submit, granted) if leased else None,
+                        "unleased_cpu": bool(m.get("unleased_cpu")),
                         "run_s": _dur(granted or start, finished)})
     return out
 

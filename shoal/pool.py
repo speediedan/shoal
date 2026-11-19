@@ -35,7 +35,9 @@ DEFAULTS = {"margin_s": 180.0, "staging_s": 120.0, "max_moves": 2, "max_age_s": 
             "interval_s": 120.0, "default_est_s": 1800.0, "ci_budget_min": 90.0,
             # past the budget: stop a CI job after this long without progress (CPU under ci_idle_cpu_s, its log
             # unchanged), or once it reaches ci_cap_x times the budget (pool_cli.budget_check)
-            "ci_stall_min": 20.0, "ci_idle_cpu_s": 30.0, "ci_cap_x": 2.0}
+            "ci_stall_min": 20.0, "ci_idle_cpu_s": 30.0, "ci_cap_x": 2.0,
+            # an unleased job using ci_unleased_cores or more over ci_unleased_min is CPU work: it gets the budget
+            "ci_unleased_cores": 2.0, "ci_unleased_min": 10.0}
 # Lane job memory ceilings (jobs.py): each job unit's MemoryMax and the shared `shoal-jobs.slice` every job unit runs in
 # (MemoryHigh throttles the slice, MemoryMax OOM-kills inside it). systemd sizes ("16G", "512M", "25%" of RAM); a bare
 # number is GiB; 0 or "" turns that ceiling off. features.placement sets them per group, `[jobs]` in the host config
