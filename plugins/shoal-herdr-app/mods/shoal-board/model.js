@@ -1,10 +1,10 @@
 // shoal-board model: pure, with no Herdr imports, so it tests under Node.
 //
 // `shoal ui board --json` gives each shoal's priority boards as graphs: open items as nodes (`work`: active, queued at
-// `pos`, queued-blocked, unqueued; `off_board` for a parent or blocker not open on the board) and edges (`parent`: an
-// issue to its sub-issue; `blocks`: an open blocker to what it blocks), with each board's metrics. Here they become a
-// layered drawing: the board's root at the top, each item a layer below everything it hangs from (its parent, its
-// blockers), a wide layer wrapped into rows.
+// `pos`, unqueued; `state`: in-progress, queued, blocked, not-queued, with `why` and `on` saying which; `off_board` for a
+// parent or blocker not open on the board) and edges (`parent`: an issue to its sub-issue; `blocks`: an open blocker to
+// what it blocks), with each board's metrics. Here they become a layered drawing: the board's root at the top, each
+// item a layer below everything it hangs from (its parent, its blockers), a wide layer wrapped into rows.
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -149,7 +149,14 @@ export function layers(board) {
   return { layer, preds };
 }
 
-const WORK_ORDER = { active: 0, queued: 1, "queued-blocked": 2, unqueued: 3 };
+const STATE_ORDER = { "in-progress": 0, queued: 1, blocked: 2, "not-queued": 3 };
+// a board read from a machine whose shoal predates `state` has only `work`
+const LEGACY_STATE = { active: "in-progress", queued: "queued", "queued-blocked": "blocked", unqueued: "not-queued" };
+
+/** A node's issue-level state: in-progress, queued, blocked or not-queued. */
+export function stateOf(n) {
+  return STATE_ORDER[n?.state] !== undefined ? n.state : LEGACY_STATE[n?.work] ?? "not-queued";
+}
 
 /**
  * Where everything goes for a canvas `width` px wide: {nodes: [{...node, x, y}], root: {x, y, w, h}, edges: [{kind, from,
@@ -211,7 +218,7 @@ export function layout(board, width = 1000, dims = DIMS.cards) {
   const looseAt = { y: nodes.length ? y : root.y + D.rootH + D.gapY, count: loose.length };
   if (loose.length) {
     y = looseAt.y + D.looseHead;
-    const sorted = loose.slice().sort((a, b) => (WORK_ORDER[a.work] ?? 9) - (WORK_ORDER[b.work] ?? 9) || order(a) - order(b));
+    const sorted = loose.slice().sort((a, b) => STATE_ORDER[stateOf(a)] - STATE_ORDER[stateOf(b)] || order(a) - order(b));
     for (let i = 0; i < sorted.length; i += perRow) {
       const chunk = sorted.slice(i, i + perRow);
       let x = D.pad;
@@ -240,15 +247,48 @@ export function arrowCmds(e, size = 6) {
   return [["M", e.x2 - size, e.y2 + back], ["L", e.x2, e.y2], ["L", e.x2 + size, e.y2 + back], ["Z"]];
 }
 
-export const WORK_LABEL = { active: "in progress", queued: "queued", "queued-blocked": "queued, blocked", unqueued: "not queued" };
+export const STATE_LABEL = { "in-progress": "in progress", queued: "queued", blocked: "blocked", "not-queued": "not queued" };
+// what an in-progress item's role is doing about it
+export const PROGRESS_WHY = { working: "working", ci: "CI", job: "job", research: "research", window: "research window",
+  lease: "lease", parked: "role parked" };
 
-/** How a node reads: {fill, border, dashed, ink, badge, tone} from its work and the palette. */
+/** A referenced item as the card shows it: `#n` in the item's own repo, else `repo#n`. */
+function refText(on, key) {
+  const [repo, num] = str(on).split("#");
+  return num && repo === str(key).split("#")[0] ? `#${num}` : str(on);
+}
+
+/** Where the issue stands, in words: "in progress: CI", "blocked on #923", "blocked: maintainer", "queued". */
+export function stateText(n) {
+  const st = stateOf(n), why = str(n?.why), on = str(n?.on);
+  if (st === "in-progress") return why && why !== "working" ? `in progress: ${PROGRESS_WHY[why] ?? why}` : "in progress";
+  if (st !== "blocked") return STATE_LABEL[st];
+  if (why === "issue") return on ? `blocked on ${refText(on, n.key)}` : "blocked on another issue";
+  if (why === "upstream") return on ? `blocked upstream: ${on}` : "blocked upstream";
+  if (why === "maintainer") return "blocked: maintainer";
+  return why === "hold" ? "blocked: free-text hold" : "blocked";
+}
+
+/** The card's short badge for a blocked item: what it waits on. */
+function blockedBadge(n) {
+  const why = str(n.why), on = str(n.on);
+  if (why === "issue") return on ? refText(on, n.key) : "issue";
+  return why === "hold" ? "hold" : why || "blocked";
+}
+
+/** How a node reads: {fill, border, dashed, ink, badge, tone} from its state and the palette. A block nothing names (a
+ * free-text hold) is dashed; one on an issue, upstream or the maintainer is solid. */
 export function nodeStyle(n, c) {
   if (n.off_board) return { fill: c.bg, border: c.dim, dashed: true, ink: c.muted, badge: "off board", tone: c.dim };
-  switch (n.work) {
-    case "active": return { fill: withAlpha(c.working, 0.18), border: c.working, dashed: false, ink: c.ink, badge: `▶ ${n.role}`, tone: c.working };
+  const why = str(n.why);
+  switch (stateOf(n)) {
+    case "in-progress": {
+      const doing = why && why !== "working" ? `${PROGRESS_WHY[why] ?? why} · ` : "";
+      return { fill: withAlpha(c.working, 0.18), border: c.working, dashed: false, ink: c.ink, badge: `▶ ${doing}${n.role}`, tone: c.working };
+    }
     case "queued": return { fill: withAlpha(c.queued, 0.14), border: c.queued, dashed: false, ink: c.ink, badge: `${n.role} #${n.pos}`, tone: c.queued };
-    case "queued-blocked": return { fill: withAlpha(c.queued, 0.1), border: c.blocked, dashed: true, ink: c.ink, badge: `⛔ ${n.role} #${n.pos}`, tone: c.blocked };
+    case "blocked": return { fill: withAlpha(c.blocked, 0.1), border: c.blocked, dashed: !why || why === "hold", ink: c.ink,
+      badge: `⛔ ${blockedBadge(n)}`, tone: c.blocked };
     default: return { fill: c.panel, border: c.border, dashed: false, ink: c.muted, badge: "not queued", tone: c.dim };
   }
 }
@@ -257,7 +297,8 @@ export function nodeStyle(n, c) {
 export function hoverLines(n) {
   const rows = [];
   const add = (k, v) => { if (str(v).trim()) rows.push([k, str(v)]); };
-  add("status", [WORK_LABEL[n.work] ?? n.work, n.status ? `board: ${n.status}` : ""].filter(Boolean).join(" · "));
+  add("status", [stateText(n) + (n.inferred ? " (read from its hold)" : ""), n.status ? `board: ${n.status}` : ""]
+    .filter(Boolean).join(" · "));
   if (n.role) add("role", n.pos ? `${n.role}, #${n.pos} in its queue` : n.role);
   add("blocker", n.blocker);
   if (arr(n.blocked_by).length) add("blocked by", n.blocked_by.join(", "));
@@ -307,11 +348,13 @@ export function tiles(m) {
   if (!m) return [];
   const pace = m.close_rate_7d ? `${m.close_rate_7d}/day over 7 days` : "no closes this week";
   const change = m.open_change_14d === null || m.open_change_14d === undefined ? "" : `${m.open_change_14d > 0 ? "+" : ""}${m.open_change_14d} in 14 days`;
+  const blocked = m.blocked ?? m.queued_blocked ?? 0; // a board read from a machine whose shoal predates `state`
   return [
     { id: "open", label: "Open", value: String(m.open), note: change, tone: "ink" },
     { id: "done", label: "Done", value: `${m.pct_done}%`, note: `${m.done} of ${m.total}`, tone: "done" },
-    { id: "active", label: "In progress", value: String(m.active), note: "a role's active item", tone: "working" },
-    { id: "queued", label: "Queued", value: String(m.queued), note: m.queued_blocked ? `+${m.queued_blocked} blocked` : "none blocked", tone: "queued" },
+    { id: "active", label: "In progress", value: String(m.in_progress ?? m.active), note: "worked, or its own run going", tone: "working" },
+    { id: "queued", label: "Queued", value: String(m.queued), note: "nothing in its way", tone: "queued" },
+    { id: "blocked", label: "Blocked", value: String(blocked), note: m.blocked_hold ? `${m.blocked_hold} on a free-text hold` : "", tone: "blocked" },
     { id: "unqueued", label: "Not queued", value: String(m.unqueued), note: m.dep_blocked ? `${m.dep_blocked} wait on a blocker` : "", tone: "dim" },
     { id: "closed", label: "Closed, 7 days", value: String(m.closed_7d), note: pace, tone: "done" },
     { id: "eta", label: "At this pace", value: m.eta_days === null || m.eta_days === undefined ? "–" : `${m.eta_days} d`, note: "until none are open", tone: "dim" },

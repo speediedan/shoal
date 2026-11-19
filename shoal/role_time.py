@@ -71,7 +71,17 @@ WAIT_GROUP = {"local-ci": "system", "remote-ci": "system", "lease": "system", "r
               "mixed": "mixed", "unverified": "unverified"}
 STATUS_WAITS = ("local-ci", "remote-ci", "research-proto", "research-window", "user-auth", "user-design", "session-blocked", "upstream")
 BLOCKER_EVENT = {"role": "session-blocked", "upstream": "upstream", "lease": "lease", "ask": "user-ask",
-                 "hold": "hold"}
+                 "hold": "hold", "run": "remote-ci"}
+# a `run` blocker (the item's own run) by its provider: a job is local, a hosted run or gate remote, a time a window
+RUN_EVENT = {"job": "local-ci", "gh-run": "remote-ci", "az-build": "remote-ci", "time": "research-window"}
+
+
+def blocker_event(blocker: str) -> str:
+    """The wait event a live next-item blocker stands for."""
+    k = blockers.kind(blocker)
+    if k == "run":
+        return RUN_EVENT.get(blocker.split(":", 1)[0], "remote-ci")
+    return BLOCKER_EVENT.get(k, "hold")
 INF = math.inf
 
 
@@ -137,7 +147,7 @@ def _queue(ledger, now, quality, v5=True):
         if b.get("evidence") == "age-only":
             quality.add("age-only-blockers")
         if status == "live":
-            kinds.add(BLOCKER_EVENT[blockers.kind(b.get("blocker", ""))])
+            kinds.add(blocker_event(b.get("blocker", "")))
             if exp is not None:
                 until = min(until, float(exp))
         else:

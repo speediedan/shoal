@@ -89,6 +89,20 @@ class ProvenBlockers(unittest.TestCase):
         q = self.q("upstream:gh-issue:owner/repo#9", ago(800))
         self.assertEqual(blockers.check(SPEC, View(), "role", q, "repo#1", q["next_blocked"]["repo#1"], q["next_blocked_meta"]["repo#1"], live=False)[0], "unknown")
 
+    def test_the_items_own_run_is_a_checkable_blocker(self):
+        for b in ("job:suite12", "gh-run:owner/repo:123", "az-build:45", "time:2030-01-01T02:00:00Z"):
+            self.assertEqual((blockers.kind(b), blockers.provider_target(b)), ("run", b), b)
+        self.assertEqual(blockers.kind("jobber:repo#1"), "role", "only the provider kinds themselves")
+        q = self.q("job:suite12", ago(800))
+        for answer, want in ((True, "live"), (False, "resolved")):
+            with patch.object(providers, "resolve", return_value=(answer, "x")):
+                self.assertEqual(blockers.check(SPEC, View(), "role", q, "repo#1", "job:suite12", q["next_blocked_meta"]["repo#1"])[0], want)
+        self.assertEqual(blockers.cleared({"repo#1": "resolved: unit exited rc=0"}, q), {"repo#1": "resolved: unit exited rc=0"},
+                         "a run that ended is news for its role, as a cleared peer item is")
+        import role_time
+        self.assertEqual([role_time.blocker_event(b) for b in ("job:x", "gh-run:o/r:1", "time:2030-01-01T00:00:00Z", "hold:x")],
+                         ["local-ci", "remote-ci", "research-window", "hold"])
+
     def test_a_hold_still_expires_on_its_own_age(self):
         q = self.q("hold:waiting for a decision", ago(300))
         self.assertEqual(blockers.check(SPEC, View(), "role", q, "repo#1", q["next_blocked"]["repo#1"], q["next_blocked_meta"]["repo#1"])[0], "expired")

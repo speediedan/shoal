@@ -496,7 +496,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "status": role_status if role.session else "parked", "sub": sub or None,
         "status_age_s": age_s(boundary, now) if boundary else None,
         "wait": ({"sub": sub, "target": st.get("target") or None, "holder": _short(st.get("holder"), 120) or None,
-                  "rescan_utc": st.get("rescan_utc") or None} if role_status == "wait" else None),
+                  "rescan_utc": st.get("rescan_utc") or None, "blocked_on": st.get("blocked_on") or None}
+                 if role_status == "wait" else None),
         "active": q.get("active") or None,
         "next": nxt,
         "last_done": ({"item": done[-1]["item"], "ts": done[-1]["ts"]} if (done := view.last_done(slug, 1)) else None),
@@ -841,6 +842,8 @@ def status_label(r: dict) -> str:
         # (it-upstream-issues-coordination, 2026-10-12: both next items waiting on upstream PRs)
         import blockers as _bl
         kinds = sorted({_bl.kind(n["blocker"]) for n in nxt})
+        if kinds == ["run"]:  # every next item waits on its own run: nothing blocks it
+            return "wait:run"
         return "blocked:" + (kinds[0] if len(kinds) == 1 else "mixed")
     return r["status"]
 

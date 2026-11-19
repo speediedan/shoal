@@ -14,11 +14,20 @@
      role, no offer and no workable `BOARD` candidate left (take one first, or pass each with its class);
    - `--blocked ITEM=<blocker>` (repeatable; `ITEM=` clears): why a next item cannot start. The
      blocker is `<role>:<repo#n>` (that role sees `BLOCKING`), `ask[:<n>]`, `user`,
-     `upstream:<target>`, `lease:<key>` or `hold:<why>`. Recorded blockers carry forward while the
-     item stays in `next`. Where the group verifies blockers, prefer a checkable one (a peer item,
-     an upstream target, a lease): it clears itself. An `ask` or `user` blocker needs the ask
-     recorded (`--ask`). A `hold` expires and must be re-verified; re-recording it is that check, so
-     re-record only after re-checking what it names;
+     `upstream:<target>`, `lease:<key>`, the item's own run (`job:<name>`,
+     `gh-run:<owner/repo>:<id>`, `az-build:<id>`, `time:<ISO UTC>`) or `hold:<why>`. Recorded
+     blockers carry forward while the item stays in `next`. Where the group verifies blockers, prefer
+     a checkable one (a peer item, an upstream target, a lease, the run): it clears itself. An `ask`
+     or `user` blocker needs the ask recorded (`--ask`). A `hold` expires and must be re-verified;
+     re-recording it is that check, so re-record only after re-checking what it names;
+   - **Name what the item waits on; a hold is the last resort.** The board shows each issue as in
+     progress or blocked from this record. An item whose own CI, gate, job or research is running
+     is not blocked: record that run (`gh-run:..`, `az-build:..`, `job:..`, `time:..`, or the
+     `lease:<key>` it queues for) and it reads in progress. Another issue is `<role>:<repo#n>`
+     (`upstream:gh-issue:<owner/repo>#<n>` outside the shoal); a maintainer decision is `ask` with
+     `--ask`. Work the item needs that has no issue yet is not a blocker: do it within the item, or
+     file it as an issue of its own and reference that. A free-text `hold:` names nothing, so the
+     board reads it as blocked on nothing, and `next` prints `HOLD UNREFERENCED` for it;
    - `--ask "<question>"`, `--answered <n>`, `--drop-ask <n> --drop-reason <why>`: see
      `asks-and-offline.md`.
 3. Keep working the active item in the same turn.
@@ -31,6 +40,7 @@
 | `FREEZE ACTIVE` | start no job units, local suites or gated builds; checkpoint, persist your plan_state, push, and sleep |
 | `FREEZE LIFTED` | the freeze is over: resume normal work, including anything a freeze message told you to hold |
 | `NEXT BLOCKED` | a next item's recorded blocker: re-check it at each boundary and clear it (`--blocked ITEM=`) once gone |
+| `HOLD UNREFERENCED` | a next item's blocker is free text: re-record it as the issue, ask or own run it waits on (see `--blocked` above) |
 | `BLOCKER STALE` | that blocker has cleared or expired and no longer lets you idle: start the item, or re-check and record what blocks it now |
 | `BOARD` | an eligible candidate: when your next items are all blocked, take one rather than idling behind them, or pass it with a reason |
 | `RETURN BLOCKED WORK` | fill=self, blocked next items, and an `OFFER` or a workable `BOARD` candidate listed: pass each blocked item back (`--pass ITEM:blocked`, it returns to the pool once unblocked), fill its place (an offer first), and take the first now if nothing is active. An imperfect lane fit beats a short queue: `out-of-lane` is not a reason to leave your queue short |

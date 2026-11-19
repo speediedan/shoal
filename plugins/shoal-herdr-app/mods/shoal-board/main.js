@@ -4,8 +4,9 @@
 // A thin View over model.js. It reads `shoal ui board --json` (this host's board digest and the roles' queues; no model
 // turn, no board read of its own) from the first machine that has a digest, on a timer and on Refresh. Above the graph,
 // the board's metrics: the rail card's counts and two trends (open items, closes a day). The graph has the board at
-// the top and every open item below what it hangs from (its parent issue, its open blockers), drawn by where it stands
-// with the roles: in progress, queued (its place in the queue), queued but blocked, or not queued.
+// the top and every open item below what it hangs from (its parent issue, its open blockers), drawn by where the issue
+// stands: in progress (worked, or its own CI, job or research running), queued (its place in the queue), blocked (on
+// an issue, upstream or the maintainer; dashed when only a free-text hold says so), or not queued.
 //
 // Two drawings: cards (each item's key, where it stands and its title) and nodes (a shape per repo, its number under
 // it, so the relationships read at a glance), each at a zoom (- and +, or Fit for the whole tree; keys - + 0, n for
@@ -24,7 +25,7 @@ import { h_flex, v_flex, Link } from "gpui-base";
 import { exec, props, theme, machines, shared, nextCommand, openOverlay } from "herdr";
 import {
   parseReply, boardArgv, pickView, layout, edgeCmds, arrowCmds, nodeStyle, hoverLines, itemActions, actionOverlay,
-  tiles, sparkPoints, withAlpha, palette, WORK_LABEL, DIMS, ZOOM, scaleDims, stepZoom, fitZoom, repoShapes, shapeCmds,
+  tiles, sparkPoints, withAlpha, palette, STATE_LABEL, DIMS, ZOOM, scaleDims, stepZoom, fitZoom, repoShapes, shapeCmds,
   shapeCentre,
 } from "./model.js";
 
@@ -253,15 +254,15 @@ export default class Board extends View {
 
   legend(c, board = null) {
     const swatch = (k, label) => {
-      const s = nodeStyle({ work: k, role: "", pos: 1 }, c);
+      const s = nodeStyle({ state: k, why: k === "blocked" ? "issue" : "", role: "", pos: 1 }, c);
       return h_flex().gap(5).items_center().child(div().w(14).h(10).rounded(3).bg(s.fill).border_1().border_color(s.border))
         .child(div().text_size(11).text_color(c.muted).child(label));
     };
     const line = (color, label) => h_flex().gap(5).items_center().child(div().w(16).h(2).bg(color))
       .child(div().text_size(11).text_color(c.muted).child(label));
     const row = h_flex().id("legend").gap(14).flex_wrap().items_center()
-      .child(swatch("active", WORK_LABEL.active)).child(swatch("queued", "queued (#: its place)"))
-      .child(swatch("queued-blocked", WORK_LABEL["queued-blocked"])).child(swatch("unqueued", WORK_LABEL.unqueued))
+      .child(swatch("in-progress", "in progress (its CI or job too)")).child(swatch("queued", "queued (#: its place)"))
+      .child(swatch("blocked", "blocked (dashed: a free-text hold)")).child(swatch("not-queued", STATE_LABEL["not-queued"]))
       .child(line(c.edge, "sub-issue")).child(line(c.dep, "unblocks"));
     if (this.mode === "nodes" && board) {
       for (const [repo, shape] of Object.entries(repoShapes(board))) {
