@@ -15,6 +15,7 @@ SHOALD="$(cd "$TESTD/../shoal" && pwd)"
 S="${1:-${TMPDIR:-/tmp}/shoal-codex-selftest-$$}"
 exec 9>"/tmp/shoal-selftest-codex.lock"; flock -w 600 9 || { echo "SELFTEST FAIL: another codex selftest holds the lock" >&2; exit 1; }
 rm -rf "$S"; mkdir -p "$S"
+trap 'shoal_scratch_exit $? "$S"' EXIT
 shoal_test_setup "$S"
 export SHOAL_CODEX_STATE="$S/codex-state" FAKE_CODEX_LOG="$S/codex-calls.jsonl"
 H="python3 $SHOALD/cli.py"; export SHOALD PYTHONPATH="$SHOALD"

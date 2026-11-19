@@ -15,6 +15,23 @@
 # probing those tools is what it is for (selftest_hermetic.sh lists them as justified).
 # have_systemd says whether systemd --user job units can run here; sections that need them
 # print `SKIP <reason>` otherwise (and always under SHOAL_TEST_NO_SYSTEMD=1).
+# shoal_scratch_exit runs from each suite's EXIT trap: a passing run removes its scratch dir (thousands
+# of files a run; /tmp is emptied at boot, and a few days of them stalled a boot for minutes), a failing
+# one keeps it and prints its path. SHOAL_TEST_KEEP_SCRATCH=1 keeps it either way.
+
+# shoal_scratch_exit RC DIR...: in an EXIT trap, as `trap 'shoal_scratch_exit $? "$S"' EXIT`
+shoal_scratch_exit() {
+  local rc=$1 d
+  shift
+  for d in "$@"; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    if [ "$rc" = 0 ] && [ "${SHOAL_TEST_KEEP_SCRATCH:-0}" != 1 ]; then
+      rm -rf "$d"
+    else
+      echo "selftest scratch kept (rc=$rc): $d" >&2
+    fi
+  done
+}
 
 shoal_test_setup() {
   local s=$1

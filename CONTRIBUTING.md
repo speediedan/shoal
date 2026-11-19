@@ -39,6 +39,10 @@ network tool it should not have. Run a suite directly (`bash tests/selftest_h4.s
 systemd job-unit sections on a host that has a user session. The suites make commits in their
 scratch repositories, so git needs a `user.name` and `user.email`.
 
+Each suite removes its scratch directory when it passes and keeps it when it fails, printing
+`selftest scratch kept (rc=N): <path>` (the wrapper does the same with its stubs and call log). Set
+`SHOAL_TEST_KEEP_SCRATCH=1` to keep it after a passing run too.
+
 CI runs the hermetic suites on Python 3.10 and 3.12 (`.github/workflows/test.yml`).
 
 ## Keep the repository public-safe
