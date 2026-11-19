@@ -57,6 +57,9 @@ TEXT_EXT = {".md", ".sh", ".py", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".
 TOKEN = re.compile(r"[A-Za-z0-9_.~/+@%-]*[A-Za-z0-9_/]")
 MD_LINK = re.compile(r"\[[^\]\n]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
 FRONT = re.compile(r"^(status|keep)\s*:\s*(.+?)\s*$", re.I | re.M)
+# outside Markdown the same fields may sit in a leading comment (`# keep: <reason>` after a shebang); in Markdown
+# `# keep:` is a heading, so only the bare form counts there
+FRONT_COMMENT = re.compile(r"^(?:(?:#|//|--|;)\s*)?(status|keep)\s*:\s*(.+?)\s*$", re.I | re.M)
 
 
 DATA_EXT = {".csv", ".tsv"}
@@ -513,7 +516,8 @@ def scan(directory: str, docs: list[str] | None = None, extra_roots: list[str] |
     out_files, candidates_out = [], []
     for p in files:
         text = repo.read(p) if posixpath.splitext(p)[1].lower() in exts else ""
-        front = {k.lower(): v for k, v in FRONT.findall("\n".join(text.splitlines()[:12]))}
+        front_re = FRONT if p.lower().endswith(".md") else FRONT_COMMENT
+        front = {k.lower(): v for k, v in front_re.findall("\n".join(text.splitlines()[:12]))}
         es = edges[p]
         if p in root_paths:
             cls = "root"

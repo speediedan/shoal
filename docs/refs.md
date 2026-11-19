@@ -52,8 +52,10 @@ left out and named in `notes`, rather than resolved against wherever the command
 | `superseded` | its front matter says `status: superseded` and nothing live names it | yes (with `--age-floor-all`, once older than `--min-age-days`) |
 | `unreferenced` | nothing names it | yes, once older than `--min-age-days` (default 7, by the commit that added it): a new file is unreferenced until it is linked |
 
-A file whose front matter (its first lines) carries `keep: <reason>` is never a candidate; the reason is reported. For a
-file named from another role's directory, the report names that role, so an archiver can tell its owner rather than edit
+A file whose front matter (its first 12 lines) carries `keep: <reason>` is never a candidate; the reason is reported.
+Outside Markdown the line may follow a comment marker (`#`, `//`, `--` or `;`), so a script records its reason as
+`# keep: <reason>` after its shebang; in Markdown `# keep:` is a heading and does not count. For a file named from
+another role's directory, the report names that role, so an archiver can tell its owner rather than edit
 another role's document. The owner is the role whose start doc the referrer is, when it is one; otherwise the roles whose
 start docs share the referrer's directory, all of them when several do.
 

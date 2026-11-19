@@ -7,7 +7,8 @@
   doc resolves against the entry's cwd or is reported, never resolved against this process's;
 - a role directory's files are classed root (the start doc, a symlinked spec doc and its target), live (transitively,
   and from a live document outside the directory), history-only, superseded and unreferenced (on both sides of the age
-  floor), with `keep:` honoured and the candidates listed;
+  floor), with `keep:` honoured (in a script, after a comment marker; in Markdown, `# keep:` is a heading) and the
+  candidates listed;
 - an untracked file, an uncommitted deletion and a dangling link make `--check` exit 1, and the directory is clean
   once they are gone;
 - without the known roots, a spec's start doc reads as unreferenced: what the roots exist to prevent.
@@ -64,6 +65,9 @@ write(f"{D}/old.md", "old\n")
 write(f"{D}/orphan.md", "nobody names this\n")
 write(f"{D}/sup.md", "---\nstatus: superseded\n---\nreplaced\n")
 write(f"{D}/kept.md", "keep: evidence for an open question\n\nkept\n")
+# outside Markdown the reason may sit in a comment after the shebang; in Markdown `# keep:` is a heading, not a keep
+write(f"{D}/kept.sh", "#!/usr/bin/env bash\n# keep: reruns the open gate\necho ok\n")
+write(f"{D}/heading.md", "# keep: a heading, not a reason\n")
 write(f"{D}/other_start.md", "# a parked role's start doc\n")
 write(f"{D}/other2.md", "# the target of a symlinked start doc\n")
 write(f"{D}/ext.md", "named from outside\n")
@@ -110,10 +114,12 @@ cls = {os.path.basename(f["path"]): f["class"] for f in r["files"]}
 want = {"lane_start.md": "root", "other_start.md": "root", "link_start.md": "root", "other2.md": "root",
         "aux.md": "live", "deep.md": "live", "lane_log.md": "live", "ext.md": "live",
         "old.md": "history-only", "sup.md": "superseded", "orphan.md": "unreferenced", "fresh.md": "unreferenced",
-        "kept.md": "unreferenced"}
+        "kept.md": "unreferenced", "kept.sh": "unreferenced", "heading.md": "unreferenced"}
 assert cls == want, {k: (cls.get(k), v) for k, v in want.items() if cls.get(k) != v}
 cand = {os.path.basename(p) for p in r["candidates"]}
-assert cand == {"old.md", "sup.md", "orphan.md"}, cand  # fresh.md is under the age floor; kept.md says why it stays
+assert cand == {"old.md", "sup.md", "orphan.md", "heading.md"}, cand  # fresh.md is under the age floor; kept.md says why it stays
+keeps = {os.path.basename(f["path"]): f.get("keep") for f in r["files"] if f.get("keep")}
+assert keeps == {"kept.md": "evidence for an open question", "kept.sh": "reruns the open gate"}, keeps
 assert [os.path.basename(x) for x in r["untracked"]] == ["untracked.md"], r["untracked"]
 assert [x["target"] for x in r["dangling"]] == ["proj/design/lane/missing.md"], r["dangling"]
 assert not r["ok"] and r["v"] == 1, r
