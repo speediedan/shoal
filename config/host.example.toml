@@ -133,12 +133,14 @@
 # CODEX_HOME). Each provider keeps its default account, named after it. A role or seat records its account; handoff,
 # add-role and the Actions dialog take one (`--account`). Default: none (one account per provider, as before).
 # [accounts]
-# select = "balance"       # the suggested account: the most paced quota headroom (default), or "default"
+# select = "balance"       # the suggested account: the most quota to use before its reset (default), or "default"
 # exclude = ["opencode"]   # providers kept out of balancing (`--ecosystem auto` never picks them)
 # keepalive = true         # the usage meter refreshes a lapsing Claude sign-in through the CLI (a tiny call, ~3/day)
 # rebalance = true         # the quorum's automatic context restart moves a role to the balanced account of its provider
 # quota_handoff = true     # a quiet role moves off an account near a limit, or over its share, to the one most under
-# near_5h = 70             # percent of a 5 h window used that counts as near its limit (default 70); near_week (85)
+# reserve_pct = 2          # percent of a window kept back to restart elsewhere: a role leaves an account only then
+# reset_grace_min = 30     # a window resetting this soon counts as fresh: its roles ride it out (default 30)
+# near_5h = 70             # optional explicit override of 100 - reserve_pct for a 5 h window; near_week likewise
 # quota_cooldown_min = 60  # a role moved for quota is not moved again sooner (default 60)
 # pin = ["<role-slug>"]    # roles balancing keeps on their own provider
 # [accounts.capacity]      # what each plan buys, in units where a Claude Max plan is 100 (Codex Plus 18, Pro 125)

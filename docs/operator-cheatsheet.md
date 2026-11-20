@@ -42,6 +42,15 @@ export S=<id> SPEC=<path to the group's spec>
     shoal digest --shoal $S --compare
     ```
 
+- Accounts and quota balance: each account's sign-in, units and headroom, where a new session would go,
+  and each account's roles against its share (architecture doc, "Balance (spend down)"). An account is
+  spent down: its roles stay until a window has `[accounts] reserve_pct` (2) percent left, then move
+  at a quiet boundary; the account whose quota would expire unused soonest is preferred:
+
+    ```bash
+    shoal accounts [--check] [--json]
+    ```
+
 ## Operator UI (Herdr; details in [`ui.md`](ui.md))
 
 - Everything above as one read-only document for every shoal on the host, or one line:
