@@ -165,15 +165,18 @@ export const BOWL_ALPHA_RANGE = [-30 * DEG, 64 * DEG];
 export const BOWL_BETA_RANGE = [-78 * DEG, 78 * DEG];
 export const BOWL_OFF_AXIS_MAX = 78 * DEG;
 // The global view opens turned round from its preset: {x, y} added to the arrows' orbit there (yaw and pitch), so an
-// orbit of zero is this view and the arrows turn on from it. Iso opens 95 degrees round and 10 degrees higher, the view
-// the maintainer orbited to and asked for as the opening one (2026-11-18): IT-MVP's globe nearer, on the left, the other
-// shoal's on the right, seen from above. The bowl (per shoal) keeps its own opening view (BOWL_HOME_*).
-export const GLOBAL_HOME = { iso: { x: 95 * DEG, y: 10 * DEG } };
+// orbit of zero is this view and the arrows turn on from it. Iso opens 111 degrees round and 2 degrees higher, the view
+// the maintainer orbited to and asked for as the opening one (2026-11-20, two shoals, iso: two presses right and one
+// down from the 2026-11-18 opening, 95 and 10): IT-MVP's globe on the left, the other shoal's on the right, side by
+// side, seen from above at a moderate angle. The bowl (per shoal) keeps its own opening view (BOWL_HOME_*).
+export const GLOBAL_HOME = { iso: { x: 111 * DEG, y: 2 * DEG } };
 const homeOf = (name, global) => (global && GLOBAL_HOME[name]) || { x: 0, y: 0 };
 // and framed as in that view: a fit (every node, label and ring inside the canvas) zoomed out about the canvas's middle
-// by `zoom`, then moved by (dx, dy) canvas widths and heights, up and to the left, so the floor and the globes' shadows
-// show below them. `f`, `d` and a drill back to the global view frame it so; the arrows and `,` `.` keep the zoom.
-export const GLOBAL_FRAME = { iso: { zoom: 0.75, dx: -0.056, dy: -0.138 } };
+// by `zoom`, then moved by (dx, dy) canvas widths and heights, a little up and to the left, so both globes fill most of
+// the canvas's width and the floor and the globes' shadows show below them (2026-11-20, the maintainer's view; matched
+// to their screenshot within a pixel or two on the globes and the outside writers). `f`, `d` and a drill back to the
+// global view frame it so; the arrows and `,` `.` keep the zoom.
+export const GLOBAL_FRAME = { iso: { zoom: 0.607, dx: -0.032, dy: -0.007 } };
 const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 /**
