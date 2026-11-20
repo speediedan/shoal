@@ -30,7 +30,9 @@ the CLI's dry-run preview and wake cost, and confirm. It replaces herdr 0.9.3's 
 - Every call is `exec("shoal", argv, {on: machine})`, machine from the role's card terminal
   (`shoal.pane=<shoal id>/<role>`) and its space. Writes: `ui act-plan <verb> ... --json`, then on
   Confirm `ui act-apply --token <t> --json`. A `confirm: false` plan (offline) applies at once and
-  still shows everything. Views: `ui act-plan <verb> --shoal <id> [--role <slug>] --json`.
+  still shows everything. Handoff, Offline and Freeze (`model.DETACHED`) apply with `--background` and are
+  followed with `ui act-status` until they end (Herdr's `exec` stops a call at 30 s); opening one of them again
+  finds its run (`statusArgv` with the verb, `resumeShows`). Views: `ui act-plan <verb> --shoal <id> [--role <slug>] --json`.
 - Changing the shoal or role drops a plan and re-reads an open view. A reply that a newer call
   has overtaken is ignored; while an apply runs, the target and verb stay put.
 - Esc closes from the verb list, else goes back a step; Enter previews, then confirms; Tab moves

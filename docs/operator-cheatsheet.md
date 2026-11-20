@@ -126,6 +126,10 @@ export S=<id> SPEC=<path to the group's spec>
   `--all` takes the otherwise-default arguments; standing defaults live in the viewer config
   (`~/.config/shoal/ui.json`, key `offline_defaults`: `{"until": ..., "note": ...}`) and
   `--until`/`--note` on the command line override them. Hidden and retired shoals are left out.
+  `offline off` says how it woke each role (`woke <role>: <channel>`), then lists every ask; an ask whose
+  GitHub state did not come back within 20 s is listed without a stale hint, marked `(not checked: GitHub was slow)`.
+  From the app (Actions, Offline), the change runs in the background: close the dialog if you like, and open
+  Offline again on the same shoal or scope to follow it or read who was woken and the asks.
 
 - Hand a claimed item from one role to another. The holding role runs this itself:
 

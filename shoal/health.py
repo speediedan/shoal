@@ -188,16 +188,18 @@ def wake_path(sid: str, slug: str) -> str:
     return os.path.join(state_dir(sid), f"wake-{slug}")
 
 
-def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "") -> str:
-    """The text of a shoal wake, prefixed with the offline banner while the maintainer is away."""
+def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "", banner: str | None = None) -> str:
+    """The text of a shoal wake, prefixed with the offline banner while the maintainer is away. `banner`: that banner
+    as the caller already read it (a verb waking several roles reads the ledger once, not once per wake)."""
     text = (f"SHOAL-WAKE {slug}@{spec.sid} [{condition or 'request'}]: {reason} || run "
             f"`shoal next --shoal {spec.sid} --slug {slug}`, act, write ONE `shoal queue`, re-arm your watcher.")
     # every wake carries the offline state, because a role that skips `next` never sees the banner
     # (measured 2026-09-24: a lane raised a blocking merge question 3 h into an offline window)
     try:
-        from ledger import Ledger, View
-        from worker import offline_banner
-        banner = offline_banner(View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec))
+        if banner is None:
+            from ledger import Ledger, View
+            from worker import offline_banner
+            banner = offline_banner(View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec))
         if banner:
             text = banner + " || " + text
     except Exception:  # noqa: BLE001 - a wake must never fail on its annotation
@@ -213,16 +215,17 @@ def wake_text(spec: ShoalSpec, slug: str, reason: str, condition: str = "") -> s
     return text
 
 
-def request_wake(spec: ShoalSpec, slug: str, reason: str, condition: str = "", dry_run: bool = False) -> str:
+def request_wake(spec: ShoalSpec, slug: str, reason: str, condition: str = "", dry_run: bool = False,
+                 banner: str | None = None) -> str:
     """Wake one role through its ecosystem's direct session wake (backends.Backend.wake);
-    returns the channel used."""
+    returns the channel used. `banner`: the offline banner as already read (wake_text)."""
     role = spec.role(slug)
     if role is None:
         return "no-such-role"
     if not is_local(role, spec):
         # the role's own host delivers its wakes (its watcher reads the ledger; its quorum runs there)
         return f"remote (skipped: {slug} runs on {role.server or spec.home}, whose watcher and quorum wake it)"
-    text = wake_text(spec, slug, reason, condition)
+    text = wake_text(spec, slug, reason, condition, banner)
     from backends import get as get_backend
     try:
         backend = get_backend(role.ecosystem)

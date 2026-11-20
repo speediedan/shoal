@@ -140,14 +140,17 @@ def known_repos(spec: ShoalSpec) -> dict[str, str]:
 _REF_STATE: dict[str, str] = {}
 
 
-def ref_state(ref: str) -> str:
-    """OPEN | CLOSED | MERGED | UNKNOWN for one issue or PR (cached per process).
-    SHOAL_FAKE_REF_STATE (JSON {ref: state}) replaces GitHub in selftests."""
+def ref_state(ref: str, live: bool = True) -> str:
+    """OPEN | CLOSED | MERGED | UNKNOWN for one issue or PR (cached per process; thread-safe, so a caller may read
+    several at once). `live=False` answers from the cache only. SHOAL_FAKE_REF_STATE (JSON {ref: state}) replaces
+    GitHub in selftests."""
     fake = config.env("FAKE_REF_STATE")
     if fake:
         import json
         return json.loads(fake).get(ref, "UNKNOWN")
     if ref not in _REF_STATE:
+        if not live:
+            return "UNKNOWN"
         import subprocess
         repo, _, n = ref.partition("#")
         try:
@@ -161,15 +164,16 @@ def ref_state(ref: str) -> str:
     return _REF_STATE[ref]
 
 
-def ask_hint(spec: ShoalSpec, view: View, ask: str) -> str:
-    """` (LIKELY STALE: ...)` when an item the ask names is merged, closed or done; else ``."""
+def ask_hint(spec: ShoalSpec, view: View, ask: str, known: dict[str, str] | None = None, live: bool = True) -> str:
+    """` (LIKELY STALE: ...)` when an item the ask names is merged, closed or done; else ``. `known`: known_repos(spec),
+    when the caller already has it; `live=False` reads GitHub states from the cache only (ref_state)."""
     default = (spec.effective_repos or [""])[0]
     why = []
-    for ref in ask_refs(ask, default, known_repos(spec)):
+    for ref in ask_refs(ask, default, known_repos(spec) if known is None else known):
         if item_key(ref) in view.done:
             why.append(f"{ref.split('/', 1)[1]} done by {view.done[item_key(ref)]['by']}")
             continue
-        st = ref_state(ref)
+        st = ref_state(ref, live)
         if st in ("MERGED", "CLOSED"):
             why.append(f"{ref.split('/', 1)[1]} {st.lower()}")
     return f" (LIKELY STALE: {'; '.join(why)})" if why else ""
@@ -1003,7 +1007,16 @@ def cmd_offline(a) -> int:
     return _offline_one(a)
 
 
+# `offline off` across two shoals, ~8 roles holding ~30 asks, ran past the Herdr app's 30 s exec limit (2026-11-20):
+# one GitHub read per ask reference in a row (0.3 to 0.4 s each, 22 s of the 33 s measured) and a ledger re-read per
+# wake. The reads and the wakes now run a few at a time, and the listing waits a bounded time for GitHub.
+OFFLINE_WAKES_AT_ONCE = 4  # a direct Claude wake can stop and resume a session (seconds each); each is its own session
+REF_READS_AT_ONCE = 8  # GitHub reads for the return listing's staleness hints
+HINT_BUDGET_S = 20.0  # how long the listing waits for them; an ask not checked by then is listed without a hint
+
+
 def _offline_one(a) -> int:
+    from concurrent.futures import ThreadPoolExecutor, as_completed, wait
     try:
         spec, led, view = _load(a)
     except (LedgerError, OSError) as exc:
@@ -1027,29 +1040,53 @@ def _offline_one(a) -> int:
             targets.append(r.slug)
         if not on and q.get("asks"):
             targets.append(r.slug)
+    asks = [] if on else [(r.slug, i, ask) for r in spec.roles
+                          for i, ask in enumerate((view.current_queue(r.slug) or {}).get("asks") or [], 1)]
     if a.dry_run:
-        print(f"[dry-run] user-offline {a.state}; would wake {targets or 'nobody'}")
+        print(f"[dry-run] user-offline {a.state}; would wake {targets or 'nobody'}"
+              + (f"; would list {len(asks)} recorded ask(s)" if asks else ""))
         return 0
-    ev = led.append("user", "system", mode="user-offline", state=a.state, until=a.until or None, note=a.note or None)
-    reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL)
-    from health import request_wake
-    for s in targets:
-        print(f"waking {s}", flush=True)
-        request_wake(spec, s, reason, condition=f"user-offline-{a.state}")
-    print(f"user-offline {a.state} [{ev['id']}]; woke {targets or 'nobody'}")
-    if not on:
-        stale = total = 0
-        for r in spec.roles:
-            q = view.current_queue(r.slug) or {}
-            for i, ask in enumerate(q.get("asks") or [], 1):
-                hint = ask_hint(spec, view, ask)
-                total += 1
+    default, known = (spec.effective_repos or [""])[0], known_repos(spec)
+    refs_of = [ask_refs(ask, default, known) for _, _, ask in asks]
+    refs = sorted({ref for rs in refs_of for ref in rs if item_key(ref) not in view.done})
+    # the GitHub reads start now: they wake nobody, so they run while the record is written and the roles are woken
+    reads = ThreadPoolExecutor(max_workers=REF_READS_AT_ONCE) if refs else None
+    pending = {ref: reads.submit(ref_state, ref) for ref in refs} if reads else {}
+    try:
+        # the record first: every wake below reads, and a role woken by it finds, the new mode in the ledger
+        ev = led.append("user", "system", mode="user-offline", state=a.state, until=a.until or None, note=a.note or None)
+        reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL)
+        from health import request_wake
+        if targets:
+            banner = offline_banner(View(led, spec))  # read once (after the record), not once per wake
+            print(f"waking {', '.join(targets)}", flush=True)
+            with ThreadPoolExecutor(max_workers=OFFLINE_WAKES_AT_ONCE) as pool:
+                woken = {pool.submit(request_wake, spec, s, reason, f"user-offline-{a.state}", False, banner): s
+                         for s in targets}
+                for f in as_completed(woken):
+                    try:
+                        how = f.result()
+                    except Exception as exc:  # noqa: BLE001 - one role's wake never stops the others or the listing
+                        how = f"FAILED ({str(exc)[:120]})"
+                    print(f"  woke {woken[f]}: {how}", flush=True)
+        print(f"user-offline {a.state} [{ev['id']}]; woke {targets or 'nobody'}", flush=True)
+        if asks:
+            wait(list(pending.values()), timeout=HINT_BUDGET_S)
+            late = {ref for ref, f in pending.items() if not f.done()}
+            stale = unchecked = 0
+            for (slug, i, ask), rs in zip(asks, refs_of):
+                slow = bool(late.intersection(rs))
+                hint = ask_hint(spec, view, ask, known, live=False)  # every state read above, or left out as late
                 stale += bool(hint)
-                print(f"  ASK {r.slug} [{i}]: {ask}{hint}")
-        if total:
-            print(f"{total} recorded ask(s), {stale} likely stale. Each woken role re-verifies its asks, drops the "
-                  f"stale ones, and raises the rest to you as prompted question sets (at most {ASKS_PER_SET} "
-                  f"per set).")
+                unchecked += slow
+                print(f"  ASK {slug} [{i}]: {ask}{hint}" + (" (not checked: GitHub was slow)" if slow else ""))
+            print(f"{len(asks)} recorded ask(s), {stale} likely stale"
+                  + (f", {unchecked} not checked against GitHub within {HINT_BUDGET_S:g} s" if unchecked else "")
+                  + ". Each woken role re-verifies its asks, drops the stale ones, and raises the rest to you as "
+                  f"prompted question sets (at most {ASKS_PER_SET} per set).")
+    finally:
+        if reads:
+            reads.shutdown(wait=False, cancel_futures=True)
     return 0
 
 

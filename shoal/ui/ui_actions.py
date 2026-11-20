@@ -44,6 +44,10 @@ WRITE_VERBS = ("msg", "offer", "withdraw", "offline", "freeze", "handoff", "remo
 APPLY_VERBS = WRITE_VERBS + ("set-fill",)
 SLUG_RE = r"^[a-z0-9][a-z0-9-]{1,47}$"
 SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoals
+# the verbs the dialog applies detached (`act-apply --background`, ui_runs) and follows with `act-status`: Herdr's exec
+# ends a call at 30 s, and these can run longer (a handoff waits for a checkpoint; `offline off` across shoals wakes every
+# role holding asks and lists the asks, measured past 30 s on 2026-11-20). Each verb's own limit once detached:
+DETACHED_TIMEOUT_S = {"handoff": 4800, "offline": 1800, "freeze": 1800}
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions", "queue")
 # providers whose turns are headless exec processes (briefs.watch_clause): no question tool, so the Asks view answers them
 HEADLESS = ("codex", "muse")
@@ -520,13 +524,16 @@ def execute(p: dict, progress: str) -> dict:
     fd = os.open(progress, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "w") as log:
         for args in argvs:  # each shoal's verb runs even when another's failed: the output says which
+            head = ""
             if len(argvs) > 1:
-                log.write(f"== {args[args.index('--shoal') + 1] if p.get('scope') and '--shoal' in args else args[0]}\n")
+                head = f"== {args[args.index('--shoal') + 1] if p.get('scope') and '--shoal' in args else args[0]}"
+                log.write(head + "\n")
                 log.flush()
-            code, out = _stream(args, log, timeout=4800) if args[0] == "handoff" else _stream(args, log)
+            code, out = _stream(args, log, timeout=DETACHED_TIMEOUT_S.get(args[0], 120))
             ui_herdr.log_action(args, code)
             rc = rc or code
-            outs.append(out.strip())
+            # a scoped plan's result names each shoal, as its progress log does: `offline off` prints no shoal id itself
+            outs.append(f"{head}\n{out.strip()}" if head and p.get("scope") else out.strip())
             if code and p.get("stop_on_fail"):
                 outs.append(f"stopped: `{args[0]}` failed (exit {code}), so nothing after it ran")
                 break
@@ -776,7 +783,8 @@ def add_parsers(u) -> None:
     q.set_defaults(func=cmd_act_plan)
     q = u.add_parser("act-apply", help="run a planned write verb once, by its token (from act-plan)")
     q.add_argument("--token", required=True)
-    q.add_argument("--background", action="store_true", help="detach a handoff and follow it with act-status")
+    q.add_argument("--background", action="store_true",
+                   help=f"detach it ({', '.join(DETACHED_TIMEOUT_S)}) and follow it with act-status")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=cmd_act_apply)
     import ui_runs

@@ -31,7 +31,7 @@ import { h_flex, v_flex, InputState, Input, Link } from "gpui-base";
 import { exec, readTextFile, appHome, props, theme, terminals, focused, spaces, panes, machines, closeOverlay, openOverlay, shared, setShared, nextCommand } from "herdr";
 import {
   MOD, VERBS, verbInfo, isWrite, isView, FIELDS, newForm, visibleFields, textFields, nextField, setValue, roleFor,
-  validate, rolesArgv, planArgv, applyArgv, statusArgv, planExpired, parseReply, textLines, preselect, settleSelection,
+  validate, rolesArgv, planArgv, applyArgv, statusArgv, isDetached, busyLabel, resumeShows, planExpired, parseReply, textLines, preselect, settleSelection,
   targetMachine, backStep, keyAction, answerTarget, resultLine, fixtureReply, palette, withAlpha, shortShoal,
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, accountOptions, suggestAccount, accountWhy, poolHint, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
@@ -127,6 +127,7 @@ export default class Actions extends View {
     this.live = "";
     this.liveFrom = null;
     this.liveBusy = false;
+    this.seenRuns = new Set(); // detached runs whose result this dialog showed: opening the verb again shows its form
     cx.timer.every(PROGRESS_MS, (cx) => this.followProgress(cx));
     this.loadRoles(cx);
     cx.spawn(async (cx) => {
@@ -194,7 +195,7 @@ export default class Actions extends View {
   /** While an apply runs: its output so far. `exec` returns only at the end, so the CLI writes a file and this reads its tail. */
   followProgress(cx) {
     if (!this.applying || !this.liveFrom || this.liveBusy) return;
-    if (this.liveFrom.run) return this.followHandoff(cx);
+    if (this.liveFrom.run) return this.followRun(cx);
     const { path, machine } = this.liveFrom;
     this.liveBusy = true;
     cx.spawn(async (cx) => {
@@ -211,7 +212,8 @@ export default class Actions extends View {
     });
   }
 
-  followHandoff(cx) {
+  /** A detached apply (handoff, offline, freeze): its log so far, then its result, from `act-status`. */
+  followRun(cx) {
     const from = this.liveFrom;
     if (!from?.run || this.liveBusy) return;
     this.liveBusy = true;
@@ -224,6 +226,7 @@ export default class Actions extends View {
           if (!r.running) {
             this.applying = false;
             this.liveFrom = null;
+            this.seenRuns.add(r.run ?? from.run);
             this.result = { ...r, plan: this.plan };
             this.screen = "result";
           }
@@ -233,19 +236,24 @@ export default class Actions extends View {
     });
   }
 
-  resumeHandoff(cx) {
+  /** Opening a detached verb: a run still going is followed, and one that just ended shows its result (resumeShows). */
+  resumeRun(cx) {
     if (this.fixture) return;
-    const seq = this.seq, machine = this.machine();
+    if (this.verb !== "handoff" && !this.sel.scope && !this.sel.shoal) return; // no target to look a run up by yet
+    const seq = this.seq, machine = this.machine(), verb = this.verb;
     cx.spawn(async (cx) => {
-      const r = parseReply(await this.call(statusArgv(this.sel), machine), "result");
-      if (this.verb !== "handoff" || seq !== this.seq || r.kind !== "result" || !r.run) return;
+      const r = parseReply(await this.call(statusArgv(this.sel, null, verb), machine), "result");
+      if (this.verb !== verb || seq !== this.seq || this.applying) return;
+      const shows = resumeShows(verb, r, Date.now(), this.seenRuns);
+      if (!shows) return;
       this.live = r.output;
-      if (r.running) {
+      if (shows === "follow") {
         this.applying = true;
         this.liveFrom = { run: r.run, machine };
-        this.busyWhat = "waiting for checkpoint and handoff";
+        this.busyWhat = busyLabel(verb);
         this.screen = "busy";
       } else {
+        this.seenRuns.add(r.run);
         this.result = r;
         this.screen = "result";
       }
@@ -289,7 +297,7 @@ export default class Actions extends View {
       this.screen = "form";
       this.focusFirst(cx);
       if (verb === "add-session") this.loadSessions(cx);
-      if (verb === "handoff") this.resumeHandoff(cx);
+      if (isDetached(verb)) this.resumeRun(cx);
     } else if (info.kind === "queue") {
       this.form = null;
       this.loadQueue(cx);
@@ -420,13 +428,14 @@ export default class Actions extends View {
     this.applying = true;
     this.live = "";
     this.liveFrom = plan.progress ? { path: plan.progress, machine: plan.machine } : null;
-    this.request("applying", applyArgv(token, this.verb === "handoff"), plan.machine, "result", (r) => {
+    this.request("applying", applyArgv(token, isDetached(this.verb)), plan.machine, "result", (r) => {
       if (r.kind === "result" && r.running && r.run) {
         this.liveFrom = { run: r.run, machine: plan.machine };
         this.live = r.output;
-        this.busyWhat = "waiting for checkpoint and handoff";
+        this.busyWhat = busyLabel(this.verb);
         return;
       }
+      if (r.kind === "result" && r.run) this.seenRuns.add(r.run); // a detached run that ended before its first reply
       this.applying = false;
       this.liveFrom = null;
       if (r.kind === "result") {
@@ -1053,11 +1062,14 @@ export default class Actions extends View {
     const head = h_flex().gap(8).items_center().py(8)
       .child(div().w(14).text_color(c.accent).frames(["◐", "◓", "◑", "◒"], 160))
       .child(div().text_color(c.muted).child(`${this.busyWhat}…`));
-    if (!this.applying || !this.live) return head;
-    if (this.verb === "handoff") return v_flex().gap(6).child(head)
-      .child(this.label("You can close this dialog. Handoff continues; reopen Handoff to follow its log.", c))
-      .child(this.mono("live", lastLines(this.live), c));
-    return v_flex().gap(6).child(head).child(this.mono("live", lastLines(this.live), c));
+    if (!this.applying) return head;
+    const col = v_flex().gap(6).child(head);
+    if (isDetached(this.verb) && this.liveFrom?.run) {
+      const name = verbInfo(this.verb)?.label ?? this.verb;
+      col.child(this.label(`You can close this dialog. ${name} continues; reopen ${name} to follow its log and see its result.`, c));
+    }
+    if (!this.live) return col;
+    return col.child(this.mono("live", lastLines(this.live), c));
   }
 
   planBody(c) {
@@ -1225,7 +1237,7 @@ export default class Actions extends View {
         break;
       case "busy":
         if (!this.applying) row.child(this.button("b-back", "Back", "plain", go((cx) => this.back(cx)), c));
-        else if (this.verb === "handoff" && this.liveFrom?.run) row.child(this.button("b-background", "Continue in background", "plain", () => this.close(), c));
+        else if (isDetached(this.verb) && this.liveFrom?.run) row.child(this.button("b-background", "Continue in background", "plain", () => this.close(), c));
         break;
       case "queue": {
         const changed = this.draft && this.queue && draftChanged(this.draft, this.queue);
