@@ -238,7 +238,7 @@ json.dump({"usage_providers": ["codex", "claude"]}, open(ui_status.ui_config_pat
 check(ui_status.usage_providers() == ["codex", "codex-b", "claude", "claude-2"],
       f"each declared account follows its provider: {ui_status.usage_providers()}")
 
-# ---- 5. quota balance: paced headroom, the policy's pick, `auto` -----------------------------------------------------
+# ---- 5. quota balance: spend-down headroom, the policy's pick, `auto` ------------------------------------------------
 NOW = 1_800_000_000.0
 WEEK = 10080
 
@@ -248,31 +248,38 @@ def reading(used: float, left_h: float, minutes: int = WEEK, **kw) -> dict:
                                                   "minutes": minutes}], **kw}], "stale": False, "error": ""}
 
 
+# headroom is the free share above the 2% reserve over the share of the window left: the rate the account must be used
+# at for its quota not to expire unused
 h_a, _ = accounts.headroom(reading(50, 1), NOW)
 h_b, why = accounts.headroom(reading(40, 144), NOW)
-check(round(h_a) == 83 and h_b == 0.0 and h_a > h_b, f"the maintainer's example: {h_a} vs {h_b}")
-check("week 40% used" in why and "on course to run out" in why, f"the binding window is named, and why: {why}")
+check(round(h_a) == 81 and round(h_b, 2) == 0.68 and h_a > h_b, f"the maintainer's example: {h_a} vs {h_b}")
+check(why == "week 40% used, resets in 6.0 d", f"on course to run out is no longer ineligible, and the window is named: {why}")
 # 2026-11-17: claude-2 at 40% of its week with 2.5 days left (carrying every Claude role) against the default at 0% with
-# 5.5 days left. On free share alone claude-2 scored 1.7 to 1.3; at the rate it is used it keeps less to spare
+# 5.5 days left. The paced score of 2026-11-17 sent new sessions to the idle default; spending down, claude-2's quota is
+# the one that expires sooner, so it is picked (both keep a share of the roles: `shares`)
 idle, busy = accounts.headroom(reading(0, 132), NOW)[0], accounts.headroom(reading(40, 60), NOW)[0]
-check(round(idle, 2) == 1.27 and round(busy, 2) == 1.06, f"idle and busy: {idle} {busy}")
+check(round(idle, 2) == 1.25 and round(busy, 2) == 1.62, f"idle and busy: {idle} {busy}")
 snap = [dict(reading(0, 132), provider="claude"), dict(reading(40, 60), provider="claude-2")]
-check(accounts.choose("claude", NOW, snap)[0] == "", "the idle account wins though the busy one resets sooner")
+check(accounts.choose("claude", NOW, snap)[0] == "claude-2", "the account whose quota expires sooner wins")
 # a window not started yet (no reset time: the 5 h one of an account idle for hours) is a whole unused window, not
 # no limit at all: before, it was skipped and the account was scored on its week alone
 fresh = {"rows": [{"bucket": "b", "windows": [{"name": "5h", "used_percent": 0, "resets_at": None, "minutes": 300},
                                                {"name": "week", "used_percent": 40, "resets_at": NOW + 60 * 3600,
                                                 "minutes": WEEK}]}]}
 h, why = accounts.headroom(fresh, NOW)
-check(h == 1.0 and why == "5h not started", f"a window not started scores 1: {h} {why}")
-check(accounts.headroom(reading(99, 1), NOW)[0] == 0.0, "under 2% free is ineligible")
+check(h == 0.98 and why == "5h not started", f"a window not started is a whole one, less the reserve: {h} {why}")
+# a 5 h window used heavily early (60% in its first 2 h) was "on course to run out" and scored 0: now it has room
+early = {"rows": [{"bucket": "b", "windows": [{"name": "5h", "used_percent": 60, "resets_at": NOW + 3 * 3600,
+                                               "minutes": 300}]}]}
+check(round(accounts.headroom(early, NOW)[0], 2) == 0.63, f"heavy early use is still eligible: {accounts.headroom(early, NOW)}")
+check(accounts.headroom(reading(99, 2), NOW)[0] == 0.0, "within the 2% reserve is ineligible")
 check(accounts.headroom(reading(10, 1, blocked=True), NOW)[0] == 0.0, "a reached limit is ineligible")
 check(accounts.headroom({"stale": True}, NOW)[0] is None, "a stale reading has no score")
 two = {"rows": [{"bucket": "b", "windows": [{"name": "5h", "used_percent": 90, "resets_at": NOW + 3600, "minutes": 300},
                                              {"name": "week", "used_percent": 10, "resets_at": NOW + 3600, "minutes": WEEK}]}]}
 check(accounts.headroom(two, NOW)[1].startswith("5h"), "the tightest window binds")
 snap = [dict(reading(94, 46), provider="claude"), dict(reading(1, 160), provider="claude-2")]
-check(accounts.choose("claude", NOW, snap)[0] == "claude-2", "balance picks the account with more paced headroom")
+check(accounts.choose("claude", NOW, snap)[0] == "claude-2", "balance picks the account with more headroom")
 snap = [dict(reading(10, 46), provider="claude"), {"provider": "claude-2", "stale": True}]
 check(accounts.choose("claude", NOW, snap)[0] == "", "an unread account is never chosen")
 check(accounts.rank("claude", NOW, snap)[-1]["account"] == "claude-2", "and is ranked last")
@@ -340,7 +347,7 @@ RSPEC = ShoalSpec(sid="acct-reb", dir=T, roles=[Role(slug="x", ecosystem="claude
                                                Role(slug="c", ecosystem="codex", account="")])
 _snapshot = subscription_usage.snapshot
 subscription_usage.snapshot = lambda keys, now=None: {"accounts": [dict(reading(0, 132), provider="claude"),
-                                                                   dict(reading(40, 60), provider="claude-2")]}
+                                                                   dict(reading(90, 140), provider="claude-2")]}
 check(not accounts.rebalance_on() and health.rebalance(RSPEC, RSPEC.roles[0]) == (), "rebalance is opt-in")
 REB_CFG = os.path.join(T, "reb.toml")
 open(REB_CFG, "w").write(open(TWO_CFG).read().replace('select = "balance"', 'select = "balance"\nrebalance = true'))
@@ -371,7 +378,8 @@ check(accounts.capacity("claude", "") == (100, "max") and accounts.capacity("cla
 check(accounts.capacity("codex", "") == (18, "plus") and accounts.capacity("codex", "codex-b") == (120, "pro"),
       "Codex Plus is 18 units of a Claude Max plan's 100; units given with a plan win")
 check("capacity" not in accounts.declared(), "the capacity table is a setting, not an account")
-check(accounts.near_threshold("5h") == 75 and accounts.near_threshold("week") == 85, "near_5h overrides, week default")
+check(accounts.near_threshold("5h") == 75 and accounts.near_threshold("week") == 98,
+      "an explicit near_5h still overrides; the week is near at the reserve (98% used)")
 
 
 def five(used: float, left_h: float) -> dict:
@@ -379,7 +387,7 @@ def five(used: float, left_h: float) -> dict:
                                                   "minutes": 300}]}], "stale": False, "error": ""}
 
 
-# the same paced headroom on Codex Plus and a Claude Max account: the Max account holds five times more
+# the same headroom on Codex Plus and a Claude Max account: the Max account holds five times more
 snap = [dict(five(5, 4), provider="claude"), dict(five(5, 4), provider="claude-2"), dict(five(5, 4), provider="codex"),
         dict(five(5, 4), provider="codex-b")]
 p, a, why = accounts.choose_any(["claude", "codex"], NOW, snap)
@@ -466,6 +474,78 @@ check(health.quota_condition(QSPEC, QSPEC.roles[0], {"restart_ready": True}, Fal
 use(CAP_CFG)
 accounts.role_load, __import__("park")._ecosystem_refusal = _load, _ref
 subscription_usage.snapshot = _snapshot
+use(TWO_CFG)
+
+# ---- spend down (2026-11-20): use what is left as a limit nears; leave only at the reserve ---------------------------
+check(accounts.reserve_pct() == 2 and accounts.near_threshold("week") == 98 and accounts.near_threshold("5h") == 98,
+      "the reserve (2%) replaces the old 70/85 defaults")
+pair = {("claude", ""): 2, ("claude", "claude-2"): 2}
+# (a) a week at 90% with 15 h left is still chosen and keeps its roles (it was near at 85%, and paced to nothing)
+a_snap = [dict(reading(90, 15), provider="claude-2"), dict(reading(50, 120), provider="claude")]
+check(accounts.choose("claude", NOW, a_snap)[0] == "claude-2", f"(a) chosen: {accounts.choose('claude', NOW, a_snap)}")
+check(accounts.near_limit(reading(90, 15), NOW) == "", "(a) not near its limit")
+check(accounts.quota_pick("claude", "claude-2", pair, False, ["claude"], NOW, a_snap) is None, "(a) keeps its roles")
+# (b) at 98.5% used its roles move off, and a new session goes elsewhere
+b_snap = [dict(reading(98.5, 15), provider="claude-2"), dict(reading(50, 120), provider="claude")]
+pick = accounts.quota_pick("claude", "claude-2", pair, False, ["claude"], NOW, b_snap)
+check(pick and pick[:2] == ("claude", "") and "near its limit (week 98.5% used)" in pick[2], f"(b) moves off: {pick}")
+check(accounts.choose("claude", NOW, b_snap)[0] == "", "(b) new sessions avoid it")
+spent = [dict(reading(98.5, 15), provider="claude-2"), dict(reading(99, 120), provider="claude")]
+check(accounts.choose("claude", NOW, spent) == ("", "no account has a fresh reading with room left: the default"),
+      "both within the reserve: the default, as before")
+# (c) 30% free resetting in 10 h is preferred to 60% free resetting in 6 days: it loses its quota soonest
+c_snap = [dict(reading(40, 144), provider="claude"), dict(reading(70, 10), provider="claude-2")]
+check(round(accounts.headroom(reading(70, 10), NOW)[0], 1) == 4.7, "(c) 28% above the reserve over 10/168 of a week")
+check(accounts.choose("claude", NOW, c_snap)[0] == "claude-2", "(c) the account that resets sooner is preferred")
+check(accounts.choose_any(["claude"], NOW, c_snap)[:2] == ("claude", "claude-2"), "(c) across the pool too")
+sh = accounts.shares(pair, ["claude"], NOW, c_snap)
+check(sh[("claude", "claude-2")]["share"] > sh[("claude", "")]["share"] > 0, f"(c) and the larger share: {sh}")
+# (d) readings either side of the threshold do not swing a role back and forth: the share fades to nothing at the
+# reserve (no jump to pull a role back), and a role moved off is never drawn back by a reading just under it
+load = dict(pair)
+seq = [98.1, 97.9, 98.1, 97.9]
+moves = []
+for used in seq:
+    snap_d = [dict(reading(used, 15), provider="claude-2"), dict(reading(50, 120), provider="claude")]
+    for acct in ("claude-2", ""):
+        if load[("claude", acct)] and (pick := accounts.quota_pick("claude", acct, load, False, ["claude"], NOW, snap_d)):
+            load[("claude", acct)] -= 1
+            load[pick[:2]] = load.get(pick[:2], 0) + 1
+            moves.append((acct, pick[1]))
+            break  # one quota move per quorum run
+check(moves and all(m == ("claude-2", "") for m in moves), f"(d) every move is off the spent account: {moves}")
+check(load == {("claude", ""): 4, ("claude", "claude-2"): 0}, f"(d) and none comes back: {load}")
+sh = accounts.shares(load, ["claude"], NOW, [dict(reading(97.9, 15), provider="claude-2"),
+                                             dict(reading(50, 120), provider="claude")])
+check(round(sh[("claude", "claude-2")]["target"]) == 0, f"(d) a reading just under the reserve draws nothing: {sh}")
+# the 5 h window against the week: a nearly spent week binds a fresh 5 h window; a 5 h window near its own reset does
+# not move roles; a 5 h window part used shares out placed roles by the week alone
+both = lambda u5, l5, uw, lw: {"rows": [{"bucket": "b", "windows": [  # noqa: E731
+    {"name": "5h", "used_percent": u5, "resets_at": None if l5 is None else NOW + l5 * 3600, "minutes": 300},
+    {"name": "week", "used_percent": uw, "resets_at": NOW + lw * 3600, "minutes": WEEK}]}], "stale": False, "error": ""}
+h, why = accounts.headroom(both(0, None, 97, 72), NOW)
+check(round(h, 3) == 0.023 and why.startswith("week 97%"), f"a nearly spent week binds a fresh 5 h window: {h} {why}")
+ride = both(99, 1 / 6, 40, 100)  # 5 h at 99%, resetting in 10 min
+check(accounts.near_limit(ride, NOW) == "", "a 5 h window at its limit but resetting within the grace: its roles ride it out")
+check(accounts.headroom(ride, NOW)[0] == 0.0, "but a new session does not start there")
+check(accounts.near_limit(both(99, 2, 40, 100), NOW) == "5h 99% used", "with 2 h to go it is near, and its roles move")
+r_snap = [dict(ride, provider="claude-2"), dict(reading(40, 100), provider="claude")]
+check(accounts.quota_pick("claude", "claude-2", pair, False, ["claude"], NOW, r_snap) is None, "no churn at a 5 h reset")
+check(accounts.quota_pick("claude", "", pair, False, ["claude"], NOW, r_snap) is None,
+      "nor onto it: an account within its reserve now takes no new session")
+part = both(70, 3, 40, 100)
+check(accounts.headroom(part, NOW, held=True)[1].startswith("week") and accounts.headroom(part, NOW)[1].startswith("5h"),
+      "placed roles are shared by the week; a new session is placed by the tighter 5 h window")
+# 2026-11-19, 21:12Z: claude-2 at 82% of its week with 15.8 h left, both 5 h windows fresh. The paced score read "no
+# account has room" for both; now claude-2, whose 16% above the reserve would expire soonest, is picked on the tie
+n_snap = [dict(both(0, None, 30, 96), provider="claude"), dict(both(0, None, 82, 15.8), provider="claude-2")]
+acct, why = accounts.choose("claude", NOW, n_snap)
+check(acct == "claude-2", f"the 2026-11-19 case spends claude-2 down: {acct} ({why})")
+RES_CFG = os.path.join(T, "res.toml")
+open(RES_CFG, "w").write(open(TWO_CFG).read().replace('select = "balance"', 'select = "balance"\nreserve_pct = 5'))
+use(RES_CFG)
+check(accounts.near_threshold("week") == 95 and accounts.near_limit(reading(96, 15), NOW) == "week 96% used",
+      "[accounts] reserve_pct sets the reserve")
 use(TWO_CFG)
 
 # ---- 6. records and icons ------------------------------------------------------------------------------------------

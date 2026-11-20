@@ -791,14 +791,21 @@ default `~/.codex`).
   no session) for each account whose token has lapsed or is within minutes of it; with `[accounts] keepalive = true`
   (opt-in: about three tiny calls per account a day) the usage meter does the same before it reads. The refresh is the
   CLI's own, so it follows how the CLI shares a token among processes; refreshing from shoal would race it.
-- **Balance.** An account's paced headroom in a window is the share it would still have free at the reset if it went
-  on at the rate it has used the window so far, over the share of the window still to run (each at least an hour): 50%
-  free with 1 h of a week left scores 83, 60% free with 6 days left after using 40% in one day 0 (on course to run out).
-  So an idle account beats one carrying the load even when the busy one resets sooner (measured 2026-11-17: claude-2 at
-  40% of its week with 2.5 days left, every Claude role on it, outscored the idle default 1.7 to 1.3 on free share
-  alone; now 1.06 to 1.27). A window not started yet (no reset time) is a whole unused one and scores 1. Its tightest
-  window is its score; under 2% free or a reached limit scores 0, and an account with no fresh reading is ranked last
-  and never picked. `[accounts] select = "balance"` (the default) makes the best-scored account the suggestion
+- **Balance (spend down).** As a window nears its limit its remaining quota is used, not avoided: an account leaves
+  service only at the reserve (`[accounts] reserve_pct`, default 2: enough to restart a role on another account,
+  erring towards now and then reaching the limit and taking the restart-ready handover). An account's headroom in a
+  window is its free share above the reserve over the share of the window still to run (at least an hour of it, at
+  most all of it): the rate it must be used at for that quota not to expire unused at the reset. So 30% free with 10 h
+  of a week left scores 4.7 and beats 60% free with 6 days left (0.68), and 50% free with 1 h of a week left scores 81.
+  Its tightest window is its score, so a nearly spent week binds however fresh the 5 h window is (97% of a week used
+  with 3 days left scores 0.02 beside a 5 h window not started). A window not started yet (no reset time) is a whole
+  unused one (0.98). A window at or within the reserve, or a reached limit, scores 0 (no new session starts there);
+  being on course to run out at the current pace no longer does (until 2026-11-20 the score was paced, so a window used
+  heavily early read as no room: on 2026-11-19 both Claude accounts read "no room" for hours while one held 18% of a
+  week that reset 15.8 h later, and roles past 85% of a week were moved off). A window that resets within `[accounts]
+  reset_grace_min` (30) counts as the fresh window it is about to become: its roles ride it out rather than move, though
+  a new session still avoids an account within its reserve now. Ties (two fresh 5 h windows bind alike) go to the
+  account whose longer windows would lose the most. An account with no fresh reading is ranked last and never picked. `[accounts] select = "balance"` (the default) makes the best-scored account the suggestion
   (`accounts.choose`): the Actions dialog pre-selects it with its reason, `--account auto` takes it on the command line,
   and `shoal accounts` prints every score. `select = "default"` suggests the provider's default. The CLI never changes
   an account unasked: a handoff with no `--account` keeps the current one. **Rebalance** (`[accounts] rebalance = true`,
@@ -817,11 +824,16 @@ default `~/.codex`).
   `{ plan, units }` overrides). An account with none is 100, so a host that declares nothing compares raw headroom as
   before. Every pick (`choose`, `choose_any`) ranks by headroom times units over 100.
 - **Quota handoff** (`[accounts] quota_handoff = true`, opt-in). Each account's share of the roles is its weighted
-  headroom (capped at its units, so an account near its reset with room to spare does not draw every role) over the
-  pool's total, times the roles running on the pool (counted from every live shoal's spec, whichever host a role runs
-  on; `accounts.shares`). A role at a quiet boundary moves (`accounts.quota_pick`, the health condition
-  `quota-handoff`) off an account near a limit (`near_5h`, default 70% used, `near_week` 85%) to the account furthest
-  under its share that is not near one, or off an account carrying at least one whole role over its share to one at
+  headroom over its windows of a day or more (`headroom(held=True)`: a 5 h window moves placed roles only at its
+  reserve, so its swings within a few hours do not churn them; capped at its units, so an account near its reset with
+  room to spare does not draw every role) over the pool's total, times the roles running on the pool (counted from
+  every live shoal's spec, whichever host a role runs on; `accounts.shares`). The share fades to nothing as a window
+  reaches the reserve, so crossing it is no jump that could pull a role back; an account with little left and days to
+  its reset (nothing to lose by waiting) so cedes a share to one whose quota would expire, by whole roles. A role at a quiet boundary moves
+  (`accounts.quota_pick`, the health condition `quota-handoff`) off an account near a limit (a window at 98% used,
+  100 less the reserve, outside its reset grace; an explicit `near_5h` or `near_week` still overrides, so a config
+  written for the old 70 and 85 keeps them) to the account furthest under its share that is not near one and can take
+  a new session now, or off an account carrying at least one whole role over its share to one at
   least one under (shares rounded to whole roles, so an account whose share is most of a role, as a Codex Plus one's
   among two Max plans and nine roles, draws one back once its window resets), so a move never only swaps which side is
   over. `[accounts.prefer] <provider> = [<slugs>]` names the roles that may be moved onto that provider (a small plan

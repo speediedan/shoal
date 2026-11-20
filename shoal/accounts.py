@@ -332,48 +332,88 @@ def keepalive(provider: str, account: str = "", min_hours: float = KEEPALIVE_MIN
 
 
 # ---- quota balance -------------------------------------------------------------------------------------------------
-# An account's paced headroom in one window: the share it would still have free at the reset if it went on using the
-# window at the rate it has so far (used over the time elapsed, both never less than an hour), divided by the share of
-# the window still to run (never less than an hour of it). So 50% free with 1 h of a week left (83) beats 60% free with
-# 6 days left after using 40% in one day (0: it would run out), and an idle account beats one carrying the load though
-# the busy one's window resets sooner (2026-11-17: claude-2 at 39% of its week with 2.5 days left, carrying every Claude
-# role, outscored the default at 0% with 5.5 days left on free share alone). A window not started yet (no reset time)
-# is a whole unused one: 1. The account's score is its tightest window's; one with any window under MIN_FREE free, or a
-# reached limit, scores 0 (ineligible); one with no fresh reading has no score and is ranked last, never chosen.
-MIN_FREE = 0.02
+# Spend down (the maintainer, 2026-11-20): as a window nears its limit, use what is left rather than avoid it, and leave
+# only at the reserve, a share small enough to restart on another account (`[accounts] reserve_pct`, default 2). An
+# account's headroom in one window is its free share above the reserve over the share of the window still to run (at
+# least an hour of it, at most all of it): the rate it would have to be used at for that quota not to expire unused at
+# the reset. So 30% free with 10 h of a week left (4.7) beats 60% free with 6 days left (0.68): the first loses its
+# quota soonest. Its tightest window is its score, so a nearly spent week binds however fresh the 5 h window is. A
+# window not started yet (no reset time) is a whole unused one (1 less the reserve). An account with a window at or
+# within the reserve, or a reached limit, scores 0 (no new session); one with no fresh reading has no score and is
+# ranked last, never chosen. A window that resets within RESET_GRACE_MIN counts as the fresh window it is about to
+# become, so a 5 h window close to its reset neither sheds roles nor holds a score down. Until 2026-11-20 the score was
+# paced (the free share left at the reset at the rate used so far) and an account "on course to run out" scored 0:
+# early heavy use of a 5 h window then made an account ineligible, and on 2026-11-19 both Claude accounts read "no
+# room" for hours while claude-2 held 18% of a week that reset 15.8 h later.
+RESERVE_PCT = 2.0
+RESET_GRACE_MIN = 30
+LONG_WINDOW_MIN = 1440  # roles already placed are shared by their windows of a day or more (`headroom(held=True)`)
 SELECT = ("balance", "default")
 
 
-def headroom(usage_row: dict, now: float) -> tuple[float | None, str]:
+def _num_setting(key: str, default: float, lo: float, hi: float) -> float:
+    try:
+        v = float(setting(key, "") or default)
+    except ValueError:
+        v = default
+    return min(max(v, lo), hi)
+
+
+def reserve_pct() -> float:
+    """`[accounts] reserve_pct`: the percent of a window kept back so a role can restart on another account (default
+    2). An account with a window at or within it takes no new session, and its roles move off (`near_limit`)."""
+    return _num_setting("reserve_pct", RESERVE_PCT, 0.0, 50.0)
+
+
+def reset_grace_min() -> float:
+    """`[accounts] reset_grace_min`: a window that resets within this many minutes counts as the fresh window it is
+    about to become for the roles already on it: they are not moved off it, and it does not hold its score down
+    (default 30). A new session still avoids an account whose window is within the reserve now."""
+    return _num_setting("reset_grace_min", RESET_GRACE_MIN, 0.0, 300.0)
+
+
+def _windows(usage_row: dict, now: float):
+    """Each window of a usage reading: (name, minutes, percent used, free share, seconds to its reset or None)."""
+    for r in usage_row.get("rows") or []:
+        for w in r.get("windows") or []:
+            try:
+                used, minutes = float(w["used_percent"]), float(w.get("minutes") or 0)
+                left = None if w.get("resets_at") is None else max(float(w["resets_at"]) - now, 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            yield str(w.get("name") or "?"), minutes, used, max(0.0, 1 - used / 100), left
+
+
+def headroom(usage_row: dict, now: float, held: bool = False) -> tuple[float | None, str]:
     """(score, its binding window) of one usage reading (subscription_usage.snapshot's row): None when it has no fresh
-    reading."""
+    reading. `held`: the score that shares out roles already running (`shares`): over the windows of a day or more
+    (every window when it reports none), and a window inside its reset grace counts fresh even within the reserve, since
+    its roles ride it out. Without it, the score a new session is placed by: every window binds."""
     if not usage_row or usage_row.get("stale") or usage_row.get("error"):
         return None, "no fresh reading"
-    best: tuple[float, str] | None = None
     for r in usage_row.get("rows") or []:
         if r.get("blocked"):
             return 0.0, f"{r.get('bucket') or '?'}: limit reached"
-        for w in r.get("windows") or []:
-            try:
-                used, minutes, reset = float(w["used_percent"]), float(w.get("minutes") or 0), w.get("resets_at")
-            except (KeyError, TypeError, ValueError):
+    res, grace = reserve_pct() / 100, reset_grace_min() * 60
+    ws = [w for w in _windows(usage_row, now) if w[1] > 0]
+    if held and any(w[1] >= LONG_WINDOW_MIN for w in ws):
+        ws = [w for w in ws if w[1] >= LONG_WINDOW_MIN]
+    best: tuple[float, str] | None = None
+    for wname, minutes, used, free, left in ws:
+        span = minutes * 60
+        if left is None:  # not started yet: a whole unused window
+            if used > 0:
                 continue
-            if minutes <= 0:
-                continue
-            span = minutes * 60
-            free = max(0.0, 1 - used / 100)
-            if reset is None:  # not started yet: a whole unused window
-                if used > 0:
-                    continue
-                h, label = 1.0, f"{w['name']} not started"
-            else:
-                left = max(float(reset) - now, 0.0)
-                spare = free - (used / 100) * max(left, 3600.0) / max(span - left, 3600.0)
-                h = 0.0 if free < MIN_FREE else max(spare, 0.0) / max(left / span, 3600 / span)
-                label = f"{w['name']} {used:g}% used, resets in {_dur(left)}" + ("" if spare > 0 else
-                                                                                  ", on course to run out")
-            if best is None or h < best[0]:
-                best = (h, label)
+            h, label = 1 - res, f"{wname} not started"
+        else:
+            h = max(free - res, 0.0) / max(min(left / span, 1.0), 3600 / span)
+            label = f"{wname} {used:g}% used, resets in {_dur(left)}"
+            if left <= grace and (held or free > res or left <= 0):
+                h, label = max(h, 1 - res), label + " (counted fresh)"
+            elif free <= res:
+                h, label = 0.0, label + f", within the {reserve_pct():g}% reserve"
+        if best is None or h < best[0]:
+            best = (h, label)
     return best if best is not None else (None, "no window reported")
 
 
@@ -382,8 +422,9 @@ def _dur(s: float) -> str:
 
 
 def rank(provider: str, now: float | None = None, snap: list | None = None) -> list[dict]:
-    """The provider's accounts on this host, best first: [{account, name, score, binding}] from the cached usage
-    readings (no read here: `shoal ui usage --refresh` refreshes them); an account with no fresh reading last."""
+    """The provider's accounts on this host, best first: [{account, name, score, binding, units, plan, weighted, held,
+    near}] from the cached usage readings (no read here: `shoal ui usage --refresh` refreshes them); an account with no
+    fresh reading last. `weighted` is the score times units over BASE_UNITS, `held` that of `headroom(held=True)`."""
     import time
     import subscription_usage
     now = time.time() if now is None else now
@@ -391,12 +432,15 @@ def rank(provider: str, now: float | None = None, snap: list | None = None) -> l
     rows = {r.get("provider"): r for r in (subscription_usage.snapshot(keys, now=now)["accounts"] if snap is None else snap)}
     out = []
     for a in of(provider):
-        score, why = headroom(rows.get(usage_key(provider, a)) or {}, now)
+        row = rows.get(usage_key(provider, a)) or {}
+        score, why = headroom(row, now)
+        held = headroom(row, now, held=True)[0]
         units, plan = capacity(provider, a)
         out.append({"account": a, "name": name(provider, a), "score": score, "binding": why, "units": units,
                     "plan": plan, "weighted": None if score is None else score * units / BASE_UNITS,
-                    "near": near_limit(rows.get(usage_key(provider, a)) or {})})
-    return sorted(out, key=lambda r: (r["weighted"] is None, -(r["weighted"] or 0)))
+                    "held": None if held is None else held * units / BASE_UNITS, "near": near_limit(row, now)})
+    # ties (two fresh 5 h windows bind alike) go to the account whose longer windows lose the most quota unused
+    return sorted(out, key=lambda r: (r["weighted"] is None, -(r["weighted"] or 0), -(r["held"] or 0)))
 
 
 USAGE_KEYS = {"opencode": "opencode-go"}  # a provider whose usage reading has another name
@@ -427,37 +471,40 @@ def pool(providers: list[str] | None = None) -> list[str]:
 
 def choose(provider: str, now: float | None = None, snap: list | None = None) -> tuple[str, str]:
     """(account, why) the selection policy picks for a new session on `provider`: `[accounts] select = "balance"` (the
-    default) the best-scored eligible account, `default` the provider's default. The default account whenever the
-    provider has one account, is excluded from balancing, or no account has a fresh, eligible reading."""
+    default) the best-scored eligible account (a score above 0 and not near a limit), `default` the provider's default.
+    The default account whenever the provider has one account, is excluded from balancing, or no account has a fresh,
+    eligible reading."""
     if provider in excluded():
         return "", "excluded from balancing ([accounts] exclude)"
     if not several(provider):
         return "", "one account"
     if setting("select", "balance") not in ("balance",):
         return "", "select = default"
-    ranked = rank(provider, now, snap)
-    top = ranked[0] if ranked else None
-    if not top or not top["score"]:
+    top = next((r for r in rank(provider, now, snap) if r["score"] and not r["near"]), None)
+    if top is None:
         return "", "no account has a fresh reading with room left: the default"
-    return top["account"], f"best paced headroom {top['score']:.2g} x {top['units']} units ({top['binding']})"
+    return top["account"], f"most quota to use before its reset {top['score']:.2g} x {top['units']} units " \
+                           f"({top['binding']})"
 
 
 def choose_any(providers: list[str] | None = None, now: float | None = None,
                snap: list | None = None) -> tuple[str, str, str]:
-    """(provider, account, why) across the balancing pool (`pool`): the account with the most paced headroom of any
-    provider in it. ("", "", why) when the pool is empty or no account has a fresh reading with room left: the caller
-    then keeps its provider. `--ecosystem auto` on handoff and add-role."""
+    """(provider, account, why) across the balancing pool (`pool`): the account with the most weighted headroom of any
+    provider in it (ties to the one whose longer windows lose the most). ("", "", why) when the pool is empty or no
+    account has a fresh reading with room left: the caller then keeps its provider. `--ecosystem auto` on handoff and
+    add-role."""
     if setting("select", "balance") != "balance":
         return "", "", "select = default"
     best = None
     for p in pool(providers):
         for r in rank(p, now, snap):
-            if r["score"] and (best is None or r["weighted"] > best[2]["weighted"]):
+            if r["score"] and not r["near"] and (best is None or (r["weighted"], r["held"] or 0) >
+                                                 (best[2]["weighted"], best[2]["held"] or 0)):
                 best = (p, r["account"], r)
     if best is None:
         return "", "", "no provider in the pool has a fresh reading with room left"
     p, a, r = best
-    return p, a, (f"best capacity-weighted headroom in the pool ({', '.join(pool(providers))}): {name(p, a)} "
+    return p, a, (f"most capacity-weighted quota to use in the pool ({', '.join(pool(providers))}): {name(p, a)} "
                   f"{r['score']:.2g} x {r['units']} units ({r['binding']})")
 
 
@@ -475,7 +522,6 @@ def choose_any(providers: list[str] | None = None, now: float | None = None,
 # An account with none is BASE_UNITS, so a host that declares nothing compares raw headroom as before.
 BASE_UNITS = 100
 PLAN_UNITS = {"claude": {"max": 100}, "codex": {"plus": 18, "pro": 125}}
-NEAR = {"5h": 70.0, "week": 85.0}  # percent used of a window that counts as near its limit (`[accounts] near_5h`, `near_week`)
 
 
 def capacity(provider: str, account: str = "") -> tuple[int, str]:
@@ -497,38 +543,43 @@ def capacity(provider: str, account: str = "") -> tuple[int, str]:
 
 
 def near_threshold(window: str) -> float:
-    """The percent used at which `window` counts as near its limit: `[accounts] near_5h` / `near_week`, else NEAR."""
+    """The percent used at which `window` counts as near its limit: 100 less `[accounts] reserve_pct` (98 by default),
+    or `[accounts] near_<window>` (`near_5h`, `near_week`) where a config sets one: an explicit override, kept so a
+    config written for the old defaults (70 and 85) works as it did."""
     try:
-        return float(setting(f"near_{window}", "") or NEAR.get(window, 100.0))
+        v = setting(f"near_{window}", "")
+        return float(v) if v else 100.0 - reserve_pct()
     except ValueError:
-        return NEAR.get(window, 100.0)
+        return 100.0 - reserve_pct()
 
 
-def near_limit(usage_row: dict) -> str:
-    """The window of a usage reading that is near its limit ("5h 74% used"), a reached limit, or "" for none."""
+def near_limit(usage_row: dict, now: float | None = None) -> str:
+    """The window of a usage reading that is near its limit ("week 98.5% used"), a reached limit, or "" for none. A
+    window that resets within the grace (`reset_grace_min`) is not near: its roles ride it out."""
+    import time
+    now = time.time() if now is None else now
     for r in (usage_row or {}).get("rows") or []:
         if r.get("blocked"):
             return f"{r.get('bucket') or '?'}: limit reached"
-        for w in r.get("windows") or []:
-            try:
-                used = float(w["used_percent"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if w.get("name") in NEAR and used >= near_threshold(w["name"]):
-                return f"{w['name']} {used:g}% used"
+    grace = reset_grace_min() * 60
+    for wname, _minutes, used, _free, left in _windows(usage_row or {}, now):
+        if used >= near_threshold(wname) and not (left is not None and left <= grace):
+            return f"{wname} {used:g}% used"
     return ""
 
 
 def shares(load: dict, providers: list[str] | None = None, now: float | None = None,
            snap: list | None = None) -> dict[tuple[str, str], dict]:
-    """{(provider, account): {load, share, target, units, weighted, near}} over the balancing pool: each account's
-    share of the roles is its capacity-weighted headroom (`weighted`, at most its units: an account near its reset
-    with room to spare does not draw every role) over the pool's total, and `target` that share of the roles running
-    on the pool now (`load`, from the specs). An account with no fresh reading takes no share and keeps its load."""
+    """{(provider, account): {load, share, target, units, weighted, near, open, binding}} over the balancing pool: each
+    account's share of the roles is its capacity-weighted held headroom (`weighted`: `headroom(held=True)`, over its
+    windows of a day or more, so a 5 h window moves roles only at its reserve; at most its units, so an account near its
+    reset with room to spare does not draw every role) over the pool's total, and `target` that share of the roles
+    running on the pool now (`load`, from the specs). `open`: a new session may start there now (its score above 0). An
+    account with no fresh reading takes no share and keeps its load."""
     rows = []
     for p in pool(providers):
         for r in rank(p, now, snap):
-            w = 0.0 if r["weighted"] is None or r["near"] else min(r["weighted"], float(r["units"]))
+            w = 0.0 if r["held"] is None or r["near"] else min(r["held"], float(r["units"]))
             rows.append(((p, r["account"]), w, r))
     total_w = sum(w for _, w, _ in rows)
     n = sum(load.get(k, 0) for k, _, _ in rows)
@@ -536,7 +587,7 @@ def shares(load: dict, providers: list[str] | None = None, now: float | None = N
     for k, w, r in rows:
         share = w / total_w if total_w else 0.0
         out[k] = {"load": load.get(k, 0), "share": share, "target": share * n, "units": r["units"],
-                  "weighted": w, "near": r["near"], "binding": r["binding"]}
+                  "weighted": w, "near": r["near"], "open": bool(r["score"]), "binding": r["binding"]}
     return out
 
 
@@ -574,15 +625,17 @@ def preferred(provider: str) -> list[str] | None:
 def quota_pick(provider: str, account: str, load: dict, pinned: bool = False, providers: list[str] | None = None,
                now: float | None = None, snap: list | None = None, slug: str = "") -> tuple[str, str, str] | None:
     """(provider, account, why) a role on `provider`/`account` should move to now, or None to stay: off an account near
-    a limit to the account furthest under its share that is not; else off an account carrying at least one role over
-    its share to one at least one role under (shares rounded to whole roles, so an account whose share is most of a role
-    gets one, and a move never just swaps which side is over). `pinned`: its own provider's accounts only; `slug`: a
-    provider with `[accounts.prefer]` takes only the roles it names. None when this account has no fresh reading."""
+    a limit (within the reserve) to the account furthest under its share that is not and can take a new session; else
+    off an account carrying at least one role over its share to one at least one role under (shares rounded to whole
+    roles, so an account whose share is most of a role gets one, and a move never just swaps which side is over).
+    `pinned`: its own provider's accounts only; `slug`: a provider with `[accounts.prefer]` takes only the roles it
+    names. None when this account has no fresh reading."""
     plan = shares(load, [provider] if pinned else providers, now, snap)
     here = plan.get((provider, account or ""))
     if here is None or (not here["near"] and here["weighted"] == 0 and here["binding"] == "no fresh reading"):
         return None
-    room = [(k, v) for k, v in plan.items() if k != (provider, account or "") and v["weighted"] > 0 and not v["near"]
+    room = [(k, v) for k, v in plan.items() if k != (provider, account or "") and v["weighted"] > 0 and v["open"]
+            and not v["near"]
             and (k[0] == provider or preferred(k[0]) is None or slug in preferred(k[0]))]
     if not room:
         return None
@@ -654,7 +707,8 @@ def cmd_accounts(a) -> int:
         print(line)
     for p in sorted({r["provider"] for r in rows}):
         acct, why = choose(p)
-        print(f"{p}: a new session would go to {name(p, acct)} ({why}; [accounts] select = {setting('select', 'balance')})")
+        print(f"{p}: a new session would go to {name(p, acct)} ({why}; [accounts] select = "
+              f"{setting('select', 'balance')}, reserve_pct = {reserve_pct():g})")
     try:
         p, acct, why = choose_any()
         print(f"pool {', '.join(pool()) or '(empty)'}" + (f" (excluded: {', '.join(excluded())})" if excluded() else "")
