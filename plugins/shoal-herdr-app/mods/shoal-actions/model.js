@@ -415,9 +415,47 @@ export function applyArgv(token, background = false) {
   return ["ui", "act-apply", "--token", token, "--json", ...(background ? ["--background"] : [])];
 }
 
-export function statusArgv(target, run = null) {
-  return ["ui", "act-status", ...(run ? ["--run", run] : target.session ? [`--session=${target.session}`]
+/**
+ * The verbs applied detached (`act-apply --background`) and followed with `act-status`: Herdr's exec ends a call at 30 s,
+ * and these run longer (a handoff waits for a checkpoint; `offline off` across shoals wakes every role holding asks
+ * and lists the asks, measured past 30 s on 2026-11-20). The CLI's ui_actions.DETACHED_TIMEOUT_S names the same.
+ */
+export const DETACHED = new Set(["handoff", "offline", "freeze"]);
+export const isDetached = (verb) => DETACHED.has(verb);
+
+/** The busy line while a detached apply runs. */
+export function busyLabel(verb) {
+  if (verb === "handoff") return "waiting for checkpoint and handoff";
+  if (verb === "offline") return "recording the mode, waking roles and listing asks";
+  if (verb === "freeze") return "recording the freeze and waking roles";
+  return "applying";
+}
+
+/** A detached run's status: by run id, else the newest for the target (a handoff's role or seat; an offline or freeze's shoal or scope). */
+export function statusArgv(target, run = null, verb = null) {
+  if (run) return ["ui", "act-status", "--run", run, "--json"];
+  if (verb && verb !== "handoff") {
+    return ["ui", "act-status", "--verb", verb, ...(target.scope ? [`--scope=${target.scope}`] : ["--shoal", target.shoal]), "--json"];
+  }
+  return ["ui", "act-status", ...(target.session ? [`--session=${target.session}`]
     : ["--shoal", target.shoal, `--role=${target.role}`]), "--json"];
+}
+
+/** Recent enough that opening the verb again shows how it ended (once per dialog), and not its form. */
+export const RESUME_FINISHED_MS = 10 * 60 * 1000;
+
+/**
+ * What opening a detached verb does with the newest run the CLI found: "follow" one still running, "result" for one that
+ * ended (a handoff's always; an offline or freeze's only when it ended in the last ten minutes and this dialog has not
+ * shown it), else null (the form). `seen`: run ids this dialog already showed.
+ */
+export function resumeShows(verb, r, now = Date.now(), seen = null) {
+  if (!r || r.kind !== "result" || !r.run) return null;
+  if (r.running) return "follow";
+  if (verb === "handoff") return "result";
+  if (seen?.has?.(r.run)) return null;
+  const ended = typeof r.finished === "number" && r.finished > 0 ? r.finished * 1000 : 0;
+  return ended && now - ended <= RESUME_FINISHED_MS ? "result" : null;
 }
 
 /** Has a plan's token run out? `plannedAt` in ms; the CLI checks again on apply. */
@@ -631,7 +669,8 @@ export function parseReply(r, expect = null) {
   } else if (d.kind === KINDS.result) {
     const rc = typeof d.rc === "number" ? d.rc : r.code;
     out = { kind: "result", rc, ok: rc === 0, command: str(d.command), output: str(d.output),
-      running: d.running === true, run: strOrNull(d.run), progress: strOrNull(d.progress) };
+      running: d.running === true, run: strOrNull(d.run), progress: strOrNull(d.progress), verb: strOrNull(d.verb),
+      finished: typeof d.finished === "number" ? d.finished : null };
   } else if (d.kind === KINDS.view) {
     out = { kind: "view", verb: strOrNull(d.verb), shoal: strOrNull(d.shoal), role: strOrNull(d.role), text: str(d.text) };
     if (Array.isArray(d.asks)) out.asks = normAsks(d.asks);

@@ -684,8 +684,9 @@ shoal ui app-usage                                 # show the usage dashboard (S
 shoal ui app-board                                 # show the board graphs (SHOAL-home's board tab)
 shoal ui board [--shoal ID] [--json]               # each shoal's boards as dependency graphs, with metrics (read-only)
 shoal ui act-apply --token T [--json]              # run a planned action once
-shoal ui act-apply --token T --background --json   # detach a confirmed Handoff
+shoal ui act-apply --token T --background --json   # detach a confirmed Handoff, Offline or Freeze
 shoal ui act-status --run RUN --json              # follow its retained progress log
+shoal ui act-status --verb offline --scope all --json  # the newest Offline across shoals (or --shoal ID; Freeze alike)
 shoal ui queue --shoal ID --role R [--json]        # one role's queue and its candidates (read-only)
 ```
 
@@ -977,7 +978,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   that stamp), to read and record in a "Handoff reconciliation" section of its start doc before new work. The result
   shows the same lines. A stale preview cannot hand off a different session that took the seat meanwhile.
   The dialog streams progress; **Continue in background** closes it without cancelling the operation. Reopen
-  Handoff on the same target to reconnect, including after completion. A failed checkpoint or disappeared worker
+  Handoff on the same target to reconnect, including after completion. **Offline** and **Freeze** run the same way
+  (an `offline off` across shoals wakes every role holding asks and lists every ask, which ran past the app's 30 s
+  call limit on 2026-11-20): the dialog follows the log, then shows the whole result, who was woken and every ask with
+  its hint. Reopened on the same shoal or scope, it follows a run still going, or shows once how one that ended in the
+  last ten minutes went. A failed checkpoint or disappeared worker
   is reported in the retained log. Role handoffs follow the restart log until the new session is recorded.
   The form and the result say how long to expect, so the dialog can be closed rather than watched (measured
   2026-11-14): a standalone seat's new session starts about 2 s after Apply; a role's restart records the new session

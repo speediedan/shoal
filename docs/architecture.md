@@ -234,7 +234,14 @@ work depends on an unmerged one, and to keep working. Roles waiting on the maint
 once to pivot, and maintainer pages are deferred. `offline off` prints every recorded ask per role,
 with a likely-stale hint where the named item is merged, closed or done, wakes each role holding
 asks to re-verify, drop or raise them as prompted question sets (at most four questions per set),
-and delivers the deferred pages as one summary. A headless role (a `codex exec` or `muse exec` turn) has no question
+and delivers the deferred pages as one summary. The mode's record is written (and pushed) before any wake; the wakes
+then run four at a time (`worker.OFFLINE_WAKES_AT_ONCE`: a direct Claude wake can stop and resume a session, seconds
+each) and each prints how it was delivered (`woke <role>: <channel>`), the offline banner they carry read once, not per
+wake. The hint's GitHub reads (one per referenced item, cached per process) run eight at a time
+(`REF_READS_AT_ONCE`) from before the record is written, and the listing waits at most `HINT_BUDGET_S` (20 s) for
+them: an ask whose item was not read by then is listed `(not checked: GitHub was slow)`. Two shoals with 28 asks read
+one by one took 33 s of GitHub reads and wake texts, past the Herdr app's 30 s exec limit (measured 2026-11-20), and
+3.5 s this way. A headless role (a `codex exec` or `muse exec` turn) has no question
 tool, so its brief (`briefs.raise_clause`) has it keep the asks recorded instead: the viewer's Asks view shows each one
 with the answer set `shoal asks` would put to the question tool (`worker.ask_options`: grant, defer, delegate review and
 deny for a merge), and the maintainer's answers reach the role as mail with a wake, `re ask <n>: <choice>. <note>` a
@@ -1966,13 +1973,18 @@ with the harness and session it was opened with after its seat moved (`ui_app.se
 foreground argv against the plan), on `ui app-open` and on the quiet sync. A card with a harness client open in it is
 left alone until the client exits.
 
-`ui_runs.py` owns confirmed background handoffs. `act-apply --background` consumes the one-use token and
-starts a detached worker; `act-status` returns the retained log and running or completed state. A worker
-that disappears is reported as failed. The worker must not carry the app exec's `HC_SCOPE`: herdr-core ends every
+`ui_runs.py` owns confirmed background actions: Handoff, Offline and Freeze (`ui_actions.DETACHED_TIMEOUT_S`, each
+verb's own limit once detached), the verbs that can outrun the app's 30 s `exec` (an `offline off` across shoals wakes
+every role holding asks and lists the asks). `act-apply --background` consumes the one-use token and
+starts a detached worker; `act-status` returns the retained log and running or completed state (`--run`, or the newest
+run for a target: a handoff's `--shoal --role` or `--session`, an offline or freeze's `--verb` with `--shoal` or
+`--scope`). A running run returns its log's last 16 kB, a finished one its whole log; a scoped run's result names
+each shoal (`== <id>`). A worker that disappears is reported as failed. The worker must not carry the app exec's `HC_SCOPE`: herdr-core ends every
 process tagged with it once that exec returns, whatever its session or cgroup, so `backends.detached()` drops it
 (`env -u`) for every detached launch, the worker and a Muse or Codex turn runner a dialog wake starts alike.
 Reopening Handoff on the same target reconnects to its latest run;
-closing the dialog does not cancel it. The reply parser preserves progress paths for both background
+closing the dialog does not cancel it. Reopening Offline or Freeze on the same shoal or scope follows a run still going,
+and shows the result of one that ended in the last ten minutes once (`model.resumeShows`), then the form. The reply parser preserves progress paths for both background
 handoffs and ordinary streamed actions. All lifecycle changes remain CLI verbs behind preview and confirm.
 
 `shoal/ui/ui_queue.py` (`ui queue`, and `act-plan queue` and `queue-set`) is the queue manager's read side and batch. The read

@@ -519,6 +519,29 @@ test("standalone Handoff: checkpoint by default, a saved start doc, and a resuma
   assert.equal(r.progress, "/example/run.log");
 });
 
+test("Offline and Freeze apply detached like Handoff: followed by run, found again by shoal or scope", () => {
+  for (const v of ["handoff", "offline", "freeze"]) assert.ok(M.isDetached(v), v);
+  for (const v of ["msg", "offer", "queue-set", "add-role"]) assert.ok(!M.isDetached(v), v);
+  assert.deepEqual(M.statusArgv({ scope: "all" }, null, "offline"), ["ui", "act-status", "--verb", "offline", "--scope=all", "--json"]);
+  assert.deepEqual(M.statusArgv({ shoal: "alpha", role: null }, null, "freeze"), ["ui", "act-status", "--verb", "freeze", "--shoal", "alpha", "--json"]);
+  assert.deepEqual(M.statusArgv({ scope: "all" }, "run1", "offline"), ["ui", "act-status", "--run", "run1", "--json"]);
+  assert.deepEqual(M.statusArgv({ shoal: "alpha", role: "r1" }, null, "handoff"), ["ui", "act-status", "--shoal", "alpha", "--role=r1", "--json"]);
+  assert.match(M.busyLabel("offline"), /waking roles and listing asks/);
+  assert.match(M.busyLabel("handoff"), /checkpoint/);
+  const now = Date.UTC(2026, 10, 20, 18, 0, 0);
+  const res = (doc) => M.parseReply(ok({ v: 1, kind: "shoal-act-result", rc: 0, run: "run1", verb: "offline", output: "woke r1", ...doc }), "result");
+  const running = res({ running: true });
+  assert.equal(running.verb, "offline");
+  assert.equal(M.resumeShows("offline", running, now), "follow");
+  const ended = res({ running: false, finished: now / 1000 - 120 });
+  assert.equal(ended.finished, now / 1000 - 120);
+  assert.equal(M.resumeShows("offline", ended, now), "result", "a run that ended while the dialog was closed shows how");
+  assert.equal(M.resumeShows("offline", ended, now, new Set(["run1"])), null, "once per dialog: then the form");
+  assert.equal(M.resumeShows("offline", res({ running: false, finished: now / 1000 - 3600 }), now), null, "an old run: the form");
+  assert.equal(M.resumeShows("handoff", res({ running: false, finished: now / 1000 - 3600 }), now), "result", "a handoff's always shows");
+  assert.equal(M.resumeShows("offline", M.parseReply(ok({ v: 1, kind: "shoal-act-result", rc: 0, running: false, run: null, output: "" }), "result"), now), null);
+});
+
 test("Add session: on any target, a list fed from every machine, saved on the session's own machine", () => {
   const addInfo = M.verbInfo("add-session");
   assert.ok(addInfo && addInfo.hostLevel && addInfo.kind === "write");

@@ -635,6 +635,7 @@ grep -q "ASK tl \[1\]: merge app#9201 (PR green) (LIKELY STALE: app#9201 merged)
   || fail "return summary lacks the stale hint :: $OUT"
 grep -q "ASK tl \[2\]: ruling on #9202 scope$" <<<"$OUT" || fail "open ask mislabelled :: $OUT"
 grep -q "2 recorded ask(s), 1 likely stale" <<<"$OUT" || fail "no return count :: $OUT"
+grep -q "^  woke tl: " <<<"$OUT" || fail "offline off does not say how each role was woken :: $OUT"
 OUT=$($H next --shoal $SID --spec "$SPEC" --slug tl --peek --no-sync 2>&1)
 grep -q "ASKS TO RAISE: the maintainer is online" <<<"$OUT" && grep -q "at most 4 questions each" <<<"$OUT" \
   || fail "next lacks the return protocol :: $OUT"
