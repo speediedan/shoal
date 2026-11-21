@@ -64,6 +64,7 @@ python3 "$TESTD/test_ci_wait.py" || fail "ci wait by repository"
 python3 "$TESTD/test_efficiency.py" || fail "ci efficiency snapshot"
 python3 "$TESTD/test_efficiency_review.py" || fail "ci efficiency review"
 python3 "$TESTD/test_pool_metrics.py" || fail "pool imbalance over compatible demand"
+python3 "$TESTD/test_resume_missing_cwd.py" || fail "resume restores a missing session directory"
 
 echo "== 1 working context: scope derives, migrate converts and removes scope"
 check '"tl-4-migration": 3.0' $H context show --shoal $SID --spec "$SPEC" --slug tl

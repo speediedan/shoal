@@ -430,6 +430,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 RESUMED_NOTE = ("Your session was resumed for this wake: its worker had been retired (idle) or had died, so "
                 "background commands it ran inside the session are gone. A detached ledger-watch survives that; "
                 "`next` says whether yours is armed. Act on this wake: ")
+RESTORED_DIR_NOTE = ("Your session's directory {path} was gone, and Claude resumes a session only from its own "
+                     "directory, so shoal restored it as a detached worktree of {anchor} at {sha}. It is a placeholder: "
+                     "work in your real worktree by absolute path, never commit here, and never remove the directory "
+                     "your session started in. ")
 WAITERS_STOPPED_NOTE = ("Your in-session job or CI waiters were stopped to deliver this wake (they held every wake "
                         "back for as long as they ran). The jobs run on, and your watcher wakes you on each `job:` or "
                         "CI wait you recorded, so re-arm a waiter only if no recorded wait covers it. Act on this wake: ")
@@ -646,6 +650,31 @@ def direct_wake_mode(spec) -> str:
     h = h if isinstance(h, dict) else {}
     m = str(h.get("direct_wake", "idle")).lower()
     return m if m in ("dead", "idle") else "idle"
+
+
+def restore_session_dir(path: str, anchor: str) -> tuple[str, str]:
+    """(sha, why): recreate a session's missing directory `path` as a detached worktree of the git repository `anchor`
+    (the shoal's `dir`), at its HEAD, so `claude --resume` can run there again. Claude resumes a session only from its
+    recorded directory, and trusts a directory only as a worktree of a trusted repository: an empty one is refused
+    (measured 2026-11-21: fts-core had replaced its session's worktree and deleted it, and every wake failed until the
+    path came back as a worktree). sha is "" when it was not restored, with the reason in why."""
+    if not path or os.path.exists(path):
+        return "", "nothing to restore"
+    if not anchor or not os.path.isdir(anchor):
+        return "", "no shoal dir to restore it from"
+    if not os.path.isdir(os.path.dirname(path.rstrip("/"))):
+        return "", f"its parent {os.path.dirname(path.rstrip('/'))} is gone too"
+    def git(*args):
+        return subprocess.run(["git", "-C", anchor, *args], capture_output=True, text=True, timeout=60)
+    head = git("rev-parse", "HEAD")
+    if head.returncode != 0:
+        return "", f"{anchor} is not a git repository"
+    git("worktree", "prune")  # a worktree deleted without `git worktree remove` still holds its path
+    sha = head.stdout.strip()
+    r = git("worktree", "add", "--detach", path, sha)
+    if r.returncode != 0:
+        return "", f"git worktree add failed: {(r.stderr or r.stdout).strip()[-160:]}"
+    return sha[:8], ""
 
 
 def detached(argv: list[str]) -> list[str]:
@@ -937,7 +966,7 @@ class ClaudeBackend(Backend):
         if row is None:
             why = "session not listed"
         elif not row.get("pid"):
-            return self._resume(row, full, RESUMED_NOTE + text, dry_run)
+            return self._resume(row, full, RESUMED_NOTE + text, dry_run, anchor=getattr(spec, "dir", ""))
         else:
             live = claude_liveness(row)
             busy_fl = work_in_flight(claude_job_state(row))
@@ -961,16 +990,22 @@ class ClaudeBackend(Backend):
                         break
                     _time.sleep(0.5)
                 _time.sleep(RESUME_SETTLE_S)
-                return "stop+" + self._resume(row, full, text, dry_run)
+                return "stop+" + self._resume(row, full, text, dry_run, anchor=getattr(spec, "dir", ""))
         return f"deferred ({why})"
 
-    def _resume(self, row: dict, session: str, text: str, dry_run: bool = False) -> str:
+    def _resume(self, row: dict, session: str, text: str, dry_run: bool = False, anchor: str = "") -> str:
         if dry_run or fake_sessions() is not None:
             return "resume" + (" (dry-run)" if dry_run else " (fake)")
         b = tool_which("claude") or "claude"
         cwd = row.get("cwd") or None
+        restored = ""
         if cwd and not os.path.isdir(cwd):
-            cwd = None
+            # Claude refuses to resume a session away from its recorded directory, so bring the directory back
+            sha, why = restore_session_dir(cwd, anchor)
+            if not sha:
+                return f"FAILED (session directory {cwd} is missing and was not restored: {why})"
+            text = RESTORED_DIR_NOTE.format(path=cwd, anchor=anchor, sha=sha) + text
+            restored = f" (restored missing directory {cwd} as a detached worktree of {anchor} at {sha})"
         env = claude_env(row_account(row))
         r = subprocess.run(detached([b, "--bg", "--resume", session, text]), capture_output=True, text=True,
                            timeout=120, cwd=cwd, env=env)
@@ -982,8 +1017,8 @@ class ClaudeBackend(Backend):
             subprocess.run([b, "rm", m.group(1)], capture_output=True, text=True, timeout=30, env=env)
             return f"FAILED (session still running; copy {m.group(1)} stopped and removed)"
         if r.returncode != 0:
-            return f"FAILED rc={r.returncode}: {out.strip().splitlines()[-1][:120] if out.strip() else ''}"
-        return "resume"
+            return f"FAILED rc={r.returncode}: {out.strip().splitlines()[-1][:120] if out.strip() else ''}{restored}"
+        return "resume" + restored
 
     def reset(self, session: str, prompt: str, label: str = "", cwd: str = "", dry_run: bool = False) -> dict:
         """Claude: a new job on the prompt, with the old job's saved options (name, model, effort from its state.json),
