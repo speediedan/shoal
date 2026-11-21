@@ -22,6 +22,8 @@ when neither is importable the file is skipped with one warning on stderr.
   azure_org      SHOAL_AZURE_ORG                             "" (Azure pipeline sensors and GPU share need it)
   azure_project  SHOAL_AZURE_PROJECT                         ""
   azure_projects (none)                                      [azure_project] (projects an `az-build:<id>` is looked up in)
+  azure_agent.* (SHOAL_AZURE_AGENT_PAT for the PAT path)     on when azure_org is set: a research reservation takes this
+                                                                 host's Azure agent out of rotation (see azure_agent())
   login_shell_tools (none)                                   [] (tools whose calls run under `bash -lc`)
   worktree_root  SHOAL_WORKTREE_ROOT                         <data_root>/_pool/worktrees (placed jobs' staged checkouts)
   ci_envs        (none)                                      {} (named CI environments a placed job may ask for)
@@ -326,6 +328,38 @@ def azure_projects() -> list[str]:
     v = file_values().get("azure_projects") or []
     out = [str(x) for x in v] if isinstance(v, list) else []
     return out or ([azure_project()] if azure_project() else [])
+
+
+AZURE_AGENT_CAPS = ("ci-any-vendor",)
+AZURE_WAITER_PATTERN = r"^azure-(?:.*-)?(\d+)$"
+
+
+def azure_agent() -> dict:
+    """`[azure_agent]` in the host config: this host's Azure Pipelines self-hosted agent, which a research reservation
+    takes out of rotation (shoal/agent_rotation.py). The agent is outside shoal, so its GPU job would take the host's
+    leases itself and wait on a reserved device until its lease budget ran out (measured 2026-11-20 and 2026-11-21: two
+    pull request gates failed that way behind an overnight reservation). Keys, all optional:
+
+      enabled         false turns it off (default: on whenever `azure_org` is set)
+      pat             the file holding a PAT with Agent Pools (Read & manage) and Build (Read & execute); env
+                      SHOAL_AZURE_AGENT_PAT (a path, never the token). Default $XDG_CONFIG_HOME/shoal/azure-agent-pat
+      name            the agent's name in the pool (default: this host's `server` name)
+      pool            the agent pool (default "Default")
+      capabilities    the user capabilities taken away while a reservation stands (default ["ci-any-vendor"])
+      requeue         false: a build already waiting here on a reserved resource is left alone (default true)
+      waiter_pattern  how a lease waiter names its Azure build: a regex whose group 1 is the build id
+                      (default `^azure-(?:.*-)?(\\d+)$`, matching `azure-<id>` and `azure-<project tag>-<id>`)"""
+    t = file_values().get("azure_agent")
+    t = t if isinstance(t, dict) else {}
+    caps = t.get("capabilities")
+    caps = [str(c) for c in caps if str(c)] if isinstance(caps, list) else list(AZURE_AGENT_CAPS)
+    pat = env("AZURE_AGENT_PAT") or str(t.get("pat") or "") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "shoal", "azure-agent-pat")
+    return {"enabled": t.get("enabled") is not False and bool(azure_org()) and bool(caps),
+            "pat": _path(pat), "name": str(t.get("name") or "") or server(),
+            "pool": str(t.get("pool") or "Default"), "capabilities": caps,
+            "requeue": t.get("requeue") is not False,
+            "waiter_pattern": str(t.get("waiter_pattern") or AZURE_WAITER_PATTERN)}
 
 
 def login_shell_tools() -> list[str]:

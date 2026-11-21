@@ -530,6 +530,42 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   on that host, with no lease of its own and only the reservation's devices visible
   (`CUDA_VISIBLE_DEVICES` for NVIDIA, `ROCR_VISIBLE_DEVICES` for AMD); without one it is refused, and
   it never moves.
+- **Azure agent rotation** (`shoal/agent_rotation.py`, `[azure_agent]` in the host config; on wherever
+  `azure_org` is set). An Azure Pipelines self-hosted agent on a reserved host is outside the planner: its
+  GPU job takes the host's leases itself and would wait on the reserved device until its lease budget ran
+  out (measured 2026-11-20 and 2026-11-21: two pull request gates failed that way behind an overnight
+  reservation). Azure admits a GPU job by demands on the agent's user capabilities, so while any
+  reservation stands on the host (or is still taking its holds) shoal removes the configured user
+  capabilities (`capabilities`, default `ci-any-vendor`: the job class an any-vendor gate demands) from the
+  host's agent (named after the host, `name` overrides) and any-vendor jobs go to the other agent. Every
+  reservation counts, a GPU or cpu-heavy one: a whole-server job (`--gpus all --cpu-heavy`) and a
+  multi-device stage wait on any of them. What was removed is written with its value to
+  `<data_root>/_pool/agent-rotation.json` before Azure is asked, and when the last reservation ends
+  (release, `--until`, a holder that died, a reservation that failed to take its holds) exactly those
+  capabilities are put back with those values, each only where it is still absent (a value set meanwhile
+  wins). Only an agent the record names is ever restored. The state is level-triggered: every `pool probe`
+  and `resources watch` sample compares "a reservation stands" with the record, so a crash between the
+  record and Azure, or a refused change, is put right on a later tick (retried every 5 min; a reservation
+  or release acts at once). The last enabled agent with those capabilities stays in rotation, since jobs
+  demanding them would then fail at once instead of waiting. `ci-vendor-marked` is not removed by
+  default: a vendor-pinned leg can run nowhere else, a short reservation can end inside its lease budget,
+  and on a host whose stages can use an unreserved device it still passes; listing it in `capabilities`
+  makes such a leg fail at once ("no agent matches demands") instead.
+  **Re-queue.** A build waiting in the host's lease queue for something a reservation holds (its waiter
+  label carries the build id: `waiter_pattern`, default `azure-[<tag>-]<id>`), running on this agent, is
+  cancelled at its stage and the stage retried (`PATCH build/builds/<id>/stages/<stage>`, state `cancel`
+  then `retry` once the stage completes), so the same build (pull request status, reason, parameters) is
+  assigned again by its demands; a stage that cannot be cancelled is cancelled with its build. Only when
+  the agent no longer meets the job's demands and another enabled agent does; a vendor-pinned job, one
+  under `requeue = false`, or any while the agent is not out of rotation is left to wait. Each build is
+  handled once per out-of-rotation period, and its owners (roles on this host whose wait target names
+  `az-build:<id>`, else `user` of the reservation's shoal) get a ledger message (`ci-requeued`,
+  `ci-cancelled` when the retry failed, `ci-blocked` when it was left) and the reservation's shoal a
+  telemetry event. **Credential.** A 0600 PAT file (`pat`, default `~/.config/shoal/azure-agent-pat`,
+  env `SHOAL_AZURE_AGENT_PAT`) with Agent Pools (Read & manage) and Build (Read & execute); the token is
+  never printed or logged. When it is missing or refused the reservation still succeeds, the record says
+  the agent was NOT taken out of rotation, and `pool reserve`, `pool status` and `doctor` say so; a
+  waiting build is then only reported. The log is `<data_root>/_pool/agent-rotation.jsonl`.
 - **Queue transfer** (`features.placement`, off by default; `--place` works without it). While a
   placed job is still queued for its lease, its `job wait` (one per job holds a supervisor lock; re-armed
   copies only wait) re-plans every `interval_s` with this host's other queued placed jobs. On advice

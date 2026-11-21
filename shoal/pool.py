@@ -397,7 +397,8 @@ def host_capacity(probe: dict, now: float, max_age_s: float = DEFAULTS["max_age_
             "class": hname, "ts": ts, "reservations": resv,
             "reserved_devices": sorted({str(d.get("uuid")) for r in resv for d in r.get("devices") or []
                                         if isinstance(d, dict) and d.get("uuid")}),
-            "reserved_cpu": any(r.get("cpu") for r in resv)}
+            "reserved_cpu": any(r.get("cpu") for r in resv),
+            "agent_rotation": p.get("agent_rotation") if isinstance(p.get("agent_rotation"), dict) else {}}
 
 
 def fitting_devices(host: dict, dem: dict, reserved_too: bool = False) -> list[str]:

@@ -194,7 +194,16 @@ def probe(now: float | None = None) -> dict:
             "lease": {k: lease.get(k) for k in ("ok", "error", "leases", "queue") if k in lease},
             "lease_cmd": config.lease_cmd(), "ci_envs": config.ci_envs(), "worktree_root": config.worktree_root(),
             "holder_history": holder_history(host, now), "reservations": reservations,
-            "maintenance": _maintenance_now(now)}
+            "agent_rotation": _agent_rotation(), "maintenance": _maintenance_now(now)}
+
+
+def _agent_rotation() -> dict:
+    """This host's Azure agent rotation (agent_rotation.summary); an unreadable record is reported, never fatal."""
+    try:
+        import agent_rotation
+        return agent_rotation.summary()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"unreadable: {str(exc)[:160]}"}
 
 
 def _maintenance_now(now: float) -> dict | None:
@@ -1193,7 +1202,8 @@ def cmd_status(a) -> int:
         for h in s["hosts"]:
             v = s["plan"]["hosts"].get(h["name"]) or {}
             out["hosts"].append({k: h[k] for k in ("name", "fresh", "reasons", "lease_ok", "cores", "mem_avail_gib",
-                                                   "gpus", "envs", "worktree_root", "reservations")}
+                                                   "gpus", "envs", "worktree_root", "reservations",
+                                                   "agent_rotation")}
                                 | {"holders": v.get("holders", []), "queue": v.get("queue", []),
                                    "drain_in_s": round(v["drain"] - s["now"]) if v.get("drain") else None})
         print(json.dumps(out, indent=1, default=str))
@@ -1217,6 +1227,12 @@ def cmd_status(a) -> int:
             devs = ", ".join(d.get("uuid", "?") for d in r.get("devices") or []) or "no GPU"
             print(f"  reserved {r.get('id')} for {r.get('for')}: {devs}{' + cpu-heavy' if r.get('cpu') else ''} "
                   f"until {r.get('until')} (out of the CI pool)")
+        import agent_rotation
+        rot = h.get("agent_rotation") or {}
+        if agent_rotation.describe(rot):
+            print(f"  {agent_rotation.describe(rot)}")
+        for b, v in sorted((rot.get("builds") or {}).items()):
+            print(f"  az-build:{b} {v.get('step')}: {v.get('why')}")
         for x in v.get("holders", []):
             print(f"  holder {x['name']} [{','.join(x['keys'])}] {'external ' if x['external'] else ''}"
                   f"elapsed {_fmt_in(x['elapsed_s'])} remaining {_fmt_in(x['remaining_s'])} ({x['est_source']})"

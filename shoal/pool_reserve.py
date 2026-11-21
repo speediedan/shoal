@@ -13,6 +13,8 @@ the CI pool. Reservations are recorded in a host-local file (`<data_root>/_pool/
 reported by `pool probe`, and released by `pool release`, at `--until` (a time, or the end of the
 owner's job of that name), or when their holder dies. The planner treats reserved resources as
 unavailable to CI work; a `research` job placed with `--place` runs only inside a reservation its role owns.
+While any reservation stands (or is still taking its holds), this host's Azure agent is out of rotation and a
+build already waiting here on a reserved resource is re-queued (agent_rotation.py).
 """
 from __future__ import annotations
 
@@ -166,6 +168,23 @@ def reserve(resources: str, owner: str, until: str, note: str = "", timeout_min:
     rid = f"r{time.strftime('%m%d%H%M', time.gmtime(now))}-{secrets.token_hex(2)}"
     hdir = os.path.join(_dir(), "holds")
     os.makedirs(hdir, exist_ok=True)
+    import agent_rotation
+    agent_rotation.mark_pending(rid)  # out of rotation before the holds' wait: a job assigned meanwhile queues behind it
+    try:
+        agent_rotation.tick(now, force=True)
+        rec = _take_holds(rid, hdir, items, lease_cmd, owner, gpus, timeout_min, until, note, now)
+    finally:
+        agent_rotation.clear_pending(rid)
+    agent_rotation.tick(force=True)  # a failed reservation puts the agent back here; a held one sweeps waiting builds
+    if rec.get("error"):
+        raise ValueError(rec["error"])
+    rec["rotation"] = agent_rotation.describe(agent_rotation.summary())
+    return rec
+
+
+def _take_holds(rid, hdir, items, lease_cmd, owner, gpus, timeout_min, until, note, now) -> dict:
+    """The holds of one reservation, recorded; {"error": why} when one is not acquired (what was taken is released)."""
+    import pool_cli
     holds = []
     for n, item in enumerate(items):
         pidfile = os.path.join(hdir, f"{rid}-{n}.pid")
@@ -180,7 +199,7 @@ def reserve(resources: str, owner: str, until: str, note: str = "", timeout_min:
         if not ok:
             for h in holds:
                 _release_hold(lease_cmd, h)
-            raise ValueError(f"hold {n} ({item['kind']}) not acquired: {why or 'no holder'}")
+            return {"error": f"hold {n} ({item['kind']}) not acquired: {why or 'no holder'}"}
         try:
             dev = _text(pidfile + ".device").strip()
         except OSError:
@@ -217,6 +236,9 @@ def release(rid: str, reason: str = "released") -> dict | None:
                     os.killpg(int(_text(h["pidfile"]).strip()), signal.SIGTERM)
         _save(d)
     rec["released"] = reason
+    import agent_rotation
+    agent_rotation.tick(force=True)  # the last reservation here ending puts the agent back in rotation
+    rec["rotation"] = agent_rotation.describe(agent_rotation.summary())
     return rec
 
 
@@ -252,6 +274,8 @@ def expire(now: float | None = None, emit=True) -> list[dict]:
                 out.append(r)
                 if emit:
                     _emit(r, "released", f"{rid} {reason}")
+    import agent_rotation
+    agent_rotation.tick(now)  # level-triggered: a refused change is retried, a waiting build is swept
     return out
 
 
@@ -317,6 +341,8 @@ def cmd_reserve(a) -> int:
     print(f"RESERVED {rec['id']} on {rec['host']} for {rec['for']}: {devs}{' + cpu-heavy' if rec.get('cpu') else ''} "
           f"until {rec['until']}\nrelease with: {config.cli()} pool release {rec['id']}"
           + (f" --host {a.host}" if a.host and a.host != local else ""))
+    if rec.get("rotation"):
+        print(rec["rotation"])
     return 0
 
 
@@ -338,6 +364,8 @@ def cmd_release(a) -> int:
         print(json.dumps(rec))
         return 0
     print(f"RELEASED {rec['id']} on {rec.get('host')} (was for {rec.get('for')})")
+    if rec.get("rotation"):
+        print(rec["rotation"])
     return 0
 
 
