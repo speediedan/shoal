@@ -655,7 +655,12 @@ escalates to a page. Adding a harness means adding its `wake`, not changing the 
 worker** is woken with no other session's turn: `claude --bg --resume <session> "<text>"` continues it
 under the same id, with its saved options, and the text as its prompt (verified 2026-10-20; the prompt
 cache is mostly kept). It forks a copy only while a worker is running, and shoal stops and removes any
-copy that appears. Modes:
+copy that appears. Claude resumes a session only from the directory it was started in, and trusts a
+directory only as a worktree of a trusted repository, so when that directory is gone shoal recreates it as
+a detached worktree of the shoal's `dir` at its HEAD (`backends.restore_session_dir`), resumes there, and
+prefixes the wake with a note that it is a placeholder; when it cannot (no `dir`, the parent is gone too),
+the wake fails naming the missing directory (2026-11-21: fts-core had deleted the worktree its session
+started in, and every wake failed "Workspace not trusted ... could not be resolved on disk"). Modes:
 
 | `direct_wake` | a session with no worker | a live session idle at its prompt, nothing in flight | anything else (mid-turn, at a question, background work in flight) |
 | --- | --- | --- | --- |

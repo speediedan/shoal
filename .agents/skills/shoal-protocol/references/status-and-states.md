@@ -49,5 +49,9 @@ activity, which goes in your prose and the ledger:
 - **The Worktrees row names every tree you read or write,** your active one first.
 - **A worktree leaves the row only after** its branch merged and `git worktree prune` confirmed
   the removal.
+- **Never remove or rename the directory your own session started in.** Your harness resumes your
+  session only from that directory, so every wake would fail. To replace that worktree, make the new
+  one beside it, work there by absolute path, and leave the old path in place until your next restart.
+  (If it does go missing, shoal restores it at the next wake as a detached placeholder worktree.)
 - **Decisions and authorizations never go in the block.** They are prompted asks
   (`asks-and-offline.md`).
