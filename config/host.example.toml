@@ -58,6 +58,22 @@
 # organization, but the CLI needs its project). Default: [azure_project].
 # azure_projects = ["<project>", "<other project>"]
 
+# This host's Azure Pipelines self-hosted agent, taken out of rotation while a research reservation (`shoal pool
+# reserve`) stands here: the user capabilities below are removed from it, so jobs demanding them go to another agent,
+# and exactly what was removed is put back when the last reservation here ends. A build already waiting here on a
+# reserved device is cancelled at its stage and the stage retried, so it lands on another agent. On wherever azure_org
+# is set. The PAT file (mode 600) needs Agent Pools (Read & manage) and Build (Read & execute); without it the
+# reservation still succeeds and the agent stays in rotation (`pool status` and `doctor` say so). Env for the path:
+# SHOAL_AZURE_AGENT_PAT. Every key is optional; the defaults are shown.
+# [azure_agent]
+# pat = "~/.config/shoal/azure-agent-pat"
+# name = "<this host's server name>"     # the agent's name in the pool
+# pool = "Default"
+# capabilities = ["ci-any-vendor"]       # add "ci-vendor-marked" to fail a vendor-pinned leg at once instead of waiting
+# requeue = true                         # false: a build already waiting here is left (its owner is still told)
+# waiter_pattern = '^azure-(?:.*-)?(\d+)$'   # how a lease waiter names its build (group 1: the build id)
+# enabled = false                        # off on this host
+
 # Tools whose calls (wait-target checks) run under `bash -lc`, for a credential exported only from a login
 # profile: health units get no profile, and `az` without AZURE_DEVOPS_EXT_PAT hangs to the timeout.
 # Default: [] (tools run in the tool environment as they are).

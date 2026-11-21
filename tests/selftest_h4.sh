@@ -233,6 +233,7 @@ import providers; print(providers.resolve('lease:gpu', 'tl', 'x')[0])")
 echo "== 6c pool placement: job run --place over two fake hosts (probe over an ssh stub, dry-run, live, transfer)"
 python3 "$TESTD/test_pool.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_pool.py"; fail "pool planner unit tests (tests/test_pool.py)"; }
 python3 "$TESTD/test_job_memory.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_job_memory.py"; fail "job memory ceilings (tests/test_job_memory.py)"; }
+python3 "$TESTD/test_agent_rotation.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_agent_rotation.py"; fail "azure agent rotation for research reservations (tests/test_agent_rotation.py)"; }
 pool_clean() { have_systemd && systemctl --user stop 'shoal-pooltest-*' 2>/dev/null; rm -rf /tmp/pooltest; }
 pool_clean
 PL="$S/pool"; mkdir -p "$PL/home-data" "$PL/far-data" "$PL/far-home" "$PL/bin" "$PL/rc"

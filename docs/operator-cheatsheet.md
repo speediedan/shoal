@@ -287,6 +287,15 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
   `JOB-VERDICT ... result=oom-kill`; `systemctl --user status shoal-jobs.slice` shows the slice's current use.
 - A host whose probe fails or is stale is ineligible, never an error: check it with
   `ssh <route> shoal pool probe --json`.
+- A research reservation takes the host's Azure agent out of rotation (`ci-any-vendor` removed, so
+  any-vendor gates go to the other agent) and restores exactly that when the last reservation there ends;
+  a build already waiting there on the reserved device is cancelled and its stage retried, so it runs on
+  the other agent. `pool reserve` and `pool status` print the agent's state (`OUT of rotation since ...`,
+  or `NOT out of rotation: <why>`), and `doctor` checks the credential. It needs, on each GPU host, a PAT
+  with **Agent Pools (Read & manage)** and **Build (Read & execute)** in a 0600 file:
+  `install -m 600 /dev/stdin ~/.config/shoal/azure-agent-pat` (or `[azure_agent] pat = "<path>"`). Without
+  it the reservation still succeeds and the agent stays in rotation. The record and log are
+  `<data_root>/_pool/agent-rotation.json` and `.jsonl`.
 - **Trial before rollout.** Point a route's `cli` at a pre-release checkout on that host, so the trial
   runs there without upgrading its live install, then remove the line after the rollout:
   `[hosts.<server>]` with `cli = "python3 /path/to/pre-release-checkout/shoal/cli.py"`. Run home's side

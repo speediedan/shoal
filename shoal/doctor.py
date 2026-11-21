@@ -7,7 +7,8 @@ Runs before a launch (no spec: host checks only) and any time after
 
 Host checks: python version, tool binaries on the explicit tool PATH
 (openchamber, claude, gh, az, git, systemctl), openchamber server
-reachable, AZURE_DEVOPS_EXT_PAT resolvable, gh auth, shoal roots writable,
+reachable, AZURE_DEVOPS_EXT_PAT resolvable, gh auth, the Azure agent rotation
+credential and state (agent_rotation.py), shoal roots writable,
 linger enabled,
 stale systemd units pointing at missing files.
 
@@ -186,6 +187,12 @@ def host_checks(d: Doc) -> None:
             pass
     if prof["azure"]:
         (d.ok if pat else d.warn)("AZURE_DEVOPS_EXT_PAT", "resolvable" if pat else "unset (pipeline watcher will refuse to judge)")
+    try:
+        import agent_rotation
+        for level, text in agent_rotation.doctor_lines():
+            getattr(d, level)("azure agent rotation", text)
+    except Exception as exc:  # noqa: BLE001
+        d.warn("azure agent rotation", f"check failed: {exc}")
     signers = config.grant_allowed_signers()
     if os.path.exists(signers):
         d.ok("grant signers", signers)
