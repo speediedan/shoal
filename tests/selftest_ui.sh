@@ -3875,6 +3875,7 @@ echo "act plan and apply ok"
 # the Queue dialog: one role's queue and candidates (read-only), and its batch as one plan
 python3 - "$SHOALD" <<'PYQ' || fail "queue manager: state and batch"
 """ui_queue on a synthetic ledger: the read side's rows and sources, and the batch's steps."""
+import datetime
 import os
 import sys
 import types
@@ -3905,11 +3906,15 @@ roles = [R("cl"), R("oc", "assigned"), R("cx")]
 spec = types.SimpleNamespace(sid="qtest", roles=roles, features={}, sources=[], effective_repos=["example/repo"],
                              role=lambda s: next((r for r in roles if r.slug == s), None), ledger_dir="")
 n = [0]
+BASE = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0) - datetime.timedelta(days=2)
 
 
 def ev(by, typ, **kw):
     n[0] += 1
-    e = {"id": f"e{n[0]}", "ts": f"2026-11-08T0{n[0] // 10}:{n[0] % 10}0:00Z", "by": by, "type": typ, **kw}
+    # relative to now: a release older than ui_queue.RELEASED_DAYS is no candidate, so fixed dates expire
+    # (2026-11-22: the fixture's 2026-11-08 release aged out and every upgrade's selftest_ui failed)
+    ts = (BASE + datetime.timedelta(minutes=10 * n[0])).strftime("%Y-%m-%dT%H:%M:%SZ")
+    e = {"id": f"e{n[0]}", "ts": ts, "by": by, "type": typ, **kw}
     if typ == "queue":
         e["_writer_file"] = by
     return e
