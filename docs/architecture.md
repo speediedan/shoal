@@ -547,7 +547,30 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   and `resources watch` sample compares "a reservation stands" with the record, so a crash between the
   record and Azure, or a refused change, is put right on a later tick (retried every 5 min; a reservation
   or release acts at once). The last enabled agent with those capabilities stays in rotation, since jobs
-  demanding them would then fail at once instead of waiting. `ci-vendor-marked` is not removed by
+  demanding them would then fail at once instead of waiting.
+  **Swap.** When every pool host whose agent shoal manages holds a reservation, that last agent should be
+  the one whose host still has the most usable free CI capacity, not whichever reserved last (measured
+  2026-11-21: one host had reserved one of its two 32 GB GPUs and left rotation; the other then reserved
+  its 24 GB GPU, leaving an 8 GB card, and was kept in as the last agent, so a build needing one large GPU
+  waited there while a 32 GB GPU sat free; the operator swapped them by hand). Hosts are ranked by
+  (unreserved GPUs of at least `large_gpu_gib`, default 16; cpu-heavy unreserved; unreserved GPUs), in
+  that order; a whole-server job cannot run on a reserved host either way. Each host changes only its own
+  agent and runs its own reconcile, so they agree by computing the same choice from the same views: the
+  `resources watch` tick (never a probe's own tick, which a peer's probe of this host triggers) reads the
+  other pool hosts' `pool probe` over their routes every 2 min while a reservation stands here and records
+  them; any tick within 10 min uses that record. The chosen host, if out of rotation, puts back what it
+  removed although its reservation stands (`kept IN rotation while reserved (swap)` in `pool status`);
+  the host kept only by the last-agent guard then leaves on its next try (within 5 min) because another
+  agent has the capabilities again, and its waiting build is re-queued as usual. The agent already in
+  rotation keeps its place unless another host ranks strictly higher, so a VRAM difference alone (24 GB
+  against 32 GB, both large) never swaps and repeated ticks never flap; among hosts that rank equal and
+  are both in, the larger free GPU and then the name decide, the same on every host. The rule changes
+  nothing when a host holds no reservation (the reserved ones leave, as before), when a peer's probe
+  failed or is stale (a host kept in by the swap stays in), when an enabled agent with the capabilities
+  belongs to no pool host whose agent shoal manages, or with `swap = false`. Its limits: the views are a
+  few minutes old, so a choice made just as a reservation starts or ends can leave both reserved agents
+  in rotation for one refresh; and a host learns its peers only over `[hosts.*]` routes, so each GPU host
+  needs a route to the other. `ci-vendor-marked` is not removed by
   default: a vendor-pinned leg can run nowhere else, a short reservation can end inside its lease budget,
   and on a host whose stages can use an unreserved device it still passes; listing it in `capabilities`
   makes such a leg fail at once ("no agent matches demands") instead.
@@ -557,7 +580,13 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   then `retry` once the stage completes), so the same build (pull request status, reason, parameters) is
   assigned again by its demands; a stage that cannot be cancelled is cancelled with its build. Only when
   the agent no longer meets the job's demands and another enabled agent does; a vendor-pinned job, one
-  under `requeue = false`, or any while the agent is not out of rotation is left to wait. Each build is
+  under `requeue = false`, or any while the agent is not out of rotation is left to wait. A build whose
+  cancel was sent is followed up on every tick whatever the reservations and the rotation are by then, with
+  no lease helper needed: its stage is retried once it reads completed, or after 15 min it is recorded
+  cancelled and its owner told to rerun it. The record outlives the out-of-rotation period with the
+  reservations it was cancelled for, so the owner is still told after they end (measured 2026-11-21: a
+  reservation released 15 s after a stage cancel dropped the record, and the build stayed cancelled until
+  the operator retried it by hand). Each build is
   handled once per out-of-rotation period, and its owners (roles on this host whose wait target names
   `az-build:<id>`, else `user` of the reservation's shoal) get a ledger message (`ci-requeued`,
   `ci-cancelled` when the retry failed, `ci-blocked` when it was left) and the reservation's shoal a

@@ -141,8 +141,9 @@ class Rotation(unittest.TestCase):
         self.az = FakeAzure()
         self.api = patch.object(self.ar, "make_api", side_effect=self.make_api)
         self.api.start()
-        self.told = []
-        self.tell = patch.object(self.ar, "_tell", side_effect=lambda ev, resv, cfg: self.told.append(ev))
+        self.told, self.told_resv = [], []
+        self.tell = patch.object(self.ar, "_tell", side_effect=lambda ev, resv, cfg: (self.told.append(ev),
+                                                                                      self.told_resv.append(resv)))
         self.tell.start()
         self.err = io.StringIO()
         self.stderr = contextlib.redirect_stderr(self.err)
@@ -154,7 +155,7 @@ class Rotation(unittest.TestCase):
 
     def tearDown(self):
         self.stderr.__exit__(None, None, None)
-        for p in self.data.glob("_pool/holds/*.pid"):
+        for p in list(self.data.glob("_pool/holds/*.pid")) + list(Path(self.d).glob("data-*/_pool/holds/*.pid")):
             with contextlib.suppress(OSError, ValueError):
                 os.kill(int(p.read_text().strip()), 15)
         self.tell.stop()
@@ -467,6 +468,249 @@ class Rotation(unittest.TestCase):
         self.assertEqual(kind, "ci-cancelled")
         self.assertIn("NOT queued again", text)
         self.pr.release(rec["id"])
+
+    def cancel_pending(self, build_id=2347):
+        """Reserve, and leave a build's stage cancel sent but not yet completed (Azure still cancelling)."""
+        rec = self.reserve()
+        self.az.agents[9]["assignedRequest"] = assigned(build_id)
+        self.az.timelines[build_id] = timeline()
+        self.queue({"key": "gpu", "waiter": f"azure-it-{build_id}", "ticket": "7", "want": ["GPU-big"]})
+        real = self.az.call
+
+        def slow(method, path, query=None, body=None, project=""):
+            out = real(method, path, query, body, project)
+            if method == "PATCH" and body.get("state") == "cancel":
+                for r in self.az.timelines[build_id]:
+                    r["state"] = "inProgress"  # still cancelling
+            return out
+        with patch.object(self.az, "call", side_effect=slow):
+            self.ar.sweep()
+        self.assertEqual(self.ar.load_state()["builds"][str(build_id)]["step"], "cancel-sent")
+        return rec
+
+    def test_a_cancel_sent_build_is_retried_after_the_reservation_ends(self):
+        # measured 2026-11-21: out 23:35:42, stage cancel sent 23:35:43, reservation ended 23:35:58, never retried
+        rec = self.cancel_pending()
+        self.queue()  # the cancelled job's waiter left the lease queue
+        self.pr.release(rec["id"])
+        self.assertEqual(self.caps()["ci-any-vendor"], "1")  # back in rotation
+        st = self.ar.load_state()
+        self.assertEqual(st["builds"]["2347"]["step"], "cancel-sent")  # the release kept the build to follow up
+        self.assertEqual(st["builds"]["2347"]["resv"][0]["id"], rec["id"])
+        self.assertEqual(self.told, [])
+        for r in self.az.timelines[2347]:
+            r["state"] = "completed"
+        self.ar.tick()  # no reservation stands now: the follow-up still runs
+        retries = [p for p in self.az.writes("PATCH") if p[2]["state"] == "retry"]
+        self.assertEqual([(p[1], p[3]) for p in retries], [("build/builds/2347/stages/__default", "proj-guid")])
+        self.assertEqual([(e["build"], e["step"]) for e in self.told], [(2347, "retried")])
+        self.assertEqual([r["id"] for r in self.told_resv[0]], [rec["id"]])  # the owner is still known
+        kind, text = self.ar.message(self.told[0], self.told_resv[0], config.azure_agent())
+        self.assertEqual(kind, "ci-requeued")
+        self.assertIn(rec["id"], text)
+        self.ar.tick()
+        self.assertFalse(os.path.exists(self.ar.path()))  # done: nothing left to record
+        self.assertEqual(len([p for p in self.az.writes("PATCH") if p[2]["state"] == "retry"]), 1)
+
+    def test_a_cancel_that_never_settles_is_reported_without_reservations(self):
+        rec = self.cancel_pending()
+        self.queue()
+        self.pr.release(rec["id"])
+        self.write_cfg_without_lease()  # the follow-up needs neither a reservation nor the lease helper
+        now = time.time()
+        self.ar.tick(now + 60)
+        self.assertEqual(self.ar.load_state()["builds"]["2347"]["step"], "cancel-sent")  # still cancelling
+        self.ar.tick(now + self.ar.CANCEL_SETTLE_S + 60)
+        self.assertEqual([(e["build"], e["step"]) for e in self.told], [(2347, "cancelled")])
+        self.assertIn("did not complete within 15 min", self.told[0]["why"])
+        kind, text = self.ar.message(self.told[0], self.told_resv[0], config.azure_agent())
+        self.assertEqual(kind, "ci-cancelled")
+        self.assertIn("Rerun its failed jobs", text)
+        self.assertEqual([p for p in self.az.writes("PATCH") if p[2]["state"] == "retry"], [])
+        # an empty reservation list still makes a message (only roles waiting on the build hear it then)
+        self.assertIn("a research reservation held", self.ar.message(self.told[0], [], config.azure_agent())[1])
+
+    def test_an_unreadable_stage_is_retried_later_then_reported(self):
+        rec = self.cancel_pending()
+        self.queue()
+        self.pr.release(rec["id"])
+        self.az.refuse = True
+        now = time.time()
+        self.ar.tick(now + 60)
+        self.assertEqual(self.ar.load_state()["builds"]["2347"]["step"], "cancel-sent")
+        self.assertIn("not retried yet", self.err.getvalue())
+        self.ar.tick(now + self.ar.CANCEL_SETTLE_S + 60)
+        self.assertEqual([(e["build"], e["step"]) for e in self.told], [(2347, "cancelled")])
+        self.assertIn("could not be read to retry it", self.told[0]["why"])
+
+    def write_cfg_without_lease(self):
+        self.cfg.write_text(f'data_root = "{self.data}"\nazure_org = "https://dev.azure.example/org"\n'
+                            f'[azure_agent]\npat = "{self.pat}"\n')
+        config._CACHE.clear()
+
+    # ---- the swap: both hosts reserved ----
+
+    def test_keep_choice(self):
+        def v(host, free, inn, reserved=True, cpu_free=True, fresh=True):
+            return self.ar.host_view(host, host, [{"uuid": f"{host}-{i}", "vram_gib": g} for i, g in enumerate(free)],
+                                     [], not cpu_free, reserved, inn, 16.0, fresh=fresh)
+        # the incident: a kept with only its 8 GB card free, b out with a 32 GB card free
+        self.assertEqual(self.ar.keep_choice([v("a", [8], True), v("b", [32], False)])[0], "b")
+        # once both are in, b stays and a leaves; and b stays when a is out
+        self.assertEqual(self.ar.keep_choice([v("a", [8], True), v("b", [32], True)])[0], "b")
+        self.assertEqual(self.ar.keep_choice([v("a", [8], False), v("b", [32], True)])[0], "b")
+        # a VRAM difference alone is no swap: both have a large card free, the one in rotation stays
+        self.assertEqual(self.ar.keep_choice([v("a", [24], True), v("b", [32], False)])[0], "a")
+        self.assertEqual(self.ar.keep_choice([v("a", [24], False), v("b", [32], True)])[0], "b")
+        # nobody in (a race): the larger free card
+        self.assertEqual(self.ar.keep_choice([v("a", [24], False), v("b", [32], False)])[0], "b")
+        # cpu-heavy reserved ranks below cpu-heavy free, above fewer large cards
+        self.assertEqual(self.ar.keep_choice([v("a", [24], True, cpu_free=False), v("b", [24], False)])[0], "b")
+        self.assertEqual(self.ar.keep_choice([v("a", [24, 24], True, cpu_free=False), v("b", [24], False)])[0], "a")
+        # the rule does not apply: a host without a reservation, a stale view, one host
+        self.assertEqual(self.ar.keep_choice([v("a", [8], True), v("b", [32, 32], False, reserved=False)])[0], "")
+        self.assertEqual(self.ar.keep_choice([v("a", [8], True), v("b", [32], False, fresh=False)])[0], "")
+        self.assertEqual(self.ar.keep_choice([v("a", [8], True)])[0], "")
+
+    @contextlib.contextmanager
+    def as_host(self, name):
+        """Run as another pool host: its own config, data root and state file, the same Azure."""
+        if name == "gpuhost-a":
+            env = {"SHOAL_CONFIG": str(self.cfg), "SHOAL_DATA_ROOT": str(self.data), "SHOAL_SERVER": name}
+        else:
+            env = {"SHOAL_CONFIG": str(Path(self.d) / f"host-{name}.toml"),
+                   "SHOAL_DATA_ROOT": str(Path(self.d) / f"data-{name}"), "SHOAL_SERVER": name}
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        config._CACHE.clear()
+        try:
+            yield
+        finally:
+            for k, val in saved.items():
+                if val is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = val
+            config._CACHE.clear()
+
+    def add_host_b(self):
+        data = Path(self.d) / "data-gpuhost-b"
+        sdir = data / "_resources" / "gpuhost-b"
+        sdir.mkdir(parents=True)
+        now = time.time()
+        (sdir / time.strftime("events-%Y%m%d.jsonl", time.gmtime(now))).write_text(json.dumps(
+            {"type": "resource_sample", "ts": now, "memory": {"available_bytes": 1 << 34},
+             "gpus": [{"uuid": "GPU-b1", "vendor": "amd", "vram_total_mib": 32768},
+                      {"uuid": "GPU-b2", "vendor": "amd", "vram_total_mib": 32768}]}) + "\n")
+        (Path(self.d) / "host-gpuhost-b.toml").write_text(
+            f'data_root = "{data}"\nlease_cmd = "{self.helper}"\nazure_org = "https://dev.azure.example/org"\n'
+            f'[azure_agent]\npat = "{self.pat}"\n')
+
+    def probe_of(self, host, now):
+        """What `pool probe` on `host` reports, as far as the swap rule reads it."""
+        import pool_cli
+        with self.as_host(host):
+            return {"type": "pool_probe", "host": host, "ts": now, "fetched_ts": now,
+                    "gpus": (pool_cli._latest_sample(host) or {}).get("gpus") or [], "lease": {},
+                    "reservations": self.pr.report(), "agent_rotation": self.ar.summary()}
+
+    def tick_as(self, host, now):
+        import pool_cli
+        other = "gpuhost-b" if host == "gpuhost-a" else "gpuhost-a"
+        with self.as_host(host), \
+                patch.object(pool_cli, "pool_names", return_value=["gpuhost-a", "gpuhost-b"]), \
+                patch.object(self.ar, "_peer_probes", side_effect=lambda t, names: {other: self.probe_of(other, t)}):
+            return self.ar.tick(now, peers=True)
+
+    def test_both_hosts_reserved_the_one_with_the_larger_free_gpu_stays_in(self):
+        # measured 2026-11-21: b reserved one of its two 32 GB cards and left rotation; then a reserved its 24 GB card,
+        # leaving only 8 GB free, and the last-agent guard kept a in, so a build needing one large GPU waited there
+        self.add_host_b()
+        with self.as_host("gpuhost-b"):
+            rb = self.pr.reserve("gpu@GPU-b1", "s/r", "job:study")
+        self.assertNotIn("ci-any-vendor", self.caps(10))
+        ra = self.reserve("gpu@GPU-big")
+        self.assertIn("kept in rotation: no other enabled agent", ra["rotation"])
+        self.assertEqual(self.caps(9)["ci-any-vendor"], "1")
+        self.az.agents[9]["assignedRequest"] = assigned(2347)
+        self.az.timelines[2347] = timeline()
+        self.queue({"key": "gpu", "waiter": "azure-it-2347", "ticket": "9", "want": ["GPU-big"]})
+        t = time.time()
+        self.tick_as("gpuhost-a", t + 1)  # a is not chosen, and still the last agent: it waits for b
+        self.assertEqual(self.caps(9)["ci-any-vendor"], "1")
+        self.tick_as("gpuhost-b", t + 2)  # b is chosen: it comes back in although its reservation stands
+        self.assertEqual(self.caps(10)["ci-any-vendor"], "1")
+        with self.as_host("gpuhost-b"):
+            s = self.ar.summary()
+            self.assertEqual((s["out"], s["kept"]), (False, "best"))
+            self.assertIn("kept IN rotation while reserved (swap)", self.ar.describe(s))
+            self.assertIn("gpuhost-b has the most usable free CI capacity", self.ar.describe(s))
+        self.tick_as("gpuhost-a", t + self.ar.RETRY_S + 3)  # a's next try: b has the capability now, so a leaves
+        self.assertNotIn("ci-any-vendor", self.caps(9))
+        # the build waiting on a's reserved card moves to b
+        self.assertEqual([(p[1], p[2]["state"]) for p in self.az.writes("PATCH")],
+                         [("build/builds/2347/stages/__default", "cancel"),
+                          ("build/builds/2347/stages/__default", "retry")])
+        self.assertEqual([(e["build"], e["step"]) for e in self.told], [(2347, "left-not-out"), (2347, "retried")])
+        puts = len(self.az.writes("PUT"))
+        self.assertEqual(puts, 3)  # b out, b back in, a out
+        for k in range(1, 6):  # no flapping across repeated ticks of both hosts
+            when = t + k * (self.ar.RETRY_S + 1) + 10
+            self.tick_as("gpuhost-a", when)
+            self.tick_as("gpuhost-b", when + 1)
+            self.assertEqual(len(self.az.writes("PUT")), puts)
+            self.assertNotIn("ci-any-vendor", self.caps(9))
+            self.assertEqual(self.caps(10)["ci-any-vendor"], "1")
+        # a's reservation ends: a comes back in and b, reserved, leaves as before the swap
+        self.pr.release(ra["id"])
+        self.assertEqual(self.caps(9)["ci-any-vendor"], "1")
+        self.tick_as("gpuhost-b", t + 10 * (self.ar.RETRY_S + 1))
+        self.assertNotIn("ci-any-vendor", self.caps(10))
+        with self.as_host("gpuhost-b"):
+            self.pr.release(rb["id"])
+        self.assertEqual((self.caps(9)["ci-any-vendor"], self.caps(10)["ci-any-vendor"]), ("1", "1"))
+
+    def test_no_swap_on_a_vram_difference_or_an_unknown_view(self):
+        self.add_host_b()
+        with self.as_host("gpuhost-b"):
+            rb = self.pr.reserve("gpu@GPU-b1", "s/r", "job:study")
+        ra = self.reserve("gpu@GPU-small")  # a keeps its 24 GB card free: as usable as b's 32 GB one
+        self.assertEqual(self.caps(9)["ci-any-vendor"], "1")
+        t = time.time()
+        for k in range(3):
+            self.tick_as("gpuhost-b", t + k * (self.ar.RETRY_S + 1) + 1)
+            self.tick_as("gpuhost-a", t + k * (self.ar.RETRY_S + 1) + 2)
+        self.assertEqual((self.caps(9).get("ci-any-vendor"), self.caps(10).get("ci-any-vendor")), ("1", None))
+        self.assertEqual(self.ar.load_state()["kept"], "best")  # a is the choice now, not only the last agent
+        # a view of a that cannot be read moves nothing on b
+        import pool_cli
+        self.pr.release(ra["id"])
+        ra = self.reserve("gpu@GPU-big")  # now b would be better, but b cannot see a
+        with self.as_host("gpuhost-b"), \
+                patch.object(pool_cli, "pool_names", return_value=["gpuhost-a", "gpuhost-b"]), \
+                patch.object(self.ar, "_peer_probes",
+                             side_effect=lambda t, names: {"gpuhost-a": {"host": "gpuhost-a", "error": "rc=255"}}):
+            self.ar.tick(t + 5 * self.ar.RETRY_S, peers=True)
+        self.assertNotIn("ci-any-vendor", self.caps(10))
+        self.pr.release(ra["id"])
+        with self.as_host("gpuhost-b"):
+            self.pr.release(rb["id"])
+
+    def test_swap_off(self):
+        self.add_host_b()
+        for p in (self.cfg, Path(self.d) / "host-gpuhost-b.toml"):
+            p.write_text(p.read_text() + "swap = false\n")
+        config._CACHE.clear()
+        with self.as_host("gpuhost-b"):
+            rb = self.pr.reserve("gpu@GPU-b1", "s/r", "job:study")
+        ra = self.reserve("gpu@GPU-big")
+        t = time.time()
+        self.tick_as("gpuhost-b", t + 1)
+        self.tick_as("gpuhost-a", t + self.ar.RETRY_S + 2)
+        self.assertEqual((self.caps(9).get("ci-any-vendor"), self.caps(10).get("ci-any-vendor")), ("1", None))
+        self.pr.release(ra["id"])
+        with self.as_host("gpuhost-b"):
+            self.pr.release(rb["id"])
 
     def test_owners_are_the_roles_waiting_on_the_build(self):
         sid = f"rotationtest{os.getpid()}"

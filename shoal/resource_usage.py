@@ -783,10 +783,11 @@ def full_sample(a):
             pass
         _atomic_write(a.prom_out, text)
     if config is not None:
-        # research reservations expire at --until even when nobody probes the pool
+        # research reservations expire at --until even when nobody probes the pool; this tick (never a probe's)
+        # also reads the other pool hosts' probes for the agent rotation's swap rule, while a reservation stands here
         try:
             import pool_reserve
-            pool_reserve.expire(s["ts"])
+            pool_reserve.expire(s["ts"], peers=True)
         except Exception as exc:  # noqa: BLE001 - never stops the sampler
             print(json.dumps({"reservation_expiry_error": str(exc)[:200]}), file=sys.stderr, flush=True)
     for spec_path in role_time_specs(a):

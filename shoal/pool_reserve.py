@@ -253,9 +253,10 @@ def job_finished(sid: str, role: str, name: str) -> bool:
     return any(os.path.exists(p) for p in rcs)
 
 
-def expire(now: float | None = None, emit=True) -> list[dict]:
+def expire(now: float | None = None, emit=True, peers: bool = False) -> list[dict]:
     """Release reservations past `--until` (a time passed, or the owner's job finished) and drop those
-    whose holder died. Each release is a `released` event in the owner's shoal telemetry."""
+    whose holder died. Each release is a `released` event in the owner's shoal telemetry. `peers`: the
+    agent rotation tick may read the other pool hosts' probes (the `resources watch` sample only)."""
     now = time.time() if now is None else now
     out = []
     for rid, rec in list(load().items()):
@@ -275,7 +276,7 @@ def expire(now: float | None = None, emit=True) -> list[dict]:
                 if emit:
                     _emit(r, "released", f"{rid} {reason}")
     import agent_rotation
-    agent_rotation.tick(now)  # level-triggered: a refused change is retried, a waiting build is swept
+    agent_rotation.tick(now, peers=peers)  # level-triggered: a refused change is retried, a waiting build is swept
     return out
 
 
