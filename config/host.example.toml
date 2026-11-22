@@ -72,6 +72,9 @@
 # capabilities = ["ci-any-vendor"]       # add "ci-vendor-marked" to fail a vendor-pinned leg at once instead of waiting
 # requeue = true                         # false: a build already waiting here is left (its owner is still told)
 # waiter_pattern = '^azure-(?:.*-)?(\d+)$'   # how a lease waiter names its build (group 1: the build id)
+# swap = true                            # every pool host reserved: keep in the agent whose host has the most free
+#                                        # usable capacity (reads the other hosts' `pool probe` over their routes)
+# large_gpu_gib = 16                     # a GPU this large or larger counts as large in that comparison
 # enabled = false                        # off on this host
 
 # Tools whose calls (wait-target checks) run under `bash -lc`, for a credential exported only from a login

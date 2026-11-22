@@ -332,6 +332,7 @@ def azure_projects() -> list[str]:
 
 AZURE_AGENT_CAPS = ("ci-any-vendor",)
 AZURE_WAITER_PATTERN = r"^azure-(?:.*-)?(\d+)$"
+AZURE_LARGE_GPU_GIB = 16.0
 
 
 def azure_agent() -> dict:
@@ -348,7 +349,10 @@ def azure_agent() -> dict:
       capabilities    the user capabilities taken away while a reservation stands (default ["ci-any-vendor"])
       requeue         false: a build already waiting here on a reserved resource is left alone (default true)
       waiter_pattern  how a lease waiter names its Azure build: a regex whose group 1 is the build id
-                      (default `^azure-(?:.*-)?(\\d+)$`, matching `azure-<id>` and `azure-<project tag>-<id>`)"""
+                      (default `^azure-(?:.*-)?(\\d+)$`, matching `azure-<id>` and `azure-<project tag>-<id>`)
+      swap            false: when every pool host holds a reservation, the agent the last-agent guard keeps in rotation
+                      is never swapped for one whose host has more usable free capacity (default true)
+      large_gpu_gib   the VRAM a GPU needs to count as large in that comparison (default 16)"""
     t = file_values().get("azure_agent")
     t = t if isinstance(t, dict) else {}
     caps = t.get("capabilities")
@@ -359,7 +363,15 @@ def azure_agent() -> dict:
             "pat": _path(pat), "name": str(t.get("name") or "") or server(),
             "pool": str(t.get("pool") or "Default"), "capabilities": caps,
             "requeue": t.get("requeue") is not False,
-            "waiter_pattern": str(t.get("waiter_pattern") or AZURE_WAITER_PATTERN)}
+            "waiter_pattern": str(t.get("waiter_pattern") or AZURE_WAITER_PATTERN),
+            "swap": t.get("swap") is not False, "large_gpu_gib": _num(t.get("large_gpu_gib"), AZURE_LARGE_GPU_GIB)}
+
+
+def _num(v, default: float) -> float:
+    try:
+        return float(v) if v is not None and not isinstance(v, bool) and float(v) > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def login_shell_tools() -> list[str]:

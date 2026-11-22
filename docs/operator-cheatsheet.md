@@ -296,6 +296,15 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
   `install -m 600 /dev/stdin ~/.config/shoal/azure-agent-pat` (or `[azure_agent] pat = "<path>"`). Without
   it the reservation still succeeds and the agent stays in rotation. The record and log are
   `<data_root>/_pool/agent-rotation.json` and `.jsonl`.
+- When every GPU host holds a reservation, one agent must stay in rotation. shoal keeps the one whose host
+  has the most usable free capacity (unreserved GPUs of at least `[azure_agent] large_gpu_gib`, default 16,
+  then cpu-heavy free, then unreserved GPUs) and swaps on its own: the better host's agent comes back in
+  (`pool status`: `kept IN rotation while reserved (swap)`), and the other leaves within 5 min. No swap on a
+  VRAM difference alone. It needs each GPU host to have a route to the other (it reads their `pool probe`);
+  an unreadable peer changes nothing. `swap = false` under `[azure_agent]` turns it off; putting
+  `ci-any-vendor` back by hand on the better agent still works as before.
+- A build shoal cancelled to move it is retried even if the reservation ends before the cancel completes;
+  if the stage never completes within 15 min the owner gets `ci-cancelled` and reruns it.
 - **Trial before rollout.** Point a route's `cli` at a pre-release checkout on that host, so the trial
   runs there without upgrading its live install, then remove the line after the rollout:
   `[hosts.<server>]` with `cli = "python3 /path/to/pre-release-checkout/shoal/cli.py"`. Run home's side
