@@ -98,6 +98,14 @@ around exactly that. Never point it at anything that writes, wakes a role or sen
 | `legend` | `false` | open with the legend shown (also `l`) |
 | `poll_ms` | `4000` | data poll interval, 1500 to 60000 |
 
+### Not live yet
+
+The feed says how live its status is (`fresh`: when its rows were read, the age past which they are
+stale, and which roles' live state it has not read). While a doc is stale, the canvas header and the
+rail say `updating` and why, the roles it marks (or every role, once its writer has not written for
+longer than the limit) are greyed, and the pulse drawer adds a still `⟳ updating` row. The arc turns
+only at `full` motion. A feed from before this (no `fresh`) is drawn as it was.
+
 ### Keys and pointer (Lattice tab)
 
 Drag to pan (4 px threshold), wheel up to zoom in at the pointer and down to zoom out (a trackpad
@@ -169,7 +177,8 @@ It reads one list and runs one verb, both here (`on` the local machine):
    | `art` | `true` | `false` draws the text screen (logo and host list) |
    | `poll_ms` | `20000` | list poll interval, 10000 to 300000 |
 
-Cards: `local` first, then each route; a green, red or grey dot (reachable, unreachable with the
+A summary that is not live yet (its `fresh` block: some roles' live state not read, or older than
+the feed's limit) greys its lines under an `updating` line. Cards: `local` first, then each route; a green, red or grey dot (reachable, unreachable with the
 doctor hint as its tooltip, not probed yet); a ring on the last choice; per shoal its tag, the
 roles that need you (in the theme's blocked color), working and waiting; a warning when the Herdr
 pin differs. Unreachable cards are greyed and do not click. Keys: arrows or `j`/`k` move, a digit
@@ -225,8 +234,8 @@ The mod's logic is in pure ES modules that run under Node (`model.js`, `layout.j
 `scene.js`, `motion.js`); `main.js` only fetches, translates the display list into GPUI elements and handles
 input.
 
-shoal-home is built the same way (`model.js`, `layout.js`, and `motion.js`, which is a verbatim
-copy of lattice-view's: edit it there, then copy; a test checks they match). shoal-actions keeps
+shoal-home is built the same way (`model.js`, `layout.js`, and `motion.js` and `fresh.js`, which are
+verbatim copies of lattice-view's: edit them there, then copy; a test checks they match). shoal-actions keeps
 its decisions in `model.js` (verbs and forms to argv, reply parsing for every reply kind, the
 preselection from `terminals()`, `focused()` and `spaces()`, keys, the fixture answers).
 

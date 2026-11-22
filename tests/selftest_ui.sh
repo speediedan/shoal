@@ -2233,6 +2233,34 @@ n = {x["id"]: x for x in d4["nodes"]}
 assert n[sid + ":tune"]["work"]["grants_pending"] == [{"item": "push an image", "kind": "image"}], n[sid + ":tune"]["work"]
 assert n["user"]["work"]["grants_pending"] == 1
 assert {s["id"]: s for s in d4["shoals"]}[sid]["metrics"]["grants_pending_n"] == 1
+# freshness: rows built here are as old as the harness listing they read; rows from the status cache as old as the cache
+import routes, ui_status
+f1 = d1["fresh"]
+assert f1["stale_after_s"] == ui_status.STALE_AFTER_S and f1["age_s"] <= 1, f1
+t0 = ui_graph._epoch(d4["ts"]) + 5
+b._cached_shoals = lambda: {sid: {"id": sid, "roles": rows, "_read": t0 - 40}}
+d5 = b.build("", t0)
+assert d5["fresh"]["as_of"] == ui_graph._iso(t0 - 40) and d5["fresh"]["age_s"] == 40 and not d5["fresh"]["stale"], d5["fresh"]
+assert not ui_status.is_stale(d5["fresh"], t0 + 30) and ui_status.is_stale(d5["fresh"], t0 + 60), "a reader judges it by its age"
+# a role on a routed host whose live state was not read (rows built without the UI feeder's merge) is marked, and so is
+# the doc; one whose host did not answer the last read too; a host with no route is never read, so it is not behind
+routes.route = lambda h: {"ssh": "u@far.invalid"} if h == "far.invalid" else None
+far = [dict(r, session="remote", host="far.invalid") if r["slug"] == "tune" else r for r in rows]
+b._cached_shoals = lambda: {sid: {"id": sid, "roles": far, "_read": t0}}
+d6 = b.build("", t0)
+n6 = {x["id"]: x for x in d6["nodes"]}
+assert n6[sid + ":tune"]["state"]["stale"] == "unread" and d6["fresh"]["stale"] and d6["fresh"]["reasons"] == ["unread"], d6["fresh"]
+assert not any(x["state"].get("stale") for i, x in n6.items() if x["kind"] == "role" and i != sid + ":tune")
+gone = [dict(r, remote_status={"ok": False, "age_s": 700, "stale": True}) if r["slug"] == "tune" else r for r in rows]
+b._cached_shoals = lambda: {sid: {"id": sid, "roles": gone, "_read": t0}}
+assert {x["id"]: x for x in b.build("", t0)["nodes"]}[sid + ":tune"]["state"]["stale"] == "host-old"
+lone = [dict(r, session="remote", host="noroute.invalid") if r["slug"] == "tune" else r for r in rows]
+b._cached_shoals = lambda: {sid: {"id": sid, "roles": lone, "_read": t0}}
+d7 = b.build("", t0)
+assert not d7["fresh"]["stale"] and "stale" not in {x["id"]: x for x in d7["nodes"]}[sid + ":tune"]["state"], d7["fresh"]
+# the home screen's host card carries the graph's block as it is
+import ui_launch
+assert ui_launch.summarize(d6)["fresh"] == d6["fresh"] and "fresh" not in ui_launch.summarize({"shoals": [], "nodes": []})
 print("incremental tail ok")
 PY2
 $H ui graph-feed --ledger-root "$GR" --once >/dev/null || fail "graph-feed --once rc"
@@ -2473,7 +2501,7 @@ for line, want in (("ab status:busy", "working"), ("ab status:busy attached acti
     finally:
         _muse.status_line = orig_sl
 tip = next(n for o, n in ui_app.CLONES["agents"][1] if o.startswith('\n        .on_click(() => run("pane.focus"'))
-assert 'el.tooltip(shoalLabel(a, "shoal.detail"))' in tip, tip
+assert 'el.tooltip(shoalTip(a))' in tip and 'shoalLabel(a, "shoal.detail")' in helper, tip
 # the clone's sections, run under Node on stand-in terminals: the group decides, Herdr's status where there is none
 import os, shutil, subprocess, tempfile
 if shutil.which("node"):
@@ -2887,6 +2915,86 @@ finally:
 groups = [m.get(ui_app.GROUP_LABEL) for m in marks if ui_app.GROUP_LABEL in m]
 assert groups == ["waiting", "needs-you"], marks  # written while attached, once per change
 assert out.getvalue() == "", "a Muse client draws its own: no report on its terminal"
+PY2
+# freshness (maintainer, 2026-11-22: at startup the agents list, lattice and rail showed status not live yet, ~30 s,
+# with nothing to say so): one rule in ui_status; the card's shoal.stale label, `starting` until its first read lands
+HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "freshness rule and the card's stale label"
+import sys, time
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import routes, ui_app, ui_status, ui_view
+now = 1_800_000_000.0
+f = ui_status.freshness(now - 30, now)
+assert f == {"as_of": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 30)), "age_s": 30,
+             "stale_after_s": ui_status.STALE_AFTER_S, "stale": False, "reasons": []}, f
+assert not ui_status.is_stale(f, now) and not ui_status.is_stale(f, now + ui_status.STALE_AFTER_S - 31)
+assert ui_status.is_stale(f, now + ui_status.STALE_AFTER_S), "a doc kept after its writer stopped goes stale by its age"
+old = ui_status.freshness(now - ui_status.STALE_AFTER_S - 1, now, ["unread"])
+assert old["stale"] and old["reasons"] == ["old", "unread"], old
+assert ui_status.freshness(now, now, ["unread", "unread", ""])["reasons"] == ["unread"]
+assert ui_status.is_stale({"stale": True, "as_of": "x"}) and not ui_status.is_stale(None), "no block (an older feed): not judged"
+assert set(ui_status.STALE_REASONS) >= {"old", "unread", "host-old", "starting"}
+# a row: only a role on another host can be behind, and only one this host has a route to
+routes.route = lambda h: {"ssh": "u@far.invalid"} if h == "far" else None
+assert ui_status.row_stale({"session": "remote", "host": "far"}) == "unread", "built without its host's live state"
+assert ui_status.row_stale({"session": "remote", "host": "noroute"}) == "", "a host with no route is never read: not behind"
+assert ui_status.row_stale({"session": "blocked", "host": "far", "remote_status": {"ok": True, "stale": False}}) == ""
+assert ui_status.row_stale({"session": "blocked", "host": "far", "remote_status": {"ok": False, "stale": True}}) == "host-old"
+assert ui_status.row_stale({"session": "idle", "host": "here"}) == ""
+# the card's labels carry the row's reason; a card that leaves clears it with the rest
+assert ui_app.STALE_LABEL == "shoal.stale" and ui_app.STALE_LABEL in ui_app.CARD_LABELS
+row = {"slug": "r", "session": "remote", "host": "far", "agent": {"group": "needs-you", "state": "asked", "detail": "x"},
+       "can_progress": {"ok": True, "reasons": []}}
+ui_app.card_report = lambda r, tag: {"need": "", "asks": 0, "asks_badge": False}
+assert ui_view._card_labels(ui_app, row)[ui_app.STALE_LABEL] == "unread"
+assert ui_view._card_labels(ui_app, dict(row, session="blocked", remote_status={"ok": True}))[ui_app.STALE_LABEL] == ""
+# a card starts `starting` (in the call that clears a stale attached mark: no extra label write) and its first read
+# clears it; `q` clears it too
+marks = []
+ui_app.hc_label = lambda t, labels: marks.append(dict(labels))
+ui_view.card = lambda sid, slug, force=False, rows=None: rows.append(dict(row, session="blocked", remote_status={"ok": True})) or "body"
+ui_view._remote_host = lambda *a: ""
+ui_app.report_text = lambda r, tag, latch=None, sent=None: ""
+import ui_herdr
+ui_herdr.shoal_tag = lambda sid: "tag"
+ui_view._getkey = lambda t: "q"
+import types, ui_term
+ui_term.CodeWatch = lambda: types.SimpleNamespace(check=lambda: None)
+ui_term.fit_frame = lambda body, keys: body
+import io
+real, sys.stdout = sys.stdout, io.StringIO()
+try:
+    ui_view.stub("s", "r")
+finally:
+    sys.stdout = real
+assert marks[0] == {ui_app.ATTACH_LABEL: "", ui_app.STALE_LABEL: "starting"}, marks
+first = next(m for m in marks[1:] if ui_app.STALE_LABEL in m)
+assert first[ui_app.STALE_LABEL] == "" and first[ui_app.GROUP_LABEL] == "needs-you", marks
+assert marks[-1][ui_app.STALE_LABEL] == "" and marks[-1][ui_app.GROUP_LABEL] == "", "leaving clears every status label"
+# the agents list greys a row while its card says it is not live, and its tooltip says why before the last known detail
+helper = ui_app.AGENTS_HELPER
+name = next(n for o, n in ui_app.CLONES["agents"][1] if o.startswith(".text_color(idle ? t.muted"))
+assert "shoalStale(a) ? t.muted" in name and "\u27f3" in name, name
+tip = next(n for o, n in ui_app.CLONES["agents"][1] if o.startswith('\n        .on_click(() => run("pane.focus"'))
+assert "el.tooltip(shoalTip(a))" in tip, tip
+import shutil, subprocess, tempfile
+if shutil.which("node"):
+    js = helper[:helper.index("export default class Agents extends View {")]
+    js = ('const shared = () => ({}); const run = () => null; const panes = () => []; const openOverlay = () => null;\n'
+          'const T = { r1: { "shoal.stale": "starting", "shoal.detail": "asks: merge?" }, r2: { "shoal.stale": "unread" },\n'
+          '            r3: { "shoal.detail": "on CI" }, r4: { "shoal.stale": "odd" } };\n'
+          'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
+          + js +
+          'const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, a, b); process.exit(1); } };\n'
+          'eq(shoalTip({ address: "r1" }), "updating: its card is reading the status \\u00b7 last known: asks: merge?", "why, then the last known");\n'
+          'eq(shoalTip({ address: "r2" }), "updating: its host\'s live state is not read yet", "a host not read");\n'
+          'eq(shoalTip({ address: "r3" }), "on CI", "a live row: its detail");\n'
+          'eq(shoalStale({ address: "r4" }), "odd", "a reason it does not know: said as it is");\n'
+          'eq(shoalStale({ address: "r3" }), "", "live");\n')
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
+        fh.write(js)
+    r = subprocess.run(["node", fh.name], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr + r.stdout
+print("freshness ok")
 PY2
 # an attach marks the terminal, and a roles tab with a marked card is not rebuilt, though the core names the card as foreground
 HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "attached label"

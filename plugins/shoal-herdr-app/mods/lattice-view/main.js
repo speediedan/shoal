@@ -41,7 +41,9 @@ import {
   cardLines, legendEntries, shortShoal, fmtAge, visualSignature, urgentSignature,
   FOCUS_KEY, homeView, escapeStep, readFocus, focusKeyOf, pulseModel, pulseSignature, actionsOverlay, scopeOverlay, removeOverlay,
   SHOAL_CARD, BOARD_CARD, HIDDEN_KEY, itemOf, hiddenList, ledgerStale, boardCells, boardBar, boardSummary, offBoardText,
+  freshness, staleText,
 } from "./model.js";
+import { freshSignature } from "./fresh.js";
 import { Layout } from "./layout.js";
 import { motionPolicy, resolveTier, rendererFromProcess, shouldRender, MOTION_CYCLE } from "./motion.js";
 import { buildScene, fitScene, fitText, headerText, GLOBE } from "./scene.js";
@@ -162,6 +164,7 @@ export default class Lattice extends View {
     this.vm = null;
     this.lay = null;
     this.error = null;
+    this.fresh = null; // how live the doc is (fresh.js), judged at each poll with this machine's clock
     this.cursor = null;
     this.lastSeq = null;
     this.tick = 0;
@@ -275,6 +278,12 @@ export default class Lattice extends View {
         this.error = null;
       } catch (e) {
         this.error = String(e?.message ?? e).slice(0, 300);
+        // the last good doc stays on screen: it is judged again, so it greys once it is past the feed's limit
+        if (this.judge()) {
+          if (this.mode === "pulse") this.pm = pulseModel(this.doc, { shoal: this.homeShoal, maxNeeds: 5, fresh: this.fresh });
+          else this.rebuild(cx);
+          draw = true;
+        }
       } finally {
         this.loading = false;
       }
@@ -315,11 +324,12 @@ export default class Lattice extends View {
     if (!doc || typeof doc !== "object") throw new Error("graph doc is not an object");
     if (typeof doc.v === "number" && doc.v !== 1) throw new Error(`graph doc v${doc.v} is not supported (v1)`);
     this.doc = doc;
+    this.judge();
     if (typeof doc.cursor === "string") this.cursor = doc.cursor;
     this.home = homeView(doc, this.homeShoal);
     if (this.mode === "pulse") {
       // the drawer needs no layout, scene or packets: only its rows, redrawn when they change
-      this.pm = pulseModel(doc, { shoal: this.homeShoal, maxNeeds: 5 });
+      this.pm = pulseModel(doc, { shoal: this.homeShoal, maxNeeds: 5, fresh: this.fresh });
       const sig = pulseSignature(this.pm);
       if (sig === this.sig) return false;
       this.sig = sig;
@@ -343,6 +353,19 @@ export default class Lattice extends View {
     }
     // a replay owns the packets: the live ones would read as part of the past
     return this.spawnPackets(this.replay ? [] : fresh, cx) || draw;
+  }
+
+  /** Judge the doc's freshness now (the feed's `fresh` block, this machine's clock); true when what it shows changed. */
+  judge() {
+    const was = freshSignature(this.fresh);
+    this.fresh = this.doc ? freshness(this.doc.fresh, Date.now()) : null;
+    return freshSignature(this.fresh) !== was;
+  }
+
+  /** A status not live yet: a turning arc while the motion tier is full, else a still mark (no frames asked for). */
+  staleMark(color, size = 11) {
+    if (this.policy.tier === "full") return svg(`mods/${MOD}/arc.svg`).size(size).flex_none().text_color(color).spin(1200);
+    return div().flex_none().text_size(size).text_color(color).child("\u27f3");
   }
 
   // ---- replay: the last 24 h by `ts`, as packets on the live picture
@@ -426,7 +449,7 @@ export default class Lattice extends View {
 
   rebuild(cx) {
     if (!this.doc) return;
-    this.vm = buildModel(this.doc, this.view, { items: this.items, hidden: hiddenList(shared(HIDDEN_KEY)) });
+    this.vm = buildModel(this.doc, this.view, { items: this.items, hidden: hiddenList(shared(HIDDEN_KEY)), fresh: this.fresh });
     this.view = this.vm.view;
     let lay = this.layouts.get(this.view);
     if (!lay) {
@@ -942,6 +965,9 @@ export default class Lattice extends View {
           .child(`${board.title} ↗`)))
         .when(chip !== null, (el) => el.child(chip))
         .when(this.home.missing, (el) => el.child(div().text_size(9.5).text_color(P.amber).child(`${shortShoal(this.homeShoal)} is not in the feed`))))
+      .when(Boolean(staleText(this.vm)), (el) => el.child(h_flex().id("header-stale").gap(5).items_center().text_size(10).text_color(P.steel2)
+        .tooltip("greyed roles show their last known state until a live status arrives")
+        .child(this.staleMark(P.steel2, 10)).child(div().child(`updating: ${staleText(this.vm)}`))))
       .child(div().text_size(9.5).text_color(P.dim).child(`${h.counts}${back} · l: legend · r: replay 24 h · d: depth ${this.depthNow !== this.depth ? `flat (${this.depth} off: CPU, low motion)` : this.depthNow ?? "flat"} · motion ${this.tier.tier}${this.tier.auto ? " (auto)" : ""}${this.lite ? " · lite" : ""}`));
   }
 
@@ -1076,6 +1102,12 @@ export default class Lattice extends View {
       .child(div().text_size(12).font_semibold().text_color(P.ink).child(vm ? (vm.global ? "all shoals" : shortShoal(vm.view)) : "shoal lattice"))
       .child(div().text_color(this.error ? P.red : P.dim).child(this.error ? "feed error" : this.doc ? `${this.doc.host ?? ""} · ${this.doc.ts ?? ""}` : "loading")));
     if (!vm) return rail;
+    const stalePic = staleText(vm);
+    if (stalePic) {
+      rail.child(h_flex().id("rail-stale").gap(6).items_center().px(6).py(4).rounded(5).bg(withAlpha(P.steel1, 0.28)).text_color(P.ink)
+        .tooltip("greyed rows and roles show their last known state until a live status arrives")
+        .child(this.staleMark(P.steel2)).child(div().flex_1().min_w(0).child(`updating: ${stalePic}`)));
+    }
     const stale = vm.shoalsInView.filter(ledgerStale);
     if (stale.length) {
       const worst = Math.max(...stale.map((s) => s.ledgerAge));
@@ -1088,6 +1120,7 @@ export default class Lattice extends View {
     for (const r of vm.needsYou.slice(0, 12)) {
       ny.child(h_flex().id(`ny-${r.id}`).gap(7).items_center().px(6).py(3).rounded(5).cursor_pointer()
         .bg(withAlpha(r.color, r.rank === 0 ? 0.16 : 0.08)).hover((s) => s.bg(withAlpha(r.color, 0.24)))
+        .when(Boolean(r.stale), (el) => el.opacity(0.5).tooltip("updating: its last known state"))
         .on_click((_e, cx) => { this.focusNode(r.id, cx); cx.notify(); })
         .child(div().w(16).h(16).flex_none().rounded(8).bg(r.color).flex().items_center().justify_center()
           .text_size(9).font_bold().text_color("#0b0b10").child(r.badge ?? "!"))
@@ -1106,6 +1139,7 @@ export default class Lattice extends View {
     for (const s of vm.shoalsInView) {
       const share = s.workShare;
       rail.child(v_flex().id(`sh-${s.id}`).gap(3).p(8).rounded(6).bg(withAlpha(s.tint, 0.06)).border(1).border_color(withAlpha(s.tint, 0.22))
+        .when(Boolean(vm.fresh?.old), (el) => el.opacity(0.55))
         .when(vm.global, (el) => el.cursor_pointer().hover((st) => st.bg(withAlpha(s.tint, 0.12))).on_click((_e, cx) => { this.drill(s.id, cx); cx.notify(); }))
         .child(h_flex().gap(7).items_center()
           .child(this.pulseDot(s.urgentColor, 8, s.needsYou > 0))
@@ -1216,6 +1250,7 @@ export default class Lattice extends View {
       for (const r of pm.needs) {
         col.child(mirror(h_flex().id(`pulse-ny-${r.id}`).gap(7).px(10).py(2).items_center().cursor_pointer()
           .hover((st) => st.bg(withAlpha(r.color, 0.16)))
+          .when(Boolean(r.stale), (el) => el.opacity(0.5))
           .tooltip(`${r.label} @${r.short}: ${r.event}${r.host ? ` on ${r.host}` : ""} · ${fmtAge(r.since_s)} · click: focus it in the lattice tab`)
           .on_click((_e, cx) => {
             setShared(FOCUS_KEY, { node: r.id, shoal: r.shoal, t: Date.now() });
@@ -1229,6 +1264,10 @@ export default class Lattice extends View {
           .child(div().w(56).flex_none().truncate().text_color(dim).child(r.host ?? ""))));
       }
       if (pm.more) col.child(mirror(h_flex().px(10).py(1).child(div().w(39).flex_none()).child(div().text_size(9.5).text_color(faint).child(`+${pm.more} more`))));
+    }
+    if (pm.staleText) {  // still in the drawer: no spinner
+      col.child(mirror(h_flex().id("pulse-stale").gap(7).px(10).py(1).items_center().tooltip(`updating: ${pm.staleText}`)
+        .child(div().w(14).flex_none().text_color(faint).child("\u27f3")).child(div().text_size(9.5).truncate().text_color(faint).child("updating"))));
     }
     return col;
   }

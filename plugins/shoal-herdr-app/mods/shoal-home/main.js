@@ -371,12 +371,14 @@ export default class Home extends View {
         return row().when(ln.tone === "down", (el) => el.tooltip(ln.text)).child(clip(ln.text, ln.tone === "down" ? withAlpha(P.red, 0.95) : P.faint));
       case "shoal":
         return row()
+          .when(Boolean(ln.stale), (el) => el.opacity(0.5))
           .child(dot(ln.tint, 6))
           .child(div().flex_none().font_semibold().text_color(ln.tint).child(ln.tag))
           .when(ln.needsYou > 0, (el) => el.child(div().flex_none().font_bold().text_color(blocked).child(`${ln.needsYou} need you`)))
           .child(clip(shoalCounts(ln), P.dim));
       case "role":
         return row()
+          .when(Boolean(ln.stale), (el) => el.opacity(0.5))
           .child(dot(ln.tint, 6))
           .child(div().flex_1().min_w(0).truncate().text_color(P.ink).child(ln.slug))
           .child(div().flex_none().text_color(ln.needsYou ? blocked : ln.state === "work" ? P.mint : P.dim).child(roleWord(ln)))
@@ -391,6 +393,9 @@ export default class Home extends View {
         return row().child(clip(ln.text, P.faint));
       case "pin":
         return row().child(clip(ln.text, P.amber));
+      case "stale":  // still: the home screen asks for no frames for it
+        return row().tooltip("greyed lines show their last known state until a live status arrives")
+          .child(div().flex_none().text_color(P.steel2).child("\u27f3")).child(clip(ln.text, P.steel2));
       case "status": {
         const color = ln.tone === "error" ? P.red : ln.tone === "ok" ? P.mint : P.dim;
         const mark = ln.tone === "error" ? "✕ " : ln.tone === "ok" ? "✓ " : "";

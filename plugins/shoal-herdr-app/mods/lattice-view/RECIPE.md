@@ -175,6 +175,12 @@ you, per-shoal throughput and per-host load.
   "off the board"; a host that is not the shoal's home has the link and no counts); SHOALS cards
   (urgent-state dot, needs-you pill, done 24h/7d, msg/h, work share bar, sparkline, asks, grants,
   pages); HOSTS (roles, working, waiting, msg/h, CI jobs placed in).
+- **Not live yet** (the doc's `fresh` block, judged by `fresh.js` at each poll with this machine's clock): while it is
+  stale, a line under the canvas header and a box at the top of the rail read `updating:` and why (`status 3 min old:
+  not written since`, or `2 roles: its host's live state is not read yet`), after a turning arc (`arc.svg`, at `full`
+  motion only) or a still `⟳`. Each role the doc marks (`state.stale`), or every role once the doc is past
+  `stale_after_s`, draws at `STALE_OPACITY` (0.4) of its opacity, its NEEDS YOU and pulse rows at half, and its card
+  gets an `updating` row; the SHOALS cards dim while the doc is old. The pulse drawer adds a still `⟳ updating` row.
 
 ## How it behaves
 
@@ -379,7 +385,8 @@ you, per-shoal throughput and per-host load.
   `stale` blocker draws fainter; the feed's `cross_host` wins over comparing hosts; `writer`
   nodes (unknown or removed writers) draw as small dashed nodes; a `state.source` of `status`
   gets a `~` in the card; `state.job.host` counts as a job host; `hosts[]` counts win in the
-  rail; a `cursor_reset` doc is a new event baseline.
+  rail; a `cursor_reset` doc is a new event baseline; a doc without `fresh` (an older feed) is not
+  judged, and a failed poll judges the last good doc again, so it greys once it is past the limit.
 - In Herdr app 0.1.12 an edit to a mod folder that is a symlink did not always refresh copies
   already open; reopening the tab picks up the new code. `herdr-app check` always reads it fresh.
 

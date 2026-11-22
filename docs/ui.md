@@ -169,6 +169,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
 
 ```json
 {"v": 1, "kind": "shoal-graph", "host": "<host>", "ts": "<utc>", "cursor": "<opaque>",
+ "fresh": {"as_of": "<utc>", "age_s": 30, "stale_after_s": 90, "stale": false, "reasons": []},
  "windows": {"rate_s": 300, "recent_s": 3600, "day_s": 86400},
  "hosts": [{"id": "host:<host>", "name": "<host>", "home": true,
             "roles": 6, "working": 1, "waiting": 4, "needs_you": 2, "msgs_1h": 14}],
@@ -188,7 +189,7 @@ The contract is versioned like the status document: `v: 1`, additive only, unkno
    {"id": "<id>:<role>", "kind": "role", "shoal": "<id>", "slug": "<role>", "label": "<role>",
     "ecosystem": "claude", "model": "<model>", "host": "<host>", "fill": "assigned",
     "state": {"class": "wait", "event": "local-ci", "group": "system", "source": "role-time", "quality": [],
-              "status": "wait", "sub": "local-ci", "session": "working", "since_s": 900,
+              "status": "wait", "sub": "local-ci", "session": "working", "since_s": 900, "stale": "unread",
               "needs_you": false, "reasons": [], "shoal_offline": false, "restart_ready": false,
               "job_host": "<pool host>",
               "job": {"unit": "<unit>", "host": "<pool host>", "placed": true, "granted": true,
@@ -305,6 +306,25 @@ The lattice's replay asks for it once (with `--events 0`), on the machine its fe
 **Hosts** are this host, every role's host, every shoal's home and every job host, with `home` true
 for this host and per-host role aggregates: `roles`, `working`, `waiting`, `needs_you` and `msgs_1h`
 (messages written by the roles there in the last hour).
+
+**Freshness.** `fresh` says how live the status shown is, by one rule (`ui_status.freshness`, `is_stale`; the mods'
+`fresh.js` is the same rule in JavaScript):
+
+- `as_of` is when the rows' live state was read: the status cache's `ts` when the rows came from it, else when the
+  graph's own harness listing was taken. `age_s` is its age when the doc was built.
+- `stale_after_s` (90) is the age past which a reader shows the doc as stale. The status cache is read up to 45 s old,
+  and a feed file or a home summary adds its own interval, so a live chain stays under it; a `graph.json` whose writer
+  stopped (a host asleep, a unit down) passes it, and a reader judges that with its own clock (reason `old`).
+- `stale` and `reasons` say what the feed knew was behind when it built the doc. A role node carries `state.stale` when
+  its live fields (session, watcher, agent group) are not current (`ui_status.row_stale`): `unread`, a role on another
+  host with a route whose row was built without that host's live state (the graph's own rows before the UI feeder's
+  first status after a restart: such a role reads only what the ledger says, measured 2026-11-22 as `user-auth` for
+  roles that waited at a prompt), or `host-old`, a role whose host did not answer the last read. A host with no route is
+  never read, so its roles are not marked. A doc without `fresh` (an older feed) is not judged.
+
+The lattice greys every marked role (and every role once the doc is `old`), dims its needs-you and pulse rows, puts the
+reason on its card, and says `updating` with why in the canvas header and the rail; the home screen's host card does
+the same for its summary (`launch --list --summary` passes the graph's `fresh` through).
 
 **Sources and cost.** Role rows come from the status cache (`status.json`, written by the
 `shoal-ui-feed` feeder) when it is at most 45 seconds old. Otherwise the graph builds them with
@@ -735,6 +755,11 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   card reports, so a seat on Codex, Muse or OpenCode, or one on another host, stays in Herdr's own sections. A role
   card keeps its labels current through an attach, whatever its harness, since they go through the core and not the
   terminal.
+- **A row that is not live yet.** A card sets `shoal.stale` while its role's row is not live, and the row is greyed
+  with `⟳` after its name, its tooltip saying why before the last known detail: `starting` from the card's start
+  until its first status read lands (a card back after a restart reads the status cold, for tens of seconds, under the
+  labels its last run left), `unread` or `host-old` for a role on another host whose live state was not read or did not
+  answer (`ui_status.row_stale`). The card clears it with its other labels when it is left with `q`.
 - **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
   an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
@@ -1032,6 +1057,8 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   standalone seats (`label`, `harness`, `account`, `state`), their needs-you, and `ledger_age_s` (how long ago its
   ledger clone last fetched). The app's home cards show `here`: every host reads the same shoals from its own clone,
   so the shoal-wide totals repeat on every card, and a host that runs no role (a laptop) never pulls its clone.
+  `fresh` is that host's graph doc's freshness block, as it is (see the graph feed's Freshness): a card past it greys
+  its lines and says `updating`.
 - **Doctor.** `shoal ui doctor` adds informational `app:` rows (app and core at the pin, mods installed from this
   checkout, machines, the feed unit); `ui app-install --check` prints the same rows and fails on them.
 

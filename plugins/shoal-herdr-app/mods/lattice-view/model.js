@@ -6,6 +6,12 @@
 // preview draw the same encoding.
 
 import { hash32, withAlpha } from "./geom.js";
+import { freshness, freshSignature, staleLine, STALE_TEXT } from "./fresh.js";
+
+export { freshness, staleLine, STALE_TEXT };
+
+/** How much a role whose status is not live yet keeps of its opacity: greyed, still read as its last known state. */
+export const STALE_OPACITY = 0.4;
 
 // Canvas palette: the neuron-explorer void and steel, the style reference's near-black violet,
 // saturated hues for state and pastel tints for identity (so state always reads first).
@@ -446,6 +452,7 @@ export function needsYouList(nodes) {
       rank: v.urgency ?? 9,
       since_s: num(s.since_s, 0),
       text: asks[0] ?? (s.says ? str(s.says) : s.event === "self" ? v.label : s.event ? `${s.class}:${s.event}` : s.class ?? ""),
+      stale: n.stale ?? (str(s.stale) || null),
     });
   }
   rows.sort((a, b) => a.rank - b.rank || b.since_s - a.since_s || (a.id < b.id ? -1 : 1));
@@ -569,6 +576,8 @@ export function boardBar(c, width) {
  */
 export function buildModel(doc, view = "global", opts = {}) {
   const items = opts.items !== false;
+  // how live the doc is now (fresh.js): `opts.fresh`, else judged at `opts.now` (a stale doc greys every role)
+  const fresh = opts.fresh !== undefined ? opts.fresh : freshness(doc?.fresh, opts.now ?? Date.now());
   const windows = obj(doc?.windows);
   const shoals = shoalSummaries(doc);
   const tintOf = new Map(shoals.map((s) => [s.id, s.tint]));
@@ -599,7 +608,9 @@ export function buildModel(doc, view = "global", opts = {}) {
   keep.sort((a, b) => (a.id < b.id ? -1 : 1));
   const byId = new Map();
   const nodes = keep.map((n) => {
-    const visual = nodeVisual(n);
+    // a role's status not live yet: its own mark (a role on another host not read yet), or the whole doc's age
+    const stale = (n.kind ?? "role") === "role" ? str(obj(n.state).stale) || (fresh?.old ? "old" : "") || null : null;
+    const visual = stale ? { ...nodeVisual(n), opacity: nodeVisual(n).opacity * STALE_OPACITY, stale } : nodeVisual(n);
     const vn = {
       id: n.id,
       kind: n.kind ?? "role",
@@ -626,6 +637,7 @@ export function buildModel(doc, view = "global", opts = {}) {
       viewArgv: Array.isArray(n.view) ? n.view : null,
       tint: n.kind === "role" ? roleTint(n.id) : tintOf.get(n.shoal) ?? PALETTE.steel2,
       visual,
+      stale,
       items: items && (n.kind ?? "role") === "role" ? roleItems(n) : [],
     };
     byId.set(vn.id, vn);
@@ -701,8 +713,13 @@ export function buildModel(doc, view = "global", opts = {}) {
     shoals,
     shoalsInView,
     needsYou: needsYouList(nodes.filter((n) => global || n.shoal === viewId)),
+    fresh,
+    staleN: nodes.filter((n) => n.stale && (global || n.shoal === viewId)).length,
   };
 }
+
+/** The view's freshness line ("" while live): the doc's age, else how many roles in view are not read yet and why. */
+export const staleText = (vm) => staleLine(vm?.fresh, vm?.staleN ?? 0);
 
 /** Edge ids touching a node (for fading everything else on hover). */
 export function incidentEdges(vm, id) {
@@ -853,6 +870,7 @@ export const hiddenList = (v) => arr(v).filter((x) => typeof x === "string");
 
 /** The pulse drawer's rows: one per live shoal, then up to `maxNeeds` needs-you roles, loudest first. */
 export function pulseModel(doc, opts = {}) {
+  const fresh = opts.fresh !== undefined ? opts.fresh : freshness(doc?.fresh, opts.now ?? Date.now());
   const only = typeof opts.shoal === "string" && opts.shoal ? opts.shoal : null;
   const all = shoalSummaries(doc);
   const shoals = only && all.some((s) => s.id === only) ? all.filter((s) => s.id === only) : all;
@@ -863,9 +881,12 @@ export function pulseModel(doc, opts = {}) {
   const needs = ranked.slice(0, Math.max(0, opts.maxNeeds ?? 5)).map((r) => {
     const n = byId.get(r.id);
     const ev = str(obj(n?.state).event) || r.key;
-    return { id: r.id, label: r.label, shoal: r.shoal, short: shortShoal(r.shoal), color: r.color, badge: r.badge ?? "!", event: ev, host: typeof n?.host === "string" ? n.host : null, since_s: r.since_s };
+    return { id: r.id, label: r.label, shoal: r.shoal, short: shortShoal(r.shoal), color: r.color, badge: r.badge ?? "!", event: ev, host: typeof n?.host === "string" ? n.host : null, since_s: r.since_s,
+      stale: r.stale || (fresh?.old ? "old" : null) };
   });
   return {
+    fresh,
+    staleText: staleLine(fresh, needs.filter((r) => r.stale).length),
     shoals: shoals.map((s) => ({ id: s.id, short: s.short, tint: s.tint, urgent: s.urgent, urgentColor: s.urgentColor, needsYou: s.needsYou, msgsPerH: s.msgsPerH, msgs24: s.msgs24 })),
     needs,
     more: Math.max(0, ranked.length - needs.length),
@@ -876,8 +897,8 @@ export function pulseModel(doc, opts = {}) {
 export function pulseSignature(pm) {
   const parts = [];
   for (const s of pm.shoals) parts.push(s.id, s.urgent, s.needsYou, s.msgsPerH, s.msgs24);
-  for (const r of pm.needs) parts.push(r.id, r.event, r.host ?? "");
-  parts.push(pm.more);
+  for (const r of pm.needs) parts.push(r.id, r.event, r.host ?? "", r.stale ?? "");
+  parts.push(pm.more, freshSignature(pm.fresh));
   return hash32(parts.join("\u0001"));
 }
 
@@ -1047,6 +1068,7 @@ export function cardLines(vm, id) {
     // "~": a status reading (no role-time probe), less certain than a role-time one
     rows.push(["state", `${s.source === "status" ? "~ " : ""}${v.label}${s.event && s.event !== "self" && v.key !== "other" ? ` (${s.event})` : ""} ${fmtAge(s.since_s)}`]);
     if (arr(s.quality).length) rows.push(["quality", arr(s.quality).map(str).join(", ")]);
+    if (n.stale) rows.push(["updating", n.stale === "old" ? staleLine(vm.fresh) || "status old" : STALE_TEXT[n.stale] ?? n.stale]);
     rows.push(["agent", [n.account ?? n.ecosystem, n.model].filter(Boolean).join(" · ") || "?"]);
     rows.push(["host", n.host ?? "?"]);
     if (n.jobHost) rows.push([str(s.event) === "research-proto" ? "research run on" : "CI job on", `${n.jobHost} (${str(s.event) || "ci"})`]);
@@ -1098,8 +1120,9 @@ export function visualSignature(vm, cardId = null) {
   if (card) parts.push(card.id, card.n_rate, card.n_1h, card.n_24h, card.recent[0]?.ts ?? "");
   for (const n of vm.nodes) {
     const v = n.visual;
-    parts.push(n.id, v.key, v.badge ?? "", v.grants ?? 0, v.needsYou ? 1 : 0, n.items.length, n.jobHost ?? "", n.host ?? "", n.label);
+    parts.push(n.id, v.key, v.badge ?? "", v.grants ?? 0, v.needsYou ? 1 : 0, n.items.length, n.jobHost ?? "", n.host ?? "", n.label, n.stale ?? "");
   }
+  parts.push(freshSignature(vm.fresh));
   for (const e of vm.edges) parts.push(e.id, e.tier, rateBand(e.rate), e.cross ? 1 : 0, e.stale ? 1 : 0);
   for (const b of vm.broadcasts) parts.push(b.src, b.tier);
   for (const r of vm.needsYou) parts.push(r.id, r.text, fmtAge(r.since_s));

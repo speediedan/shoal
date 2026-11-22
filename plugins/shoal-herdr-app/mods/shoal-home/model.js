@@ -9,8 +9,11 @@
 //                                              "needs_you"}], "needs_you", "pin_ok",
 //                                  "here": {"host", "roles": [{"shoal", "tag", "slug", "ecosystem", "account",
 //                                           "state", "event", "needs_you"}], "seats": [{"label", "harness",
-//                                           "account", "state"}], "needs_you", "ledger_age_s"}}}]}
-// `reachable: null` means not probed yet.
+//                                           "account", "state"}], "needs_you", "ledger_age_s"},
+//                                  "fresh": {"as_of", "stale_after_s", "stale", "reasons"}}}]}
+// `reachable: null` means not probed yet. `fresh` is the host's graph doc's freshness block (fresh.js).
+
+import { freshness, staleLine } from "./fresh.js";
 
 export const KIND = "shoal-launch-list";
 
@@ -89,6 +92,7 @@ function normSummary(s) {
     needsYou: num(o.needs_you, shoals.reduce((t, x) => t + x.needsYou, 0)),
     pinOk: typeof o.pin_ok === "boolean" ? o.pin_ok : null,
     here: normHere(o.here),
+    fresh: obj(o.fresh),
   };
 }
 
@@ -251,8 +255,11 @@ export function openResult(r) {
  * entry is one fixed-height line, so layout.js can size the card from the count alone.
  * `status`: {phase: "opening" | "ok" | "error", text} or null.
  */
-export function cardLines(h, status = null) {
+export function cardLines(h, status = null, nowMs = Date.now()) {
   const lines = [];
+  // a summary whose status is not live yet (fresh.js, the graph's own block): its lines grey, and one line says why
+  const f = freshness(h.summary?.fresh, nowMs);
+  const stale = Boolean(f?.stale);
   const where = h.local ? "this machine" : h.route ?? h.name;
   const machine = h.machine && h.machine !== h.name ? ` · machine ${h.machine}` : "";
   lines.push({ kind: "sub", text: `${where}${machine}` });
@@ -268,8 +275,9 @@ export function cardLines(h, status = null) {
       ...here.seats.map((s) => ({ kind: "seat", ...s })),
     ];
     if (!items.length) lines.push({ kind: "note", tone: "dim", text: "no roles or seats run here" });
-    items.slice(0, MAX_HERE).forEach((x) => lines.push(x));
+    items.slice(0, MAX_HERE).forEach((x) => lines.push(stale ? { ...x, stale: true } : x));
     if (items.length > MAX_HERE) lines.push({ kind: "more", text: `+${items.length - MAX_HERE} more` });
+    if (stale) lines.push({ kind: "stale", text: `updating: ${staleLine(f)}` });
     if (here.ledgerAgeS !== null && here.ledgerAgeS > STALE_LEDGER_S) {
       lines.push({ kind: "pin", text: `⚠ ledger copy here is ${ageText(here.ledgerAgeS)} old` });
     }
@@ -277,8 +285,9 @@ export function cardLines(h, status = null) {
   } else if (h.summary) {
     const shoals = h.summary.shoals;
     if (!shoals.length) lines.push({ kind: "note", tone: "dim", text: "no shoals running" });
-    shoals.slice(0, MAX_SHOALS).forEach((s, i) => lines.push({ kind: "shoal", tint: PASTELS[i % PASTELS.length], ...s }));
+    shoals.slice(0, MAX_SHOALS).forEach((s, i) => lines.push({ kind: "shoal", tint: PASTELS[i % PASTELS.length], ...s, ...(stale ? { stale: true } : {}) }));
     if (shoals.length > MAX_SHOALS) lines.push({ kind: "more", text: `+${shoals.length - MAX_SHOALS} more shoals` });
+    if (stale) lines.push({ kind: "stale", text: `updating: ${staleLine(f)}` });
     if (h.summary.pinOk === false) lines.push({ kind: "pin", text: "⚠ Herdr pin differs: shoal ui doctor" });
   } else lines.push({ kind: "note", tone: "dim", text: st === "unknown" ? "not probed yet" : "no summary" });
   if (status) lines.push({ kind: "status", tone: status.phase, text: status.phase === "opening" ? "opening…" : status.text });
