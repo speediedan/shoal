@@ -1823,7 +1823,10 @@ and the contract are in [`ui.md`](ui.md).
   each shoal a sphere in the global view with its roles placed on it by need, then activity, then recency (the side facing
   you holds what needs you), the operator and outside seats on a plane above; the layout
   is projected before the scene, so hit tests, packets and cards follow it, and a CPU renderer at low or off motion
-  stays flat. The rail warns when the feed's ledger
+  stays flat. While the doc's status is not live (its `fresh` block, below in the graph feed), the canvas header and the
+  rail say `updating` and why, with a turning arc at `full` motion and a still mark below it, every role the doc marks
+  not live (or, past the feed's limit, every role) is drawn at `STALE_OPACITY`, its needs-you and pulse rows dimmed and
+  its card saying why; the reader rule is `fresh.js`, shared with the home screen. The rail warns when the feed's ledger
   clone is over an hour old, because the feed does not pull unless the host config's `ledger_pull_min` says how
   often to (for a host that runs no role, whose clone nothing else keeps current; the home card warns past six hours).
 - **Herdr app home** (`plugins/shoal-herdr-app/mods/shoal-home/`): the splash and host chooser as
@@ -1836,7 +1839,8 @@ and the contract are in [`ui.md`](ui.md).
   below 640 by 460 or without the assets), a kelp sea whose two sets are the shoals, joined by one direct tendril, with two solo vines for
   standalone sessions that weave through the letters and link to both sets (`ocean.js`, a static display
   list; only the solo vines cross the logo, none reaches the cards) and one card per host: reachability with the doctor hint, the last choice,
-  per-shoal needs-you, working and waiting, and the pin check. A click runs
+  per-shoal needs-you, working and waiting, and the pin check; a summary whose `fresh` block says it is not live greys its
+  lines under an `updating` line (`fresh.js`, a verbatim copy of the lattice's). A click runs
   `shoal ui app-open --machine <name>` here and shows its result on the card; unreachable cards
   do not click. Motion uses the lattice budget (its `motion.js`, copied verbatim): a native drift
   only at `full`, stopped once a host is opened. Pure modules are tested under Node
@@ -1925,6 +1929,14 @@ host that is not the shoal's home has the links alone. The digest records each b
 Queue items match board items by `item_key`, which needs `default_owner` set: without it a queue item keeps its owner, and reads
 as off the board. The same match gives a role's work items their board titles; an item not in the digest has none.
 `next_total` counts the whole queue, since the lattice draws only the first few.
+**Freshness** (`ui_status.freshness`, one rule for every view): the doc carries `fresh`, with `as_of` (when its rows' live
+state was read: the status cache's `ts`, else the harness listing the graph's own rows read), `stale_after_s`
+(`STALE_AFTER_S`, 90: the cache's 45 s plus a feed interval and a summary's cache stay under it) and `stale` with
+`reasons`. A role on a routed host whose live fields were not merged is marked `state.stale: unread` (the graph's own rows
+before the UI feeder's first status after a restart: measured 2026-11-22, four such roles read `user-auth` from the ledger
+while they waited at a prompt), one whose host failed the last read `host-old` (`ui_status.row_stale`); a host with no route
+is never read, so it is not marked. A reader also judges the doc by its age (`ui_status.is_stale`, the mods' `fresh.js`):
+a `graph.json` whose writer stopped (a host asleep, a unit down) goes stale past `stale_after_s` with reason `old`.
 A saved standalone session on this host is an `external` node whether or not it ever wrote to a ledger or was dismissed from the
 app's spaces, and says which session it is and whether it runs now (`saved`, `standalone`). A ledger writer with no saved session has nothing to remove, so the lattice
 offers only to hide it. A blocked Claude session's own words (its job's `needs`) travel with its row as `says`. `shoal dismiss` records a
@@ -1966,7 +1978,10 @@ repaired pane by pane, never added to. A role card in a herdr-core terminal (`HC
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
 feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
-session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; and a role that finished an item and rests says
+session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; a card sets `shoal.stale` while its row is not
+live (`starting` from its start until its first status read lands, since a card back after a restart reads the status
+cold for tens of seconds under the labels its last run left; else `ui_status.row_stale`), and `shoal-agents` greys that
+row, marks its name with `⟳` and puts why before the last known detail on its tooltip; and a role that finished an item and rests says
 `done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A card reports its
 role's or seat's name as its `app`, so the pane is headed by it; the app picks an agent's icon from its program table by
 that name, and none matched, so every card drew the generic agent robot (2026-11-14). The plan names each card's

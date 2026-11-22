@@ -769,6 +769,60 @@ def cached_status(ids: list[str] | None = None, max_age_s: float = CACHE_MAX_AGE
     return doc
 
 
+# ---- freshness: whether what a view shows is live yet -----------------------------------------
+
+# A status read longer ago than this is not live. Readers take the status cache up to CACHE_MAX_AGE_S old and a feed
+# file or a summary adds its own interval, so a live chain stays well under it; a writer that stopped (a host that
+# slept, a feed unit that is down) passes it.
+STALE_AFTER_S = 90
+# why a status is not live, as feeds and card labels name it (the Herdr app's views say the same words)
+STALE_REASONS = {
+    "old": "read longer ago than the feed's limit: its writer has not written since",
+    "unread": "runs on another host whose live state has not been read yet",
+    "host-old": "runs on another host that did not answer the last read",
+    "starting": "its card has not read the status yet",
+}
+
+
+def row_stale(row: dict) -> str:
+    """Why one role row's live state (its session, its watcher, its agent group) is not current, or "" when it is.
+    Only a role on another host can be behind: its live fields come from that host (`merge_remote`). `unread`: its row
+    was built without them (no read yet, as the graph's own rows before the UI feeder's first status); `host-old`: the
+    last read failed and the row holds an older one. A host with no route is never read, so it is not behind either."""
+    rs = row.get("remote_status")
+    if isinstance(rs, dict) and rs.get("stale"):
+        return "host-old"
+    if row.get("session") == "remote" and not rs:
+        import routes
+        if routes.route(str(row.get("host") or "")) is not None:
+            return "unread"
+    return ""
+
+
+def freshness(as_of: float, now: float, reasons=()) -> dict:
+    """The freshness block a UI feed carries: when the status it shows was read (`as_of`, the oldest source), its age
+    then, the age past which a reader shows it as stale (`stale_after_s`), and whether it is stale already, with why
+    (`reasons`, from STALE_REASONS). A reader that keeps the doc applies `is_stale` with its own clock."""
+    age = max(0, int(now - as_of))
+    rs = list(dict.fromkeys(str(r) for r in reasons if r))
+    if age > STALE_AFTER_S and "old" not in rs:
+        rs.insert(0, "old")
+    return {"as_of": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(as_of)), "age_s": age,
+            "stale_after_s": STALE_AFTER_S, "stale": bool(rs), "reasons": rs}
+
+
+def is_stale(fresh: dict | None, now: float | None = None) -> bool:
+    """The one reader rule: stale when the feed said so, or when its `as_of` is older than its `stale_after_s` now.
+    A doc without the block (an older feed) is not judged."""
+    if not isinstance(fresh, dict):
+        return False
+    if fresh.get("stale"):
+        return True
+    a = age_s(str(fresh.get("as_of") or ""),
+              datetime.datetime.fromtimestamp(now, datetime.timezone.utc) if now is not None else None)
+    return a is not None and a > int(fresh.get("stale_after_s") or STALE_AFTER_S)
+
+
 # ---- rendering -------------------------------------------------------------------------
 
 def _age(s: int | None) -> str:

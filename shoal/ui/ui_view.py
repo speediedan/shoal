@@ -628,7 +628,9 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
         import ui_app
         report = ui_app.in_core_terminal()  # the Herdr app: the card reports the role's state itself (OSC 7501)
         if report:
-            _mark_attached(ui_app, "")  # a card that died during an attach left it set
+            # a card that died during an attach left that mark set; and until the first status read lands (a cold one
+            # takes tens of seconds after a restart), the labels a last run left are not live: the agents list greys them
+            _marks(ui_app, {ui_app.ATTACH_LABEL: "", ui_app.STALE_LABEL: "starting"})
     except Exception:  # noqa: BLE001 - the app adapter can never take a 0.9.3 card down
         ui_app, report = None, False
     try:
@@ -642,7 +644,8 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             sys.stdout.write(ui_app.OSC_CLEAR)
             sys.stdout.flush()
             _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: "",
-                            ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: ""})
+                            ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: "",
+                            ui_app.STALE_LABEL: ""})
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -717,13 +720,14 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
 
 
 def _card_labels(ui_app, row: dict) -> dict:
-    """The labels a role card keeps on its terminal for the agents list: its badge's cause and asks, and its derived
-    group, state and detail."""
+    """The labels a role card keeps on its terminal for the agents list: its badge's cause and asks, its derived
+    group, state and detail, and why that state is not live yet ("" when it is)."""
+    import ui_status
     rep = ui_app.card_report(row, "")
     group, state, detail = ui_app.role_agent(row)
     return {ui_app.NEED_LABEL: rep.get("need", ""), ui_app.ASKS_LABEL: str(rep.get("asks") or ""),
             ui_app.ASKS_BADGE_LABEL: "1" if rep.get("asks_badge") else "", ui_app.GROUP_LABEL: group,
-            ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail}
+            ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail, ui_app.STALE_LABEL: ui_status.row_stale(row)}
 
 
 def _after_attach(ui_app) -> None:

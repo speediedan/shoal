@@ -111,6 +111,10 @@ GROUP_LABEL = "shoal.group"
 STATE_LABEL = "shoal.state"
 DETAIL_LABEL = "shoal.detail"  # the row's tooltip: the ask's first line, the blocker or target
 DETAIL_MAX = 200
+# why the row's state is not live yet ("" when it is): `starting` until the card's first status read lands (a card that
+# came back after a restart reads the status cold, for tens of seconds, under the labels its last run left), else the
+# row's own reason (`ui_status.row_stale`). The agents list greys such a row and says why on its tooltip
+STALE_LABEL = "shoal.stale"
 AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
 
 
@@ -785,7 +789,7 @@ def _is_shell(argv) -> bool:
 
 # the labels a card keeps on its terminal while it runs; one leaving with `q` clears the status ones on its way out
 CARD_LABELS = ("shoal.attached", "shoal.need", "shoal.asks", "shoal.asks-badge", "shoal.group", "shoal.state",
-               "shoal.detail")
+               "shoal.detail", "shoal.stale")
 
 
 def foreground_kind(t: dict) -> str:
@@ -1796,6 +1800,18 @@ function shoalLabel(a, key) {
 function shoalRank(a, herdr) {
   return SHOAL_RANK[shoalLabel(a, "shoal.group")] ?? HERDR_RANK[herdr] ?? 0;
 }
+// A row whose state is not live yet (its card's shoal.stale label: the card's first status read has not landed, or the
+// role's host has not been read) is greyed, with \u27f3 after its name; its tooltip says why, then its last known detail.
+const SHOAL_STALE = { starting: "its card is reading the status", unread: "its host's live state is not read yet",
+  "host-old": "its host did not answer the last read", old: "its status is old" };
+function shoalStale(a) {
+  const why = shoalLabel(a, "shoal.stale");
+  return why ? SHOAL_STALE[why] ?? why : "";
+}
+function shoalTip(a) {
+  const stale = shoalStale(a), detail = shoalLabel(a, "shoal.detail");
+  return stale ? `updating: ${stale}${detail ? ` \u00b7 last known: ${detail}` : ""}` : detail;
+}
 // A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab.
 function shoalMore(a, sr, full, fallback) {
   const state = shoalLabel(a, "shoal.state");
@@ -1820,11 +1836,12 @@ CLONES = {
         ('const machine = a.address.includes("/") ? a.address.split("/")[0] : null;',
          'const machine = sr?.host ?? (a.address.includes("/") ? a.address.split("/")[0] : null);'),
         ("const name = full ? a.space_name || label(a) :", "const name = sr ? sr.role : full ? a.space_name || label(a) :"),
-        (".text_color(idle ? t.muted : t.foreground).child(name))", ".text_color(sr?.color ?? (idle ? t.muted : t.foreground)).child(name))"),
+        (".text_color(idle ? t.muted : t.foreground).child(name))",
+         ".text_color(shoalStale(a) ? t.muted : sr?.color ?? (idle ? t.muted : t.foreground)).child(shoalStale(a) ? `${name} \u27f3` : name))"),
         ('.items_center().justify_center().child("!");',
          '.items_center().justify_center().id(`shoal-badge-${a.address}`).cursor_pointer().on_click((_e, cx) => shoalAsks(a, cx)).child(shoalBadge(a));'),
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
-        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(shoalLabel(a, "shoal.detail")), (el) => el.tooltip(shoalLabel(a, "shoal.detail")))\n        .when(Boolean(pic)'),
+        ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(shoalTip(a)), (el) => el.tooltip(shoalTip(a)))\n        .when(Boolean(pic)'),
     ]),
     # the top bar: Home and Lattice beside Files and Changes, where they are always in reach (the status bar's own
     # commands, so one path does the switching: an open tab at once, else the CLI)

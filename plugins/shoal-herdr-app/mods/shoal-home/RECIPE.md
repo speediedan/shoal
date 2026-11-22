@@ -70,7 +70,9 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   provider), up to nine rows then `+n more`; `no roles or seats run here` for a host with none;
   `⚠ ledger copy here is N d old` in amber when the host's ledger clone last fetched over six
   hours ago (a host that runs no role never pulls); `⚠ Herdr pin differs: shoal ui doctor` in
-  amber when `pin_ok` is false; and the open status. The header's `N need you` counts that
+  amber when `pin_ok` is false; while the summary's `fresh` block says it is not live (`fresh.js`, a verbatim copy
+  of lattice-view's), its role and shoal rows at half opacity and a `⟳ updating: ...` line in steel saying why; and
+  the open status. The header's `N need you` counts that
   host's own roles. Every host reads every shoal from its own ledger clone, so shoal-wide totals
   would be the same on each card: a summary without `here` (an older host) still shows one row
   per shoal (tint dot, tag, `N need you`, `W working · Q waiting · R roles`).
@@ -109,8 +111,8 @@ geometry and colors are the mod's own, the text uses the render host's fonts.)
   `["shoal","ui","launch","--list","--json","--summary"]` here, or `{kind: "fixture", path?}`),
   `motion`, `renderer`, `art`, `poll_ms`.
 - `main.js` (the View), `model.js` (list parsing, card lines, keys, open results), `layout.js`
-  (composition per window size), `ocean.js` (the sea), `logo.js` and `glyphs.js` (the logo), `motion.js` (a verbatim
-  copy of lattice-view's). The sea and the logo are pure, so `main.js` keeps the last result per layout (`lastResult`).
+  (composition per window size), `ocean.js` (the sea), `logo.js` and `glyphs.js` (the logo), `motion.js` and `fresh.js`
+  (verbatim copies of lattice-view's). The sea and the logo are pure, so `main.js` keeps the last result per layout (`lastResult`).
 - `assets/logo.png` is generated. The letters are built in `glyphs.js` (rounded polygons, ovals, and for the S a stroke
   along two ovals). The reef is `preview/logo_reef.mjs`, drawn procedurally and seeded, in each letter's cap units. To
   change either, run `preview/gen_logo_image.mjs` (a CPU-only headless browser, 244 px to the em, which is twice the

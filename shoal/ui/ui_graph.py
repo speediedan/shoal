@@ -510,10 +510,13 @@ class GraphBuilder:
 
     # -- role rows: the status cache when fresh, else role_row over this builder's own View
     def _cached_shoals(self) -> dict[str, dict]:
+        """{shoal id: its status doc} from the status cache when it is fresh, each with `_read`: when the feeder read it
+        (the cache's `ts`), which is how old the rows' live state is."""
         if not self.use_cache:
             return {}
         d = ui_status.read_cache()
-        return {s["id"]: s for s in (d or {}).get("shoals", []) if s.get("id") and not s.get("error")}
+        t = _epoch((d or {}).get("ts") or "")
+        return {s["id"]: dict(s, _read=t) for s in (d or {}).get("shoals", []) if s.get("id") and not s.get("error")}
 
     def _alias_seats(self, now: float) -> None:
         """EXT_ALIAS for this build: each saved Claude seat whose session's own name (claude agents) is not its label, so
@@ -547,8 +550,17 @@ class GraphBuilder:
         dnow = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
         hrows = self._harness_rows(now)
         rows = [ui_status.role_row(spec, view, r, hrows, dnow, opencode_probe=False) for r in spec.roles]
-        self._rows[spec.sid] = (now, rows)
+        # (built, rows, when the harness listing they read was taken: how old their live state is)
+        self._rows[spec.sid] = (now, rows, self._harness[0])
         return rows
+
+    def _read_at(self, sid: str, cs: dict | None, now: float) -> float:
+        """When the live state of a shoal's rows was read: the status cache's time, else the harness listing's."""
+        if cs is not None and isinstance(cs.get("roles"), list):
+            t = cs.get("_read")
+            return float(t) if isinstance(t, (int, float)) else now
+        memo = self._rows.get(sid)
+        return float(memo[2]) if memo is not None and len(memo) > 2 else now
 
     # -- one document
     def build(self, since: str = "", now: float | None = None, replay: bool = False) -> dict:
@@ -587,6 +599,7 @@ class GraphBuilder:
                 "state": {"class": "work", "event": "", "group": "", "needs_you": False},
                 "work": {"asks_open": 0, "grants_pending": 0}, "metrics": {"msgs_out_1h": 0, "msgs_in_1h": 0}}
         nodes["user"] = user
+        read_at: list[float] = []  # per shoal, when its rows' live state was read
         ext_seen: dict[str, set[str]] = {}
         ext_metrics: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
 
@@ -607,6 +620,7 @@ class GraphBuilder:
             view = View(led, spec)
             cs = cached.get(sid)
             rows = cs["roles"] if cs and isinstance(cs.get("roles"), list) else self._rows_for(spec, view, now)
+            read_at.append(self._read_at(sid, cs, now))
             states = role_states(spec, view, rows, now)
             repos = repo_map(spec)
             home = spec.home or this_host
@@ -737,6 +751,9 @@ class GraphBuilder:
                                 "heartbeat_age_s": row.get("heartbeat_age_s"), "context_k": row.get("context_k")},
                     "view": row.get("view") or [config.cli(), "view", sid, slug],
                 }
+                stale = ui_status.row_stale(row)
+                if stale:  # its live state is behind (a role on another host not read yet): shown, marked as such
+                    nodes[nid]["state"]["stale"] = stale
                 if job:
                     nodes[nid]["state"]["job"] = job
                     nodes[nid]["state"]["job_host"] = job["host"]
@@ -847,7 +864,12 @@ class GraphBuilder:
                           **{k: hagg[h][k] for k in ("roles", "working", "waiting", "needs_you", "msgs_1h", "msgs_24h")}}
                          for h in sorted(hagg)],
                "shoals": shoals, "nodes": list(nodes.values()), "edges": edocs,
-               "events": tail_events["events"]}
+               "events": tail_events["events"],
+               # how live the status shown is: a reader greys it past `stale_after_s` (a writer that stopped) or while
+               # `stale` (some roles' live state not read yet)
+               "fresh": ui_status.freshness(min(read_at, default=now), now,
+                                            sorted({n["state"]["stale"] for n in nodes.values()
+                                                    if n["kind"] == "role" and n["state"].get("stale")}))}
         if tail_events.get("cursor_reset"):
             doc["cursor_reset"] = True
         if replay:

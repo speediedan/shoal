@@ -2882,3 +2882,68 @@ test("2026-11-18: in the bowl every role sits well inside its own host's lune, L
   }
   assert.ok(checked > 1000 && least >= D.LUNE_MARGIN - 1e-9, `${checked} placements, the least ${least.toFixed(3)} of a lune's width from its edge`);
 });
+
+// ---- freshness (maintainer, 2026-11-22: at startup the lattice and rail showed status not live yet, with nothing to say so)
+const F = await import(join(MOD, "fresh.js"));
+const T0 = Date.parse("2026-11-02T20:00:00Z");
+const withFresh = (fresh, mark = {}) => {
+  const d = structuredClone(doc);
+  d.fresh = fresh;
+  for (const n of d.nodes) if (mark[n.id]) n.state = { ...n.state, stale: mark[n.id] };
+  return d;
+};
+const live = { as_of: "2026-11-02T20:00:00Z", age_s: 20, stale_after_s: 90, stale: false, reasons: [] };
+
+test("fresh.js: the feed's block, judged with this clock: stale when the feed says so or past its limit; no block, no verdict", () => {
+  assert.equal(F.freshness(undefined), null, "an older feed carries none: not judged");
+  assert.equal(F.freshness(null), null);
+  const f = F.freshness(live, T0 + 60_000);
+  assert.deepEqual(f, { stale: false, old: false, ageS: 60, limit: 90, reasons: [] });
+  const old = F.freshness(live, T0 + 91_000);
+  assert.ok(old.stale && old.old && old.ageS === 91 && old.reasons[0] === "old", JSON.stringify(old));
+  assert.equal(F.staleLine(old), "status 2 min old: not written since");
+  assert.equal(F.staleLine(F.freshness(live, T0 + 3 * 3600_000)), "status 3 h old: not written since");
+  const unread = F.freshness({ ...live, stale: true, reasons: ["unread"] }, T0 + 1000);
+  assert.ok(unread.stale && !unread.old);
+  assert.equal(F.staleLine(unread, 2), "2 roles: its host's live state is not read yet");
+  assert.equal(F.staleLine(F.freshness({ ...live, stale: true, reasons: ["new-reason"] }, T0), 1), "1 role: new-reason", "an unknown reason is said as it is");
+  assert.equal(F.staleLine(f), "", "live: nothing to say");
+  assert.notEqual(F.freshSignature(f), F.freshSignature(old), "going stale redraws");
+  assert.equal(F.freshSignature(F.freshness(live, T0 + 100_000)), F.freshSignature(F.freshness(live, T0 + 100_500)), "a poll a moment later draws nothing new");
+});
+
+test("a role marked not live is greyed, flagged on its rail row and its card; the doc's age greys every role", () => {
+  const tune = `${A}:tune`, core = `${A}:core`;
+  const d = withFresh({ ...live, stale: true, reasons: ["unread"] }, { [tune]: "unread" });
+  const vm = M.buildModel(d, "global", { now: T0 + 1000 });
+  const base = global.byId.get(tune).visual.opacity;
+  assert.equal(vm.byId.get(tune).stale, "unread");
+  assert.ok(Math.abs(vm.byId.get(tune).visual.opacity - base * M.STALE_OPACITY) < 1e-9, "greyed");
+  assert.equal(vm.byId.get(core).stale, null, "the others stay as they are");
+  assert.equal(vm.byId.get(core).visual.opacity, global.byId.get(core).visual.opacity);
+  assert.equal(vm.byId.get("user").stale, null, "only roles carry a status");
+  assert.equal(vm.needsYou.find((r) => r.id === tune).stale, "unread", "its needs-you row says so");
+  assert.equal(vm.staleN, 1);
+  assert.equal(M.staleText(vm), "1 role: its host's live state is not read yet");
+  assert.ok(M.cardLines(vm, tune).rows.some(([k, v]) => k === "updating" && v === F.STALE_TEXT.unread), "its card says why");
+  assert.notEqual(M.visualSignature(vm), M.visualSignature(M.buildModel(withFresh(live), "global", { now: T0 + 1000 })), "a change of freshness redraws");
+  // a doc whose writer stopped: every role greys, the rail says how old
+  const old = M.buildModel(withFresh(live), "global", { now: T0 + 600_000 });
+  assert.ok(old.nodes.filter((x) => x.kind === "role").every((x) => x.stale === "old"));
+  assert.equal(M.staleText(old), "status 10 min old: not written since");
+  assert.equal(M.staleText(M.buildModel(withFresh(live), "global", { now: T0 + 1000 })), "", "live: nothing said");
+  assert.equal(M.staleText(global), "", "the fixture has no block: as before");
+  // drilled into a shoal, only its roles count
+  assert.equal(M.buildModel(d, B, { now: T0 + 1000 }).staleN, 0);
+});
+
+test("the pulse drawer greys a stale needs-you row and says it is updating", () => {
+  const tune = `${A}:tune`;
+  const pm = M.pulseModel(withFresh({ ...live, stale: true, reasons: ["unread"] }, { [tune]: "unread" }), { now: T0 + 1000 });
+  assert.equal(pm.needs.find((r) => r.id === tune).stale, "unread");
+  assert.equal(pm.staleText, "1 role: its host's live state is not read yet");
+  const pl = M.pulseModel(withFresh(live), { now: T0 + 1000 });
+  assert.equal(pl.staleText, "");
+  assert.notEqual(M.pulseSignature(pm), M.pulseSignature(pl), "it redraws when freshness changes");
+  assert.ok(M.pulseModel(withFresh(live), { now: T0 + 600_000 }).needs.every((r) => r.stale === "old"));
+});

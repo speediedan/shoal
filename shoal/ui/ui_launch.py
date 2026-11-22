@@ -686,10 +686,13 @@ def summarize(graph: dict, core_version: str = "") -> dict:
                 seats.append({"label": n.get("label") or "", "harness": sa.get("harness") or "",
                               "account": sa.get("account") or "", "state": sa.get("state") or ""})
     ages = [s.get("ledger_age_s") for s in graph.get("shoals", []) if s["id"] in live and s.get("ledger_age_s") is not None]
-    return {"shoals": shoals, "needs_you": sum(x["needs_you"] for x in shoals),
-            "pin_ok": (core_version == ui_app.CORE_PIN) if core_version else None,
-            "here": {"host": host, "roles": roles, "seats": seats, "needs_you": sum(1 for r in roles if r["needs_you"]),
-                     "ledger_age_s": min(ages) if ages else None}}
+    out = {"shoals": shoals, "needs_you": sum(x["needs_you"] for x in shoals),
+           "pin_ok": (core_version == ui_app.CORE_PIN) if core_version else None,
+           "here": {"host": host, "roles": roles, "seats": seats, "needs_you": sum(1 for r in roles if r["needs_you"]),
+                    "ledger_age_s": min(ages) if ages else None}}
+    if isinstance(graph.get("fresh"), dict):  # the graph's own freshness block: the card greys a summary past it
+        out["fresh"] = graph["fresh"]
+    return out
 
 
 def host_summary(choice: str) -> dict | None:

@@ -664,3 +664,25 @@ test("a card lists what runs on its host: its roles (any shoal), its seats, its 
   const empty = M.parseList({ hosts: [{ name: "lap", reachable: true, summary: { shoals: [], here: { roles: [], seats: [], ledger_age_s: 60 } } }] }).hosts[0];
   assert.deepEqual(M.cardLines(empty).slice(1).map((l) => l.text), ["no roles or seats run here"]);
 });
+
+test("freshness: a card whose summary is not live yet greys its lines and says why; fresh.js is lattice-view's", () => {
+  assert.equal(readFileSync(join(MOD, "fresh.js"), "utf8"), readFileSync(join(MODS, "lattice-view", "fresh.js"), "utf8"),
+    "shoal-home/fresh.js is a verbatim copy of lattice-view/fresh.js: edit there, then copy");
+  const t0 = Date.parse("2026-11-22T12:00:00Z");
+  const fresh = { as_of: "2026-11-22T12:00:00Z", age_s: 10, stale_after_s: 90, stale: false, reasons: [] };
+  const raw = JSON.parse(fixtureText);
+  const withFresh = (f) => {
+    const d = structuredClone(raw);
+    d.hosts.find((h) => h.name === "local").summary.fresh = f;
+    return M.parseList(d).hosts.find((h) => h.name === "local");
+  };
+  const plain = M.cardLines(list.hosts[0], null, t0);
+  assert.deepEqual(M.cardLines(withFresh(fresh), null, t0 + 30_000), plain, "live: the card as before");
+  const old = M.cardLines(withFresh(fresh), null, t0 + 3600_000);
+  assert.ok(old.filter((x) => x.kind === "shoal").every((x) => x.stale === true), "its shoal lines grey");
+  assert.equal(old.at(-1).kind, "stale");
+  assert.equal(old.at(-1).text, "updating: status 1 h old: not written since");
+  const unread = M.cardLines(withFresh({ ...fresh, stale: true, reasons: ["unread"] }), null, t0);
+  assert.equal(unread.at(-1).text, "updating: its host's live state is not read yet");
+  assert.equal(L.cardHeight(old.length), L.cardHeight(plain.length + 1), "the card makes room for the line");
+});
