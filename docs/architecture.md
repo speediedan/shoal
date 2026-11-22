@@ -1974,7 +1974,12 @@ its own program is a bare shell, and another program in front, such as `claude a
 never typed into, closed or restarted, since its foreground may be the parent of a harness's background daemon: on
 `app-open` and the sync its `shoal.pane` label moves to `shoal.pane.taken`, the card's stale `shoal.*` status labels are
 cleared, and a fresh card is split in beside it. A roles tab held as it is because a card in it is in use is still
-repaired pane by pane, never added to. A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
+repaired pane by pane, never added to; a planned role whose card is in none of the held tabs (unparked, or added with
+`add-role`) gets it in one new tab of its own, the next free `roles N`, laid out like the others (`_add_held`), with
+nothing closed, so the role reaches the agents list without waiting for every card to detach (measured 2026-11-22: an
+unparked role stayed off the agents list while another card was attached); the next pass finds that card shown and adds
+nothing more, and once nothing is in use the tabs are laid out to the plan again. This happens only when every terminal
+in those tabs was read: one that cannot be read (a machine out of reach) may already hold that card. A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
 feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead

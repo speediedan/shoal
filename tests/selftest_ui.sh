@@ -3015,13 +3015,15 @@ card_fg = {"foreground": {"name": "python", "argv": ["python", "/x/cli.py", "vie
 assert ui_app.foreground_kind(card_fg) == "card"
 ui_app.hc_get = lambda t: {"labels": {ui_app.PANE_LABEL: "s/r", ui_app.ATTACH_LABEL: "1"}, **card_fg}
 closed = []
-ui_app.app_do = lambda verb, args=None: closed.append(verb)
+ui_app.app_do = lambda verb, args=None: closed.append(verb) or {}
+ui_app.app_ls = lambda: {"spaces": []}
 said = []
-rec = types.SimpleNamespace(machine=None, dry_run=False, say=said.append)
-space = {"name": "s", "tabs": [{"name": "roles", "panes": [{"label": "s/other"}]}]}
+rec = ui_app.Reconciler(None)
+rec.say = said.append
+space = {"name": "s", "tabs": [{"name": "roles", "panes": [{"label": "s/other", "argv": ["x"]}]}]}
 got = {"id": "x", "tabs": [{"name": "roles", "terminals": [{"terminal": "t9", "pane": "p9"}]}]}
 assert ui_app.Reconciler._relayout(rec, space, got, {}) is True
-assert not closed and "in use" in said[-1], (closed, said)
+assert closed == ["tab.new"] and "in use" in said[0], (closed, said)  # the attached card's tab stays; the other role's card is added
 PY2
 # a blocked session's own words come from its job; nothing there reads as nothing
 SAYS="$(mktemp -d)"
@@ -3618,7 +3620,7 @@ print("app remote ok")
 PY5
 # the card's own status report (OSC 7501), the mapping, and the host list
 python3 - "$SHOALD" <<'PY6' || fail "card report"
-import base64, os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import base64, os, sys, tempfile; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
 import ui_app
 o = ui_app.osc7501("blocked", "auth", "lane/r", "wait user-auth")
 assert o.startswith("\x1b]7501;state=blocked:kind=auth:app=shoal:title=") and o.endswith("\x1b\\"), repr(o)
@@ -3677,7 +3679,32 @@ calls.clear()
 more = dict(space, tabs=[{"name": "roles", "layout": "grid", "panes": [pane("t1"), pane("t2"), pane("t3")]}])
 assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and any(c == "tab.close" for c, _ in calls), "a new role lays out again"
 calls.clear(); fg["t2"] = "other"
-assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls and "in use" in rec.out[-1], "an attached card keeps the tabs"
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and "in use" in rec.out[-3], "an attached card keeps the tabs"
+# ... and a role newly planned (unparked, added) gets its card in a new roles tab of its own, closing nothing
+assert [c for c, _ in calls] == ["tab.new"] and calls[0][1]["name"] == "roles 2" and calls[0][1]["space"] == "sp", calls
+assert ui_app.ROLE_TAB.match(calls[0][1]["name"]) and "tag: add s/t3 in a new tab roles 2" in rec.out[-2], rec.out
+assert not rec.rebuilt and not any(c in ("tab.close", "pane.close") for c, _ in calls), calls
+# the next pass finds that card shown and adds nothing more
+calls.clear(); fg["t3"] = "card"
+held = dict(got, tabs=got["tabs"] + [{"id": "tb2", "name": "roles 2", "terminals": [{"terminal": "t3", "pane": "p3"}]}])
+assert rec._relayout(more, held, {"local/tag": ui_app.TABS_V}) and not calls and "in use" in rec.out[-1], (calls, rec.out)
+# a dry run only says what it would add
+dry = ui_app.Reconciler(None, dry_run=True)
+assert dry._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls, calls
+assert "[dry-run] tag: add s/t3 in a new tab roles 2 (the tabs in use stay as they are)" in dry.out, dry.out
+# the new tab takes no name the plan or the space already uses, and the apply pass adds no planned roles tab by name
+fg.update(t4="card", t5="card")
+split = dict(space, tabs=[{"name": "roles", "layout": "grid", "panes": [pane("t1"), pane("t2")]},
+                          {"name": "roles 2", "layout": "grid", "panes": [pane("t3"), pane("t4")]}])
+ls_held = {"spaces": [dict(got, name="tag", machine=None, tabs=got["tabs"] + [{"id": "tbx", "name": "roles 3", "terminals": []}])]}
+ui_app.app_ls = lambda: ls_held
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp()
+app = ui_app.Reconciler(None)
+out = app.apply({"spaces": [split]}, focus=False)
+news = [a["name"] for c, a in calls if c == "tab.new"]
+assert news == ["roles 4"] and not any(c in ("tab.close", "pane.close") for c, _ in calls), (calls, out)
+assert any("add s/t3, s/t4 in a new tab roles 4" in x for x in out), out
+ui_app.app_ls = lambda: {"spaces": []}
 fg["t2"] = "card"; calls.clear()
 # a terminal that cannot be read (a machine out of reach) may be anything: its tabs stay, whatever the labels say
 real_get = ui_app.hc_get
@@ -3686,7 +3713,12 @@ def unreadable(t):
         raise ui_app.AppError("no route")
     return real_get(t)
 ui_app.hc_get = unreadable
+rec.out.clear()
 assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls, "an unreadable terminal closed tabs"
+assert not any("new tab" in x for x in rec.out), "an unreadable pane may hold the card: none added"
+fg["t1"] = "other"  # an attached card beside it does not change that
+assert rec._relayout(more, got, {"local/tag": ui_app.TABS_V}) and not calls and not any("new tab" in x for x in rec.out), calls
+fg["t1"] = "card"
 ui_app.hc_get = real_get
 # someone closed every roles tab: the quiet sync leaves that, an explicit open brings them back
 closed = {"id": "sp", "tabs": []}

@@ -925,8 +925,10 @@ class Reconciler:
         """Rebuild a shoal's roles tabs when they no longer hold the planned roles, or were built before TABS_V (a
         tab grown one pane at a time is a stack, not a grid). A card is only a viewer, so closing it stops nothing, but
         one in use (an attached session, or anything else that is not a card), or one that cannot be read (a machine out of
-        reach, whose tabs may hold anything), keeps every tab as it is. The quiet `sync` leaves a space with no roles tab
-        alone: someone closed them. True when it dealt with the roles tabs."""
+        reach, whose tabs may hold anything), keeps every tab as it is. While a readable card in use holds them, a planned
+        role whose card is in no roles tab (unparked, or added with `add-role`) gets its card in one new tab of its own
+        (`_add_held`), and nothing is closed; once nothing is in use the tabs are laid out to the plan as usual. The quiet
+        `sync` leaves a space with no roles tab alone: someone closed them. True when it dealt with the roles tabs."""
         self.rebuilt = False  # True only when the tabs were (or, in a dry run, would be) closed and made again
         planned = [t for t in s["tabs"] if ROLE_TAB.match(t["name"]) and not t.get("mod")]
         existing = [t for t in got.get("tabs", []) if ROLE_TAB.match(t.get("name") or "")]
@@ -935,14 +937,14 @@ class Reconciler:
         if sync and not existing:
             return True
         have: dict[str, set[str]] = {}
-        busy = False
+        busy = unread = False
         for tab in existing:
             labels = set()
             for x in tab.get("terminals", []):
                 try:
                     t = hc_get(x["terminal"])
                 except AppError:
-                    busy = True
+                    busy = unread = True
                     continue
                 lab = (t.get("labels") or {}).get(PANE_LABEL)
                 if lab:
@@ -956,6 +958,8 @@ class Reconciler:
         if busy:
             if have != want:
                 self.say(f"{s['name']}: roles changed, but a card is in use: tabs left as they are until it is detached")
+                if not unread:
+                    self._add_held(s, got, planned, set().union(*have.values()))
             return True
         self.say(f"{s['name']}: lay the roles out again ({len(planned)} tab(s))")
         self.rebuilt = True
@@ -972,6 +976,21 @@ class Reconciler:
             app_do("tab.move", {"id": tabs[name]["id"], "index": i})
         built[key] = TABS_V
         return True
+
+    def _add_held(self, s: dict, got: dict, planned: list[dict], shown: set[str]) -> None:
+        """Roles tabs held by a card in use: give the planned roles whose cards are in none of them (`shown`) one new
+        roles tab, named with the next free `roles N` and laid out like the planned ones. No existing tab or pane is
+        touched, and the next pass finds those cards shown, so it adds nothing more. Only when every terminal was read:
+        an unreadable pane may already hold one of those cards."""
+        missing = [p for t in planned for p in t["panes"] if p["label"] not in shown]
+        if not missing:
+            return
+        taken = {t.get("name") for t in got.get("tabs", [])} | {t["name"] for t in s["tabs"]}
+        name = next(f"roles {n}" for n in range(2, len(taken) + 3) if f"roles {n}" not in taken)
+        layout = planned[0].get("layout", "stack") if planned else "stack"
+        self.say(f"{s['name']}: add {', '.join(p['label'] for p in missing)} in a new tab {name} (the tabs in use stay "
+                 f"as they are)")
+        self._new_tab(got["id"], {"name": name, "layout": layout, "panes": missing})
 
     def _refresh_mod(self, space_id: str, tab_doc: dict, t: dict, built: dict, space_name: str) -> None:
         """Rebuild a mod tab made before TABS_V: its props are fixed when it is made."""
@@ -1137,13 +1156,15 @@ class Reconciler:
                 if rebuilt and ROLE_TAB.match(t["name"]) and not t.get("mod"):
                     continue
                 if t["name"] not in tabs:
+                    if relaid and ROLE_TAB.match(t["name"]) and not t.get("mod"):
+                        continue  # held roles tabs: a planned role with no card got one in `_relayout`, nothing else is added
                     if not sync:
                         self._new_tab(got["id"], t)
                         if t.get("mod") and not self.dry_run:
                             built[f"{key}/{s['name']}/{t['name']}"] = TABS_V
                 elif t.get("mod"):
                     self._refresh_mod(got["id"], tabs[t["name"]], t, built, s["name"])
-                else:  # held roles tabs (a card in use) are repaired in place, never added to
+                else:  # held roles tabs (a card in use) are repaired in place; a missing card goes in a tab of its own
                     self._gaps(s, tabs[t["name"]], t, sync=sync, add=not (relaid and ROLE_TAB.match(t["name"])))
                 if t["name"] == "overview" and t["name"] in tabs:
                     self._drop_ledger(s, tabs[t["name"]], t)
