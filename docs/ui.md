@@ -844,13 +844,16 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two
   reporters would take turns on one row. After any attach the card writes its report again, even an unchanged `done` (a Codex client takes its own report with it when it exits, which left the role off the agents list), and clears the `shoal.attached` label again. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
   the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open. That hold covers every roles tab of the shoal until the last card detaches: a
-  new role's card appears, and a removed role's card goes, at the next sync after that, so the grid can change just after a detach.
+  removed role's card goes, and the grid is laid out again, at the next sync after that, so the grid can change just after a detach.
+  A new role's card (a role unparked, or added) does not wait: it appears at once in a roles tab of its own (the next free
+  `roles N`), and nothing else changes until the detach.
 - **Spaces.** `app-open` gives each shoal a space named with its short tag, on its home host (the spec's
   `home`; a shoal with none counts as every host's), with the tabs the 0.9.3 adapter uses: `overview` (the dashboard; its `l` shows the ledger tail in
   place, and `overview_ledger: true` in `ui.json` keeps a tail pane, while with it off the sync closes one), `roles` (four cards a tab
   in a 2x2 grid, two or three stacked, more roles in `roles 2` and on) and `lattice` (the `lattice-view` mod on that
   shoal, reading the feed of the space's machine). `shoal ui app-sync`, run every two minutes by the `shoal-status` bar,
-  lays roles tabs out again when roles are added or removed, unless a card is in use, and leaves anything you closed
+  lays roles tabs out again when roles are added or removed, unless a card is in use (then only a new role's card is
+  added, in a tab of its own), and leaves anything you closed
   closed. A shoal's or a seat's space has no lattice tab of its own any more (one shoal made before is closed, once): the
   top bar's **Lattice** (Ctrl+Alt+L) opens the global lattice in `SHOAL-home`, drilled into the shoal of the space in view,
   and `shoal ui app-lattice` does the same from a terminal, and
