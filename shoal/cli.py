@@ -1254,9 +1254,10 @@ def cmd_status(spec: ShoalSpec) -> int:
             if sc:
                 pid = sc.get("pid", "")
                 alive = pid and os.path.exists(f"/proc/{pid}")
+                held = _ledger_watch.hold_text(_ledger_watch.current_hold(sc, bool(alive)))
                 print(f"  ledger-watch {r.slug}: session={sc.get('session_id', '?')[:12]} pid={pid} "
                       f"{'alive' if alive else 'DEAD'} last_tick={sc.get('last_tick', 'never')} "
-                      f"last_wake={sc.get('last_wake', 'never')}")
+                      f"last_wake={sc.get('last_wake', 'never')}" + (f" {held}" if held else ""))
             else:
                 print(f"  ledger-watch {r.slug}: not armed (no sidecar)")
     except Exception as exc:  # noqa: BLE001

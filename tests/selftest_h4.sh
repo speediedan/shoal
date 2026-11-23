@@ -2708,5 +2708,141 @@ PY2
 echo "== 42 accounts: none declared is the old path; a second account's jobs, transcripts, roster and usage are read from its own directory"
 python3 "$TESTD/test_accounts.py" || fail "provider accounts (tests/test_accounts.py)"
 
+echo "== 43 a watcher holding wakes for an attached client: recorded, paged once, never counted as a wake without effect"
+# measured 2026-11-22: a client opened from a role's card (`codex resume <thread>`) held a user offer for 6 h; the
+# watcher held it (rightly), nothing said so, and health paged "woken 2x without effect". The client is faked at the
+# function boundary (ledger_watch.attached_pid), never a real process
+SC_UP=/tmp/$SID/ledger-watch-up.state
+python3 - "$SHOALD" "$SPEC" "$SC_UP" <<'PY2' || fail "attached-client hold"
+import argparse, contextlib, datetime, io, json, os, sys
+sys.path.insert(0, sys.argv[1])
+import health, ledger_watch as lw
+from ledger import Ledger
+from roles import ShoalSpec
+SPEC, SC = sys.argv[2], sys.argv[3]
+spec = ShoalSpec.load(SPEC)
+THREAD = "01a00000-0000-7000-8000-00000000c0de"
+ME = os.getpid()  # stands in for the client's pid: current_hold reads a client whose /proc entry is gone as detached
+def ago(m):
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+# --- the watcher: holds for the client, records it, delivers once it exits, and clears the record
+led = Ledger(spec.sid, root=spec.ledger_dir, sync=False)
+led.append("user", "offer", to="up", item="app#9431:fix", prio=20)
+CLIENT = [ME]
+FIRED = []
+lw.attached_pid = lambda s, e="muse": CLIENT[0] if s == THREAD else 0
+lw.muse_session_busy = lambda s, e="muse": False
+lw.client_desc = lambda pid, s: f"pid {pid}, `codex resume {s}`, opened from its card"
+lw.fire = lambda wake, text, *a, **k: FIRED.append(text) or True
+lw.emit_wake = lambda *a, **k: None
+class Stop(Exception):
+    pass
+TICKS = [0]
+def sleep(_s):
+    TICKS[0] -= 1
+    if TICKS[0] < 0:
+        raise Stop()
+lw.time.sleep = sleep
+lw.code_stamp = lambda: 0.0
+ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd"); lw.add_parser(sp)
+args = ["ledger-watch", "--shoal", spec.sid, "--spec", SPEC, "--slug", "up", "--wake", f"exec:{THREAD}",
+        "--session", THREAD, "--interval", "0", "--no-sync", "--no-board", "--sidecar", SC]
+def ticks(n):
+    TICKS[0] = n - 1
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            lw.cmd_ledger_watch(ap.parse_args(args))
+        except Stop:
+            pass
+    return out.getvalue(), lw.load_sidecar(SC)
+if os.path.exists(SC):
+    os.remove(SC)
+out, sc = ticks(2)
+assert not FIRED, ("a wake went out under an attached client", FIRED)
+assert sc.get("held_reason") == f"attached:{ME}" and int(sc.get("held_events", 0)) >= 1 and sc.get("held_since"), sc
+assert "opened from its card" in sc.get("held_client", "") and "last_wake" not in sc, sc
+assert out.count("HOLDING") == 1, out  # said once a hold, not every tick
+since = sc["held_since"]
+out, sc = ticks(1)  # a re-armed watcher keeps the hold's start
+assert sc.get("held_since") == since and not FIRED, sc
+h = lw.current_hold(sc, True)
+assert h["attached"] and h["pid"] == ME and lw.hold_text(h).startswith(f"holding {h['events']} event(s) for an attached client pid {ME} since "), h
+assert lw.current_hold(sc, False) == {}, "a dead watcher holds nothing"
+CLIENT[0] = 0
+out, sc = ticks(1)
+assert len(FIRED) == 1 and "app#9431" in FIRED[0], FIRED
+assert not any(k.startswith("held_") for k in sc) and sc.get("last_wake"), sc
+assert "hold ended" in out, out
+# a client that exited between ticks is no hold to a reader, before the watcher's next tick clears it
+assert lw.current_hold(dict(sc, held_reason="attached:999999999", held_since=ago(5), held_events="1"), True) == {}
+# --- health: wakes-held from the sidecar, paged once after the grace; the role's other ladders hold
+HOLD_SC = {"pid": str(ME), "held_reason": f"attached:{ME}", "held_since": ago(35), "held_events": "2",
+           "held_client": f"pid {ME}, `codex resume <thread>`, opened from its card"}
+SIDE = {"up": HOLD_SC}
+health.watcher_alive = lambda sid, slug: (slug in SIDE, dict(SIDE.get(slug, {})))
+from ledger import View
+conds = [c for c in health.evaluate(spec, View(led, spec), {}) if c["condition"] == "wakes-held"]
+assert len(conds) == 1 and conds[0]["slug"] == "up" and conds[0]["key"] == f"attached:{ME}:{HOLD_SC['held_since']}", conds
+want = (f"an interactive client (pid {ME}, `codex resume <thread>`, opened from its card) has held 2 wake(s) for 35 min; "
+        "detach it (exit the client) so the watcher can deliver")
+assert conds[0]["detail"] == want, conds[0]["detail"]
+PAGES = []
+health.page_user = lambda spec, text, state, dry_run=False: PAGES.append(text) or "page"
+health.host_beats = lambda *a, **k: []
+health.claude_busy = lambda: {}
+COND = []
+health.evaluate = lambda spec, view, cbusy: [dict(c) for c in COND]
+def run(state=None):
+    p = os.path.join(health.state_dir(spec.sid), "health.json")
+    json.dump(state if state is not None else json.load(open(p)), open(p, "w"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        health.run(spec, "a", dry_run=False)
+    return out.getvalue(), json.load(open(p))
+offer = {"slug": "up", "condition": "unacked-work", "key": "offer:o-1", "since": ago(70), "detail": "offer app#9431:fix by user not acknowledged"}
+held = dict(conds[0])
+COND[:] = [held, offer]
+out, st = run({})
+assert PAGES == ["up: " + want], PAGES
+assert "up unacked-work step1:wake -> held (its watcher holds every wake for an attached client" in out, out
+assert "without effect" not in out and st["ladders"]["up|unacked-work|offer:o-1"]["step"] == 0, (out, st["ladders"])
+# the hold goes on: no second page, no second word about the held ladder, and still no wake
+out, st = run()
+assert len(PAGES) == 1 and "held (" not in out and ":wake ->" not in out, (PAGES, out)
+# the client exits: the watcher delivers, and the held ladder counts from now (nothing held was a wake without effect)
+SIDE["up"] = {"pid": str(ME)}
+COND[:] = [offer]
+out, st = run()
+lad = st["ladders"]["up|unacked-work|offer:o-1"]
+assert lad["step"] == 0 and (health.age_min(lad["since"]) or 0) < 1 and "held_by" not in lad, lad
+assert "up|wakes-held|" + held["key"] not in st["ladders"], "the hold's condition closes with it"
+assert len(PAGES) == 1 and ":wake ->" not in out, (PAGES, out)
+# a Claude session at an open question: its wakes wait there; the page says so instead of "without effect"
+SIDE["up"] = {"pid": str(ME), "held_reason": "question", "held_since": ago(50), "held_events": "1"}
+COND[:] = [dict(offer, key="offer:o-2")]
+out, st = run({"ladders": {"up|unacked-work|offer:o-2": {"since": ago(70), "step": 2}}})
+assert len(PAGES) == 2 and "woken 2x, but its watcher has held its wakes undelivered since" in PAGES[1] \
+    and "open question" in PAGES[1] and "without effect" not in PAGES[1], PAGES
+print("attached-client hold ok")
+PY2
+# next --peek and show say it, where the operator looks (a live watcher and client: this shell stands in for both)
+printf 'pid=%s\nsession_id=bbbb2222\nheld_reason=attached:%s\nheld_since=%s\nheld_events=2\nheld_client=pid %s\n' \
+  $$ $$ "$(date -u +%FT%TZ)" $$ > "$SC_UP"
+check "WATCH ledger-watch pid=$$ alive; holding 2 event(s) for an attached client pid $$ since [0-9:]*Z; exit that client" \
+  $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
+check "watcher: holding 2 event(s) for an attached client pid $$" $H show --shoal $SID --spec "$SPEC" --slug up --no-pull
+check "WATCHER holding 2 event(s) for an attached client pid $$" $H show --shoal $SID --spec "$SPEC" --no-pull
+rm -f "$SC_UP"
+OUT=$($H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek 2>&1)
+! grep -q "holding" <<<"$OUT" || fail "a hold outlived its sidecar :: $(grep WATCH <<<"$OUT")"
+python3 - "$SHOALD" <<'PY2' || fail "wakes-held in the agents list"
+import sys, types
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_status
+a = ui_status.agent_state(types.SimpleNamespace(fill="self"), "idle", "", {}, {}, ["wakes-held"], "idle", False)
+assert a["group"] == "needs-you" and a["state"] == "wakes-held" and "exit the client" in a["detail"], a
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID

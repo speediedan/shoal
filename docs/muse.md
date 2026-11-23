@@ -57,7 +57,8 @@ mode for a person-driven session (the first ones are `infra-aux` and `infra-expa
   `muse resume <id>` is open fails with "session ... is already in use" (measured 2026-10-15 on a live role, and the
   wake was lost). So an attached client counts as busy: the watcher holds the wake (it goes out at the first idle
   tick after you detach), `start_run` refuses and the runner exits 75, and the status line reads
-  `status:busy attached`. Ordinary role observation no longer opens this exclusive client.
+  `status:busy attached`. The watcher records the hold in its sidecar, `next --peek` and `show` print it, and the
+  health quorum pages it once after 30 minutes (`wakes-held`, architecture doc §7). Ordinary role observation no longer opens this exclusive client.
   Quit native interaction with `/exit` when finished; never kill the running turn to view it.
 - Interactive seats are not shoal roles: they are not woken by `exec:` and have no ledger watcher. Making an
   interactive pane a ledger-woken role (a wake typed into the pane) is deliberately not built yet.

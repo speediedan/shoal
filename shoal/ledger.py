@@ -894,6 +894,20 @@ def short(s: str, n: int = 60) -> str:
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
+def _hold_note(view: View, slug: str) -> str:
+    """What the role's watcher on this host holds for a person at its session (ledger_watch.hold_note), or ''."""
+    spec = view.spec
+    try:
+        from roles import is_local
+        role = spec.role(slug) if spec is not None else None
+        if role is None or not role.session or not is_local(role, spec):
+            return ""
+        from ledger_watch import hold_note
+        return hold_note(view.ledger.sid, slug)
+    except Exception:  # noqa: BLE001 - the status views never fail on a sidecar
+        return ""
+
+
 def render_role(view: View, slug: str, candidates: list[dict] | None = None,
                 hb_age_min: float | None = None, n_msgs: int = 5) -> str:
     L = []
@@ -913,6 +927,9 @@ def render_role(view: View, slug: str, candidates: list[dict] | None = None,
         L.append("state: (no state event yet)")
     if hb_age_min is not None:
         L.append(f"heartbeat: {hb_age_min:.0f}m ago (this host)")
+    held = _hold_note(view, slug)
+    if held:
+        L.append(f"watcher: {held}")
     qv = view.current_queue(slug)
     if qv is not None:
         L.append(f"queue v{qv.get('version')}: active={qv.get('active') or '-'} next={','.join(qv.get('next') or []) or '-'}"
@@ -1004,6 +1021,9 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
             pk = getattr(r, "parked", None) or {}
             state = "parked (no session)" + (f" since {pk['at']}" if pk.get("at") else "") + \
                 (f": {pk['note']}" if pk.get("note") else "") + (f"; until {pk['until']}" if pk.get("until") else "")
+        held_ = _hold_note(view, r.slug)
+        if held_:
+            state += f"; WATCHER {held_}"
         ng = grants_by_role.get(r.slug, 0) + grants_by_role.get("*", 0)
         L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {ng or '—'} | {last} |")
     pool = [o for o in view.offers.values() if o["status"] == "open" and o["to"] == "*"]

@@ -249,11 +249,21 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   explicit idle-only action serialized with the automated turn lock. Modern journal discovery
   restores activity estimates; unreadable role activity stays unknown. Key readers retain a
   pending Enter across refresh and the observer has q/Escape/Ctrl+C return keys.
-- **Metric:** snapshot count and age of pending offers/requests beside quiet attached viewers,
-  derived from ledger timestamps, watcher deferral logs and native journal mtime. A snapshot
-  alone cannot reconstruct historical viewer-held duration.
-- **Status:** guarded for role-card observation. Explicit native interaction and clients launched
-  outside SHOAL still require `/exit` before automatic wakes can proceed.
+- **Second signature (2026-11-22):** a client opened from the card's explicit native key and left
+  open held a user offer for 6 h. The watcher's sidecar `last_wake` stayed a day old while
+  `last_tick` advanced, and health paged "offer ... not acknowledged (woken 2x without effect)":
+  its two wakes were wake requests the watcher never delivered. The cause was found by hand
+  (`pgrep` for `codex resume <thread>`).
+- **Guard:** the watcher records the hold in its sidecar (`held_since`, `held_reason=attached:<pid>`,
+  `held_events`, `held_client`); `next --peek` (WATCH line), `show` and the agents list
+  (`wakes-held`) print it; health pages it once after 30 min (`wakes-held`) naming the client to
+  exit, and holds the role's other ladders meanwhile, so no held wake is paged as one without
+  effect. Once the client exits, those ladders count from the delivery.
+- **Metric:** `wakes-held` condition intervals (telemetry condition open/close) give the
+  held duration per hold; `page:wakes-held` counts the pages. Before the guard: snapshot count and
+  age of pending offers/requests beside quiet attached viewers only.
+- **Status:** guarded for role-card observation, and paged for explicit native interaction and
+  clients launched outside SHOAL, which still require `/exit` before automatic wakes can proceed.
 
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after

@@ -82,7 +82,10 @@ Health pages are ledger messages to `user`, and, when the spec sets
 `features.health.page = "gh-issue:<owner/repo>#<n>"`, comments on that issue. Watch it. For each
 page: read `shoal show --shoal <id>` and the named role's `shoal next --shoal <id> --slug <role>
 --peek`, then act (offer, withdraw, `msg --wake`, restart the role) or record why not. A page that
-repeats means the ladder ran out: the role could not recover by itself.
+repeats means the ladder ran out: the role could not recover by itself. A `wakes-held` page ("an
+interactive client (pid N, ...) has held N wake(s)") means a native client you or someone opened on
+the role's session (often from its card) is still attached: exit it (`/exit`), and the watcher
+delivers what it held at its next tick.
 
 ## Health review
 

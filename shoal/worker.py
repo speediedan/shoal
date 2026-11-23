@@ -564,10 +564,16 @@ def cmd_next(a) -> int:
             out.append(f"WATCH ledger-watch runs on {host_of(role, spec)}: check it there "
                        f"(ssh {host_of(role, spec)} shoal next --shoal {spec.sid} --slug {slug} --peek)")
         else:
+            from ledger_watch import current_hold, hold_text
             sc = load_sidecar(sidecar_path(spec.sid, slug))
             pid = sc.get("pid", "")
             alive = bool(pid) and os.path.exists(f"/proc/{pid}")
-            out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}")
+            # a hold for a person at the session (an attached client, an open question) says so: nothing else did
+            # (measured 2026-11-22: a client opened from a card held a user offer for 6 h, found by hand with pgrep)
+            held = hold_text(current_hold(sc, alive))
+            out.append(f"WATCH ledger-watch pid={pid or '-'} {'alive' if alive else 'NOT RUNNING: re-arm after this boundary'}"
+                       + (f"; {held}" + ("; exit that client to let them through" if "attached" in held else "")
+                          if held else ""))
     except Exception:
         pass
     out.append("# END EVERY TURN IN A SLEEP STATUS: the last write of a turn is `queue --wait ..` (waiter armed) or "

@@ -387,7 +387,7 @@ work only offers to them or to `*`; `fill=none` roles never claim.
 
 | type | runs as | wakes | detected dead by |
 | --- | --- | --- | --- |
-| `ledger-watch` | setsid-detached (Claude: `--wake direct`; opencode: `--wake send:<own id>`; muse/codex: `--wake exec:<own id>`), or an in-session background command (Claude under `direct_wake: dead`: `--wake exit`) | its own session, for work only | sidecar pid; health `watcher-dead` |
+| `ledger-watch` | setsid-detached (Claude: `--wake direct`; opencode: `--wake send:<own id>`; muse/codex: `--wake exec:<own id>`), or an in-session background command (Claude under `direct_wake: dead`: `--wake exit`) | its own session, for work only | sidecar pid; health `watcher-dead`; a hold for an attached client, health `wakes-held` (§7) |
 | wait waiter (CI, lease, job) | an in-session background command, head-pinned, with verdict lines | its own session | a missing verdict; health `wait-resolved`, `wait-validity` |
 | job unit and `job wait` | a `systemd-run --user` transient unit in `shoal-jobs.slice`, with a `MemoryHigh` cap and a `MemoryMax` ceiling | its own session, through the waiter | `JOB-VERDICT` line (`result=oom-kill` when a memory ceiling killed it); unit state; on another host, `HOST-REBOOTED` when its boot id changed under the job |
 | `health-a`, `health-b` | systemd user timers | roles (through adapters), the maintainer | each checks the other's tick |
@@ -627,6 +627,7 @@ The `restart` step of `wait-resolved` and `wait-validity` (`RESTART_NOT_PAGE`) h
 wakes to a fresh session at its recorded wait, as `context_restart` does; it is held while the session is mid-turn,
 and pages only when the restart fails.
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
+| `wakes-held` | the role's live watcher holds new events for an interactive client attached to its exec session (`codex resume`, `muse resume`: a native view opened from the role's card and left open), as its sidecar records; keyed by the hold, so one page per hold. While it holds, the role's other ladders hold too (below) | page 30 (`ATTACHED_PAGE_MIN`) |
 | `turn-ended-active` (`continuation`) | status `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `checkout-stuck` (when `watch_checkouts` lists it) | a shared checkout has an operation left in progress, a local file differing from one its upstream changed, or commits on both sides; behind alone is not stuck | page 60 |
 | `stale-active` (when `continuation` is off) | status `active`, no ledger write, session between turns | wake 90, page 180 |
@@ -637,6 +638,24 @@ and pages only when the restart fails.
 | `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
 | `asks-unraised` | the maintainer is online and a role holds open asks while at a quiet boundary with no question open, 10 min after its last write (an ask recorded before a CI wait otherwise showed as needs-you with nothing to answer); keyed by its asks, so a new ask raises again. The wake keeps the role's recorded wait (no user-auth wait over it). Never for a headless role (Codex, Muse: no question tool; its asks are answered from the Asks view) | wake, again at 120 min |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
+
+**Wakes held for a person at the session.** A detached watcher never delivers onto a person: it holds new events
+while an interactive client is attached to an exec session (Codex, Muse: one owner per session), or while a Claude
+session is at an open question, and delivers them at its first tick after. It records such a hold in its sidecar
+(`held_since`, `held_reason` = `attached:<pid>` or `question`, `held_events`, `held_client`: the client's pid, its
+`<harness> resume <thread>` and, when it runs under the role's observer, "opened from its card"), and clears it when
+it delivers or nothing is held; a turn in flight is not recorded. `shoal next --peek` says it on its WATCH line
+(`WATCH ledger-watch pid=<n> alive; holding 2 event(s) for an attached client pid <n> since 21:58Z; exit that client
+...`), `shoal show` on the role's row (and `watcher:` line with `--slug`), `shoal status` on the watcher's line, and
+the agents list as `wakes-held` (needs you). The quorum reads a hold only while the watcher and the client are alive.
+For an attached client it pages once (`wakes-held`, after 30 min: "<role>: an interactive client (pid N, `codex
+resume <thread>`, opened from its card) has held N wake(s) for M min; detach it (exit the client) so the watcher can
+deliver"), and holds every other ladder of that role (not `watcher-dead` or the host and checkout conditions): a wake
+from it would be held too, and its page would say "woken Nx without effect" of wakes that were never delivered
+(measured 2026-11-22: a user offer sat 6 h behind a client opened from a card and left open, paged as just that). When
+the client exits, each held ladder starts over from that moment, so it counts only wakes the role actually received.
+An open question is the role's own ask, which the daily digest already carries, so it pages nothing of its own; a page
+that falls due while one holds the wakes says they wait undelivered at the question instead of "without effect".
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.

@@ -23,6 +23,8 @@ boundary), so a new instance restarts the ladder and one instance never escalate
                      mid-turn, and pages only when it fails)
   lease-orphan       (watch_leases) a lease its provider marks orphaned, since its owner ended   page@30
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
+  wakes-held         the role's live watcher holds new events for an attached client       page@30 (once a hold)
+                     (`codex resume`, `muse resume`); while it holds, the role's other ladders hold too
   stale-active       status active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
 
@@ -59,12 +61,16 @@ from roles import ShoalSpec, find_spec, host_of, is_detached_wake, is_home, is_l
 TOOL_PATH = config.tool_path()
 _ENV = config.tool_env()
 PEER_STALE_MIN = 15
+ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after this (and `wakes-held` pages at it)
 LADDERS = {
     "unacked-work": [(10, "wake"), (30, "wake"), (60, "page")],
     # a role that slept through its wake on a resolved wait is handed to a fresh session at that wait: a page asked the
     # maintainer to do what the quorum can (2026-11-18); a page only when the restart fails
     "wait-resolved": [(15, "wake"), (60, "restart")],
     "watcher-dead": [(10, "wake"), (40, "page")],
+    # an interactive client attached to an exec session (a native view opened from the role's card and left open) holds
+    # every wake its watcher would deliver, rightly, but silently: one page per hold (2026-11-22: a user offer sat 6 h)
+    "wakes-held": [(ATTACHED_PAGE_MIN, "page")],
     "stale-active": [(90, "wake"), (180, "page")],
     # features.waitdiscipline (architecture doc §3.5, §6): no wait is silent past its rescan,
     # and a peer's wait on you is work you are woken for
@@ -104,7 +110,8 @@ CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 # wakes without effect on these end in a context restart at the role's recorded wait, not a page (a page only when the
 # restart fails); held while the session is mid-turn
 RESTART_NOT_PAGE = ("wait-resolved", "wait-validity")
-ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after this
+# conditions that do not reach the role through its watcher, so a hold for an attached client does not hold their ladders
+HOLD_EXEMPT = ("wakes-held", "watcher-dead", "host-silent", "host-name-clash", "checkout-stuck", "lease-orphan")
 
 
 def restart_client(role) -> str:
@@ -182,6 +189,13 @@ def watcher_alive(sid: str, slug: str) -> tuple[bool, dict]:
         return (b"ledger-watch" in cmd and slug.encode() in cmd), sc
     except (OSError, ValueError):
         return False, sc
+
+
+def watcher_hold(sid: str, slug: str) -> dict:
+    """The hold the role's live watcher records for a person at its session (ledger_watch.current_hold), or {}."""
+    from ledger_watch import current_hold
+    alive, sc = watcher_alive(sid, slug)
+    return current_hold(sc, alive)
 
 
 def wake_path(sid: str, slug: str) -> str:
@@ -831,6 +845,15 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
             out.append({"slug": slug, "condition": "watcher-dead", "key": f"pid:{sc.get('pid', 'none')}", "since": since,
                         "first_seen": True,
                         "detail": f"ledger-watch not running ({'designed exit, no re-arm: ' + ex if ex else 'no exit verdict: killed or never armed'})"})
+        from ledger_watch import current_hold
+        hold = current_hold(sc, alive)
+        if hold.get("attached"):
+            # the watcher holds every new event for a person's client, by design: say so, once per hold, with what to exit
+            held_min = age_min(hold["since"]) or 0.0
+            out.append({"slug": slug, "condition": "wakes-held", "key": f"{hold['reason']}:{hold['since']}",
+                        "since": hold["since"],
+                        "detail": f"an interactive client ({hold['client']}) has held {hold['events']} wake(s) for "
+                                  f"{held_min:.0f} min; detach it (exit the client) so the watcher can deliver"})
         # wait discipline: expired rescans, and peers blocked on unscheduled items
         if (spec.features or {}).get("waitdiscipline"):
             ru = st.get("rescan_utc", "")
@@ -1437,6 +1460,15 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     ladders = state.setdefault("ladders", {})
     prev_keys = set(ladders)
     live_keys = set()
+    holds: dict[str, dict] = {}
+
+    def hold_of(slug_: str) -> dict:
+        if slug_ not in holds:
+            try:
+                holds[slug_] = watcher_hold(spec.sid, slug_) if spec.role(slug_) is not None else {}
+            except Exception:  # noqa: BLE001 - an unreadable sidecar never holds a ladder
+                holds[slug_] = {}
+        return holds[slug_]
     for c in conds:
         k = f"{c['slug']}|{c['condition']}|{c['key']}"
         live_keys.add(k)
@@ -1456,6 +1488,23 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             steps = LADDERS[c["condition"]]
         if c["condition"] in wake_off:  # features.health.wake_off: this condition pages, never wakes
             steps = [x for x in steps if x[1] != "wake"]
+        hold = hold_of(c["slug"]) if c["condition"] not in HOLD_EXEMPT else {}
+        if hold.get("attached"):
+            # the role's watcher holds every wake for an attached client: a wake from here would be held too, and a page
+            # saying "woken Nx without effect" would be false (2026-11-22: two wakes never delivered, paged as such).
+            # `wakes-held` pages the hold itself; this ladder waits, and counts from the delivery once the client exits
+            lad["held_by"] = hold["reason"]
+            if lad["step"] < len(steps) and a >= steps[lad["step"]][0] and lad.get("held_said") != hold["reason"]:
+                lad["held_said"] = hold["reason"]
+                acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{steps[lad['step']][1]}",
+                             f"held (its watcher holds every wake for an attached client, pid {hold['pid']}; "
+                             f"this ladder counts from when it delivers)"))
+            continue
+        if lad.pop("held_by", None):
+            # the client went away and the watcher delivers what it held: what was held was never a wake without effect
+            lad.pop("held_said", None)
+            lad["since"], lad["step"] = iso(), 0
+            a = 0.0
         while lad["step"] < len(steps) and a >= steps[lad["step"]][0]:
             at, action = steps[lad["step"]]
             role_ = spec.role(c["slug"])
@@ -1560,10 +1609,16 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                                                  f"its restart {ch})", state, dry_run)
                 elif c["condition"] in RESTART_NOT_PAGE:
                     ch = f"woken {lad['step']}x without effect: {ch}"
-            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan"):
+            elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan",
+                                    "wakes-held"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
-                ch = page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect)", state, dry_run)
+                hold = hold_of(c["slug"])
+                # a Claude session at an open question takes no wake either: its wakes wait there, undelivered
+                how = (f"woken {lad['step']}x, but its watcher has held its wakes undelivered since {hold['since']}: the "
+                       f"session is at an open question; answer it to let them through" if hold.get("reason") == "question"
+                       else f"woken {lad['step']}x without effect")
+                ch = page_user(spec, f"{c['slug']}: {c['detail']} ({how})", state, dry_run)
             acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
             lad["step"] += 1
             break  # at most one action per condition per run
