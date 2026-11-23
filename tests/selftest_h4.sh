@@ -2742,7 +2742,10 @@ def sleep(_s):
     TICKS[0] -= 1
     if TICKS[0] < 0:
         raise Stop()
-lw.time.sleep = sleep
+# only the watcher loop's own sleep: a patch of the time module itself also reached subprocess's wait loop (a git call
+# in health's ledger pull below) and ended it early, depending on timing
+import time as _time, types
+lw.time = types.SimpleNamespace(sleep=sleep, time=_time.time)
 lw.code_stamp = lambda: 0.0
 ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd"); lw.add_parser(sp)
 args = ["ledger-watch", "--shoal", spec.sid, "--spec", SPEC, "--slug", "up", "--wake", f"exec:{THREAD}",
@@ -2776,6 +2779,7 @@ assert not any(k.startswith("held_") for k in sc) and sc.get("last_wake"), sc
 assert "hold ended" in out, out
 # a client that exited between ticks is no hold to a reader, before the watcher's next tick clears it
 assert lw.current_hold(dict(sc, held_reason="attached:999999999", held_since=ago(5), held_events="1"), True) == {}
+lw.time = _time
 # --- health: wakes-held from the sidecar, paged once after the grace; the role's other ladders hold
 HOLD_SC = {"pid": str(ME), "held_reason": f"attached:{ME}", "held_since": ago(35), "held_events": "2",
            "held_client": f"pid {ME}, `codex resume <thread>`, opened from its card"}
