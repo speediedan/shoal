@@ -473,6 +473,14 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     wait_done = (not remote and role_status == "wait" and sub in CI_SUBS and job_ended(st.get("target") or "", slug, spec.sid))
     if wait_done and _client_holds(role, spec):
         reasons.append("wake-held")
+    elif role.session and not remote:
+        try:
+            from ledger_watch import current_hold
+            if current_hold(sc, alive).get("attached"):
+                # its watcher holds new events for an attached client (the quorum pages it as wakes-held)
+                reasons.append("wakes-held")
+        except Exception:  # noqa: BLE001 - a read model never fails on a sidecar
+            pass
     blocking = [r for r in reasons if r not in ("waiting-on-you", "parked", "dormant", "watcher-dormant", "context-large",
                                                "no-work", "handoff-pending", "restart-held")]
     words = (claude_says(claude_session(rows, role.session) or {}, role.session)
@@ -1139,7 +1147,7 @@ def pending_question(row: dict, session: str) -> bool:
 
 
 NEEDS_REASONS = {"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you", "blocker-role-cannot-take",
-                 "wake-held", "handoff-pending", "restart-held", "no-work"}
+                 "wake-held", "wakes-held", "handoff-pending", "restart-held", "no-work"}
 # The attention axis of the agents list (docs/ui.md): every role is in exactly one group, and its `state` says why
 AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
 BLOCKED_SUBS = ("session-blocked", "upstream")
@@ -1177,6 +1185,7 @@ def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: li
     for why, text in (("dead-worker", "its session's worker is gone"),
                       ("blocker-role-cannot-take", "a blocker names a role that cannot take the item"),
                       ("wake-held", "its wait ended, but an attached client holds the wake"),
+                      ("wakes-held", "an attached client holds its watcher's wakes: exit the client"),
                       ("handoff-pending", "restart-ready: waiting for its handoff"),
                       ("restart-held", "auto restart held by an attached client: detach its card"),
                       ("blocked-says-waiting", "its last turn ended saying it waits on you")):

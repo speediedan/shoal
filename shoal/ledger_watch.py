@@ -22,7 +22,13 @@ Test mode (`--test`) fires the adapter once with LEDGER-WAKE-TEST and
 exits: arming counts only after the test wake is seen in-transcript.
 
 Sidecar: /tmp/<id>/ledger-watch-<slug>.state (session_id=, pid=,
-armed_utc=, delivered=<comma ids, capped 400>, fetch_fail=, last_tick=).
+armed_utc=, delivered=<comma ids, capped 400>, fetch_fail=, last_tick=,
+last_wake=). While a detached watcher holds new events for a person at the
+session (an interactive client attached to an exec session, or a Claude
+session at an open question) it also records held_since=, held_reason=
+(`attached:<pid>` or `question`), held_events= and held_client=; they are
+cleared once it delivers, or once nothing is held. `health` pages a hold for
+an attached client once (`wakes-held`), and `next --peek` and `show` print it.
 """
 from __future__ import annotations
 
@@ -196,6 +202,113 @@ def _wake_requests(sid: str, slug: str) -> list[tuple[str, str]]:
     return out
 
 
+def attached_pid(session: str, ecosystem: str = "muse") -> int:
+    """Pid of an interactive client (`codex resume`, `muse resume`) that holds an exec session, else 0."""
+    try:
+        if ecosystem == "codex":
+            import codex_harness
+            return int(codex_harness.attached_client(session) or 0)
+        import muse
+        return int(muse.attached_client(session) or 0)
+    except Exception:  # noqa: BLE001 - an unreadable process table never holds a wake back
+        return 0
+
+
+def client_desc(pid: int, session: str) -> str:
+    """`pid 123, `codex resume <thread>`, opened from its card`: what a person must exit, as far as /proc says.
+    A client opened from the role's card runs under its observer (`codex-tail`, `muse-tail`)."""
+    out = f"pid {pid}"
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+        i = argv.index("resume")
+        if i >= 1:
+            out += f", `{os.path.basename(argv[i - 1])} resume {session}`"
+    except (OSError, ValueError):
+        pass
+    p = pid
+    for _ in range(8):
+        try:
+            with open(f"/proc/{p}/stat") as fh:
+                p = int(fh.read().rsplit(")", 1)[1].split()[1])
+            if p <= 1:
+                break
+            with open(f"/proc/{p}/cmdline", "rb") as fh:
+                cmd = fh.read()
+        except (OSError, ValueError, IndexError):
+            break
+        if b"codex-tail" in cmd or b"muse-tail" in cmd:
+            return out + ", opened from its card"
+    return out
+
+
+HOLD_KEYS = ("held_since", "held_reason", "held_events", "held_client")
+
+
+def note_hold(sc: dict[str, str], reason: str, n: int, client: str = "") -> None:
+    """Record (or clear) why a detached watcher holds n new events. Only a person at the session is recorded: an
+    attached client (`attached:<pid>`) or an open question (`question`); a turn in flight ends by itself and is not.
+    The since time is kept while the reason stays the same."""
+    if not (reason.startswith("attached:") or reason == "question"):
+        if sc.get("held_reason"):
+            print(f"{now_iso()} hold ended ({sc['held_reason']}, since {sc.get('held_since', '?')})", flush=True)
+        for k in HOLD_KEYS:
+            sc.pop(k, None)
+        return
+    if sc.get("held_reason") != reason or not sc.get("held_since"):
+        sc["held_since"] = now_iso()
+        sc["held_reason"] = reason
+        if client:
+            sc["held_client"] = client
+        else:
+            sc.pop("held_client", None)
+        print(f"{now_iso()} HOLDING {n} event(s): "
+              + (f"an interactive client ({client}) is attached" if client else "the session is at an open question")
+              + "; delivered once it is gone", flush=True)
+    sc["held_events"] = str(n)
+
+
+def current_hold(sc: dict[str, str], alive: bool) -> dict:
+    """The hold a watcher's sidecar records, while it still stands: {reason, since, events, client, pid, attached}, or {}
+    when the watcher is not alive, nothing is held, or the attached client has gone (the watcher delivers at its next
+    tick)."""
+    reason, since = sc.get("held_reason", ""), sc.get("held_since", "")
+    if not alive or not reason or not since:
+        return {}
+    pid = 0
+    if reason.startswith("attached:"):
+        try:
+            pid = int(reason.split(":", 1)[1])
+        except ValueError:
+            return {}
+        if not os.path.exists(f"/proc/{pid}"):
+            return {}
+    try:
+        n = int(sc.get("held_events") or 0)
+    except ValueError:
+        n = 0
+    return {"reason": reason, "since": since, "events": n, "client": sc.get("held_client", "") or (f"pid {pid}" if pid else ""),
+            "pid": pid, "attached": bool(pid)}
+
+
+def hold_text(h: dict) -> str:
+    """`holding 2 event(s) for an attached client pid 123 since 21:58Z` ('' for no hold)."""
+    if not h:
+        return ""
+    since = h["since"]
+    at = since[11:16] + "Z" if since[:10] == now_iso()[:10] else since[5:16] + "Z"
+    if h.get("attached"):
+        return f"holding {h['events']} event(s) for an attached client pid {h['pid']} since {at}"
+    return f"holding {h['events']} event(s) at an open question since {at}"
+
+
+def hold_note(sid: str, slug: str) -> str:
+    """The hold of a role's watcher on this host, as `hold_text` says it ('' when none)."""
+    sc = load_sidecar(sidecar_path(sid, slug))
+    pid = sc.get("pid", "")
+    return hold_text(current_hold(sc, bool(pid) and os.path.exists(f"/proc/{pid}")))
+
+
 def muse_session_busy(session: str, ecosystem: str = "muse") -> bool:
     """True while an exec turn (or, for Muse and Codex, an attached interactive client) holds the session."""
     try:
@@ -243,6 +356,11 @@ def claude_session_busy(session: str) -> bool:
     interrupt the turn or land on the prompt. A session that only ended its turn self-reported
     'blocked' (waiting on the maintainer, no prompt) is NOT busy: holding wakes from it deadlocked three
     lanes, each waiting for exactly the message being held (measured 2026-10-13)."""
+    return bool(claude_session_hold(session))
+
+
+def claude_session_hold(session: str) -> str:
+    """Why a Claude session takes no wake now: 'busy' (mid-turn), 'question' (at an open question prompt), or ''."""
     try:
         from health import claude_busy, claude_prompt_open
         st = next((v for k, v in claude_busy().items() if session and k.startswith(session[:8])), "")
@@ -253,10 +371,24 @@ def claude_session_busy(session: str) -> bool:
             rows = (fake.get("claude") or []) if fake is not None else get_backend("claude")._agents()
             from backends import claude_find
             row = claude_find(rows, session) or {}
-            return claude_prompt_open(row, session)
+            return "question" if claude_prompt_open(row, session) else ""
     except Exception:  # noqa: BLE001
-        return False
-    return st == "busy"
+        return ""
+    return "busy" if st == "busy" else ""
+
+
+def hold_reason(wake: str, session: str, ecosystem: str, repo_dir: str) -> str:
+    """Why a detached watcher holds its new events this tick: `attached:<pid>` (an interactive client holds the exec
+    session), `question` (a Claude session at an open question), `busy` (a turn in flight), or '' (deliver)."""
+    if wake == "direct":
+        return claude_session_hold(session)
+    if wake.startswith("exec:"):
+        thread = wake[len("exec:"):]
+        pid = attached_pid(thread, ecosystem)
+        if pid:
+            return f"attached:{pid}"
+        return "busy" if muse_session_busy(thread, ecosystem) else ""
+    return "busy" if session_busy(session, repo_dir) else ""
 
 
 def claude_deliver(sid: str, spec, role, session: str, text: str) -> str:
@@ -427,24 +559,32 @@ def cmd_ledger_watch(a) -> int:
         sc["last_tick"] = now_iso()
         sc["fetch_fail"] = str(fails)
         if not new:
+            note_hold(sc, "", 0)
             save_sidecar(sc_path, sc)
             continue
-        if persistent and (claude_session_busy(session) if a.wake == "direct"
-                           else muse_session_busy(a.wake[len("exec:"):], role.ecosystem if role else "muse") if a.wake.startswith("exec:")
-                           else session_busy(session, repo_dir)):
-            # never wake a lane mid-turn (or, for Claude, at an open question): the events stay
-            # undelivered and go out at the next idle tick
+        held = hold_reason(a.wake, session, role.ecosystem if role else "muse", repo_dir) if persistent else ""
+        if held:
+            # never wake a lane mid-turn, never collide with a person at it (an attached client, an open
+            # question): the events stay undelivered and go out at the next idle tick. A person's hold is
+            # recorded, so health can page it and `next`/`show` can say it (measured 2026-11-22: a client opened
+            # from a card held a user offer for 6 h, and health paged it as a wake without effect)
+            pid = int(held.split(":", 1)[1]) if held.startswith("attached:") else 0
+            client = "" if not pid else sc.get("held_client", "") if sc.get("held_reason") == held else \
+                client_desc(pid, a.wake[len("exec:"):])
+            note_hold(sc, held, len(new), client)
             save_sidecar(sc_path, sc)
             continue
         if persistent and a.wake == "direct" and _limit_until(sid, getattr(role, "account", None) if role is not None else None):
             # inside the account usage limit a delivered wake errors in the role's turn and is lost
             # (2026-10-14): hold the events; the first tick after the reset delivers them
+            note_hold(sc, "", 0)
             save_sidecar(sc_path, sc)
             continue
         ids = [i for i, _ in new]
         delivered |= set(ids)
         sc["delivered"] = ",".join(list(delivered)[-DELIVERED_CAP:])
         sc["last_wake"] = now_iso()
+        note_hold(sc, "", 0)
         save_sidecar(sc_path, sc)
         reason = ",".join(sorted({d.split()[0] for _, d in new}))
         text = (f"{label} at {now_iso()} ({len(new)} new): " + " | ".join(d for _, d in new)
@@ -458,6 +598,8 @@ def cmd_ledger_watch(a) -> int:
                 # nothing failed: the session cannot take a direct wake yet (work in flight wakes it
                 # anyway), so the events stay undelivered for a later tick
                 sc["delivered"] = ",".join(x for x in sc["delivered"].split(",") if x not in set(ids))
+                if "at a question" in ch:
+                    note_hold(sc, "question", len(new))
                 save_sidecar(sc_path, sc)
                 continue
             fired = not ch.startswith(("FAILED", "no-adapter"))
