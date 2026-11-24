@@ -627,7 +627,7 @@ The `restart` step of `wait-resolved` and `wait-validity` (`RESTART_NOT_PAGE`) h
 wakes to a fresh session at its recorded wait, as `context_restart` does; it is held while the session is mid-turn,
 and pages only when the restart fails.
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
-| `wakes-held` | the role's live watcher holds new events for an interactive client attached to its exec session (`codex resume`, `muse resume`: a native view opened from the role's card and left open), as its sidecar records; keyed by the hold, so one page per hold. While it holds, the role's other ladders hold too (below) | page 30 (`ATTACHED_PAGE_MIN`) |
+| `wakes-held` | the role's live watcher holds new events for an interactive client attached to its exec session (`codex resume`, `muse resume`: a native view opened from the role's card and left open), as its sidecar records; keyed by the hold, so one page per hold. While it holds, the role's other ladders hold too (below). While the maintainer is offline, a card's client is ended at 60 (`detach_cards`, below) | page 30 (`ATTACHED_PAGE_MIN`) |
 | `turn-ended-active` (`continuation`) | status `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `checkout-stuck` (when `watch_checkouts` lists it) | a shared checkout has an operation left in progress, a local file differing from one its upstream changed, or commits on both sides; behind alone is not stuck | page 60 |
 | `stale-active` (when `continuation` is off) | status `active`, no ledger write, session between turns | wake 90, page 180 |
@@ -656,6 +656,37 @@ from it would be held too, and its page would say "woken Nx without effect" of w
 the client exits, each held ladder starts over from that moment, so it counts only wakes the role actually received.
 An open question is the role's own ask, which the daily digest already carries, so it pages nothing of its own; a page
 that falls due while one holds the wakes says they wait undelivered at the question instead of "without effect".
+
+**A card's client left attached while the maintainer is offline (`features.health.detach_cards`, default on).** A
+person who opens a role's session from its card (`i` in a Codex or Muse card's observer, Enter on a Claude card), answers
+it and goes offline leaves the client attached: it holds a Codex or Muse role's wakes (above), or a Claude role's
+automatic restart (`context_restart` `auto`, and the `restart` steps of `wait-resolved` and `wait-validity`), for as
+long as it stays. Measured 2026-11-22..24: a Codex role stalled for hours twice this way, and a Claude role ran 13.5 h
+attached, growing to about 913k tokens of a 1M window, before the operator ended each client by hand; the held wakes and
+the restart then went through. The quorum does the same, when all of these hold:
+
+1. the maintainer is offline (`shoal offline on`; online, the hold is only paged, as above);
+2. the hold has lasted `CARD_DETACH_MIN` (60 min, `{"after_min": N}` sets another), counted from when the watcher first
+   held an event (`held_since`) or the restart was first held. An hour is twice the hold's page, so a maintainer who is
+   online always hears of a hold first. A Claude context restart whose context is at twice its limit or more uses
+   `CARD_DETACH_FAR_MIN` (15 min): each turn then costs at least two fresh sessions' worth, and the model's window is near;
+3. the client is a card's, positively: walking its parents (`ledger_watch.card_client`, at most 8) reaches the role's
+   observer with native access allowed (`codex-tail --allow-interactive` or `muse-tail --allow-interactive` with the
+   role's `--session`) or `shoal view` of the role (`<shoal> <role>`, or its session or job id), and it is this user's
+   process on this host.
+
+Then it sends SIGTERM to that client only (the wrapper's own child: the process whose exit returns the card to its view),
+never to the session, the wrapper or anything else, and once a hold: a client that does not exit within 5 s is left as it
+is (said in the run's output), and the hold's page stays due. A client started by hand (`codex resume` typed in a shell,
+a terminal's `claude attach`) has no card above it and is never touched; the run says so once a hold ("not a card's
+viewer"). The detach is recorded as a ledger msg to `user` (kind `health`; not delivered to the page channels while the
+maintainer is offline): "<role>: detached the card's interactive client (pid N, `codex resume <thread>`) after M min
+while you were offline; it held 2 wake(s); the card is back to its read-only view" (for Claude, "it held its context
+restart"). The normal paths then resume: the watcher delivers what it held at its next tick, and the restart runs at the
+quorum's next run. The card stays usable: a Codex or Muse observer prints "The native client was ended (SIGTERM)" and is
+back on its live read-only view, with the terminal's settings restored (a client killed outright leaves the tty raw); a
+Claude card's `shoal view` says the client was ended, does not reattach, and exits 0, so the card is back on its card.
+`detach_cards: false` turns it off for a spec.
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.
@@ -751,6 +782,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
 | `wake_gap_min` | 30 | at least this long between two health wakes of one role |
 | `wake_off` | none | conditions that never wake, only page (for example `["parked-work", "hold-long"]`) |
+| `detach_cards` | on | while the maintainer is offline, a role card's native client left attached past 60 min (`{"after_min": N}`; 15 min for a Claude context restart at twice its limit) is ended with SIGTERM, so the wakes or the restart it holds go through; recorded as a msg to `user`. Only a client whose parents reach the role's card (its observer or `shoal view`) is touched (§7, "A card's client left attached") |
 | `stale_upkeep` | on | respawn an idle Claude worker that runs an older Claude Code than the installed one (no turn); report a busy one once per version. An old worker's updater keeps reinstalling the current version, and each reinstall restarts the background service and drops attached clients ([`handover.md`](handover.md), "Related upkeep") |
 
 And every run sends **at most one wake per role**, carrying every condition then due.
@@ -770,7 +802,7 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 | key (`features.health`) | default | effect |
 | --- | --- | --- |
 | `context_restart_k` | 300 | the context size, in thousands of tokens, past which a role is advised to hand over; 0 is off. A dict sets it per role, with `"*"` as the default: `{"*": 300, "<slug>": 0}` exempts a session that needs a large context |
-| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. While a client is attached to a Claude role's session (a card's `claude attach`), the restart is held rather than tried: an attached client keeps the worker alive, so the stop would fail and the ladder would move on to its page with no retry. It restarts once the client detaches, and pages once if the hold lasts 30 minutes. A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
+| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. While a client is attached to a Claude role's session (a card's `claude attach`), the restart is held rather than tried: an attached client keeps the worker alive, so the stop would fail and the ladder would move on to its page with no retry. It restarts once the client detaches, and pages once if the hold lasts 30 minutes; while the maintainer is offline, a card's client is ended after 60 minutes (15 at twice the limit: `detach_cards`). A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
 
 1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line (`next` records when the session was first
    shown it). No extra wake is spent on it. In `auto` it says the handover comes at the next quiet boundary on the start
@@ -1725,7 +1757,9 @@ and the contract are in [`ui.md`](ui.md).
   same lock as automated turns. It refuses while busy; `/exit` releases native ownership and
   returns to observation. A native client holds the session and the role's wakes until it exits, so
   `native_client.py` reports it apart from a turn (`held`, with pid, terminal and start) and offers `T`, which ends
-  it unless the session was written to in the last two minutes. A Muse `/exit` while a turn runs cancels that turn
+  it unless the session was written to in the last two minutes. A client ended by SIGTERM (`T`, or the quorum while the
+  maintainer is offline: §7, `detach_cards`) returns the observer to its live view with the terminal's settings as they
+  were before the client (`ui_view.terminal_kept`, which a card's attach uses too). A Muse `/exit` while a turn runs cancels that turn
   (Muse records the command, then the run's terminal record as `cancelled`): on the way out the view says so and
   offers `c`, which runs the turn again headless (`muse.continue_cancelled`, only after such an exit) so the role
   finishes it and brings its own queue up to date. Standalone Muse and Codex cards retain native resume when idle. Native

@@ -214,31 +214,83 @@ def attached_pid(session: str, ecosystem: str = "muse") -> int:
         return 0
 
 
-def client_desc(pid: int, session: str) -> str:
-    """`pid 123, `codex resume <thread>`, opened from its card`: what a person must exit, as far as /proc says.
-    A client opened from the role's card runs under its observer (`codex-tail`, `muse-tail`)."""
-    out = f"pid {pid}"
+def proc_argv(pid: int) -> list[str]:
+    """A process's argv from /proc ([] when it cannot be read)."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as fh:
-            argv = [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
-        i = argv.index("resume")
-        if i >= 1:
-            out += f", `{os.path.basename(argv[i - 1])} resume {session}`"
-    except (OSError, ValueError):
-        pass
-    p = pid
-    for _ in range(8):
-        try:
-            with open(f"/proc/{p}/stat") as fh:
-                p = int(fh.read().rsplit(")", 1)[1].split()[1])
-            if p <= 1:
-                break
-            with open(f"/proc/{p}/cmdline", "rb") as fh:
-                cmd = fh.read()
-        except (OSError, ValueError, IndexError):
+            return [x.decode(errors="replace") for x in fh.read().split(b"\0") if x]
+    except OSError:
+        return []
+
+
+def proc_ppid(pid: int) -> int:
+    """A process's parent pid from /proc (0 when it cannot be read)."""
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return int(fh.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+CARD_TAILS = ("codex-tail", "muse-tail")
+CARD_DEPTH = 8
+
+
+def card_wrapper(argv: list[str], sid: str = "", slug: str = "", sessions: tuple[str, ...] = ()) -> str:
+    """What a role card runs a native client under, when `argv` is one: its observer with native access allowed
+    (`codex-tail --allow-interactive`, `muse-tail --allow-interactive`) or `shoal view` (a Claude card's `claude attach`).
+    Given ids, it must name them: the observer its `--session` (one of `sessions`), the view the role (`sid` and `slug`)
+    or its session. '' for anything else, a shell or a terminal a person started a client in by hand among them."""
+    for i in range(min(len(argv) - 1, 3)):
+        if os.path.basename(argv[i]) not in ("shoal", "cli.py"):
+            continue
+        sub, rest = argv[i + 1], argv[i + 2:]
+        if sub in CARD_TAILS and "--allow-interactive" in rest:
+            s = rest[rest.index("--session") + 1] if "--session" in rest[:-1] else ""
+            if not sessions or s in sessions:
+                return f"{sub} --allow-interactive"
+        if sub == "view":
+            named = not (sid or slug or sessions) or (sid and slug and sid in rest and slug in rest) \
+                or any(s and s in rest for s in sessions)
+            if named:
+                return "shoal view"
+        return ""
+    return ""
+
+
+def card_client(pid: int, sid: str = "", slug: str = "", sessions: tuple[str, ...] = ()) -> tuple[int, str]:
+    """(the client a role card started, its wrapper) when `pid` is that client or runs under it, else (0, ''). The
+    client is the wrapper's own child (`codex resume` under `codex-tail`, `claude attach` under `shoal view`): the
+    process whose exit returns the card to its read-only view. Found by walking parents, at most CARD_DEPTH."""
+    child = pid
+    for _ in range(CARD_DEPTH):
+        p = proc_ppid(child)
+        if p <= 1:
             break
-        if b"codex-tail" in cmd or b"muse-tail" in cmd:
-            return out + ", opened from its card"
+        w = card_wrapper(proc_argv(p), sid, slug, sessions)
+        if w:
+            return child, w
+        child = p
+    return 0, ""
+
+
+def client_cmd(argv: list[str]) -> str:
+    """`codex resume <thread>`, `claude attach <job>`: a client's command, by its binary's name only."""
+    for i, x in enumerate(argv):
+        if x in ("resume", "attach") and i >= 1:
+            return " ".join([os.path.basename(argv[i - 1]), x] + argv[i + 1:i + 2])
+    return os.path.basename(argv[0]) if argv else ""
+
+
+def client_desc(pid: int, session: str) -> str:
+    """`pid 123, `codex resume <thread>`, opened from its card`: what a person must exit, as far as /proc says.
+    A client opened from the role's card runs under its observer (`codex-tail`, `muse-tail`: card_client)."""
+    out = f"pid {pid}"
+    argv = proc_argv(pid)
+    if "resume" in argv[1:]:
+        out += f", `{os.path.basename(argv[argv.index('resume') - 1])} resume {session}`"
+    if card_client(pid)[0]:
+        return out + ", opened from its card"
     return out
 
 

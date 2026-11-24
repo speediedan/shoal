@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -87,9 +88,11 @@ TERM_RESET = ("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015
               "\x1b[?1l\x1b>\x1b[<99u\x1b7\x1b[?1049l\x1b[<99u\x1b[?25h\x1b[0m")  # \x1b7: on the normal screen, ?1049l's restore then stays put
 
 
-def run_attached(argv: list[str]) -> int:
-    """An attach from a card: its exit code (130 on Ctrl-C), with the terminal as the card needs it however the client ended.
-    The tty's own settings too: a local client killed outright leaves it raw, which no escape sequence undoes."""
+@contextlib.contextmanager
+def terminal_kept():
+    """Leave the terminal as a card or observer needs it however a client run inside ended: the tty's own settings (a
+    local client killed outright, by SIGTERM for one, leaves it raw, which no escape sequence undoes, and every later
+    key read would save and restore that raw state), the modes TERM_RESET turns off, and no pending input."""
     saved = None
     try:
         import termios
@@ -98,9 +101,7 @@ def run_attached(argv: list[str]) -> int:
     except (ImportError, OSError, ValueError):
         pass
     try:
-        return subprocess.run(argv).returncode
-    except KeyboardInterrupt:
-        return 130
+        yield
     finally:
         if saved:
             try:
@@ -110,6 +111,16 @@ def run_attached(argv: list[str]) -> int:
         sys.stdout.write(TERM_RESET)
         sys.stdout.flush()
         flush_input()
+
+
+def run_attached(argv: list[str]) -> int:
+    """An attach from a card: its exit code (130 on Ctrl-C), with the terminal as the card needs it however the client
+    ended (terminal_kept)."""
+    with terminal_kept():
+        try:
+            return subprocess.run(argv).returncode
+        except KeyboardInterrupt:
+            return 130
 
 
 def remote_attach(server: str, sid: str, slug: str, standalone: tuple[str, str, str] | None = None) -> int:
@@ -465,6 +476,8 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
     started = time.time()
     r = subprocess.run(argv, env=env)
     for _ in range(REATTACH_MAX):
+        if ended_by_term(r.returncode):
+            break  # ended on purpose (`kill`, or the quorum while the maintainer is offline): never reattached
         # the Claude background service restarted under the client (an update reinstalled the binary: measured
         # 2026-10-22, 124 restarts in a day), which drops every attached client back to its card. Reattach the same
         # session; attaching never takes a turn. Only a restart as the client ended counts: the service restarts every
@@ -479,6 +492,10 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
         argv, env = viewer(harness, session if not job else job, label, model, effort)
         started = time.time()
         r = subprocess.run(argv, env=env)
+    if ended_by_term(r.returncode):
+        print(f"shoal view: the client was ended (SIGTERM); the session keeps running. The health quorum ends a card's "
+              f"client left attached while the maintainer is offline, so the wakes or the restart it held go through")
+        return 0
     if r.returncode != 0 and binary and replaced(binary):
         # Claude Code updated itself while attached: the running client's own binary is gone, so its reconnect
         # (which respawns the background service from that path) fails (measured 2026-10-22: "posix_spawn
@@ -494,6 +511,11 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
 
 
 REATTACH_MAX = 3
+
+
+def ended_by_term(rc: int) -> bool:
+    """A client that exited on SIGTERM: by the signal itself, or by a handler exiting 128+15."""
+    return rc in (-signal.SIGTERM, 128 + signal.SIGTERM)
 REATTACH_WINDOW_S = 60  # how close to the client's end a restart must be (measured: a client dropped 12 s after one)
 SERVICE_START = re.compile(r"^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)\] \[supervisor\] .*daemon start")
 

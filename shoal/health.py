@@ -24,7 +24,8 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   lease-orphan       (watch_leases) a lease its provider marks orphaned, since its owner ended   page@30
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
   wakes-held         the role's live watcher holds new events for an attached client       page@30 (once a hold)
-                     (`codex resume`, `muse resume`); while it holds, the role's other ladders hold too
+                     (`codex resume`, `muse resume`); while it holds, the role's other ladders hold too.
+                     Offline, a card's client is ended at 60 (detach_cards; a held Claude restart too)
   stale-active       status active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
 
@@ -43,6 +44,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -62,6 +64,16 @@ TOOL_PATH = config.tool_path()
 _ENV = config.tool_env()
 PEER_STALE_MIN = 15
 ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after this (and `wakes-held` pages at it)
+# features.health.detach_cards (default on): while the maintainer is offline, a role card's native client left attached
+# past this grace is ended (SIGTERM to that client only; the session is untouched and the card falls back to its
+# read-only view), so the wakes or the restart it holds go through (2026-11-22..24: three stalls of hours, each ended by
+# hand the same way). An hour is twice the hold's page, so an online maintainer always hears of a hold first
+CARD_DETACH_MIN = 60
+# a Claude context restart held for a context at CARD_DETACH_FAR_X times its limit or more: every turn then costs at
+# least that many fresh sessions' worth, and the model's window is near (2026-11-24: about 913k of a 1M window)
+CARD_DETACH_FAR_MIN = 15
+CARD_DETACH_FAR_X = 2
+CARD_DETACH_WAIT_S = 5.0
 LADDERS = {
     "unacked-work": [(10, "wake"), (30, "wake"), (60, "page")],
     # a role that slept through its wake on a resolved wait is handed to a fresh session at that wait: a page asked the
@@ -112,6 +124,16 @@ CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 RESTART_NOT_PAGE = ("wait-resolved", "wait-validity")
 # conditions that do not reach the role through its watcher, so a hold for an attached client does not hold their ladders
 HOLD_EXEMPT = ("wakes-held", "watcher-dead", "host-silent", "host-name-clash", "checkout-stuck", "lease-orphan")
+
+
+def claude_clients(role) -> tuple[list[int], tuple[str, ...]]:
+    """(the `claude attach` pids holding a Claude role's session, its session and job ids), one listing read."""
+    import park
+    from backends import get as get_backend
+    row = get_backend("claude")._row(role.session, include_stopped=True) or {}
+    if row.get("kind") == "interactive":  # a terminal session, not a card's client
+        return [], ()
+    return park.claude_attach_pids(role, row), (role.session, park.claude_job(role, row))
 
 
 def restart_client(role) -> str:
@@ -175,6 +197,106 @@ def continuation_cfg(spec: ShoalSpec) -> dict | None:
 def health_cfg(spec: ShoalSpec) -> dict:
     h = (spec.features or {}).get("health")
     return h if isinstance(h, dict) else {}
+
+
+def detach_cfg(spec: ShoalSpec) -> dict | None:
+    """features.health.detach_cards: true (the default) or {"after_min": N}; None when false."""
+    v = health_cfg(spec).get("detach_cards", True)
+    if not v:
+        return None
+    after = v.get("after_min", CARD_DETACH_MIN) if isinstance(v, dict) else CARD_DETACH_MIN
+    try:
+        return {"after_min": float(after)}
+    except (TypeError, ValueError):
+        return {"after_min": float(CARD_DETACH_MIN)}
+
+
+# ---- a card's native client left attached while the maintainer is offline -----------------------------------------
+
+def signal_client(pid: int) -> None:
+    """SIGTERM to one client process (tests replace this)."""
+    os.kill(pid, signal.SIGTERM)
+
+
+def client_gone(pid: int) -> bool:
+    return not os.path.exists(f"/proc/{pid}")
+
+
+def own_process(pid: int) -> bool:
+    """True when `pid` runs on this host as this user: the quorum never signals another user's process."""
+    try:
+        return os.stat(f"/proc/{pid}").st_uid == os.getuid()
+    except OSError:
+        return False
+
+
+def card_detach(spec: ShoalSpec, role, find, since: str, held: str, lad: dict, acts: list, step: str, offline: bool,
+                dry_run: bool = False, far: bool = False) -> bool:
+    """End a role card's native client that holds `held` (its wakes, or its restart) since `since`, when the maintainer
+    is offline, features.health.detach_cards is on and the hold has outlived its grace (CARD_DETACH_MIN, or
+    CARD_DETACH_FAR_MIN when `far`). Only a client positively identified as a card's (ledger_watch.card_client: its
+    parents reach the role's observer or `shoal view`, naming the role or one of its session ids) and owned by this user on
+    this host is signalled, once per hold and with SIGTERM only; a client started by hand is never touched. Records the
+    detach as a ledger msg to `user`. `find()` gives (the attached client pids, the role's session ids), read only once
+    the grace is up. True when the client was ended (its hold then lifts at the watcher's next tick, or the next run's
+    restart), so the caller's ladder waits for that rather than paging the hold."""
+    if lad.get("detached") or lad.get("detach_failed"):
+        # once a hold: a client that would not go is the page's to raise, and so is one opened after the maintainer is back
+        return bool(lad.get("detached")) and offline
+    cfg = detach_cfg(spec)
+    if cfg is None or not offline or role is None:
+        return False
+    grace = min(cfg["after_min"], CARD_DETACH_FAR_MIN) if far else cfg["after_min"]
+    held_min = age_min(since) or 0.0
+    if held_min < grace:
+        return False
+    try:
+        pids, sessions = find()
+    except Exception:  # noqa: BLE001 - an unreadable listing never ends a client
+        return False
+    if not pids:
+        return False
+    import ledger_watch as lw
+    client, wrapper = 0, ""
+    for pid in pids:
+        client, wrapper = lw.card_client(pid, spec.sid, role.slug, sessions)
+        if client:
+            break
+    if not client or not own_process(client):
+        key = ",".join(str(p) for p in pids)
+        if lad.get("not_card") != key:
+            lad["not_card"] = key
+            acts.append((role.slug, step, f"not detached: the client (pid {key}) is not a card's viewer on this host "
+                                          "(a client started by hand is left to its owner)"))
+        return False
+    cmd = lw.client_cmd(lw.proc_argv(client)) or "?"
+    text = (f"{role.slug}: detached the card's interactive client (pid {client}, `{cmd}`) after {held_min:.0f} min while "
+            f"you were offline; it held {held}; the card is back to its read-only view")
+    if dry_run:
+        acts.append((role.slug, step, f"would detach (dry-run): {text}"))
+        return False
+    lad["detach_failed"] = iso()
+    try:
+        signal_client(client)
+    except OSError as exc:
+        acts.append((role.slug, step, f"detach FAILED (pid {client}: {exc})"))
+        return False
+    deadline = time.time() + CARD_DETACH_WAIT_S
+    while not client_gone(client) and time.time() < deadline:
+        time.sleep(0.2)
+    if not client_gone(client):
+        acts.append((role.slug, step, f"detach FAILED (pid {client}, `{cmd}`, under {wrapper}, did not exit on SIGTERM "
+                                      f"within {CARD_DETACH_WAIT_S:g} s; left as it is)"))
+        return False
+    lad["detached"] = lad.pop("detach_failed")
+    try:
+        from ledger import Ledger
+        Ledger(spec.sid, root=spec.ledger_dir).append(SYSTEM_WRITER, "msg", to="user", kind="health", text=text[:500])
+        rec = "recorded"
+    except Exception as exc:  # noqa: BLE001 - the detach is done; a failed record is said in the run's output
+        rec = f"record FAILED ({str(exc)[:60]})"
+    acts.append((role.slug, step, f"detached ({wrapper}; {rec}): {text}"))
+    return True
 
 
 # ---- wake adapters -------------------------------------------------------------
@@ -953,7 +1075,7 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                       f"then end your turn; the handover follows at your next quiet boundary"})
             elif o is not None:
                 out.append({"slug": slug, "condition": "context-restart", "key": f"session:{role.session}",
-                            "since": q.get("ts") or iso(), "first_seen": True,
+                            "since": q.get("ts") or iso(), "first_seen": True, "over": list(o),
                             "detail": f"context {o[0]}k past its {o[1]}k limit at a quiet boundary (nothing mid-flight): "
                                       f"`shoal restart --spec <spec> --only {slug}` hands it to a fresh session"})
             else:
@@ -1500,6 +1622,14 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                              f"held (its watcher holds every wake for an attached client, pid {hold['pid']}; "
                              f"this ladder counts from when it delivers)"))
             continue
+        if c["condition"] == "wakes-held":
+            # offline, a card's client left attached past the grace is ended, so the watcher delivers what it holds
+            h_ = hold_of(c["slug"])
+            r_ = spec.role(c["slug"])
+            if h_.get("attached") and r_ is not None and card_detach(
+                    spec, r_, lambda: ([h_["pid"]], (r_.session,)), h_["since"], f"{h_['events']} wake(s)", lad, acts,
+                    "wakes-held:detach", offline, dry_run):
+                continue
         if lad.pop("held_by", None):
             # the client went away and the watcher delivers what it held: what was held was never a wake without effect
             lad.pop("held_said", None)
@@ -1535,14 +1665,22 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     lad["attached_said"] = client
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}",
                                  f"held ({client}; it restarts once the client detaches)"))
+                # offline, a card's `claude attach` left open past the grace is ended; the restart runs next time
+                ov = c.get("over") or ()
+                far = c["condition"] == "context-restart" and len(ov) == 2 and ov[0] >= CARD_DETACH_FAR_X * ov[1]
+                what = "its context restart" if c["condition"] == "context-restart" else f"its restart ({c['condition']})"
+                if card_detach(spec, role_, lambda: claude_clients(role_), held, what, lad, acts,
+                               f"{c['condition']}:detach", offline, dry_run, far):
+                    break
                 if (age_min(held) or 0.0) >= ATTACHED_PAGE_MIN and not lad.get("attached_paged"):
                     lad["attached_paged"] = iso()
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:page", page_user(
                         spec, f"{c['slug']}: restart-ready, but its automatic restart is held: {client}. Detach the "
                         "client (its card or terminal) to let it restart", state, dry_run)))
                 break
-            for k in ("attached", "attached_said", "attached_paged"):
-                lad.pop(k, None)
+            for k in ("attached", "attached_said", "attached_paged") + (
+                    ("detached", "detach_failed", "not_card") if action == "restart" else ()):
+                lad.pop(k, None)  # a restart no longer held: a client attached later is a new hold
             if action == "wake" and c["condition"] == "watcher-dead":
                 # the quorum re-arms a dead DETACHED watcher itself (no model turn); only an in-session
                 # (exit) watcher still needs its role woken to re-arm (architecture doc §7)

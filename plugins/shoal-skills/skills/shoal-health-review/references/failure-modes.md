@@ -262,8 +262,20 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
 - **Metric:** `wakes-held` condition intervals (telemetry condition open/close) give the
   held duration per hold; `page:wakes-held` counts the pages. Before the guard: snapshot count and
   age of pending offers/requests beside quiet attached viewers only.
-- **Status:** guarded for role-card observation, and paged for explicit native interaction and
-  clients launched outside SHOAL, which still require `/exit` before automatic wakes can proceed.
+- **Third signature (2026-11-22..24):** the same client left attached while the maintainer was
+  offline stalled a Codex role for hours twice, and held a Claude role's automatic context restart
+  for 13.5 h (its context grew to about 913k of a 1M window). Each time the operator confirmed the
+  client ran under the role's card (its parents reach `shoal view`, `codex-tail` or `muse-tail`),
+  sent SIGTERM to that client only, and the held wakes and the restart went through.
+- **Second guard:** while the maintainer is offline, the quorum does the same
+  (`features.health.detach_cards`, default on): a card's client held past 60 min (15 min for a
+  Claude context restart at twice its limit) gets one SIGTERM, recorded as a msg to `user`
+  ("<role>: detached the card's interactive client (pid N, ...)"). A client whose parents do not
+  reach the role's card is never touched; the run says "not a card's viewer". Online, it is paged
+  only.
+- **Status:** guarded for role-card observation; ended automatically for a card's client while the
+  maintainer is offline; paged otherwise (online, or a client launched outside SHOAL), which still
+  requires `/exit` before automatic wakes can proceed.
 
 ## Not a failure: long jobs that look like a faulty monitor (2026-10-01)
 A research role's waits ran for hours. Every job's waiter woke the session 3 to 27 seconds after

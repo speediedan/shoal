@@ -244,11 +244,26 @@ def _claude_client(role) -> str:
     row = get_backend("claude")._row(role.session, include_stopped=True) or {}
     if row.get("kind") == "interactive":
         return f"it runs interactively in pid {row.get('pid')}"
-    job = str(row.get("id") or role.session.split("-", 1)[0][:8])
+    pids = claude_attach_pids(role, row)
+    return f"a client (pid {pids[0]}) is attached" if pids else ""
+
+
+def claude_job(role, row: dict | None = None) -> str:
+    """The job id `claude attach` takes for a Claude role's session (its row's id, else the session id's head)."""
+    if row is None:
+        from backends import get as get_backend
+        row = get_backend("claude")._row(role.session, include_stopped=True) or {}
+    return str(row.get("id") or role.session.split("-", 1)[0][:8])
+
+
+def claude_attach_pids(role, row: dict | None = None) -> list[int]:
+    """Pids of the `claude attach <job>` clients on this host's process table that hold a Claude role's session."""
+    job = claude_job(role, row)
     try:
-        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+        pids = sorted(int(p) for p in os.listdir("/proc") if p.isdigit())
     except OSError:
-        return ""
+        return []
+    out = []
     for p in pids:
         try:
             with open(f"/proc/{p}/cmdline", "rb") as fh:
@@ -258,8 +273,9 @@ def _claude_client(role) -> str:
         for i in (0, 1, 2):
             if (len(argv) > i + 2 and os.path.basename(argv[i]) == "claude" and argv[i + 1] == "attach"
                     and job in argv[i + 2:]):
-                return f"a client (pid {p}) is attached"
-    return ""
+                out.append(p)
+                break
+    return out
 
 
 def _session_active_min(role) -> float | None:

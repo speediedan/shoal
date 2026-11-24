@@ -15,7 +15,10 @@ map.
      not. Compare `attached active|quiet` with the native `session.jsonl` mtime. Unknown activity
      is not work. Role cards should be in the live observer; native interaction holds wakes until
      `/exit`, and the WATCH line of `shoal next --peek` says `holding N event(s) for an attached
-     client pid <n>` while it does. Do not stop a productive turn merely to attach (FM-21).
+     client pid <n>` while it does. Do not stop a productive turn merely to attach (FM-21). While
+     the maintainer is offline the quorum ends a card's client held past an hour itself
+     (`detach_cards`): a hold that outlives that is a client started by hand ("not a card's
+     viewer" in the health log), a failed SIGTERM ("detach FAILED"), or the feature turned off.
 2. **Is it making progress?**
    - When it last wrote to the ledger (`shoal show`, last event).
    - The tail of its transcript: a recent tool call, and no long-pending tool call or question.
