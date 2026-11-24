@@ -1754,7 +1754,12 @@ def cmd_app_install(a) -> int:
 
 SHOAL_LAYOUT = "shoal"
 CLONE_MARK = ".shoal-clone"
-AGENTS_HELPER = """// shoal: a role card's row names the role, in its shoal's color, on the host it really runs on.
+AGENTS_HELPER = """// shoal: the lattice's motion budget (motion.js, copied in beside this file: CLONE_FILES), so the header's clock
+// redraws only where the lattice would animate.
+import { readTextFile } from "herdr";
+import { resolveTier, rendererFromProcess } from "./motion.js";
+
+// shoal: a role card's row names the role, in its shoal's color, on the host it really runs on.
 const SHOAL_MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 function shoalRole(a) {
   const term = terminals().find((x) => x.address === a.address);
@@ -1852,12 +1857,22 @@ function shoalWhenTip(section, dur) {
 // How old the status is: each card on a machine reads one status, rebuilt there every SHOAL_FEED_S plus the time a
 // rebuild takes, and re-reads it every SHOAL_CARD_S; the first card to read a rebuild labels its time (shoal.asof).
 // The newest label per machine is that machine's status; the header shows the oldest machine's, and each on its tip.
-// It moves only when the list redraws (a label changes, else Herdr's 30 s tick): no frames of its own at any motion tier.
+// It counts up by the second from that time (shoalTick): a data timer that redraws the list only when the header would
+// read or color differently, since every mod redraw redraws the whole window. It ticks at the lattice's full and
+// balanced motion tiers (motion.js, auto: the renderer and the window's focus). At low and off (a software renderer, or
+// an unknown one in a window without focus) a frame costs most of a core, so there the header moves only when the list
+// redraws (a label changes, else Herdr's 30 s tick), and its tooltip says so. A copy not drawn gets no redraws from it.
 const SHOAL_CARD_S = 15, SHOAL_FEED_S = 20, SHOAL_OLD_S = 90; // ui_view.CARD_REFRESH_S, ui_herdr.FEED_INTERVAL_S, ui_status.STALE_AFTER_S
+const SHOAL_TICK_MS = 500;
 function shoalAge(s) {
-  return s < 60 ? `${Math.max(0, Math.floor(s / 5) * 5)}s` : s < 5400 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+  return s < 60 ? `${Math.max(0, s)}s` : s < 5400 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`;
 }
-function shoalFresh(now) {
+// Does the header count each second here? The lattice's tiers, as auto resolves them for this window.
+function shoalTicks(view) {
+  const tier = resolveTier("auto", { renderer: view?.shoalRenderer ?? null, focused: window()?.active !== false }).tier;
+  return tier === "full" || tier === "balanced";
+}
+function shoalFresh(now, ticking = true) {
   const by = new Map();
   for (const x of terminals()) {
     const t = Date.parse(x?.labels?.["shoal.asof"] ?? "");
@@ -1866,17 +1881,60 @@ function shoalFresh(now) {
     by.set(m, Math.max(by.get(m) ?? 0, t));
   }
   if (!by.size) return null;
-  const ages = [...by].map(([m, t]) => [m, Math.max(0, Math.round((now - t) / 1000))]).sort((x, y) => y[1] - x[1]);
+  const ages = [...by].map(([m, t]) => [m, Math.max(0, Math.floor((now - t) / 1000))]).sort((x, y) => y[1] - x[1]);
   const worst = ages[0][1];
   const each = ages.map(([m, s]) => `${m}: ${shoalAge(s)} ago`).join(", ");
+  const moves = ticking ? "It counts up each second." : "It moves only when this list redraws (a label changes, else every 30 s): this window's motion tier is low or off, where a redraw a second costs too much.";
   return { text: `status ${shoalAge(worst)} ago`, old: worst > SHOAL_OLD_S,
-    tip: `Role status read ${each}. Each machine rebuilds it every ${SHOAL_FEED_S} s plus the rebuild's own time, and each role card re-reads it every ${SHOAL_CARD_S} s, so a row can be up to ${SHOAL_CARD_S} s behind this.` };
+    tip: `Role status read ${each}. Each machine rebuilds it every ${SHOAL_FEED_S} s plus the rebuild's own time, and each role card re-reads it every ${SHOAL_CARD_S} s, so a row can be up to ${SHOAL_CARD_S} s behind this. ${moves}` };
 }
-function shoalHead(t, now) {
-  const f = shoalFresh(now);
+// What the header draws, as the tick compares it: whether it ticks, its text and its color.
+function shoalHeadKey(f, ticking) {
+  return `${ticking ? "tick" : "coarse"}|${f ? `${f.text}|${f.old}` : ""}`;
+}
+// The header; it notes on the view what it drew, so the tick redraws only for a change, and that the redraw it asked
+// for has been drawn.
+function shoalHead(t, now, view) {
+  const ticking = shoalTicks(view);
+  const f = shoalFresh(now, ticking);
+  if (view) { view.shoalDrawn = shoalHeadKey(f, ticking); view.shoalPending = false; }
   return h_flex().gap(8).items_center().min_w(0)
     .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
     .when(Boolean(f), (el) => el.child(div().id("shoal-asof").text_size(10.5).text_color(f.old ? t.blocked : t.dim).tooltip(f.tip).child(f.text)));
+}
+// One tick: redraw when the header would read or color differently. Not before the header was first drawn, not with
+// the rail collapsed or the sidebar hidden (no header), not while the redraw it last asked for is still undrawn (a copy
+// in a hidden block or another tab: its timers run, but it is not drawn), and at low or off motion only to say, once,
+// that it stopped counting (Herdr's 30 s tick and label writes move it there). Checked every SHOAL_TICK_MS (half a
+// second, so no second is skipped), it redraws at most once a second, and once a minute past the first minute.
+function shoalTickStep(view, now, cx) {
+  if (view.shoalDrawn == null || view.shoalPending || narrow() || find(layout(), "sidebar")?.hidden === true) return false;
+  const ticking = shoalTicks(view);
+  const key = shoalHeadKey(shoalFresh(now, ticking), ticking);
+  if (key === view.shoalDrawn || (!ticking && view.shoalDrawn.startsWith("coarse|"))) return false;
+  view.shoalPending = true;
+  cx.notify();
+  return true;
+}
+// Started from init: the renderer probe the lattice makes (Linux: the app process's environment, then its loaded
+// libraries), and the tick. The tick is the view's task, so it ends with the copy; close() cancels it too.
+function shoalTick(view, cx) {
+  if (window()?.platform === "linux" && view.shoalRenderer == null) {
+    cx.spawn(async (cx) => {
+      try {
+        const env = (await readTextFile("/proc/self/environ")) ?? "";
+        view.shoalRenderer = rendererFromProcess(env) ?? rendererFromProcess(env, (await readTextFile("/proc/self/maps")) ?? "");
+      } catch (_e) {
+        // no hint: auto stays at balanced, which ticks while the window has focus
+      }
+    });
+  }
+  view.shoalTimer = cx.timer.every(SHOAL_TICK_MS, (cx) => shoalTickStep(view, Date.now(), cx));
+  return view.shoalTimer;
+}
+function shoalStop(view) {
+  view.shoalTimer?.cancel();
+  view.shoalTimer = null;
 }
 // A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab.
 function shoalMore(a, sr, full, fallback) {
@@ -1916,7 +1974,11 @@ CLONES = {
          '.child(duration(now - when))))'),
         # the header says how old the status is
         ('            .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))\n',
-         '            .child(shoalHead(t, now))\n'),
+         '            .child(shoalHead(t, now, this))\n'),
+        # and counts up each second where the motion tier allows (shoalTick); the copy's close cancels the timer
+        ("    cx.timer.every(30000, (cx) => cx.notify());\n  }\n",
+         "    cx.timer.every(30000, (cx) => cx.notify());\n    shoalTick(this, cx);\n  }\n\n"
+         "  async close(_cx) {\n    shoalStop(this);\n  }\n"),
     ]),
     # the top bar: Home and Lattice beside Files and Changes, where they are always in reach (the status bar's own
     # commands, so one path does the switching: an open tab at once, else the CLI)
@@ -1962,8 +2024,11 @@ CLONES = {
 LAYOUT_BLOCKS = {"agents": "shoal-agents", "spaces": "shoal-spaces", "workspace-status": "shoal-status",
                  "workspace-chrome": "shoal-chrome", "tabs": "shoal-tabs"}
 # files a clone carries that its shipped mod has not: {clone file: shoal's source}. Copied, since the app loads no picture
-# through a link; their bytes are part of the clone's mark, so a new icon redoes the copy
-CLONE_FILES = {"workspace-chrome": {"shoal.png": os.path.join(PKG, "ui", "assets", "shoal-64.png")}}
+# through a link and a clone's module imports from its own folder; their bytes are part of the clone's mark, so a new
+# icon (or motion.js) redoes the copy
+CLONE_FILES = {"workspace-chrome": {"shoal.png": os.path.join(PKG, "ui", "assets", "shoal-64.png")},
+               # the agents list's header clock follows the lattice's motion budget (its tiers and renderer probe)
+               "agents": {"motion.js": os.path.join(MOD_DIR, "lattice-view", "motion.js")}}
 
 
 def patch_clone(text: str, name: str, patches: list[tuple[str, str]]) -> str | None:

@@ -800,8 +800,18 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   tooltip gives each machine's and the cadence. The status is rebuilt by the feeder every 20 s plus the pass itself (about
   2 s since the pass lists `claude agents` once, `backends.agents_memo`: it listed 26 to 28 times and took 18 s, so a
   rebuild came every 38 s, measured 2026-11-24), and each card re-reads it every 15 s, so a row can lag its host's ledger
-  and sessions by up to two passes, the sleep and 15 s (about 40 s; it was about 70 s). The header moves only when the list
-  redraws (a label changes, else Herdr's 30 s tick): it asks for no frames at any motion tier.
+  and sessions by up to two passes, the sleep and 15 s (about 40 s; it was about 70 s). The header counts up by the
+  second from the label's time (`shoalTick`): it stayed at `0s` and then jumped to `20s` or more, since it moved only when
+  the list redrew (a label changes, else Herdr's 30 s tick). Every redraw of a mod redraws the whole window and reruns
+  the list's render (about 2,000 element calls for 25 rows: with stub elements, 0.4 ms in V8 and 1.9 ms with its JIT
+  off), so the tick is a data timer that checks twice a second (no second is skipped) and redraws only when the header
+  would read or color differently: once a second for the first minute, then once a minute, and once when it passes 90 s
+  and turns the warning color. It ticks at the lattice's full and balanced motion tiers (its `motion.js`, copied beside
+  the clone, auto: the renderer and the window's focus). At low and off (a software renderer, where a frame costs most
+  of a core, or an unknown renderer in a window without focus) it redraws once to say so on its tooltip and then moves
+  only when the list redraws, as before. It asks for nothing while it has no header (the rail collapsed, the sidebar
+  hidden) or while the redraw it last asked for is undrawn (a copy in a hidden block or another tab keeps its timers but
+  is not drawn), and the copy's `close` cancels it (the timer is the copy's task, so it ends with the copy anyway).
 - **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
   an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.

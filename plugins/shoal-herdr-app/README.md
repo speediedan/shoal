@@ -113,7 +113,9 @@ only at `full` motion. A feed from before this (no `fresh`) is drawn as it was.
 not live yet: its tooltip says why, and `answered` or `resumed` means you answered (or its session runs again) and the
 status is catching up, which takes one rebuild. A row's time is how long it has been in its section. The header says
 how old the status is (`status 20s ago`, the oldest machine's; its tooltip gives each machine's and the cadence), in
-the warning color past 90 s; it moves only when the list redraws, so it asks for no frames at any motion tier. A role
+the warning color past 90 s. It counts up each second where the lattice's motion tier is full or balanced (a redraw a
+second, only when the text or color changes); at low or off (a software renderer) it moves only when the list redraws,
+and its tooltip says so. A role
 row's badge opens the actions dialog on that role's Asks; with nothing to answer there, the dialog shows its actions
 and says so.
 

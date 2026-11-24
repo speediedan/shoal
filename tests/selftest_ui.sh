@@ -2506,7 +2506,7 @@ assert 'el.tooltip(shoalTip(a))' in tip and 'shoalLabel(a, "shoal.detail")' in h
 # the clone's sections, run under Node on stand-in terminals: the group decides, Herdr's status where there is none
 import os, shutil, subprocess, tempfile
 if shutil.which("node"):
-    js = helper[:helper.index("export default class Agents extends View {")]
+    js = "\n".join(l for l in helper[:helper.index("export default class Agents extends View {")].split("\n") if not l.startswith("import "))
     js = ('const shared = () => ({}); const run = () => null; const panes = () => []; const openOverlay = () => null;\n'
           'const T = { r1: { "shoal.group": "waiting", "shoal.state": "remote-ci", "shoal.pane": "alpha/core" },\n'
           '            r2: { "shoal.group": "dismissed", "shoal.state": "asked" }, s1: { "shoal.state": "your-turn" } };\n'
@@ -2979,7 +2979,7 @@ tip = next(n for o, n in ui_app.CLONES["agents"][1] if o.startswith('\n        .
 assert "el.tooltip(shoalTip(a))" in tip, tip
 import shutil, subprocess, tempfile
 if shutil.which("node"):
-    js = helper[:helper.index("export default class Agents extends View {")]
+    js = "\n".join(l for l in helper[:helper.index("export default class Agents extends View {")].split("\n") if not l.startswith("import "))
     js = ('const shared = () => ({}); const run = () => null; const panes = () => []; const openOverlay = () => null;\n'
           'const T = { r1: { "shoal.stale": "starting", "shoal.detail": "asks: merge?" }, r2: { "shoal.stale": "unread" },\n'
           '            r3: { "shoal.detail": "on CI" }, r4: { "shoal.stale": "odd" } };\n'
@@ -3101,9 +3101,10 @@ assert backends.memo_rows((True, None)) is None, "nothing kept after the pass"
 print("answered, refreshing ok")
 PY2
 # the agents list: the badge opens Asks for every role row, the row's time is time in its section, the header says how
-# old the status is, and a row shown ahead of its status is greyed with why
+# old the status is and counts it up each second (a fake timer drives it), and a row shown ahead of its status is
+# greyed with why
 python3 - "$SHOALD" <<'PY2' || fail "agents list: badge, time and status age"
-import sys
+import os, pathlib, sys, tempfile
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
 import ui_app, ui_herdr, ui_status, ui_view
 helper = ui_app.AGENTS_HELPER
@@ -3111,12 +3112,29 @@ assert f"SHOAL_CARD_S = {ui_view.CARD_REFRESH_S}, SHOAL_FEED_S = {int(ui_herdr.F
     "the header's cadence is the code's"
 patches = dict(ui_app.CLONES["agents"][1])
 assert patches['      const s = a.status === "done" ? "idle" : a.status;\n'] == "      const s = shoalTrackKey(a);\n"
-assert any("shoalWhenTip(" in n for n in patches.values()) and any("shoalHead(t, now)" in n for n in patches.values())
+assert any("shoalWhenTip(" in n for n in patches.values()) and any("shoalHead(t, now, this)" in n for n in patches.values())
+# the tick starts in init, after Herdr's own 30 s redraw, and the copy's close cancels it
+init = patches["    cx.timer.every(30000, (cx) => cx.notify());\n  }\n"]
+assert "    shoalTick(this, cx);\n  }\n" in init and "async close(_cx) {\n    shoalStop(this);\n  }" in init, init
+# the header's tiers are the lattice's own motion budget, copied beside the clone
+motion = ui_app.CLONE_FILES["agents"]["motion.js"]
+assert motion == os.path.join(ui_app.MOD_DIR, "lattice-view", "motion.js") and os.path.exists(motion)
+assert 'from "./motion.js";' in helper
+with tempfile.TemporaryDirectory() as home:
+    os.environ["HERDR_APP_HOME"] = home
+    os.makedirs(os.path.join(home, "mods", "agents"))
+    open(os.path.join(home, "mods", "agents", "main.js"), "w").write("\n".join(o for o, _ in ui_app.CLONES["agents"][1]))
+    ok, _line = ui_app.install_clone("agents")
+    copied = os.path.join(home, "mods", "shoal-agents", "motion.js")
+    assert ok and open(copied).read() == open(motion).read(), "the clone carries the lattice's motion.js"
+    assert ui_app.install_clone("agents") == (True, ""), "current: nothing redone"
 assert set(ui_status.CARD_AHEAD) <= set(ui_status.STALE_REASONS)
 import shutil, subprocess, tempfile
 if shutil.which("node"):
     js = helper[:helper.index("export default class Agents extends View {")]
-    js = ('let opened = []; const shared = () => ({}); const run = () => null; const panes = () => [];\n'
+    js = "\n".join(line for line in js.split("\n") if not line.startswith("import "))
+    js = (f'import {{ resolveTier, rendererFromProcess }} from "{pathlib.Path(motion).as_uri()}";\n'
+          'let opened = []; const shared = () => ({}); const run = () => null; const panes = () => [];\n'
           'const openOverlay = (o) => opened.push(o.props.verb);\n'
           'const now = Date.parse("2026-11-24T20:00:00Z");\n'
           'const T = { r1: { "shoal.pane": "s1/a", "shoal.group": "needs-you", "shoal.asof": "2026-11-24T19:59:30Z" },\n'
@@ -3124,7 +3142,15 @@ if shutil.which("node"):
           '            "m2/t2": { "shoal.pane": "s1/c", "shoal.asof": "2026-11-24T19:59:50Z" },\n'
           '            s9: { "shoal.pane": "standalone/x" }, r3: { "shoal.stale": "resumed" } };\n'
           'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
-          'const h_flex = () => null; const div = () => null;\n'
+          # an element records its text, color and tooltip; the window, the layout and the probe are the test's
+          'const el = () => { const e = { kids: [] }; const p = new Proxy(e, { get: (o, k) => k in o ? o[k] : (...a) => {\n'
+          '  if (k === "child") o.kids.push(a[0]); else if (k === "text_color") o.color = a[0]; else if (k === "tooltip") o.tip = a[0];\n'
+          '  else if (k === "when") { if (a[0]) a[1](p); } return p; } }); return p; };\n'
+          'const h_flex = el; const div = el;\n'
+          'let WIN = { platform: "linux", active: true }, NARROW = false, SIDEBAR = { id: "sidebar" };\n'
+          'const window = () => WIN; const narrow = () => NARROW; const layout = () => ({ id: "root", children: [SIDEBAR] });\n'
+          'const find = (n, id) => n?.id === id ? n : (n?.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null;\n'
+          'let ENV = "SHOAL_LATTICE_RENDERER=gpu\\0HOME=/x"; const readTextFile = async () => ENV;\n'
           + js +
           'const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, a, b); process.exit(1); } };\n'
           'const cx = { stop_propagation: () => null };\n'
@@ -3136,11 +3162,70 @@ if shutil.which("node"):
           'const f = shoalFresh(now);\n'
           'eq(f.text, "status 30s ago", "the oldest machine\'s newest status");\n'
           'eq(f.old, false, "within the limit");\n'
-          'if (!f.tip.includes("this computer: 30s ago") || !f.tip.includes("m2: 10s ago") || !f.tip.includes("every 15 s")) { console.error(f.tip); process.exit(1); }\n'
+          'if (!f.tip.includes("this computer: 30s ago") || !f.tip.includes("m2: 10s ago") || !f.tip.includes("every 15 s") || !f.tip.includes("counts up each second")) { console.error(f.tip); process.exit(1); }\n'
+          'eq(shoalFresh(now + 7900).text, "status 37s ago", "to the second, not in steps of 5");\n'
           'eq(shoalFresh(now + 120000).old, true, "past the limit: said in the warning color");\n'
           'eq(shoalFresh(now + 300000).text, "status 5 min ago", "minutes");\n'
           'eq(shoalTip({ address: "m2/t1" }), "updating: you answered; the status is catching up", "greyed with why");\n'
-          'eq(shoalStale({ address: "r3" }), "its session is running again; the status is catching up", "resumed");\n')
+          'eq(shoalStale({ address: "r3" }), "its session is running again; the status is catching up", "resumed");\n'
+          # the tick, on a fake timer: it asks for a redraw only when the header would change, once per change
+          'const th = { dim: "dim", blocked: "warn" };\n'
+          'const asof = (h) => h.kids[1];\n'
+          'const view = {}; let every = null, cancelled = 0, spawned = [], notes = 0;\n'
+          'const tcx = { timer: { every: (ms, fn) => { every = { ms, fn }; return { cancel: () => { cancelled++; } }; } },\n'
+          '  spawn: (fn) => spawned.push(fn), notify: () => { notes++; } };\n'
+          'const task = shoalTick(view, tcx);\n'
+          'eq([every.ms, spawned.length, view.shoalTimer === task], [500, 1, true], "a half-second check and one renderer probe");\n'
+          '(async () => {\n'
+          '  await spawned[0](tcx);\n'
+          '  eq(view.shoalRenderer, "gpu", "the probe reads the renderer as the lattice does");\n'
+          '  let clock = now; const realNow = Date.now; Date.now = () => clock;\n'
+          '  every.fn(tcx); eq(notes, 0, "nothing before the header is first drawn");\n'
+          '  let head = shoalHead(th, clock, view);\n'
+          '  eq([asof(head).kids[0], asof(head).color], ["status 30s ago", "dim"], "drawn");\n'
+          '  const drawn = [];\n'
+          '  for (let i = 0; i < 2 * 75; i++) {\n'  # 75 s of half-second checks, the list redrawn whenever asked
+          '    clock += 500; const before = notes; every.fn(tcx);\n'
+          '    if (notes > before) { head = shoalHead(th, clock, view); drawn.push([asof(head).kids[0], asof(head).color]); }\n'
+          '  }\n'
+          '  eq(drawn.length, 31, "one redraw a second to 59 s, one for the first minute, one past 90 s: " + JSON.stringify(drawn));\n'
+          '  eq(drawn.slice(0, 3).map((d) => d[0]), ["status 31s ago", "status 32s ago", "status 33s ago"], "counting up by one");\n'
+          '  eq(drawn[28], ["status 59s ago", "dim"], "the last second");\n'
+          '  eq(drawn[29], ["status 1 min ago", "dim"], "minutes from 60 s, still within the limit");\n'
+          '  eq(drawn[30], ["status 1 min ago", "warn"], "the warning color once past 90 s, at the check that crosses it");\n'
+          '  eq(clock - now, 75000, "75 s of checks");\n'
+          # a redraw asked for and not drawn (a hidden block, another tab): no more until the list draws again
+          '  for (const k of ["r1", "m2/t1", "m2/t2"]) T[k]["shoal.asof"] = new Date(clock - 10000).toISOString();\n'
+          '  head = shoalHead(th, clock, view);\n'
+          '  eq(asof(head).kids[0], "status 10s ago", "a new status");\n'
+          '  notes = 0; clock += 1000; every.fn(tcx); clock += 1000; every.fn(tcx); clock += 1000; every.fn(tcx);\n'
+          '  eq(notes, 1, "one redraw asked for, none while it is undrawn");\n'
+          '  shoalHead(th, clock, view); clock += 1000; every.fn(tcx); eq(notes, 2, "drawn again: it counts on");\n'
+          '  shoalHead(th, clock, view);\n'
+          # no header: a collapsed rail, a hidden sidebar
+          '  notes = 0; NARROW = true; clock += 1000; every.fn(tcx); eq(notes, 0, "the rail has no header"); NARROW = false;\n'
+          '  SIDEBAR.hidden = true; clock += 1000; every.fn(tcx); eq(notes, 0, "a hidden sidebar"); SIDEBAR.hidden = false;\n'
+          '  every.fn(tcx); eq(notes, 1, "shown again: it catches up at once"); shoalHead(th, clock, view);\n'
+          # the motion tiers: a software renderer, or an unknown one without focus, gives the coarse header
+          '  eq(shoalTicks(view), true, "gpu, focused: full");\n'
+          '  WIN.active = false; eq(shoalTicks(view), true, "gpu without focus: balanced, still ticks");\n'
+          '  view.shoalRenderer = null; eq(shoalTicks(view), false, "unknown renderer without focus: low");\n'
+          '  WIN.active = true; eq(shoalTicks(view), true, "unknown renderer, focused: balanced");\n'
+          '  view.shoalRenderer = "cpu"; eq(shoalTicks(view), false, "a software renderer: low");\n'
+          '  notes = 0; clock += 1000; every.fn(tcx); eq(notes, 1, "one redraw to say it stopped counting");\n'
+          '  head = shoalHead(th, clock, view);\n'
+          '  if (!asof(head).tip.includes("moves only when this list redraws")) { console.error(asof(head).tip); process.exit(1); }\n'
+          '  for (let i = 0; i < 20; i++) { clock += 1000; every.fn(tcx); }\n'
+          '  eq(notes, 1, "coarse: no redraws of its own, the seconds wait for the list");\n'
+          '  view.shoalRenderer = "gpu"; clock += 1000; every.fn(tcx); eq(notes, 2, "back at full: it counts again"); shoalHead(th, clock, view);\n'
+          # cleanup: the copy's close cancels the timer
+          '  shoalStop(view); eq([cancelled, view.shoalTimer], [1, null], "close cancels the tick");\n'
+          '  shoalStop(view); eq(cancelled, 1, "twice is harmless");\n'
+          # no probe off Linux, or with a renderer already known
+          '  spawned = []; shoalTick({ shoalRenderer: "gpu" }, tcx); WIN.platform = "macos"; shoalTick({}, tcx);\n'
+          '  eq(spawned.length, 0, "the probe runs once, on Linux");\n'
+          '  Date.now = realNow;\n'
+          '})().catch((e) => { console.error(e); process.exit(1); });\n')
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
         fh.write(js)
     r = subprocess.run(["node", fh.name], capture_output=True, text=True)
