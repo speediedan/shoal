@@ -17,7 +17,18 @@ S="${1:-${TMPDIR:-/tmp}/shoal-h4-selftest-$$}"
 exec 9>"/tmp/shoal-selftest-h4selftest.lock"; flock -w 1800 9 || { echo "SELFTEST FAIL: another h4selftest run holds the lock" >&2; exit 1; }
 # background watchers this test starts must never outlive it (a stray one shares the
 # sidecar and silently swallows the next run's wakes)
-cleanup() { pkill -f -- '(cli\.py|shoal) ledger-watch --shoal h4selftest' 2>/dev/null || true; }
+WATCH_PAT='(cli\.py|shoal) ledger-watch --shoal h4selftest'
+cleanup() { pkill -f -- "$WATCH_PAT" 2>/dev/null || true; }
+# stop them and wait until each is gone: a section that deletes a role's sidecar to judge its watcher dead must
+# run with none left. A real health run (section 11) re-arms tl's dead watcher as the quorum does, detached at
+# --interval 120, and every tick of it rewrites tl's sidecar with its live pid: a tick landing inside such a
+# section makes health read tl's watcher as alive (the wake goes to a wake-file and no watcher-dead step runs)
+stop_watchers() {
+  cleanup
+  for _ in $(seq 1 40); do pgrep -f -- "$WATCH_PAT" >/dev/null || return 0; sleep 0.25; done
+  pkill -KILL -f -- "$WATCH_PAT" 2>/dev/null || true; sleep 0.5
+  ! pgrep -f -- "$WATCH_PAT" >/dev/null || { echo "SELFTEST FAIL: a selftest watcher survived SIGKILL" >&2; exit 1; }
+}
 trap 'rc=$?; cleanup; shoal_scratch_exit $rc "$S"' EXIT
 cleanup
 rm -rf "$S" /tmp/h4selftest; mkdir -p "$S/root" "$S/data" "$S/remote"
@@ -1207,6 +1218,7 @@ grep -q "no data root" <<<"$OUT" || fail "fm_report ran without a data root :: $
 echo "== 22 direct wake: a reaped Claude worker is re-armed or resumed directly; old relay-era keys change nothing"
 # the measured shape (2026-10-02): the background service reaped every worker, so `claude agents
 # --json --all` lists the role with no pid, and its waiters are gone
+stop_watchers  # the quorum's re-arm in section 11 left a live tl watcher; its next tick would bind the sidecar
 rm -f /tmp/$SID/health.json /tmp/$SID/wake-tl /tmp/$SID/ledger-watch-tl.state
 FS_REAPED='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"","state":"stopped"}],"opencode":{}}'
 HV="$H health --spec $SPEC --instance a --dry-run"
@@ -1500,17 +1512,19 @@ print("usage-limit marks ok")
 PY2
 FS_IDLE='{"claude":[{"id":"aaaa1111","sessionId":"aaaa1111-0000","status":"idle","state":"done","pid":4242},{"id":"bbbb2222","sessionId":"bbbb2222-0000","status":"idle","state":"done","pid":4243}],"opencode":{}}'
 HV="$H health --spec $SPEC --instance a --dry-run"
+# both runs judge tl's watcher dead from a missing sidecar: no watcher may be left to bind it in between
+stop_watchers
 rm -f /tmp/$SID/health.json /tmp/$SID/ledger-watch-tl.state /tmp/$SID/wake-tl
 SEED='import datetime, json, sys; now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 json.dump({"ladders": {"tl|watcher-dead|pid:none": {"since": now, "step": 0}}}, open(sys.argv[1], "w"))'
 python3 -c "$SEED" /tmp/$SID/health.json
 OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=15 $HV 2>&1)
-grep -q "tl watcher-dead step1:wake -> held (usage limit until" <<<"$OUT" || fail "a Claude wake inside the limit was not held :: $OUT"
+grep -q "tl watcher-dead step1:wake -> held (usage limit until" <<<"$OUT" || fail "a Claude wake inside the limit was not held :: $OUT :: tl sidecar: $(tr '\n' ' ' < /tmp/$SID/ledger-watch-tl.state 2>/dev/null)"
 ! grep -q "usage-limit reset" <<<"$OUT" || fail "resume wake before the reset :: $OUT"
 python3 -c "$SEED" /tmp/$SID/health.json
 OUT=$(env CLAUDE_CONFIG_DIR="$CC" SHOAL_FAKE_SESSIONS="$FS_IDLE" SHOAL_HEALTH_SHIFT_MIN=60 $HV 2>&1)
 # after the reset the step runs: a re-arm by the quorum (detached watcher, live worker) where it used to wake
-grep -Eq "tl watcher-dead step1:(wake|rearm) -> " <<<"$OUT" && ! grep -q "held (usage" <<<"$OUT" || fail "the held wake did not run after the reset :: $OUT"
+grep -Eq "tl watcher-dead step1:(wake|rearm) -> " <<<"$OUT" && ! grep -q "held (usage" <<<"$OUT" || fail "the held wake did not run after the reset :: $OUT :: tl sidecar: $(tr '\n' ' ' < /tmp/$SID/ledger-watch-tl.state 2>/dev/null)"
 grep -q "tl usage-limit reset:wake" <<<"$OUT" && grep -q "up usage-limit reset:wake" <<<"$OUT" \
   || fail "no resume wake for each role the limit touched :: $OUT"
 rm -f /tmp/$SID/health.json
