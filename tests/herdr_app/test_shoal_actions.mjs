@@ -250,7 +250,7 @@ test("replies: plan, result, view, asks", () => {
   assert.deepEqual(asks.asks.map((a) => [a.role, a.host, a.asks.length, a.question, a.saysWaiting]),
     [["lane-a", "host-a", 1, true, false], ["lane-b", "host-b", 2, false, true]]);
   assert.deepEqual(M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["", "a", 3] }, { asks: ["y"] }, null] }), "view").asks,
-    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false, links: [], options: [], headless: false }]);
+    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false, waits: "", links: [], options: [], headless: false }]);
   // each ask's answer set, and whether the role is headless (answered only here)
   const lb = asks.asks.find((a) => a.role === "lane-b");
   assert.ok(lb.headless && lb.options.length === lb.asks.length && lb.options[0].includes("Defer"), "a headless role's answer sets");
@@ -808,6 +808,30 @@ test("dialog size: three sizes, a cycle, and a reopen that keeps the target, the
   assert.deepEqual([s.width, s.height], [M.SIZES.full.width, M.SIZES.full.height]);
   assert.deepEqual(s.props, { size: "full", shoal: A, role: "r", scope: null, session: null, machine: "machine-a", verb: "asks", answers });
   assert.equal(M.SIZE_KEY, "shoal-actions.size");
+});
+
+test("a row's badge opens Asks: the reopen at the remembered size keeps the verb, and an empty Asks says so", () => {
+  // the badge opens the dialog at the normal size and it reopens at once at the person's remembered one, before the
+  // roles list lands: that reopen dropped the verb, and the badge showed the plain actions list (2026-11-24)
+  assert.equal(M.resizeVerb(null, "asks"), "asks", "the verb not reached yet goes with the reopen");
+  assert.equal(M.resizeVerb("asks", null), "asks");
+  assert.equal(M.resizeVerb("queue", "asks"), "queue", "the verb shown wins");
+  assert.equal(M.resizeVerb("msg", "asks"), null, "a write verb's form is not reopened (as before)");
+  assert.equal(M.resizeVerb(null, "msg"), null);
+  assert.equal(M.resizeVerb(null, "nonsense"), null);
+  const src = readFileSync(join(MOD, "main.js"), "utf8");
+  assert.ok(/resizeVerb\(this\.verb, this\.pendingVerb\)/.test(src), "resize carries the pending verb");
+  // every way a role asks has something to show; only a role with nothing there falls back, with a line saying so
+  const view = M.parseReply(ok({ ...fx.views.asks, asks: [
+    { role: "q", asks: [], question: true }, { role: "w", asks: [], waits: "user-auth: a token" }, { role: "h", asks: ["merge?"], headless: true },
+  ] }), "view");
+  for (const r of ["q", "w", "h"]) assert.equal(M.asksFallback(view, r), null, r);
+  assert.equal(view.asks.find((a) => a.role === "w").waits, "user-auth: a token", "a wait on you is carried");
+  assert.equal(view.asks.find((a) => a.role === "q").waits, "");
+  assert.match(M.asksFallback(view, "other"), /^other has no asks recorded, no question open and no wait on you/);
+  assert.equal(M.asksFallback(view, null), null, "not opened for one role: the view as it is");
+  assert.equal(M.asksFallback({ text: "x" }, "q"), null, "not an asks view");
+  assert.ok(/asksFallback\(r, this\.asksFor\)/.test(src) && /this\.asksFor = p\.verb === "asks"/.test(src));
 });
 
 test("main.js makes InputState only in init or when a view arrives, never during render", () => {

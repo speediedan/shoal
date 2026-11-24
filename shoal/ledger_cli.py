@@ -371,6 +371,16 @@ def cmd_msg(a) -> int:
                     wake=(True if getattr(a, "wake", False) else None))
     print(f"msg {by}->{a.to} [{a.kind}] [{ev['id']}]")
     target = spec.role(a.to) if spec is not None and a.to not in ("*", "user") and not to_ext else None
+    if target is not None and by == "user":
+        # a reply to its asks: this host's card shows it answered on its next refresh, before the status is rebuilt
+        try:
+            ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+            if ui_dir not in sys.path:
+                sys.path.insert(0, ui_dir)
+            import ui_status
+            ui_status.note_reply(spec.sid, target.slug, ev)
+        except Exception:  # noqa: BLE001 - a display hint never fails a message
+            pass
     if a.to == "*" and getattr(a, "wake", False) and by == "user" and spec is not None:
         # broadcast: every role's watcher delivers a user --wake msg; a role whose watcher is dead gets it
         # through the quorum's adapter instead (a direct wake)

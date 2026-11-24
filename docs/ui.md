@@ -60,7 +60,7 @@ reader ignores fields it does not know.
      "last_done": {"item": "<repo>#<j>:fix", "ts": "<utc>"},
      "blocker_stale": true, "offers_open": 0, "mail_since_boundary": 1, "asks": ["..."],
      "watcher": "alive|dead|none", "session": "working|blocked|idle|dead|unknown|parked",
-     "last_write_age_s": 900, "heartbeat_age_s": 60,
+     "answered": null, "last_write_age_s": 900, "heartbeat_age_s": 60,
      "can_progress": {"ok": false, "reasons": ["blocked-on-question"]}, "needs_you": true,
      "agent": {"group": "needs-you|working|waiting|blocked|held", "state": "asked", "detail": "..."},
      "view": ["shoal", "view", "<id>", "<role>"]}]}]}
@@ -74,9 +74,19 @@ nothing assigned, held and handoff pending alike). The first match decides, in t
 |---|---|---|
 | `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `wakes-held` (its watcher holds new events for a client attached to its session, as the watcher's sidecar records; the quorum pages it once: exit the client. While you are offline, a card's client is ended after an hour), `handoff-pending` (restart-ready, and the shoal's context restart is `page`, so the operator restarts it; in `auto` mode a restart-ready role needs nobody), `restart-held` (its automatic restart is held for an attached client: detach it; while you are offline, a card's client is ended after an hour), `says-waiting` (Claude reads the session as `blocked`: its last turn ended sounding like it waits on you, with no prompt open and no ask recorded; only when the ledger has no reason of its own, a recorded wait or a blocker on every next item, in which case the role reads by the ledger with those words in its detail), `no-work` (fill=assigned, empty queue, no offer) |
 | `working` | the role's, now | `working` |
-| `waiting` | nobody's: it resumes by itself | the wait's substate (`local-ci`, `remote-ci`, `research-proto`, `research-window`, ...), `<sub>: resolved` while its wake is due, `work-due` (a blocker resolved, its wake is due) |
+| `waiting` | nobody's: it resumes by itself | `answered` (you replied to every open ask since its last write; see Answered below), the wait's substate (`local-ci`, `remote-ci`, `research-proto`, `research-window`, ...), `<sub>: resolved` while its wake is due, `work-due` (a blocker resolved, its wake is due) |
 | `blocked` | another role's or the outside world's | `session-blocked`, `upstream`, `blocked: role`, `blocked: upstream`, `blocked: lease` (a blocker only past its daily look says so in `detail`, still blocked) |
 | `held` | the maintainer's, by choice | `parked`, `held` (a `hold:` blocker), `observer` (fill=none) |
+
+**Answered.** A message you write to a role (`by: user`) after its last write answers its open asks when it names
+them (`re ask <n>: ...`, the Asks view's form: those asks) or wakes it (a plain note without a wake answers nothing).
+When it answers every ask, the role reads `waiting`, state `answered` (`ui_status.reply_answer`; the row carries
+`answered`: `{ts, asks, partial, late, age_s}`): your move is made, and its watcher wakes it on your reply. It stays
+`asked` when you answered only some (its detail says which), when the reply is older than `ANSWER_PICKUP_S` (600 s: the
+watcher pulls every 120 s, so something holds it, and the detail says when you answered), or when the reply cannot reach
+it (`ANSWER_HOLDS`: parked, a dead worker, a held wake, a question open in its session). A turn running reads
+`working` as before, and the role's next write (its `queue --answered`, or a new ask) ends `answered`: a new or
+unanswered ask reads `asked` again.
 
 `needs_you` is `group == "needs-you"` and not dismissed. A dismissal is keyed on the needs fingerprint, which
 includes `agent.state`, so a dismissed row keeps its group and state (shown apart, under Dismissed) and comes back
@@ -525,7 +535,8 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   install) therefore read as in use and the re-apply refuses. Detach and close those cards by
   hand; do not widen the match.
 
-**Feed** (`shoal ui feed`, the `shoal-ui-feed` user unit, every 20 s):
+**Feed** (`shoal ui feed`, the `shoal-ui-feed` user unit, every 20 s after a pass of about 2 s, so a status rebuild
+lands about every 22 s; a pass lists `claude agents` once per kind, `backends.agents_memo`):
 
 - **Cards for other hosts' roles need a route.** A session resolves only through its own host's harness, so
   a role on another host is attached by running that host's `shoal view` over ssh. A role whose host has a
@@ -767,6 +778,30 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   until its first status read lands (a card back after a restart reads the status cold, for tens of seconds, under the
   labels its last run left), `unread` or `host-old` for a role on another host whose live state was not read or did not
   answer (`ui_status.row_stale`). The card clears it with its other labels when it is left with `q`.
+- **Answered, refreshing.** A card shows a row ahead of the status it read while that row still says the role needs
+  your answer, from what it knows sooner (`ui_status.card_view`): your reply written on this host (`shoal msg --by
+  user` leaves a hint, `/tmp/<id>/reply-<role>.json`, beside the ledger event) moves it to Waiting, state `answered`;
+  its session running again (Claude from the listing the host's cards share, at most 25 s old, with its open question
+  read from the transcript; Codex and Muse from their turn lock) moves it to Working, state `answered` when its open
+  question closed and `working` otherwise. Each sets `shoal.stale` (`answered` or `resumed`), so the row is greyed with
+  `⟳` and its tooltip says "you answered; the status is catching up". So the row leaves Needs you within one card
+  refresh (15 s) of your answer, and a row still in Needs you, not greyed, is one the status says asks you now (a new
+  ask, or one you have not answered). Only rows that need your answer are read this way, and never toward needs you: a
+  new ask is the status's to show. The status catches up within one rebuild and the mark goes.
+- **A row's time** (`6m`) is how long the row has been in its section, as the list saw it move there (Herdr's own
+  stamp, kept across app restarts, keyed in `shoal-agents` on the card's `shoal.group`, `shoalTrackKey`): in Needs you,
+  how long it has needed you since it last went there; it starts again when the row moves (answered, working, asked
+  again). Herdr keyed it on the reported status, so a row moving between sections with the same status (needs you as
+  asked, then as a question) kept its time. Its tooltip says what it is. A row with no group keeps Herdr's key. The
+  first app start after the change starts every role row's clock once.
+- **How old the status is.** The list's header says `status 20s ago`: the first card on a machine to read each status
+  rebuild labels its time (`shoal.asof`, `ui_status.claim_asof`: one label per machine per rebuild, since each label
+  written redraws the app), and the header shows the oldest machine's newest, in the warning color past 90 s; its
+  tooltip gives each machine's and the cadence. The status is rebuilt by the feeder every 20 s plus the pass itself (about
+  2 s since the pass lists `claude agents` once, `backends.agents_memo`: it listed 26 to 28 times and took 18 s, so a
+  rebuild came every 38 s, measured 2026-11-24), and each card re-reads it every 15 s, so a row can lag its host's ledger
+  and sessions by up to two passes, the sleep and 15 s (about 40 s; it was about 70 s). The header moves only when the list
+  redraws (a label changes, else Herdr's 30 s tick): it asks for no frames at any motion tier.
 - **What the agents list says.** A turn in progress reads working. A role waiting on its own job or CI reads working too, unless it also has
   an ask or an open question: then it needs you, and its message says the job runs on. A job that has ended no longer reads as working, though the role
   has yet to take it up. A role whose host cannot be reached reads idle, with its last known state in its message.
@@ -934,8 +969,13 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   sizes an overlay only when it opens and has no resize by drag, so the header's `⤢` cycles normal (640 by 600),
   large and full (shares of the window), reopening the dialog at the new size on the same target and verb with the
   answers kept; the size is remembered for the person (`shared("shoal-actions.size")`), and a dialog opened at another
-  size (a card's right-click, `mod.open`) reopens itself at the remembered one. When the badge is an open prompt, its click focuses the pane where the prompt is
-  answered, and the row's right-click still opens any asks beside it) or a design or
+  size (a card's right-click, `mod.open`, a row's badge) reopens itself at the remembered one, keeping the verb it was
+  opened on (`resizeVerb`: that reopen comes before the roles list, and it dropped the verb, so the badge showed the
+  plain actions list until 2026-11-24). A role row's badge opens that role's Asks whatever made it ask: ledger asks (a
+  headless role's included), a question open in its session (the view says to attach to its card to answer there),
+  words that wait on you, or a wait it recorded on you (`user-auth` and the like, with what it holds); only a role with
+  none of these falls back to the dialog's actions, with a line saying so (`asksFallback`). The row's right-click
+  still opens its asks when it has some) or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
   seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until
   you look, and anything the role does next, or an attach, replaces it. A card restarted by an upgrade (every card re-execs

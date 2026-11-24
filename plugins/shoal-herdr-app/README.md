@@ -106,6 +106,17 @@ rail say `updating` and why, the roles it marks (or every role, once its writer 
 longer than the limit) are greyed, and the pulse drawer adds a still `⟳ updating` row. The arc turns
 only at `full` motion. A feed from before this (no `fresh`) is drawn as it was.
 
+### The agents list (`shoal-agents`)
+
+`shoal-agents` is a patched copy of Herdr's own agents mod, made by `shoal ui app-install` and kept current by
+`ui app-sync` (`ui_app.CLONES`); it reads the labels each role card writes on its terminal. A row greyed with `⟳` is
+not live yet: its tooltip says why, and `answered` or `resumed` means you answered (or its session runs again) and the
+status is catching up, which takes one rebuild. A row's time is how long it has been in its section. The header says
+how old the status is (`status 20s ago`, the oldest machine's; its tooltip gives each machine's and the cadence), in
+the warning color past 90 s; it moves only when the list redraws, so it asks for no frames at any motion tier. A role
+row's badge opens the actions dialog on that role's Asks; with nothing to answer there, the dialog shows its actions
+and says so.
+
 ### Keys and pointer (Lattice tab)
 
 Drag to pan (4 px threshold), wheel up to zoom in at the pointer and down to zoom out (a trackpad

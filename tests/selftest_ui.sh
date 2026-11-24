@@ -2458,7 +2458,8 @@ pr = ui_app.card_report(prompt, "t")
 assert pr["asks"] == 2 and not pr["asks_badge"], "an open prompt beside asks: the badge focuses the pane, the right-click opens the asks"
 helper = ui_app.AGENTS_HELPER
 assert 'shoalDialog(a, cx, shoalHasAsks(a) ? "asks" : "dismiss")' in helper and 'labels?.["shoal.asks"]' in helper
-assert 'labels?.["shoal.asks-badge"] === "1"' in helper, "the badge opens them only when they are its question"
+assert 'function shoalAsks(a, cx) {\n  shoalDialog(a, cx, "asks");\n}' in helper, \
+    "a role row's badge opens its Asks whatever made it ask (an open prompt too); the dialog falls back when there is none"
 badge = next(n for o, n in ui_app.CLONES["agents"][1] if o == '.items_center().justify_center().child("!");')
 assert "on_click((_e, cx) => shoalAsks(a, cx))" in badge and ".id(`shoal-badge-" in badge, badge
 # the agents list's groups: a role's derived agent state, Dismissed once dismissed; nothing until the status carries it
@@ -2995,6 +2996,156 @@ if shutil.which("node"):
     r = subprocess.run(["node", fh.name], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr + r.stdout
 print("freshness ok")
+PY2
+# answered, refreshing (maintainer, 2026-11-24: three rows stayed in Needs you, asked, after their questions were
+# answered): your reply since the role's last write answers its asks (waiting, answered); a card shows what it knows
+# sooner (your reply written on its host, its session running again) greyed as `answered` or `resumed`; a new ask, a
+# question still open or a held wake stays asked
+HC_TERMINAL_ID=t9 env -u SHOAL_FAKE_SESSIONS python3 - "$SHOALD" "$S/answered" <<'PY2' || fail "answered, refreshing"
+import datetime, os, sys, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+os.environ["XDG_RUNTIME_DIR"] = sys.argv[2]
+import backends, ui_app, ui_herdr, ui_status, ui_view
+now = datetime.datetime(2026, 11, 24, 20, 0, tzinfo=datetime.timezone.utc)
+msg = lambda ts, text="", wake=None: {"ts": ts, "type": "msg", "by": "user", "to": "r", "text": text, "wake": wake}
+A = ui_status.reply_answer
+assert ui_status.reply_asks("re ask 2: Deny.\nre ask 1: Grant merge. ok") == [1, 2]
+assert A([msg("2026-11-24T19:59:00Z", "re ask 1: Grant\nre ask 2: Defer")], ["a", "b"], now)["partial"] is False
+part = A([msg("2026-11-24T19:59:00Z", "re ask 2: Defer")], ["a", "b"], now)
+assert part["asks"] == [2] and part["partial"], part
+assert A([msg("2026-11-24T19:59:00Z", "go ahead", True)], ["a", "b"], now)["asks"] == [1, 2], "a woken reply answers every ask"
+assert A([msg("2026-11-24T19:59:00Z", "fyi")], ["a"], now) is None, "a plain note without a wake answers nothing"
+assert A([msg("2026-11-24T19:59:00Z", "re ask 7: x")], ["a"], now) is None, "an ask it does not have"
+assert A([msg("2026-11-24T19:40:00Z", "", True)], ["a"], now)["late"], "past ANSWER_PICKUP_S: not being taken up"
+assert A([], ["a"], now) is None and A([msg("2026-11-24T19:59:00Z", "", True)], [], now) is None
+# the agents list's state: answered while it is taken up; still asked for a part, a late one, or a reason that holds it
+role = types.SimpleNamespace(fill="self")
+q = {"asks": ["May I merge 12?", "Retire the lane?"]}
+st = lambda reasons=(), sess="idle", answer=None: ui_status.agent_state(role, "waiting", "local-ci", {}, q, ["waiting-on-you", *reasons],
+                                                                        sess, False, None, answer)
+full = A([msg("2026-11-24T19:59:00Z", "re ask 1: y\nre ask 2: n")], q["asks"], now)
+g = st(answer=full)
+assert (g["group"], g["state"]) == ("waiting", "answered") and "May I merge 12?" in g["detail"], g
+assert (st(answer=None)["group"], st(answer=None)["state"]) == ("needs-you", "asked")
+assert st(sess="working", answer=full)["group"] == "working", "a turn running is working, as before"
+g = st(answer=part)
+assert g["state"] == "asked" and "you answered ask 2 of 2" in g["detail"], g
+g = st(answer=dict(full, late=True, age_s=1200))
+assert g["state"] == "asked" and "you answered 20m ago" in g["detail"], g
+for hold in ("wakes-held", "blocked-on-question", "dead-worker"):
+    assert st([hold], answer=full)["group"] == "needs-you", hold
+# a card's faster read: only while the status row says it needs your answer, and only from something newer than it
+row = {"slug": "r", "session": "blocked", "needs_you": True, "asks": list(q["asks"]), "as_of": "2026-11-24T19:59:00Z",
+       "agent": {"group": "needs-you", "state": "asked", "detail": "May I merge 12?"},
+       "can_progress": {"ok": True, "reasons": ["blocked-on-question", "waiting-on-you"]}}
+t = lambda iso: datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+v, why = ui_status.card_view(row, None, {"session": "working", "prompt": False, "t": t("2026-11-24T19:59:20Z")})
+assert why == "answered" and (v["agent"]["group"], v["agent"]["state"]) == ("working", "answered") and not v["needs_you"], v
+assert "blocked-on-question" not in v["can_progress"]["reasons"] and ui_herdr.herdr_state(dict(v, wait=None, sub=None)) == "working"
+assert ui_status.card_view(row, None, {"session": "working", "prompt": True, "t": t("2026-11-24T19:59:20Z")}) == (row, ""), \
+    "a question still open is still asked"
+assert ui_status.card_view(row, None, {"session": "working", "prompt": False, "t": t("2026-11-24T19:58:00Z")}) == (row, ""), \
+    "a read older than the status says nothing new"
+asked = dict(row, can_progress={"ok": True, "reasons": ["waiting-on-you"]}, session="idle")
+v, why = ui_status.card_view(asked, None, {"session": "working", "prompt": False, "t": t("2026-11-24T19:59:20Z")})
+assert why == "resumed" and v["agent"]["state"] == "working", "running again with no question closed: resumed, not answered"
+reply = {"ts": "2026-11-24T19:59:30Z", "wake": True, "asks": [1, 2]}
+v, why = ui_status.card_view(asked, reply, None)
+assert why == "answered" and (v["agent"]["group"], v["agent"]["state"]) == ("waiting", "answered") and not v["needs_you"], v
+assert ui_status.card_view(asked, dict(reply, asks=[1], wake=False), None) == (asked, ""), "one ask of two: still asked"
+assert ui_status.card_view(asked, dict(reply, ts="2026-11-24T19:58:00Z"), None) == (asked, ""), "a reply the status has seen"
+assert ui_status.card_view(row, reply, None) == (row, ""), "a question open in its session holds a reply"
+assert ui_status.card_view(dict(asked, agent={"group": "working", "state": "working"}), reply, None)[1] == ""
+assert ui_status.card_view(dict(asked, as_of=None), reply, None)[1] == "", "a row without its status time is not judged"
+# the reply hint: `shoal msg --by user` keeps it under the shoal's state dir; a card reads it
+sid = "answered-test-" + str(os.getpid())
+ui_status.note_reply(sid, "r", {"ts": "2026-11-24T19:59:30Z", "id": "e1", "wake": True, "text": "re ask 1: y"})
+assert ui_status.read_reply(sid, "r") == {"ts": "2026-11-24T19:59:30Z", "id": "e1", "wake": True, "asks": [1]}
+assert ui_status.read_reply(sid, "other") is None
+import shutil
+shutil.rmtree(ui_status.state_dir(sid), ignore_errors=True)
+# the card's labels: why it is ahead, else the row's own reason; and the newest status time once per host
+ui_app.card_report = lambda r, tag: {"need": "", "asks": 0, "asks_badge": False}
+assert ui_view._card_labels(ui_app, v, "answered")[ui_app.STALE_LABEL] == "answered"
+assert ui_app.ASOF_LABEL == "shoal.asof" and ui_app.ASOF_LABEL in ui_app.CARD_LABELS
+assert ui_status.claim_asof("2026-11-24T19:59:00Z") and not ui_status.claim_asof("2026-11-24T19:59:00Z"), "one card per rebuild"
+assert not ui_status.claim_asof("2026-11-24T19:58:00Z") and ui_status.claim_asof("2026-11-24T19:59:40Z") and not ui_status.claim_asof("")
+marks = []
+ui_app.hc_label = lambda term, labels: marks.append(dict(labels))
+ui_view._mark_asof(ui_app, {"as_of": "2026-11-24T20:00:20Z"})
+ui_view._mark_asof(ui_app, {"as_of": "2026-11-24T20:00:20Z"})
+assert marks == [{ui_app.ASOF_LABEL: "2026-11-24T20:00:20Z"}], marks
+# _card_row reads the session only while the row needs your answer, and never for a role on another host
+seen = []
+ui_status.live_turn = lambda sid, slug, spec="": seen.append(slug) or {"session": "working", "prompt": False, "t": t("2026-11-24T19:59:20Z")}
+ui_status.read_reply = lambda sid, slug: None
+assert ui_view._card_row("s", "r", "", row)[1] == "answered" and seen == ["r"]
+assert ui_view._card_row("s", "r", "", dict(row, session="remote"))[1] == "" and seen == ["r"], "another host's role: the status only"
+assert ui_view._card_row("s", "r", "", dict(row, agent={"group": "waiting", "state": "local-ci"})) [1] == "" and seen == ["r"]
+# a status pass lists `claude agents` once per kind, however often its rows ask; outside a pass every call lists
+calls = []
+backends.subprocess = types.SimpleNamespace(run=lambda argv, **k: calls.append(argv) or types.SimpleNamespace(returncode=0, stdout='[{"id": "y"}]'),
+                                            SubprocessError=Exception, TimeoutExpired=Exception)
+backends.claude_agents(True)
+backends.claude_agents(True)
+assert len(calls) == 2, calls
+calls.clear()
+with backends.agents_memo():
+    backends.memo_keep((True, None), [{"id": "x"}])
+    assert backends.claude_agents(True) == [{"id": "x"}], "a listing the pass already took"
+    assert backends.claude_agents(False) == [{"id": "y"}] and backends.claude_agents(False) == [{"id": "y"}]
+    with backends.agents_memo():
+        assert backends.memo_rows((True, None)) == [{"id": "x"}], "a nested pass shares the memo"
+assert len(calls) == 1, calls
+assert backends.memo_rows((True, None)) is None, "nothing kept after the pass"
+print("answered, refreshing ok")
+PY2
+# the agents list: the badge opens Asks for every role row, the row's time is time in its section, the header says how
+# old the status is, and a row shown ahead of its status is greyed with why
+python3 - "$SHOALD" <<'PY2' || fail "agents list: badge, time and status age"
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_herdr, ui_status, ui_view
+helper = ui_app.AGENTS_HELPER
+assert f"SHOAL_CARD_S = {ui_view.CARD_REFRESH_S}, SHOAL_FEED_S = {int(ui_herdr.FEED_INTERVAL_S)}, SHOAL_OLD_S = {ui_status.STALE_AFTER_S}" in helper, \
+    "the header's cadence is the code's"
+patches = dict(ui_app.CLONES["agents"][1])
+assert patches['      const s = a.status === "done" ? "idle" : a.status;\n'] == "      const s = shoalTrackKey(a);\n"
+assert any("shoalWhenTip(" in n for n in patches.values()) and any("shoalHead(t, now)" in n for n in patches.values())
+assert set(ui_status.CARD_AHEAD) <= set(ui_status.STALE_REASONS)
+import shutil, subprocess, tempfile
+if shutil.which("node"):
+    js = helper[:helper.index("export default class Agents extends View {")]
+    js = ('let opened = []; const shared = () => ({}); const run = () => null; const panes = () => [];\n'
+          'const openOverlay = (o) => opened.push(o.props.verb);\n'
+          'const now = Date.parse("2026-11-24T20:00:00Z");\n'
+          'const T = { r1: { "shoal.pane": "s1/a", "shoal.group": "needs-you", "shoal.asof": "2026-11-24T19:59:30Z" },\n'
+          '            "m2/t1": { "shoal.pane": "s1/b", "shoal.asof": "2026-11-24T19:58:00Z", "shoal.stale": "answered" },\n'
+          '            "m2/t2": { "shoal.pane": "s1/c", "shoal.asof": "2026-11-24T19:59:50Z" },\n'
+          '            s9: { "shoal.pane": "standalone/x" }, r3: { "shoal.stale": "resumed" } };\n'
+          'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
+          'const h_flex = () => null; const div = () => null;\n'
+          + js +
+          'const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, a, b); process.exit(1); } };\n'
+          'const cx = { stop_propagation: () => null };\n'
+          'shoalAsks({ address: "r1" }, cx); shoalAsks({ address: "m2/t1" }, cx); shoalAsks({ address: "s9" }, cx);\n'
+          'eq(opened, ["asks", "asks"], "every role row\'s badge opens Asks, whatever its asks-badge label; a seat\'s keeps its pane");\n'
+          'eq(shoalTrackKey({ address: "r1", status: "blocked" }), "shoal:needs-you", "the clock follows the section");\n'
+          'eq(shoalTrackKey({ address: "x", status: "done" }), "idle", "no group: Herdr\'s own key");\n'
+          'eq(shoalWhenTip("Needs you", "6m"), "6m in Needs you: since this list saw the row move there", "what the time is");\n'
+          'const f = shoalFresh(now);\n'
+          'eq(f.text, "status 30s ago", "the oldest machine\'s newest status");\n'
+          'eq(f.old, false, "within the limit");\n'
+          'if (!f.tip.includes("this computer: 30s ago") || !f.tip.includes("m2: 10s ago") || !f.tip.includes("every 15 s")) { console.error(f.tip); process.exit(1); }\n'
+          'eq(shoalFresh(now + 120000).old, true, "past the limit: said in the warning color");\n'
+          'eq(shoalFresh(now + 300000).text, "status 5 min ago", "minutes");\n'
+          'eq(shoalTip({ address: "m2/t1" }), "updating: you answered; the status is catching up", "greyed with why");\n'
+          'eq(shoalStale({ address: "r3" }), "its session is running again; the status is catching up", "resumed");\n')
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
+        fh.write(js)
+    r = subprocess.run(["node", fh.name], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr + r.stdout
+print("agents list badge, time and status age ok")
 PY2
 # an attach marks the terminal, and a roles tab with a marked card is not rebuilt, though the core names the card as foreground
 HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "attached label"
@@ -4006,6 +4157,22 @@ assert want in row["asks"] and len(want) > 160, row["asks"]
 assert len(row["options"]) == len(row["asks"]) == len(row["links"]), row
 PYASK
 N_ASK=$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);r=next(r for r in d["asks"] if r["role"]=="cl");print(r["asks"].index(sys.argv[2])+1)' "$OUT" "$LONG_ASK")
+# your reply to it (the Asks view's form) answers it at once in the status, and leaves the hint a card on this host reads
+sleep 1  # a reply in the ask's own second is not after it (ledger times are whole seconds)
+env $AE $H msg --shoal $SID --to cl --text "re ask $N_ASK: Grant merge." --no-sync >/dev/null 2>&1 || fail "reply to the long ask"
+[ -s "/tmp/$SID/reply-cl.json" ] || fail "msg --by user left no reply hint for the card"
+IDLE_CL='{"claude": [{"sessionId": "c1a2b3c4-0000-1111", "id": "c1a2b3c4", "pid": 4242, "state": "done", "name": "cl"}]}'
+OUT=$(env $AE SHOAL_FAKE_SESSIONS="$IDLE_CL" $H ui status --shoal $SID --ledger-root "$ROOT" --json) || fail "status after a reply"
+python3 - "$OUT" "$N_ASK" <<'PYANS' || fail "a reply answers the ask in the status :: $(head -c 600 <<<"$OUT")"
+import json, sys
+r = next(x for x in json.loads(sys.argv[1])["shoals"][0]["roles"] if x["slug"] == "cl")
+n = int(sys.argv[2])
+assert r["answered"] and n in r["answered"]["asks"], r["answered"]
+if len(r["asks"]) == 1:
+    assert (r["agent"]["group"], r["agent"]["state"]) == ("waiting", "answered") and not r["needs_you"], r["agent"]
+else:
+    assert r["agent"]["state"] == "asked" and f"you answered ask {n} of" in r["agent"]["detail"], r["agent"]
+PYANS
 env $AE $H queue --shoal $SID --slug cl --answered "$N_ASK" --no-sync >/dev/null 2>&1 || fail "drop the long ask again"
 OUT=$(env $AE $H ui act-plan roles --shoal $SID --json) || fail "act-plan roles :: $OUT"
 python3 -c 'import json,sys;d=json.loads(sys.argv[1]);s=d["shoals"][0];assert d["kind"]=="shoal-act-roles" and "cl" in [r["slug"] for r in s["roles"]] and "parked" not in [r["slug"] for r in s["roles"]],d' "$OUT" \

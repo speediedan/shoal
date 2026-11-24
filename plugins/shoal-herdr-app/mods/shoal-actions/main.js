@@ -36,7 +36,7 @@ import {
   verbsFor, scopeLabel, handoffMachine, lastLines, runsAcross, runLabel, sessionsArgv, openSeatArgv, mergeSessions, filterSessions,
   providerOptions, accountOptions, suggestAccount, accountWhy, poolHint, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
   draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, handoffLatencyNote, verbGroups, pickKey,
-  answerKey, toggleChoice, setNote, batchAnswerText, answeredCount, clearRole, SIZE_KEY, SIZES, sizeName, nextSize, resizeSpec,
+  answerKey, toggleChoice, setNote, batchAnswerText, answeredCount, clearRole, SIZE_KEY, SIZES, sizeName, nextSize, resizeSpec, resizeVerb, asksFallback,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -82,6 +82,8 @@ export default class Actions extends View {
     this.lastEnter = 0;
     this.focusKey = null;
     this.pendingVerb = verbInfo(p.verb) ? p.verb : null;
+    // opened on one role's Asks (its row's badge): with nothing to answer there, the dialog shows its actions and says so
+    this.asksFor = p.verb === "asks" && typeof p.role === "string" ? p.role : null;
     this.sessions = null; // Add session: every machine's candidates, merged
     this.sessionsNote = null;
     this.sessionsSeq = 0;
@@ -376,7 +378,14 @@ export default class Actions extends View {
     const machine = this.machine();
     const verb = this.verb;
     this.request(`reading ${verbInfo(verb).label.toLowerCase()}`, planArgv(verb, this.sel), machine, "view", (r) => {
-      if (r.kind === "view") {
+      const none = verb === "asks" && r.kind === "view" ? asksFallback(r, this.asksFor) : null;
+      if (verb === "asks") this.asksFor = null;
+      if (none) {
+        this.verb = null;
+        this.view = null;
+        this.screen = "menu";
+        this.hint = none;
+      } else if (r.kind === "view") {
         this.view = { ...r, machine };
         this.makeNoteInputs(this.view);
         this.screen = "view";
@@ -605,7 +614,7 @@ export default class Actions extends View {
   resize(name) {
     const to = sizeName(name);
     safe(() => setShared(SIZE_KEY, to), null);
-    const verb = isView(this.verb) || isQueue(this.verb) ? this.verb : null;
+    const verb = resizeVerb(this.verb, this.pendingVerb);
     const at = props()?.overlay;
     if (!at) return; // not an overlay this dialog can close: a second one would open beside it
     if (safe(() => openOverlay(resizeSpec(to, this.sel, verb, this.answers, this.origin)), null)) closeOverlay(at);
@@ -965,6 +974,7 @@ export default class Actions extends View {
 
   menuBody(c) {
     const col = v_flex().gap(2);
+    if (this.hint) col.child(div().pb(6).text_size(11.5).text_color(c.amber).child(this.hint));
     col.child(div().pb(6).text_size(11.5).text_color(c.muted).child("Pick an action. Permanent or wide ones preview first; on the rest, tick Preview first to see a dry run."));
     for (const v of verbGroups(this.sel).flatMap((g) => g.verbs)) {
       col.child(h_flex().id(`m-${v.verb}`).gap(10).px(8).py(5).rounded(6).cursor_pointer().items_center()
@@ -1133,7 +1143,8 @@ export default class Actions extends View {
       v.asks.forEach((a, i) => {
         const why = a.question ? "blocked on a question in its session: attach to its card to answer there, or answer by mail"
           : a.headless && a.asks.length ? "its turns are headless (no question tool): answer each ask here, from its choices"
-          : a.saysWaiting ? "says it waits on you, with no prompt: answer by mail with a wake" : "";
+          : a.saysWaiting ? "says it waits on you, with no prompt: answer by mail with a wake"
+          : a.waits ? `it waits on you (${a.waits}): answer by mail with a wake` : "";
         const card = v_flex().id(`ask-${i}`).gap(4).p(10).rounded(8).bg(c.panel).border_1().border_color(withAlpha(c.blocked, 0.45))
           .child(h_flex().gap(8).items_center()
             .child(div().w(8).h(8).rounded(4).flex_none().bg(c.blocked))

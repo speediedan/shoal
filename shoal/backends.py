@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import os
 import re
@@ -816,14 +817,52 @@ def row_account(row: dict | None, job: str = "") -> str:
     return accounts.job_account("claude", str((row or {}).get("id") or job))
 
 
+# One listing per kind for the length of a read model's pass (`agents_memo`): a status computation asked `claude agents`
+# 26 to 28 times, once per transcript lookup and context read, at about 0.46 s each, so the UI feeder took 18 s a pass and
+# the status every card shows was rebuilt only every 38 s (measured 2026-11-24). None outside a pass: a wake or a restart
+# reads the live listing every time.
+_AGENTS_MEMO: dict | None = None
+
+
+@contextlib.contextmanager
+def agents_memo(seed: dict | None = None):
+    """Inside it, `claude_agents` lists each kind (`include_stopped`, `which`) once and hands back that listing again.
+    For a read model that describes one moment (a status pass, a card's check), never for code that acts and re-reads.
+    `seed`: listings already taken ({(include_stopped, which): rows}). A nested call shares the outer pass's memo."""
+    global _AGENTS_MEMO
+    outer = _AGENTS_MEMO
+    if outer is None:
+        _AGENTS_MEMO = dict(seed or {})
+    try:
+        yield
+    finally:
+        _AGENTS_MEMO = outer
+
+
+def memo_rows(key: tuple) -> list | None:
+    """The listing a pass already took for `key`, or None (no pass, or not listed yet)."""
+    m = _AGENTS_MEMO
+    return None if m is None or key not in m else list(m[key])
+
+
+def memo_keep(key: tuple, rows: list) -> None:
+    """Keep a listing taken another way (`ui_status.claude_rows`) for the rest of the pass; outside one, nothing."""
+    if _AGENTS_MEMO is not None and rows:
+        _AGENTS_MEMO[key] = list(rows)
+
+
 def claude_agents(include_stopped: bool = False, timeout: int = 30, which: str | None = None) -> list:
     """`claude agents --json [--all]` across every Claude account on this host (or the one named by `which`), each row of
     a declared account labeled with it (`accounts.ROW_KEY`). Job and conversation ids are unique across accounts, so
-    the rows simply concatenate. [] for an account whose listing fails."""
+    the rows simply concatenate. [] for an account whose listing fails. Inside `agents_memo`, listed once per kind."""
     import json as _json
     fake = fake_sessions()
     if fake is not None:
         return list(fake.get("claude") or [])
+    key = (bool(include_stopped), which)
+    kept = memo_rows(key)
+    if kept is not None:
+        return kept
     b = tool_which("claude") or "claude"
     argv = [b, "agents", "--json"] + (["--all"] if include_stopped else [])
     out = []
@@ -837,6 +876,7 @@ def claude_agents(include_stopped: bool = False, timeout: int = 30, which: str |
             if a and isinstance(e, dict):
                 e[accounts.ROW_KEY] = a
             out.append(e)
+    memo_keep(key, out)
     return out
 
 
