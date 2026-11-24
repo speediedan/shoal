@@ -11,9 +11,11 @@ and `interactive_view`.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
+import sys
 import time
 
 QUIET_S = 120  # a session written to within this long is mid-turn: never ended from a viewer
@@ -72,6 +74,19 @@ def take_over(h, session: str) -> str:
     return f"not ended: {where(pid)} did not exit"
 
 
+def kept_terminal():
+    """ui_view.terminal_kept: the observer's terminal as it was before the client, however the client ended (a client
+    ended by SIGTERM, from `T` or by the health quorum while the maintainer is offline, may leave it raw)."""
+    try:
+        ui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+        if ui not in sys.path:
+            sys.path.insert(0, ui)
+        from ui_view import terminal_kept
+        return terminal_kept()
+    except Exception:  # noqa: BLE001 - the view itself never depends on the restore
+        return contextlib.nullcontext()
+
+
 def on_key(h, key: str, session: str, model: str, effort: str, keys: str) -> None:
     """`i` asks for native access; `T` (a capital, so never by accident) ends the client that refused it first; `c`
     continues a turn an `/exit` cancelled, headless, where the harness can tell (Muse)."""
@@ -91,7 +106,12 @@ def on_key(h, key: str, session: str, model: str, effort: str, keys: str) -> Non
     deadline = time.time() + (RELEASE_WAIT_S if key == "T" else 0)
     while True:
         try:
-            h.interactive_view(session, model, effort)
+            with kept_terminal():
+                rc = h.interactive_view(session, model, effort)
+            if rc in (-signal.SIGTERM, 128 + signal.SIGTERM):
+                print("\nThe native client was ended (SIGTERM); the session keeps running. The health quorum ends a "
+                      "card's client left attached while the maintainer is offline, so its held wakes go through.",
+                      flush=True)
             break
         except h.BusyError as exc:
             # the observer that opened the client ended by `T` lets go of the lock a moment after the client exits

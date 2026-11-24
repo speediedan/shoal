@@ -72,7 +72,7 @@ nothing assigned, held and handoff pending alike). The first match decides, in t
 
 | Group | Whose move | States |
 |---|---|---|
-| `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `wakes-held` (its watcher holds new events for a client attached to its session, as the watcher's sidecar records; the quorum pages it once: exit the client), `handoff-pending` (restart-ready, and the shoal's context restart is `page`, so the operator restarts it; in `auto` mode a restart-ready role needs nobody), `restart-held` (its automatic restart is held for an attached client: detach it), `says-waiting` (Claude reads the session as `blocked`: its last turn ended sounding like it waits on you, with no prompt open and no ask recorded; only when the ledger has no reason of its own, a recorded wait or a blocker on every next item, in which case the role reads by the ledger with those words in its detail), `no-work` (fill=assigned, empty queue, no offer) |
+| `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `wakes-held` (its watcher holds new events for a client attached to its session, as the watcher's sidecar records; the quorum pages it once: exit the client. While you are offline, a card's client is ended after an hour), `handoff-pending` (restart-ready, and the shoal's context restart is `page`, so the operator restarts it; in `auto` mode a restart-ready role needs nobody), `restart-held` (its automatic restart is held for an attached client: detach it; while you are offline, a card's client is ended after an hour), `says-waiting` (Claude reads the session as `blocked`: its last turn ended sounding like it waits on you, with no prompt open and no ask recorded; only when the ledger has no reason of its own, a recorded wait or a blocker on every next item, in which case the role reads by the ledger with those words in its detail), `no-work` (fill=assigned, empty queue, no offer) |
 | `working` | the role's, now | `working` |
 | `waiting` | nobody's: it resumes by itself | the wait's substate (`local-ci`, `remote-ci`, `research-proto`, `research-window`, ...), `<sub>: resolved` while its wake is due, `work-due` (a blocker resolved, its wake is due) |
 | `blocked` | another role's or the outside world's | `session-blocked`, `upstream`, `blocked: role`, `blocked: upstream`, `blocked: lease` (a blocker only past its daily look says so in `detail`, still blocked) |
@@ -494,6 +494,13 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   back (both measured under a pty, 2026-10-12). Herdr's prefix keys do not detach: they go to Herdr,
   not to the attached client. `/bg` then `/exit` also returns to the card in a Claude session (seen
   by the maintainer); `/exit` on its own was not tested, so prefer Ctrl+Z.
+- **A client left attached while you are offline.** An attached client holds a Codex or Muse role's wakes, and a
+  Claude role's automatic restart, until it exits. While the maintainer is offline (`shoal offline on`), the health
+  quorum ends a card's client left attached for an hour (15 min for a Claude context restart at twice its limit) with a
+  SIGTERM to that client only, and records it as a msg to `user` (`features.health.detach_cards`, default on;
+  [architecture](architecture.md) §7). The session is untouched. A Codex or Muse card's observer says "The native
+  client was ended (SIGTERM)" and is back on its live read-only view; a Claude card's `shoal view` says the client was
+  ended, does not reattach, and the card comes back. A client started by hand in a terminal is never touched.
 
 ## The Herdr adapter
 

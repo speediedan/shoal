@@ -85,7 +85,12 @@ page: read `shoal show --shoal <id>` and the named role's `shoal next --shoal <i
 repeats means the ladder ran out: the role could not recover by itself. A `wakes-held` page ("an
 interactive client (pid N, ...) has held N wake(s)") means a native client you or someone opened on
 the role's session (often from its card) is still attached: exit it (`/exit`), and the watcher
-delivers what it held at its next tick.
+delivers what it held at its next tick. While you are offline the quorum does this for you: a card's
+client left attached for an hour (15 min for a Claude context restart at twice its limit) gets a
+SIGTERM, to that client only, and a msg to you says so ("<role>: detached the card's interactive
+client (pid N, ...) after M min while you were offline"). The card is back on its read-only view; reopen
+the client from it if you still need it. A client you started by hand in a terminal is never ended.
+`features.health.detach_cards: false` turns this off for a spec.
 
 ## Health review
 

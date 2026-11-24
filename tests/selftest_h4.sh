@@ -2848,5 +2848,183 @@ a = ui_status.agent_state(types.SimpleNamespace(fill="self"), "idle", "", {}, {}
 assert a["group"] == "needs-you" and a["state"] == "wakes-held" and "exit the client" in a["detail"], a
 PY2
 
+echo "== 44 offline, a card's native client left attached past its grace is ended (SIGTERM), recorded, and nothing else"
+# measured 2026-11-22..24: a client opened from a role's card and left attached while the maintainer was offline held a
+# Codex role's wakes for hours (twice) and a Claude role's context restart for 13.5 h; each was ended by hand with a
+# SIGTERM to that client only. The process tree (ledger_watch.proc_ppid, proc_argv) and the signal (health.signal_client)
+# are faked at their function boundaries: nothing outside this test is signalled
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "card detach"
+import contextlib, datetime, io, json, os, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import health, ledger_watch as lw
+from ledger import Ledger
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+led = Ledger(spec.sid, root=spec.ledger_dir, sync=False)
+THREAD = spec.role("up").session  # the role's own session: its card's observer names it
+ME = os.getpid()  # the held client's pid: current_hold needs its /proc entry; it is never signalled (signal_client is faked)
+def ago(m):
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+CLI = "/opt/<prefix>/shoal/cli.py"
+CARD = {101: (100, ["python3", CLI, "codex-tail", "--session", THREAD, "--allow-interactive", "--model", "", "--effort", ""]),
+        100: (99, ["python3", CLI, "view", spec.sid, "up"]), 99: (1, ["python3", CLI, "view", spec.sid, "up", "--stub"])}
+TREE = {}
+def tree(client_argv, parent):  # the held client (ME) under `parent`, with the card's chain above it
+    TREE.clear(); TREE.update(CARD); TREE[ME] = (parent, client_argv)
+lw.proc_ppid = lambda pid: TREE.get(pid, (0, []))[0]
+lw.proc_argv = lambda pid: TREE.get(pid, (0, []))[1]
+CODEX = ["node", "/opt/<prefix>/bin/codex", "resume", THREAD]
+# --- who is a card's viewer: the observer (with native access, for this session) or `shoal view` of this role
+assert lw.card_wrapper(CARD[101][1], spec.sid, "up", (THREAD,)) == "codex-tail --allow-interactive"
+assert lw.card_wrapper(["python3", "/opt/<prefix>/bin/muse-x", "muse-tail"], sessions=(THREAD,)) == ""
+assert lw.card_wrapper(["python3", CLI, "codex-tail", "--session", THREAD], sessions=(THREAD,)) == "", "no native access: not its client"
+assert lw.card_wrapper(CARD[101][1], sessions=("another",)) == "", "another session's observer"
+assert lw.card_wrapper(["/opt/<prefix>/bin/shoal", "view", spec.sid, "up"], spec.sid, "up") == "shoal view"
+assert lw.card_wrapper(["/opt/<prefix>/bin/shoal", "view", spec.sid, "tl"], spec.sid, "up", ("bbbb2222",)) == "", "another role's view"
+assert lw.card_wrapper(["bash"]) == "" and lw.card_wrapper(["tmux", "new"]) == ""
+tree(CODEX, 101)
+assert lw.card_client(ME, spec.sid, "up", (THREAD,)) == (ME, "codex-tail --allow-interactive")
+assert lw.client_cmd(CODEX) == f"codex resume {THREAD}" and lw.client_cmd(["claude", "attach", "bbbb2222"]) == "claude attach bbbb2222"
+tree(CODEX, 200); TREE[200] = (1, ["bash"])  # `codex resume` typed in a shell
+assert lw.card_client(ME, spec.sid, "up", (THREAD,)) == (0, "")
+# --- health
+KILLS, PAGES = [], []
+health.signal_client = lambda pid: KILLS.append(pid)
+health.client_gone = lambda pid: pid in KILLS
+health.page_user = lambda spec, text, state, dry_run=False: PAGES.append(text) or "page"
+health.host_beats = lambda *a, **k: []
+health.claude_busy = lambda: {}
+SIDE, COND = {}, []
+health.watcher_alive = lambda sid, slug: (slug in SIDE, dict(SIDE.get(slug, {})))
+health.evaluate = lambda spec, view, cbusy: [dict(c) for c in COND]
+def offline(on):
+    led.append("user", "system", mode="user-offline", state="on" if on else "off")
+def records():
+    return [e for e in Ledger(spec.sid, root=spec.ledger_dir, sync=False).events(reload=True)
+            if e["type"] == "msg" and e.get("to") == "user" and "detached the card's" in e.get("text", "")]
+def run(state=None):
+    p = os.path.join(health.state_dir(spec.sid), "health.json")
+    json.dump(state if state is not None else json.load(open(p)), open(p, "w"))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        health.run(spec, "a", dry_run=False)
+    return out.getvalue(), json.load(open(p))
+def hold(m):
+    since = ago(m)
+    SIDE["up"] = {"pid": str(ME), "held_reason": f"attached:{ME}", "held_since": since, "held_events": "2",
+                  "held_client": f"pid {ME}, `codex resume <thread>`, opened from its card"}
+    COND[:] = [{"slug": "up", "condition": "wakes-held", "key": f"attached:{ME}:{since}", "since": since,
+                "detail": f"an interactive client (pid {ME}) has held 2 wake(s) for {m} min; detach it (exit the client)"}]
+n0 = len(records())
+# Codex wake hold, offline, a card's client, past the grace: one SIGTERM to that client, one record, and no page
+offline(True)
+tree(CODEX, 101); hold(65)
+out, st = run({})
+assert KILLS == [ME], (KILLS, out)
+rec = records()[n0:]
+want = (f"up: detached the card's interactive client (pid {ME}, `codex resume {THREAD}`) after 65 min while you were "
+        "offline; it held 2 wake(s); the card is back to its read-only view")
+assert len(rec) == 1 and rec[0]["text"] == want and rec[0]["by"] == "shoal", rec
+assert "up wakes-held:detach -> detached (codex-tail --allow-interactive; recorded)" in out and not PAGES, (out, PAGES)
+# the next run before the watcher's tick (the hold still reads): never a second signal for the same hold
+out, st = run()
+assert KILLS == [ME] and len(records()) == n0 + 1, (KILLS, out)
+# inside the grace: nothing
+KILLS.clear(); hold(40)
+out, st = run({})
+assert not KILLS and "detach" not in out, out
+# online: the page only, never a kill
+offline(False); hold(65); PAGES.clear()
+out, st = run({})
+assert not KILLS and len(PAGES) == 1 and PAGES[0].startswith("up: an interactive client"), (KILLS, PAGES, out)
+# a client started by hand (its parents are a shell, not a card): never killed, said once
+offline(True); PAGES.clear()
+tree(CODEX, 200); TREE[200] = (1, ["bash"]); hold(65)
+out, st = run({})
+assert not KILLS and "not detached: the client (pid " in out and "not a card's viewer" in out, out
+out, st = run()
+assert not KILLS and "not detached" not in out, out
+# the feature off: never killed
+tree(CODEX, 101); hold(65)
+spec.features.setdefault("health", {})["detach_cards"] = False
+out, st = run({})
+assert not KILLS and "detach" not in out, out
+spec.features["health"]["detach_cards"] = {"after_min": 120}  # a longer grace of its own
+out, st = run({})
+assert not KILLS, out
+del spec.features["health"]["detach_cards"]
+assert len(records()) == n0 + 1
+# --- Claude: a context restart held for a card's `claude attach`
+SIDE.clear()
+CLAUDE = ["claude", "attach", "bbbb2222"]
+TREE.clear(); TREE.update({ME: (300, CLAUDE), 300: (1, ["python3", "/opt/<prefix>/bin/shoal", "view", spec.sid, "up"])})
+spec.features["health"]["context_restart"] = "auto"
+health.restart_client = lambda r: f"a client (pid {ME}) is attached" if r is not None and TREE.get(ME) else ""
+health.claude_clients = lambda r: ([ME], (r.session, "bbbb2222"))
+RESTARTS = []
+health.context_restart = lambda spec, sp, r, dry_run=False, extra=(): RESTARTS.append(r.slug) or "restarted"
+health.rebalance = lambda spec, r: ()
+K = "up|context-restart|session:bbbb2222"
+def ctx(k=400, lim=300):
+    COND[:] = [{"slug": "up", "condition": "context-restart", "key": "session:bbbb2222", "since": ago(70),
+                "first_seen": True, "over": [k, lim], "detail": f"context {k}k past its {lim}k limit at a quiet boundary"}]
+ctx()
+out, st = run({"ladders": {K: {"since": ago(70), "step": 0, "attached": ago(65), "attached_said": f"a client (pid {ME}) is attached",
+                               "attached_paged": ago(35)}}})
+assert KILLS == [ME] and not RESTARTS, (KILLS, out)
+rec = records()[n0 + 1:]
+assert len(rec) == 1 and rec[0]["text"] == (f"up: detached the card's interactive client (pid {ME}, `claude attach bbbb2222`) "
+                                            "after 65 min while you were offline; it held its context restart; the card "
+                                            "is back to its read-only view"), rec
+assert "up context-restart:detach -> detached (shoal view; recorded)" in out, out
+# the client has gone: the restart runs at the next run
+TREE.clear()
+out, st = run()
+assert RESTARTS == ["up"] and len(KILLS) == 1, (RESTARTS, out)
+# far past its limit (twice or more): the shorter grace; not so far: the full one
+KILLS.clear(); RESTARTS.clear()
+TREE.update({ME: (300, CLAUDE), 300: (1, ["python3", "/opt/<prefix>/bin/shoal", "view", spec.sid, "up"])})
+seed = lambda: {"ladders": {K: {"since": ago(30), "step": 0, "attached": ago(20), "attached_said": f"a client (pid {ME}) is attached"}}}
+ctx(400, 300)
+out, st = run(seed())
+assert not KILLS, out
+ctx(650, 300)
+out, st = run(seed())
+assert KILLS == [ME] and "after 20 min" in out, (KILLS, out)
+# online: held and paged as before, never killed
+KILLS.clear(); PAGES.clear()
+offline(False)
+out, st = run(seed())
+out, st = run({"ladders": {K: {"since": ago(70), "step": 0, "attached": ago(65), "attached_said": f"a client (pid {ME}) is attached"}}})
+assert not KILLS and not RESTARTS and any("its automatic restart is held" in p for p in PAGES), (KILLS, PAGES, out)
+# a terminal `claude attach` (not under a card's `shoal view`): never killed
+offline(True)
+TREE[300] = (1, ["-bash"])
+out, st = run({"ladders": {K: {"since": ago(70), "step": 0, "attached": ago(65), "attached_said": f"a client (pid {ME}) is attached"}}})
+assert not KILLS and "not a card's viewer" in out, out
+offline(False)
+print("card detach ok")
+PY2
+python3 - "$SHOALD" <<'PY2' || fail "a card's client ended by SIGTERM"
+import contextlib, io, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import ui_view
+# a Claude card's `shoal view`: a client ended by SIGTERM is said as such, never reattached, and the card takes over again
+ui_view.verify_listed = lambda *a, **k: ""
+CALLS = []
+def viewer(*a, **k):
+    CALLS.append(a)
+    return ["sh", "-c", "kill -TERM $$"], {}
+ui_view.viewer = viewer
+ui_view.service_restarted_since = lambda t: True  # even right after a service restart, which would reattach
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    rc = ui_view.run_viewer("claude", "bbbb2222", "<shoal>/up")
+assert rc == 0 and len(CALLS) == 1 and "the client was ended (SIGTERM)" in out.getvalue() \
+    and "attached in another terminal" not in out.getvalue(), (rc, CALLS, out.getvalue())
+assert ui_view.ended_by_term(-15) and ui_view.ended_by_term(143) and not ui_view.ended_by_term(1)
+print("card client SIGTERM ok")
+PY2
+
 echo "SELFTEST H4 OK ($S)"
 rm -rf /tmp/$SID
