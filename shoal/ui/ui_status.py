@@ -21,6 +21,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -195,7 +196,7 @@ def discover(root: str, ids: list[str] | None = None, include_retired: bool = Fa
 def claude_rows() -> list[dict]:
     """`claude agents --json --all` rows (stopped sessions included: no `pid` is a dead worker,
     FM-14), across every Claude account on this host. SHOAL_FAKE_SESSIONS answers it in tests."""
-    from backends import claude_agents, fake_sessions
+    from backends import claude_agents, fake_sessions, memo_keep, memo_rows
     fake = fake_sessions()
     if fake is not None:
         return list(fake.get("claude") or [])
@@ -204,12 +205,17 @@ def claude_rows() -> list[dict]:
             return claude_agents(include_stopped=True)
         except (OSError, subprocess.SubprocessError):
             return []
+    kept = memo_rows((True, None))  # inside a status pass: the listing it already took
+    if kept is not None:
+        return kept
     try:
         r = subprocess.run(["claude", "agents", "--json", "--all"], capture_output=True, text=True,
                            timeout=30, env=config.tool_env())
-        return json.loads(r.stdout or "[]") if r.returncode == 0 else []
+        rows = json.loads(r.stdout or "[]") if r.returncode == 0 else []
     except (OSError, ValueError, subprocess.SubprocessError):
         return []
+    memo_keep((True, None), rows if isinstance(rows, list) else [])
+    return rows
 
 
 ROWS_MAX_AGE_S = 25  # a standalone card refreshes every 30 s: one listing serves every card on the host
@@ -398,6 +404,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
     sess = session_state(role, rows, opencode_probe, spec.dir, spec)
     asks = list(q.get("asks") or [])
     mail = [m for m in view.msgs_to(slug, boundary)]
+    # your reply to its asks since its last write: the asks stay recorded until its next turn takes them up
+    answer = reply_answer([m for m in mail if m.get("by") == "user" and m.get("to") == slug], asks, now) if asks else None
     last = view.last_by.get(slug, "")
     hb = age_min(hb_path(spec.sid, slug))
 
@@ -487,7 +495,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
              if role.ecosystem == "claude" and "blocked-says-waiting" in reasons else "")
     prompt = (_h.claude_open_prompt(role.session)
               if role.ecosystem == "claude" and "blocked-on-question" in reasons else "")
-    agent = agent_state(role, hstatus, sub, st, q, reasons, sess, wait_done, stale_nb)
+    agent = agent_state(role, hstatus, sub, st, q, reasons, sess, wait_done, stale_nb, answer)
     if role.ecosystem == "claude" and sess == "blocked" and not {"blocked-says-waiting", "blocked-on-question"} & set(reasons):
         said = claude_says(claude_session(rows, role.session) or {}, role.session)
         if said:  # the words stay readable beside the ledger's reason, without making them a need
@@ -513,6 +521,7 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
         "asks": [_short(a, 160) for a in asks],
+        "answered": answer,
         "says": _short(words, 160),
         "wait_done": wait_done,
         "watcher": "remote" if remote else ("alive" if alive else ("none" if not sc else "dead")),
@@ -709,6 +718,12 @@ def host_beats_doc(spec, led, now) -> dict:
 def status(ids: list[str] | None = None, root: str = "", include_retired: bool = False,
            with_conditions: bool = False, pull: bool = False, opencode_probe: bool = True,
            refresh_conditions: bool = False, rows_only: bool = False) -> dict:
+    from backends import agents_memo
+    with agents_memo():  # one `claude agents` listing per kind for the whole pass (backends._AGENTS_MEMO)
+        return _status(ids, root, include_retired, with_conditions, pull, opencode_probe, refresh_conditions, rows_only)
+
+
+def _status(ids, root, include_retired, with_conditions, pull, opencode_probe, refresh_conditions, rows_only) -> dict:
     import socket
     rows = claude_rows()
     shoals = []
@@ -829,6 +844,135 @@ def is_stale(fresh: dict | None, now: float | None = None) -> bool:
     a = age_s(str(fresh.get("as_of") or ""),
               datetime.datetime.fromtimestamp(now, datetime.timezone.utc) if now is not None else None)
     return a is not None and a > int(fresh.get("stale_after_s") or STALE_AFTER_S)
+
+
+# ---- a card's own faster read: your answer before the status shows it -------------------------
+
+# why a card shows a row ahead of the status it read (its `shoal.stale` label; the agents list greys the row): you
+# answered (a reply sent, or the session's open question closed with its turn running again), or its session runs again
+CARD_AHEAD = {"answered": "you answered; the status is catching up",
+              "resumed": "its session is running again; the status is catching up"}
+STALE_REASONS.update(CARD_AHEAD)
+
+
+def _reply_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"reply-{slug}.json")
+
+
+def note_reply(sid: str, slug: str, ev: dict) -> None:
+    """Record, on this host, that you just wrote to a role (`shoal msg --by user`): {ts, id, wake, asks}. A card here
+    reads it on its next refresh, so the row says you answered before the status is rebuilt (the ledger event is the
+    record; this is a hint next to it, under the shoal's state dir like its wake files)."""
+    try:
+        os.makedirs(state_dir(sid), exist_ok=True)
+        p = _reply_path(sid, slug)
+        tmp = p + f".{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"ts": ev.get("ts"), "id": ev.get("id"), "wake": bool(ev.get("wake")),
+                       "asks": reply_asks(ev.get("text", ""))}, fh)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def read_reply(sid: str, slug: str) -> dict | None:
+    """Your last reply to a role as `note_reply` kept it on this host, or None."""
+    try:
+        d = json.load(open(_reply_path(sid, slug)))
+        return d if isinstance(d, dict) and d.get("ts") else None
+    except (OSError, ValueError):
+        return None
+
+
+def live_turn(sid: str, slug: str, spec_path: str = "") -> dict | None:
+    """{session, prompt, t}: a role's session read now (`t`, epoch), for a role whose session runs on this host: Claude
+    from the listing every card on the host shares (`claude_rows_cached`, at most ROWS_MAX_AGE_S old) with its open
+    question from the transcript, Codex and Muse from their own turn lock (`session_state`). None for a role on another
+    host, a parked one, or when it cannot be read."""
+    from backends import agents_memo
+    from roles import find_spec, is_local
+    try:
+        spec = ShoalSpec.load(find_spec(sid, spec_path))
+        role = spec.role(slug)
+        if role is None or not role.session or not is_local(role, spec):
+            return None
+        if role.ecosystem != "claude":
+            t = time.time()
+            return {"session": session_state(role, [], False, spec.dir, spec), "prompt": False, "t": t}
+        t, rows = claude_rows_cached()
+        if not rows:
+            return None
+        with agents_memo({(True, None): rows}):  # the transcript lookup reuses that listing
+            sess = claude_turn(e) if (e := claude_session(rows, role.session)) else "unknown"
+            prompt = sess in ("blocked", "working", "idle") and pending_question(e or {}, role.session)
+        return {"session": sess, "prompt": bool(prompt), "t": t}
+    except Exception:  # noqa: BLE001 - a card never fails on its faster read
+        return None
+
+
+def _epoch(ts: str) -> float | None:
+    try:
+        return datetime.datetime.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def card_view(row: dict, reply: dict | None = None, live: dict | None = None) -> tuple[dict, str]:
+    """(row, why) a card shows: the status row (`as_of`: when the status it came from was read), or, while that row
+    still says the role needs your answer, what the card knows sooner, with why (CARD_AHEAD): your reply newer than
+    the status (`reply`, `read_reply`) moves it to waiting, `answered`; its session running again, newer than the
+    status (`live`, `live_turn`) moves it to working, `answered` when its open question closed and `resumed` otherwise.
+    Never the other way: a new ask, or a question still open, is the status's to show, and it shows it as asked."""
+    agent = row.get("agent") if isinstance(row.get("agent"), dict) else {}
+    as_of = _epoch(row.get("as_of") or "")
+    if agent.get("group") != "needs-you" or agent.get("state") not in ("asked", "question") or as_of is None:
+        return row, ""
+    reasons = list((row.get("can_progress") or {}).get("reasons") or [])
+    asks = list(row.get("asks") or [])
+    first = f"; {asks[0]}" if asks else ""
+    if live and live.get("session") == "working" and not live.get("prompt") and float(live.get("t") or 0) > as_of:
+        closed = "blocked-on-question" in reasons
+        why = "answered" if closed else "resumed"
+        return dict(row, session="working", needs_you=False,
+                    can_progress=dict(row.get("can_progress") or {}, reasons=[x for x in reasons if x != "blocked-on-question"]),
+                    agent={"group": "working", "state": "answered" if closed else "working",
+                           "detail": ("you answered its question and its turn runs again" if closed
+                                      else "its session runs again") + first}), why
+    t = _epoch((reply or {}).get("ts") or "")
+    if t is not None and t > as_of and not set(reasons) & ANSWER_HOLDS:
+        names = [n for n in (reply or {}).get("asks") or [] if isinstance(n, int)]
+        msg = {"ts": reply["ts"], "wake": reply.get("wake"), "text": " ".join(f"re ask {n}:" for n in names)}
+        ans = reply_answer([msg], asks or ["(a question)"], None)
+        if ans and not ans["partial"]:
+            return dict(row, needs_you=False, answered=ans,
+                        agent={"group": "waiting", "state": "answered",
+                               "detail": "you answered: its next turn takes your reply up" + first}), "answered"
+    return row, ""
+
+
+def claim_asof(ts: str) -> bool:
+    """Whether this card is the one on this host to label the status's `ts` (`shoal.asof`, the agents list's header
+    reads it): the first card to see a newer status takes it, so one label is written per host per rebuild, not one per
+    card (each label written redraws the app)."""
+    import fcntl
+    if not ts:
+        return False
+    p = os.path.join(os.path.dirname(cache_path()), "asof-claim")
+    try:
+        os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+        with open(p + ".lock", "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            try:
+                last = open(p).read().strip()
+            except OSError:
+                last = ""
+            if ts <= last:
+                return False
+            with open(p, "w") as fh:
+                fh.write(ts + "\n")
+            return True
+    except OSError:
+        return False
 
 
 # ---- rendering -------------------------------------------------------------------------
@@ -1146,6 +1290,50 @@ def pending_question(row: dict, session: str) -> bool:
     return _h.claude_prompt_open(row, session)
 
 
+# ---- your reply to a role's asks ---------------------------------------------------------------
+
+# A reply counts as taken up within this: the role's watcher pulls the ledger every 120 s and wakes it at once, and its
+# turn starts in seconds. Past it, something holds the role (an attached client, a dead session), and the row says
+# asked again, with when you answered.
+ANSWER_PICKUP_S = 600
+# a reason that keeps the reply from reaching the role: its row stays in needs you, by that reason or as asked
+ANSWER_HOLDS = {"parked", "dead-worker", "wake-held", "wakes-held", "blocked-on-question"}
+_REPLY_ASK = re.compile(r"\bre ask (\d+)\b", re.I)
+
+
+def reply_asks(text: str) -> list[int]:
+    """The asks a reply names: the Asks view writes `re ask <n>: ...`, one line per answered ask."""
+    return sorted({int(n) for n in _REPLY_ASK.findall(str(text or ""))})
+
+
+def reply_answer(replies: list[dict], asks: list, now: datetime.datetime | None = None) -> dict | None:
+    """Whether your messages to a role, written since its last write (`replies`: msg events by `user` to it), answer its
+    open asks: {ts, asks, partial, late, age_s}, or None. A reply answers the asks it names (`re ask <n>`, the Asks
+    view's form), else every ask when it wakes the role (a plain note without a wake answers nothing). `partial`: some
+    ask is left; `late`: older than ANSWER_PICKUP_S, so not being taken up."""
+    if not asks:
+        return None
+    named: set[int] = set()
+    every, ts = False, ""
+    for m in replies:
+        ns = reply_asks(m.get("text", ""))
+        if ns:
+            named |= set(ns)
+        elif m.get("wake"):
+            every = True
+        else:
+            continue
+        ts = max(ts, str(m.get("ts") or ""))
+    if not ts:
+        return None
+    got = list(range(1, len(asks) + 1)) if every else sorted(n for n in named if 1 <= n <= len(asks))
+    if not got:
+        return None
+    age = age_s(ts, now)
+    return {"ts": ts, "asks": got, "partial": len(got) < len(asks),
+            "late": age is not None and age > ANSWER_PICKUP_S, "age_s": age}
+
+
 NEEDS_REASONS = {"dead-worker", "blocked-on-question", "blocked-says-waiting", "waiting-on-you", "blocker-role-cannot-take",
                  "wake-held", "wakes-held", "handoff-pending", "restart-held", "no-work"}
 # The attention axis of the agents list (docs/ui.md): every role is in exactly one group, and its `state` says why
@@ -1154,7 +1342,7 @@ BLOCKED_SUBS = ("session-blocked", "upstream")
 
 
 def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: list[str], sess: str,
-                wait_done: bool, stale_nb: dict | None = None) -> dict:
+                wait_done: bool, stale_nb: dict | None = None, answer: dict | None = None) -> dict:
     """{group, state, detail} for one role: an accurate state that does not collapse to the status word, in the group
     that says whose move it is. `idle` was the role's own word for every item blocked, nothing assigned, held and
     handoff pending alike (measured 2026-11-10: 7 of 14 roles read idle for five different reasons). The first match
@@ -1170,10 +1358,18 @@ def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: li
         # its turn is running: it is working now, and the ask (still its badge) is answered once the turn ends (measured
         # 2026-11-18: venngram-expert read needs-you, asked, through a whole turn of its own)
         return g("working", "working", f"asks you: {asks[0]}")
+    if asks and answer and not answer.get("partial") and not answer.get("late") and not r & ANSWER_HOLDS:
+        # you replied to every ask since its last write: your move is made, and its watcher wakes it on your reply
+        return g("waiting", "answered", f"you answered: its next turn takes your reply up; {asks[0]}")
     if asks:  # a parked role's ask too: answering it is the maintainer's move either way
         # a role can ask while it waits on something else (a CI run): say both, so "asked" beside remote-ci reads as one
         also = f"also waiting {sub}; " if role_status == "waiting" and sub and sub not in USER_WAITS else ""
-        return g("needs-you", "asked", ("parked; " if "parked" in r else "") + also + str(asks[0]))
+        said = ""
+        if answer and answer.get("partial"):
+            said = f"you answered ask {', '.join(str(n) for n in answer['asks'])} of {len(asks)}; "
+        elif answer and answer.get("late"):
+            said = f"you answered {_age(answer.get('age_s'))} ago and it has not taken that up; "
+        return g("needs-you", "asked", ("parked; " if "parked" in r else "") + said + also + str(asks[0]))
     if "parked" in r:
         return g("held", "parked", "parked by the operator: no session, no wakes")
     if "blocked-on-question" in r:

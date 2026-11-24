@@ -187,7 +187,9 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
 **The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),
 `idle`, `offline` or `parked`, from its last `state` event, else its queue version's `status`. It is the canonical
 role state; `session` is the harness's status of the session, and the agents list's `agent` (group and state) is a
-reading derived from both. It was called "posture" until 2026-11-11: queue events written before then store the
+reading derived from both. A message you write to a role after its last write that names its asks (`re ask <n>`) or
+wakes it answers them (`ui_status.reply_answer`): while its next turn takes the reply up, the role reads `waiting`,
+`answered`, not `asked` ([`ui.md`](ui.md), Answered). It was called "posture" until 2026-11-11: queue events written before then store the
 field as `posture`, and the readers of ledger history take `status`, then `posture`.
 
 **Every turn ends in a sleep status:** `queue --wait <sub> --holder <who> --target <kind:ref>`
@@ -1773,8 +1775,10 @@ and the contract are in [`ui.md`](ui.md).
   - Layout: one workspace per shoal (an overview tab and a roles tab of cards) and a `standalone`
     workspace for non-shoal sessions. `ui open` is idempotent and re-applies a whole tab with
     `layout.apply`; it never types into a pane.
-  - Feeder: the `shoal-ui-feed` unit reports each role pane's state (`pane.report_agent`, source
-    `shoal`) and tokens (`pane.report_metadata`, with a TTL, so a dead feeder shows no data rather
+  - Feeder: the `shoal-ui-feed` unit rebuilds the status cache every 20 s after a pass (about 2 s: a pass lists
+    `claude agents` once per kind, `backends.agents_memo`; each transcript and context read listed it again, 26 to
+    28 times at 0.46 s, so a pass took 18 s and a rebuild came every 38 s, measured 2026-11-24), reports each role
+    pane's state (`pane.report_agent`, source `shoal`) and tokens (`pane.report_metadata`, with a TTL, so a dead feeder shows no data rather
     than stale data). A pane whose foreground is a bare shell gets tokens but no agent report:
     Herdr drops that report at once, so sending it only made the role flash in the agents list.
     The `mode` token (`▶` turn, `◷` waiting on a job or CI) says why a role reads working; an attached but
@@ -2038,8 +2042,17 @@ feeder push; a question from ledger asks also labels their count (`shoal.asks`),
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; a card sets `shoal.stale` while its row is not
 live (`starting` from its start until its first status read lands, since a card back after a restart reads the status
-cold for tens of seconds under the labels its last run left; else `ui_status.row_stale`), and `shoal-agents` greys that
-row, marks its name with `⟳` and puts why before the last known detail on its tooltip; and a role that finished an item and rests says
+cold for tens of seconds under the labels its last run left; `answered` or `resumed` while it shows the row ahead of
+its status: your reply written on this host (`shoal msg --by user` leaves `/tmp/<id>/reply-<role>.json` beside the
+ledger event) or the role's session running again, newer than the status, while the status still says it needs your
+answer (`ui_status.card_view`), so the row leaves Needs you within one card refresh of the answer; else
+`ui_status.row_stale`), and `shoal-agents` greys that
+row, marks its name with `⟳` and puts why before the last known detail on its tooltip; the first card on a host to
+read each status rebuild labels its time (`shoal.asof`, `ui_status.claim_asof`), and the list's header says how old the
+status is (the oldest machine's newest, each on its tooltip); a row's time is its time in its section (`shoalTrackKey`
+keys Herdr's stamp on `shoal.group`); a role row's badge opens the actions dialog on that role's Asks whatever made it
+ask (ledger asks, an open question, a user wait), and the dialog falls back to its actions, saying so, only when there
+is nothing there (`asksFallback`; its reopen at the remembered size keeps the verb, `resizeVerb`); and a role that finished an item and rests says
 `done` once (`DoneLatch`, from the row's `last_done`), which the app holds until someone looks. A card reports its
 role's or seat's name as its `app`, so the pane is headed by it; the app picks an agent's icon from its program table by
 that name, and none matched, so every card drew the generic agent robot (2026-11-14). The plan names each card's

@@ -619,6 +619,8 @@ function normAsks(list) {
     asks: arr(a.asks).map(str).filter((x) => x.trim()),
     question: a.question === true,
     saysWaiting: a.says_waiting === true,
+    // a wait it recorded on you (user-auth, user-design, user-feedback) and what it holds: "" when none
+    waits: str(a.waits ?? ""),
     // per ask: the issues and PRs it names, http(s) only
     links: arr(a.links).map((l) => arr(l).map(obj).filter((x) => x && strOrNull(x.text) && /^https?:\/\//i.test(str(x.url)))
       .map((x) => ({ text: str(x.text), url: str(x.url) }))),
@@ -940,6 +942,28 @@ export const sizeName = (v) => (Object.prototype.hasOwnProperty.call(SIZES, v) ?
 
 /** The size after `name` in the toggle's cycle (normal, large, full, normal). */
 export const nextSize = (name) => SIZE_ORDER[(SIZE_ORDER.indexOf(sizeName(name)) + 1) % SIZE_ORDER.length];
+
+/**
+ * The verb a reopen carries: the one shown when it is a view or the queue, else the one the dialog was opened on and has
+ * not reached yet (`pending`: it waits for the roles list). A dialog opened from a row's badge on Asks reopens at once
+ * at the person's remembered size, before the roles list lands, and that reopen dropped the verb: the badge opened the
+ * plain actions list (2026-11-24).
+ */
+export function resizeVerb(verb, pending = null) {
+  if (isView(verb) || isQueue(verb)) return verb;
+  return !verb && (isView(pending) || isQueue(pending)) ? pending : null;
+}
+
+/**
+ * What the dialog says when it was opened on one role's Asks (its row's badge) and the role has nothing to answer
+ * there: no ask recorded, no question open, no wait on you. The dialog then shows the role's actions with this line;
+ * null when the view has something for that role (or the dialog was not opened for one).
+ */
+export function asksFallback(view, role) {
+  if (!role || !Array.isArray(view?.asks)) return null;
+  if (view.asks.some((a) => a?.role === role)) return null;
+  return `${role} has no asks recorded, no question open and no wait on you: its other actions are below`;
+}
 
 /**
  * The overlay that reopens this dialog at size `name`, on the same target and verb, carrying the batch's answers, so a

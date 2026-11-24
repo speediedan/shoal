@@ -662,7 +662,10 @@ def view(verb: str, a) -> dict:
             if a.role and r["slug"] != a.role:
                 continue  # one role's asks (its badge in the agents list opens them)
             reasons = set(r["can_progress"]["reasons"])
-            if r["asks"] or {"blocked-on-question", "blocked-says-waiting"} & reasons:
+            # every way a role asks you: ledger asks (a headless role's too), an open question, words that wait on you,
+            # and a wait it recorded on you (user-auth and the like), so its row's badge always has something here
+            waits = r.get("sub") in ui_status.USER_WAITS and r.get("status") == "wait"
+            if r["asks"] or {"blocked-on-question", "blocked-says-waiting"} & reasons or waits:
                 # each ask in full from the role's queue: the status row cuts one at 160 characters for a table cell,
                 # and this view is where it is read and answered
                 full = list((view.current_queue(r["slug"]) or {}).get("asks") or [])
@@ -670,6 +673,7 @@ def view(verb: str, a) -> dict:
                 rows.append({"role": r["slug"], "host": r.get("host") or "", "remote": bool(r.get("host")) and r.get("host") != here,
                              "asks": asks, "question": "blocked-on-question" in reasons,
                              "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or "",
+                             "waits": (f"{r['sub']}: {(r.get('wait') or {}).get('holder') or ''}".rstrip(": ") if waits else ""),
                              "links": [ask_links(q, r.get("active") or "", repos) for q in asks],
                              # each ask's answer set (worker.ask_options): a headless role cannot prompt, so its asks
                              # are answered here, from the choices a prompting role's question tool would offer
@@ -677,6 +681,7 @@ def view(verb: str, a) -> dict:
                              "headless": (getattr(spec.role(r["slug"]), "ecosystem", "") or "") in HEADLESS})
         text = "\n".join([f"{x['role']}" + ("  (a question is open in its session: attach to answer it)" if x["question"] else "")
                           + (f"\n  it says: {x['says']}" if x["says"] else "")
+                          + (f"\n  it waits on you: {x['waits']}" if x["waits"] else "")
                           + "".join(f"\n  ask {i}: {q}\n    answer: {' | '.join(o)}" for i, (q, o)
                                     in enumerate(zip(x["asks"], x["options"]), 1)) for x in rows]) \
             or "no open asks and no role waiting on a question"

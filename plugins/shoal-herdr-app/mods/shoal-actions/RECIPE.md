@@ -39,7 +39,11 @@ the CLI's dry-run preview and wake cost, and confirm. It replaces herdr 0.9.3's 
   between text fields. Answer in the asks view opens Message to that role with wake on. Each ask takes a choice
   (toggled) and a note (model.js `answerKey`, `toggleChoice`, `setNote`); a role's Submit answers plans one Message
   (`batchAnswerText`, wake on, dry run first), and the answers clear once it lands (`clearRole`). The header's size
-  toggle reopens the dialog (`resizeSpec`) at normal, large or full, remembered in `shared("shoal-actions.size")`.
+  toggle reopens the dialog (`resizeSpec`) at normal, large or full, remembered in `shared("shoal-actions.size")`;
+  a dialog opened at another size reopens at once at the remembered one, keeping the verb it was opened on even before
+  the roles list lands (`resizeVerb`). Opened on one role's Asks (a row's badge in the agents list: `verb: "asks"`,
+  `role`), it shows every way that role asks you (ledger asks, an open question, words that wait on you, a wait on you
+  with what it holds); when there is none, it shows the role's actions with a line saying so (`asksFallback`).
 - Queue reads `ui act-plan queue --shoal <id> --role <slug> --json` and keeps a draft in memory
   (model.js `newDraft`, `draftPlace`, `draftMove`, `draftRemove`, `draftBlock`). Preview sends
   `ui act-plan queue-set --order=... [--drop=...] [--blocked=item=why] --json`. A refusal's

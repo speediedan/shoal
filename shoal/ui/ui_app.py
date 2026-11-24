@@ -115,6 +115,9 @@ DETAIL_MAX = 200
 # came back after a restart reads the status cold, for tens of seconds, under the labels its last run left), else the
 # row's own reason (`ui_status.row_stale`). The agents list greys such a row and says why on its tooltip
 STALE_LABEL = "shoal.stale"
+# when the status a card read was built (UTC, the status cache's `ts`): set by the first card on a host to read each
+# rebuild (`ui_status.claim_asof`), so the agents list's header can say how old the status on each machine is
+ASOF_LABEL = "shoal.asof"
 AGENT_GROUPS = ("needs-you", "working", "waiting", "blocked", "held")
 
 
@@ -789,7 +792,7 @@ def _is_shell(argv) -> bool:
 
 # the labels a card keeps on its terminal while it runs; one leaving with `q` clears the status ones on its way out
 CARD_LABELS = ("shoal.attached", "shoal.need", "shoal.asks", "shoal.asks-badge", "shoal.group", "shoal.state",
-               "shoal.detail", "shoal.stale")
+               "shoal.detail", "shoal.stale", "shoal.asof")
 
 
 def foreground_kind(t: dict) -> str:
@@ -1780,13 +1783,15 @@ function shoalDismiss(a, cx) {
   shoalDialog(a, cx, shoalHasAsks(a) ? "asks" : "dismiss");
 }
 
-// A role card's ledger asks (its shoal.asks label): the right-click opens them whenever there are some. The badge's click
-// does only when they are its question (shoal.asks-badge): an open prompt keeps the row's click, which focuses its pane.
+// A role card's ledger asks (its shoal.asks label): the right-click opens them whenever there are some. A role row's
+// badge opens the dialog on that role's Asks whatever made it ask (ledger asks, an open question in its session, a
+// headless role's asks, a user wait); the dialog falls back to its actions, saying so, when there is nothing to answer.
+// A seat's badge keeps the row's click (its pane).
 function shoalHasAsks(a) {
   return Number(terminals().find((x) => x.address === a.address)?.labels?.["shoal.asks"] ?? 0) > 0;
 }
 function shoalAsks(a, cx) {
-  if (terminals().find((x) => x.address === a.address)?.labels?.["shoal.asks-badge"] === "1") shoalDialog(a, cx, "asks");
+  shoalDialog(a, cx, "asks");
 }
 
 function shoalDialog(a, cx, verb) {
@@ -1824,7 +1829,8 @@ function shoalRank(a, herdr) {
 // A row whose state is not live yet (its card's shoal.stale label: the card's first status read has not landed, or the
 // role's host has not been read) is greyed, with \u27f3 after its name; its tooltip says why, then its last known detail.
 const SHOAL_STALE = { starting: "its card is reading the status", unread: "its host's live state is not read yet",
-  "host-old": "its host did not answer the last read", old: "its status is old" };
+  "host-old": "its host did not answer the last read", old: "its status is old",
+  answered: "you answered; the status is catching up", resumed: "its session is running again; the status is catching up" };
 function shoalStale(a) {
   const why = shoalLabel(a, "shoal.stale");
   return why ? SHOAL_STALE[why] ?? why : "";
@@ -1832,6 +1838,45 @@ function shoalStale(a) {
 function shoalTip(a) {
   const stale = shoalStale(a), detail = shoalLabel(a, "shoal.detail");
   return stale ? `updating: ${stale}${detail ? ` \u00b7 last known: ${detail}` : ""}` : detail;
+}
+// A row's time is how long it has been in its section, as this list saw it move there (Herdr's stamp, kept across
+// restarts): keyed on the card's group, so needs you, working and waiting each start the clock again. A row without a
+// group keeps Herdr's key, its status (done and idle as one).
+function shoalTrackKey(a) {
+  const g = shoalLabel(a, "shoal.group");
+  return g ? `shoal:${g}` : a.status === "done" ? "idle" : a.status;
+}
+function shoalWhenTip(section, dur) {
+  return `${dur} in ${section ?? "this state"}: since this list saw the row move there`;
+}
+// How old the status is: each card on a machine reads one status, rebuilt there every SHOAL_FEED_S plus the time a
+// rebuild takes, and re-reads it every SHOAL_CARD_S; the first card to read a rebuild labels its time (shoal.asof).
+// The newest label per machine is that machine's status; the header shows the oldest machine's, and each on its tip.
+// It moves only when the list redraws (a label changes, else Herdr's 30 s tick): no frames of its own at any motion tier.
+const SHOAL_CARD_S = 15, SHOAL_FEED_S = 20, SHOAL_OLD_S = 90; // ui_view.CARD_REFRESH_S, ui_herdr.FEED_INTERVAL_S, ui_status.STALE_AFTER_S
+function shoalAge(s) {
+  return s < 60 ? `${Math.max(0, Math.floor(s / 5) * 5)}s` : s < 5400 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+}
+function shoalFresh(now) {
+  const by = new Map();
+  for (const x of terminals()) {
+    const t = Date.parse(x?.labels?.["shoal.asof"] ?? "");
+    if (!Number.isFinite(t)) continue;
+    const m = String(x.address ?? "").includes("/") ? String(x.address).split("/")[0] : "this computer";
+    by.set(m, Math.max(by.get(m) ?? 0, t));
+  }
+  if (!by.size) return null;
+  const ages = [...by].map(([m, t]) => [m, Math.max(0, Math.round((now - t) / 1000))]).sort((x, y) => y[1] - x[1]);
+  const worst = ages[0][1];
+  const each = ages.map(([m, s]) => `${m}: ${shoalAge(s)} ago`).join(", ");
+  return { text: `status ${shoalAge(worst)} ago`, old: worst > SHOAL_OLD_S,
+    tip: `Role status read ${each}. Each machine rebuilds it every ${SHOAL_FEED_S} s plus the rebuild's own time, and each role card re-reads it every ${SHOAL_CARD_S} s, so a row can be up to ${SHOAL_CARD_S} s behind this.` };
+}
+function shoalHead(t, now) {
+  const f = shoalFresh(now);
+  return h_flex().gap(8).items_center().min_w(0)
+    .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
+    .when(Boolean(f), (el) => el.child(div().id("shoal-asof").text_size(10.5).text_color(f.old ? t.blocked : t.dim).tooltip(f.tip).child(f.text)));
 }
 // A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab.
 function shoalMore(a, sr, full, fallback) {
@@ -1863,6 +1908,15 @@ CLONES = {
          '.items_center().justify_center().id(`shoal-badge-${a.address}`).cursor_pointer().on_click((_e, cx) => shoalAsks(a, cx)).child(shoalBadge(a));'),
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
         ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(shoalTip(a)), (el) => el.tooltip(shoalTip(a)))\n        .when(Boolean(pic)'),
+        # a row's time: how long it has been in its section (shoalTrackKey), and its tooltip says so
+        ('      const s = a.status === "done" ? "idle" : a.status;\n', '      const s = shoalTrackKey(a);\n'),
+        ('el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))',
+         'el.child(div().id(`shoal-when-${a.address}`).flex_none().text_size(11).text_color(t.dim)'
+         '.tooltip(shoalWhenTip(byPriority ? SHOAL_SECTION[rankOf(a) || HERDR_RANK[RANK.idle]] : null, duration(now - when)))'
+         '.child(duration(now - when))))'),
+        # the header says how old the status is
+        ('            .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))\n',
+         '            .child(shoalHead(t, now))\n'),
     ]),
     # the top bar: Home and Lattice beside Files and Changes, where they are always in reach (the status bar's own
     # commands, so one path does the switching: an open tab at once, else the CLI)

@@ -596,7 +596,7 @@ def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None)
     if r is None:
         return f"{slug}: not a role of {sid}"
     if rows_out is not None:
-        rows_out.append(r)
+        rows_out.append(dict(r, as_of=doc.get("ts")))  # when the status it came from was read (`ui_status.card_view`)
     import re as _re
     tag = _re.sub(r"-[0-9]{8}-[0-9]{6}$", "", sid)
     # Herdr draws the pane border title as plain text, so the card's own first line carries the colors:
@@ -667,7 +667,7 @@ def stub(sid: str, slug: str, spec_path: str = "") -> int:
             sys.stdout.flush()
             _marks(ui_app, {ui_app.NEED_LABEL: "", ui_app.ASKS_LABEL: "", ui_app.ASKS_BADGE_LABEL: "",
                             ui_app.GROUP_LABEL: "", ui_app.STATE_LABEL: "", ui_app.DETAIL_LABEL: "",
-                            ui_app.STALE_LABEL: ""})
+                            ui_app.STALE_LABEL: "", ui_app.ASOF_LABEL: ""})
 
 
 def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
@@ -693,12 +693,14 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
         if ui_app is not None and rows:
             try:
                 import ui_herdr
-                osc = ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid), latch, sent)
+                row, ahead = _card_row(sid, slug, spec_path, rows[0])
+                osc = ui_app.report_text(row, ui_herdr.shoal_tag(sid), latch, sent)
                 sent = osc or sent
-                now = _card_labels(ui_app, rows[0])
+                now = _card_labels(ui_app, row, ahead)
                 if now != need:
                     _marks(ui_app, now)
                     need = now
+                _mark_asof(ui_app, rows[0])
             except Exception:  # noqa: BLE001 - a report never breaks the card
                 pass
         if routed:
@@ -741,15 +743,41 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             time.sleep(3)
 
 
-def _card_labels(ui_app, row: dict) -> dict:
+def _card_labels(ui_app, row: dict, ahead: str = "") -> dict:
     """The labels a role card keeps on its terminal for the agents list: its badge's cause and asks, its derived
-    group, state and detail, and why that state is not live yet ("" when it is)."""
+    group, state and detail, and why that state is not live yet ("" when it is): `ahead` when the card shows the row
+    ahead of its status (`ui_status.card_view`), else the row's own reason."""
     import ui_status
     rep = ui_app.card_report(row, "")
     group, state, detail = ui_app.role_agent(row)
     return {ui_app.NEED_LABEL: rep.get("need", ""), ui_app.ASKS_LABEL: str(rep.get("asks") or ""),
             ui_app.ASKS_BADGE_LABEL: "1" if rep.get("asks_badge") else "", ui_app.GROUP_LABEL: group,
-            ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail, ui_app.STALE_LABEL: ui_status.row_stale(row)}
+            ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail,
+            ui_app.STALE_LABEL: ahead or ui_status.row_stale(row)}
+
+
+def _card_row(sid: str, slug: str, spec_path: str, row: dict) -> tuple[dict, str]:
+    """(row, why) this card shows: its status row, or what it knows sooner while that row still says the role needs
+    your answer (`ui_status.card_view`): your reply written on this host, or the role's session running again. Only
+    then does it read the session itself, through the listing the host's cards share, so a quiet card costs nothing."""
+    import ui_status
+    agent = row.get("agent") if isinstance(row.get("agent"), dict) else {}
+    if agent.get("group") != "needs-you" or agent.get("state") not in ("asked", "question"):
+        return row, ""
+    try:
+        live = ui_status.live_turn(sid, slug, spec_path) if row.get("session") != "remote" else None
+        return ui_status.card_view(row, ui_status.read_reply(sid, slug), live)
+    except Exception:  # noqa: BLE001 - the status row is always there to show
+        return row, ""
+
+
+def _mark_asof(ui_app, row: dict) -> None:
+    """Label when the status this card read was built (`shoal.asof`), when this card is the first on its host to read
+    that status (`ui_status.claim_asof`): the agents list's header says how old the status is from the newest."""
+    import ui_status
+    ts = str(row.get("as_of") or "")
+    if ts and ui_status.claim_asof(ts):
+        _mark(ui_app, ui_app.ASOF_LABEL, ts)
 
 
 def _after_attach(ui_app) -> None:
@@ -809,14 +837,16 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
         card(sid, slug, False, rows)
         if not rows:
             return None
+        row, ahead = _card_row(sid, slug, "", rows[0])
         try:
-            labels = _card_labels(ui_app, rows[0])
+            labels = _card_labels(ui_app, row, ahead)
             if labels != marked[0]:
                 _marks(ui_app, labels)
                 marked[0] = labels
+            _mark_asof(ui_app, rows[0])
         except Exception:  # noqa: BLE001 - the labels never hold up the report
             pass
-        return ui_app.report_text(rows[0], ui_herdr.shoal_tag(sid)) if rows[0].get("ecosystem") == "claude" else None
+        return ui_app.report_text(row, ui_herdr.shoal_tag(sid)) if row.get("ecosystem") == "claude" else None
 
     def report() -> None:
         last = None
