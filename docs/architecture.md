@@ -2049,7 +2049,9 @@ answer (`ui_status.card_view`), so the row leaves Needs you within one card refr
 `ui_status.row_stale`), and `shoal-agents` greys that
 row, marks its name with `⟳` and puts why before the last known detail on its tooltip; the first card on a host to
 read each status rebuild labels its time (`shoal.asof`, `ui_status.claim_asof`), and the list's header says how old the
-status is (the oldest machine's newest, each on its tooltip); a row's time is its time in its section (`shoalTrackKey`
+status is (the oldest machine's newest, each on its tooltip), counting up by the second on a data timer that redraws
+only when the header changes and only at the lattice's full and balanced motion tiers (`shoalTick`, `motion.js` copied
+beside the clone); a row's time is its time in its section (`shoalTrackKey`
 keys Herdr's stamp on `shoal.group`); a role row's badge opens the actions dialog on that role's Asks whatever made it
 ask (ledger asks, an open question, a user wait), and the dialog falls back to its actions, saying so, only when there
 is nothing there (`asksFallback`; its reopen at the remembered size keeps the verb, `resizeVerb`); and a role that finished an item and rests says
