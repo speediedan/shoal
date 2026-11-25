@@ -74,12 +74,12 @@ FALLBACK_BELOW = 6
 FALLBACK_CLASSES = ("out-of-lane", "blocked")
 
 QUERY = """
-query($login:String!, $number:Int!, $after:String) {
+query($login:String!, $number:Int!, $after:String, $first:Int!) {
   %s(login:$login) {
     projectV2(number:$number) {
       title
       url
-      items(first:50, after:$after) {
+      items(first:$first, after:$after) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -138,35 +138,18 @@ def _short(repo: str) -> str:
 
 def fetch_board(owner: str, number: int) -> list[dict]:
     """All board items in board order, with the fields the digest needs."""
-    from sources import board_fixture, gh_graphql
+    from sources import board_fixture, project_pages
     fixture = board_fixture()  # SHOAL_BOARD_FIXTURE (tests): no board read
     if fixture is not None:
         return fixture
     items: list[dict] = []
-    after, scope = None, None
-    while True:
-        data = None
-        for s in ([scope] if scope else ["user", "organization"]):
-            try:
-                d = gh_graphql(QUERY % s, login=owner, number=int(number), after=after or "")
-            except RuntimeError:
-                continue
-            node = (d.get("data") or {}).get(s) or {}
-            if node.get("projectV2"):
-                data, scope = node["projectV2"], s
-                break
-        if data is None:
-            raise RuntimeError(f"project {owner}/{number} not readable as user or organization project")
+    for data in project_pages(QUERY, owner, number, 50):  # a page GitHub refuses is read again smaller
         BOARD_META[f"{owner}/{number}"] = {"title": data.get("title") or "", "url": data.get("url") or ""}
         for n in data["items"]["nodes"]:
             c = n.get("content") or {}
             if not c or "number" not in c:
                 continue
             items.append(_content_item(c, len(items) + 1, ((n.get("status") or {}).get("name") or "")))
-        pi = data["items"]["pageInfo"]
-        if not pi.get("hasNextPage"):
-            break
-        after = pi.get("endCursor")
     return items
 
 

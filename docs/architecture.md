@@ -328,6 +328,10 @@ repository, labels, a body excerpt, open blockers, parent and linked PRs, and pe
 with its reasons and a rank that lets board order break ties. A pass with `suggest=<role>` lifts
 the item for that role; a role never sees an item it passed on; items every self-filling role
 passed are listed once as unowned. Watchers and `next` read the digest, never GitHub.
+Both board reads (the digest's and `fill`'s) page through `sources.project_pages`: GitHub refuses some pages outright
+("Something went wrong while executing your query") at a size it serves smaller, so a refused page is asked again at
+half the size, down to one item, and the rest of the read keeps that size. Measured 2026-11-25: one board's 50-item
+sixth page failed on every read for three days, so that group's digest never refreshed, while 40 items passed.
 
 **Umbrellas** (`shoal/umbrella.py`). A claim protects one item id, so working a row (a sub-issue) under an
 umbrella held as the active item never checked who held the row: two lanes built the same row for two hours
