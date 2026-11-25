@@ -37,6 +37,7 @@ import {
   providerOptions, accountOptions, suggestAccount, accountWhy, poolHint, isQueue, QUEUE_SRCS, SRC_LABEL, srcColor, newDraft, draftPick, draftPlace, draftMove, draftRemove, draftBlock,
   draftChanged, draftCandidates, draftProblem, pendingTransfers, queueSetArgv, draftRefused, commandLines, handoffDocNote, handoffLatencyNote, verbGroups, pickKey,
   answerKey, toggleChoice, setNote, batchAnswerText, answeredCount, clearRole, SIZE_KEY, SIZES, sizeName, nextSize, resizeSpec, resizeVerb, asksFallback,
+  askWhy,
 } from "./model.js";
 
 const MONO = "Geist Mono";
@@ -1141,10 +1142,7 @@ export default class Actions extends View {
     if (Array.isArray(v.asks)) {
       if (!v.asks.length) col.child(div().text_color(c.dim).child("no open asks and no role waiting on a question"));
       v.asks.forEach((a, i) => {
-        const why = a.question ? "blocked on a question in its session: attach to its card to answer there, or answer by mail"
-          : a.headless && a.asks.length ? "its turns are headless (no question tool): answer each ask here, from its choices"
-          : a.saysWaiting ? "says it waits on you, with no prompt: answer by mail with a wake"
-          : a.waits ? `it waits on you (${a.waits}): answer by mail with a wake` : "";
+        const why = askWhy(a);
         const card = v_flex().id(`ask-${i}`).gap(4).p(10).rounded(8).bg(c.panel).border_1().border_color(withAlpha(c.blocked, 0.45))
           .child(h_flex().gap(8).items_center()
             .child(div().w(8).h(8).rounded(4).flex_none().bg(c.blocked))

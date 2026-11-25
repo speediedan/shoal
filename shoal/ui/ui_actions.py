@@ -34,6 +34,7 @@ PKG = os.path.dirname(HERE)
 for _p in (PKG, HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+import ask_answers  # noqa: E402
 
 V = 1
 PLAN_TTL_S = 600
@@ -48,6 +49,11 @@ SCOPED_VERBS = ("offline", "freeze")  # the verbs `--scope` applies across shoal
 # ends a call at 30 s, and these can run longer (a handoff waits for a checkpoint; `offline off` across shoals wakes every
 # role holding asks and lists the asks, measured past 30 s on 2026-11-20). Each verb's own limit once detached:
 DETACHED_TIMEOUT_S = {"handoff": 4800, "offline": 1800, "freeze": 1800}
+# what the Asks view says of a role whose session holds an open question (its watcher's answer path: ledger_watch
+# through_question; the dialog's own line is model.js askWhy)
+QUESTION_OPEN_NOTE = ("a question is open in its session: answer it in its chat (attach), or here: answers to its asks "
+                      "(`re ask <n> ...`) close that question, its turn stopped and resumed with your answer, unless a "
+                      "client is attached")
 VIEW_VERBS = ("roles", "next", "status", "conditions", "asks", "upgrade", "sessions", "queue")
 # providers whose turns are headless exec processes (briefs.watch_clause): no question tool, so the Asks view answers them
 HEADLESS = ("codex", "muse")
@@ -672,8 +678,11 @@ def view(verb: str, a) -> dict:
                 # and this view is where it is read and answered
                 full = list((view.current_queue(r["slug"]) or {}).get("asks") or [])
                 asks = full if len(full) == len(r["asks"]) else list(r["asks"])
+                # each ask's id (ask_answers.ask_id): the answer names its ask by id and opening words, not by number
+                ids = ([ask_answers.ask_id(q) for q in asks] if asks is full
+                       else list(r.get("ask_ids") or [ask_answers.ask_id(q) for q in asks]))
                 rows.append({"role": r["slug"], "host": r.get("host") or "", "remote": bool(r.get("host")) and r.get("host") != here,
-                             "asks": asks, "question": "blocked-on-question" in reasons,
+                             "asks": asks, "ids": ids, "question": "blocked-on-question" in reasons,
                              "says_waiting": "blocked-says-waiting" in reasons, "says": r.get("says") or "",
                              "waits": (f"{r['sub']}: {(r.get('wait') or {}).get('holder') or ''}".rstrip(": ") if waits else ""),
                              "links": [ask_links(q, r.get("active") or "", repos) for q in asks],
@@ -681,7 +690,7 @@ def view(verb: str, a) -> dict:
                              # are answered here, from the choices a prompting role's question tool would offer
                              "options": [[o["label"] for o in ask_options(q)] for q in asks],
                              "headless": (getattr(spec.role(r["slug"]), "ecosystem", "") or "") in HEADLESS})
-        text = "\n".join([f"{x['role']}" + ("  (a question is open in its session: attach to answer it)" if x["question"] else "")
+        text = "\n".join([f"{x['role']}" + (f"  ({QUESTION_OPEN_NOTE})" if x["question"] else "")
                           + (f"\n  it says: {x['says']}" if x["says"] else "")
                           + (f"\n  it waits on you: {x['waits']}" if x["waits"] else "")
                           + "".join(f"\n  ask {i}: {q}\n    answer: {' | '.join(o)}" for i, (q, o)

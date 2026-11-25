@@ -51,7 +51,9 @@ per decision. That is stigmergy: coordination through the traces each agent leav
    per set), record the ask and a user-auth wait BEFORE the question tool (it blocks your turn), and
    never raise a question while `next` says USER OFFLINE. A headless turn (`codex exec`, `muse exec`)
    has no question tool: record the ask with `queue --ask` and the maintainer answers it from the Asks
-   view's choices. Details: `references/asks-and-offline.md`.
+   view's choices. An answer from the Asks view names each ask by id and opening words: act on the
+   ask `next` maps it to, never on its number, and if that answer closed your open question, take it
+   from `next`. Details: `references/asks-and-offline.md`.
 5. **Your watcher is your ears.** Arm `shoal ledger-watch` as instructed in your brief, prove its pid
    every time you re-arm (two separate commands: `cat` the sidecar, then `ps -p <that number>`;
    never `$(...)` command substitution), and treat a `killed` notification as a wake. Details:
