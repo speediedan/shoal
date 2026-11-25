@@ -497,8 +497,8 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   `away_summary` recap (a small model call, not a turn) when a client returns to a session with
   unseen activity. This was measured once on a testbed lane; `ui quiet-check` reports recaps
   separately from turns.
-- **Stub mode.** `--stub` shows a role card that refreshes every 15 seconds. It attaches on Enter and
-  comes back to the card on detach.
+- **Stub mode.** `--stub` shows a role card that refreshes on each status rebuild (it looks for one every second,
+  `ui_view.REBUILD_POLL_S`) and every 15 seconds at the latest. It attaches on Enter and comes back to the card on detach.
 - **Detaching.** Inside an attached Claude session, Ctrl+Z detaches (`claude attach` exits 0); in an
   opencode session, Ctrl+C quits the client. Either way the session keeps running and the card comes
   back (both measured under a pty, 2026-10-12). Herdr's prefix keys do not detach: they go to Herdr,
@@ -547,7 +547,8 @@ lands about every 22 s; a pass lists `claude agents` once per kind, `backends.ag
   with its host, answered by mail.
 - **Live state of routed remote roles.** Harness liveness and sidecars are readable only on the role's host,
   so the read model pulls that host's own rows (`shoal ui status --shoal <id> --rows-only --json`, which has
-  no usage and never pulls further hosts) over the route, cached 30 s, and takes their live fields
+  no usage and never pulls further hosts) over the route, pulled again once older than 15 s
+  (`routes.STATUS_PULL_S`, so each feeder rebuild reads it afresh; a pull that failed is retried after 30 s), and takes their live fields
   (`session`, `watcher`, `can_progress`, `needs_you`, `context_k`, `heartbeat_age_s`, and `agent`, the agents-list
   group: an open question is read from the role's transcript, which only its host has). Each merged row
   carries `remote_status` (`ok`, `age_s`, `stale`). A failed pull keeps the last good rows for up to 10 min,
@@ -788,6 +789,12 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   refresh (15 s) of your answer, and a row still in Needs you, not greyed, is one the status says asks you now (a new
   ask, or one you have not answered). Only rows that need your answer are read this way, and never toward needs you: a
   new ask is the status's to show. The status catches up within one rebuild and the mark goes.
+- **Asked in an open client.** A row moves to Needs you at once when the client attached under its card (Claude Code's
+  own, `app=claude-code`) reports itself blocked on a question or a permission prompt: that report is live, while the
+  card's labels wait for the next rebuild (a row read `working · attached` while its session sat in its question,
+  2026-11-25). Its state reads `question` (or `permission`), its tooltip says `its session asks you now`, and it goes
+  back to its labels when the client reports something else. A dismissed row stays dismissed, and a seat's card reports
+  its own.
 - **A row's time** (`6m`) is how long the row has been in its section, as the list saw it move there (Herdr's own
   stamp, kept across app restarts, keyed in `shoal-agents` on the card's `shoal.group`, `shoalTrackKey`): in Needs you,
   how long it has needed you since it last went there; it starts again when the row moves (answered, working, asked
@@ -799,12 +806,17 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   written redraws the app), and the header shows the oldest machine's newest, in the warning color past 90 s; its
   tooltip gives each machine's and the cadence. The status is rebuilt by the feeder every 20 s plus the pass itself (about
   2 s since the pass lists `claude agents` once, `backends.agents_memo`: it listed 26 to 28 times and took 18 s, so a
-  rebuild came every 38 s, measured 2026-11-24), and each card re-reads it every 15 s, so a row can lag its host's ledger
-  and sessions by up to two passes, the sleep and 15 s (about 40 s; it was about 70 s). The header counts up by the
+  rebuild came every 38 s, measured 2026-11-24), and each card re-reads it on the rebuild
+  (every 15 s at the latest, `ui_view.rebuilt_since`), so a row can lag its host's ledger
+  and sessions by up to one rebuild interval plus about a second (about 13 s on average and 25 s at most at the rebuild
+  every 23 s measured 2026-11-25; before, a role on another host, pulled once in 46 s, took 32 s and 62 s, and one here 20 s
+  and 39 s, since a card had a 15 s timer of its own). The header counts up by the
   second from the label's time (`shoalTick`): it stayed at `0s` and then jumped to `20s` or more, since it moved only when
   the list redrew (a label changes, else Herdr's 30 s tick). Every redraw of a mod redraws the whole window and reruns
   the list's render (about 2,000 element calls for 25 rows: with stub elements, 0.4 ms in V8 and 1.9 ms with its JIT
-  off), so the tick is a data timer that checks twice a second (no second is skipped) and redraws only when the header
+  off; the clone's render also took the whole terminal list 320 times for 24 rows, 44 to 55 ms, against 1 time and 3 ms
+  for Herdr's own mod and, since, for the clone: `shoalIndex` reads it once a render and the tick reads none), so the tick is a data timer that checks twice
+  a second (no second is skipped) and redraws only when the header
   would read or color differently: once a second for the first minute, then once a minute, and once when it passes 90 s
   and turns the warning color. It ticks at the lattice's full and balanced motion tiers (its `motion.js`, copied beside
   the clone, auto: the renderer and the window's focus). At low and off (a software renderer, where a frame costs most

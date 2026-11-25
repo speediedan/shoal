@@ -109,7 +109,10 @@ only at `full` motion. A feed from before this (no `fresh`) is drawn as it was.
 ### The agents list (`shoal-agents`)
 
 `shoal-agents` is a patched copy of Herdr's own agents mod, made by `shoal ui app-install` and kept current by
-`ui app-sync` (`ui_app.CLONES`); it reads the labels each role card writes on its terminal. A row greyed with `⟳` is
+`ui app-sync` (`ui_app.CLONES`); it reads the labels each role card writes on its terminal, from one read of the
+terminal list a render (`shoalIndex`; every row used to read it, 320 reads a render for 24 rows). A row whose own client
+asks you (a question or a permission prompt in an attached client) is in Needs you at once, ahead of its card's labels.
+A row greyed with `⟳` is
 not live yet: its tooltip says why, and `answered` or `resumed` means you answered (or its session runs again) and the
 status is catching up, which takes one rebuild. A row's time is how long it has been in its section. The header says
 how old the status is (`status 20s ago`, the oldest machine's; its tooltip gives each machine's and the cadence), in

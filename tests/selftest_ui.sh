@@ -134,7 +134,7 @@ assert routes.reachable("other-host.invalid", force=True) is False
 # an attach that fails fast says why and retries every ATTACH_RETRY_S; q gives up (no session is taken over)
 ui_view.ATTACH_RETRY_S = 0
 keys = iter(["r", "q"])
-ui_view._getkey = lambda t: next(keys)
+ui_view._getkey = lambda t, changed=None: next(keys)
 import io, contextlib
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
@@ -163,8 +163,8 @@ attempts = [l for l in open(os.environ["STUB_SSH_LOG"]) if "shoal view uiselftes
 assert len(attempts) == 4, attempts
 print("routed cards ok")
 PY2
-# live state of a routed remote role comes from its own host's rows (`ui status --rows-only`), cached 30 s;
-# a failed pull keeps the last good rows, marked stale
+# live state of a routed remote role comes from its own host's rows (`ui status --rows-only`), pulled again once older
+# than routes.STATUS_PULL_S (each feeder rebuild); a failed pull keeps the last good rows, marked stale
 OUT=$($H ui status --shoal $SID --ledger-root "$ROOT" --rows-only --json) || fail "rows-only rc"
 python3 - "$OUT" <<'PY2' || fail "rows-only is this host's rows only"
 import json, sys
@@ -178,25 +178,42 @@ cat > "$S/far-rows.json" <<JSON
  "agent": {"group": "needs-you", "state": "question", "detail": "an open question prompt in its session"}}]}]}
 JSON
 rm -rf "$SHOAL_ROUTE_CACHE"
-STUB_SSH_OUT="$S/far-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" "$ROOT" <<'PY2' || fail "remote status merge"
+STUB_SSH_LOG="$S/pull.log" STUB_SSH_OUT="$S/far-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" "$ROOT" <<'PY2' || fail "remote status merge"
 import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
-import routes, ui_status
+import routes, ui_herdr, ui_status
 def far():
     doc = ui_status.status(["uiselftest"], root=sys.argv[3])
     return next(x for x in doc["shoals"][0]["roles"] if x["slug"] == "far")
+pulls = lambda: sum("--rows-only" in l for l in open(os.environ["STUB_SSH_LOG"]))
 f = far()
 assert f["session"] == "idle" and f["watcher"] == "alive" and f["context_k"] == 42, f
+# one pull per feeder rebuild: a read inside STATUS_PULL_S reuses it, the next rebuild (one feed interval later) pulls
+# again. At 30 s every other rebuild reused the last pull: a remote question reached the list once in 46 s (2026-11-25)
+assert routes.STATUS_PULL_S < ui_herdr.FEED_INTERVAL_S and pulls() == 1, pulls()
+far()
+assert pulls() == 1, "a read inside STATUS_PULL_S pulls nothing"
+import json
+p = os.path.join(routes._cache_dir(), "status-other-host.invalid-uiselftest.json")
+d = json.load(open(p)); d["t"] -= ui_herdr.FEED_INTERVAL_S; json.dump(d, open(p, "w"))
+f = far()
+assert pulls() == 2 and not f["remote_status"]["stale"], (pulls(), f["remote_status"])
 # its group too: only its own host reads an open question from its transcript (2026-11-18: a role at a question on
 # another host read working in the agents list here, from this host's own derivation)
 assert f["agent"]["group"] == "needs-you" and f["agent"]["state"] == "question", f["agent"]
 assert f["remote_status"]["ok"] and not f["remote_status"]["stale"], f["remote_status"]
 # the host stops answering: the last good rows stay, marked stale once the cache has aged
 os.environ["STUB_SSH_RC"] = "255"; os.environ.pop("STUB_SSH_OUT")
-import json, time
-p = os.path.join(routes._cache_dir(), "status-other-host.invalid-uiselftest.json")
 d = json.load(open(p)); d["t"] -= 60; d["pulled"] -= 200; json.dump(d, open(p, "w"))
 f = far()
 assert f["session"] == "idle" and f["remote_status"]["stale"] and not f["remote_status"]["ok"], f
+# and a failed pull is retried at STATUS_CACHE_S, so a host that is down does not hold up every rebuild
+n = pulls()
+d = json.load(open(p)); d["t"] -= ui_herdr.FEED_INTERVAL_S; json.dump(d, open(p, "w"))
+far()
+assert pulls() == n, "one rebuild on: not retried"
+d["t"] -= routes.STATUS_CACHE_S; json.dump(d, open(p, "w"))
+far()
+assert pulls() == n + 1
 print("remote status merge ok")
 PY2
 # a spec written before the wake relay's retirement (features.relay, health.relay_fallback, a wake-relay role, local
@@ -1907,7 +1924,7 @@ assert open(calls).read().split() == ["a3"] and "restarted" not in buf.getvalue(
 # a restart just as it ended, and a key pressed in the pause: stays on the card
 ui_view.REATTACH_WINDOW_S = 60
 open(calls, "w").write("")
-ui_view._getkey = lambda t: "x"
+ui_view._getkey = lambda t, changed=None: "x"
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     assert ui_view.run_viewer("claude", "abcd1234", "seat") == 0
@@ -2375,7 +2392,7 @@ def attempt(argv):
     return 255
 ui_view.run_attached = attempt
 keys = iter(["\x1b", "<", "q"])
-ui_view._getkey = lambda t: next(keys)
+ui_view._getkey = lambda t, changed=None: next(keys)
 with contextlib.redirect_stdout(io.StringIO()):
     assert ui_view.remote_attach("h", "s", "r") == 255
 assert len(runs) == 1, runs  # mouse bytes fired no attempt
@@ -2395,7 +2412,7 @@ assert len(runs) == 1, runs  # Ctrl-C gives up
 # stdin at EOF returns from a read at once: the retries stay paced, and this ends under its own bound
 import time
 ui_view.ATTACH_RETRY_S = 1
-ui_view._getkey = lambda t: ""
+ui_view._getkey = lambda t, changed=None: ""
 runs.clear()
 class Enough(Exception):
     pass
@@ -2462,6 +2479,7 @@ assert 'function shoalAsks(a, cx) {\n  shoalDialog(a, cx, "asks");\n}' in helper
     "a role row's badge opens its Asks whatever made it ask (an open prompt too); the dialog falls back when there is none"
 badge = next(n for o, n in ui_app.CLONES["agents"][1] if o == '.items_center().justify_center().child("!");')
 assert "on_click((_e, cx) => shoalAsks(a, cx))" in badge and ".id(`shoal-badge-" in badge, badge
+assert "when(Boolean(a.address), (el) => el.id(`shoal-badge-" in badge, "no id without an address: they would all collide"
 # the agents list's groups: a role's derived agent state, Dismissed once dismissed; nothing until the status carries it
 row = {"agent": {"group": "waiting", "state": "remote-ci", "detail": "on  acme/app#12\nCI"}, "dismissed": False}
 assert ui_app.role_agent(row) == ("waiting", "remote-ci", "on acme/app#12 CI"), "the detail is one line, for a tooltip"
@@ -2513,7 +2531,8 @@ if shutil.which("node"):
           '            a1: { "shoal.group": "working", "shoal.state": "working", "shoal.pane": "alpha/core", "shoal.attached": "1" },\n'
           '            a2: { "shoal.group": "working", "shoal.state": "working", "shoal.pane": "standalone/seat", "shoal.attached": "1",\n'
           '                  "shoal.detail": "running a turn" }, a3: { "shoal.attached": "1" } };\n'
-          'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
+          'const Q = {}; let reads = 0;\n'
+          'const terminals = () => (reads++, Object.entries(T).map(([address, labels]) => ({ address, labels, report: Q[address] })));\n'
           + js +
           'const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, a, b); process.exit(1); } };\n'
           'eq(shoalRank({ address: "r1" }, 4), SHOAL_RANK.waiting, "the group wins over the reported status");\n'
@@ -2530,7 +2549,28 @@ if shutil.which("node"):
           'eq(shoalMore({ address: "a1", space_name: "alpha" }, { role: "core" }, true, "x"), "alpha \\u00b7 working \\u00b7 attached", "attached: said after the state");\n'
           'eq(shoalMore({ address: "a2" }, null, true, "session"), "working \\u00b7 attached", "an attached seat too");\n'
           'eq(shoalTip({ address: "a2" }), "attached \\u00b7 running a turn", "and its tooltip");\n'
-          'eq(shoalTip({ address: "a3" }), "attached", "with no detail");\n')
+          'eq(shoalTip({ address: "a3" }), "attached", "with no detail");\n'
+          # the client attached under a card says blocked on a question: needs you at once, before the labels say so
+          'Object.assign(T, { d1: { "shoal.group": "dismissed", "shoal.pane": "alpha/core" }, c1: { "shoal.group": "working", "shoal.pane": "alpha/core" },\n'
+          '                   s2: { "shoal.group": "working", "shoal.pane": "standalone/seat" } });\n'
+          'for (const x of ["r1", "d1", "s2"]) Q[x] = { app: "claude-code", kind: "question" };\n'
+          'Q.c1 = { app: "core", kind: "question" };\n'
+          'const b = (address, status = "blocked") => ({ address, status, space_name: "alpha" });\n'
+          'eq(shoalClientNeed(b("r1")), "question", "its own client asks");\n'
+          'eq([shoalRank(b("r1"), 2), shoalMore(b("r1"), { role: "core" }, true, "x"), shoalTrackKey(b("r1"))],\n'
+          '   [SHOAL_RANK["needs-you"], "alpha \\u00b7 question", "shoal:needs-you"], "the row moves, says question and restarts its clock");\n'
+          'eq(shoalTip(b("r1")), "its session asks you now (a question in its client)", "and says why");\n'
+          'eq([shoalClientNeed(b("r1", "working")), shoalRank(b("r1", "working"), 2)], ["", SHOAL_RANK.waiting], "answered: the labels again");\n'
+          'eq([shoalClientNeed(b("d1")), shoalRank(b("d1"), 4)], ["", SHOAL_RANK.dismissed], "a dismissed row stays dismissed");\n'
+          'eq([shoalClientNeed(b("c1")), shoalRank(b("c1"), 2)], ["", SHOAL_RANK.working], "the card\'s own report is not the client\'s");\n'
+          'eq(shoalClientNeed(b("s2")), "", "a seat\'s card reports its own");\n'
+          # one list a render: after shoalIndex no row reads the list again
+          'shoalIndex(terminals());\n'
+          'reads = 0;\n'
+          'for (const a of Object.keys(T).map((x) => b(x))) { shoalRole(a); shoalRank(a, 2); shoalTip(a); shoalStale(a); shoalMore(a, null, true, "x"); shoalTrackKey(a); shoalBadge(a); }\n'
+          'shoalFresh(Date.now());\n'
+          'eq(reads, 0, "rows read the render\'s index, not the list");\n'
+          'shoalHasAsks(b("r1")); eq(reads, 1, "a click reads the live list");\n')
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
         fh.write(js)
     r = subprocess.run(["node", fh.name], capture_output=True, text=True)
@@ -2957,6 +2997,44 @@ finally:
     sys.stdout = real
 assert out.getvalue() == "", out.getvalue()  # outside the app nothing; a failed read breaks nothing
 PY2
+# a card reads again on the status's rebuild, not only on its 15 s timer, attached or not: an open question reached the
+# agents list up to a card refresh after the rebuild that saw it
+XDG_RUNTIME_DIR="$S/rebuild-run" python3 - "$SHOALD" <<'PY2' || fail "card refresh on a rebuild"
+import io, sys, time, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_herdr, ui_status, ui_view
+ui_view.REBUILD_POLL_S = 0.02
+t0 = time.time()
+assert ui_view._getkey(0.1) == "" and time.time() - t0 >= 0.09, "no check: the whole timeout"
+checks = []
+t0 = time.time()
+assert ui_view._getkey(5, lambda: checks.append(1) or len(checks) >= 3) == ""
+assert time.time() - t0 < 1 and len(checks) == 3, (time.time() - t0, checks)
+stamp = ui_status.cache_stamp()
+assert stamp == 0, "no cache yet"
+rebuilt = ui_view.rebuilt_since(stamp)
+assert not rebuilt()
+ui_status.write_cache({"v": 1, "ts": ui_status.iso(), "shoals": []})
+assert rebuilt() and ui_status.cache_stamp() != stamp
+ui_view.CARD_REFRESH_S = 30
+ui_herdr.shoal_tag = lambda sid: "tag"
+reads = []
+app = types.SimpleNamespace(ATTACH_LABEL="x", report_text=lambda r, tag: "")
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", app, make=lambda: (reads.append(1), ("<x>", True))[1]):
+        time.sleep(0.2)
+        assert len(reads) == 1, reads
+        time.sleep(0.01)
+        ui_status.write_cache({"v": 1, "ts": ui_status.iso(), "shoals": []})
+        time.sleep(0.2)
+finally:
+    sys.stdout = real
+assert len(reads) == 2, ("the rebuild is read at once, not after CARD_REFRESH_S", reads)
+assert out.getvalue() == "<x>", out.getvalue()
+print("card refresh on a rebuild ok")
+PY2
 # the agents list's labels stay current through an attach, whatever the harness: they go through the core, not the terminal
 HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "labels during attach"
 import io, sys, time
@@ -3087,7 +3165,7 @@ ui_view._remote_host = lambda *a: ""
 ui_app.report_text = lambda r, tag, latch=None, sent=None: ""
 import ui_herdr
 ui_herdr.shoal_tag = lambda sid: "tag"
-ui_view._getkey = lambda t: "q"
+ui_view._getkey = lambda t, changed=None: "q"
 import types, ui_term
 ui_term.CodeWatch = lambda: types.SimpleNamespace(check=lambda: None)
 ui_term.fit_frame = lambda body, keys: body
@@ -3158,6 +3236,10 @@ g = st(answer=full)
 assert (g["group"], g["state"]) == ("waiting", "answered") and "May I merge 12?" in g["detail"], g
 assert (st(answer=None)["group"], st(answer=None)["state"]) == ("needs-you", "asked")
 assert st(sess="working", answer=full)["group"] == "working", "a turn running is working, as before"
+# a turn that waits at an open question prompt waits on you, whatever its tempo: with ledger asks beside it the row read
+# working (and Claude Code's own `?`) while the session sat in its question
+g = st(["blocked-on-question"], sess="working")
+assert (g["group"], g["state"]) == ("needs-you", "asked"), g
 g = st(answer=part)
 assert g["state"] == "asked" and "you answered ask 2 of 2" in g["detail"], g
 g = st(answer=dict(full, late=True, age_s=1200))
@@ -3271,7 +3353,7 @@ if shutil.which("node"):
           '            "m2/t1": { "shoal.pane": "s1/b", "shoal.asof": "2026-11-24T19:58:00Z", "shoal.stale": "answered" },\n'
           '            "m2/t2": { "shoal.pane": "s1/c", "shoal.asof": "2026-11-24T19:59:50Z" },\n'
           '            s9: { "shoal.pane": "standalone/x" }, r3: { "shoal.stale": "resumed" } };\n'
-          'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
+          'let reads = 0; const terminals = () => (reads++, Object.entries(T).map(([address, labels]) => ({ address, labels })));\n'
           # an element records its text, color and tooltip; the window, the layout and the probe are the test's
           'const el = () => { const e = { kids: [] }; const p = new Proxy(e, { get: (o, k) => k in o ? o[k] : (...a) => {\n'
           '  if (k === "child") o.kids.push(a[0]); else if (k === "text_color") o.color = a[0]; else if (k === "tooltip") o.tip = a[0];\n'
@@ -3324,6 +3406,10 @@ if shutil.which("node"):
           '  eq(drawn[29], ["status 1 min ago", "dim"], "minutes from 60 s, still within the limit");\n'
           '  eq(drawn[30], ["status 1 min ago", "warn"], "the warning color once past 90 s, at the check that crosses it");\n'
           '  eq(clock - now, 75000, "75 s of checks");\n'
+          '  shoalIndex(terminals()); head = shoalHead(th, clock, view); reads = 0;\n'
+          '  for (let i = 0; i < 4; i++) { clock += 500; every.fn(tcx); }\n'
+          '  eq(reads, 0, "the tick reads no list: it compares the times the header drew"); SHOAL_TERMS = SHOAL_COLORS = null;\n'
+          '  head = shoalHead(th, clock, view); notes = 0;\n'
           # a redraw asked for and not drawn (a hidden block, another tab): no more until the list draws again
           '  for (const k of ["r1", "m2/t1", "m2/t2"]) T[k]["shoal.asof"] = new Date(clock - 10000).toISOString();\n'
           '  head = shoalHead(th, clock, view);\n'

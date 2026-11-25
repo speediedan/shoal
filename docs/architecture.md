@@ -1868,7 +1868,10 @@ and the contract are in [`ui.md`](ui.md).
     `claude agents` once per kind, `backends.agents_memo`; each transcript and context read listed it again, 26 to
     28 times at 0.46 s, so a pass took 18 s and a rebuild came every 38 s, measured 2026-11-24), reports each role
     pane's state (`pane.report_agent`, source `shoal`) and tokens (`pane.report_metadata`, with a TTL, so a dead feeder shows no data rather
-    than stale data). A pane whose foreground is a bare shell gets tokens but no agent report:
+    than stale data). Each rebuild pulls a routed host's rows afresh (`routes.STATUS_PULL_S`, 15 s; a failed pull is
+    retried after 30 s), and a role card re-reads the status on the rebuild (`ui_status.cache_stamp`,
+    `ui_view.rebuilt_since`, checked each second; every 15 s at the latest), so an open question reaches the agents list
+    within about one rebuild. A pane whose foreground is a bare shell gets tokens but no agent report:
     Herdr drops that report at once, so sending it only made the role flash in the agents list.
     The `mode` token (`▶` turn, `◷` waiting on a job or CI) says why a role reads working; an attached but
     quiet Muse or Codex seat reads idle (`status_line` adds `active` or `quiet` from the session file's age).
@@ -2132,7 +2135,10 @@ again when the core holds none for its terminal (`ui_view._report_during`, readi
 attach client reports its session itself (`app=claude-code`) and clears that report when the background service restarts
 under it, which took an attached seat's row off the agents list while the person worked in it (measured 2026-11-25), and
 the app lists no agent for a terminal with no report, whatever its labels; an attached row reads `attached` after its
-state and before its tooltip (`shoal.attached`, `shoalAttached`); a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
+state and before its tooltip (`shoal.attached`, `shoalAttached`), and one whose client reports a question or permission
+is in Needs you at once, ahead of its labels (`shoalClientNeed`; a dismissed row stays dismissed); the clone reads the
+terminal list once a render and not on the tick (`shoalIndex`; each row read it about 13 times, so a render took 44 ms or
+more where Herdr's own takes 3 ms); a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; a card sets `shoal.stale` while its row is not
 live (`starting` from its start until its first status read lands, since a card back after a restart reads the status

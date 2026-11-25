@@ -565,11 +565,21 @@ def flush_input() -> None:
             pass
 
 
-def _getkey(timeout: float) -> str:
-    """One keypress within `timeout` seconds, '' on timeout. Raw mode only when stdin is a tty."""
+def _getkey(timeout: float, changed=None) -> str:
+    """One keypress within `timeout` seconds, '' on timeout. Raw mode only when stdin is a tty. With `changed` (a
+    callable), it is checked every REBUILD_POLL_S, and a True ends the wait early ('')."""
     import select
+    end = time.time() + timeout
+
+    def waits():  # the slices to wait in: the whole timeout, or REBUILD_POLL_S each until `changed` says so
+        while True:
+            left = max(0.0, end - time.time())
+            yield min(left, REBUILD_POLL_S) if changed is not None else left
+            if end - time.time() <= 0 or (changed is not None and changed()):
+                return
     if not sys.stdin.isatty():
-        time.sleep(timeout)
+        for s in waits():
+            time.sleep(s)
         return ""
     import termios
     import tty
@@ -579,10 +589,29 @@ def _getkey(timeout: float) -> str:
         # TCSAFLUSH (setcbreak's default) drops a key typed just before a refresh/prompt.
         # Cards and observers must preserve that pending Enter or detach key.
         tty.setcbreak(fd, termios.TCSANOW)
-        r, _, _ = select.select([sys.stdin], [], [], timeout)
-        return sys.stdin.read(1) if r else ""
+        for s in waits():
+            r, _, _ = select.select([sys.stdin], [], [], s)
+            if r:
+                return sys.stdin.read(1)
+        return ""
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+# how often a role card looks for a new status rebuild (one stat of the cache file)
+REBUILD_POLL_S = 1.0
+
+
+def _cache_stamp() -> int:
+    import ui_status
+    return ui_status.cache_stamp()
+
+
+def rebuilt_since(stamp: int):
+    """A check that is True once the status cache was written after `stamp` (`ui_status.cache_stamp`): a card refreshes on
+    the rebuild instead of waiting out its CARD_REFRESH_S, so a new state reaches the agents list within a second of the
+    rebuild rather than up to 15 s after it (an open question waited for the card's next refresh)."""
+    return lambda: _cache_stamp() != stamp
 
 
 def card(sid: str, slug: str, force: bool = False, rows_out: list | None = None) -> str:
@@ -684,6 +713,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
         remote = _remote_host(sid, slug, spec_path)
         routed = bool(remote) and routes.route(remote) is not None
         rows: list = []
+        stamp = _cache_stamp()  # before the read: a rebuild landing during it refreshes the card again at once
         try:
             body = card(sid, slug, force, rows)
         except Exception as exc:  # noqa: BLE001 - a card never crashes the pane
@@ -713,7 +743,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
         sys.stdout.write(ui_term.fit_frame(body, "\x1b[2m" + keys + f"   (refresh every {CARD_REFRESH_S}s; viewing "
                                            f"never wakes the role)\n{DETACH_HINT}\x1b[0m") + osc)
         sys.stdout.flush()
-        k = _getkey(CARD_REFRESH_S)
+        k = _getkey(CARD_REFRESH_S, rebuilt_since(stamp))
         if k in ("q", "Q"):
             return 0
         if k in ("r", "R"):
@@ -888,6 +918,7 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     def report() -> None:
         last = None  # the report this attach last wrote
         while True:
+            stamp = _cache_stamp()
             try:
                 osc, changes = (make or role_osc)()
                 if osc and osc != last and changes:
@@ -903,7 +934,12 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
                         last = osc
             except Exception:  # noqa: BLE001 - a report never breaks an attach
                 pass
-            if stop.wait(CARD_REFRESH_S):
+            # the next refresh: CARD_REFRESH_S on, or the status's next rebuild, as the card's own loop does
+            end, rebuilt = time.time() + CARD_REFRESH_S, rebuilt_since(stamp)
+            while not stop.wait(max(0.0, min(REBUILD_POLL_S, end - time.time()))):
+                if time.time() >= end or rebuilt():
+                    break
+            if stop.is_set():
                 return
 
     t = threading.Thread(target=report, daemon=True)
