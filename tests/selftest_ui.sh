@@ -3190,7 +3190,7 @@ assert ui_status.card_view(dict(asked, as_of=None), reply, None)[1] == "", "a ro
 # the reply hint: `shoal msg --by user` keeps it under the shoal's state dir; a card reads it
 sid = "answered-test-" + str(os.getpid())
 ui_status.note_reply(sid, "r", {"ts": "2026-11-24T19:59:30Z", "id": "e1", "wake": True, "text": "re ask 1: y"})
-assert ui_status.read_reply(sid, "r") == {"ts": "2026-11-24T19:59:30Z", "id": "e1", "wake": True, "asks": [1]}
+assert ui_status.read_reply(sid, "r") == {"ts": "2026-11-24T19:59:30Z", "id": "e1", "wake": True, "asks": [1], "refs": [[1, "", ""]]}
 assert ui_status.read_reply(sid, "other") is None
 import shutil
 shutil.rmtree(ui_status.state_dir(sid), ignore_errors=True)

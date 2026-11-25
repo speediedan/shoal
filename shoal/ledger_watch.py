@@ -443,14 +443,62 @@ def hold_reason(wake: str, session: str, ecosystem: str, repo_dir: str) -> str:
     return "busy" if session_busy(session, repo_dir) else ""
 
 
-def claude_deliver(sid: str, spec, role, session: str, text: str) -> str:
+def claude_deliver(sid: str, spec, role, session: str, text: str, through: bool = False) -> str:
     """A detached Claude watcher's delivery (`--wake direct`): resume a retired session, or stop and
-    resume an idle one (features.health.direct_wake). Returns the channel, as
-    backends.ClaudeBackend.deliver names it."""
+    resume an idle one (features.health.direct_wake), or with `through` one at an open question (`through_question`).
+    Returns the channel, as backends.ClaudeBackend.deliver names it."""
     if spec is None or role is None:
         return "no-adapter (no spec or role to deliver for)"
     from backends import get as get_backend
-    return get_backend("claude").deliver(spec, role, session, text)
+    try:
+        return get_backend("claude").deliver(spec, role, session, text, through_question=through,
+                                             confirm=(lambda: question_stays(spec, role, session)) if through else None)
+    except (OSError, subprocess.SubprocessError) as exc:  # a CLI call that timed out: the events are kept and retried
+        return f"FAILED ({short(str(exc), 120)})"
+
+
+def is_answer(m: dict, slug: str, asks: list) -> bool:
+    """A msg is the maintainer's answer to an ask slug has now: by `user`, to slug itself, woken, and naming one by its
+    id or opening words (`re ask <n> [<id>] "<words>"`, the Asks dialog's Submit). A number alone is no proof of which
+    ask was meant, and an ask since answered, replaced or reworded is not the one answered."""
+    import ask_answers
+    return (m.get("by") == "user" and m.get("to") == slug and bool(m.get("wake")) and m.get("kind") != "request"
+            and any(r["how"] in ("id", "quote") for r in ask_answers.resolve(m.get("text", ""), asks)))
+
+
+def question_stays(spec, role, session: str) -> str:
+    """Why a watcher may not stop a Claude session's turn at its open question ('' when it may)."""
+    from backends import direct_wake_mode, get as get_backend, only_waiters, work_in_flight
+    from health import claude_job_state, claude_open_prompt
+    import park
+    if direct_wake_mode(spec) != "idle":
+        return "features.health.direct_wake is dead: a live worker is never stopped"
+    try:
+        if not claude_open_prompt(session):
+            return "its transcript shows no open question: the prompt is another kind, or just closed"
+        row = get_backend("claude")._row(session, include_stopped=True) or {}
+        st = claude_job_state(row)
+        if work_in_flight(st) and not only_waiters(st, role.slug, row.get("pid")):
+            return "it has background work in flight"
+        pids = park.claude_attach_pids(role, row)
+    except Exception as exc:  # noqa: BLE001 - unknown is not "nobody there"
+        return f"its session could not be read: {short(str(exc), 80)}"
+    return f"a client is attached: pid {pids[0]}, the person there answers it" if pids else ""
+
+
+def through_question(view: View, slug: str, new: list[tuple[str, str]], spec, role, session: str, sc: dict) -> str:
+    """`<msg>@<question>` when a watcher's undelivered events hold the maintainer's answer and the Claude session's open
+    question may be closed to deliver it (stop the turn, resume it with the wake), else ''. Every other event (a
+    broadcast, an offer, a queue order, a plain note) waits for the question. One answer never closes two questions:
+    `sc['through']` keeps the last one delivered this way, and only a retry at the same question may repeat it."""
+    ids = {i for i, _ in new}
+    asks = list((view.current_queue(slug) or {}).get("asks") or []) if spec is not None and role is not None else []
+    got = [m["id"] for m in view.msgs_to(slug) if m["id"] in ids and is_answer(m, slug, asks)]
+    if not got or question_stays(spec, role, session):
+        return ""
+    from health import claude_open_prompt
+    last, token = sc.get("through", ""), f"{got[-1]}@{claude_open_prompt(session)}"
+    return "" if last.split("@")[0] == got[-1] and last != token else token
 
 
 def fire(wake: str, text: str, repo_dir: str, ecosystem: str = "muse", model: str = "", effort: str = "") -> bool:
@@ -615,6 +663,10 @@ def cmd_ledger_watch(a) -> int:
             save_sidecar(sc_path, sc)
             continue
         held = hold_reason(a.wake, session, role.ecosystem if role else "muse", repo_dir) if persistent else ""
+        through = through_question(view, slug, new, spec, role, session or "", sc) \
+            if a.wake == "direct" and held in ("", "question") else ""
+        if through:
+            held = ""
         if held:
             # never wake a lane mid-turn, never collide with a person at it (an attached client, an open
             # question): the events stay undelivered and go out at the next idle tick. A person's hold is
@@ -644,12 +696,17 @@ def cmd_ledger_watch(a) -> int:
                 + ("; your watcher keeps running (no re-arm)." if persistent else ", re-arm."))
         emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
         if a.wake == "direct":
-            ch = claude_deliver(sid, spec, role, session or "", text)
+            if through:
+                was, sc["through"] = sc.get("through", ""), through
+                save_sidecar(sc_path, sc)
+            ch = claude_deliver(sid, spec, role, session or "", text, through=bool(through))
             print(f"{now_iso()} delivered via {ch}", flush=True)
             if ch.startswith("deferred"):
                 # nothing failed: the session cannot take a direct wake yet (work in flight wakes it
                 # anyway), so the events stay undelivered for a later tick
                 sc["delivered"] = ",".join(x for x in sc["delivered"].split(",") if x not in set(ids))
+                if through:
+                    sc["through"] = was  # nothing was stopped
                 if "at a question" in ch:
                     note_hold(sc, "question", len(new))
                 save_sidecar(sc_path, sc)

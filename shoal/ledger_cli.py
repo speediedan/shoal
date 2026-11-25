@@ -365,6 +365,8 @@ def cmd_msg(a) -> int:
             return 1
     if a.dry_run:
         print(f"[dry-run] msg {by}->{a.to} [{a.kind}] {a.text[:80]}")
+        for line in _answer_notes(spec, led, {"by": by, "to": a.to, "kind": a.kind, "wake": getattr(a, "wake", False), "text": a.text}):
+            print(line)
         return 0
     ev = led.append(by, "msg", to=a.to, text=a.text, kind=a.kind, re=a.re,
                     ack=(True if a.ack or a.kind == "request" else None),
@@ -393,6 +395,8 @@ def cmd_msg(a) -> int:
                       f"({r.slug}'s ledger-watch is not running)")
     if target is not None and getattr(a, "wake", False) and by == "user" and target.session:
         _wake_fallback(spec, target, ev)
+    for line in _answer_notes(spec, led, ev):
+        print(line)
     if target is not None and by not in ("user",) + SYSTEM_WRITERS and re.search(r"#\d+", a.text or ""):
         # FM-4 (measured 2026-10-08): a lane delegated seven items to an assigned reviewer by mail
         print(f"note: this is mail. {a.to} reads it at its next `next`; it is not woken by it"
@@ -414,6 +418,41 @@ def _wake_fallback(spec: ShoalSpec, target, ev: dict) -> None:
     elif not watcher_alive(spec.sid, target.slug)[0]:
         print(f"wake via {request_wake(spec, target.slug, 'user message ' + ev['id'] + ': ' + ev.get('text', ''), 'user-msg')} "
               f"({target.slug}'s ledger-watch is not running)")
+
+
+def _answer_notes(spec: ShoalSpec | None, led: Ledger, msg: dict) -> list[str]:
+    """What becomes of your answer to a role's asks (a woken `re ask` message; the Asks dialog shows these lines): each
+    line that names no ask the role has now, and, for a Claude role at an open question, whether its watcher closes
+    that question to deliver it or why the answer waits. Measured 2026-11-25: an answer sat undelivered behind the role's
+    own question, and nothing said so."""
+    import ask_answers
+    target = spec.role(msg["to"]) if spec is not None and msg.get("by") == "user" and msg.get("wake") else None
+    if target is None:
+        return []
+    asks = list((View(led, spec).current_queue(target.slug) or {}).get("asks") or [])
+    rs = ask_answers.resolve(msg.get("text", ""), asks)
+    out = [f"note: `{ask_answers.name(r)}` names none of {target.slug}'s asks now"
+           + (f" (ask {r['now']} opens the same, but its text has changed)" if r["how"] == "reworded" else
+              " alone (it opens several)" if r["how"] == "ambiguous" else "") + f": {target.slug} is told not to guess"
+           for r in rs if r["how"] in ("gone", "reworded", "ambiguous")]
+    if not rs or target.ecosystem != "claude":
+        return out
+    try:
+        ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+        if ui_dir not in sys.path:
+            sys.path.insert(0, ui_dir)
+        import ledger_watch
+        import ui_status
+        # the listing every card on this host shares (at most a few seconds old): a dialog's call is short
+        if not (ui_status.live_turn(spec.sid, target.slug) or {}).get("prompt"):
+            return out
+        why = ("it names none of its asks by id or words" if not ledger_watch.is_answer(msg, target.slug, asks) else
+               ledger_watch.question_stays(spec, target, target.session))
+    except Exception:  # noqa: BLE001 - a note never fails a message
+        return out
+    return out + [f"note: {target.slug}'s session is at an open question: " + (
+        f"this waits until the question is answered in its chat ({why})" if why else
+        "its watcher closes the question at its next tick and resumes the turn with this answer")]
 
 
 def _refusals(rows: list[tuple[str, str, str]], dry_run: bool) -> bool:

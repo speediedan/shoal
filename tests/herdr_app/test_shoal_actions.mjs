@@ -250,7 +250,7 @@ test("replies: plan, result, view, asks", () => {
   assert.deepEqual(asks.asks.map((a) => [a.role, a.host, a.asks.length, a.question, a.saysWaiting]),
     [["lane-a", "host-a", 1, true, false], ["lane-b", "host-b", 2, false, true]]);
   assert.deepEqual(M.parseReply(ok({ ...fx.views.asks, asks: [{ role: "x", asks: ["", "a", 3] }, { asks: ["y"] }, null] }), "view").asks,
-    [{ role: "x", host: null, asks: ["a", "3"], question: false, saysWaiting: false, waits: "", links: [], options: [], headless: false }]);
+    [{ role: "x", host: null, asks: ["a", "3"], ids: [], question: false, saysWaiting: false, waits: "", links: [], options: [], headless: false }]);
   // each ask's answer set, and whether the role is headless (answered only here)
   const lb = asks.asks.find((a) => a.role === "lane-b");
   assert.ok(lb.headless && lb.options.length === lb.asks.length && lb.options[0].includes("Defer"), "a headless role's answer sets");
@@ -771,17 +771,19 @@ test("a long command breaks at its arguments, never inside a word or a quoted sp
 });
 
 test("batch answers: a choice and/or a note per ask, one message per role in the form a headless brief reads", () => {
-  const card = { role: "it-architect", asks: ["May I squash-merge PR #948?", "May I squash-merge PR #1028?", "Publish the lens?"] };
+  const card = { role: "it-architect", asks: ["May I squash-merge PR #48?", "May I squash-merge PR #28?", "Publish the lens?"] };
   const k = (n) => M.answerKey(A, card.role, n, card.asks[n - 1]);
   let p = M.toggleChoice({}, k(1), "Grant merge");
   p = M.setNote(p, k(1), "  after its GPU gate\n passes ");
   p = M.setNote(p, k(3), "not yet: hold until the review lands");
   assert.equal(M.batchAnswerText(A, card, p),
-    "re ask 1: Grant merge. after its GPU gate passes\nre ask 3: not yet: hold until the review lands",
-    "ask order, the choice then the note (whitespace folded), unanswered asks left out");
+    're ask 1 "May I squash-merge PR #48?": Grant merge. after its GPU gate passes\n'
+    + 're ask 3 "Publish the lens?": not yet: hold until the review lands',
+    "ask order, each named by its opening words, the choice then the note (whitespace folded), unanswered asks left out");
   assert.equal(M.answeredCount(A, card, p), 2);
   p = M.toggleChoice(p, k(2), "Defer review");
-  assert.ok(M.batchAnswerText(A, card, p).includes("re ask 2: Defer review."), "a choice alone ends with its full stop");
+  assert.ok(M.batchAnswerText(A, card, p).includes('re ask 2 "May I squash-merge PR #28?": Defer review.'),
+    "a choice alone ends with its full stop");
   p = M.toggleChoice(p, k(2), "Defer review");
   assert.equal(M.answeredCount(A, card, p), 2, "picking the chosen one again clears it");
   assert.equal(M.batchAnswerText(A, card, M.setNote({}, k(2), "   ")), "", "a blank note is no answer");
@@ -793,6 +795,30 @@ test("batch answers: a choice and/or a note per ask, one message per role in the
   assert.equal(Object.keys(cleared).length, 1, "and keeps every other role's");
   // the single-ask Reply's text, still the same form: a choice prefill is what one batch line looks like
   assert.equal(M.answerTarget({ shoal: A }, { role: "lane-b" }, new Date(), 1, "Grant merge").form.values.text, "re ask 1: Grant merge. ");
+});
+
+test("an answer names its ask by id and opening words, not by number alone (shoal/ask_answers.py reads them)", () => {
+  // measured 2026-11-25: a role replaced both its merge asks at the same numbers three minutes after an answer; a line
+  // that says only `re ask 1` then answers whatever ask 1 has become. The ids come from shoal (ask_id); the opening
+  // words are cut the way ask_answers.ask_lead cuts them (the expected values below are its output)
+  const long = 'Merge PR #301 (lane-b: fix the  "widget" cache eviction order under load) at head 1a2b3c4d?';
+  assert.equal(M.askLead(long), "Merge PR #301 (lane-b: fix the 'widget' cache", "eight words at most, quotes made single");
+  assert.equal(M.askLead("x".repeat(70)), "x".repeat(60), "one long word: its first sixty characters");
+  const card = { role: "lane-b", asks: ["May I squash-merge PR #48?", long], ids: ["afb5ba", "179294"] };
+  assert.equal(M.answerPrefix(card, 1), 're ask 1 [afb5ba] "May I squash-merge PR #48?":');
+  assert.equal(M.answerPrefix(card, 2), `re ask 2 [179294] "Merge PR #301 (lane-b: fix the 'widget' cache":`);
+  assert.equal(M.answerPrefix({ ...card, ids: ["not an id!"] }, 1), 're ask 1 "May I squash-merge PR #48?":', "a bad id is left out");
+  assert.equal(M.answerPrefix({ role: "lane-b" }, 3), "re ask 3:", "no ask text: the number alone, as before");
+  const p = M.toggleChoice({}, M.answerKey(A, card.role, 2, long), "Grant merge");
+  assert.equal(M.batchAnswerText(A, card, p), `re ask 2 [179294] "Merge PR #301 (lane-b: fix the 'widget' cache": Grant merge.`);
+  assert.equal(M.answerTarget({ shoal: A }, card, new Date(), 1, "Deny").form.values.text, 're ask 1 [afb5ba] "May I squash-merge PR #48?": Deny. ');
+  // ids reach the dialog from the CLI's asks view
+  const v = M.parseReply({ code: 0, stdout: JSON.stringify({ v: 1, kind: "shoal-act-view", verb: "asks", text: "",
+    asks: [{ role: "lane-b", asks: card.asks, ids: card.ids, question: true }] }) });
+  assert.deepEqual(v.asks[0].ids, card.ids);
+  // a role at an open question: the dialog says an answer here reaches it, by closing the question
+  assert.ok(/answer it in its chat.*or here.*closes that question.*resumed with your answer/.test(M.askWhy(v.asks[0])), M.askWhy(v.asks[0]));
+  assert.ok(/headless/.test(M.askWhy({ headless: true, asks: ["x"] })) && M.askWhy({}) === "");
 });
 
 test("dialog size: three sizes, a cycle, and a reopen that keeps the target, the verb and the answers", () => {

@@ -502,6 +502,10 @@ RESTORED_DIR_NOTE = ("Your session's directory {path} was gone, and Claude resum
 WAITERS_STOPPED_NOTE = ("Your in-session job or CI waiters were stopped to deliver this wake (they held every wake "
                         "back for as long as they ran). The jobs run on, and your watcher wakes you on each `job:` or "
                         "CI wait you recorded, so re-arm a waiter only if no recorded wait covers it. Act on this wake: ")
+QUESTION_CLOSED_NOTE = ("YOUR OPEN QUESTION WAS CLOSED: the turn held at it was stopped, and nobody answered the prompt "
+                        "itself. A role runs `next`: if the maintainer answered its asks from outside its chat (the Asks "
+                        "dialog), MAIL says which of its asks each `re ask` line answers, or that it names an ask it no "
+                        "longer has. Act on those, and raise again only what is still open. ")
 # a background command that only waits on the role's own job or on CI: stopping it loses nothing, since the job unit runs on
 # and the role's recorded wait (and its detached watcher) covers it. Anything else in flight is real work and holds the wake.
 # what a waiter's pipeline runs beside it: output filters, never work of their own (2026-11-18: a role's
@@ -1161,7 +1165,8 @@ class ClaudeBackend(Backend):
             return "wake-file" + (" (dry-run)" if dry_run else "")
         return self.deliver(spec, role, role.session, text, dry_run)
 
-    def deliver(self, spec, role, session: str, text: str, dry_run: bool = False, through_question: bool = False) -> str:
+    def deliver(self, spec, role, session: str, text: str, dry_run: bool = False, through_question: bool = False,
+                confirm=None) -> str:
         """Deliver one wake to a Claude session with no turn but the target's own, where it allows that
         (features.health.direct_wake; architecture doc §7). Returns the channel:
         - `resume`: the session has no worker (retired idle at its prompt, reaped, stopped), so
@@ -1172,10 +1177,13 @@ class ClaudeBackend(Backend):
         - `deferred (...)`: busy, at a question, work in flight, or a live worker under mode `dead`; the
           caller retries later (a session with work in flight wakes itself when that work ends);
           `through_question` (an operator's explicit handoff choice) stops and resumes a session at a question
-          instead, which drops the question;
-        - `FAILED ...`: the resume did not take; the caller retries."""
+          instead, which drops the question. So does a watcher delivering the maintainer's answer, which also passes
+          `confirm`: called just before the stop, it returns why not to ('' to go on), and the wake is deferred;
+        - `FAILED ...`: the resume did not take (after a stop too); the caller retries.
+        A turn stopped at a question is resumed with QUESTION_CLOSED_NOTE first, by a retry as well: the note goes on
+        whenever the session's transcript ends at a question nobody answered."""
         import time as _time
-        from health import claude_job_state, claude_liveness, claude_prompt_open
+        from health import claude_job_state, claude_liveness, claude_open_prompt, claude_prompt_open
         mode = direct_wake_mode(spec)
         row = self._row(session, include_stopped=True) if session else None
         full = str((row or {}).get("sessionId") or session)
@@ -1183,23 +1191,29 @@ class ClaudeBackend(Backend):
         if row is None:
             why = "session not listed"
         elif not row.get("pid"):
-            return self._resume(row, full, RESUMED_NOTE + text, dry_run, anchor=getattr(spec, "dir", ""))
+            text = (QUESTION_CLOSED_NOTE if claude_open_prompt(full) else "") + RESUMED_NOTE + text
+            return self._resume(row, full, text, dry_run, anchor=getattr(spec, "dir", ""))
         else:
             live = claude_liveness(row)
             busy_fl = work_in_flight(claude_job_state(row))
+            open_q = live != "busy" and claude_prompt_open(row, full)
             if live == "busy":
                 why = "mid-turn"
-            elif claude_prompt_open(row, full) and not through_question:
+            elif open_q and not through_question:
                 why = "at a question"
             elif busy_fl and not only_waiters(claude_job_state(row), getattr(role, "slug", ""), row.get("pid")):
                 why = "background work in flight"
             elif mode != "idle" and not through_question:
                 why = "live worker (direct_wake dead)"
             else:
+                if open_q and confirm and (why := confirm()):
+                    return f"deferred (at a question: {why})"
                 if dry_run or fake_sessions() is not None:
                     return "stop+resume" + (" (dry-run)" if dry_run else " (fake)")
                 if busy_fl:  # only its own job or CI waiters: they stop with the worker, the jobs and the watcher go on
                     text = WAITERS_STOPPED_NOTE + text
+                if open_q:
+                    text = QUESTION_CLOSED_NOTE + text
                 self.stop(str(row.get("id") or full[:8]))
                 for _ in range(40):
                     r2 = self._row(full, include_stopped=True) or {}
@@ -1207,7 +1221,9 @@ class ClaudeBackend(Backend):
                         break
                     _time.sleep(0.5)
                 _time.sleep(RESUME_SETTLE_S)
-                return "stop+" + self._resume(row, full, text, dry_run, anchor=getattr(spec, "dir", ""))
+                ch = self._resume(row, full, text, dry_run, anchor=getattr(spec, "dir", ""))
+                # a failure after the stop reads as one: "stop+FAILED ..." counted as delivered, and lost the wake
+                return "FAILED after stop" + ch[len("FAILED"):] if ch.startswith("FAILED") else "stop+" + ch
         return f"deferred ({why})"
 
     def _resume(self, row: dict, session: str, text: str, dry_run: bool = False, anchor: str = "") -> str:
