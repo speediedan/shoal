@@ -289,6 +289,17 @@ def pinned(slug: str) -> bool:
     return isinstance(v, list) and slug in [str(x) for x in v]
 
 
+def pin_of(role) -> str:
+    """Why automatic balancing keeps `role` on its provider ("" when it may move it): its own provider pin (an explicit
+    `handoff --ecosystem`, recorded on the role in the spec) or `[accounts] pin` naming its slug. A move the operator
+    made by hand otherwise lasted only until the next automatic restart (2026-11-25: a role handed to Codex was moved
+    back to Claude at its next one)."""
+    pin = getattr(role, "provider_pin", None) or {}
+    if isinstance(pin, dict) and pin.get("provider"):
+        return f"pinned to {pin['provider']} by {pin.get('by') or 'user'} at {pin.get('at') or '?'} ({pin.get('via') or 'handoff'})"
+    return "[accounts] pin" if pinned(getattr(role, "slug", "")) else ""
+
+
 QUOTA_COOLDOWN_MIN = 60  # a role moved for quota is not moved again sooner (`[accounts] quota_cooldown_min`)
 
 

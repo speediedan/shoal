@@ -36,10 +36,74 @@ _ENV = config.tool_env()
 
 
 def tool_which(name: str) -> str | None:
-    """A harness binary on this process's PATH, else on the host's tool path (`tool_path`): a command run
-    over ssh gets a login shell's PATH, which on a host with an nvm install lacks `claude` (measured
-    2026-10-20: a remote `shoal view` failed with "No such file or directory: 'claude'")."""
-    return shutil.which(name) or shutil.which(name, path=_ENV.get("PATH", ""))
+    """A harness binary, looked up afresh (`config.harness_which`): on this process's PATH, else on the host's tool
+    path (`tool_path`), else at its known install locations. A command run over ssh gets a login shell's PATH, which on
+    a host with an nvm install lacks `claude` (measured 2026-10-20: a remote `shoal view` failed with "No such file or
+    directory: 'claude'")."""
+    return config.harness_which(name)
+
+
+# A launch waits this long for a harness binary that is missing (an update replaces it: 2026-11-25, a context restart
+# failed on a missing `claude` and nothing tried again), looking again every LAUNCH_POLL_S.
+LAUNCH_WAIT_S = 60.0
+LAUNCH_POLL_S = 5.0
+
+
+def launch_wait_s() -> float:
+    """LAUNCH_WAIT_S, or `SHOAL_LAUNCH_WAIT_S` (the selftests set 0: a host with no harness CLI fails at once there)."""
+    try:
+        return max(0.0, float(config.env("LAUNCH_WAIT_S") or LAUNCH_WAIT_S))
+    except ValueError:
+        return LAUNCH_WAIT_S
+
+
+class HarnessMissing(FileNotFoundError):
+    """A harness CLI still missing after a launch's wait (`harness_exe`)."""
+
+
+def _sleep(s: float) -> None:
+    """A launch's wait for its harness binary. Tests replace this, never `time.sleep` itself."""
+    import time as _time
+    _time.sleep(s)
+
+
+def harness_exe(name: str, wait_s: float | None = None) -> str:
+    """The executable to launch harness `name` with now, looked up afresh (`tool_which`, never a path kept from an
+    earlier run). Missing, it is looked up again every LAUNCH_POLL_S for up to `wait_s` (launch_wait_s): a CLI mid-update
+    comes back within a minute or so. Raises HarnessMissing, saying what was looked at, when it does not. The wait is
+    counted in the sleeps it takes (`_sleep`), so a test that replaces `_sleep` runs it at once."""
+    wait = launch_wait_s() if wait_s is None else max(0.0, float(wait_s))
+    waited = 0.0
+    while True:
+        exe = tool_which(name)
+        if exe:
+            return exe
+        if waited >= wait:
+            raise HarnessMissing(2, f"{config.harness_missing(name) or 'no ' + name + ' executable'}"
+                                    + (f" (looked again for {wait:g} s)" if wait else ""), name)
+        step = min(LAUNCH_POLL_S, wait - waited)
+        _sleep(step)
+        waited += step
+
+
+def run_harness(name: str, args: list[str], wait_s: float | None = None, wrap=None, **kw) -> subprocess.CompletedProcess:
+    """`subprocess.run` of harness `name` with `args`, its executable resolved at this call (`harness_exe`). An exec that
+    fails on a missing file (the link replaced between the lookup and the exec, or the interpreter it names gone
+    mid-update) is tried again within the same wait. `wrap`: a function applied to the argv (`detached`)."""
+    wait = launch_wait_s() if wait_s is None else max(0.0, float(wait_s))
+    waited = 0.0
+    while True:
+        exe = harness_exe(name, wait - waited)
+        argv = [exe, *args]
+        try:
+            return subprocess.run(wrap(argv) if wrap else argv, **kw)
+        except FileNotFoundError as exc:
+            if waited >= wait:
+                raise HarnessMissing(2, f"{name} would not start: {exc}" + (f" (tried for {wait:g} s)" if wait else ""),
+                                     name) from exc
+            step = min(LAUNCH_POLL_S, wait - waited)
+            _sleep(step)
+            waited += step
 
 
 def fake_sessions() -> dict | None:
@@ -562,6 +626,119 @@ def work_in_flight(state: dict) -> bool:
     return running or float(state.get("_age_s") or 0) < QUEUED_STALE_S
 
 
+# ---- a job's background tasks, verified -------------------------------------------------------------------------
+# Claude Code counts a job's background tasks itself (state.json `inFlight.tasks`, and `fan`: one entry per task, with
+# `doneAt` once it ends), and that count can hold tasks that have ended: measured 2026-11-25 on an operator seat, the
+# app read several tasks and a subagent outstanding while two shells were alive and every subagent had finished. Shoal
+# checks each entry Claude still lists against evidence of its own: a background shell writes its output to
+# <tmp>/claude-<uid>/<cwd>/<session>/tasks/<task id>.output, so it is alive while a process holds that file open; a
+# subagent's record (<claude home>/projects/<cwd>/<session>/subagents/agent-<id>.meta.json, the target of its
+# `.output` link there) says `finished: true` once it has. An entry with no such evidence either way is taken as
+# Claude lists it.
+
+def claude_tmp_root() -> str:
+    """Where Claude Code keeps its per-session task files: <tmp>/claude-<uid>."""
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), f"claude-{os.getuid()}")
+
+
+def claude_task_dirs(ids: list[str]) -> list[str]:
+    """The task directories of a Claude job's conversations (`ids`: its current, original and recorded session ids)."""
+    import glob
+    out: list[str] = []
+    for sid in dict.fromkeys(i for i in ids if i and re.fullmatch(r"[0-9a-f-]{8,64}", i)):
+        out += glob.glob(os.path.join(claude_tmp_root(), "*", sid, "tasks"))
+    return out
+
+
+def task_writers(dirs: list[str]) -> set[str]:
+    """Task ids whose output file under one of `dirs` a live process holds open (its stdout or stderr), from /proc."""
+    roots = tuple(os.path.realpath(d) + os.sep for d in dirs)
+    out: set[str] = set()
+    if not roots:
+        return out
+    try:
+        pids = [d for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return out
+    for pid in pids:
+        for fd in ("1", "2"):
+            try:
+                t = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if t.startswith(roots) and t.endswith(".output"):
+                out.add(os.path.basename(t)[:-len(".output")])
+    return out
+
+
+def agent_finished(dirs: list[str], task_id: str) -> bool | None:
+    """True when a subagent's own record says it finished, False when it says it runs, None when there is none."""
+    import json as _json
+    for d in dirs:
+        link = os.path.join(d, f"{task_id}.output")
+        target = os.path.realpath(link) if os.path.islink(link) else ""
+        meta = target[:-len(".jsonl")] + ".meta.json" if target.endswith(".jsonl") else ""
+        try:
+            m = _json.load(open(meta)) if meta else None
+        except (OSError, ValueError):
+            m = None
+        if isinstance(m, dict):
+            return bool(m.get("finished"))
+    return None
+
+
+def live_tasks(row: dict, state: dict) -> dict:
+    """A Claude job's background tasks that are running, verified (see above): {shells, agents, total, listed (what
+    Claude Code itself counts), ended (listed by it, but over by the evidence), verified (the count rests on `fan`)}.
+    Without `fan` it is Claude's own count, a stale queued count left out (`work_in_flight`)."""
+    fl = (state or {}).get("inFlight") or {}
+    try:
+        listed = int(fl.get("tasks") or 0) + int(fl.get("queued") or 0) if isinstance(fl, dict) else 0
+    except (TypeError, ValueError):
+        listed = 0
+    fan = [t for t in (state or {}).get("fan") or [] if isinstance(t, dict) and t.get("kind") != "todo"
+           and not t.get("doneAt")]
+    if fan and not listed:
+        # Claude Code counts nothing in flight (a stopped job keeps the last `fan` it wrote): none runs
+        return {"shells": 0, "agents": 0, "total": 0, "listed": 0, "ended": len(fan), "verified": True}
+    if not fan:
+        n = listed if work_in_flight(state) else 0
+        agents = n if isinstance(fl, dict) and any("agent" in str(k) for k in fl.get("kinds") or []) else 0
+        return {"shells": n - agents, "agents": agents, "total": n, "listed": listed, "ended": 0, "verified": False}
+    dirs = claude_task_dirs([str(row.get("sessionId") or ""), str(row.get("originalSessionId") or ""),
+                             str(state.get("sessionId") or "")])
+    writers = task_writers(dirs) if any(t.get("kind") != "agent" for t in fan) else set()
+    shells = agents = ended = trusted_s = trusted_a = 0
+    for t in fan:
+        tid = str(t.get("id") or "")
+        if t.get("kind") == "agent":
+            done = agent_finished(dirs, tid)
+            if done:
+                ended += 1
+            else:
+                agents += 1
+                trusted_a += done is None  # no record either way: as Claude lists it
+        elif dirs and tid in writers:
+            shells += 1
+        elif not dirs or not any(os.path.exists(os.path.join(d, f"{tid}.output")) for d in dirs):
+            shells += 1  # no evidence either way: as Claude lists it
+            trusted_s += 1
+        else:
+            ended += 1
+    # never more than Claude Code counts, unless proven alive: the entries with no evidence go first
+    over = max(0, shells + agents - listed)
+    cut_s = min(trusted_s, over)
+    cut_a = min(trusted_a, over - cut_s)
+    shells, agents, ended = shells - cut_s, agents - cut_a, ended + cut_s + cut_a
+    try:
+        queued = int(fl.get("queued") or 0) if isinstance(fl, dict) and work_in_flight(state) else 0
+    except (TypeError, ValueError):
+        queued = 0
+    return {"shells": shells + queued, "agents": agents, "total": shells + queued + agents, "listed": listed,
+            "ended": ended, "verified": True}
+
+
 # `claude --bg --resume` right after `claude stop` still finds the session running and forks a copy;
 # measured 2026-10-20: forked with the pid gone for 1 s, continued in place 4 s later
 RESUME_SETTLE_S = 6.0
@@ -863,11 +1040,11 @@ def claude_agents(include_stopped: bool = False, timeout: int = 30, which: str |
     kept = memo_rows(key)
     if kept is not None:
         return kept
-    b = tool_which("claude") or "claude"
-    argv = [b, "agents", "--json"] + (["--all"] if include_stopped else [])
+    args = ["agents", "--json"] + (["--all"] if include_stopped else [])
     out = []
     for a in (accounts.of("claude") if which is None else [which]):
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=claude_env(a))
+        # resolved at each call, no wait (a status pass must not stall): a missing CLI raises HarnessMissing, plainly
+        r = run_harness("claude", args, wait_s=0, capture_output=True, text=True, timeout=timeout, env=claude_env(a))
         try:
             rows = _json.loads(r.stdout) if r.returncode == 0 else []
         except Exception:
@@ -1047,8 +1224,11 @@ class ClaudeBackend(Backend):
             text = RESTORED_DIR_NOTE.format(path=cwd, anchor=anchor, sha=sha) + text
             restored = f" (restored missing directory {cwd} as a detached worktree of {anchor} at {sha})"
         env = claude_env(row_account(row))
-        r = subprocess.run(detached([b, "--bg", "--resume", session, text]), capture_output=True, text=True,
-                           timeout=120, cwd=cwd, env=env)
+        try:  # resolved at this launch, waiting out an update that has the binary missing (harness_exe)
+            r = run_harness("claude", ["--bg", "--resume", session, text], wrap=detached, capture_output=True, text=True,
+                            timeout=120, cwd=cwd, env=env)
+        except OSError as exc:
+            return f"FAILED ({exc}){restored}"
         out = ANSI_RE.sub("", r.stdout + r.stderr)
         m = COPY_RE.search(out)
         if m:
@@ -1113,6 +1293,7 @@ class ClaudeBackend(Backend):
         deadline = _time.time() + verify_s
         while jobs and _time.time() < deadline:
             _time.sleep(2)
+            harness_exe("claude")  # the listing that verifies the stop: an update may have the CLI missing a moment
             rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
             back = [j for j in jobs if (rows.get(j) or {}).get("pid")]
             if back and restops < RETIRE_MAX_RESTOPS:
@@ -1120,6 +1301,7 @@ class ClaudeBackend(Backend):
                     self.stop(j)
                 restops += 1
                 deadline = max(deadline, _time.time() + verify_s / 2)
+        harness_exe("claude")
         rows = {str(r.get("id")): r for r in self._agents(include_stopped=True)}
         return [j for j in jobs if (rows.get(j) or {}).get("pid")]
 
@@ -1175,15 +1357,17 @@ class ClaudeBackend(Backend):
             return "cc_DRYRUN_" + re.sub(r"\W+", "_", title)
         if not brief:
             raise UnsupportedError("claude create needs the role brief text")
-        b = tool_which("claude") or "claude"
-        argv = [b, "--bg", "-n", name or title]
+        argv = ["--bg", "-n", name or title]
         if model:
             argv += ["--model", model]
         if effort:
             argv += ["--effort", effort]
         argv += [brief]
-        r = subprocess.run(detached(argv), capture_output=True, text=True, timeout=120,
-                           cwd=repo_dir, env=claude_env(self.account))
+        try:  # resolved at this launch, waiting out an update that has the binary missing (harness_exe)
+            r = run_harness("claude", argv, wrap=detached, capture_output=True, text=True, timeout=120,
+                            cwd=repo_dir, env=claude_env(self.account))
+        except OSError as exc:
+            raise RuntimeError(f"claude --bg failed for {title!r}: {exc}") from exc
         m = parse_bg_id(r.stdout + r.stderr)
         if not m:
             raise RuntimeError(f"claude --bg failed for {title!r}: "
@@ -1222,9 +1406,11 @@ class ClaudeBackend(Backend):
         if fake_sessions() is not None:
             return "fake"
         e = self._row(session_id, include_stopped=True) or {}
-        b = tool_which("claude") or "claude"
-        r = subprocess.run(detached([b, "respawn", str(e.get("id") or session_id[:8])]), capture_output=True,
-                           text=True, timeout=120, env=claude_env(row_account(e) if e else id_account(session_id)))
+        try:
+            r = run_harness("claude", ["respawn", str(e.get("id") or session_id[:8])], wrap=detached, capture_output=True,
+                            text=True, timeout=120, env=claude_env(row_account(e) if e else id_account(session_id)))
+        except OSError as exc:
+            return f"FAILED ({exc})"
         out = ANSI_RE.sub("", r.stdout + r.stderr).strip().splitlines()
         return (out[-1] if out else "respawned") if r.returncode == 0 else f"FAILED rc={r.returncode}: {out[-1] if out else ''}"
 
@@ -1267,9 +1453,8 @@ class ClaudeBackend(Backend):
 
     @staticmethod
     def stop(session_id: str) -> str:
-        b = tool_which("claude") or "claude"
-        r = subprocess.run([b, "stop", session_id], capture_output=True,
-                           text=True, timeout=30, env=claude_env(id_account(session_id)))
+        r = run_harness("claude", ["stop", session_id], capture_output=True, text=True, timeout=30,
+                        env=claude_env(id_account(session_id)))
         return (r.stdout + r.stderr).strip()[-200:]
 
     def quota_paused(self, session_id: str, repo_dir: str = "") -> str:

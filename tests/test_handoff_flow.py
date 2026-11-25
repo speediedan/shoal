@@ -45,6 +45,10 @@ class HandoffTests(unittest.TestCase):
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
+        # the harness CLIs a handoff checks before it stops anything: present (a test host need not have them)
+        self.exe = patch.object(backends, "harness_exe", side_effect=lambda name, wait_s=None: f"/opt/<prefix>/{name}")
+        self.exe.start()
+        self.addCleanup(self.exe.stop)
 
     def write_doc(self, state):
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -237,7 +241,7 @@ class HandoffTests(unittest.TestCase):
             self.write_doc("ready for a replacement")
             ready[0] = True
             return 0
-        def handoff(*args):
+        def handoff(*args, **kwargs):
             self.assertFalse(args[5], "the workflow never forces the lifecycle gate")
             events.append("handoff")
             role.session = "new-session"
@@ -250,6 +254,52 @@ class HandoffTests(unittest.TestCase):
              patch.object(park, "handoff", side_effect=handoff):
             self.assertEqual(flow.run(self.args), 0)
         self.assertEqual(events, ["handoff"] if already_ready else ["checkpoint-request", "handoff"])
+
+    def test_role_restart_that_ends_without_a_replacement_is_reported_loudly(self):
+        # 2026-11-25: a handoff stopped its role's session, then its launch failed: it must say so, not wait it out
+        role = types.SimpleNamespace(slug="core", session="old-session", ecosystem="claude", doc=str(self.doc))
+        spec = types.SimpleNamespace(sid="example", ledger_dir="", dir=str(self.root), role=lambda _: role)
+        log = self.root / "context-restart-core.log"
+        def handoff(*args, **kwargs):
+            log.write_text("consumer core: brief -> x\n  FAIL: auto-launch failed: claude --bg failed for 'core'\n")
+            return 0
+        self.args.session, self.args.spec, self.args.only = "", "/example/spec.json", "core"
+        import health
+        with patch("roles.ShoalSpec.load", return_value=spec), patch("roles.is_local", return_value=True), \
+             patch("roles.state_dir", return_value=str(self.root)), patch.object(flow, "preflight"), \
+             patch.object(flow, "role_ready", return_value=True), patch("ledger.Ledger"), patch("ledger.View"), \
+             patch.object(park, "handoff", side_effect=handoff), patch.object(health, "restart_lock_held", return_value=False), \
+             patch.object(backends, "claude_untrusted", return_value=""):
+            with self.assertRaises(flow.HandoffFailed) as cm:
+                flow.run(self.args)
+        msg = str(cm.exception)
+        self.assertIn("FAIL: auto-launch failed", msg)
+        self.assertIn("has no running session until a restart takes", msg)
+        self.assertIn("shoal restart --spec /example/spec.json --only core", msg)
+
+    def test_standalone_launch_failure_after_the_stop_is_loud_and_keeps_the_registry(self):
+        events = []
+        def create(*a, **k):
+            raise RuntimeError("claude --bg failed for 'example-seat': no claude executable")
+        target = types.SimpleNamespace(create=create)
+        source = types.SimpleNamespace(send=lambda *a, **k: self.write_doc("restart-ready"))
+        with patch.object(flow, "between", return_value=True), \
+             patch.object(park, "stop_session", side_effect=lambda *a: events.append("stop") or "stopped"), \
+             patch.object(backends, "get", side_effect=lambda eco: source if eco == "muse" else target):
+            with self.assertRaisesRegex(flow.HandoffFailed, "old session old-sess is STOPPED"):
+                flow.standalone_handoff(self.args, self.entry, str(self.doc), "codex", time.monotonic() + 2)
+        self.assertEqual(events, ["stop"])
+        self.assertEqual(load_standalone()[0]["session"], "old-session", "the registry still names the old session")
+
+    def test_standalone_missing_cli_refuses_before_the_stop(self):
+        source = types.SimpleNamespace(send=lambda *a, **k: self.write_doc("restart-ready"))
+        def missing(name, wait_s=None):
+            raise backends.HarnessMissing(2, f"no {name} executable on PATH", name)
+        with patch.object(flow, "between", return_value=True), patch.object(backends, "harness_exe", side_effect=missing), \
+             patch.object(park, "stop_session") as stop, patch.object(backends, "get", return_value=source):
+            with self.assertRaises(backends.HarnessMissing):
+                flow.standalone_handoff(self.args, self.entry, str(self.doc), "codex", time.monotonic() + 2)
+        stop.assert_not_called()
 
     def test_role_workflow_requests_checkpoint_before_using_the_unforced_gate(self):
         self._role_workflow(False)

@@ -65,6 +65,9 @@ shoal_test_setup() {
   # session-liveness probes answer from an empty world (no harness knows the synthetic
   # session ids anyway), so no `claude agents` / `openchamber session status` call is made
   export SHOAL_FAKE_SESSIONS='{"claude": [], "opencode": {}}'
+  # a launch whose harness CLI is missing fails at once here (it waits out an update on a real host: backends.harness_exe)
+  export SHOAL_LAUNCH_WAIT_S=0
+  unset SHOAL_CLAUDE_BIN
   WORK="$s/work"
   mkdir -p "$WORK"
   git init -q "$WORK"

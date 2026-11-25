@@ -294,6 +294,37 @@ def remote_state(host: str, unit: str) -> dict[str, str]:
     return d
 
 
+REMOTE_STATE_TTL_S = 60.0  # one ssh read of a remote unit serves a long-lived reader (a watcher's ticks) this long
+_REMOTE_STATE: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+def remote_state_cached(host: str, unit: str, ttl_s: float = REMOTE_STATE_TTL_S) -> dict[str, str]:
+    """remote_state, kept for `ttl_s` in this process (an unreachable answer too, so a dead route costs one ssh
+    timeout a minute, not one a read)."""
+    import time as _time
+    k = (host, unit)
+    hit = _REMOTE_STATE.get(k)
+    if hit is not None and _time.monotonic() - hit[0] < ttl_s:
+        return dict(hit[1])
+    st = remote_state(host, unit)
+    _REMOTE_STATE[k] = (_time.monotonic(), dict(st))
+    return st
+
+
+def job_host(sid: str, unit: str) -> str:
+    """The host a job's unit runs on, from its record here (`job run --on`, or `--place` onto another pool host), ""
+    when it runs on this host or has no record here."""
+    try:
+        with open(paths(sid, unit)["meta"]) as fh:
+            m = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(m, dict):
+        return ""
+    host = str(m.get("host") or (m.get("placement") or {}).get("host") or "")
+    return "" if not host or host == config.server() else host
+
+
 def reboot_detail(host: str) -> str:
     """When the remote host booted, the last line of its previous boot and the kernel's reset reason, as far as
     its journal lets this account read them; "" when unreachable."""

@@ -133,6 +133,9 @@ class Role:
         # "never": {"repos": [...], "labels": [...]}}. Soft ranking; `never` is the
         # only hard exclusion and is reserved for safety.
     server: str = ""             # host the session runs on ("" = this host)
+    provider_pin: dict = dataclasses.field(default_factory=dict)  # {provider, by, at, via}: an explicit
+        # `handoff --ecosystem` move, kept by automatic balancing (rebalance, quota handoffs) as `[accounts] pin` keeps
+        # a slug, until a later explicit handoff changes it or `--no-pin` clears it (accounts.pin_of)
     parked: dict = dataclasses.field(default_factory=dict)  # `shoal park` (park.py): {at, by, note, until,
         # session}; set while the role has no session on purpose, cleared by the restart that relaunches it
     aux: bool = False            # residual lane (architecture doc §4.1): no brief of its own;

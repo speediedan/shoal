@@ -42,7 +42,11 @@ A provider can have more than one account on a host: declare each extra one in t
 them with each provider's own sign-in answer. A role or seat records its account; to move one to another
 account of the same provider, `shoal handoff --spec <spec> --only <role> --account <name> --prepare`
 (a seat: `--session <label>`), dry-run first. It keeps the host, model and effort. The default account
-is named after its provider (`--account claude`). A role never chooses its own account. SHOAL does not
+is named after its provider (`--account claude`). A role never chooses its own account. Moving a role to
+another provider (`handoff --ecosystem <provider>`, or the Handoff dialog's provider) pins it there: automatic
+balancing (quota handoffs) keeps it on that provider until a later explicit handoff moves it, and `shoal show`
+prints the pin. Add `--no-pin` to move it without one (it also clears a pin); `[accounts] pin = [<slugs>]` in the
+host config pins by slug without a handoff. SHOAL does not
 check a provider's account limits: a launch on an account that is not signed in fails with the
 provider's message, so read `accounts --check` first. A meter that reads `HTTP 401: login rejected` for an
 account no session runs on is usually a lapsed access token, not a lost sign-in: `shoal accounts --keepalive`
@@ -91,6 +95,16 @@ SIGTERM, to that client only, and a msg to you says so ("<role>: detached the ca
 client (pid N, ...) after M min while you were offline"). The card is back on its read-only view; reopen
 the client from it if you still need it. A client you started by hand in a terminal is never ended.
 `features.health.detach_cards: false` turns this off for a spec.
+
+A failed restart stays due: the quorum retries it after 5, 10, 20, then every 30 minutes, and pages once
+after three failures in a row ("<role>: its restart has failed 3 times in a row since ...; last error: ...").
+Read the error and its restart log. A missing harness CLI (`no claude executable on PATH, the tool path or
+its install locations`, often with a dangling link mid-update) is usually an update in progress: each launch
+looks the CLI up afresh and waits up to a minute for it. `shoal doctor` says where it looked; a
+`harness-missing` page (30 min) means the install is broken: reinstall it, and the next retry relaunches the
+role from its start doc. A handoff whose restart failed prints `FAILED: the restart of <role> FAILED ...`:
+the old session was stopped, and the quorum relaunches the role within minutes, or run `shoal restart --spec
+<spec> --only <role>`.
 
 ## Health review
 

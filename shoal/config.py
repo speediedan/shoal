@@ -12,6 +12,9 @@ when neither is importable the file is skipped with one warning on stderr.
   ledger_dir     SHOAL_LEDGER_DIR                            <data_root>/ledger
   ledger_repo    SHOAL_LEDGER_REPO                           "" (start / ledger-init then need --ledger-repo)
   tool_path      SHOAL_TOOL_PATH                             this process's PATH
+  (harness CLIs) SHOAL_CLAUDE_BIN, SHOAL_CODEX_BIN, SHOAL_MUSE_BIN  looked up afresh at each launch: PATH, tool_path,
+                                                                 then HARNESS_HOMES (harness_which)
+  (launch wait)  SHOAL_LAUNCH_WAIT_S                         60 (s a launch waits for a missing harness CLI)
   lease_cmd      SHOAL_LEASE_CMD, GPU_LEASE_CMD              "" (no lease provider: lease waits read unknown)
   default_repos  (none)                                      [] (a spec's own `repos` still wins)
   cli            SHOAL_CLI                                   `shoal` when installed, else python3 <this package>/cli.py
@@ -157,6 +160,75 @@ def ledger_repo() -> str:
 
 def tool_path() -> str:
     return str(_get("tool_path", names("TOOL_PATH"), lambda: os.environ.get("PATH", "")))
+
+
+# Where each harness CLI's own installers put it, looked at after PATH and the tool path: the native installer's
+# ~/.local/bin, an older per-user install, every node version nvm holds (the current one first), and the system
+# prefixes. `SHOAL_<NAME>_BIN` (SHOAL_CLAUDE_BIN, SHOAL_CODEX_BIN, SHOAL_MUSE_BIN) names one outright.
+HARNESS_HOMES = {
+    "claude": ("~/.local/bin/claude", "~/.claude/local/claude", "<nvm>/claude", "/usr/local/bin/claude",
+               "/opt/homebrew/bin/claude"),
+    "codex": ("~/.local/bin/codex", "<nvm>/codex", "/usr/local/bin/codex", "/opt/homebrew/bin/codex"),
+    "muse": ("~/.local/bin/muse",),
+    "opencode": ("~/.opencode/bin/opencode", "~/.local/bin/opencode", "<nvm>/opencode"),
+    "openchamber": ("~/.local/bin/openchamber", "<nvm>/openchamber"),
+}
+
+
+def _nvm_bins() -> list[str]:
+    """nvm's node bin directories, the current one ($NVM_BIN) first, then the newest version first."""
+    import glob
+    import re as _re
+    root = os.environ.get("NVM_DIR") or os.path.expanduser("~/.nvm")
+
+    def ver(p: str) -> tuple:
+        return tuple(int(x) for x in _re.findall(r"\d+", os.path.basename(os.path.dirname(p))))
+    found = sorted(glob.glob(os.path.join(root, "versions", "node", "*", "bin")), key=ver, reverse=True)
+    cur = os.environ.get("NVM_BIN", "")
+    return ([cur] if cur else []) + [d for d in found if d != cur]
+
+
+def harness_places(name: str) -> list[str]:
+    """The known install locations of harness `name`, in lookup order (HARNESS_HOMES)."""
+    out: list[str] = []
+    for p in HARNESS_HOMES.get(name, ()):
+        if p.startswith("<nvm>/"):
+            out += [os.path.join(d, p[len("<nvm>/"):]) for d in _nvm_bins()]
+        else:
+            out.append(os.path.expanduser(p))
+    return out
+
+
+def _runnable(p: str) -> bool:
+    return os.path.isfile(p) and os.access(p, os.X_OK)  # a dangling link is not a file
+
+
+def harness_which(name: str) -> str | None:
+    """Harness `name`'s executable, looked up afresh on every call and never kept: `SHOAL_<NAME>_BIN`, then this
+    process's PATH, then the tool path, then its known install locations. An update replaces the binary and its link
+    (measured 2026-11-25: an npm reinstall left nvm's `bin/claude` missing for about an hour), so a path found once may
+    be gone at the next launch, and the next lookup may find the CLI somewhere else."""
+    pinned = env(f"{name.upper()}_BIN")
+    if pinned:
+        return pinned
+    found = shutil.which(name) or shutil.which(name, path=tool_env().get("PATH", ""))
+    if found:
+        return found
+    return next((p for p in harness_places(name) if _runnable(p)), None)
+
+
+def harness_missing(name: str) -> str:
+    """"" when harness `name` resolves now; else what was looked at, naming a dangling link (an update half done, or a
+    broken install) where one sits on the way."""
+    if harness_which(name):
+        return ""
+    dirs = [d for d in (os.environ.get("PATH", "") + ":" + tool_path()).split(":") if d]
+    looked = [os.path.join(d, name) for d in dict.fromkeys(dirs)] + harness_places(name)
+    dangling = [p for p in dict.fromkeys(looked) if os.path.islink(p) and not os.path.exists(p)]
+    why = f"no {name} executable on PATH, the tool path or its install locations ({', '.join(harness_places(name)) or 'none known'})"
+    if dangling:
+        why += f"; dangling link {dangling[0]} -> {os.readlink(dangling[0])} (an update in progress, or a broken install)"
+    return why
 
 
 MUX_ENV_PREFIXES = ("HERDR_", "ZELLIJ")

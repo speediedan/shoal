@@ -2750,6 +2750,64 @@ try:
 finally:
     ui_status.claude_turn, ui_status.pending_question = orig
 PY2
+# 2026-11-25: Claude Code's own count of a seat's background tasks can hold shells and subagents that have ended; the
+# seat then read working on its background with work that was over. Only what still runs counts: a shell whose output
+# file a process holds open, a subagent its own record does not mark finished. The process scan (backends.task_writers)
+# and Claude's tmp root (backends.claude_tmp_root) are faked at their function boundaries
+python3 - "$SHOALD" "$S" <<'PY2' || fail "seat background tasks: only live ones"
+import json, os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import backends, health, ui_app, ui_status
+S = sys.argv[2]
+SID = "5ea70000-0000-4000-8000-000000000001"
+root = os.path.join(S, "claude-tmp")
+tasks = os.path.join(root, "-work", SID, "tasks")
+subs = os.path.join(S, "claude-home", "projects", "-work", SID, "subagents")
+os.makedirs(tasks, exist_ok=True); os.makedirs(subs, exist_ok=True)
+for t in ("bshellok", "bshelldone"):
+    open(os.path.join(tasks, t + ".output"), "w").close()
+for a, fin in (("aagentdone", True), ("aagentrun", False)):
+    open(os.path.join(subs, f"agent-{a}.jsonl"), "w").close()
+    json.dump({"finished": True} if fin else {"description": "x"}, open(os.path.join(subs, f"agent-{a}.meta.json"), "w"))
+    os.symlink(os.path.join(subs, f"agent-{a}.jsonl"), os.path.join(tasks, a + ".output"))
+backends.claude_tmp_root = lambda: root
+backends.task_writers = lambda dirs: {"bshellok"} if dirs == [tasks] else set()
+fan = [{"id": "bshellok", "kind": "shell", "label": "ci watch"}, {"id": "bshelldone", "kind": "shell", "label": "until .."},
+       {"id": "aagentdone", "kind": "agent", "label": "a review"}, {"id": "aagentrun", "kind": "agent", "label": "a fix"},
+       {"id": "todo:1", "kind": "todo", "label": "later"}, {"id": "bold", "kind": "shell", "doneAt": 1}]
+row = {"sessionId": SID, "id": "5ea70000", "pid": 7, "tempo": "idle", "fan": fan,
+       "inFlight": {"tasks": 4, "queued": 0, "kinds": ["local_bash", "local_agent"]}}
+lt = backends.live_tasks(row, health.claude_job_state(row))
+assert (lt["shells"], lt["agents"], lt["total"], lt["listed"], lt["ended"]) == (1, 1, 2, 4, 2), lt
+orig = (ui_status.claude_turn, ui_status.pending_question)
+ui_status.pending_question = lambda r, s: False
+ui_status.claude_turn = lambda r: "idle"
+try:
+    rep = ui_app.standalone_report([row], SID, "5ea70000", "seat")
+    assert rep["bg"] == 2 and rep["msg"] == ("between turns: 2 background tasks running (1 shell, 1 subagent); 2 more "
+                                             "listed by Claude Code have ended"), rep
+    assert ui_app.standalone_agent(rep)[:2] == ("working", "background")
+    # every subagent finished and the shells ended: held, not working on a background that is over
+    json.dump({"finished": True}, open(os.path.join(subs, "agent-aagentrun.meta.json"), "w"))
+    backends.task_writers = lambda dirs: set()
+    rep = ui_app.standalone_report([row], SID, "5ea70000", "seat")
+    assert rep["bg"] == 0 and rep["msg"] == "alive, between turns", rep
+    assert ui_app.standalone_agent(rep)[:2] == ("held", "idle"), ui_app.standalone_agent(rep)
+finally:
+    ui_status.claude_turn, ui_status.pending_question = orig
+# the turn signal: a finished subagent Claude still counts no longer holds the session working
+assert health.claude_liveness(row) == "idle", "a finished subagent"
+json.dump({"description": "x"}, open(os.path.join(subs, "agent-aagentrun.meta.json"), "w"))
+assert health.claude_liveness(row) == "busy", "a running one"
+# Claude counting nothing (a stopped job keeps its last list): none, whatever the list says
+assert backends.live_tasks(row, dict(health.claude_job_state(row), inFlight=None))["total"] == 0
+# no task directory to check (another host's tmp, a reboot): as Claude lists it, never more than it counts
+backends.claude_tmp_root = lambda: os.path.join(S, "no-such-tmp")
+lt = backends.live_tasks(dict(row, inFlight={"tasks": 1, "kinds": ["local_bash"]}),
+                         dict(health.claude_job_state(row), inFlight={"tasks": 1, "kinds": ["local_bash"]}))
+assert lt["total"] == 1 and lt["ended"] == 3, lt
+print("seat background tasks ok")
+PY2
 # a card says `done` once when its role finishes an item and rests; anything newer replaces it, an attach clears it
 python3 - "$SHOALD" <<'PY2' || fail "the one-shot done report"
 import sys

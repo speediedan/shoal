@@ -424,6 +424,13 @@ OOM stop kills the exit-code wrapper too: `job wait` then prints `JOB-VERDICT <u
 with the ceilings the job ran under and what to change, instead of `UNIT-GONE-NO-STATUS`. The job meta records the
 effective `memory_max` and `slice`.
 
+**A `job:` wait is verified where the job runs.** `providers.job` reads the job's record on this host (`jobs.job_host`:
+its `host`, or its placement's host) and, for a job on another host, reads its unit and rc file there over the same
+route (`jobs.remote_state_cached`: one ssh read per host and unit per minute in a process, an unreachable answer
+included). Active there is pending, an rc there is resolved, and only a host that cannot be reached (or a unit missing
+there with no rc file) is unknown. Measured 2026-11-25: a role waiting on a job it placed on the other host, in both
+directions, read `WAIT TARGET UNVERIFIABLE (unit ... not found and no rc file)` while the unit was active there.
+
 Watchers stay small and idempotent: re-arming
 never duplicates a side effect. A
 `killed` notification is itself a wake: the role runs `next`, acts, re-arms and proves the new pid.
@@ -627,8 +634,29 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 
 The `restart` step of `wait-resolved` and `wait-validity` (`RESTART_NOT_PAGE`) hands a role that slept through its
 wakes to a fresh session at its recorded wait, as `context_restart` does; it is held while the session is mid-turn,
-and pages only when the restart fails.
-| `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver | wake 10 (a detached watcher: re-armed by the quorum instead), page 40 |
+and a failure of it is retried as below.
+| `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver, or its watcher is detached (a re-arm costs no turn) | wake 10 (a detached watcher: re-armed by the quorum instead; for a role with nothing to do, no wake at all), page 40 |
+| `restart-retry` | a restart that failed (below) whose Claude session is not running, and no other restarting condition of the role raised this run | restart, once its backoff has passed |
+| `harness-missing` | a harness CLI this host's roles need resolves nowhere (`config.harness_missing`), one per CLI | page 30 |
+
+**A failed restart stays due.** Every restart the quorum or `shoal handoff` runs (`context_restart`) first resolves
+each harness CLI it needs (the old provider's for a Claude stop, the new provider's for the launch) and waits for one
+that is missing, up to `backends.LAUNCH_WAIT_S` (60 s), looking again every 5 s, before anything stops: an update
+replaces the binary and its link (measured 2026-11-25: a context restart failed with `[Errno 2] No such file or
+directory: '<nvm>/bin/claude'` during a Claude Code update, the condition vanished with the listing, nothing tried
+again, and the role reached twice its limit; an hour later a handoff stopped its role's session, then failed on the
+same, leaving it with none). A stop interrupted that way is done once more after the CLI is back (a stop is
+idempotent), so the launch still follows. Whatever fails is recorded on the role (`/tmp/<id>/context-restart-<slug>.json`:
+the session it replaces, the restart's arguments, the failures in a row, the first, the last error, the next try),
+and so is each launch; a launched restart that ends with the spec still naming the old session failed too, with the
+line its log ends on (`restart_retries`). The ladder keeps its restart step: the next try waits 5, 10, 20, then every
+30 minutes (`RESTART_BACKOFF_MIN`), any of the role's restarting conditions is held until then ("held (its restart
+failed 2x in a row (last: ...); next try from 02:10Z)"), and after `RESTART_FAIL_PAGE` (3) failures in a row the
+maintainer is paged once with the error and the log. When the role's condition is not raised (its Claude session was
+stopped, or the listing that proves a quiet boundary failed), `restart-retry` tries the same restart again, which
+relaunches the role from its start doc; a session listed as running is left to its own conditions, so no turn is cut
+off. The record goes once the spec names a new session ("recovered: session <new> replaced <old> after N failed
+attempt(s)"). A restart already under way (the role's restart lock) is not a failure.
 | `wakes-held` | the role's live watcher holds new events for an interactive client attached to its exec session (`codex resume`, `muse resume`: a native view opened from the role's card and left open), as its sidecar records; keyed by the hold, so one page per hold. While it holds, the role's other ladders hold too (below). While the maintainer is offline, a card's client is ended at 60 (`detach_cards`, below) | page 30 (`ATTACHED_PAGE_MIN`) |
 | `turn-ended-active` (`continuation`) | status `active`, session proven between turns | wake at `after_min`, wake 30 later, page 90 later |
 | `checkout-stuck` (when `watch_checkouts` lists it) | a shared checkout has an operation left in progress, a local file differing from one its upstream changed, or commits on both sides; behind alone is not stuck | page 60 |
@@ -953,6 +981,15 @@ default `~/.codex`).
   maintainer's 2026-11-18 estimates of 0.15 to 0.2 and about 1.25 of a Max plan per 5 h and per week; a number or
   `{ plan, units }` overrides). An account with none is 100, so a host that declares nothing compares raw headroom as
   before. Every pick (`choose`, `choose_any`) ranks by headroom times units over 100.
+- **Provider pins.** An explicit `shoal handoff --ecosystem <provider>` (the CLI, or the app's Handoff dialog, which
+  runs it) records `provider_pin` {provider, by, at, via} on the role in the spec (`restart --set-provider-pin
+  SLUG:PROVIDER`), and automatic balancing keeps the role on that provider (`accounts.pin_of`), as `[accounts] pin`
+  keeps a slug: a quota handoff picks among that provider's accounts only, and rebalance never changes a provider
+  anyway. A move made by hand otherwise lasted only until the next automatic restart (2026-11-25: a role handed to
+  Codex went back to Claude at its next one). A later explicit handoff to another provider moves the pin; `--no-pin`
+  moves without one and clears one the role had, as `--ecosystem auto` (balancing's own pick) does; a handoff naming no
+  provider leaves it. `shoal show` prints it on the role's row (`fill`, pinned to <provider>) and, with `--slug`, on a
+  `provider:` line, which names `[accounts] pin` too. `[accounts] pin` still works, with no spec change.
 - **Quota handoff** (`[accounts] quota_handoff = true`, opt-in). Each account's share of the roles is its weighted
   headroom over its windows of a day or more (`headroom(held=True)`: a 5 h window moves placed roles only at its
   reserve, so its swings within a few hours do not churn them; capped at its units, so an account near its reset with
@@ -972,7 +1009,7 @@ default `~/.codex`).
   through `park.move_args`, as `shoal handoff` builds a move, so a role taken to another provider gets that provider's
   `[provider_defaults]` model and effort. At most one quota move per quorum run, and none for a role moved within
   `quota_cooldown_min` (60), so readings and the role count catch up between moves; `[accounts] pin` lists roles kept
-  on their own provider. `shoal accounts` prints each account's units and plan, and each account's roles against its
+  on their own provider, as a role's provider pin keeps it (above). `shoal accounts` prints each account's units and plan, and each account's roles against its
   share.
 
 `doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
@@ -2091,7 +2128,15 @@ A restart note (`handoff --note`, the dialog's Restart note) goes into the new s
 doc: a role's restart gets it as `restart --note SLUG:TEXT`, set on the role for that run's brief only (`briefs.note_block`,
 never saved with the spec), and a standalone seat's resume brief has it appended (`handoff_flow.resume_brief`). A role
 whose Claude session has a client attached is refused before anything stops (`park._claude_client`): the client keeps
-the worker alive, so the stop would report it still live and nothing would restart.
+the worker alive, so the stop would report it still live and nothing would restart. A launch never runs a harness by a
+path kept from earlier or by its bare name: `backends.harness_exe` looks it up afresh (`config.harness_which`:
+`SHOAL_<NAME>_BIN`, PATH, the tool path, then its install locations: `~/.local/bin`, an older per-user install, every
+nvm node version, the system prefixes) and waits out an update (above, "A failed restart stays due"). A role's
+handoff whose restart ends without recording a new session says so at once (`FAILED: the restart of <role> FAILED:
+<its log's line>. Its old session was stopped first, so <role> has no running session until a restart takes: the
+health quorum relaunches it from its start doc within minutes, or run shoal restart ...`), rather than waiting out its
+10 minutes; a standalone seat whose new session does not start after its old one stopped says the old one is STOPPED
+and its checkpoint stands. Both check every CLI they need before anything stops.
 A standalone seat can explicitly use `--no-prepare` when its checkpoint validates, has no live job-folder
 references and the source is already idle. `OpenChamberBackend.create` sends a supplied resume brief with
 the requested model and effort (`--variant`); role startup creates an empty session and sends separately.
@@ -2139,6 +2184,18 @@ writes no OSC for a Muse or Codex client, which draws its own): they had frozen 
 `session-blocked` for an hour after it cleared its wait (2026-11-14). A Muse or Codex seat's declared wait lapses at a
 turn end its card saw (`_SeatReport.ended`), since those harnesses report none, and a Claude seat whose own background
 tasks run between turns reads `working: background` (they are its work), not waiting.
+**A standalone seat's own status counts only live tasks.** Claude Code counts a job's background tasks itself (its
+state's `inFlight.tasks` and `fan`, one entry per task with `doneAt` once it ends), and that count can hold shells and
+subagents that have ended (2026-11-25: an operator seat read several tasks and a subagent outstanding while two shells
+were alive and every subagent had finished). Shoal cannot correct Claude Code's own panel (its attach view), but it
+does not repeat the error: `backends.live_tasks` checks each entry Claude still lists against its own evidence. A
+background shell writes to `<tmp>/claude-<uid>/<cwd>/<session>/tasks/<id>.output`, so it runs while a process holds
+that file open (`/proc/<pid>/fd/1` or `2`); a subagent's record (`subagents/agent-<id>.meta.json`, the target of its
+`.output` link there) says `finished: true` once it has. An entry with no evidence either way is taken as Claude lists
+it, and the total never exceeds Claude's own count unless proven alive, so a stopped job's leftover list reads none.
+`standalone_report` counts these (`between turns: 2 background tasks running (1 shell, 1 subagent); 4 more listed by
+Claude Code have ended`), and `health.claude_liveness` holds a turn open only for a subagent that runs by this test
+(`agents_in_flight`). A stale `queued` count is left out as everywhere (`work_in_flight`).
 The app's reconciler (`ui_app.Reconciler._gaps`) also replaces a standalone card that sits at its own screen
 with the harness and session it was opened with after its seat moved (`ui_app.seat_ids` read from the pane's
 foreground argv against the plan), on `ui app-open` and on the quiet sync. A card with a harness client open in it is

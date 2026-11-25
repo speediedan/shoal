@@ -27,7 +27,11 @@ spec path, data root and harness stores. **Never write a role's queue.** Run `ne
   and freeze state, and the tooling sha.
 - `shoal next --shoal <id> --slug <role> --peek` per role: `NEXT BLOCKED`, `BLOCKER STALE`, `BOARD`
   candidates, `WAIT`, `WATCH`, `GONE`, and `HELD-UNSCHEDULED` lines.
-- `shoal health --spec <spec> --instance a --dry-run`: what the quorum sees right now.
+- `shoal health --spec <spec> --instance a --dry-run`: what the quorum sees right now. A `restart-retry`
+  or a restart step `held (its restart failed Nx in a row (last: ...); next try from ...)` is a restart
+  that failed and is still due: read its error and `/tmp/<id>/context-restart-<role>.log`; a
+  `harness-missing` condition names a harness CLI that resolves nowhere (`shoal doctor` says where it
+  looked).
 - The health journal since the last review: which ladders climbed, and how many **pages** reached
   the maintainer. Pages are the maintainer-attention cost the review exists to drive down.
 
@@ -43,7 +47,8 @@ Check each role against its status's checklist in `references/checks.md`. In sho
   progress (recent tool calls, a ledger write, or a running job). A session `done` while its status
   says `active` ended its turn without a sleep status.
 - **waiting:** the target is checkable and still pending, AND a watcher owned by the session (or
-  the ledger watcher's backstop) will fire when it ends. A long job is not a faulty monitor: compare
+  the ledger watcher's backstop) will fire when it ends. A detached watcher that is dead is re-armed by
+  the quorum (no turn) even when the role has nothing to do; one still dead after a run is a finding. A long job is not a faulty monitor: compare
   each job's end time with the role's next ledger write before concluding anything.
 - **idle:** every next-item blocker is true NOW, against live state. A blocker shaped like the
   maintainer has a recorded ask. A dependency is in checkable form. No finished item sits in

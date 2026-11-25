@@ -144,14 +144,19 @@ def host_checks(d: Doc) -> None:
         need.add("az")
     d.info("host profile", f"server={config.server()}; local roles' harnesses: "
            f"{', '.join(sorted(prof['ecosystems'])) or '(none)'}; home of: {', '.join(prof['home_of']) or '(none)'}")
+    harnesses = set(ECOSYSTEM_TOOLS.values())
     for tool in ("openchamber", "claude", "muse", "codex", "gh", "az", "git", "systemctl"):
         p = shutil.which(tool, path=ENV["PATH"])
-        if p:
-            d.ok(f"tool {tool}", p)
+        # a harness CLI is launched wherever `config.harness_which` finds it (its install locations too), afresh each time
+        found = p or (config.harness_which(tool) if tool in harnesses else None)
+        if found:
+            d.ok(f"tool {tool}", found if p else f"{found} (not on the tool PATH; launches find it at its install location)")
         elif tool in need:
-            d.fail(f"tool {tool}", "not found on tool PATH (a role on this host needs it)")
+            d.fail(f"tool {tool}", (config.harness_missing(tool) if tool in harnesses else "not found on tool PATH")
+                   + " (a role on this host needs it: none of its sessions can start, stop or be woken directly)")
         else:
-            d.info(f"tool {tool}", "not installed; no role on this host needs it")
+            d.info(f"tool {tool}", "not installed; no role on this host needs it"
+                   + (f" ({config.harness_missing(tool).split('; ', 1)[1]})" if tool in harnesses and "dangling" in config.harness_missing(tool) else ""))
     if "opencode" in prof["ecosystems"]:
         try:
             r = run(["openchamber", "status"], timeout=30)

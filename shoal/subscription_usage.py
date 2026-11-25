@@ -217,7 +217,7 @@ def codex_read(account=""):
         accounts.apply("codex", account, env)
     for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
         env.pop(key, None)
-    p = subprocess.Popen([config.env("CODEX_BIN") or "codex", "app-server"],
+    p = subprocess.Popen([config.harness_which("codex") or "codex", "app-server"],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     replies = queue.Queue()
 

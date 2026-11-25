@@ -70,7 +70,9 @@ def sdir(session: str, create: bool = False) -> str:
 
 
 def codex_bin() -> str:
-    return config.env("CODEX_BIN") or shutil.which("codex") or os.path.expanduser("~/.nvm/versions/node/current/bin/codex")
+    """The codex executable, looked up afresh at each launch (`config.harness_which`: SHOAL_CODEX_BIN, PATH, the tool
+    path, its install locations), never kept across runs."""
+    return config.harness_which("codex") or "codex"
 
 
 def codex_homes() -> list[tuple[str, str]]:
@@ -327,6 +329,8 @@ def cmd_codex_run(a) -> int:
         err_from = err.tell()  # this turn's stderr starts here: an older turn's failure must not read as this one's
         err.write(f"--- {start} {' '.join(run_argv(session, a.dir, a.model, a.effort)[:4])} ...\n")
         err.flush()
+        import backends
+        backends.harness_exe("codex")  # an update may have the CLI missing for a minute: wait it out (bounded)
         with open(a.prompt_file) as pin:
             p = subprocess.Popen(run_argv(session, a.dir, a.model, a.effort), stdin=pin, stdout=subprocess.PIPE,
                                  stderr=err, text=True, cwd=a.dir if os.path.isdir(a.dir) else None, env=turn_env())

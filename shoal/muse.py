@@ -61,8 +61,9 @@ def sdir(session: str, create: bool = False) -> str:
 
 
 def muse_bin() -> str:
-    return (config.env("MUSE_BIN") or shutil.which("muse")
-            or os.path.expanduser("~/.local/bin/muse"))
+    """The muse executable, looked up afresh at each launch (`config.harness_which`: SHOAL_MUSE_BIN, PATH, the tool path,
+    ~/.local/bin), never kept across runs."""
+    return config.harness_which("muse") or "muse"
 
 
 def uuid7() -> str:
@@ -369,6 +370,8 @@ def cmd_muse_run(a) -> int:
         with open(os.path.join(d, "run.jsonl"), "a") as out, open(os.path.join(d, "run.err"), "a") as err:
             err_from = err.tell()  # this turn's stderr starts here: an older failure must not read as this one's
             err.write(f"--- {start} {' '.join(run_argv(a.session, a.dir, a.prompt_file, a.model, a.effort)[:4])} ...\n")
+            import backends
+            backends.harness_exe("muse")  # an update may have the CLI missing for a minute: wait it out (bounded)
             p = subprocess.Popen(run_argv(a.session, a.dir, a.prompt_file, a.model, a.effort),
                                  stdout=subprocess.PIPE, stderr=err, text=True, cwd=a.dir if os.path.isdir(a.dir) else None,
                                  env=turn_env())
