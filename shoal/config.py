@@ -231,14 +231,17 @@ def harness_missing(name: str) -> str:
     return why
 
 
-MUX_ENV_PREFIXES = ("HERDR_", "ZELLIJ")
+EXEC_SCOPE_VAR = "HC_SCOPE"  # herdr-core's tag on everything a terminal or an `exec` started: it ends them all with it
+MUX_ENV_PREFIXES = ("HERDR_", "ZELLIJ", EXEC_SCOPE_VAR)
 
 
 def tool_env(base: dict | None = None) -> dict:
     """An environment whose PATH is `tool_path` ahead of the current PATH (duplicates dropped,
     first occurrence wins, so lookup order is unchanged). Terminal-multiplexer variables are
     dropped: a harness CLI started from a pane (a probe that happens to start the Claude daemon)
-    must never carry pane identity into every session's hooks."""
+    must never carry pane identity into every session's hooks, nor the tag that ends it with the terminal
+    (measured 2026-11-25: a rebuild of Herdr's role cards ended the Claude daemon a card's probe had started,
+    with every session on the account)."""
     env = {k: v for k, v in (os.environ if base is None else base).items() if not k.startswith(MUX_ENV_PREFIXES)}
     seen, parts = set(), []
     for p in (tool_path() + ":" + env.get("PATH", "")).split(":"):

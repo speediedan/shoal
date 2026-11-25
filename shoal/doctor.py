@@ -227,7 +227,21 @@ def host_checks(d: Doc) -> None:
                 parts = line[len("ExecStart="):].split()
                 if len(parts) > 1 and parts[1].startswith("/") and not os.path.exists(parts[1]):
                     stale.append(os.path.basename(svc))
+    claude_daemons(d)
     (d.warn if stale else d.ok)("systemd units", f"{len(stale)} unit(s) point at missing scripts: {stale}" if stale else "no stale ExecStart paths")
+
+
+def claude_daemons(d: Doc) -> None:
+    """Each Claude account's daemon (claude_daemon.report): where it runs, and what would end it with its sessions."""
+    import accounts
+    import claude_daemon
+    from backends import fake_sessions
+    if fake_sessions() is not None:
+        return
+    for a, home in accounts.homes("claude"):
+        if os.path.isdir(os.path.join(home, "daemon")):
+            level, line = claude_daemon.report(a)
+            getattr(d, level)(f"claude daemon {accounts.name('claude', a)}", line)
 
 
 def provider_failures(session_ids: list[str], hours: float = 24) -> dict:

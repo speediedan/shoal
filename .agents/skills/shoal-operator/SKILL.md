@@ -106,6 +106,10 @@ role from its start doc. A handoff whose restart failed prints `FAILED: the rest
 the old session was stopped, and the quorum relaunches the role within minutes, or run `shoal restart --spec
 <spec> --only <role>`.
 
+A `claude-daemon` page says closing a Herdr terminal would end a Claude account's daemon, or some of its sessions
+(they carry the terminal's `HC_SCOPE`): keep that terminal open, run `shoal claude-daemon takeover --account <account>`
+(`install` first if `status` says it is not installed), then stop and resume each named session at a quiet moment.
+
 A `job-throttled` WARN in the health journal (a page if it lasts 30 min) names a job whose own cgroup stalls on
 memory: it reads `active` and makes little progress. `shoal job status --shoal <id>` shows its pressure and its
 slice's; stop a job sharing `shoal-jobs.slice`, or raise `[jobs] slice_memory_high` in the host config. A research
