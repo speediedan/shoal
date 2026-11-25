@@ -393,6 +393,9 @@ def cmd_msg(a) -> int:
                       f"({r.slug}'s ledger-watch is not running)")
     if target is not None and getattr(a, "wake", False) and by == "user" and target.session:
         _wake_fallback(spec, target, ev)
+        note = _question_note(spec, target, ev)
+        if note:
+            print(note)
     if target is not None and by not in ("user",) + SYSTEM_WRITERS and re.search(r"#\d+", a.text or ""):
         # FM-4 (measured 2026-10-08): a lane delegated seven items to an assigned reviewer by mail
         print(f"note: this is mail. {a.to} reads it at its next `next`; it is not woken by it"
@@ -414,6 +417,43 @@ def _wake_fallback(spec: ShoalSpec, target, ev: dict) -> None:
     elif not watcher_alive(spec.sid, target.slug)[0]:
         print(f"wake via {request_wake(spec, target.slug, 'user message ' + ev['id'] + ': ' + ev.get('text', ''), 'user-msg')} "
               f"({target.slug}'s ledger-watch is not running)")
+
+
+def _question_note(spec: ShoalSpec, target, ev: dict) -> str:
+    """What becomes of your woken message to a Claude role whose session sits at an open question ('' for any other
+    role): an answer to its asks goes through, its watcher closing the question and resuming the turn with it
+    (ledger_watch.through_question), unless a client is attached or direct wakes never stop a live worker; any other
+    message waits for the question. The Asks dialog shows this line in its result, so you
+    know whether the answer is on its way or waits for the chat (measured 2026-11-25: an answer from the dialog sat
+    undelivered behind the role's own question, and nothing said so)."""
+    if getattr(target, "ecosystem", "") != "claude":
+        return ""
+    try:
+        ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
+        if ui_dir not in sys.path:
+            sys.path.insert(0, ui_dir)
+        import ledger_watch
+        import ui_status
+        from backends import direct_wake_mode
+        # the listing every card on this host shares (at most a few seconds old): a dialog's call is short
+        live = ui_status.live_turn(spec.sid, target.slug)
+        if not (live and live.get("prompt")):
+            return ""
+        pids = ledger_watch.claude_attached(target)
+    except Exception:  # noqa: BLE001 - a note never fails a message
+        return ""
+    head = f"note: {target.slug}'s session is at an open question"
+    if not ledger_watch.is_answer(ev, target.slug):
+        return (f"{head}: this message names none of its asks (`re ask <n> ...`), so it waits until the question is "
+                f"answered in its chat; an answer from the Asks dialog goes through the question")
+    if pids:
+        return (f"{head} and a client is attached to it (pid {pids[0]}): this answer waits until the question is "
+                f"answered in its chat or the client exits")
+    if direct_wake_mode(spec) != "idle":
+        return (f"{head} and direct wakes never stop a live worker here (features.health.direct_wake dead): this "
+                f"answer waits until the question is answered in its chat")
+    return (f"{head}: its watcher closes that question and resumes the turn with this answer at its next tick "
+            f"(the question is dropped; the role is told why)")
 
 
 def _refusals(rows: list[tuple[str, str, str]], dry_run: bool) -> bool:

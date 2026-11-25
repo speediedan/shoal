@@ -21,6 +21,25 @@ where you sit, and a question buried in a status report is not an ask.
 5. **After the answers,** remove each answered ask with `queue --answered <n>`. An ask whose answer
    was a condition stays recorded until the condition holds.
 
+## Answers from the Asks dialog
+
+The maintainer can answer your recorded asks from the viewer's Asks dialog instead of your
+question, in any harness:
+
+1. **The answer arrives as mail with a wake,** one line per ask:
+   `re ask <n> [<id>] "<opening words>": <choice>. <detail>`. The id is a short hash of the ask's
+   text and the quote is its opening words, as they were when the maintainer answered.
+2. **Match on the id and the words, never on the number.** You may have reordered, replaced or
+   re-raised your asks since. Under the message, `next` says which of your current asks each line
+   answers (act on that one, then `queue --answered <its number now>`). It may also say a line names
+   an ask you no longer have: do not apply that answer to another ask. Tell the maintainer
+   (`msg --to user`), and raise the ask again if it still applies. A line that opens like one of your
+   asks whose text has changed (a new head SHA, say) is not a grant for the new text: confirm first.
+3. **An answer can close your open question.** If your question prompt is still open when a dialog
+   answer arrives, shoal stops that turn and resumes you with the answer. Your wake then starts with
+   YOUR OPEN QUESTION WAS CLOSED. Take the answer from `next`, and raise again only what it leaves
+   open. If a client is attached to your session, the answer waits for the person there instead.
+
 ## Headless turns (Codex, Muse)
 
 A turn started by `codex exec` or `muse exec` has no terminal and no question tool, so it never
@@ -32,8 +51,9 @@ prompts. Its asks are still first-person, and the maintainer still answers from 
    defer and deny otherwise), the same set `shoal asks` builds for the question tool.
 2. **Keep it recorded.** A still-valid ask from an earlier session of your role stays as it is:
    grants never transfer, but the ask is yours to keep, so do not clear it only to record it again.
-3. **The answer arrives as mail**, `re ask <n>: <choice>. <detail>`, read in `next` at your
-   boundary (the maintainer's answer wakes you). Act on it, then `queue --answered <n>`.
+3. **The answer arrives as mail**, `re ask <n> [<id>] "<opening words>": <choice>. <detail>`, read
+   in `next` at your boundary (the maintainer's answer wakes you). Act on the ask `next` maps it to,
+   then `queue --answered` with that ask's number now (see "Answers from the Asks dialog" above).
 
 ## Dropping an ask
 

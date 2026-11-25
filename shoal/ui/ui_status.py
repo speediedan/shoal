@@ -33,6 +33,7 @@ for _p in (PKG, HERE):
         sys.path.insert(0, _p)
 
 import accounts  # noqa: E402
+import ask_answers  # noqa: E402
 import config  # noqa: E402
 from layout import GROUPS_DIR, SPEC_FILE  # noqa: E402
 from roles import ShoalSpec, state_dir  # noqa: E402
@@ -522,6 +523,8 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
         "offers_open": len(view.queue(slug)),
         "mail_since_boundary": len(mail),
         "asks": [_short(a, 160) for a in asks],
+        # each ask's id (ask_answers.ask_id of its full text): an answer names its ask by it, never by number alone
+        "ask_ids": [ask_answers.ask_id(a) for a in asks],
         "answered": answer,
         "says": _short(words, 160),
         "wait_done": wait_done,
@@ -870,7 +873,10 @@ def note_reply(sid: str, slug: str, ev: dict) -> None:
         tmp = p + f".{os.getpid()}.tmp"
         with open(tmp, "w") as fh:
             json.dump({"ts": ev.get("ts"), "id": ev.get("id"), "wake": bool(ev.get("wake")),
-                       "asks": reply_asks(ev.get("text", ""))}, fh)
+                       "asks": reply_asks(ev.get("text", "")),
+                       # the asks it names as it names them (number, id, opening words): a card matches them to the
+                       # role's asks by id or words, as the role does, so a reordered ask is not counted answered
+                       "refs": [[r["n"], r["id"], r["lead"]] for r in ask_answers.parse(ev.get("text", ""))]}, fh)
         os.replace(tmp, p)
     except OSError:
         pass
@@ -941,9 +947,12 @@ def card_view(row: dict, reply: dict | None = None, live: dict | None = None) ->
                                       else "its session runs again") + first}), why
     t = _epoch((reply or {}).get("ts") or "")
     if t is not None and t > as_of and not set(reasons) & ANSWER_HOLDS:
-        names = [n for n in (reply or {}).get("asks") or [] if isinstance(n, int)]
-        msg = {"ts": reply["ts"], "wake": reply.get("wake"), "text": " ".join(f"re ask {n}:" for n in names)}
-        ans = reply_answer([msg], asks or ["(a question)"], None)
+        refs = [x for x in (reply or {}).get("refs") or [] if isinstance(x, list) and len(x) == 3]
+        if not refs:  # a hint written before refs: the numbers it named
+            refs = [[n, "", ""] for n in (reply or {}).get("asks") or [] if isinstance(n, int)]
+        text = "\n".join(f"re ask {n}" + (f" [{i}]" if i else "") + (f' "{q}"' if q else "") + ":" for n, i, q in refs)
+        msg = {"ts": reply["ts"], "wake": reply.get("wake"), "text": text}
+        ans = reply_answer([msg], asks or ["(a question)"], None, row.get("ask_ids"))
         if ans and not ans["partial"]:
             return dict(row, needs_you=False, answered=ans,
                         agent={"group": "waiting", "state": "answered",
@@ -1307,18 +1316,23 @@ def reply_asks(text: str) -> list[int]:
     return sorted({int(n) for n in _REPLY_ASK.findall(str(text or ""))})
 
 
-def reply_answer(replies: list[dict], asks: list, now: datetime.datetime | None = None) -> dict | None:
+def reply_answer(replies: list[dict], asks: list, now: datetime.datetime | None = None,
+                 ids: list | None = None) -> dict | None:
     """Whether your messages to a role, written since its last write (`replies`: msg events by `user` to it), answer its
-    open asks: {ts, asks, partial, late, age_s}, or None. A reply answers the asks it names (`re ask <n>`, the Asks
-    view's form), else every ask when it wakes the role (a plain note without a wake answers nothing). `partial`: some
-    ask is left; `late`: older than ANSWER_PICKUP_S, so not being taken up."""
+    open asks: {ts, asks, partial, late, age_s}, or None. A reply answers the asks it names (`re ask <n> [<id>]
+    "<words>"`, the Asks view's form, matched by id or words as ask_answers.resolve reads it, so an answer to an ask the
+    role has since replaced answers nothing), else every ask when it wakes the role (a plain note without a wake answers
+    nothing). `ids`: the asks' ids when `asks` are cut short (a status row). `partial`: some ask is left; `late`: older
+    than ANSWER_PICKUP_S, so not being taken up."""
     if not asks:
         return None
     named: set[int] = set()
     every, ts = False, ""
     for m in replies:
-        ns = reply_asks(m.get("text", ""))
-        if ns:
+        if reply_asks(m.get("text", "")):
+            ns = ask_answers.answered(m.get("text", ""), asks, ids)
+            if not ns:
+                continue  # it names only asks the role no longer has
             named |= set(ns)
         elif m.get("wake"):
             every = True

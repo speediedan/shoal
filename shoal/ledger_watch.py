@@ -317,6 +317,13 @@ def note_hold(sc: dict[str, str], reason: str, n: int, client: str = "") -> None
         print(f"{now_iso()} HOLDING {n} event(s): "
               + (f"an interactive client ({client}) is attached" if client else "the session is at an open question")
               + "; delivered once it is gone", flush=True)
+    elif client != sc.get("held_client", ""):
+        # the same hold, with a client attached at it or gone (an open question a person sits at)
+        if client:
+            sc["held_client"] = client
+            print(f"{now_iso()} HOLDING {n} event(s): an interactive client ({client}) is attached", flush=True)
+        else:
+            sc.pop("held_client", None)
     sc["held_events"] = str(n)
 
 
@@ -443,14 +450,65 @@ def hold_reason(wake: str, session: str, ecosystem: str, repo_dir: str) -> str:
     return "busy" if session_busy(session, repo_dir) else ""
 
 
-def claude_deliver(sid: str, spec, role, session: str, text: str) -> str:
+def claude_deliver(sid: str, spec, role, session: str, text: str, through_question: bool = False) -> str:
     """A detached Claude watcher's delivery (`--wake direct`): resume a retired session, or stop and
-    resume an idle one (features.health.direct_wake). Returns the channel, as
-    backends.ClaudeBackend.deliver names it."""
+    resume an idle one (features.health.direct_wake); `through_question` also stops and resumes one at an
+    open question (`through_question` below). Returns the channel, as backends.ClaudeBackend.deliver names it."""
     if spec is None or role is None:
         return "no-adapter (no spec or role to deliver for)"
     from backends import get as get_backend
-    return get_backend("claude").deliver(spec, role, session, text)
+    return get_backend("claude").deliver(spec, role, session, text, through_question=through_question,
+                                         question_note=THROUGH_QUESTION_NOTE if through_question else "")
+
+
+# The resumed turn's first words when the watcher closed an open question to deliver the maintainer's answer
+THROUGH_QUESTION_NOTE = (
+    "YOUR OPEN QUESTION WAS CLOSED: the maintainer answered from outside your chat (the Asks dialog, or `shoal msg "
+    "--wake`) while your question prompt was open, so shoal stopped that turn and resumed you with the answer; nobody "
+    "answered the prompt itself. Run `next`: under the maintainer's message, MAIL says which of your current asks each "
+    "`re ask` line answers, or that it names an ask you no longer have. Act on those, and raise again only what the "
+    "answer leaves open. ")
+
+
+def claude_attached(role) -> list[int]:
+    """Pids of `claude attach` clients holding a Claude role's session on this host: a person may be at its chat."""
+    try:
+        import park
+        return park.claude_attach_pids(role)
+    except Exception:  # noqa: BLE001 - an unreadable process table reads as nobody attached
+        return []
+
+
+def is_answer(m: dict, slug: str) -> bool:
+    """A msg that is the maintainer's answer to slug's asks: by `user`, to slug itself, woken, naming asks."""
+    import ask_answers
+    return (m.get("by") == "user" and m.get("to") == slug and bool(m.get("wake")) and m.get("kind", "info") != "request"
+            and bool(ask_answers.parse(m.get("text", ""))))
+
+
+def through_question(view: View, slug: str, new: list[tuple[str, str]], spec, role) -> tuple[bool, str]:
+    """(go, why): whether a watcher holding `new` for a Claude session at an open question delivers them through it
+    (stop the turn, resume it with the wake). Only for the maintainer's answer to the role's asks: a `user` msg to this
+    role, sent with a wake, that names asks (`re ask <n> ...`, the Asks dialog's Submit), which a session at a question
+    could otherwise never take. A broadcast, a queue order, a transfer or a plain note waits for the question (measured
+    2026-11-25: a role opened an in-chat question for the asks it had recorded, the maintainer answered them in the Asks
+    dialog, and the answer sat undelivered until they answered the same question in the chat, 5 min later). Not while a
+    client is attached (the person there answers in the chat: stopping the turn would cut them off), and not under
+    features.health.direct_wake `dead` (never stop a live worker). Any other event keeps waiting for the question."""
+    if role is None or spec is None:
+        return False, ""
+    ids = {i for i, _ in new}
+    answers = [m for m in view.msgs_to(slug, since_ts=mail_read_since(view.ledger.sid, slug))
+               if m.get("id") in ids and is_answer(m, slug)]
+    if not answers:
+        return False, ""
+    from backends import direct_wake_mode
+    if direct_wake_mode(spec) != "idle":
+        return False, "features.health.direct_wake is dead: a live worker is never stopped"
+    pids = claude_attached(role)
+    if pids:
+        return False, f"pid {pids[0]}, `claude attach`"
+    return True, f"the maintainer's answer {answers[-1]['id']}"
 
 
 def fire(wake: str, text: str, repo_dir: str, ecosystem: str = "muse", model: str = "", effort: str = "") -> bool:
@@ -615,6 +673,12 @@ def cmd_ledger_watch(a) -> int:
             save_sidecar(sc_path, sc)
             continue
         held = hold_reason(a.wake, session, role.ecosystem if role else "muse", repo_dir) if persistent else ""
+        through, why_through = False, ""
+        if held == "question" and a.wake == "direct":
+            # the maintainer's answer goes through an open question: nothing else can reach a turn held there
+            through, why_through = through_question(view, slug, new, spec, role)
+            if through:
+                held = ""
         if held:
             # never wake a lane mid-turn, never collide with a person at it (an attached client, an open
             # question): the events stay undelivered and go out at the next idle tick. A person's hold is
@@ -623,6 +687,8 @@ def cmd_ledger_watch(a) -> int:
             pid = int(held.split(":", 1)[1]) if held.startswith("attached:") else 0
             client = "" if not pid else sc.get("held_client", "") if sc.get("held_reason") == held else \
                 client_desc(pid, a.wake[len("exec:"):])
+            if held == "question" and why_through.startswith("pid "):
+                client = why_through  # the maintainer's answer waits for the person attached at its chat
             note_hold(sc, held, len(new), client)
             save_sidecar(sc_path, sc)
             continue
@@ -644,14 +710,21 @@ def cmd_ledger_watch(a) -> int:
                 + ("; your watcher keeps running (no re-arm)." if persistent else ", re-arm."))
         emit_wake(sid, slug, session, role.ecosystem if role else "", reason, len(new))
         if a.wake == "direct":
-            ch = claude_deliver(sid, spec, role, session or "", text)
+            ch = claude_deliver(sid, spec, role, session or "", text, through_question=through)
+            if ch.startswith("deferred") and "at a question" in ch:
+                # the listing saw the question before the transcript did: the maintainer's answer still goes through
+                through, why_through = through_question(view, slug, new, spec, role)
+                if through:
+                    ch = claude_deliver(sid, spec, role, session or "", text, through_question=True)
+            if through and not ch.startswith(("deferred", "FAILED", "no-adapter")):
+                print(f"{now_iso()} closed an open question to deliver {why_through}", flush=True)
             print(f"{now_iso()} delivered via {ch}", flush=True)
             if ch.startswith("deferred"):
                 # nothing failed: the session cannot take a direct wake yet (work in flight wakes it
                 # anyway), so the events stay undelivered for a later tick
                 sc["delivered"] = ",".join(x for x in sc["delivered"].split(",") if x not in set(ids))
-                if "at a question" in ch:
-                    note_hold(sc, "question", len(new))
+                if "at a question" in ch or through:
+                    note_hold(sc, "question", len(new), why_through if why_through.startswith("pid ") else "")
                 save_sidecar(sc_path, sc)
                 continue
             fired = not ch.startswith(("FAILED", "no-adapter"))

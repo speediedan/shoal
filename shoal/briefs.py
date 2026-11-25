@@ -153,6 +153,15 @@ def ask_evidence(role: Role) -> str:
             "decline/hold) and recorded with `queue --ask \"<question>\"`")
 
 
+# How an answer from the Asks dialog reads, for every harness (ask_answers.py): by the ask's id and opening words, so a
+# role that reordered or replaced its asks never applies an answer to the wrong one
+ANSWER_MAIL = ("The answer arrives as mail, a line per ask: `re ask <n> [<id>] \"<opening words>\": <choice>. <detail>`, "
+               "read in `next` at your boundary. Match it by its id and words, never by its number: under the message "
+               "`next` says which of your current asks each line answers (act on it, then `queue --answered <that "
+               "number>`), or that it names an ask you no longer have (do not apply it to another ask: tell the "
+               "maintainer).")
+
+
 def raise_clause(role: Role, sid: str) -> str:
     """How recorded asks reach the maintainer. A role that can prompt raises them as question sets; a headless one
     leaves them recorded, and the viewer's Asks view shows each with its answer set (worker.ask_options), so the
@@ -161,11 +170,12 @@ def raise_clause(role: Role, sid: str) -> str:
         return ("and keep the rest recorded: you never prompt (no question tool), and each recorded ask reaches the "
                 "maintainer as a question in the Asks view with its answer set (grant, defer, delegate review, deny "
                 "for a merge; grant, defer, deny otherwise), so write the ask, not the options. Never clear a "
-                "still-valid ask only to record it again. The answer arrives as mail `re ask <n>: <choice>. <detail>`, "
-                "read in `next` at your boundary: act on it and remove it with `queue --answered <n>`.")
+                "still-valid ask only to record it again. " + ANSWER_MAIL)
     return (f"build the sets with `{SHOAL_CLI} asks --shoal {sid} --slug {role.slug} --question-json` (live PR "
             "labels: never describe a PR from memory), and raise EVERY set, one question-tool call per set of at most "
-            "four; remove answered asks with `queue --answered <n>`. BEFORE ANY PROMPTED QUESTION (merge asks "
+            "four; remove answered asks with `queue --answered <n>`. The maintainer may answer from the Asks dialog "
+            "instead, even while your question is open (shoal then closes it and resumes you: the wake says YOUR OPEN "
+            "QUESTION WAS CLOSED). " + ANSWER_MAIL + " BEFORE ANY PROMPTED QUESTION (merge asks "
             "included): run `next` unpiped (never through head/grep: MAIL and banners print first); if it says USER "
             "OFFLINE, record the ask with `queue --ask` instead. The question tool blocks your turn, so record the ask "
             "and a user-auth wait first.")

@@ -626,7 +626,9 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
 
 
 def claude_open_prompt(session: str, tail_bytes: int = 524288) -> str:
-    """The id of the newest AskUserQuestion with no result yet in the session's transcript tail, else ""."""
+    """The id of the newest AskUserQuestion with no result yet in the session's transcript tail, else "". A user prompt
+    after it closes it too: a turn stopped at the question and resumed with a prompt (a watcher delivering the
+    maintainer's answer through it, `ledger_watch.through_question`) leaves the question's tool use without a result."""
     from backends import fake_sessions
     if fake_sessions() is not None:
         return ""
@@ -641,11 +643,19 @@ def claude_open_prompt(session: str, tail_bytes: int = 524288) -> str:
         return ""
     open_q: dict[str, bool] = {}  # in order, so the last is the newest
     for line in chunk.splitlines():
-        if "AskUserQuestion" not in line and "tool_result" not in line:
+        prompt = open_q and '"user"' in line
+        if "AskUserQuestion" not in line and "tool_result" not in line and not prompt:
             continue
         try:
-            content = (json.loads(line).get("message") or {}).get("content")
-        except ValueError:
+            d = json.loads(line)
+            content = (d.get("message") or {}).get("content")
+        except (ValueError, AttributeError):
+            continue
+        if prompt and d.get("type") == "user" and not d.get("isMeta") and (
+                isinstance(content, str) and content.strip()
+                or isinstance(content, list) and content
+                and all(isinstance(c, dict) and c.get("type") == "text" for c in content)):
+            open_q.clear()  # a prompt typed after the question: the turn holding it has gone
             continue
         for c in content if isinstance(content, list) else []:
             if not isinstance(c, dict):
@@ -2080,7 +2090,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 hold = hold_of(c["slug"])
                 # a Claude session at an open question takes no wake either: its wakes wait there, undelivered
                 how = (f"woken {lad['step']}x, but its watcher has held its wakes undelivered since {hold['since']}: the "
-                       f"session is at an open question; answer it to let them through" if hold.get("reason") == "question"
+                       f"session is at an open question; answer it in its chat, or from the Asks dialog (its watcher "
+                       f"then closes the question and resumes it with your answer)" if hold.get("reason") == "question"
                        else f"woken {lad['step']}x without effect")
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} ({how})", state, dry_run)
             if action == "restart" and ch.startswith("FAILED") and role_ is not None and not dry_run:

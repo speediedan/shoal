@@ -617,6 +617,10 @@ function normAsks(list) {
     role: strOrNull(a.role),
     host: strOrNull(a.host),
     asks: arr(a.asks).map(str).filter((x) => x.trim()),
+    // per ask: its id (a short hash of its text, from shoal), which an answer names it by, kept beside the asks a blank
+    // one is dropped from; [] from an older shoal, or when the lists do not line up
+    ids: arr(a.ids).length === arr(a.asks).length
+      ? arr(a.asks).map((x, i) => [str(x), str(arr(a.ids)[i])]).filter(([x]) => x.trim()).map(([, i]) => i) : [],
     question: a.question === true,
     saysWaiting: a.says_waiting === true,
     // a wait it recorded on you (user-auth, user-design, user-feedback) and what it holds: "" when none
@@ -872,11 +876,54 @@ export function keyAction(keystroke, screen, opts = {}) {
  * it, and a choice from its answer set (`choice`) fills the answer in, left open for a condition or a reviewer's name.
  */
 export function answerTarget(target, ask, now = new Date(), n = null, choice = null) {
-  const text = Number.isInteger(n) ? `re ask ${n}: ${choice ? `${choice}. ` : ""}` : null;
+  const text = Number.isInteger(n) ? `${answerPrefix(ask, n)} ${choice ? `${choice}. ` : ""}` : null;
   return {
     target: { ...target, role: ask.role },
     form: newForm("msg", now, { wake: true, ...(text ? { text } : {}) }),
   };
+}
+
+// ---- naming an ask: a role re-raises and reorders its asks, so an answer that names an ask by number alone can land on
+// another ask by the time it is read (measured 2026-11-25: both of a role's merge asks were replaced at the same numbers
+// three minutes after an answer). Each answer line names its ask by its id and its opening words too; the role's
+// `next` matches on those (shoal/ask_answers.py, which this mirrors: LEAD_WORDS, LEAD_CHARS, norm).
+
+const LEAD_WORDS = 8;
+const LEAD_CHARS = 60;
+const normAsk = (t) => str(t).replace(/\s+/g, " ").trim().replace(/"/g, "'");
+
+/** An ask's opening words, at most LEAD_WORDS words and LEAD_CHARS characters (ask_answers.ask_lead). */
+export function askLead(text) {
+  const t = normAsk(text);
+  let out = "";
+  for (const w of t.split(" ").slice(0, LEAD_WORDS)) {
+    const next = `${out} ${w}`.trim();
+    if (next.length > LEAD_CHARS) break;
+    out = next;
+  }
+  return out || t.slice(0, LEAD_CHARS);
+}
+
+/** `re ask 2 [a1b2c3] "Merge PR #12 ...":` for ask n of a card (its id left out when shoal sent none). */
+export function answerPrefix(card, n) {
+  const ask = arr(card?.asks)[n - 1];
+  const id = str(arr(card?.ids)[n - 1]);
+  const lead = ask === undefined ? "" : askLead(ask);
+  return `re ask ${n}${/^[0-9a-f]{4,16}$/.test(id) ? ` [${id}]` : ""}${lead ? ` "${lead}"` : ""}:`;
+}
+
+/** What the Asks view says under a role's name: how its asks reach it, and for an open question in its session, that
+ *  an answer sent here closes that question (its watcher stops the turn and resumes it with the answer). */
+export function askWhy(a) {
+  if (a?.question) {
+    return "a question is open in its session: answer it in its chat (attach to its card), or here: Submit answers "
+      + "closes that question, its turn stopped and resumed with your answer (unless a client is attached; a note "
+      + "that names no ask waits for the chat)";
+  }
+  if (a?.headless && arr(a.asks).length) return "its turns are headless (no question tool): answer each ask here, from its choices";
+  if (a?.saysWaiting) return "says it waits on you, with no prompt: answer by mail with a wake";
+  if (a?.waits) return `it waits on you (${a.waits}): answer by mail with a wake`;
+  return "";
 }
 
 // ---- batch answers: a choice and/or a note per ask, sent as one message (the way a question tool collects every
@@ -901,9 +948,9 @@ const noteOf = (p) => str(p?.text).replace(/\s+/g, " ").trim();
 const answered = (p) => Boolean(p?.choice) || Boolean(noteOf(p));
 
 /**
- * The one message a role's batch sends: a line per answered ask, in ask order, `re ask <n>: <choice>. <note>` (either
- * part alone when only one is given), the form a headless brief tells its role to read. Unanswered asks are left out;
- * "" when none is answered.
+ * The one message a role's batch sends: a line per answered ask, in ask order,
+ * `re ask <n> [<id>] "<opening words>": <choice>. <note>` (either part alone when only one is given), the form the
+ * role's `next` matches to its asks. Unanswered asks are left out; "" when none is answered.
  */
 export function batchAnswerText(shoal, card, picks) {
   const lines = [];
@@ -911,7 +958,7 @@ export function batchAnswerText(shoal, card, picks) {
     const p = picks?.[answerKey(shoal, card.role, j + 1, ask)];
     if (!answered(p)) return;
     const parts = [p.choice ? `${p.choice}.` : "", noteOf(p)].filter(Boolean);
-    lines.push(`re ask ${j + 1}: ${parts.join(" ")}`);
+    lines.push(`${answerPrefix(card, j + 1)} ${parts.join(" ")}`);
   });
   return lines.join("\n");
 }

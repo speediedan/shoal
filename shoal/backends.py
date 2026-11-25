@@ -1161,7 +1161,8 @@ class ClaudeBackend(Backend):
             return "wake-file" + (" (dry-run)" if dry_run else "")
         return self.deliver(spec, role, role.session, text, dry_run)
 
-    def deliver(self, spec, role, session: str, text: str, dry_run: bool = False, through_question: bool = False) -> str:
+    def deliver(self, spec, role, session: str, text: str, dry_run: bool = False, through_question: bool = False,
+                question_note: str = "") -> str:
         """Deliver one wake to a Claude session with no turn but the target's own, where it allows that
         (features.health.direct_wake; architecture doc §7). Returns the channel:
         - `resume`: the session has no worker (retired idle at its prompt, reaped, stopped), so
@@ -1172,7 +1173,8 @@ class ClaudeBackend(Backend):
         - `deferred (...)`: busy, at a question, work in flight, or a live worker under mode `dead`; the
           caller retries later (a session with work in flight wakes itself when that work ends);
           `through_question` (an operator's explicit handoff choice) stops and resumes a session at a question
-          instead, which drops the question;
+          instead, which drops the question (a watcher's delivery of the maintainer's answer, or an operator's
+          handoff), with `question_note` before the text when a question was open, so the resumed turn knows why;
         - `FAILED ...`: the resume did not take; the caller retries."""
         import time as _time
         from health import claude_job_state, claude_liveness, claude_prompt_open
@@ -1187,15 +1189,18 @@ class ClaudeBackend(Backend):
         else:
             live = claude_liveness(row)
             busy_fl = work_in_flight(claude_job_state(row))
+            open_q = live != "busy" and claude_prompt_open(row, full)
             if live == "busy":
                 why = "mid-turn"
-            elif claude_prompt_open(row, full) and not through_question:
+            elif open_q and not through_question:
                 why = "at a question"
             elif busy_fl and not only_waiters(claude_job_state(row), getattr(role, "slug", ""), row.get("pid")):
                 why = "background work in flight"
             elif mode != "idle" and not through_question:
                 why = "live worker (direct_wake dead)"
             else:
+                if open_q and question_note:
+                    text = question_note + text
                 if dry_run or fake_sessions() is not None:
                     return "stop+resume" + (" (dry-run)" if dry_run else " (fake)")
                 if busy_fl:  # only its own job or CI waiters: they stop with the worker, the jobs and the watcher go on

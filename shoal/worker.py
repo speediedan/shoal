@@ -33,6 +33,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "telemetry"))
+import ask_answers  # noqa: E402
 import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, queue_next_max, Ledger, LedgerError, View, fmt_item,  # noqa: E402
@@ -249,7 +250,7 @@ def question_sets(spec: ShoalSpec, view: View, slug: str) -> dict:
                              f"{', draft' if live.get('isDraft') else ''}, head {str(live.get('headRefOid'))[:8]}, "
                              f"mergeable {live.get('mergeable')}, checks: {checks})")
         hint = ask_hint(spec, view, ask)
-        questions.append({"ask": i, "header": f"Ask {i}", "multiSelect": False,
+        questions.append({"ask": i, "id": ask_answers.ask_id(ask), "header": f"Ask {i}", "multiSelect": False,
                           "question": ask + (hint or "") + ("\n\nLive: " + "; ".join(facts) if facts else ""),
                           "options": ask_options(ask)})
     sets = [questions[k:k + ASKS_PER_SET] for k in range(0, len(questions), ASKS_PER_SET)]
@@ -412,9 +413,14 @@ def cmd_next(a) -> int:
         out.append(f"MAIL {len(mail)} unread since your last `next` (read it now; "
                    + ("--peek: left unread for the role; " if getattr(a, "peek", False) else "this call marked it read; ")
                    + "mail never wakes you):")
+        now_asks = list((view.current_queue(slug) or {}).get("asks") or [])
         for m in mail[-5:]:
             text = m.get("text", "") if m.get("by") == "user" else short(m.get("text", ""), 300)
             out.append(f"  {m['ts']} {m['by']}->{m['to']} [{m.get('kind', 'info')}] {text}")
+            if m.get("by") == "user":
+                # an answer to asks names each by id and opening words: say which ask it answers NOW, or that it
+                # answers none, so the role never goes by a number it has since given to another ask
+                out += ask_answers.next_lines(m.get("text", ""), now_asks, spec.sid, slug)
     dropped = recent_drops(view, slug)
     if dropped:
         out.append("DROPPED ASKS (not answered; disclose each to the maintainer in your next question set): "
