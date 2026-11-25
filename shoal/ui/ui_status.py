@@ -767,6 +767,14 @@ def write_cache(doc: dict) -> None:
         pass
 
 
+def cache_stamp() -> int:
+    """When the status cache was last written (its mtime, ns; 0 without one): a card compares it to refresh on a rebuild."""
+    try:
+        return os.stat(cache_path()).st_mtime_ns
+    except OSError:
+        return 0
+
+
 def read_cache(max_age_s: float = CACHE_MAX_AGE_S) -> dict | None:
     """The all-shoal document the feeder last wrote when it is fresh, else None. Never computes:
     readers that must not probe (the graph feed) fall back on their own."""
@@ -1355,9 +1363,11 @@ def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: li
 
     def g(group, state, detail=""):
         return {"group": group, "state": state, "detail": _short(detail, 160) or None}
-    if asks and sess == "working" and "parked" not in r:
+    if asks and sess == "working" and "parked" not in r and "blocked-on-question" not in r:
         # its turn is running: it is working now, and the ask (still its badge) is answered once the turn ends (measured
-        # 2026-11-18: venngram-expert read needs-you, asked, through a whole turn of its own)
+        # 2026-11-18: venngram-expert read needs-you, asked, through a whole turn of its own). Not at an open question
+        # prompt: the turn waits there on you, whatever its subagents keep the tempo at, and with ledger asks beside it
+        # the row read working (`?` badge) while the session sat in the question
         return g("working", "working", f"asks you: {asks[0]}")
     if asks and answer and not answer.get("partial") and not answer.get("late") and not r & ANSWER_HOLDS:
         # you replied to every ask since its last write: your move is made, and its watcher wakes it on your reply

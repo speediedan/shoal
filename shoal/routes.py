@@ -142,6 +142,10 @@ def view_argv(server: str, sid: str, slug: str) -> list[str] | None:
 
 STATUS_CACHE_S = 30
 STATUS_STALE_S = 600
+# a role's live rows are pulled again once older than this: under the UI feeder's 20 s interval, so each status rebuild
+# (about every 23 s) reads the host afresh. At STATUS_CACHE_S every other rebuild reused the last pull, so a remote role's
+# open question reached the agents list once every 46 s (measured 2026-11-25), on top of the card's own refresh
+STATUS_PULL_S = 15
 # the fields of a role row that only the role's own host can know (its harness and its sidecars); the
 # ledger-derived ones (status, queue, asks, last write) are already right on every host
 LIVE_FIELDS = ("session", "watcher", "can_progress", "needs_you", "dismissed", "needs_fp", "says", "wait_done", "context_k", "heartbeat_age_s",
@@ -150,13 +154,13 @@ LIVE_FIELDS = ("session", "watcher", "can_progress", "needs_you", "dismissed", "
 
 def remote_rows(server: str, sid: str) -> tuple[dict, dict]:
     """({slug: row}, meta) for `sid`'s roles on `server`, from that host's `shoal ui status --rows-only`
-    over its route: fresh within STATUS_CACHE_S, else pulled again; a failed pull keeps the last good rows
-    (up to STATUS_STALE_S) and marks them stale. meta: {"ok", "age_s", "stale"}."""
+    over its route: fresh within STATUS_PULL_S, else pulled again; a failed pull keeps the last good rows
+    (up to STATUS_STALE_S) and marks them stale past STATUS_CACHE_S * 4. meta: {"ok", "age_s", "stale"}."""
     r = route(server)
     if r is None:
         return {}, {"ok": False, "age_s": None, "stale": True}
     key = f"status-{server}-{sid}"
-    c = _cached(key, STATUS_CACHE_S)
+    c = _cached(key, STATUS_PULL_S)
     if c is None:
         prev = _cached(key, STATUS_STALE_S) or {}
         rows, ok = {}, False
@@ -174,7 +178,7 @@ def remote_rows(server: str, sid: str) -> tuple[dict, dict]:
             _store(key, c)
         else:
             c = {"rows": prev.get("rows") or {}, "ok": False, "pulled": prev.get("pulled")}
-            _store(key, dict(c))  # retry after STATUS_CACHE_S, not on every read
+            _store(key, dict(c))  # retry after STATUS_PULL_S, not on every read
     pulled = c.get("pulled")
     age = int(time.time() - pulled) if pulled else None
     return c.get("rows") or {}, {"ok": bool(c.get("ok")), "age_s": age,

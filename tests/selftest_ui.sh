@@ -134,7 +134,7 @@ assert routes.reachable("other-host.invalid", force=True) is False
 # an attach that fails fast says why and retries every ATTACH_RETRY_S; q gives up (no session is taken over)
 ui_view.ATTACH_RETRY_S = 0
 keys = iter(["r", "q"])
-ui_view._getkey = lambda t: next(keys)
+ui_view._getkey = lambda t, changed=None: next(keys)
 import io, contextlib
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
@@ -163,8 +163,8 @@ attempts = [l for l in open(os.environ["STUB_SSH_LOG"]) if "shoal view uiselftes
 assert len(attempts) == 4, attempts
 print("routed cards ok")
 PY2
-# live state of a routed remote role comes from its own host's rows (`ui status --rows-only`), cached 30 s;
-# a failed pull keeps the last good rows, marked stale
+# live state of a routed remote role comes from its own host's rows (`ui status --rows-only`), pulled again once older
+# than routes.STATUS_PULL_S (each feeder rebuild); a failed pull keeps the last good rows, marked stale
 OUT=$($H ui status --shoal $SID --ledger-root "$ROOT" --rows-only --json) || fail "rows-only rc"
 python3 - "$OUT" <<'PY2' || fail "rows-only is this host's rows only"
 import json, sys
@@ -178,22 +178,31 @@ cat > "$S/far-rows.json" <<JSON
  "agent": {"group": "needs-you", "state": "question", "detail": "an open question prompt in its session"}}]}]}
 JSON
 rm -rf "$SHOAL_ROUTE_CACHE"
-STUB_SSH_OUT="$S/far-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" "$ROOT" <<'PY2' || fail "remote status merge"
+STUB_SSH_LOG="$S/pull.log" STUB_SSH_OUT="$S/far-rows.json" SHOAL_SSH="$S/ssh-stub" python3 - "$SHOALD" "$SPEC" "$ROOT" <<'PY2' || fail "remote status merge"
 import os, sys; sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
-import routes, ui_status
+import routes, ui_herdr, ui_status
 def far():
     doc = ui_status.status(["uiselftest"], root=sys.argv[3])
     return next(x for x in doc["shoals"][0]["roles"] if x["slug"] == "far")
+pulls = lambda: sum("--rows-only" in l for l in open(os.environ["STUB_SSH_LOG"]))
 f = far()
 assert f["session"] == "idle" and f["watcher"] == "alive" and f["context_k"] == 42, f
+# one pull per feeder rebuild: a read inside STATUS_PULL_S reuses it, the next rebuild (one feed interval later) pulls
+# again. At 30 s every other rebuild reused the last pull: a remote question reached the list once in 46 s (2026-11-25)
+assert routes.STATUS_PULL_S < ui_herdr.FEED_INTERVAL_S and pulls() == 1, pulls()
+far()
+assert pulls() == 1, "a read inside STATUS_PULL_S pulls nothing"
+import json
+p = os.path.join(routes._cache_dir(), "status-other-host.invalid-uiselftest.json")
+d = json.load(open(p)); d["t"] -= ui_herdr.FEED_INTERVAL_S; json.dump(d, open(p, "w"))
+f = far()
+assert pulls() == 2 and not f["remote_status"]["stale"], (pulls(), f["remote_status"])
 # its group too: only its own host reads an open question from its transcript (2026-11-18: a role at a question on
 # another host read working in the agents list here, from this host's own derivation)
 assert f["agent"]["group"] == "needs-you" and f["agent"]["state"] == "question", f["agent"]
 assert f["remote_status"]["ok"] and not f["remote_status"]["stale"], f["remote_status"]
 # the host stops answering: the last good rows stay, marked stale once the cache has aged
 os.environ["STUB_SSH_RC"] = "255"; os.environ.pop("STUB_SSH_OUT")
-import json, time
-p = os.path.join(routes._cache_dir(), "status-other-host.invalid-uiselftest.json")
 d = json.load(open(p)); d["t"] -= 60; d["pulled"] -= 200; json.dump(d, open(p, "w"))
 f = far()
 assert f["session"] == "idle" and f["remote_status"]["stale"] and not f["remote_status"]["ok"], f
@@ -1907,7 +1916,7 @@ assert open(calls).read().split() == ["a3"] and "restarted" not in buf.getvalue(
 # a restart just as it ended, and a key pressed in the pause: stays on the card
 ui_view.REATTACH_WINDOW_S = 60
 open(calls, "w").write("")
-ui_view._getkey = lambda t: "x"
+ui_view._getkey = lambda t, changed=None: "x"
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     assert ui_view.run_viewer("claude", "abcd1234", "seat") == 0
@@ -2375,7 +2384,7 @@ def attempt(argv):
     return 255
 ui_view.run_attached = attempt
 keys = iter(["\x1b", "<", "q"])
-ui_view._getkey = lambda t: next(keys)
+ui_view._getkey = lambda t, changed=None: next(keys)
 with contextlib.redirect_stdout(io.StringIO()):
     assert ui_view.remote_attach("h", "s", "r") == 255
 assert len(runs) == 1, runs  # mouse bytes fired no attempt
@@ -2395,7 +2404,7 @@ assert len(runs) == 1, runs  # Ctrl-C gives up
 # stdin at EOF returns from a read at once: the retries stay paced, and this ends under its own bound
 import time
 ui_view.ATTACH_RETRY_S = 1
-ui_view._getkey = lambda t: ""
+ui_view._getkey = lambda t, changed=None: ""
 runs.clear()
 class Enough(Exception):
     pass
@@ -2957,6 +2966,44 @@ finally:
     sys.stdout = real
 assert out.getvalue() == "", out.getvalue()  # outside the app nothing; a failed read breaks nothing
 PY2
+# a card reads again on the status's rebuild, not only on its 15 s timer, attached or not: an open question reached the
+# agents list up to a card refresh after the rebuild that saw it
+XDG_RUNTIME_DIR="$S/rebuild-run" python3 - "$SHOALD" <<'PY2' || fail "card refresh on a rebuild"
+import io, sys, time, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_herdr, ui_status, ui_view
+ui_view.REBUILD_POLL_S = 0.02
+t0 = time.time()
+assert ui_view._getkey(0.1) == "" and time.time() - t0 >= 0.09, "no check: the whole timeout"
+checks = []
+t0 = time.time()
+assert ui_view._getkey(5, lambda: checks.append(1) or len(checks) >= 3) == ""
+assert time.time() - t0 < 1 and len(checks) == 3, (time.time() - t0, checks)
+stamp = ui_status.cache_stamp()
+assert stamp == 0, "no cache yet"
+rebuilt = ui_view.rebuilt_since(stamp)
+assert not rebuilt()
+ui_status.write_cache({"v": 1, "ts": ui_status.iso(), "shoals": []})
+assert rebuilt() and ui_status.cache_stamp() != stamp
+ui_view.CARD_REFRESH_S = 30
+ui_herdr.shoal_tag = lambda sid: "tag"
+reads = []
+app = types.SimpleNamespace(ATTACH_LABEL="x", report_text=lambda r, tag: "")
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", app, make=lambda: (reads.append(1), ("<x>", True))[1]):
+        time.sleep(0.2)
+        assert len(reads) == 1, reads
+        time.sleep(0.01)
+        ui_status.write_cache({"v": 1, "ts": ui_status.iso(), "shoals": []})
+        time.sleep(0.2)
+finally:
+    sys.stdout = real
+assert len(reads) == 2, ("the rebuild is read at once, not after CARD_REFRESH_S", reads)
+assert out.getvalue() == "<x>", out.getvalue()
+print("card refresh on a rebuild ok")
+PY2
 # the agents list's labels stay current through an attach, whatever the harness: they go through the core, not the terminal
 HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "labels during attach"
 import io, sys, time
@@ -3087,7 +3134,7 @@ ui_view._remote_host = lambda *a: ""
 ui_app.report_text = lambda r, tag, latch=None, sent=None: ""
 import ui_herdr
 ui_herdr.shoal_tag = lambda sid: "tag"
-ui_view._getkey = lambda t: "q"
+ui_view._getkey = lambda t, changed=None: "q"
 import types, ui_term
 ui_term.CodeWatch = lambda: types.SimpleNamespace(check=lambda: None)
 ui_term.fit_frame = lambda body, keys: body
@@ -3158,6 +3205,10 @@ g = st(answer=full)
 assert (g["group"], g["state"]) == ("waiting", "answered") and "May I merge 12?" in g["detail"], g
 assert (st(answer=None)["group"], st(answer=None)["state"]) == ("needs-you", "asked")
 assert st(sess="working", answer=full)["group"] == "working", "a turn running is working, as before"
+# a turn that waits at an open question prompt waits on you, whatever its tempo: with ledger asks beside it the row read
+# working (and Claude Code's own `?`) while the session sat in its question
+g = st(["blocked-on-question"], sess="working")
+assert (g["group"], g["state"]) == ("needs-you", "asked"), g
 g = st(answer=part)
 assert g["state"] == "asked" and "you answered ask 2 of 2" in g["detail"], g
 g = st(answer=dict(full, late=True, age_s=1200))

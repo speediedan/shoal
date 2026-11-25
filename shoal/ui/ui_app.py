@@ -1763,17 +1763,46 @@ AGENTS_HELPER = """// shoal: the lattice's motion budget (motion.js, copied in b
 import { readTextFile } from "herdr";
 import { resolveTier, rendererFromProcess } from "./motion.js";
 
+// shoal: one render's terminals by address, and the shoals' colors (shoalIndex, given the list the render already reads):
+// every row's labels come from it. Each terminals() call hands the whole list (labels, reports, programs) to the script,
+// and the rows asked for it about thirteen times each (measured 2026-11-25 on Herdr's shipped mod with this clone, 24 rows:
+// 320 calls and 44 ms a render in Node against Herdr's own 3 ms, and more under the app's interpreter), at a redraw a
+// second while the header counts. A click reads the live list; before a first render (a test), so does every helper.
+let SHOAL_TERMS = null, SHOAL_COLORS = null;
+function shoalIndex(all) {
+  SHOAL_TERMS = new Map(all.map((x) => [x.address, x]));
+  SHOAL_COLORS = shared("space.colors") ?? {};
+}
+function shoalTerm(address) {
+  return SHOAL_TERMS ? SHOAL_TERMS.get(address) : terminals().find((x) => x.address === address);
+}
+
 // shoal: a role card's row names the role, in its shoal's color, on the host it really runs on.
 const SHOAL_MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 function shoalRole(a) {
-  const term = terminals().find((x) => x.address === a.address);
+  const term = shoalTerm(a.address);
   const label = term?.labels?.["shoal.pane"] ?? "";
   const cut = label.lastIndexOf("/");
   if (cut < 0 || label.startsWith("standalone/")) return null;
   const title = term?.report?.title ?? "";
   const at = title.indexOf("@");
-  const stored = (shared("space.colors") ?? {})[a.space] ?? "ansi6";
+  const stored = (SHOAL_COLORS ?? shared("space.colors") ?? {})[a.space] ?? "ansi6";
   return { role: label.slice(cut + 1), host: at >= 0 ? title.slice(at + 1) : null, color: stored.startsWith("#") ? stored : SHOAL_MARK[stored] ?? null };
+}
+
+// The session's own client asks you now: a client attached under a role's card (Claude Code's attach client reports its
+// session itself, app=claude-code) says blocked on a question or a permission. That report is live, while the card's
+// labels wait for the next status rebuild and card refresh: the row read `working · attached` with the client's `?`
+// beside it while the session sat in its question. The card's own report (app: the role's name) is not this.
+const SHOAL_CLIENT_ASKS = { question: "question", permission: "permission" };
+function shoalClientNeed(a) {
+  if (a.status !== "blocked") return "";
+  const term = shoalTerm(a.address);
+  const label = term?.labels?.["shoal.pane"] ?? "";
+  const cut = label.lastIndexOf("/");
+  if (cut < 0 || label.startsWith("standalone/")) return "";
+  const app = term?.report?.app ?? a.app ?? "";
+  return app && app !== label.slice(cut + 1) ? SHOAL_CLIENT_ASKS[term?.report?.kind] ?? "" : "";
 }
 
 // A row shows its role. Focus alone moves to a pane the zoom hides, so a zoomed view stays zoomed, on this role:
@@ -1816,7 +1845,7 @@ function shoalDialog(a, cx, verb) {
 // (the core keeps only auth, question and permission), in the lattice's marks. `!` is left for a cause nobody named.
 const SHOAL_NEED = { dead: "\u2715", nowatch: "\u25cc", stuck: "\u2298" };
 function shoalBadge(a) {
-  const term = a.address ? terminals().find((x) => x.address === a.address) : null;
+  const term = a.address ? shoalTerm(a.address) : null;
   const kind = term?.report?.kind;
   return kind === "question" ? "?" : kind === "auth" ? "\u26b7" : kind === "permission" ? "\u2691"
     : SHOAL_NEED[term?.labels?.["shoal.need"]] ?? "!";
@@ -1830,10 +1859,14 @@ const HERDR_RANK = { 4: 10, 3: 8, 2: 9, 1: 4 }; // Herdr's blocked, done, workin
 const SHOAL_SECTION = { 10: "Needs you", 9: "Working", 8: "Done", 7: "Waiting", 6: "Blocked", 5: "Held", 4: "Idle", 1: "Dismissed" };
 const SHOAL_SECTION_STATUS = { 10: "blocked", 9: "working", 8: "done" };
 function shoalLabel(a, key) {
-  return terminals().find((x) => x.address === a.address)?.labels?.[key] ?? "";
+  return shoalTerm(a.address)?.labels?.[key] ?? "";
+}
+// The row's group: the session's own client asking you (shoalClientNeed) first, then the card's label.
+function shoalGroup(a) {
+  return shoalClientNeed(a) ? "needs-you" : shoalLabel(a, "shoal.group");
 }
 function shoalRank(a, herdr) {
-  return SHOAL_RANK[shoalLabel(a, "shoal.group")] ?? HERDR_RANK[herdr] ?? 0;
+  return SHOAL_RANK[shoalGroup(a)] ?? HERDR_RANK[herdr] ?? 0;
 }
 // A row whose state is not live yet (its card's shoal.stale label: the card's first status read has not landed, or the
 // role's host has not been read) is greyed, with \u27f3 after its name; its tooltip says why, then its last known detail.
@@ -1841,7 +1874,7 @@ const SHOAL_STALE = { starting: "its card is reading the status", unread: "its h
   "host-old": "its host did not answer the last read", old: "its status is old",
   answered: "you answered; the status is catching up", resumed: "its session is running again; the status is catching up" };
 function shoalStale(a) {
-  const why = shoalLabel(a, "shoal.stale");
+  const why = shoalClientNeed(a) ? "" : shoalLabel(a, "shoal.stale"); // the client's own report is live
   return why ? SHOAL_STALE[why] ?? why : "";
 }
 // A card with a client attached under it (its shoal.attached label): the person is in that session. The row says so in
@@ -1850,15 +1883,16 @@ function shoalAttached(a) {
   return shoalLabel(a, "shoal.attached") ? "attached" : "";
 }
 function shoalTip(a) {
-  const stale = shoalStale(a), detail = shoalLabel(a, "shoal.detail"), att = shoalAttached(a);
-  const tip = stale ? `updating: ${stale}${detail ? ` \u00b7 last known: ${detail}` : ""}` : detail;
+  const stale = shoalStale(a), detail = shoalLabel(a, "shoal.detail"), att = shoalAttached(a), asks = shoalClientNeed(a);
+  const tip = asks ? `its session asks you now (a ${asks} in its client)${detail ? ` \u00b7 its status still says: ${detail}` : ""}`
+    : stale ? `updating: ${stale}${detail ? ` \u00b7 last known: ${detail}` : ""}` : detail;
   return att ? (tip ? `${att} \u00b7 ${tip}` : att) : tip;
 }
 // A row's time is how long it has been in its section, as this list saw it move there (Herdr's stamp, kept across
 // restarts): keyed on the card's group, so needs you, working and waiting each start the clock again. A row without a
 // group keeps Herdr's key, its status (done and idle as one).
 function shoalTrackKey(a) {
-  const g = shoalLabel(a, "shoal.group");
+  const g = shoalGroup(a);
   return g ? `shoal:${g}` : a.status === "done" ? "idle" : a.status;
 }
 function shoalWhenTip(section, dur) {
@@ -1882,32 +1916,38 @@ function shoalTicks(view) {
   const tier = resolveTier("auto", { renderer: view?.shoalRenderer ?? null, focused: window()?.active !== false }).tier;
   return tier === "full" || tier === "balanced";
 }
-function shoalFresh(now, ticking = true) {
+// Each machine's newest status time [[machine, ms]], from the render's terminals (shoalIndex), else the live list.
+function shoalAsofs() {
   const by = new Map();
-  for (const x of terminals()) {
+  for (const x of SHOAL_TERMS ? SHOAL_TERMS.values() : terminals()) {
     const t = Date.parse(x?.labels?.["shoal.asof"] ?? "");
     if (!Number.isFinite(t)) continue;
     const m = String(x.address ?? "").includes("/") ? String(x.address).split("/")[0] : "this computer";
     by.set(m, Math.max(by.get(m) ?? 0, t));
   }
-  if (!by.size) return null;
-  const ages = [...by].map(([m, t]) => [m, Math.max(0, Math.floor((now - t) / 1000))]).sort((x, y) => y[1] - x[1]);
+  return [...by];
+}
+function shoalFresh(now, ticking = true, asofs = shoalAsofs()) {
+  if (!asofs.length) return null;
+  const ages = asofs.map(([m, t]) => [m, Math.max(0, Math.floor((now - t) / 1000))]).sort((x, y) => y[1] - x[1]);
   const worst = ages[0][1];
   const each = ages.map(([m, s]) => `${m}: ${shoalAge(s)} ago`).join(", ");
   const moves = ticking ? "It counts up each second." : "It moves only when this list redraws (a label changes, else every 30 s): this window's motion tier is low or off, where a redraw a second costs too much.";
   return { text: `status ${shoalAge(worst)} ago`, old: worst > SHOAL_OLD_S,
-    tip: `Role status read ${each}. Each machine rebuilds it every ${SHOAL_FEED_S} s plus the rebuild's own time, and each role card re-reads it every ${SHOAL_CARD_S} s, so a row can be up to ${SHOAL_CARD_S} s behind this. ${moves}` };
+    tip: `Role status read ${each}. Each machine rebuilds it every ${SHOAL_FEED_S} s plus the rebuild's own time, and each role card reads a rebuild within a second of it (every ${SHOAL_CARD_S} s at the latest), so a row is about a second behind this. ${moves}` };
 }
 // What the header draws, as the tick compares it: whether it ticks, its text and its color.
 function shoalHeadKey(f, ticking) {
   return `${ticking ? "tick" : "coarse"}|${f ? `${f.text}|${f.old}` : ""}`;
 }
-// The header; it notes on the view what it drew, so the tick redraws only for a change, and that the redraw it asked
-// for has been drawn.
+// The header; it notes on the view what it drew and from which status times, so the tick redraws only for a change and
+// reads no terminals (a new time is a label change, which redraws the list anyway), and that the redraw it asked for
+// has been drawn.
 function shoalHead(t, now, view) {
   const ticking = shoalTicks(view);
-  const f = shoalFresh(now, ticking);
-  if (view) { view.shoalDrawn = shoalHeadKey(f, ticking); view.shoalPending = false; }
+  const asofs = shoalAsofs();
+  const f = shoalFresh(now, ticking, asofs);
+  if (view) { view.shoalDrawn = shoalHeadKey(f, ticking); view.shoalPending = false; view.shoalAsofs = asofs; }
   return h_flex().gap(8).items_center().min_w(0)
     .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
     .when(Boolean(f), (el) => el.child(div().id("shoal-asof").text_size(10.5).text_color(f.old ? t.blocked : t.dim).tooltip(f.tip).child(f.text)));
@@ -1920,7 +1960,7 @@ function shoalHead(t, now, view) {
 function shoalTickStep(view, now, cx) {
   if (view.shoalDrawn == null || view.shoalPending || narrow() || find(layout(), "sidebar")?.hidden === true) return false;
   const ticking = shoalTicks(view);
-  const key = shoalHeadKey(shoalFresh(now, ticking), ticking);
+  const key = shoalHeadKey(shoalFresh(now, ticking, view.shoalAsofs ?? []), ticking);
   if (key === view.shoalDrawn || (!ticking && view.shoalDrawn.startsWith("coarse|"))) return false;
   view.shoalPending = true;
   cx.notify();
@@ -1949,7 +1989,7 @@ function shoalStop(view) {
 // A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab; `attached` after
 // either while a client is attached under its card.
 function shoalMore(a, sr, full, fallback) {
-  const state = shoalLabel(a, "shoal.state"), att = shoalAttached(a);
+  const state = shoalClientNeed(a) || shoalLabel(a, "shoal.state"), att = shoalAttached(a);
   if (sr) return full ? [a.space_name, state, att].filter(Boolean).join(" \u00b7 ") || null : null;
   return full && (state || att) ? [state, att].filter(Boolean).join(" \u00b7 ") : fallback;
 }
@@ -1973,8 +2013,14 @@ CLONES = {
         ("const name = full ? a.space_name || label(a) :", "const name = sr ? sr.role : full ? a.space_name || label(a) :"),
         (".text_color(idle ? t.muted : t.foreground).child(name))",
          ".text_color(shoalStale(a) ? t.muted : sr?.color ?? (idle ? t.muted : t.foreground)).child(shoalStale(a) ? `${name} \u27f3` : name))"),
+        # one terminals() read a render: the rows' labels come from the list the render already takes (shoalIndex)
+        ("    const all = terminals();\n    this.migratePins(all);\n",
+         "    const all = terminals();\n    shoalIndex(all);\n    this.migratePins(all);\n"),
+        # the badge clicks through to Asks on a row; a sub-agent's badge and a folded header's (no address) get no id,
+        # since every one of them would share `shoal-badge-undefined`
         ('.items_center().justify_center().child("!");',
-         '.items_center().justify_center().id(`shoal-badge-${a.address}`).cursor_pointer().on_click((_e, cx) => shoalAsks(a, cx)).child(shoalBadge(a));'),
+         '.items_center().justify_center().when(Boolean(a.address), (el) => el.id(`shoal-badge-${a.address}`).cursor_pointer()'
+         '.on_click((_e, cx) => shoalAsks(a, cx))).child(shoalBadge(a));'),
         ('\n          .on_click(() => run("pane.focus", { pane: a.pane }))', '\n          .on_click(() => shoalGo(a))'),
         ('\n        .on_click(() => run("pane.focus", { pane: a.pane }))\n        .when(Boolean(pic)', '\n        .on_click(() => shoalGo(a))\n        .on_mouse_down("right", (_e, cx) => shoalDismiss(a, cx))\n        .when(Boolean(shoalTip(a)), (el) => el.tooltip(shoalTip(a)))\n        .when(Boolean(pic)'),
         # a row's time: how long it has been in its section (shoalTrackKey), and its tooltip says so
