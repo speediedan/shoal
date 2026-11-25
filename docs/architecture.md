@@ -95,6 +95,7 @@ to match against), so a group can work from other trackers or a plain file.
 | telemetry and reports | `shoal/telemetry/` (`transition`, `report`, reconcile) | always | events, ground truth, the review artifact |
 | host instruments | `shoal/psi_watch.py`, `shoal/kill_audit.py` (`kill-audit`) | run by the operator | memory-pressure fires and harness reaps, joined |
 | timers | `shoal/systemd.py` (`install-systemd`, `uninstall-systemd`) | per spec | systemd `--user` units named `shoal-<id>-<job>` |
+| Claude daemon service | `shoal/claude_daemon.py` (`claude-daemon`, `install-systemd --claude-daemon`) | per host, by hand | one durable `claude daemon` per Claude account as a systemd `--user` service (section 7) |
 | preflight | `shoal/doctor.py` (`doctor`) | always | host checks, and group checks with `--spec` |
 | state primitive | `shoal/state.py` (`transition`) | always | heartbeat, wait proof and telemetry in one command |
 | operator UI | `shoal/ui/` (`ui status`, `ui line`, `view`, `ui open`, `ui feed`, `ui menu`), `plugins/shoal-herdr/` | run by the operator | a read-only status contract for every shoal on a host, a viewer that never resumes, and the Herdr adapter (section 12) |
@@ -697,6 +698,7 @@ and a failure of it is retried as below.
 | `restart-retry` | a restart that failed (below) whose Claude session is not running, and no other restarting condition of the role raised this run | restart, once its backoff has passed |
 | `harness-missing` | a harness CLI this host's roles need resolves nowhere (`config.harness_missing`), one per CLI | page 30 |
 | `job-throttled` | a job of the group on this host whose own cgroup's `full` memory pressure averages 50% or more over 60 s (`jobs.throttled_jobs`), one per job run; a WARN line when first seen | page 30 |
+| `claude-daemon` | a Claude account the group's roles use on this host whose daemon, or a session of it, carries a Herdr terminal's `HC_SCOPE` (`claude_daemon.exposure`), one per account and daemon | page 10 |
 
 **A failed restart stays due.** Every restart the quorum or `shoal handoff` runs (`context_restart`) first resolves
 each harness CLI it needs (the old provider's for a Claude stop, the new provider's for the launch) and waits for one
@@ -883,6 +885,38 @@ whose `relay-watch` delivered wakes as cross-session messages, two turns per wak
 `health.relay_fallback` or `health.revive` loads: the role is dropped at load and the keys are ignored
 (a workerless session is resumed on its next wake, so `revive`'s respawn has nothing left to do). To
 keep a role down, park it or mark it `offline`: a dead session alone is woken by its next work.
+
+**One durable Claude daemon per account.** Every background session of a Claude account is a worker of that account's
+one daemon (`<account dir>/daemon.lock`). Claude Code starts it on demand from whichever client finds none (`--bg`,
+`attach`, `agents`, or an attached client that wins the race to restart it at an update), with that client's environment
+and in its cgroup. herdr-core gives every terminal and `exec` a `HC_SCOPE` token and, when it ends, signals every process
+that carries it, whatever its session or cgroup. A client in a role card therefore started a daemon that died with the
+card, and its workers with it: a SIGHUP ends a daemon with no log line (verified 2026-11-25 on a daemon with a scratch
+account directory; SIGTERM logs `cause=signal`), and both silent deaths that day, with 2 and 6 sessions, fell within 30 s
+of Herdr ending cards. Two things keep it from happening:
+- no Claude process shoal starts carries the token: `config.tool_env` and the viewers (`ui_view.clean_env`) drop
+  `HC_SCOPE`, as `backends.detached()` does. A client typed into a Herdr shell still carries its own;
+- `shoal claude-daemon install` (or `install-systemd --claude-daemon`; off unless asked for) runs each account's daemon as
+  `shoal-claude-daemon@<account>.service`, in `shoal-claude.slice`, with the account's overlay and none of a client's
+  environment. Every path that launches or resumes a session (`create`, `_resume`, `respawn`, a card's attach) calls
+  `claude_daemon.ensure` first, which starts the unit and waits up to 10 s for a daemon; without the unit (or without
+  systemd `--user`) it does nothing and Claude Code starts the daemon as before.
+
+The unit's main process, `claude-daemon run`, starts `claude daemon run --origin foreground`: that origin never exits
+when idle (an on-demand daemon exits 5 s after its last worker), an on-demand daemon yields to it, and none displaces it.
+`--origin service` is not used: Claude Code offers no service install in this version, and that origin polls a remote flag
+that stops every worker and removes the service. `run` leaves an on-demand daemon that already holds the account alone
+until it has been gone for 3 s (an update restart is back in about 0.2 s), so installing on a host with live sessions
+changes nothing for them. `shoal claude-daemon takeover --account <name>` moves it at once (SIGUSR1 to `run` alone): the
+on-demand daemon yields, which closes its manager by the same call as its restart at an update, stopping no worker, and
+the new one adopts the workers (its log's `bg adopt:` line counts them). The workers stay in the cgroup and with the
+environment they were started with, so one that carries a token is safe only once it is stopped and resumed. After the
+service has held an account, `run` takes it back from an on-demand daemon by itself. The unit is
+`KillMode=process`: stopping, restarting or uninstalling it never stops a daemon or a session (`claude daemon stop --any`
+does), and `OOMPolicy=continue`, so one session's OOM kill does not stop the rest.
+
+`shoal claude-daemon status` and `doctor` print each account's daemon pid, origin and cgroup: `WARN` for one started on
+demand and for a daemon or session that carries a token. Health pages the second (`claude-daemon`).
 
 ### When roles wake, and what that costs
 

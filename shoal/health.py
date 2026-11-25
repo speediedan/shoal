@@ -33,6 +33,7 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   harness-missing    a harness CLI this host's roles need resolves nowhere                     page@30
   job-throttled      a job on this host whose cgroup's full memory pressure averages 50% or more over 60 s
                      (jobs.THROTTLE_FULL_PCT): a WARN line when first seen, a page if it stays so    page@30
+  claude-daemon      a Claude daemon or session a closing Herdr terminal would end (its HC_SCOPE)  page@10
 
 Wakes go through direct session wake (backends.Backend.wake), one implementation per
 ecosystem: opencode -> a send to the session; Claude with a live ledger-watch -> a wake
@@ -132,6 +133,9 @@ LADDERS = {
     # reads `active` while it makes little progress (2026-11-25: an hour in D state at 3 MB/s behind a slice over its
     # MemoryHigh, its GPU reservation idle). A WARN line when first seen; a page if it is still so 30 min later
     "job-throttled": [(30, "page")],
+    # a Claude daemon or session that carries a Herdr terminal's HC_SCOPE: closing that terminal ends it, and for the
+    # daemon every session on the account (2026-11-25, twice). Nothing is wrong yet, so a page only after 10 min
+    "claude-daemon": [(10, "page")],
 }
 # the conditions whose ladders restart their role
 RESTARTING = ("context-restart", "quota-handoff", "wait-resolved", "wait-validity", "restart-retry")
@@ -141,7 +145,7 @@ CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 RESTART_NOT_PAGE = ("wait-resolved", "wait-validity")
 # conditions that do not reach the role through its watcher, so a hold for an attached client does not hold their ladders
 HOLD_EXEMPT = ("wakes-held", "watcher-dead", "host-silent", "host-name-clash", "checkout-stuck", "lease-orphan",
-               "harness-missing", "job-throttled")
+               "harness-missing", "job-throttled", "claude-daemon")
 
 
 def claude_clients(role) -> tuple[list[int], tuple[str, ...]]:
@@ -1612,6 +1616,18 @@ def harness_checks(spec: ShoalSpec) -> list[dict]:
     return out
 
 
+def claude_daemon_checks(spec: ShoalSpec) -> list[dict]:
+    """`claude-daemon`: a Claude account this shoal's roles use on this host whose daemon or sessions a closing Herdr
+    terminal would end (`claude_daemon.conditions`)."""
+    from backends import fake_sessions
+    if fake_sessions() is not None:
+        return []
+    import claude_daemon
+    used = {r.account or "" for r in spec.roles if r.ecosystem == "claude" and r.session and is_local(r, spec)}
+    return [{"slug": f"host:{config.server()}", "condition": "claude-daemon", "key": c["key"], "since": iso(),
+             "first_seen": True, "detail": c["detail"]} for c in claude_daemon.conditions(used)]
+
+
 def multi_host(spec: ShoalSpec) -> bool:
     """True when the shoal's roles span more than one host. A shoal that names its home but runs every
     role there (the usual case) is single-host: it neither beats nor judges, so it writes no ledger noise."""
@@ -1853,6 +1869,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     conds = evaluate(spec, view, cbusy)
     conds += restart_retries(spec, spec_path, conds, cbusy, state, acts, dry_run)
     conds += harness_checks(spec)
+    conds += claude_daemon_checks(spec)
     conds += host_beats(spec, led, state, dry_run)
     conds += watched_checkouts(spec, dry_run)
     conds += orphaned_leases(spec)
@@ -2080,7 +2097,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 if c["condition"] in RESTART_NOT_PAGE and not ch.startswith("FAILED"):
                     ch = f"woken {lad['step']}x without effect: {ch}"
             elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan",
-                                    "wakes-held", "harness-missing", "job-throttled"):
+                                    "wakes-held", "harness-missing", "job-throttled", "claude-daemon"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 hold = hold_of(c["slug"])

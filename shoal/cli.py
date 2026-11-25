@@ -29,6 +29,7 @@ Subcommands:
                 with features.health run the health quorum instead).
   brief         print/write one role's first prompt (restart uses this).
   install-systemd / uninstall-systemd   watcher units per shoal generation.
+  claude-daemon  run each Claude account's daemon as a durable systemd --user service (claude_daemon.py).
   spec absolutize-docs   rewrite relative role docs to absolute paths under --base.
   spec sources           list, add or remove a live shoal's priority-table sources (a board, a label).
   ledger verbs  offer | withdraw | claim | release | done | msg | show | fill |
@@ -89,6 +90,7 @@ import startdoc as _startdoc  # noqa: E402
 import refs as _refs  # noqa: E402
 import logentry as _logentry  # noqa: E402
 import lifecycle as _lifecycle  # noqa: E402
+import claude_daemon as _claude_daemon  # noqa: E402
 import archive as _archive  # noqa: E402
 import resource_usage as _resource_usage  # noqa: E402
 import pool_cli as _pool_cli  # noqa: E402
@@ -1423,6 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
     _refs.add_parser(sub)
     _logentry.add_parser(sub)
     _lifecycle.add_parser(sub)
+    _claude_daemon.add_parser(sub)
     _archive.add_parser(sub)
     _resource_usage.add_parser(sub)
     _pool_cli.add_parsers(sub)
@@ -1503,6 +1506,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="write (and optionally enable) systemd --user watcher units")
     p.add_argument("--spec", required=True)
     p.add_argument("--enable", action="store_true", help="daemon-reload + enable --now each timer")
+    p.add_argument("--claude-daemon", action="store_true",
+                   help="also run each Claude account's daemon on this host as a service (shoal claude-daemon install)")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_install_cli)
 
@@ -1581,8 +1586,9 @@ def cmd_install_cli(a: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"cannot read spec {a.spec}: {exc}")
         return 1
-    return cmd_install_systemd(spec, os.path.abspath(a.spec),
-                               dry_run=a.dry_run, enable=a.enable)
+    rc = cmd_install_systemd(spec, os.path.abspath(a.spec),
+                             dry_run=a.dry_run, enable=a.enable)
+    return rc or (_claude_daemon.install(a.dry_run) if a.claude_daemon else 0)
 
 
 def cmd_watch(a: argparse.Namespace) -> int:

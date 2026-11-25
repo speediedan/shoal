@@ -37,7 +37,9 @@ for _p in (PKG, HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-STRIP_PREFIXES = ("HERDR_", "ZELLIJ")
+# HC_SCOPE: herdr-core ends whatever carries it when the card's terminal closes, and a client may start its harness's
+# background daemon (Claude's holds every session of the account); closing the terminal still hangs the client up
+STRIP_PREFIXES = ("HERDR_", "ZELLIJ", "HC_SCOPE")
 CARD_REFRESH_S = 15
 # a standalone card that reports its session: each refresh lists `claude agents` (about 0.4 s of CPU), so half a role card's rate
 SEAT_REFRESH_S = 30
@@ -473,6 +475,10 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
                        **({"observe": True} if observe else {}))
     print(f"shoal view: {label} -> {harness} {session} (detach to come back; the session keeps running)")
     binary = os.path.realpath(argv[0]) if harness == "claude" else ""
+    if harness == "claude":  # an attach starts the account's daemon when it finds none
+        import accounts
+        import claude_daemon
+        claude_daemon.ensure(accounts.env_account("claude", env))
     started = time.time()
     r = subprocess.run(argv, env=env)
     for _ in range(REATTACH_MAX):

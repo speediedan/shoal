@@ -76,6 +76,7 @@ python3 "$TESTD/test_efficiency.py" || fail "ci efficiency snapshot"
 python3 "$TESTD/test_efficiency_review.py" || fail "ci efficiency review"
 python3 "$TESTD/test_pool_metrics.py" || fail "pool imbalance over compatible demand"
 python3 "$TESTD/test_resume_missing_cwd.py" || fail "resume restores a missing session directory"
+python3 "$TESTD/test_claude_daemon.py" || fail "the durable Claude daemon service (tests/test_claude_daemon.py)"
 python3 "$TESTD/test_ask_answers.py" || fail "answers name their asks by id and reach a role at an open question (tests/test_ask_answers.py)"
 
 echo "== 1 working context: scope derives, migrate converts and removes scope"

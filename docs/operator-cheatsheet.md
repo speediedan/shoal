@@ -209,6 +209,16 @@ export S=<id> SPEC=<path to the group's spec>
     shoal install-systemd --spec $SPEC --enable
     ```
 
+- Run each Claude account's daemon as a service, so no client or terminal that ends takes every session with it (per
+  host, once; safe with live sessions, which stay where they are):
+
+    ```bash
+    shoal claude-daemon status
+    shoal claude-daemon install --dry-run
+    shoal claude-daemon install
+    shoal claude-daemon takeover --account <account>   # move an on-demand daemon that is live now; sessions keep running
+    ```
+
 - Upgrade a running group. It prints each change's rollout class (live, re-arm, brief, restart),
   runs the tests, and applies feature edits:
 

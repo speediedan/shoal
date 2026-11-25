@@ -28,6 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import accounts  # noqa: E402
+import claude_daemon  # noqa: E402
 import config  # noqa: E402
 
 TOOL_PATH = config.tool_path()
@@ -878,7 +879,7 @@ def detached(argv: list[str]) -> list[str]:
     return argv
 
 
-EXEC_SCOPE_VAR = "HC_SCOPE"  # herdr-core's tag on what an `exec` started
+EXEC_SCOPE_VAR = config.EXEC_SCOPE_VAR
 
 
 def spawn_detached(argv: list[str], **kw) -> subprocess.Popen:
@@ -1240,6 +1241,7 @@ class ClaudeBackend(Backend):
             text = RESTORED_DIR_NOTE.format(path=cwd, anchor=anchor, sha=sha) + text
             restored = f" (restored missing directory {cwd} as a detached worktree of {anchor} at {sha})"
         env = claude_env(row_account(row))
+        claude_daemon.ensure(row_account(row))
         try:  # resolved at this launch, waiting out an update that has the binary missing (harness_exe)
             r = run_harness("claude", ["--bg", "--resume", session, text], wrap=detached, capture_output=True, text=True,
                             timeout=120, cwd=cwd, env=env)
@@ -1379,6 +1381,7 @@ class ClaudeBackend(Backend):
         if effort:
             argv += ["--effort", effort]
         argv += [brief]
+        claude_daemon.ensure(self.account)
         try:  # resolved at this launch, waiting out an update that has the binary missing (harness_exe)
             r = run_harness("claude", argv, wrap=detached, capture_output=True, text=True, timeout=120,
                             cwd=repo_dir, env=claude_env(self.account))
@@ -1422,9 +1425,11 @@ class ClaudeBackend(Backend):
         if fake_sessions() is not None:
             return "fake"
         e = self._row(session_id, include_stopped=True) or {}
+        acct = row_account(e) if e else id_account(session_id)
+        claude_daemon.ensure(acct)
         try:
             r = run_harness("claude", ["respawn", str(e.get("id") or session_id[:8])], wrap=detached, capture_output=True,
-                            text=True, timeout=120, env=claude_env(row_account(e) if e else id_account(session_id)))
+                            text=True, timeout=120, env=claude_env(acct))
         except OSError as exc:
             return f"FAILED ({exc})"
         out = ANSI_RE.sub("", r.stdout + r.stderr).strip().splitlines()
