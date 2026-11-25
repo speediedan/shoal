@@ -914,6 +914,14 @@ def render_role(view: View, slug: str, candidates: list[dict] | None = None,
     role = view.spec.role(slug) if view.spec is not None else None
     if role is not None:
         L.append(f"role: {role.label}")
+        try:
+            import accounts
+            pin = accounts.pin_of(role)
+        except Exception:  # noqa: BLE001 - the role view never fails on host settings
+            pin = ""
+        if pin:
+            L.append(f"provider: {role.ecosystem}, kept there by automatic balancing: {pin}"
+                     + ("" if pin.startswith("[accounts]") else " (`handoff --ecosystem` changes it, `--no-pin` clears it)"))
     st = view.role_state(slug)
     if st:
         sub = f"/{st['sub']}" if st.get("sub") else ""
@@ -1024,6 +1032,9 @@ def render_all(view: View, spec, candidates_for=None, hb_ages: dict[str, float] 
         held_ = _hold_note(view, r.slug)
         if held_:
             state += f"; WATCHER {held_}"
+        pin = (getattr(r, "provider_pin", None) or {}).get("provider")
+        if pin:
+            fill += f", pinned to {pin}"
         ng = grants_by_role.get(r.slug, 0) + grants_by_role.get("*", 0)
         L.append(f"| **{r.label}** | {fill} | {state} | {act} | {', '.join(nxt) or '—'} | {ng or '—'} | {last} |")
     pool = [o for o in view.offers.values() if o["status"] == "open" and o["to"] == "*"]

@@ -301,6 +301,8 @@ def build(verb: str, a) -> tuple[list[str], str, bool]:
             if a.ecosystem not in ui_status.active_ecosystems():
                 raise ActError(f"{a.ecosystem} is set aside on this host (`shoal ui set ecosystems`): hand off to one in use")
             args.append(f"--ecosystem={a.ecosystem}")
+        if getattr(a, "no_pin", False):
+            args.append("--no-pin")
         if a.force:
             if not getattr(a, "no_prepare", False):
                 raise ActError("turn off checkpoint-first before choosing Force")
@@ -777,6 +779,8 @@ def add_parsers(u) -> None:
     q.add_argument("--account", default="", help="handoff, add-role, add-session: the provider account (`shoal accounts`)")
     q.add_argument("--force", action="store_true", help="handoff: even though the role has not said it is restart-ready")
     q.add_argument("--no-prepare", action="store_true", help="handoff: skip requesting a checkpoint first")
+    q.add_argument("--no-pin", action="store_true",
+                   help="handoff: a provider move that balancing may undo (no provider pin; clears one)")
     q.add_argument("--through-question", action="store_true",
                    help="standalone Claude handoff: a seat at an open question is stopped and resumed with the request")
     q.add_argument("--undo", action="store_true", help="dismiss: show the role as needing you again")

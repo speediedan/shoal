@@ -915,6 +915,26 @@ def run_restart(spec: ShoalSpec, args: argparse.Namespace) -> int:
             print(f"REFUSED: --set-effort {slug} needs --only {slug}")
             return 1
         r.effort = effort
+    for kv in (getattr(args, "set_provider_pin", None) or []):
+        # `handoff --ecosystem <p>`: the operator's explicit move, which automatic balancing then keeps (accounts.pin_of);
+        # empty clears it (`handoff --no-pin`)
+        slug, _, eco = kv.partition(":")
+        r = spec.role(slug)
+        if r is None or (eco and eco not in ECOSYSTEMS):
+            print(f"bad --set-provider-pin {kv!r} (want SLUG:{'|'.join(ECOSYSTEMS)} or SLUG: to clear)")
+            return 1
+        if slug not in (only or []):
+            print(f"REFUSED: --set-provider-pin {slug} needs --only {slug}")
+            return 1
+        was = (r.provider_pin or {}).get("provider", "")
+        if eco:
+            r.provider_pin = {"provider": eco, "by": "user", "at": utcnow_iso(),
+                              "via": "handoff --ecosystem"}
+            print(f"{slug}: provider pinned to {eco} (automatic balancing keeps it there; a later `handoff --ecosystem` "
+                  f"changes it, `--no-pin` clears it)")
+        elif was:
+            r.provider_pin = {}
+            print(f"{slug}: provider pin ({was}) cleared")
     for kv in (getattr(args, "note", None) or []):
         slug, _, text = kv.partition(":")
         r = spec.role(slug)
@@ -1330,6 +1350,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--set-ecosystem", action="append", default=[],
                    help="SLUG:ECOSYSTEM to relaunch a role on another provider (repeatable; `handoff` stops the old session)")
     p.add_argument("--set-effort", action="append", default=[], help="SLUG:EFFORT for a relaunched role (repeatable)")
+    p.add_argument("--set-provider-pin", action="append", default=[],
+                   help="SLUG:PROVIDER to record the role's provider pin (automatic balancing keeps it there), SLUG: to "
+                        "clear it (`handoff --ecosystem` sets it; repeatable)")
     p.add_argument("--set-account", action="append", default=[],
                    help="SLUG:ACCOUNT to relaunch a role on another account of its provider (repeatable; the provider's "
                         "name or empty is its default account; `handoff --account` stops the old session)")

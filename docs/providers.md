@@ -45,7 +45,7 @@ can resolve it without the role. Each kind resolves to `pending`, `resolved` or 
 
 | kind | ref | resolves from | ships with |
 | --- | --- | --- | --- |
-| `job` | the name given to `shoal job run --name` | the job unit's state: active is pending, an exit-code file is resolved, and a missing unit with no exit file is unknown | core (needs a `systemd --user` host) |
+| `job` | the name given to `shoal job run --name` | the job unit's state, read on the host it runs on (its record here names it: `job run --on`, or `--place` onto another pool host; one ssh read per minute per process, `jobs.remote_state_cached`): active is pending, an exit-code file is resolved, and a missing unit with no exit file, or a host that cannot be reached, is unknown | core (needs a `systemd --user` host) |
 | `lease` | a lease key | the lease provider above | core |
 | `gh-run` | `<owner/repo>:<run id>` | `gh run view` | core (needs `gh`) |
 | `gh-pr` | `<owner/repo>#<n>` | `gh pr view`: a merged or closed PR is resolved; for an open one, `gh pr checks`: any pending check is pending, and an empty check list is unknown, never resolved. With upstream semantics (an `upstream` wait or an `upstream:` blocker) an open PR is pending whatever its checks say, because the dependency is the merge, not the CI | core (needs `gh`) |

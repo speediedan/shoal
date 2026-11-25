@@ -402,11 +402,11 @@ def standalone_report(rows: list[dict], session: str, job: str, label: str) -> d
     turn = ui_status.claude_turn(row) if row else "dead"
     state, kind, msg = "idle", "", {"working": "running a turn", "idle": "alive, between turns"}.get(turn, "stopped")
     st = _h.claude_job_state(row) if row else {}
-    fl = st.get("inFlight") if isinstance(st.get("inFlight"), dict) else {}
-    try:
-        bg = int(fl.get("tasks") or 0) + int(fl.get("queued") or 0)
-    except (TypeError, ValueError):
-        bg = 0
+    # only the tasks that still run (backends.live_tasks): Claude Code's own count can hold shells and subagents that
+    # have ended, and the seat then read working on its background for work that was over (2026-11-25)
+    from backends import live_tasks
+    lt = live_tasks(row, st) if row else {"total": 0, "shells": 0, "agents": 0, "ended": 0}
+    bg = lt["total"]
     if turn == "working":
         state = "working"
     elif turn == "blocked" and ui_status.pending_question(row, session):
@@ -414,7 +414,11 @@ def standalone_report(rows: list[dict], session: str, job: str, label: str) -> d
     elif bg and turn != "dead":
         # between turns with its own background tasks running (a suite, a CI watch): it is waiting on its own work, which
         # re-invokes it, not held (measured 2026-11-11: a seat running suites read held)
-        msg = f"between turns: {bg} background task{'s' if bg > 1 else ''} running"
+        kinds = ", ".join(x for x in (f"{lt['shells']} shell{'s' if lt['shells'] != 1 else ''}" if lt["shells"] else "",
+                                       f"{lt['agents']} subagent{'s' if lt['agents'] != 1 else ''}" if lt["agents"] else "")
+                          if x)
+        msg = f"between turns: {bg} background task{'s' if bg > 1 else ''} running ({kinds})" + \
+            (f"; {lt['ended']} more listed by Claude Code have ended" if lt.get("ended") else "")
     elif turn == "blocked":
         msg = "your turn: waiting for a reply"
     # when its last turn ended, so a dismissal lapses at the next reply and a declared wait at a later turn: the job's

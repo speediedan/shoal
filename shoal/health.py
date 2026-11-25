@@ -28,6 +28,9 @@ boundary), so a new instance restarts the ladder and one instance never escalate
                      Offline, a card's client is ended at 60 (detach_cards; a held Claude restart too)
   stale-active       status active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
+  restart-retry      a restart that failed (restart_record), its Claude session not running    restart after its backoff
+                     (any restart that fails stays due: 5, 10, 20, then 30 min apart; paged after 3 in a row)
+  harness-missing    a harness CLI this host's roles need resolves nowhere                     page@30
 
 Wakes go through direct session wake (backends.Backend.wake), one implementation per
 ecosystem: opencode -> a send to the session; Claude with a live ledger-watch -> a wake
@@ -117,13 +120,22 @@ LADDERS = {
     # [accounts] quota_handoff: a role at a quiet boundary whose account nears a 5 h or weekly limit, or carries more
     # than its share, is handed to the account balancing picks (accounts.quota_pick); held through its cooldown
     "quota-handoff": [(0, "restart")],
+    # a restart that failed (restart_record) whose role no other restarting condition covers this run: tried again once
+    # its backoff has passed, and paged after RESTART_FAIL_PAGE failures in a row
+    "restart-retry": [(0, "restart")],
+    # a harness CLI a local role needs resolves nowhere (`config.harness_missing`): an update takes a minute or so, so
+    # one still missing after 30 min is a broken install, paged once
+    "harness-missing": [(30, "page")],
 }
+# the conditions whose ladders restart their role
+RESTARTING = ("context-restart", "quota-handoff", "wait-resolved", "wait-validity", "restart-retry")
 CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 # wakes without effect on these end in a context restart at the role's recorded wait, not a page (a page only when the
 # restart fails); held while the session is mid-turn
 RESTART_NOT_PAGE = ("wait-resolved", "wait-validity")
 # conditions that do not reach the role through its watcher, so a hold for an attached client does not hold their ladders
-HOLD_EXEMPT = ("wakes-held", "watcher-dead", "host-silent", "host-name-clash", "checkout-stuck", "lease-orphan")
+HOLD_EXEMPT = ("wakes-held", "watcher-dead", "host-silent", "host-name-clash", "checkout-stuck", "lease-orphan",
+               "harness-missing")
 
 
 def claude_clients(role) -> tuple[list[int], tuple[str, ...]]:
@@ -499,13 +511,18 @@ def claude_job_tempo(row: dict) -> str:
     return str(claude_job_state(row).get("tempo") or "")
 
 
-def agents_in_flight(st: dict) -> int:
+def agents_in_flight(st: dict, row: dict | None = None) -> int:
     """How many of the session's own subagents are running (`inFlight` kinds naming an agent). A
     background shell does not count: a bare `run_in_background` command kept `state` at working and
-    hid ended turns (2026-10-08), so only delegated agent work holds a turn open."""
+    hid ended turns (2026-10-08), so only delegated agent work holds a turn open. Where the job lists its tasks
+    (`fan`), only the subagents not finished by their own record count (backends.live_tasks): a finished one Claude
+    Code still counted kept a seat reading working (2026-11-25)."""
     fl = st.get("inFlight") or {}
     if not isinstance(fl, dict) or not any("agent" in str(k) for k in fl.get("kinds") or []):
         return 0
+    if any(isinstance(t, dict) and t.get("kind") not in ("todo", None) for t in st.get("fan") or []):
+        from backends import live_tasks
+        return live_tasks(row or {}, st)["agents"]
     try:
         return int(fl.get("tasks") or 0)
     except (TypeError, ValueError):
@@ -518,7 +535,7 @@ def claude_liveness(row: dict) -> str:
     (measured 2026-10-13: three research agents writing proposals read as an idle session)."""
     st = claude_job_state(row)
     tempo = CLAUDE_TEMPO.get(str(st.get("tempo") or ""))
-    if tempo == "idle" and agents_in_flight(st):
+    if tempo == "idle" and agents_in_flight(st, row):
         return "busy"
     if tempo:
         return tempo
@@ -538,7 +555,8 @@ def claude_busy() -> dict[str, str]:
         if fake is not None:
             rows = list(fake.get("claude") or [])
         elif not accounts.several("claude"):
-            r = subprocess.run(["claude", "agents", "--json"], capture_output=True, text=True, timeout=30, env=_ENV)
+            from backends import run_harness
+            r = run_harness("claude", ["agents", "--json"], wait_s=0, capture_output=True, text=True, timeout=30, env=_ENV)
             rows = json.loads(r.stdout or "[]")
         else:
             rows = claude_agents()
@@ -959,13 +977,20 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
         # work arrives: a retired worker is dormant, and waking it only to re-arm cost a cold turn
         # (2026-10-20: six in one night)
         alive, sc = watcher_alive(spec.sid, slug)
-        if watcher_dead(alive, role_status, between) and not watcher_dormant(spec, view, role, role_status):
+        dead = watcher_dead(alive, role_status, between)
+        quiet = dormant = dead and watcher_dormant(spec, view, role, role_status)
+        if dormant and role.session and health_cfg(spec).get("rearm", True):
+            # a detached watcher costs no turn to re-arm, so a dormant role gets its watcher back too: without one, every
+            # wake to it is a stop and resume (2026-11-25: a failed restart ended its watcher, and nothing re-armed it)
+            from briefs import arming
+            dormant = not is_detached_wake(arming(role, spec)[0])
+        if dead and not dormant:
             since = sc.get("armed_utc") or boundary or iso()
             ex = sc.get("exit", "")
             if ex:
                 since = max(since, ex.split(" ")[-1])
             out.append({"slug": slug, "condition": "watcher-dead", "key": f"pid:{sc.get('pid', 'none')}", "since": since,
-                        "first_seen": True,
+                        "first_seen": True, "rearm_only": quiet,
                         "detail": f"ledger-watch not running ({'designed exit, no re-arm: ' + ex if ex else 'no exit verdict: killed or never armed'})"})
         from ledger_watch import current_hold
         hold = current_hold(sc, alive)
@@ -1221,15 +1246,15 @@ def quota_condition(spec: ShoalSpec, role, q: dict, auto: bool) -> dict | None:
     """`[accounts] quota_handoff`: the quota-handoff condition for a local role at a quiet boundary, or None. The role is
     handed over as a context restart is: in `auto` context mode at any quiet boundary once its start doc meets its
     contract, else only when it marked itself restart-ready. The target is `accounts.quota_pick` over the balancing pool
-    (its own provider only when `[accounts] pin` names it), never a provider this host will not run or a Claude account
-    that has not trusted the shoal's folder."""
+    (its own provider only when `[accounts] pin` names it or the role carries a provider pin: accounts.pin_of), never a
+    provider this host will not run or a Claude account that has not trusted the shoal's folder."""
     import accounts
     if role is None or not role.session or not accounts.quota_handoff_on() or not is_local(role, spec):
         return None
     if not (q.get("restart_ready") or auto):
         return None
     try:
-        pick = accounts.quota_pick(role.ecosystem, role.account, accounts.role_load(), accounts.pinned(role.slug),
+        pick = accounts.quota_pick(role.ecosystem, role.account, accounts.role_load(), bool(accounts.pin_of(role)),
                                    slug=role.slug)
     except Exception:  # noqa: BLE001 - no usage cache or specs: the role stays
         return None
@@ -1277,12 +1302,106 @@ def rebalance(spec: ShoalSpec, role) -> tuple[str, ...]:
             f"([accounts] rebalance: {why})")
 
 
+# A restart that fails stays due: the role keeps a record of it (restart_record) and the quorum tries again after a
+# backoff that grows with each failure in a row, paging once after RESTART_FAIL_PAGE of them with the error. Measured
+# 2026-11-25: a context restart failed on a `claude` binary an update had removed, nothing tried again, and the role
+# reached twice its limit an hour later; a handoff stopped its role's session, then failed on the same, and left the role
+# with no session at all.
+RESTART_FAIL_PAGE = 3
+RESTART_BACKOFF_MIN = (5, 10, 20, 30)  # after the 1st, 2nd, 3rd, 4th and later failures in a row
+ALREADY_RUNNING = "a restart of "  # the lock's refusal: another restart is under way, not a failure
+
+
+def restart_record_path(sid: str, slug: str) -> str:
+    return os.path.join(state_dir(sid), f"context-restart-{slug}.json")
+
+
+def restart_record(sid: str, slug: str) -> dict:
+    """The role's last restart attempt ({} when none is on record): {session (the one it replaces), state (launched |
+    failed), at, extra (its restart arguments), fails (in a row), first (the first of them), error, retry_at, log,
+    log_off, paged}."""
+    try:
+        d = json.load(open(restart_record_path(sid, slug)))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_restart_record(sid: str, slug: str, rec: dict | None) -> None:
+    p = restart_record_path(sid, slug)
+    if not rec:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+        return
+    os.makedirs(state_dir(sid), exist_ok=True)
+    with open(p + ".tmp", "w") as fh:
+        json.dump(rec, fh, indent=1)
+    os.replace(p + ".tmp", p)
+
+
+def restart_backoff_min(fails: int) -> float:
+    return float(RESTART_BACKOFF_MIN[min(max(fails, 1), len(RESTART_BACKOFF_MIN)) - 1])
+
+
+def note_restart_failure(spec: ShoalSpec, role, error: str, extra: tuple[str, ...] = ()) -> dict:
+    """Count one failed restart of `role` in its record (a new count when the record was another session's) and set when
+    the quorum may try again. Returns the record."""
+    rec = restart_record(spec.sid, role.slug)
+    if rec.get("session") != role.session:
+        rec = {}
+    fails = int(rec.get("fails") or 0) + 1
+    rec.update(session=role.session, state="failed", at=iso(), fails=fails, first=rec.get("first") or iso(),
+               error=short_line(error, 240), extra=list(extra or rec.get("extra") or []),
+               retry_at=iso(utcnow() + datetime.timedelta(minutes=restart_backoff_min(fails))))
+    save_restart_record(spec.sid, role.slug, rec)
+    return rec
+
+
+def restart_lock_held(sid: str, slug: str) -> bool:
+    """True while a restart of the role runs (it holds the role's restart lock)."""
+    p = os.path.join(state_dir(sid), f"context-restart-{slug}.lock")
+    if not os.path.exists(p):
+        return False
+    with open(p, "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    return False
+
+
+def log_failure(path: str, offset: int) -> str:
+    """The line that says why a detached restart failed, from its log after `offset`: its last FAIL line, else its last."""
+    try:
+        with open(path, errors="replace") as fh:
+            fh.seek(max(0, int(offset or 0)))
+            lines = [x.strip() for x in fh.read().splitlines() if x.strip()]
+    except (OSError, ValueError):
+        return "its log is unreadable"
+    fail = [x for x in lines if "FAIL" in x or "Error" in x or "REFUSED" in x]
+    return (fail or lines or ["it ended with nothing in its log"])[-1]
+
+
+def restart_harnesses(role, extra: tuple[str, ...]) -> list[str]:
+    """The harness CLIs a restart of `role` runs: its own provider's (Claude's stop lists and stops jobs) and the new
+    one's (`--set-ecosystem`)."""
+    from doctor import ECOSYSTEM_TOOLS
+    new = next((x.split(":", 1)[1] for x in extra if x.startswith(f"--set-ecosystem={role.slug}:")), "")
+    tools = [ECOSYSTEM_TOOLS.get(role.ecosystem, "")] if role.ecosystem == "claude" else []
+    return [t for t in dict.fromkeys(tools + [ECOSYSTEM_TOOLS.get(new or role.ecosystem, "")]) if t]
+
+
 def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False, extra: tuple[str, ...] = ()) -> str:
     """features.health.context_restart `auto`: hand a restart-ready role to a fresh session. The old Claude
     session is stopped first and its detached watcher ended (neither wakes it), so nothing delivers to it
     afterwards; then `restart --only` launches the new one, detached from this run (it verifies the new
     loop for minutes, and the quorum holds a lock). `extra`: more restart arguments (`shoal handoff`'s model and
-    provider)."""
+    provider). Every harness CLI it needs must resolve before anything stops (waiting out an update, bounded), and a
+    failure at any step is recorded (`note_restart_failure`) so the quorum tries again: a role it stopped and could
+    not relaunch is relaunched from its start doc at the next try."""
     if role is None or not spec_path:
         return "FAILED (no role or spec path)"
     argv = shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", role.slug, *extra]
@@ -1290,6 +1409,8 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
         return "would restart (dry-run): " + " ".join(argv[-(4 + len(extra)):])
     log = os.path.join(state_dir(spec.sid), f"context-restart-{role.slug}.log")
     guard = None
+    ended = ""  # the detached watcher this ended, which a failure re-arms
+    stopped = ""
     try:
         os.makedirs(state_dir(spec.sid), exist_ok=True)
         # one restart of a role at a time: the spec records the new session only when it ends, so a double click, or the
@@ -1299,32 +1420,183 @@ def context_restart(spec: ShoalSpec, spec_path: str, role, dry_run: bool = False
         try:
             fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            return f"FAILED (a restart of {role.slug} is already running; its log: {log})"
+            return f"FAILED ({ALREADY_RUNNING}{role.slug} is already running; its log: {log})"
+        import backends
+        for tool in restart_harnesses(role, extra):
+            backends.harness_exe(tool)  # before anything stops: a CLI mid-update is waited for, a missing one refuses
         alive, sc = watcher_alive(spec.sid, role.slug)
         if alive and is_detached_wake(str(sc.get("wake", ""))):
             os.kill(int(sc["pid"]), 15)  # a detached watcher: ending it wakes nobody
+            ended = "detached"
         if role.ecosystem == "claude" and role.session:
             # every job on the conversation, watched so a respawned worker is stopped again: a copy left behind would hold
             # the role beside the new session
             import park
-            stopped = park.stop_session(role)
+            stopped = "a stop was under way when it failed"  # a stop that raises may have stopped the jobs already
+            try:
+                stopped = park.stop_session(role)
+            except OSError:
+                # past this point the old session may be stopped already, so leaving now could leave the role with
+                # none (measured 2026-11-25: a handoff's stop went through, then its check of the stop failed on a
+                # `claude` an update had removed). Once more, after the CLI is back (bounded): a stop is idempotent
+                for tool in restart_harnesses(role, extra):
+                    backends.harness_exe(tool)
+                stopped = park.stop_session(role)
             if "STILL LIVE" in stopped:
                 # the watcher ended above would leave a live session with nobody to wake it (measured 2026-11-18:
                 # it-architect, re-armed by hand): re-arm it now, as the quorum does a dead one
-                rearmed = rearm_watcher(spec, role, {}, dry_run) if alive and is_detached_wake(str(sc.get("wake", ""))) else ""
+                rearmed = rearm_watcher(spec, role, {}, dry_run) if ended else ""
                 __import__("context").note_restart(spec, role, f"FAILED ({stopped})")
+                note_restart_failure(spec, role, stopped, extra)
                 return f"FAILED ({stopped}; nothing restarted" + (f"; watcher: {rearmed}" if rearmed else "") + ")"
+        offset = os.path.getsize(log) if os.path.exists(log) else 0
         from backends import spawn_detached
         # its own scope, like a re-armed watcher: the quorum's oneshot unit would end it with its cgroup
         spawn_detached(argv, stdin=subprocess.DEVNULL, stdout=open(log, "a"), stderr=subprocess.STDOUT,
                        cwd=spec.dir or None, env=_ENV, pass_fds=(guard.fileno(),))
         out = f"restarting on a fresh session (log {log})"
+        rec = restart_record(spec.sid, role.slug)
+        if rec.get("session") != role.session:
+            rec = {}
+        rec.update(session=role.session, state="launched", at=iso(), extra=list(extra), log=log, log_off=offset)
+        save_restart_record(spec.sid, role.slug, rec)
     except (OSError, ValueError) as exc:
         out = f"FAILED ({exc})"
+        rec = note_restart_failure(spec, role, str(exc), extra)
+        if stopped:
+            # the old session is stopped (or may be): the role has no session until a restart takes. Say so where the
+            # caller reads it; the quorum relaunches it from its start doc at the next try
+            out += (f"; its old session was stopped first ({short_line(stopped, 60)}), so it may have none running: the quorum "
+                    f"relaunches it from its start doc from {rec['retry_at'][11:16]}Z, or run `shoal restart --spec "
+                    f"<spec> --only {role.slug}`")
+        elif ended:
+            rearmed = rearm_watcher(spec, role, {}, dry_run)
+            if rearmed:
+                out += f"; watcher: {rearmed}"
     finally:
         if guard is not None:
             guard.close()  # this process's copy: the restart's keeps the lock
     __import__("context").note_restart(spec, role, out)
+    return out
+
+
+def restart_gate(spec: ShoalSpec, role) -> str:
+    """Why a restart of `role` must wait this run ("" when it may go): one launched and still running, or one that failed
+    and waits out its backoff (restart_record)."""
+    if role is None:
+        return ""
+    rec = restart_record(spec.sid, role.slug)
+    if not rec or rec.get("session") != role.session:
+        return ""
+    if rec.get("state") == "launched" and restart_lock_held(spec.sid, role.slug):
+        return f"its restart launched at {rec.get('at', '?')} is still running"
+    if rec.get("state") == "failed":
+        when = parse(rec.get("retry_at", ""))
+        if when is not None and when > utcnow():
+            return (f"its restart failed {rec.get('fails', 1)}x in a row (last: {short_line(rec.get('error', ''), 120)}); "
+                    f"next try from {rec['retry_at'][11:16]}Z")
+    return ""
+
+
+def restart_failed(spec: ShoalSpec, role, ch: str, c: dict, n_before: int, state: dict, dry_run: bool = False) -> str:
+    """What a failed restart adds to its action line: the count in a row, the next try, and the page once the count
+    reaches RESTART_FAIL_PAGE. A stand-in restart that wrote no record gets one here."""
+    if ALREADY_RUNNING in ch:
+        return ""  # another restart holds the lock: not a failure of this one
+    rec = restart_record(spec.sid, role.slug)
+    if rec.get("session") != role.session or int(rec.get("fails") or 0) <= n_before or rec.get("state") != "failed":
+        rec = note_restart_failure(spec, role, ch[len("FAILED"):].strip(" ()") or ch, tuple(c.get("extra") or ()))
+    return f" (failure {rec['fails']} in a row; next try from {rec['retry_at'][11:16]}Z)" + \
+        restart_page(spec, role, rec, c.get("detail", ""), state, dry_run)
+
+
+def restart_page(spec: ShoalSpec, role, rec: dict, detail: str, state: dict, dry_run: bool = False) -> str:
+    """The page once a role's restart has failed RESTART_FAIL_PAGE times in a row ("" before that, and after it was sent)."""
+    n = int(rec.get("fails") or 0)
+    if n < RESTART_FAIL_PAGE or rec.get("paged"):
+        return ""
+    text = (f"{role.slug}: its restart has failed {n} times in a row since {rec.get('first', '?')}; last error: "
+            f"{rec.get('error', '?')}. The quorum keeps trying every {restart_backoff_min(n):g} min"
+            + (f" ({detail})" if detail else "") + f". Restart log: {rec.get('log') or 'none (it failed before launch)'}")
+    out = "; " + page_user(spec, text, state, dry_run)
+    if not dry_run:
+        rec["paged"] = iso()
+        save_restart_record(spec.sid, role.slug, rec)
+    return out
+
+
+def restart_retries(spec: ShoalSpec, spec_path: str, conds: list[dict], cbusy: dict[str, str], state: dict, acts: list,
+                    dry_run: bool = False) -> list[dict]:
+    """Follow every local role's last restart (restart_record) and return the `restart-retry` conditions due this run.
+    A record whose session the spec no longer names is done (the restart took, or the role was parked or moved on). A
+    launched restart that ended with the spec still naming the old session failed: counted, with the line its log ends
+    on. A failed one is retried by the role's own restarting condition when one is raised; else, for a Claude role whose
+    session is not running (a stop that went through, or a listing that failed), by `restart-retry`, so a role the
+    failure left with no session is relaunched from its start doc. A session listed as running is left to its own
+    conditions: it is not cut off mid-turn."""
+    out = []
+    fresh = None
+    for role in spec.roles:
+        if not is_local(role, spec):
+            continue
+        rec = restart_record(spec.sid, role.slug)
+        if not rec:
+            continue
+        if rec.get("state") == "launched" and rec.get("session") == role.session and \
+                not restart_lock_held(spec.sid, role.slug):
+            # the restart may have recorded its session after this run loaded the spec: read it again before judging
+            if fresh is None:
+                try:
+                    fresh = ShoalSpec.load(spec_path) if spec_path else spec
+                except (OSError, ValueError):
+                    fresh = spec
+            now = fresh.role(role.slug)
+            if now is None or now.session != rec.get("session"):
+                role = now or role
+            elif not dry_run:
+                rec = note_restart_failure(spec, role, "the detached restart ended without recording a new session: "
+                                           + log_failure(rec.get("log", ""), rec.get("log_off", 0)),
+                                           tuple(rec.get("extra") or ()))
+                acts.append((role.slug, "restart", f"FAILED: {rec['error']} (failure {rec['fails']} in a row; next try "
+                                                   f"from {rec['retry_at'][11:16]}Z)"
+                             + restart_page(spec, role, rec, "", state, dry_run)))
+        if not role.session or role.session != rec.get("session"):
+            if not dry_run:
+                if int(rec.get("fails") or 0) and role.session:
+                    acts.append((role.slug, "restart", f"recovered: session {role.session[:8]} replaced "
+                                                       f"{str(rec.get('session', ''))[:8]} after {rec['fails']} failed "
+                                                       f"attempt(s)"))
+                save_restart_record(spec.sid, role.slug, None)
+            continue
+        if rec.get("state") != "failed":
+            continue
+        if any(c["slug"] == role.slug and c["condition"] in RESTARTING for c in conds):
+            continue
+        if role.ecosystem != "claude" or any(k.startswith(role.session[:8]) for k in cbusy):
+            continue  # its session runs: its own conditions restart it at a quiet boundary, gated by the backoff
+        out.append({"slug": role.slug, "condition": "restart-retry", "key": f"session:{role.session}",
+                    "since": rec.get("first") or iso(), "extra": list(rec.get("extra") or []), "between": None,
+                    "detail": f"its restart failed {rec.get('fails', 1)}x in a row (last: "
+                              f"{short_line(rec.get('error', ''), 120)}) and its session is not running"})
+    return out
+
+
+def harness_checks(spec: ShoalSpec) -> list[dict]:
+    """`harness-missing`: a harness CLI this host's roles need that resolves nowhere (`config.harness_missing`), one
+    condition per CLI, keyed by the CLI. None under SHOAL_FAKE_SESSIONS: a test host need not have any harness CLI."""
+    from doctor import ECOSYSTEM_TOOLS
+    from backends import fake_sessions
+    if fake_sessions() is not None:
+        return []
+    tools = sorted({ECOSYSTEM_TOOLS[r.ecosystem] for r in spec.roles
+                    if r.session and is_local(r, spec) and r.ecosystem in ECOSYSTEM_TOOLS and r.ecosystem != "opencode"})
+    out = []
+    for t in tools:
+        why = config.harness_missing(t)
+        if why:
+            out.append({"slug": t, "condition": "harness-missing", "key": f"tool:{t}", "since": iso(), "first_seen": True,
+                        "detail": f"{why}: no {t} session on this host can start, stop or be woken directly. An update "
+                                  f"takes a minute or so; reinstall it (`shoal doctor` says where it was looked for)"})
     return out
 
 
@@ -1538,7 +1810,10 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     led = Ledger(spec.sid, root=spec.ledger_dir)
     led.pull()
     view = View(led, spec)
-    conds = evaluate(spec, view, claude_busy())
+    cbusy = claude_busy()
+    conds = evaluate(spec, view, cbusy)
+    conds += restart_retries(spec, spec_path, conds, cbusy, state, acts, dry_run)
+    conds += harness_checks(spec)
     conds += host_beats(spec, led, state, dry_run)
     conds += watched_checkouts(spec, dry_run)
     conds += orphaned_leases(spec)
@@ -1656,6 +1931,13 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     lad["quiet"] = "mid-turn"
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:restart", "held (mid-turn)"))
                 break
+            gate = restart_gate(spec, role_) if action == "restart" else ""
+            if gate:
+                # a restart under way, or one that failed and waits out its backoff: the ladder stays where it is
+                if lad.get("quiet") != gate:
+                    lad["quiet"] = gate
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:restart", f"held ({gate})"))
+                break
             client = restart_client(role_) if action == "restart" else ""
             if client:
                 # a person attached to the session keeps its worker alive, so a stop fails STILL LIVE and the ladder moved
@@ -1689,6 +1971,13 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:rearm", ch))
                     lad["step"] += 1
                     break
+                if c.get("rearm_only"):
+                    # nothing waits for this role: a wake would only spend a turn to re-arm. The ladder goes on to its
+                    # page if the watcher cannot be kept up
+                    acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake",
+                                 f"skipped (nothing for it to do; re-arm {ch or 'not due yet'})"))
+                    lad["step"] += 1
+                    break
             if action == "wake":
                 fp = f"{c['slug']}|{c['condition']}|{c.get('fp') or c['key']}"
                 hold = ""
@@ -1718,6 +2007,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", ""))
                 lad["step"] += 1
                 break
+            n_before = int(restart_record(spec.sid, c["slug"]).get("fails") or 0) if action == "restart" else 0
             if action == "restart" and c["condition"] == "quota-handoff":
                 # one quota move per run, and none for a role moved within its cooldown: the readings and the load the
                 # next pick reads catch up with each move first, so roles do not swing between accounts
@@ -1737,18 +2027,17 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     moved_at[c["slug"]] = iso()
                     quota_done = True
                     ch += f"; {c['detail']}"
+            elif action == "restart" and c["condition"] == "restart-retry":
+                ch = context_restart(spec, spec_path, role_, dry_run, tuple(c.get("extra") or ()))
             elif action == "restart":
                 moved = rebalance(spec, role_)
                 ch = context_restart(spec, spec_path, role_, dry_run, moved[:1])
                 if moved and not ch.startswith("FAILED"):
                     ch += f"; {moved[1]}"
-                if ch.startswith("FAILED") and c["condition"] in RESTART_NOT_PAGE:
-                    ch += "; " + page_user(spec, f"{c['slug']}: {c['detail']} (woken {lad['step']}x without effect; "
-                                                 f"its restart {ch})", state, dry_run)
-                elif c["condition"] in RESTART_NOT_PAGE:
+                if c["condition"] in RESTART_NOT_PAGE and not ch.startswith("FAILED"):
                     ch = f"woken {lad['step']}x without effect: {ch}"
             elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan",
-                                    "wakes-held"):
+                                    "wakes-held", "harness-missing"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 hold = hold_of(c["slug"])
@@ -1757,6 +2046,12 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                        f"session is at an open question; answer it to let them through" if hold.get("reason") == "question"
                        else f"woken {lad['step']}x without effect")
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} ({how})", state, dry_run)
+            if action == "restart" and ch.startswith("FAILED") and role_ is not None and not dry_run:
+                # it stays due: the ladder keeps this step, tried again after its backoff (restart_gate); paged with
+                # the error after RESTART_FAIL_PAGE failures in a row
+                ch += restart_failed(spec, role_, ch, c, n_before, state, dry_run)
+                acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
+                break
             acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:{action}", ch))
             lad["step"] += 1
             break  # at most one action per condition per run

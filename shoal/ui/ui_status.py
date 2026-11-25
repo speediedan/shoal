@@ -209,8 +209,9 @@ def claude_rows() -> list[dict]:
     if kept is not None:
         return kept
     try:
-        r = subprocess.run(["claude", "agents", "--json", "--all"], capture_output=True, text=True,
-                           timeout=30, env=config.tool_env())
+        from backends import run_harness
+        r = run_harness("claude", ["agents", "--json", "--all"], wait_s=0, capture_output=True, text=True,
+                        timeout=30, env=config.tool_env())
         rows = json.loads(r.stdout or "[]") if r.returncode == 0 else []
     except (OSError, ValueError, subprocess.SubprocessError):
         return []

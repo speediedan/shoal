@@ -173,6 +173,21 @@ def job(ref: str, slug: str, sid: str) -> Result:
     # reads `inactive` and marked every live job wait resolved (2026-09-23, #t401).
     import jobs
     unit = ref if ref.startswith("shoal-") or not sid else jobs.find_unit(sid, slug, ref)
+    host = jobs.job_host(sid, unit) if sid else ""
+    if host:
+        # it runs on another host (`job run --on`, or placed there): its unit and rc file are there, so a read here
+        # found neither and called a running job unverifiable (2026-11-25, both directions between two hosts)
+        rst = jobs.remote_state_cached(host, unit)
+        if not rst:
+            return None, f"unit {unit} on {host}: host unreachable (unknown, not resolved)"
+        ract = rst.get("ActiveState", "")
+        if ract in ("active", "activating", "deactivating", "reloading"):
+            return True, f"unit {unit} {ract} on {host}"
+        if rst.get("rc"):
+            return False, f"unit {unit} exited rc={rst['rc']} on {host}"
+        if rst.get("LoadState") == "not-found":
+            return None, f"unit {unit} not found on {host} and no rc file (unknown, not resolved)"
+        return False, f"unit {unit} {ract or 'gone'} on {host}"
     st = jobs.unit_state(unit)
     if not st:  # systemd could not be read (no user bus over ssh, say): unknown, not ended
         return None, f"unit {unit} state unreadable"

@@ -36,6 +36,10 @@ class HandoffError(ValueError):
     pass
 
 
+class HandoffFailed(HandoffError):
+    """The handoff ran and its restart failed (not a refusal before anything changed)."""
+
+
 def note(text: str) -> None:
     print(text, flush=True)
 
@@ -310,7 +314,8 @@ def run(a) -> int:
         restart_log = os.path.join(state_dir(spec.sid), f"context-restart-{label}.log")
         offset = os.path.getsize(restart_log) if os.path.exists(restart_log) else 0
         rc = park.handoff(ShoalSpec.load(a.spec), a.spec, label, a.model, a.ecosystem, False, False, a.effort,
-                          getattr(a, "note", ""), getattr(a, "account", None))
+                          getattr(a, "note", ""), getattr(a, "account", None),
+                          pin=not (getattr(a, "no_pin", False) or getattr(a, "auto_pick", False)))
         if rc:
             return rc
         note("3/3 Restart launched; following its log until the replacement is recorded")
@@ -324,7 +329,19 @@ def run(a) -> int:
                 if chunk:
                     print(chunk, end="", flush=True)
             fresh = ShoalSpec.load(a.spec).role(label)
-            return fresh is not None and bool(fresh.session) and fresh.session != old
+            if fresh is not None and bool(fresh.session) and fresh.session != old:
+                return True
+            if not health.restart_lock_held(spec.sid, label):
+                # the restart has ended and the spec still names the old session: it failed. Its old session is stopped,
+                # so say it loudly; the quorum relaunches the role from its start doc (health.restart_retries)
+                raise HandoffFailed(
+                    f"the restart of {label} FAILED: {health.log_failure(restart_log, start_offset)}. Its old session "
+                    f"was stopped first, so {label} has no running session until a restart takes: the health quorum "
+                    f"relaunches it from its start doc within minutes, or run `shoal restart --spec {a.spec} --only "
+                    f"{label}` now. Restart log: {restart_log}")
+            return False
+        import health
+        start_offset = offset
         wait_for(replaced, f"Waiting for {label}'s replacement; restart log: {restart_log}", time.monotonic() + 600)
         note(f"Handoff complete: {label}'s replacement is recorded in the spec")
         return 0
@@ -396,6 +413,10 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prep
     if not between(entry):
         raise HandoffError("the session started another turn after its checkpoint; no replacement started")
     seat = types.SimpleNamespace(ecosystem=entry["harness"], session=old)
+    from doctor import ECOSYSTEM_TOOLS
+    for h in dict.fromkeys(x for x in (entry["harness"] if entry["harness"] == "claude" else "", eco) if x):
+        # every CLI the stop and the launch run, before anything stops (an update in progress is waited for, bounded)
+        backends.harness_exe(ECOSYSTEM_TOOLS.get(h, h))
     note(f"2/3 Checkpoint verified; retiring the old {entry['harness']} session")
     stopped = park.stop_session(seat)
     note(stopped)
@@ -410,8 +431,15 @@ def standalone_handoff(a, entry: dict, doc: str, eco: str, deadline: float, prep
     effort = a.effort or (entry.get("effort", "") if eco == entry["harness"] else deffort)
     note(f"3/3 Starting the new {eco} session" + (f" on {accounts.name(eco, acct)}" if acct or accounts.several(eco) else "")
          + f" from {doc}")
-    new = (backends.get(eco, acct) if acct else backends.get(eco)).create(label, entry.get("cwd") or os.getcwd(),
-                                   brief=resume_brief(doc, getattr(a, "note", "")), name=label, model=model, effort=effort)
+    try:
+        new = (backends.get(eco, acct) if acct else backends.get(eco)).create(
+            label, entry.get("cwd") or os.getcwd(), brief=resume_brief(doc, getattr(a, "note", "")), name=label,
+            model=model, effort=effort)
+    except (OSError, RuntimeError, backends.UnsupportedError) as exc:
+        # the old session is stopped and its checkpoint stands: say so loudly, and how to finish
+        raise HandoffFailed(f"the new {eco} session did not start ({exc}). {label}'s old session {old[:8]} is STOPPED, "
+                            f"and its checkpoint in {doc} stands: start the seat again from that doc (the registry "
+                            f"still names the old session)") from exc
     at = handover.now_iso()
     # the sessions this seat has had, newest last: which one a stale card, job or name-addressed message belongs to
     lineage = (list(original.get("lineage") or []) + [{"harness": original["harness"], "session": old,

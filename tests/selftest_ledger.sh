@@ -667,6 +667,51 @@ n0 = len(led.events(reload=True))
 assert health.host_beats(single, led, {}, dry_run=False) == [] and len(led.events(reload=True)) == n0, "beat written"
 print("wake mode and host beats ok")
 PY3
+echo "== provider pin: an explicit handoff's move is kept by balancing, saved with the role, shown by show"
+python3 - "$SHOALD" "$MH/shoals/t1shoal/shoal.json" "$A" "$S" <<'PY3' || fail "provider pin"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import accounts, config, health, ledger, roles
+from ledger import Ledger, View
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+spec.ledger = dict(spec.ledger, dir=sys.argv[3])
+role = spec.role("alpha")
+role.ecosystem, role.session = "codex", "01a00000-0000-7000-8000-0000000000a1"
+pin = {"provider": "codex", "by": "user", "at": "2026-11-25T03:00:00Z", "via": "handoff --ecosystem"}
+role.provider_pin = dict(pin)
+# saved with the role, and a spec written before it loads with none
+back = ShoalSpec.from_dict(spec.to_dict())
+assert back.role("alpha").provider_pin == pin and back.role("beta").provider_pin == {}, back.role("alpha")
+d = spec.to_dict(); [r.pop("provider_pin", None) for r in d["roles"]]
+assert ShoalSpec.from_dict(d).role("alpha").provider_pin == {}
+# balancing reads it as `[accounts] pin`: a quota handoff picks among its own provider's accounts only
+assert accounts.pin_of(role).startswith("pinned to codex by user at 2026-11-25T03:00:00Z")
+cfg = os.path.join(sys.argv[4], "pin-host.toml")
+open(cfg, "w").write('[accounts]\nquota_handoff = true\npin = ["beta"]\n')
+os.environ["SHOAL_CONFIG"] = cfg
+config._CACHE.clear()
+assert accounts.pin_of(spec.role("beta")) == "[accounts] pin" and accounts.pinned("beta")
+seen = []
+accounts.quota_pick = lambda p, a, load, pinned=False, providers=None, now=None, snap=None, slug="": seen.append((slug, pinned))
+accounts.role_load = lambda specs=None: {}
+roles.is_local = health.is_local = lambda r, s=None: True
+spec.role("beta").session = "bbbb0001"
+for r_ in (role, spec.role("beta")):
+    health.quota_condition(spec, r_, {"restart_ready": True}, False)
+role.provider_pin = {}
+health.quota_condition(spec, role, {"restart_ready": True}, False)
+assert seen[0] == ("alpha", True) and seen[1] == ("beta", True) and seen[-1] == ("alpha", False), seen
+role.provider_pin = dict(pin)
+# shown: the status table's fill column, and the role view's provider line (either kind of pin)
+view = View(Ledger("t1shoal", root=sys.argv[3], sync=False), spec)
+assert ", pinned to codex |" in ledger.render_all(view, spec), ledger.render_all(view, spec)
+r = ledger.render_role(view, "alpha")
+assert "provider: codex, kept there by automatic balancing: pinned to codex by user" in r and "--no-pin" in r, r
+assert "provider: " in ledger.render_role(view, "beta") and "[accounts] pin" in ledger.render_role(view, "beta")
+os.environ.pop("SHOAL_CONFIG"); config._CACHE.clear()
+print("provider pin ok")
+PY3
 echo "== matcher transport: model calls go through openchamber, never the opencode CLI"
 mkdir -p "$S/ocstub"
 cat > "$S/ocstub/openchamber" <<'SH'

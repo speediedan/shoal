@@ -419,13 +419,16 @@ def claude_live(role) -> bool:
 
 
 def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "", force: bool = False,
-            dry_run: bool = False, effort: str = "", note: str = "", account: str | None = None) -> int:
+            dry_run: bool = False, effort: str = "", note: str = "", account: str | None = None, pin: bool = True) -> int:
     """Hand a role to a fresh session in place, from its start doc rather than a compaction, optionally on another model
     or provider: the quorum's `context_restart` run by hand, under the quorum's gate. Everything that can be proved is
     proved before the old session stops: the role is at a boundary (restart-ready, status idle or waiting, between
     turns; only that gate yields to `force`, which can cut off a Claude turn), a session nothing here can stop is not
     held (`force` never overrides that), and the new provider's tool and the start doc are in order. A login on the new
-    provider is not checked (no harness has a uniform probe), and the restart itself runs detached: its log tells."""
+    provider is not checked (no harness has a uniform probe), and the restart itself runs detached: its log tells.
+    A provider named explicitly (`ecosystem`) is recorded as the role's provider pin, which automatic balancing keeps
+    (accounts.pin_of) until a later explicit handoff changes it; `pin` False (`--no-pin`, or `--ecosystem auto`) records
+    none and clears any the role had."""
     import health
     import reconcile
     import startdoc
@@ -515,10 +518,16 @@ def handoff(spec, spec_path: str, slug: str, model: str = "", ecosystem: str = "
     extra, model, effort = move_args(role, new_eco, new_acct, model, effort)
     if note.strip():  # the operator's restart note, in the new session's first prompt
         extra.append(f"--note={slug}:{note.strip()}")
+    pin_to = ecosystem if ecosystem and pin else ""
+    if pin_to or (not pin and (role.provider_pin or {}).get("provider")):
+        # an explicit move outlasts automatic balancing; `--no-pin` (or a later explicit move) changes it
+        extra.append(f"--set-provider-pin={slug}:{pin_to}")
     acct_now = (f" ({role.account})" if role.account else "")
     to = " ".join(x for x in (new_eco or role.ecosystem, model or ("" if new_eco else role.model), effort) if x)
     if accounts.several(new_eco or role.ecosystem) or new_acct:
         to += f" on {accounts.name(new_eco or role.ecosystem, new_acct)}"
+    if pin_to:
+        print(f"{slug}: pins its provider to {pin_to}: automatic balancing keeps it there (`--no-pin` to opt out)")
     print(f"{slug}: {role.ecosystem}{acct_now} session {role.session[:8]} hands off to a new {to} session from "
           f"{role.doc or 'its brief (no start doc on record)'}" + ("" if q.get("restart_ready") else
           " (not restart-ready: stopped on its usage limit)" if stop is not None else " (not restart-ready: forced)"))
@@ -798,6 +807,7 @@ def resolve_auto(a) -> str:
 
 
 def cmd_handoff(a) -> int:
+    a.auto_pick = getattr(a, "ecosystem", "") == "auto"  # balancing's pick, not the operator's: never a pin
     said = resolve_auto(a)
     if said:
         print(said, flush=True)
@@ -806,7 +816,7 @@ def cmd_handoff(a) -> int:
         try:
             return handoff_flow.run(a)
         except (handoff_flow.HandoffError, OSError, RuntimeError) as exc:
-            print(f"REFUSED: {exc}", flush=True)
+            print(f"{'FAILED' if isinstance(exc, handoff_flow.HandoffFailed) else 'REFUSED'}: {exc}", flush=True)
             return 1
     from roles import ShoalSpec
     if not a.spec or not a.only:
@@ -817,8 +827,9 @@ def cmd_handoff(a) -> int:
     if expected and (spec.role(a.only) is None or spec.role(a.only).session != expected):
         print("REFUSED: this role changed sessions since the preview: plan the handoff again")
         return 1
+    # `auto` hands the choice to balancing, so it pins nothing and clears a pin the role had, as `--no-pin` does
     return handoff(spec, a.spec, a.only, a.model, a.ecosystem, a.force, a.dry_run, a.effort, getattr(a, "note", ""),
-                   getattr(a, "account", None))
+                   getattr(a, "account", None), pin=not (getattr(a, "no_pin", False) or a.auto_pick))
 
 
 def add_parser(sub) -> None:
@@ -866,6 +877,9 @@ def add_parser(sub) -> None:
     p.add_argument("--account", default=None,
                    help="the new session's account of that provider (`shoal accounts`; default: the current one on the "
                         "same provider, else the provider's default)")
+    p.add_argument("--no-pin", action="store_true",
+                   help="with --ecosystem: move the role without pinning its provider (automatic balancing may move it "
+                        "again), and clear a pin it had")
     p.add_argument("--force", action="store_true", help="even though the role has not said it is restart-ready")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_handoff)

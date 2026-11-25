@@ -890,6 +890,20 @@ assert (r.ecosystem, r.model, r.effort) == ("claude", "m9", "high"), (r.ecosyste
 d = json.load(open(rspec))
 next(x for x in d["roles"] if x["slug"] == "up").update(ecosystem="claude")
 json.dump(d, open(rspec, "w"))
+# the provider pin an explicit `handoff --ecosystem` records rides on the restart: set, kept, cleared; only with --only
+def restart_pin(only, pin):
+    ns = argparse.Namespace(spec=rspec, stages="handoffs,sync-plans,restart", dry_run=False, only=only,
+                            consumer_launched=[], keep=[], seq=[], set_model=[], set_ecosystem=[], set_effort=[],
+                            set_provider_pin=list(pin), old_session=[], defer_consumers=False, probe_claude=False,
+                            no_verify=True, save_spec="", force=False)
+    return cli.run_restart(ShoalSpec.load(rspec), ns)
+assert restart_pin("tl", ["up:claude"]) == 1 and not ShoalSpec.load(rspec).role("up").provider_pin, "outside --only"
+assert restart_pin("up", ["up:nope"]) == 1
+assert restart_pin("up", ["up:claude"]) in (0, 5)
+pin = ShoalSpec.load(rspec).role("up").provider_pin
+assert pin["provider"] == "claude" and pin["by"] == "user" and pin["at"] and pin["via"] == "handoff --ecosystem", pin
+assert restart_pin("up", []) in (0, 5) and ShoalSpec.load(rspec).role("up").provider_pin == pin, "a restart keeps it"
+assert restart_pin("up", ["up:"]) in (0, 5) and ShoalSpec.load(rspec).role("up").provider_pin == {}, "cleared"
 
 V = cli.sidecar_verdict
 since, before, after = "2026-09-28T12:00:00Z", "2026-09-28T11:00:00Z", "2026-09-28T13:00:00Z"
@@ -2049,6 +2063,10 @@ while time.time() < end:
         break
     time.sleep(1)
 assert rc == 1 and "STILL LIVE" in t and "nothing restarted" in t and len(spawned) == 2, (rc, t, spawned)
+# recorded for the quorum to try again (section 45); cleared here, so later sections start without it
+rec = health.restart_record(spec.sid, "up")
+assert rec["state"] == "failed" and rec["fails"] == 1 and "STILL LIVE" in rec["error"], rec
+health.save_restart_record(spec.sid, "up", None)
 # FAILED reaches the exit code, which is what the dialog reports
 health.context_restart = lambda *a, **k: "FAILED (no room)"
 rc, t = run(dry_run=False)
@@ -2078,6 +2096,20 @@ assert park.handoff(spec, spec_path, "up", "gpt-y", "codex", True, True, "low") 
 assert "--set-model=up:gpt-y" in got[-1] and "--set-effort=up:low" in got[-1], got[-1]
 assert park.handoff(spec, spec_path, "up", "", "opencode", True, True) == 0
 assert "--set-model=up:" in got[-1] and not any(x.startswith("--set-effort") for x in got[-1]), got[-1]
+# 2026-11-25: an explicit provider move pins the role there, so automatic balancing does not undo it at the next
+# automatic restart; `--no-pin` moves without one (and clears one); a handoff naming no provider leaves the pin alone
+assert "--set-provider-pin=up:codex" in got[-2] and "--set-provider-pin=up:opencode" in got[-1], got[-2:]
+assert park.handoff(spec, spec_path, "up", "", "codex", True, True, pin=False) == 0
+assert not any(x.startswith("--set-provider-pin") for x in got[-1]), "no pin, and none to clear"
+role.provider_pin = {"provider": "codex", "by": "user", "at": "2026-11-25T03:00:00Z", "via": "handoff --ecosystem"}
+assert park.handoff(spec, spec_path, "up", "", "codex", True, True, pin=False) == 0
+assert "--set-provider-pin=up:" in got[-1], "--no-pin clears the pin it had"
+assert park.handoff(spec, spec_path, "up", "", "", True, True) == 0
+assert not any(x.startswith("--set-provider-pin") for x in got[-1]), "no provider named: the pin stays"
+import accounts
+assert accounts.pin_of(role).startswith("pinned to codex by user at 2026-11-25T03:00:00Z"), accounts.pin_of(role)
+role.provider_pin = {}
+assert accounts.pin_of(role) == ""
 # a session stopped on its usage limit can never mark itself restart-ready: no Force needed, and the new session gets a
 # reconciliation brief; one that is not stopped is still refused
 import reconcile
@@ -3038,6 +3070,257 @@ assert rc == 0 and len(CALLS) == 1 and "the client was ended (SIGTERM)" in out.g
     and "attached in another terminal" not in out.getvalue(), (rc, CALLS, out.getvalue())
 assert ui_view.ended_by_term(-15) and ui_view.ended_by_term(143) and not ui_view.ended_by_term(1)
 print("card client SIGTERM ok")
+PY2
+
+echo "== 45 a failed restart stays due: retried after a backoff, paged after 3 in a row; a missing harness CLI is waited for"
+# measured 2026-11-25: a context restart failed on a `claude` an update had removed, the condition vanished with the
+# listing and nothing tried again; a handoff stopped its role's session, then failed on the same, and left it with none.
+# The lookup (backends.tool_which, config.harness_missing), the waits (backends._sleep), the stop (park.stop_session) and
+# the launch (backends.spawn_detached) are faked at their function boundaries
+python3 - "$SHOALD" "$SPEC" "$S" <<'PY2' || fail "restart retry"
+import contextlib, datetime, io, json, os, stat, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(0, sys.argv[1] + "/ui")
+import backends, config, health, park, context
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+S = sys.argv[3]
+def ago(m):
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%SZ")
+# --- the lookup: afresh every call, an override, then PATH, then the install locations; a dangling link said plainly
+home = os.path.join(S, "h45-home")
+os.makedirs(os.path.join(home, ".local", "bin"), exist_ok=True)
+nvm = os.path.join(home, ".nvm", "versions", "node")
+for v in ("v20.1.0", "v22.3.0"):
+    os.makedirs(os.path.join(nvm, v, "bin"), exist_ok=True)
+saved = {k: os.environ.get(k) for k in ("HOME", "PATH", "SHOAL_TOOL_PATH", "NVM_DIR", "NVM_BIN", "SHOAL_CLAUDE_BIN")}
+os.environ.update(HOME=home, PATH="/usr/bin:/bin", SHOAL_TOOL_PATH="/usr/bin", NVM_DIR=os.path.join(home, ".nvm"))
+os.environ.pop("NVM_BIN", None); os.environ.pop("SHOAL_CLAUDE_BIN", None)
+config._CACHE.clear()
+def exe(p):
+    open(p, "w").write("#!/bin/sh\necho ok\n"); os.chmod(p, 0o755)
+assert config.harness_which("claude") is None
+link = os.path.join(nvm, "v22.3.0", "bin", "claude")
+os.symlink(os.path.join(nvm, "v22.3.0", "lib", "gone", "cli.js"), link)  # an update half done
+why = config.harness_missing("claude")
+assert "no claude executable" in why and f"dangling link {link}" in why and "an update in progress" in why, why
+exe(os.path.join(nvm, "v20.1.0", "bin", "claude"))
+assert config.harness_which("claude") == os.path.join(nvm, "v20.1.0", "bin", "claude"), "an older node's install, not the dangling one"
+exe(os.path.join(home, ".local", "bin", "claude"))
+assert config.harness_which("claude") == os.path.join(home, ".local", "bin", "claude"), "the native installer's first"
+os.environ["SHOAL_CLAUDE_BIN"] = "/opt/<prefix>/claude"
+assert config.harness_which("claude") == "/opt/<prefix>/claude"
+for k, v in saved.items():
+    if v is None:
+        os.environ.pop(k, None)
+    else:
+        os.environ[k] = v
+config._CACHE.clear()
+# --- a launch waits for a missing CLI (bounded), and an exec that finds it gone is tried again
+SLEPT = []
+backends._sleep = lambda s_: SLEPT.append(s_)
+seq = iter([None, None, "/bin/true"])
+backends.tool_which = lambda name: next(seq)
+assert backends.harness_exe("claude", 60) == "/bin/true" and SLEPT == [5.0, 5.0], SLEPT
+SLEPT.clear()
+backends.tool_which = lambda name: None
+config_missing = config.harness_missing
+config.harness_missing = lambda name: f"no {name} executable on PATH, the tool path or its install locations"
+try:
+    backends.harness_exe("claude", 12)
+    raise SystemExit("expected HarnessMissing")
+except backends.HarnessMissing as exc:
+    assert "no claude executable" in str(exc) and "looked again for 12 s" in str(exc) and SLEPT == [5.0, 5.0, 2.0], (exc, SLEPT)
+assert isinstance(backends.HarnessMissing(), FileNotFoundError), "callers that catch OSError still do"
+SLEPT.clear()
+seq = iter([os.path.join(S, "h45-gone", "claude"), "/bin/echo"])
+backends.tool_which = lambda name: next(seq)
+r = backends.run_harness("claude", ["hello"], wait_s=30, capture_output=True, text=True)
+assert r.stdout.strip() == "hello" and SLEPT == [5.0], (r.stdout, SLEPT)
+# --- the quorum's restart: a missing CLI refuses before anything stops, and is recorded
+role = spec.role("up")
+role.ecosystem, role.session = "claude", "cccc3333-0000-4000-8000-000000000045"
+STOPS, SPAWNS = [], []
+park.stop_session = lambda r, dry_run=False: STOPS.append(r.session) or f"stopped {r.session[:8]}"
+real_spawn = backends.spawn_detached
+backends.spawn_detached = lambda argv, **kw: SPAWNS.append(argv) or real_spawn(["true"], **kw)
+health.watcher_alive = lambda sid, slug: (False, {})
+context.note_restart = lambda *a: None
+health.save_restart_record(spec.sid, "up", None)
+backends.tool_which = lambda name: None
+out = health.context_restart(spec, "/s.json", role, False, ())
+rec = health.restart_record(spec.sid, "up")
+assert out.startswith("FAILED (") and "no claude executable" in out and not STOPS and not SPAWNS, (out, STOPS)
+assert rec["state"] == "failed" and rec["fails"] == 1 and rec["session"] == role.session, rec
+assert 4 <= (health.parse(rec["retry_at"]) - health.utcnow()).total_seconds() / 60 <= 5, rec["retry_at"]
+# a stop interrupted by the CLI going missing (it may have stopped already) is done again once the CLI is back, and the
+# launch goes on: the role is never left with its session stopped and nothing launched
+backends.tool_which = lambda name: "/bin/true"
+calls = []
+def flaky_stop(r, dry_run=False):
+    calls.append(r.session)
+    if len(calls) == 1:
+        raise FileNotFoundError(2, "No such file or directory", "claude")
+    return f"stopped {r.session[:8]}"
+park.stop_session = flaky_stop
+out = health.context_restart(spec, "/s.json", role, False, ("--set-ecosystem=up:codex",))
+rec = health.restart_record(spec.sid, "up")
+assert out.startswith("restarting on a fresh session") and len(calls) == 2 and len(SPAWNS) == 1, (out, calls)
+assert rec["state"] == "launched" and rec["fails"] == 1 and rec["extra"] == ["--set-ecosystem=up:codex"], rec
+# --- the detached restart ended with the spec still naming the old session: a failure, with its log's line, retried
+import time
+end = time.time() + 10
+while health.restart_lock_held(spec.sid, "up") and time.time() < end:
+    time.sleep(0.2)
+with open(rec["log"], "a") as fh:
+    fh.write("consumer up: brief -> x\n  FAIL: auto-launch failed: claude --bg failed for 'up': no claude executable\n")
+PAGES = []
+health.page_user = lambda spec_, text, state, dry_run=False: PAGES.append(text) or "page"
+health.host_beats = lambda *a, **k: []
+health.claude_busy = lambda: {}  # the listing failed, or the session is stopped: not running either way
+health.evaluate = lambda spec_, view, cbusy: [dict(c) for c in COND]
+COND = []
+RESTARTS = []
+def fake_restart(spec_, sp, r, dry_run=False, extra=()):
+    RESTARTS.append(tuple(extra))
+    return "FAILED (no claude executable on PATH, the tool path or its install locations)"
+health.context_restart = fake_restart
+def run(state=None):
+    p = os.path.join(health.state_dir(spec.sid), "health.json")
+    json.dump(state if state is not None else json.load(open(p)), open(p, "w"))
+    o = io.StringIO()
+    with contextlib.redirect_stdout(o):
+        health.run(spec, "a", dry_run=False)
+    return o.getvalue(), json.load(open(p))
+out, st = run({})
+rec = health.restart_record(spec.sid, "up")
+assert "up restart -> FAILED: the detached restart ended without recording a new session: FAIL: auto-launch failed" in out, out
+assert rec["fails"] == 2 and rec["state"] == "failed" and not RESTARTS, (rec, RESTARTS)
+assert "up restart-retry step1:restart -> held (its restart failed 2x in a row" in out, out
+# inside its backoff: nothing, and said once
+out, st = run()
+assert not RESTARTS and "held (" not in out, out
+# the backoff passed: tried again with the same move, a third failure in a row pages once, with the error
+rec["retry_at"] = ago(1); health.save_restart_record(spec.sid, "up", rec)
+out, st = run()
+rec = health.restart_record(spec.sid, "up")
+assert RESTARTS == [("--set-ecosystem=up:codex",)] and rec["fails"] == 3, (RESTARTS, rec)
+assert "(failure 3 in a row; next try from" in out and len(PAGES) == 1, (out, PAGES)
+assert PAGES[0].startswith("up: its restart has failed 3 times in a row since") and "no claude executable" in PAGES[0], PAGES
+assert "up|restart-retry|session:" + role.session in st["ladders"], "it stays on the ladder"
+rec["retry_at"] = ago(1); health.save_restart_record(spec.sid, "up", rec)
+out, st = run()
+assert len(RESTARTS) == 2 and len(PAGES) == 1 and health.restart_record(spec.sid, "up")["fails"] == 4, (RESTARTS, PAGES)
+assert (health.parse(health.restart_record(spec.sid, "up")["retry_at"]) - health.utcnow()).total_seconds() > 25 * 60
+# a session listed as running is left to its own conditions (no cut-off turn); its own restart waits out the backoff too
+health.claude_busy = lambda: {role.session: "busy"}
+rec = health.restart_record(spec.sid, "up"); rec["retry_at"] = ago(1); health.save_restart_record(spec.sid, "up", rec)
+out, st = run()
+assert len(RESTARTS) == 2 and "restart-retry" not in out, out
+rec["retry_at"] = health.iso(health.utcnow() + datetime.timedelta(minutes=10)); health.save_restart_record(spec.sid, "up", rec)
+health.claude_busy = lambda: {role.session: "idle"}
+COND[:] = [{"slug": "up", "condition": "wait-resolved", "key": "target:x", "since": ago(70), "detail": "resolved"}]
+out, st = run({"ladders": {"up|wait-resolved|target:x": {"since": ago(70), "step": 1}}})
+assert len(RESTARTS) == 2 and "up wait-resolved step2:restart -> held (its restart failed 4x in a row" in out, out
+COND[:] = []
+# the restart took (the spec names a new session): the record goes, and it says so
+role.session = "dddd4444-0000-4000-8000-000000000045"
+out, st = run()
+assert "up restart -> recovered: session dddd4444 replaced cccc3333 after 4 failed attempt(s)" in out, out
+assert health.restart_record(spec.sid, "up") == {} and not any("restart-retry" in k for k in st["ladders"]), st["ladders"]
+# --- a harness CLI a local role needs resolving nowhere is a condition, paged after its 30 min
+backends.fake_sessions = lambda: None
+config.harness_missing = lambda name: f"no {name} executable on PATH, the tool path or its install locations" if name == "claude" else ""
+hc = health.harness_checks(spec)
+assert [c["condition"] for c in hc] == ["harness-missing"] and hc[0]["key"] == "tool:claude" and "no claude session" in hc[0]["detail"], hc
+config.harness_missing = lambda name: ""
+assert health.harness_checks(spec) == []
+config.harness_missing = config_missing
+print("restart retry ok")
+PY2
+# a dead detached watcher costs no turn to re-arm, so a role with nothing to do gets it back too (2026-11-25: a failed
+# restart ended one, and every wake went by stop and resume until a page); an in-session watcher there still waits
+python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "dormant detached watcher"
+import contextlib, io, json, os, sys
+sys.path.insert(0, sys.argv[1])
+import health
+from ledger import Ledger, View
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+spec.role("up").ecosystem = "codex"  # an exec: watcher, detached
+health.watcher_alive = lambda sid, slug: (False, {})
+health.watcher_dormant = lambda spec_, view, role, st: True
+health.session_between_turns = lambda r, c, d: True
+view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+wd = [c for c in health.evaluate(spec, view, {}) if c["condition"] == "watcher-dead" and c["slug"] == "up"]
+assert len(wd) == 1 and wd[0]["rearm_only"] is True, wd
+spec.features.setdefault("health", {})["rearm"] = False
+assert not [c for c in health.evaluate(spec, view, {}) if c["condition"] == "watcher-dead" and c["slug"] == "up"]
+spec.features["health"].pop("rearm")
+# re-armed by the quorum; a re-arm not due yet spends no turn on a wake
+health.evaluate = lambda spec_, view_, cbusy: [dict(wd[0], since="2000-01-01T00:00:00Z", first_seen=False)]
+health.host_beats = lambda *a, **k: []
+health.claude_busy = lambda: {}
+WAKES = []
+health.request_wake = lambda *a, **k: WAKES.append(a) or "woke"
+health.rearm_watcher = lambda *a, **k: ""
+p = os.path.join(health.state_dir(spec.sid), "health.json")
+json.dump({}, open(p, "w"))
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    health.run(spec, "a", dry_run=False)
+assert "up watcher-dead step1:wake -> skipped (nothing for it to do; re-arm not due yet)" in out.getvalue() and not WAKES, out.getvalue()
+print("dormant detached watcher ok")
+PY2
+
+echo "== 46 a job: wait target is verified on the host its unit runs on (job run --on, or placed there)"
+# measured 2026-11-25: a role waiting on a job it placed on another host, in both directions between two hosts, read
+# WAIT TARGET UNVERIFIABLE (unit not found here, no rc file here) while the unit was active there. The remote read
+# (jobs.remote_state) and the local one (jobs.unit_state) are faked at their function boundaries
+python3 - "$SHOALD" "$SID" <<'PY2' || fail "remote job target"
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import config, jobs, providers
+sid = sys.argv[2]
+os.environ["SHOAL_SERVER"] = "hosta"
+config._CACHE.clear()
+unit = jobs.find_unit(sid, "up", "gpu1")
+p = jobs.paths(sid, unit)
+os.makedirs(p["sdir"], exist_ok=True)
+READS, LOCAL = [], []
+STATE = {}
+jobs.remote_state = lambda host, u: READS.append((host, u)) or dict(STATE)
+jobs.unit_state = lambda u: LOCAL.append(u) or {"LoadState": "not-found", "ActiveState": "inactive"}
+def meta(**kw):
+    json.dump(dict({"unit": unit, "shoal": sid, "slug": "up", "name": "gpu1"}, **kw), open(p["meta"], "w"))
+    jobs._REMOTE_STATE.clear()
+# `job run --on hostb`: read there, and active there is pending
+meta(host="hostb")
+STATE.update(ActiveState="active", LoadState="loaded")
+assert providers.job("gpu1", "up", sid) == (True, f"unit {unit} active on hostb"), providers.job("gpu1", "up", sid)
+assert READS == [("hostb", unit)] and not LOCAL, (READS, LOCAL)
+# one read serves a watcher's ticks for a minute
+providers.job("gpu1", "up", sid)
+assert len(READS) == 1, READS
+# exited there with its rc: resolved
+jobs._REMOTE_STATE.clear()
+STATE.update(ActiveState="inactive", LoadState="not-found", rc="0")
+assert providers.job("gpu1", "up", sid) == (False, f"unit {unit} exited rc=0 on hostb")
+# unreachable: unknown, and only then
+jobs._REMOTE_STATE.clear()
+STATE.clear()
+ok, why = providers.job("gpu1", "up", sid)
+assert ok is None and why == f"unit {unit} on hostb: host unreachable (unknown, not resolved)", why
+# placed (`job run --place`) onto another pool host: its placement names it
+meta(placement={"host": "hostb"})
+STATE.update(ActiveState="activating", LoadState="loaded")
+assert providers.job("gpu1", "up", sid)[0] is True
+# placed on this host, or no record here: the local read, as before
+meta(placement={"host": "hosta"})
+LOCAL.clear(); n = len(READS)
+assert providers.job("gpu1", "up", sid)[0] is None and LOCAL == [unit] and len(READS) == n
+os.remove(p["meta"])
+assert providers.job("gpu1", "up", sid)[0] is None and len(READS) == n
+print("remote job target ok")
 PY2
 
 echo "SELFTEST H4 OK ($S)"
