@@ -24,6 +24,13 @@ every designed exit: JOB-VERDICT <unit> result=success|failed exit=<rc> | result
 ceiling was reached) | UNIT-GONE-NO-STATUS | HOST-REBOOTED (another host's boot id changed under the job)
 | TIMEOUT | NOT-FOUND, followed by the log tail. An `ExecStopPost` writes the unit's result
 (`$SERVICE_RESULT`) beside the exit code, so an OOM kill is named even after the unit is collected.
+
+A running job's memory pressure (`memory.pressure` of its own cgroup and of `shoal-jobs.slice`, some and full,
+avg10/avg60) is shown by `status`, and a job whose cgroup's full pressure averages THROTTLE_FULL_PCT or more over
+60 s is `throttled`: its tasks are stalled on memory most of the time and it makes little progress while its unit
+reads `active` (measured 2026-11-25: the slice sat above its MemoryHigh for an hour at full avg10 65 to 80%, and a
+small GPU training job read 3 MB/s in D state while its reservation sat idle). `wait` prints one `JOB-THROTTLED`
+line when it first sees it, and notes it again beside the verdict; health raises `job-throttled` (health.py).
 """
 from __future__ import annotations
 
@@ -276,14 +283,19 @@ def remote_state(host: str, unit: str) -> dict[str, str]:
               f"-p LoadState,ActiveState 2>/dev/null; echo ---; cat {rp['rc']} 2>/dev/null || true; "
               f"echo ---; cat {rp['granted']} 2>/dev/null || true; echo ---; stat -c %Y {rp['rc']} 2>/dev/null || true; "
               f"echo ---; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true; "
-              f"echo ---; cat {rp['result']} 2>/dev/null || true")
+              f"echo ---; cat {rp['result']} 2>/dev/null || true; "
+              # the unit's cgroup and the memory pressure of it and of its slice (status, wait: `throttled`)
+              f"echo ---; cg=$(systemctl --user show -p ControlGroup --value {shlex.quote(unit)}.service 2>/dev/null); "
+              f'echo "$cg"; r="${{SHOAL_CGROUP_ROOT:-/sys/fs/cgroup}}"; '
+              f'echo ---; if [ -n "$cg" ]; then cat "$r$cg/memory.pressure" 2>/dev/null; fi; '
+              f'echo ---; if [ -n "$cg" ]; then cat "$r$(dirname "$cg")/memory.pressure" 2>/dev/null; fi; true')
     try:
         r = _ssh(host, script, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return {}
     if r.returncode != 0:
         return {}
-    parts = (r.stdout.split("---\n") + ["", "", "", "", "", ""])[:6]
+    parts = (r.stdout.split("---\n") + [""] * 9)[:9]
     d = {}
     for line in parts[0].splitlines():
         k, _, v = line.partition("=")
@@ -291,6 +303,8 @@ def remote_state(host: str, unit: str) -> dict[str, str]:
     d["rc"], d["granted"], d["rc_mtime"] = parts[1].strip(), parts[2].strip(), parts[3].strip()
     d["boot_id"] = parts[4].strip()
     d["result"] = parts[5].strip()
+    d["ControlGroup"] = parts[6].strip()
+    d["pressure"] = pressure_from(d["ControlGroup"], parts[7], parts[8]) if d["ControlGroup"] else {}
     return d
 
 
@@ -342,12 +356,126 @@ def reboot_detail(host: str) -> str:
 
 
 def unit_state(unit: str) -> dict[str, str]:
-    r = _systemctl("show", f"{unit}.service", "-p", "LoadState,ActiveState,SubState,Result,ExecMainStatus")
+    r = _systemctl("show", f"{unit}.service", "-p", "LoadState,ActiveState,SubState,Result,ExecMainStatus,ControlGroup")
     d = {}
     for line in r.stdout.splitlines():
         k, _, v = line.partition("=")
         d[k] = v
     return d
+
+
+# ---- memory pressure ----------------------------------------------------------------------------------
+THROTTLE_FULL_PCT = 50.0  # a job whose cgroup's `full` memory pressure averages this over 60 s or more is throttled
+
+
+def cgroup_root() -> str:
+    """Where the unified cgroup tree is mounted (SHOAL_CGROUP_ROOT points the tests at a fake one)."""
+    return config.env("CGROUP_ROOT", "/sys/fs/cgroup")
+
+
+def parse_pressure(text: str) -> dict:
+    """A PSI file (`some avg10=.. avg60=.. avg300=.. total=..` and `full ...`) as {"some": {...}, "full": {...}}."""
+    out: dict = {}
+    for line in str(text or "").splitlines():
+        parts = line.split()
+        if not parts or parts[0] not in ("some", "full"):
+            continue
+        vals = {}
+        for kv in parts[1:]:
+            k, _, v = kv.partition("=")
+            if k in ("avg10", "avg60", "avg300"):
+                try:
+                    vals[k] = float(v)
+                except ValueError:
+                    pass
+        out[parts[0]] = vals
+    return out
+
+
+def pressure_from(cgroup: str, unit_text: str, parent_text: str) -> dict:
+    """{"unit": psi, "parent": psi, "parent_name": "shoal-jobs.slice", "throttled": bool} from a unit's cgroup path
+    and the two PSI files' text; {} when there is no reading."""
+    unit = parse_pressure(unit_text)
+    if not unit:
+        return {}
+    parent = cgroup.rstrip("/").rsplit("/", 1)[0] if "/" in cgroup.strip("/") else ""
+    out = {"unit": unit, "throttled": throttled(unit)}
+    par = parse_pressure(parent_text)
+    if par and parent:
+        out.update(parent=par, parent_name=parent.rsplit("/", 1)[-1])
+    return out
+
+
+def pressure_of(cgroup: str) -> dict:
+    """The memory pressure of a local unit's cgroup (a path as systemd's ControlGroup gives it) and of its parent
+    slice; {} when the unit has no cgroup (not running) or the files cannot be read."""
+    if not cgroup:
+        return {}
+    root = cgroup_root().rstrip("/")
+    parent = cgroup.rstrip("/").rsplit("/", 1)[0]
+    return pressure_from(cgroup, _read_raw(f"{root}{cgroup}/memory.pressure"),
+                         _read_raw(f"{root}{parent}/memory.pressure") if parent else "")
+
+
+def throttled(psi: dict) -> bool:
+    return float((psi.get("full") or {}).get("avg60") or 0.0) >= THROTTLE_FULL_PCT
+
+
+def _psi_short(psi: dict) -> str:
+    def two(kind: str) -> str:
+        v = psi.get(kind) or {}
+        return f"{v.get('avg10', 0):.0f}/{v.get('avg60', 0):.0f}%"
+    return f"some {two('some')} full {two('full')}"
+
+
+def pressure_text(pr: dict) -> str:
+    """One line: the job's and its slice's memory pressure (avg10/avg60), and the verdict when it is throttled."""
+    if not pr:
+        return ""
+    line = f"memory pressure (avg10/avg60): job {_psi_short(pr['unit'])}"
+    if pr.get("parent"):
+        line += f"; {pr.get('parent_name') or 'parent'} {_psi_short(pr['parent'])}"
+    if pr.get("throttled"):
+        line += (f"; THROTTLED (full avg60 {pr['unit']['full'].get('avg60', 0):.0f}% >= {THROTTLE_FULL_PCT:g}%: its "
+                 f"tasks stall on memory most of the time, so it makes little progress"
+                 + (f"; {pr.get('parent_name')} is at its memory ceiling" if throttled(pr.get("parent") or {}) else "")
+                 + ")")
+    return line
+
+
+def _read_raw(path: str) -> str:
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except (OSError, TypeError):
+        return ""
+
+
+class ThrottleWatch:
+    """What one `job wait` saw of its job's memory pressure: one JOB-THROTTLED line (and event) the first time
+    the job is throttled, and a note beside the verdict."""
+
+    def __init__(self, a, unit: str):
+        self.a, self.unit = a, unit
+        self.first = ""
+        self.peak = 0.0
+        self.last = ""
+
+    def see(self, pr: dict) -> None:
+        if not pr or not pr.get("throttled"):
+            return
+        self.peak = max(self.peak, float(pr["unit"]["full"].get("avg60") or 0.0))
+        self.last = pressure_text(pr)
+        if not self.first:
+            self.first = now_iso()
+            print(f"JOB-THROTTLED {self.unit}: {self.last}")
+            _emit(self.a.sid, self.a.slug or "?", "job-throttled", f"{self.unit}: {self.last}"[:200])
+
+    def verdict_note(self) -> str:
+        if not self.first:
+            return ""
+        return (f"memory: the job was throttled during its run (first seen {self.first}, full avg60 peak "
+                f"{self.peak:.0f}%): it may have run slow for lack of memory, not for its own work")
 
 
 def _emit(sid: str, slug: str, kind: str, note: str, extra: dict | None = None) -> None:
@@ -629,6 +757,7 @@ def _wait_remote(a, unit: str, meta: dict) -> int:
     rp = {"log": meta.get("log") or remote_paths(unit)["log"]}
     deadline = time.time() + a.timeout_min * 60 if a.timeout_min else None
     misses = 0
+    watch = ThrottleWatch(a, unit)
     print(f"{now_iso()} waiting on {unit} on {host} (pid {os.getpid()})")
     while True:
         st = remote_state(host, unit)
@@ -641,6 +770,7 @@ def _wait_remote(a, unit: str, meta: dict) -> int:
         else:
             misses = 0
             if st.get("ActiveState") in ("active", "activating", "deactivating", "reloading"):
+                watch.see(st.get("pressure") or {})
                 if _placed_poll(a, unit, meta, st.get("granted", "")):
                     return MOVED
             else:
@@ -668,6 +798,8 @@ def _wait_remote(a, unit: str, meta: dict) -> int:
                     verdict = (f"JOB-VERDICT {unit} UNIT-GONE-NO-STATUS ({gone + '; ' if gone else ''}"
                                f"see {host} journal for {unit}.service)")
                 print(verdict)
+                if watch.verdict_note():
+                    print(watch.verdict_note())
                 try:
                     r = _ssh(host, f"tail -n {int(a.tail)} {rp['log']} 2>/dev/null", timeout=30)
                     print(f"--- log tail ({host}:{rp['log']}):\n{r.stdout.rstrip() or '(no log)'}")
@@ -696,11 +828,14 @@ def _read(path: str) -> str:
 def _wait_local(a, unit: str, p: dict, meta: dict) -> int:
     deadline = time.time() + a.timeout_min * 60 if a.timeout_min else None
     seen = False
+    watch = ThrottleWatch(a, unit)
     print(f"{now_iso()} waiting on {unit} (pid {os.getpid()})")
     while True:
         st = unit_state(unit)
         active = st.get("ActiveState") in ("active", "activating", "deactivating", "reloading")
         seen = seen or active
+        if active:
+            watch.see(pressure_of(st.get("ControlGroup", "")))
         if active and _placed_poll(a, unit, meta, _read(p.get("granted"))):
             return MOVED
         if not active:
@@ -728,6 +863,8 @@ def _wait_local(a, unit: str, p: dict, meta: dict) -> int:
                 verdict = (f"JOB-VERDICT {unit} UNIT-GONE-NO-STATUS result={st.get('Result', '?')} "
                            f"(killed outside its command: see `journalctl --user -u {unit}.service`)")
             print(verdict)
+            if watch.verdict_note():
+                print(watch.verdict_note())
             print(f"--- log tail ({p['log']}):\n{tail(p['log'], a.tail)}")
             if meta.get("placement"):
                 end = os.path.getmtime(p["rc"]) if rc is not None else None
@@ -756,6 +893,31 @@ def cmd_wait(a) -> int:
         print(f"{now_iso()} {unit} moved; following it to its new host")
 
 
+def throttled_jobs(sid: str) -> list[tuple[dict, dict]]:
+    """(meta, pressure) for each of a shoal's jobs running on this host whose cgroup is throttled (health)."""
+    sdir = paths(sid, "x")["sdir"]
+    try:
+        names = sorted(f for f in os.listdir(sdir) if f.endswith(".json"))
+    except OSError:
+        return []
+    out = []
+    for f in names:
+        try:
+            with open(os.path.join(sdir, f)) as fh:
+                m = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(m, dict) or m.get("host") or not m.get("unit"):
+            continue  # a job on another host is judged there
+        st = unit_state(m["unit"])
+        if st.get("ActiveState") != "active":
+            continue
+        pr = pressure_of(st.get("ControlGroup", ""))
+        if pr.get("throttled"):
+            out.append((m, pr))
+    return out
+
+
 def cmd_status(a) -> int:
     sdir = paths(a.sid, "x")["sdir"]
     try:
@@ -775,8 +937,10 @@ def cmd_status(a) -> int:
             where = f" on {m['host']}"
             granted = (f" lease_granted={m.get('lease_granted') or st.get('granted') or '-'}"
                        if m.get("placement") else "")
-            print(f"{m['unit']}{where}: {st.get('ActiveState', 'unreachable')} rc={st.get('rc') or '-'} "
-                  f"started={m['started_utc']}{granted} :: {' '.join(m['cmd'])[:80]}")
+            pr = st.get("pressure") or {}
+            print(f"{m['unit']}{where}: {st.get('ActiveState', 'unreachable')}{' THROTTLED' if pr.get('throttled') else ''} "
+                  f"rc={st.get('rc') or '-'} started={m['started_utc']}{granted} :: {' '.join(m['cmd'])[:80]}"
+                  + (f"\n    {pressure_text(pr)}" if pr and st.get("ActiveState") == "active" else ""))
             continue
         st = unit_state(m["unit"])
         rc = "-"
@@ -788,8 +952,10 @@ def cmd_status(a) -> int:
         last = last_line(m.get("log", "")) if st.get("ActiveState") == "active" else ""
         granted = (f" lease_granted={m.get('lease_granted') or _read(paths(a.sid, m['unit'])['granted']) or '-'}"
                    if m.get("placement") else "")
-        print(f"{m['unit']}: {st.get('ActiveState', '?')}/{st.get('SubState', '?')} rc={rc} "
-              f"started={m['started_utc']}{granted} :: {' '.join(m['cmd'])[:80]}" + (f"\n    last: {last}" if last else ""))
+        pr = pressure_of(st.get("ControlGroup", "")) if st.get("ActiveState") == "active" else {}
+        print(f"{m['unit']}: {st.get('ActiveState', '?')}/{st.get('SubState', '?')}{' THROTTLED' if pr.get('throttled') else ''} "
+              f"rc={rc} started={m['started_utc']}{granted} :: {' '.join(m['cmd'])[:80]}"
+              + (f"\n    last: {last}" if last else "") + (f"\n    {pressure_text(pr)}" if pr else ""))
     return 0
 
 

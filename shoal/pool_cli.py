@@ -703,9 +703,17 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
     import jobs
     owner = f"{a.sid}/{a.slug}"
     owned = [(h, r) for h in hosts for r in h.get("reservations") or []
-             if r.get("for") == owner and (not a.reservation or r.get("id") == a.reservation)]
+             if r.get("for") == owner and (r.get("state") or "held") == "held"
+             and (not a.reservation or r.get("id") == a.reservation)]
     if not owned:
         mine = f" {a.reservation}" if a.reservation else ""
+        waiting = [r["id"] for h in hosts for r in h.get("reservations") or []
+                   if r.get("for") == owner and (r.get("state") or "held") != "held"
+                   and (not a.reservation or r.get("id") == a.reservation)]
+        if waiting:
+            print(f"JOB-REFUSED: {owner}'s reservation {', '.join(waiting)} is still waiting for its grant (it holds "
+                  f"nothing yet); run the job once `pool reserve` prints RESERVED")
+            return 3
         print(f"JOB-REFUSED: a research job runs only inside a reservation its role owns, and {owner} holds no "
               f"live reservation{mine} on {'the pinned host' if a.place != 'auto' else 'any pool host'}. Take one "
               f"first: {config.cli()} pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy "
@@ -750,9 +758,27 @@ def _run_research(a, cmd, unit, p, src, hosts, dem, now, home) -> int:
         "request": {k: req[k] for k in ("cmd", "env", "memory_high", "memory_max", "job_slice", "cwd", "repo_path", "url", "sha",
                                          "repo", "ci_env", "class", "stage_home")}})
     save_meta(a.sid, unit, meta)
+    _attach(target["name"], home, res["id"], unit)
     jobs._emit(a.sid, a.slug, "placed", f"{unit} on {target['name']} ({reason})", {"placement": decision})
     print(f"JOB-PLACED {unit} on {target['name']} ({reason})")
     return 0
+
+
+def _attach(host: str, home: str, rid: str, unit: str) -> None:
+    """Record the job in its reservation on the reservation's host, so the reservation is kept while the job runs
+    (pool_reserve.expire). Best effort: a reservation `--until job:<this job>` is kept by its name anyway."""
+    import pool_reserve
+    try:
+        if host == home:
+            ok = pool_reserve.attach(rid, unit) is not None
+        else:
+            rc, rec, _err = pool_reserve._remote(host, ["pool", "attach", rid, unit], 60)
+            ok = rc == 0 and bool(rec) and not rec.get("error")
+    except Exception:  # noqa: BLE001 - never fails a placement that already started
+        ok = False
+    if not ok:
+        print(f"(could not record {unit} in reservation {rid} on {host}; it is kept for the job only through its "
+              f"--until job:<name>)", file=sys.stderr)
 
 
 # ---- supervision (job wait) -------------------------------------------------------------------------
@@ -1224,9 +1250,16 @@ def cmd_status(a) -> int:
         if h["envs"]:
             print(f"  ci envs: {', '.join(sorted(h['envs']))}")
         for r in h.get("reservations") or []:
+            if (r.get("state") or "held") != "held":
+                print(f"  waiting {r.get('id')} for {r.get('for')}: {r.get('want')} until {r.get('until')}, since "
+                      f"{r.get('waiting_since') or '?'}, holding nothing ({r.get('waiting') or r.get('state')}); "
+                      f"cancel with `pool release {r.get('id')} --host {h['name']}`")
+                continue
             devs = ", ".join(d.get("uuid", "?") for d in r.get("devices") or []) or "no GPU"
+            kept = r.get("kept") or {}
             print(f"  reserved {r.get('id')} for {r.get('for')}: {devs}{' + cpu-heavy' if r.get('cpu') else ''} "
-                  f"until {r.get('until')} (out of the CI pool)")
+                  f"until {r.get('until')} (out of the CI pool)"
+                  + (f"; {kept.get('why')}, kept while {', '.join(kept.get('jobs') or [])} runs" if kept else ""))
         import agent_rotation
         rot = h.get("agent_rotation") or {}
         if agent_rotation.describe(rot):

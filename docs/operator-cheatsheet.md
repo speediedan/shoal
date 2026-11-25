@@ -263,7 +263,8 @@ shoal job run --shoal $S --slug <role> --name <job> --place auto --needs gpu:1:n
   --repo <checkout> --est 30 --dry-run -- <cmd>   # the decision, staging and wrapped command; nothing starts
 shoal upgrade --spec $SPEC --enable placement    # queue transfers of placed jobs (after a manual trial)
 shoal pool reserve --host <host> --resources gpu@<uuid> --for $S/<role> --until job:<job>   # one GPU for research
-shoal pool release <id> --host <host>            # (also released at --until, or when its holder dies)
+shoal pool reserve --host <host> --resources gpus:2 --for $S/<role> --until job:<job>  # two, all or nothing
+shoal pool release <id> --host <host>            # also cancels a request still waiting (it holds nothing)
 shoal maintenance on --server <host> --until +90m --note "<why>" --wake   # before a deliberate reboot, reset or hang test
 shoal maintenance status --server <host>         # jobs, reservations and placement refuse the host while it is on
 shoal maintenance off --server <host>            # (also ends at --until); a test still holds the host's leases itself
@@ -272,6 +273,11 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
 
 - A placed job's meta records the hosts considered, their predicted starts, the choice and
   `lease_granted`; `job status` shows `lease_granted=`.
+- A reservation is taken all or nothing: a request waits holding nothing (`pool status` lists it as `waiting ...,
+  holding nothing (<why>)`), then takes every device at once; a device another live reservation holds is never
+  granted again, whichever role asks. `pool reserve` prints `RESERVE-WAITING <id>` when it has to wait; `pool release
+  <id>` cancels it, and its `pool reserve` exits `RESERVE-CANCELLED`. A reservation whose `--until` passed, or whose
+  holder died, is kept while a job placed in it still runs (`kept while <unit> runs` in `pool status`).
 - Lease scope: a local CPU suite takes `--lease cpu-light` (`--needs cpu --cpu-light`), which yields to
   CI; CPU work that must hold the host takes `--lease cpu-heavy` (`--needs cpu --cpu-heavy`); a bare
   `--cpu-heavy` on the helper also reserves every GPU.
@@ -285,6 +291,10 @@ shoal job run --shoal $S --slug <role> --name <job> --class research --place aut
   lane jobs on the host together). Set them per host under `[jobs]` in the host config, per group in
   `features.placement`, per job with `--memory-max` (0 or '' turns a ceiling off). A job its ceiling killed ends with
   `JOB-VERDICT ... result=oom-kill`; `systemctl --user status shoal-jobs.slice` shows the slice's current use.
+- `job status` shows each running job's memory pressure and its slice's (`some`/`full`, avg10/avg60) and marks a job
+  `THROTTLED` when its own `full` avg60 is 50% or more: it reads `active` but stalls on memory. `job wait` prints
+  `JOB-THROTTLED` once; health logs a WARN (`job-throttled`) and pages if it lasts 30 min. Stop a job sharing the
+  slice, or raise `[jobs] slice_memory_high` in the host config.
 - A host whose probe fails or is stale is ineligible, never an error: check it with
   `ssh <route> shoal pool probe --json`.
 - A research reservation takes the host's Azure agent out of rotation (`ci-any-vendor` removed, so

@@ -246,6 +246,7 @@ echo "== 6c pool placement: job run --place over two fake hosts (probe over an s
 python3 "$TESTD/test_pool.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_pool.py"; fail "pool planner unit tests (tests/test_pool.py)"; }
 python3 "$TESTD/test_job_memory.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_job_memory.py"; fail "job memory ceilings (tests/test_job_memory.py)"; }
 python3 "$TESTD/test_agent_rotation.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_agent_rotation.py"; fail "azure agent rotation for research reservations (tests/test_agent_rotation.py)"; }
+python3 "$TESTD/test_pool_reserve.py" 2>&1 | tail -1 | grep -qx OK || { python3 "$TESTD/test_pool_reserve.py"; fail "all-or-nothing research reservations and job memory pressure (tests/test_pool_reserve.py)"; }
 pool_clean() { have_systemd && systemctl --user stop 'shoal-pooltest-*' 2>/dev/null; rm -rf /tmp/pooltest; }
 pool_clean
 PL="$S/pool"; mkdir -p "$PL/home-data" "$PL/far-data" "$PL/far-home" "$PL/bin" "$PL/rc"

@@ -381,7 +381,8 @@ esac
             (sdir / _t.strftime("events-%Y%m%d.jsonl", _t.gmtime(now))).write_text(_json.dumps(
                 {"type": "resource_sample", "ts": now, "memory": {"available_bytes": 1 << 34},
                  "gpus": [{"uuid": "GPU-x", "vendor": "nvidia", "vram_total_mib": 24576, "arch": "sm_89"}]}) + "\n")
-            env = {"SHOAL_CONFIG": str(cfg), "SHOAL_DATA_ROOT": str(data), "SHOAL_SERVER": "testhost"}
+            env = {"SHOAL_CONFIG": str(cfg), "SHOAL_DATA_ROOT": str(data), "SHOAL_SERVER": "testhost",
+                   "SHOAL_HOLD_SCOPE": "0", "SHOAL_POOL_POLL_S": "0.1"}
             with patch.dict(os.environ, env):
                 import config
                 config._CACHE.clear()
