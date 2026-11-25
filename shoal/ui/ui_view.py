@@ -814,16 +814,49 @@ def _mark(ui_app, key: str, value: str) -> None:
         pass
 
 
+def _core_status(ui_app) -> tuple[bool, dict | None]:
+    """(read, report): the OSC 7501 report the core holds for this card's terminal (its root record; None when it holds
+    none), and whether the terminal could be read at all (False: nothing is known, so nothing is judged lost)."""
+    try:
+        t = ui_app.hc_get(os.environ["HC_TERMINAL_ID"])
+    except Exception:  # noqa: BLE001 - an unread terminal leaves the reports as they were
+        return False, None
+    if not isinstance(t, dict) or "status" not in t:
+        return False, None
+    return True, t["status"] if isinstance(t["status"], dict) else None
+
+
+_OSC_APP = re.compile(r"[;:]app=([^:\x1b]*)")
+
+
+def _osc_app(osc: str) -> str:
+    """The `app` an OSC 7501 report names ("" when none)."""
+    m = _OSC_APP.search(osc or "")
+    return m.group(1) if m else ""
+
+
 @contextlib.contextmanager
 def _report_during(sid: str, slug: str, ui_app, make=None):
     """Keep the role's status current on the agents list through an attach. The card's loop waits on the attach, and a pane
     can stay attached for hours, so a role's last report froze there: `blocked` long after the answer (measured 2026-11-06:
     three of eight needs-you rows). The core has no verb for this, so it goes through the terminal, as the loop's own report
-    does; only a changed report is written, because the attached client is drawing on the same terminal. Claude only: its
-    client reports nothing, while Codex's writes `app=codex` itself, so two reporters would take turns on one row (Muse's is
-    not known), and those keep the frozen report as before. The agents list's labels are another matter: they go through
-    the core, not the terminal, so a role card keeps them current through an attach whatever its harness (measured
-    2026-11-10: three attached cards had no group, so their rows sat in the old sections until a detach)."""
+    does; only a changed report is written, because the attached client is drawing on the same terminal. A Claude card
+    writes each change. Other harnesses write their own report (Codex's `app=codex`), so two reporters would take turns on
+    one row, and those cards write a change only while the core holds the card's own report.
+
+    The attached client can also take the report away: Claude Code's attach client reports its session itself
+    (`app=claude-code`), and clears that report (the terminal's root record) when its link to the background service
+    drops, as at the service's self-restart for an update, while the client stays attached. With the report gone the app
+    lists no agent for the terminal, so the row left the agents list while the person was working in that session
+    (measured 2026-11-25: a seat attached through its card read `agent: null` from the restart on, its labels still
+    `working`), and a card that writes only changes never wrote its unchanged report again. So each refresh reads what
+    the core holds for the terminal (`hc get`), and when it holds no report the card writes its own again, whatever the
+    harness; a report the client wrote is left to it.
+
+    `make`: what the card would report now, as (osc, writes_changes); the role's own by default. The agents list's
+    labels are another matter: they go through the core, not the terminal, so a role card keeps them current through an
+    attach whatever its harness (measured 2026-11-10: three attached cards had no group, so their rows sat in the old
+    sections until a detach)."""
     if ui_app is None:
         yield
         return
@@ -832,11 +865,11 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     _mark_attached(ui_app, "1")
     marked: list = [None]  # the labels last written by this attach
 
-    def role_osc() -> str | None:
+    def role_osc() -> tuple[str | None, bool]:
         rows: list = []
         card(sid, slug, False, rows)
         if not rows:
-            return None
+            return None, False
         row, ahead = _card_row(sid, slug, "", rows[0])
         try:
             labels = _card_labels(ui_app, row, ahead)
@@ -846,17 +879,28 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
             _mark_asof(ui_app, rows[0])
         except Exception:  # noqa: BLE001 - the labels never hold up the report
             pass
-        return ui_app.report_text(row, ui_herdr.shoal_tag(sid)) if row.get("ecosystem") == "claude" else None
+        return ui_app.report_text(row, ui_herdr.shoal_tag(sid)), row.get("ecosystem") == "claude"
+
+    def write(osc: str) -> None:
+        sys.stdout.write(osc)
+        sys.stdout.flush()
 
     def report() -> None:
-        last = None
+        last = None  # the report this attach last wrote
         while True:
             try:
-                osc = (make or role_osc)()
-                if osc and osc != last:
-                    sys.stdout.write(osc)
-                    sys.stdout.flush()
+                osc, changes = (make or role_osc)()
+                if osc and osc != last and changes:
+                    write(osc)
                     last = osc
+                elif osc or last:
+                    read, held = _core_status(ui_app)
+                    if read and held is None:  # the client took the report away: the card's own goes back
+                        write(osc or last)
+                        last = osc or last
+                    elif read and osc and osc != last and _osc_app(osc) and held.get("app") == _osc_app(osc):
+                        write(osc)  # the core holds the card's report, not the client's: keep it current
+                        last = osc
             except Exception:  # noqa: BLE001 - a report never breaks an attach
                 pass
             if stop.wait(CARD_REFRESH_S):
@@ -997,8 +1041,9 @@ def _seat_dismissed(label: str) -> bool:
 
 
 class _SeatReport:
-    """A local standalone Claude card's reports to the app: its session's state each refresh, `done` once when a turn the
-    card saw running has ended, and the same through an attach (the Claude client reports nothing itself)."""
+    """A local standalone card's reports to the app: its session's state each refresh, `done` once when a turn the card saw
+    running has ended, and the same through an attach (`_report_during`: the Claude client's own report can be cleared
+    under it)."""
 
     def __init__(self, ui_app, label: str):
         self.ui_app, self.label = ui_app, label
@@ -1125,10 +1170,11 @@ def _standalone_loop(harness: str, session: str, label: str, host: str = "", job
             flush_input()
             # the attach's reporter is a thread of its own with its own state: nothing it touches is the loop's, and a
             # fresh latch says no `done` while you are in the session
-            # a Muse or Codex client draws its own report, so for those only the labels are kept current: they had
-            # frozen through an attach (2026-11-14: a seat read session-blocked for an hour after it cleared its wait)
+            # a Muse or Codex client draws its own report, so for those the labels are kept current (they had frozen
+            # through an attach: 2026-11-14, a seat read session-blocked for an hour after it cleared its wait) and the
+            # card's report is written only where the core holds none, or holds the card's own
             s, j, h, att = session, job, harness, _SeatReport(ui_app, label) if seat is not None else None
-            make = (lambda: att.text(s, j)) if h == "claude" else (lambda: att.text(s, j, harness=h) and None)
+            make = lambda: (att.text(s, j, harness=h), h == "claude")
             with _report_during("", "", ui_app, make=make) if att is not None else contextlib.nullcontext():
                 run_attached(_view_cmd("", "", "", harness=harness, session=session, label=label)
                                + (["--job", job] if job else []))
