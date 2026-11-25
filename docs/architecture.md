@@ -1265,7 +1265,9 @@ does not reward splitting work or skipping checks.
   vendored trees; fnmatch, so `*` crosses `/`; `[efficiency] exclude` replaces the list). A PR count
   is never a throughput number on its own. The merged PRs come from one GitHub search per week of
   days (the query reads a day either side and keeps the merges inside the UTC days), paced for the
-  search rate limit and retried after a backoff; each PR's file list comes from the files endpoint
+  search rate limit and retried after a backoff. Search does not follow a transfer or rename, so each
+  configured repository is searched under its current name (one REST lookup, which follows the
+  redirect; the configured name stays the rows' key). Each PR's file list comes from the files endpoint
   and is cached for good beside the rows, since a merged PR does not change. A file list read only in
   part is not counted (nor cached), and the row says how many PRs it could not count.
 - **Cost** is the day's CI from the ci-wait store: job-minutes (counted GitHub jobs, gate builds,

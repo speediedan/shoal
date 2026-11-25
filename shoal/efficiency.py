@@ -142,6 +142,18 @@ class GitHubReader:
         self.run = run or ci_wait.default_runner
         self.pause, self.retries, self.sleep = pause, retries, sleep
         self._last = None
+        self._names: dict[str, str] = {}
+
+    def current_name(self, repo):
+        """The repository's name now: a transferred or renamed one answers its new `owner/name` through the REST
+        redirect, which search does not follow (measured 2026-11-25: after two repositories moved to an organization,
+        `repo:<old owner>/<name>` failed every search, so the daily snapshot exited 1 and counted none of their
+        merges). The configured name stays the key of every stored row; on a failed lookup the name is used as given."""
+        if repo not in self._names:
+            d = ci_wait._json(self.run, ["gh", "api", f"repos/{repo}"])
+            name = d.get("full_name") if isinstance(d, dict) else None
+            self._names[repo] = name if isinstance(name, str) and "/" in name else repo
+        return self._names[repo]
 
     def _search(self, argv):
         for attempt in range(self.retries + 1):
@@ -161,7 +173,7 @@ class GitHubReader:
         keeps exactly the merges inside the UTC days."""
         last_day = last_day or first_day
         t0, t1 = day_bounds(first_day)[0], day_bounds(last_day)[1]
-        q = f"repo:{repo} is:pr is:merged merged:{shift(first_day, -1)}..{shift(last_day, 1)}"
+        q = f"repo:{self.current_name(repo)} is:pr is:merged merged:{shift(first_day, -1)}..{shift(last_day, 1)}"
         out = []
         for page in range(1, GH_SEARCH_PAGES + 1):
             d = self._search(["gh", "api", f"search/issues?q={urllib.parse.quote(q)}&per_page=100&page={page}"])
