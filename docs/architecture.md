@@ -2038,7 +2038,12 @@ unparked role stayed off the agents list while another card was attached); the n
 nothing more, and once nothing is in use the tabs are laid out to the plan again. This happens only when every terminal
 in those tabs was read: one that cannot be read (a machine out of reach) may already hold that card. A role card in a herdr-core terminal (`HC_TERMINAL_ID` set) prints its
 own OSC 7501 status each refresh, so the app's agents list, dots, sounds and toasts follow the role without a
-feeder push; a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
+feeder push; through an attach it writes a changed report (a Claude card) and, whatever the harness, writes its report
+again when the core holds none for its terminal (`ui_view._report_during`, reading `hc get` each refresh): Claude Code's
+attach client reports its session itself (`app=claude-code`) and clears that report when the background service restarts
+under it, which took an attached seat's row off the agents list while the person worked in it (measured 2026-11-25), and
+the app lists no agent for a terminal with no report, whatever its labels; an attached row reads `attached` after its
+state and before its tooltip (`shoal.attached`, `shoalAttached`); a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
 session, a dead watcher or a blocker that cannot move, sets the terminal label `shoal.need` that the agents list's badge reads; a card sets `shoal.stale` while its row is not
 live (`starting` from its start until its first status read lands, since a card back after a restart reads the status

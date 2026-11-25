@@ -894,7 +894,13 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   kind goes in the card's `shoal.need` label instead: `\u2715` its session is dead, `\u25cc` its watcher is dead and it has
   work, `\u2298` a blocker that cannot move; `!` is left for a cause nobody named. A session that says it waits on you reads `?`. A Claude role's card keeps reporting during an attach, writing only a changed report, since the attached client
   draws on the same terminal. Other harnesses keep the report from before the attach: Codex's client reports itself (`app=codex`), and two
-  reporters would take turns on one row. After any attach the card writes its report again, even an unchanged `done` (a Codex client takes its own report with it when it exits, which left the role off the agents list), and clears the `shoal.attached` label again. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
+  reporters would take turns on one row. A report the attached client takes away is written again, whatever the harness: each
+  refresh the card reads what the core holds for its terminal (`hc get`), and when it holds no report the card writes its own,
+  then keeps it current while the core holds it, until the client reports again. Claude Code's attach client reports its
+  session itself (`app=claude-code`) and clears that report when the background service restarts under it (an update),
+  while it stays attached; the app then lists no agent for the terminal, so the row left the agents list exactly while you
+  worked in that session (measured 2026-11-25). An attached row says so: `attached` after its state in the priority view
+  and before its tooltip (the `shoal.attached` label). After any attach the card writes its report again, even an unchanged `done` (a Codex client takes its own report with it when it exits, which left the role off the agents list), and clears the `shoal.attached` label again. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
   the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open. That hold covers every roles tab of the shoal until the last card detaches: a
   removed role's card goes, and the grid is laid out again, at the next sync after that, so the grid can change just after a detach.
   A new role's card (a role unparked, or added) does not wait: it appears at once in a roles tab of its own (the next free
@@ -958,7 +964,7 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   `question` only while a prompt is open (a seat's reply ending reads `blocked` in the listing: that is your turn to
   type, so it reads `idle`, "your turn: waiting for a reply", and stays out of Needs you), else `idle` (`stopped` in the message when no
   worker runs). A turn the card saw running that has ended is a `done`, written once, as a role's. It keeps reporting
-  through an attach (the Claude client reports nothing itself), and while it reports it refreshes every 30 s instead
+  through an attach, and writes its report again when the attached client clears it (see "Status while attached"), and while it reports it refreshes every 30 s instead
   of every 5 minutes. Every reporting card on a host shares one `claude agents` listing (`claude-rows.json` beside the
   status cache, at most 25 s old, refreshed under a lock by the first card to find it stale), which serves both a card's
   `/bg` check and its report. A remote, opencode, Muse or Codex seat's card reports nothing.

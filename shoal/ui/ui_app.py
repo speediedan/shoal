@@ -1840,9 +1840,15 @@ function shoalStale(a) {
   const why = shoalLabel(a, "shoal.stale");
   return why ? SHOAL_STALE[why] ?? why : "";
 }
+// A card with a client attached under it (its shoal.attached label): the person is in that session. The row says so in
+// its detail and its tooltip, and keeps its live state, since the card goes on reporting through the attach.
+function shoalAttached(a) {
+  return shoalLabel(a, "shoal.attached") ? "attached" : "";
+}
 function shoalTip(a) {
-  const stale = shoalStale(a), detail = shoalLabel(a, "shoal.detail");
-  return stale ? `updating: ${stale}${detail ? ` \u00b7 last known: ${detail}` : ""}` : detail;
+  const stale = shoalStale(a), detail = shoalLabel(a, "shoal.detail"), att = shoalAttached(a);
+  const tip = stale ? `updating: ${stale}${detail ? ` \u00b7 last known: ${detail}` : ""}` : detail;
+  return att ? (tip ? `${att} \u00b7 ${tip}` : att) : tip;
 }
 // A row's time is how long it has been in its section, as this list saw it move there (Herdr's stamp, kept across
 // restarts): keyed on the card's group, so needs you, working and waiting each start the clock again. A row without a
@@ -1936,11 +1942,12 @@ function shoalStop(view) {
   view.shoalTimer?.cancel();
   view.shoalTimer = null;
 }
-// A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab.
+// A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab; `attached` after
+// either while a client is attached under its card.
 function shoalMore(a, sr, full, fallback) {
-  const state = shoalLabel(a, "shoal.state");
-  if (sr) return full ? [a.space_name, state].filter(Boolean).join(" \u00b7 ") || null : null;
-  return full && state ? state : fallback;
+  const state = shoalLabel(a, "shoal.state"), att = shoalAttached(a);
+  if (sr) return full ? [a.space_name, state, att].filter(Boolean).join(" \u00b7 ") || null : null;
+  return full && (state || att) ? [state, att].filter(Boolean).join(" \u00b7 ") : fallback;
 }
 
 export default class Agents extends View {"""

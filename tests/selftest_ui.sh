@@ -2509,7 +2509,10 @@ if shutil.which("node"):
     js = "\n".join(l for l in helper[:helper.index("export default class Agents extends View {")].split("\n") if not l.startswith("import "))
     js = ('const shared = () => ({}); const run = () => null; const panes = () => []; const openOverlay = () => null;\n'
           'const T = { r1: { "shoal.group": "waiting", "shoal.state": "remote-ci", "shoal.pane": "alpha/core" },\n'
-          '            r2: { "shoal.group": "dismissed", "shoal.state": "asked" }, s1: { "shoal.state": "your-turn" } };\n'
+          '            r2: { "shoal.group": "dismissed", "shoal.state": "asked" }, s1: { "shoal.state": "your-turn" },\n'
+          '            a1: { "shoal.group": "working", "shoal.state": "working", "shoal.pane": "alpha/core", "shoal.attached": "1" },\n'
+          '            a2: { "shoal.group": "working", "shoal.state": "working", "shoal.pane": "standalone/seat", "shoal.attached": "1",\n'
+          '                  "shoal.detail": "running a turn" }, a3: { "shoal.attached": "1" } };\n'
           'const terminals = () => Object.entries(T).map(([address, labels]) => ({ address, labels }));\n'
           + js +
           'const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { console.error(m, a, b); process.exit(1); } };\n'
@@ -2523,7 +2526,11 @@ if shutil.which("node"):
           'eq(shoalMore({ address: "r1", space_name: "alpha" }, { role: "core" }, true, "x"), "alpha \\u00b7 remote-ci", "a role: space and state");\n'
           'eq(shoalMore({ address: "r1", space_name: "alpha" }, { role: "core" }, false, "x"), null, "under a space header: nothing");\n'
           'eq(shoalMore({ address: "s1" }, null, true, "session"), "your-turn", "a seat: its state");\n'
-          'eq(shoalMore({ address: "y" }, null, true, "session"), "session", "another agent: its own detail");\n')
+          'eq(shoalMore({ address: "y" }, null, true, "session"), "session", "another agent: its own detail");\n'
+          'eq(shoalMore({ address: "a1", space_name: "alpha" }, { role: "core" }, true, "x"), "alpha \\u00b7 working \\u00b7 attached", "attached: said after the state");\n'
+          'eq(shoalMore({ address: "a2" }, null, true, "session"), "working \\u00b7 attached", "an attached seat too");\n'
+          'eq(shoalTip({ address: "a2" }), "attached \\u00b7 running a turn", "and its tooltip");\n'
+          'eq(shoalTip({ address: "a3" }), "attached", "with no detail");\n')
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as fh:
         fh.write(js)
     r = subprocess.run(["node", fh.name], capture_output=True, text=True)
@@ -2916,6 +2923,71 @@ finally:
 groups = [m.get(ui_app.GROUP_LABEL) for m in marks if ui_app.GROUP_LABEL in m]
 assert groups == ["waiting", "needs-you"], marks  # written while attached, once per change
 assert out.getvalue() == "", "a Muse client draws its own: no report on its terminal"
+PY2
+# a report the attached client took away goes back (measured 2026-11-25: Claude's attach client clears the terminal's
+# report when the background service restarts under it, and a card writing only changes left the seat off the agents
+# list while the person worked in it); a report the client wrote itself is left to it
+HC_TERMINAL_ID=t9 python3 - "$SHOALD" <<'PY2' || fail "a lost report comes back during an attach"
+import io, sys, time, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_app, ui_view
+ui_view.CARD_REFRESH_S = 0.05
+core = {"status": {"app": "seat", "state": "working"}}
+gets = []
+def hc_get(t):
+    gets.append(t)
+    if core.get("unreadable"):
+        raise ui_app.AppError("no core")
+    return {"address": t, "status": core["status"]}
+class Term(io.StringIO):
+    """The terminal: what the card writes there, the core holds as the terminal's report."""
+    def write(self, text):
+        if "]7501;" in text:
+            core["status"] = {"app": ui_view._osc_app(text), "state": "x"}
+        return super().write(text)
+app = types.SimpleNamespace(ATTACH_LABEL=ui_app.ATTACH_LABEL, hc_label=lambda t, l: None, hc_get=hc_get)
+now = {"osc": ui_app.osc7501("working", "", "standalone/seat", "running a turn", app="seat"), "own": True}
+def attach(steps, make=None):
+    out = Term()
+    real, sys.stdout = sys.stdout, out
+    try:
+        with ui_view._report_during("", "", app, make=make or (lambda: (now["osc"], now["own"]))):
+            for step in steps:
+                step()
+                time.sleep(0.2)
+    finally:
+        sys.stdout = real
+    return out.getvalue()
+W = now["osc"]
+X = ui_app.osc7501("idle", "", "standalone/seat", "between turns", app="seat")
+# Claude: written once; the client clears the report (a service restart under it): written again, once
+got = attach([lambda: None, lambda: core.update(status=None), lambda: None])
+assert got == W * 2, repr(got)
+assert gets and set(gets) == {"t9"}, "it reads its own terminal"
+# and while the client reports the session itself, the card leaves an unchanged report alone
+got = attach([lambda: core.update(status={"app": "claude-code", "state": "working"}), lambda: None])
+assert got == W, repr(got)  # the first, as before: nothing had been written by this attach
+# a `done` already written (the card's text is "" after it) comes back as it was
+seq = iter([ui_app.osc7501("done", "", "standalone/seat", "done its turn", app="seat")] + [""] * 1000)
+got = attach([lambda: None, lambda: core.update(status=None), lambda: None], make=lambda: (next(seq), True))
+assert got.count("state=done") == 2 and got.count("\x1b]7501;") == 2, repr(got)
+# Codex: the client's own report is left to it, changes and all; a lost one is replaced by the card's, which is then
+# kept current while the core holds it, until the client reports again
+now.update(own=False)
+core["status"] = {"app": "codex", "state": "working"}
+got = attach([lambda: None, lambda: now.update(osc=X)])
+assert got == "", repr(got)
+now["osc"] = W
+got = attach([lambda: core.update(status=None), lambda: now.update(osc=X),
+              lambda: core.update(status={"app": "codex", "state": "working"}), lambda: now.update(osc=W)])
+assert got == W + X, repr(got)
+# a terminal that cannot be read: nothing is judged lost, and a Claude card writes its changes as before
+now.update(own=True, osc=W)
+core.update(unreadable=True, status=None)
+got = attach([lambda: None, lambda: now.update(osc=X)])
+assert got == W + X, repr(got)
+assert ui_view._core_status(types.SimpleNamespace()) == (False, None), "an adapter with no reader: nothing known"
+assert ui_view._osc_app(W) == "seat" and ui_view._osc_app(ui_app.OSC_CLEAR) == ""
 PY2
 # freshness (maintainer, 2026-11-22: at startup the agents list, lattice and rail showed status not live yet, ~30 s,
 # with nothing to say so): one rule in ui_status; the card's shoal.stale label, `starting` until its first read lands
