@@ -424,6 +424,17 @@ OOM stop kills the exit-code wrapper too: `job wait` then prints `JOB-VERDICT <u
 with the ceilings the job ran under and what to change, instead of `UNIT-GONE-NO-STATUS`. The job meta records the
 effective `memory_max` and `slice`.
 
+**Memory pressure.** A ceiling that throttles rather than kills is silent: a unit at its slice's `MemoryHigh` reads
+`active` while its tasks stall on reclaim (measured 2026-11-25: `shoal-jobs.slice` sat above its 18G `MemoryHigh` for an
+hour at full pressure avg10 65 to 80%, and a small GPU training job read 3 MB/s in D state, making no progress while its
+research reservation sat idle). `job status` therefore prints, for each running job, the `memory.pressure` of the job's
+own cgroup and of its parent slice (`some` and `full`, avg10/avg60, from the unit's `ControlGroup` under
+`/sys/fs/cgroup`, or `SHOAL_CGROUP_ROOT`; over the same ssh read for a job on another host), and marks the job
+`THROTTLED` when its own cgroup's `full` avg60 is at least 50% (`jobs.THROTTLE_FULL_PCT`). `job wait` prints one
+`JOB-THROTTLED <unit>: ...` line (and a `job-throttled` event) the first time it sees that, and a note beside the
+verdict. Health raises `job-throttled` for a throttled job of the group on its own host: a WARN line at first sight,
+a page if it is still throttled 30 min later.
+
 **A `job:` wait is verified where the job runs.** `providers.job` reads the job's record on this host (`jobs.job_host`:
 its `host`, or its placement's host) and, for a job on another host, reads its unit and rc file there over the same
 route (`jobs.remote_state_cached`: one ssh read per host and unit per minute in a process, an unreachable answer
@@ -522,20 +533,46 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   sleeping until the window) that read as `local-ci` and was re-verified every 3 h (measured 2026-11-10: 4 to 6 turns
   a night for one role).
 - **Research reservations** (`shoal/pool_reserve.py`). `shoal pool reserve [--host H] --resources
-  gpu@<uuid>,...|gpus:N|cpu-heavy --for <shoal>/<role> --until <ISO|job:NAME> [--note]` takes the
-  leases on H with the helper's background-holder mode (`--hold --pidfile`): one hold per device (a
-  named device is the helper's only candidate, through `GPU_LEASE_DEVICES`; `gpus:N` takes N best-fit
-  devices) and `cpu-heavy` as its own hold, so one GPU can stay with research while the rest of the
-  host stays in the CI pool. Each reservation is recorded in H's `<data_root>/_pool/reservations.json`,
-  reported by `pool probe` and `pool status`, and is a `reserved` event. `shoal pool release <id>
-  [--host H]` releases it, and so does `--until` (a time passed, or the owner's job of that name ran to
-  an exit code on H), checked by every probe and every `resources watch` sample; a reservation whose
-  holder died is dropped. The planner takes reserved devices and a reserved `cpu-heavy` out of what a
+  gpu@<uuid>,...|gpus:N|cpu-heavy --for <shoal>/<role> --until <ISO|job:NAME> [--note] [--timeout-min M]` takes
+  the leases on H with the helper's background-holder mode (`--hold --pidfile`): one hold per device (a
+  named device is the helper's only candidate, through `GPU_LEASE_DEVICES`; `gpus:N` takes the N smallest free
+  devices, the helper's best fit) and `cpu-heavy` as its own hold, so one GPU can stay with research while the rest
+  of the host stays in the CI pool. Each request is recorded at once in H's `<data_root>/_pool/reservations.json`
+  (state `waiting`, its `pool reserve` process and why it waits; `held` once granted), reported by `pool probe` and
+  `pool status`, and a grant is a `reserved` event.
+  **All or nothing.** A request holds nothing while it waits (measured 2026-11-25: two queued `gpus:2` requests each
+  took one device as devices freed one at a time, then each waited for the other forever). It watches the helper's
+  `--status --json` until everything it wants is free (not held, not wanted by a ticket already queued there, not
+  listed by another live reservation), then takes each with a zero-wait hold (`--timeout 0`); if any is not granted,
+  the ones taken are released at once and it watches again. The pick, the takes and the commit run under an flock on
+  `_pool/acquire.lock`, so two requests never interleave their takes. Requests keep a fair order like the helper's
+  queue: one does not try while an earlier request still waiting on the host wants any of the same (`gpus:N`
+  overlaps every GPU request). A helper exit other than 75 (busy) is final. `pool reserve` prints
+  `RESERVE-WAITING <id> ...` to stderr when it has to wait, with the cancel command.
+  **One device, one reservation.** The pick skips every device another live reservation lists, even when the helper
+  reports it free, and the grant is committed under the reservations lock only when no other live record names one
+  of its devices or `cpu-heavy`, so a second request for a held device waits (or times out), whichever role asks.
+  Each hold runs in its own `systemd-run --user --scope` where a user manager is reachable (`SHOAL_HOLD_SCOPE=0`
+  turns it off): measured 2026-11-25, a hold taken from inside a launcher job unit died with that unit seconds
+  later, the reservation was dropped as "holder gone" while its research job ran on, and the next reservation was
+  granted the same device. A research job placed in a reservation is recorded in it (`pool attach`).
+  **Ending.** `shoal pool release <id> [--host H]` releases it; on a request still waiting it cancels it (its `pool
+  reserve` exits `RESERVE-CANCELLED`, rc 3, so a launcher chained on it stops) and leaves nothing behind; it also
+  stops a request an older copy of this code was taking (its `holds/<id>.pending` marker and `holds/<id>-*.pid`
+  holds). A reservation also ends at `--until` (a time passed, or the owner's job of that name wrote an exit code on
+  H after the grant; an exit file left by an earlier run of the same name does not count), checked by every probe
+  and every `resources watch` sample, and is dropped when its holder died. Either way, while a job placed in it
+  (its `job:<name>`, or one attached) is still running on H, it is kept (`kept` in the record, a
+  `reservation-kept` event) and a lost hold is taken again where it can be, until that job ends. A waiting request
+  whose `pool reserve` is gone is dropped; one whose record vanished while it waits (an older `expire`, in a
+  `resources watch` started before an upgrade, drops a record with no holds) writes it back. A record written
+  before states existed reads as `held`, so reservations standing at an upgrade carry on unchanged.
+  The planner takes reserved devices and a reserved `cpu-heavy` out of what a
   CI job may use: a host whose fitting GPUs are all reserved is ineligible, a whole-host request is
   ineligible on a host with any reservation, a CI job wrapped for such a host only sees the unreserved
   fitting devices (`GPU_LEASE_DEVICES`), and a queued job whose host a reservation took is moved when
   another host can run it. CI never queues behind a research hold. A `research` job placed with
-  `--place` must run inside a reservation its role owns (`--reservation <id>` picks one of several),
+  `--place` must run inside a granted reservation its role owns (`--reservation <id>` picks one of several),
   on that host, with no lease of its own and only the reservation's devices visible
   (`CUDA_VISIBLE_DEVICES` for NVIDIA, `ROCR_VISIBLE_DEVICES` for AMD); without one it is refused, and
   it never moves.
@@ -638,6 +675,7 @@ and a failure of it is retried as below.
 | `watcher-dead` | the `ledger-watch` pid is gone and the session is between turns, and (`lazy_rearm`) the role is active or has work its watcher would deliver, or its watcher is detached (a re-arm costs no turn) | wake 10 (a detached watcher: re-armed by the quorum instead; for a role with nothing to do, no wake at all), page 40 |
 | `restart-retry` | a restart that failed (below) whose Claude session is not running, and no other restarting condition of the role raised this run | restart, once its backoff has passed |
 | `harness-missing` | a harness CLI this host's roles need resolves nowhere (`config.harness_missing`), one per CLI | page 30 |
+| `job-throttled` | a job of the group on this host whose own cgroup's `full` memory pressure averages 50% or more over 60 s (`jobs.throttled_jobs`), one per job run; a WARN line when first seen | page 30 |
 
 **A failed restart stays due.** Every restart the quorum or `shoal handoff` runs (`context_restart`) first resolves
 each harness CLI it needs (the old provider's for a Claude stop, the new provider's for the launch) and waits for one

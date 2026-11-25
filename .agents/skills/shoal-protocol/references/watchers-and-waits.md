@@ -69,9 +69,14 @@ A job that holds no lease and uses almost no CPU (a hosted-CI watcher) has no bu
 lease (2+ cores for 10 min) is budgeted from its start: run CPU suites with `--cpu-light --place auto` instead.
 Split a long suite, or run long experiments as `--class research` inside a reservation your role owns.
 The operator (or you, where your grants allow) takes one with `shoal pool reserve --host <host> --resources gpu@<uuid>|gpus:N|cpu-heavy --for
-<shoal>/<you> --until <ISO|job:<name>>`; a research job outside a reservation is refused. Release a
-reservation as soon as the research is done (`shoal pool release <id> --host <host>`): it is taken out
-of everyone's CI. Never run research as a `ci` job or under the host's lease directly: in the lease's
+<shoal>/<you> --until <ISO|job:<name>>`; a research job outside a reservation is refused. A request is all
+or nothing: it waits holding nothing until every device it asked for is free (`RESERVE-WAITING <id>` on stderr),
+and a device another reservation holds, even one of yours, is never granted to a second one. To drop a request
+you no longer need, run `shoal pool release <id> --host <host>` on it (its `pool reserve` exits
+`RESERVE-CANCELLED`); never kill its processes by hand. Release a reservation as soon as the research is done
+(`shoal pool release <id> --host <host>`): it is taken out of everyone's CI. A job that reads `THROTTLED` in
+`shoal job status` (or prints `JOB-THROTTLED` in its wait) is stalled on memory, not working: say so to the
+operator rather than waiting it out. Never run research as a `ci` job or under the host's lease directly: in the lease's
 first-come queue it sits ahead of CI builds, whose acquire steps then time out (measured 2026-11-08:
 three chains of recovery runs held a CI GPU for six hours ahead of two gated builds). Wait on research
 runs as `research-proto` (`--wait research-proto --target job:<name>`).

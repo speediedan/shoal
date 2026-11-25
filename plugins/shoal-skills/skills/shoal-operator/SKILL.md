@@ -106,6 +106,12 @@ role from its start doc. A handoff whose restart failed prints `FAILED: the rest
 the old session was stopped, and the quorum relaunches the role within minutes, or run `shoal restart --spec
 <spec> --only <role>`.
 
+A `job-throttled` WARN in the health journal (a page if it lasts 30 min) names a job whose own cgroup stalls on
+memory: it reads `active` and makes little progress. `shoal job status --shoal <id>` shows its pressure and its
+slice's; stop a job sharing `shoal-jobs.slice`, or raise `[jobs] slice_memory_high` in the host config. A research
+request that should not run any more is cancelled with `shoal pool release <id> --host <host>` even before its
+grant (`pool status` lists it as `waiting ..., holding nothing`); never kill its hold processes by pid.
+
 ## Health review
 
 On a schedule, after an upgrade, or when pages repeat, run the review in `shoal-health-review`. It

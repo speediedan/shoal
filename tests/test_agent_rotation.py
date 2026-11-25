@@ -129,7 +129,8 @@ class Rotation(unittest.TestCase):
              "gpus": [{"uuid": "GPU-big", "vendor": "nvidia", "vram_total_mib": 24576},
                       {"uuid": "GPU-small", "vendor": "nvidia", "vram_total_mib": 8192}]}) + "\n")
         self.env = patch.dict(os.environ, {"SHOAL_CONFIG": str(self.cfg), "SHOAL_DATA_ROOT": str(self.data),
-                                           "SHOAL_SERVER": "gpuhost-a"})
+                                           "SHOAL_SERVER": "gpuhost-a", "SHOAL_HOLD_SCOPE": "0",
+                                           "SHOAL_POOL_POLL_S": "0.1"})
         self.env.start()
         for k in ("SHOAL_AZURE_ORG", "SHOAL_AZURE_AGENT_PAT", "SHOAL_LEASE_CMD", "GPU_LEASE_CMD"):
             os.environ.pop(k, None)
@@ -337,9 +338,9 @@ class Rotation(unittest.TestCase):
         self.assertFalse(os.path.exists(self.ar.path()))
 
     def test_a_failed_reservation_puts_the_agent_back(self):
-        (Path(self.d) / "refuse").write_text("")
+        (Path(self.d) / "refuse").write_text("")  # busy (75): it waits, holding nothing, until its timeout
         with self.assertRaises(ValueError):
-            self.reserve()
+            self.pr.reserve("gpu@GPU-big", "s/r", "job:study", timeout_min=0.01)
         self.assertEqual(self.caps()["ci-any-vendor"], "1")
         self.assertEqual(len(self.az.writes("PUT")), 2)  # out while it waited for its holds, back when it failed
         self.assertFalse(os.path.exists(self.ar.path()))

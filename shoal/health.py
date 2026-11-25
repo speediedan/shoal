@@ -31,6 +31,8 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   restart-retry      a restart that failed (restart_record), its Claude session not running    restart after its backoff
                      (any restart that fails stays due: 5, 10, 20, then 30 min apart; paged after 3 in a row)
   harness-missing    a harness CLI this host's roles need resolves nowhere                     page@30
+  job-throttled      a job on this host whose cgroup's full memory pressure averages 50% or more over 60 s
+                     (jobs.THROTTLE_FULL_PCT): a WARN line when first seen, a page if it stays so    page@30
 
 Wakes go through direct session wake (backends.Backend.wake), one implementation per
 ecosystem: opencode -> a send to the session; Claude with a live ledger-watch -> a wake
@@ -126,6 +128,10 @@ LADDERS = {
     # a harness CLI a local role needs resolves nowhere (`config.harness_missing`): an update takes a minute or so, so
     # one still missing after 30 min is a broken install, paged once
     "harness-missing": [(30, "page")],
+    # a job unit on this host whose own cgroup stalls on memory most of the time (jobs.THROTTLE_FULL_PCT): its unit
+    # reads `active` while it makes little progress (2026-11-25: an hour in D state at 3 MB/s behind a slice over its
+    # MemoryHigh, its GPU reservation idle). A WARN line when first seen; a page if it is still so 30 min later
+    "job-throttled": [(30, "page")],
 }
 # the conditions whose ladders restart their role
 RESTARTING = ("context-restart", "quota-handoff", "wait-resolved", "wait-validity", "restart-retry")
@@ -135,7 +141,7 @@ CONTEXT_AUTO_LADDER = [(0, "restart"), (30, "page")]
 RESTART_NOT_PAGE = ("wait-resolved", "wait-validity")
 # conditions that do not reach the role through its watcher, so a hold for an attached client does not hold their ladders
 HOLD_EXEMPT = ("wakes-held", "watcher-dead", "host-silent", "host-name-clash", "checkout-stuck", "lease-orphan",
-               "harness-missing")
+               "harness-missing", "job-throttled")
 
 
 def claude_clients(role) -> tuple[list[int], tuple[str, ...]]:
@@ -1686,6 +1692,27 @@ def orphaned_leases(spec: ShoalSpec, lease: dict | None = None) -> list[dict]:
     return list(out.values())
 
 
+def throttled_jobs(spec: ShoalSpec, found: list | None = None) -> list[dict]:
+    """`job-throttled`: a job of this shoal running on this host whose cgroup is throttled (jobs.throttled_jobs), one
+    instance per job run (its unit and start), counted from when health first saw it so. `found`: (meta, pressure)
+    pairs (tests)."""
+    if found is None:
+        import jobs as _jobs
+        try:
+            found = _jobs.throttled_jobs(spec.sid)
+        except Exception:  # noqa: BLE001 - an unreadable job never breaks a health run
+            found = []
+    import jobs as _jobs
+    out = []
+    for m, pr in found:
+        out.append({"slug": str(m.get("slug") or "?"), "condition": "job-throttled",
+                    "key": f"{m.get('unit')}@{m.get('started_utc') or '?'}", "since": iso(), "first_seen": True,
+                    "detail": f"job {m.get('name') or m.get('unit')} ({m.get('unit')}) reads active but is throttled: "
+                              f"{_jobs.pressure_text(pr)}. Stop a job sharing its slice, or raise the slice's ceiling "
+                              f"([jobs] slice_memory_high in the host config)"})
+    return out
+
+
 def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list[dict]:
     """Multi-host liveness of whole hosts. Every host with a live local role writes a `host-beat` system
     event at most every `host_beat_min` (its quorum is alive); home raises `host-silent` for another host
@@ -1817,6 +1844,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     conds += host_beats(spec, led, state, dry_run)
     conds += watched_checkouts(spec, dry_run)
     conds += orphaned_leases(spec)
+    conds += throttled_jobs(spec)
     if not dry_run and is_local_any(spec) and health_cfg(spec).get("context_snapshot", True):
         try:
             # one context-cost snapshot per host per UTC day (context_cost.py): the first run after midnight writes it
@@ -1856,6 +1884,9 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     quota_done = False  # one quota handoff per run
     ladders = state.setdefault("ladders", {})
     prev_keys = set(ladders)
+    for c in conds:
+        if c["condition"] == "job-throttled" and f"{c['slug']}|{c['condition']}|{c['key']}" not in prev_keys:
+            acts.append((c["slug"], "job-throttled", f"WARN {c['detail']}"))  # a page follows only if it lasts
     live_keys = set()
     holds: dict[str, dict] = {}
 
@@ -2037,7 +2068,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 if c["condition"] in RESTART_NOT_PAGE and not ch.startswith("FAILED"):
                     ch = f"woken {lad['step']}x without effect: {ch}"
             elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan",
-                                    "wakes-held", "harness-missing"):
+                                    "wakes-held", "harness-missing", "job-throttled"):
                 ch = page_user(spec, f"{c['slug']}: {c['detail']}", state, dry_run)
             else:
                 hold = hold_of(c["slug"])
