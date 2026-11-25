@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shoal"))
@@ -173,6 +174,24 @@ class GitHub(unittest.TestCase):
         self.assertIsNone(reader(fake).merged_prs(REPO, DAY))
         self.assertEqual(fake.count("search/issues"), 1 + ef.GH_SEARCH_RETRIES)
         self.assertIsNone(reader(FakeGitHub()).pr_files(REPO, 42), "an unreadable file list is None, not []")
+
+    def test_moved_repository_searched_by_its_current_name(self):
+        moved = FakeGitHub(MERGED, FILES)
+        inner = moved.__call__
+
+        def run(argv, login=False):
+            if argv[2] == f"repos/{REPO}":  # the REST redirect answers the new name; search would not follow it
+                return 0, json.dumps({"full_name": "neworg/" + REPO.split("/", 1)[1]})
+            if argv[2].startswith("search/issues?") and urllib.parse.quote(f"repo:{REPO} ") in argv[2]:
+                return 1, ""
+            return inner(argv, login=login)
+        gh = reader(run)
+        self.assertEqual(len(gh.merged_prs(REPO, DAY)), 3, "the moved repository's merges are found")
+        self.assertEqual(len(gh.merged_prs(REPO, ef.shift(DAY, 1))), 1)
+        lookups = [c for c in moved.calls if c[2] == f"repos/{REPO}"]
+        self.assertEqual(lookups, [], "the lookup is answered before the fake")
+        self.assertEqual(gh.current_name(REPO), "neworg/" + REPO.split("/", 1)[1])
+        self.assertEqual(reader(FakeGitHub()).current_name(REPO), REPO, "an unreadable lookup keeps the name")
         with tempfile.TemporaryDirectory() as td:
             got = ef.merged_by_day(reader(FakeGitHub(MERGED, {1: FILES[1]})), REPO, [DAY], td)
             self.assertEqual([p["files"] is None for p in got[DAY]], [False, True, True])
