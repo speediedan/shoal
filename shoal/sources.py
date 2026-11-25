@@ -30,11 +30,11 @@ GH_ENV = dict(os.environ, PATH="/usr/bin:/bin:/usr/local/bin:" + os.environ.get(
 _CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 QUERY = """
-query($login:String!, $number:Int!, $after:String) {
+query($login:String!, $number:Int!, $after:String, $first:Int!) {
   %s(login:$login) {
     projectV2(number:$number) {
       title
-      items(first:100, after:$after) {
+      items(first:$first, after:$after) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -68,6 +68,39 @@ def gh_graphql(query: str, **vars) -> dict:
     if r.returncode != 0:
         raise RuntimeError(f"gh api graphql failed: {r.stderr.strip()[-300:]}")
     return json.loads(r.stdout)
+
+
+def project_pages(query: str, owner: str, number: int, first: int):
+    """Each page of a board read, in board order: the `projectV2` node of `query` (a template whose `%s` is the owner
+    kind, taking $login, $number, $after and $first), as a user project or else an organization one (the first page
+    that reads decides). GitHub refuses some pages outright ("Something went wrong while executing your query") at a
+    size it serves smaller: measured 2026-11-25, one board's 50-item page 6 failed on every read for three days, so
+    that board's digest never refreshed, while 40 items passed and each item read alone. A refused page is asked again
+    at half the size, down to one item, and the rest of the read keeps the smaller size."""
+    after, scope, size = "", None, max(1, int(first))
+    while True:
+        data, err = None, ""
+        for s in ([scope] if scope else ["user", "organization"]):
+            try:
+                d = gh_graphql(query % s, login=owner, number=int(number), after=after, first=size)
+            except RuntimeError as exc:
+                err = str(exc)
+                continue
+            node = (d.get("data") or {}).get(s) or {}
+            if node.get("projectV2"):
+                data, scope = node["projectV2"], s
+                break
+        if data is None:
+            if err and size > 1:
+                size = max(1, size // 2)
+                continue
+            raise RuntimeError(f"project {owner}/{number} not readable as user or organization project"
+                               + (f": {err[-200:]}" if err else ""))
+        yield data
+        pi = data["items"]["pageInfo"]
+        if not pi.get("hasNextPage"):
+            return
+        after = pi.get("endCursor") or ""
 
 
 def board_fixture() -> list[dict] | None:
@@ -106,21 +139,7 @@ def github_project_items(owner: str, number: int, ttl_s: float = 120) -> list[di
     if ck in _CACHE and now - _CACHE[ck][0] < ttl_s:
         return _CACHE[ck][1]
     items: list[dict] = []
-    after = None
-    scope = None
-    while True:
-        data = None
-        for s in ([scope] if scope else ["user", "organization"]):
-            try:
-                d = gh_graphql(QUERY % s, login=owner, number=int(number), after=after or "")
-            except RuntimeError:
-                continue
-            node = (d.get("data") or {}).get(s) or {}
-            if node.get("projectV2"):
-                data, scope = node["projectV2"], s
-                break
-        if data is None:
-            raise RuntimeError(f"project {owner}/{number} not readable as user or organization project")
+    for data in project_pages(QUERY, owner, number, 100):
         for n in data["items"]["nodes"]:
             c = n.get("content") or {}
             if not c or "number" not in c:
@@ -140,10 +159,6 @@ def github_project_items(owner: str, number: int, ttl_s: float = 120) -> list[di
                 "url": c.get("url", ""), "draft": bool(c.get("isDraft")),
                 "project_item_id": n.get("id", ""),
             })
-        pi = data["items"]["pageInfo"]
-        if not pi.get("hasNextPage"):
-            break
-        after = pi.get("endCursor")
     _CACHE[ck] = (now, items)
     return items
 

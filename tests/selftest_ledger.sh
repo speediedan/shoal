@@ -248,6 +248,42 @@ assert "app#779" in items, items
 bad = [x for x in v.violations if "#779" in str(x)]
 assert not bad, bad
 PY2
+echo "== 10b board read: a page GitHub refuses is read again smaller; a missing board still says so"
+env -u SHOAL_BOARD_FIXTURE python3 - "$SHOALD" <<'PYB' || fail "board page shrink"
+import sys; sys.path.insert(0, sys.argv[1])
+import digest, sources
+board = [{"id": f"I{i}", "status": None, "content": {"__typename": "Issue", "number": i, "title": f"t{i}", "state": "OPEN",
+          "url": "", "repository": {"nameWithOwner": "acme/app"}}} for i in range(1, 121)]
+calls = []
+def fake(query, login, number, after, first):
+    scope = "organization" if "organization(login" in query else "user"
+    calls.append((scope, after, first))
+    if scope == "user":  # an organization's board: the user lookup fails
+        raise RuntimeError("gh api graphql failed: Could not resolve to a User")
+    if number != 7:
+        raise RuntimeError("gh api graphql failed: Could not resolve to a ProjectV2")
+    start = int(after or 0)
+    if start >= 50 and first > 20:  # the second page is refused above 20 items, as GitHub did at 50
+        raise RuntimeError("gh api graphql failed: Something went wrong while executing your query")
+    nodes = board[start:start + first]
+    end = start + len(nodes)
+    return {"data": {scope: {"projectV2": {"title": "B", "url": "u", "items": {
+        "pageInfo": {"hasNextPage": end < len(board), "endCursor": str(end)}, "nodes": nodes}}}}}
+sources.gh_graphql = fake
+got = digest.fetch_board("acme", 7)
+assert [x["number"] for x in got] == list(range(1, 121)), [x["number"] for x in got][:60]
+sizes = [f for s, a, f in calls if s == "organization"]
+assert sizes[:4] == [50, 50, 25, 12], sizes  # page 2 refused at 50 and 25, read at 12, the rest stays at 12
+assert set(sizes[4:]) == {12}, sizes
+assert all(s == "organization" for s, a, f in calls[1:]), calls[:3]  # the scope found on page 1 is kept
+calls.clear()
+assert len(sources.github_project_items("acme", 7, ttl_s=0)) == 120  # the fill read shares the same pager
+try:
+    digest.fetch_board("acme", 8)
+    raise SystemExit("a missing board read as empty")
+except RuntimeError as exc:
+    assert "not readable" in str(exc) and "ProjectV2" in str(exc), exc
+PYB
 [ "$(SHOAL_DATA_ROOT="$S/new-root" python3 -c "import sys; sys.path.insert(0, '$SHOALD'); import config; print(config.data_root())")" = "$S/new-root" ] \
   || fail "SHOAL_DATA_ROOT not honoured"
 echo "== layout: shoals/<id>/shoal.json; next_max; retired wake relay ignored, relay wake alias"

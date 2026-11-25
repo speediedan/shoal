@@ -4125,7 +4125,7 @@ print("card report ok")
 PY6
 OUT=$(env $AENV SHOAL_UI_LEDGER_ROOTS="$ROOT" HC_TERMINAL_ID=t1 timeout 4 $H view $SID cl --stub </dev/null 2>/dev/null); true
 grep -q $'\x1b\]7501;state=' <<<"$OUT" || fail "a card in a core terminal reports no OSC 7501 :: $(tail -c 300 <<<"$OUT" | od -c | tail -5)"
-OUT=$(env $AENV SHOAL_UI_LEDGER_ROOTS="$ROOT" timeout 4 $H view $SID cl --stub </dev/null 2>/dev/null); true
+OUT=$(env -u HC_TERMINAL_ID $AENV SHOAL_UI_LEDGER_ROOTS="$ROOT" timeout 4 $H view $SID cl --stub </dev/null 2>/dev/null); true
 ! grep -q $'\x1b\]7501' <<<"$OUT" || fail "a card outside the app wrote an OSC 7501 report"
 OUT=$(env $AENV SHOAL_CONFIG="$S/host-app.toml" SHOAL_SSH="$S/ssh-stub" STUB_SSH_RC=255 $H ui launch --list --json) || fail "launch --list :: $OUT"
 python3 - "$OUT" <<'PY7' || fail "launch list shape"
