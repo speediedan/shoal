@@ -630,7 +630,9 @@ def claude_prompt_open(row: dict, session: str, tail_bytes: int = 524288) -> boo
 
 
 def claude_open_prompt(session: str, tail_bytes: int = 524288) -> str:
-    """The id of the newest AskUserQuestion with no result yet in the session's transcript tail, else ""."""
+    """The id of the newest AskUserQuestion with no result yet in the session's transcript tail, else "". A prompt
+    after it closes it too: a turn stopped at the question and resumed (the maintainer's answer, `ledger_watch.through_question`)
+    leaves the question without a result."""
     from backends import fake_sessions
     if fake_sessions() is not None:
         return ""
@@ -645,19 +647,23 @@ def claude_open_prompt(session: str, tail_bytes: int = 524288) -> str:
         return ""
     open_q: dict[str, bool] = {}  # in order, so the last is the newest
     for line in chunk.splitlines():
-        if "AskUserQuestion" not in line and "tool_result" not in line:
+        if "AskUserQuestion" not in line and "tool_result" not in line and not (open_q and '"user"' in line):
             continue
         try:
-            content = (json.loads(line).get("message") or {}).get("content")
-        except ValueError:
+            d = json.loads(line)
+            content = (d.get("message") or {}).get("content")
+        except (ValueError, AttributeError):
             continue
-        for c in content if isinstance(content, list) else []:
-            if not isinstance(c, dict):
-                continue
+        blocks = [c for c in content if isinstance(c, dict)] if isinstance(content, list) else []
+        for c in blocks:
             if c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
                 open_q[str(c.get("id") or "?")] = True
             elif c.get("type") == "tool_result":
                 open_q.pop(str(c.get("tool_use_id")), None)
+        # a message queued while a question is open is written as a queue operation, so a prompt here starts a new turn
+        if (d.get("type") == "user" and content and not d.get("isMeta") and not d.get("isSidechain")
+                and not any(c.get("type") == "tool_result" for c in blocks)):
+            open_q.clear()
     return next(reversed(open_q), "")
 
 
@@ -2097,7 +2103,7 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 hold = hold_of(c["slug"])
                 # a Claude session at an open question takes no wake either: its wakes wait there, undelivered
                 how = (f"woken {lad['step']}x, but its watcher has held its wakes undelivered since {hold['since']}: the "
-                       f"session is at an open question; answer it to let them through" if hold.get("reason") == "question"
+                       f"session is at an open question; answer it in its chat or from the Asks dialog" if hold.get("reason") == "question"
                        else f"woken {lad['step']}x without effect")
                 ch = page_user(spec, f"{c['slug']}: {c['detail']} ({how})", state, dry_run)
             if action == "restart" and ch.startswith("FAILED") and role_ is not None and not dry_run:

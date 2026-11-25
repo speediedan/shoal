@@ -79,7 +79,8 @@ nothing assigned, held and handoff pending alike). The first match decides, in t
 | `held` | the maintainer's, by choice | `parked`, `held` (a `hold:` blocker), `observer` (fill=none) |
 
 **Answered.** A message you write to a role (`by: user`) after its last write answers its open asks when it names
-them (`re ask <n>: ...`, the Asks view's form: those asks) or wakes it (a plain note without a wake answers nothing).
+them (`re ask <n> [<id>] "<opening words>": ...`, the Asks view's form: those asks, matched by id or words, so an
+answer to an ask the role has since replaced answers nothing) or wakes it (a plain note without a wake answers nothing).
 When it answers every ask, the role reads `waiting`, state `answered` (`ui_status.reply_answer`; the row carries
 `answered`: `{ts, asks, partial, late, age_s}`): your move is made, and its watcher wakes it on your reply. It stays
 `asked` when you answered only some (its detail says which), when the reply is older than `ANSWER_PICKUP_S` (600 s: the
@@ -979,9 +980,13 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   text, which is how a headless role (a Codex or Muse turn, with no question tool) is answered, and a link to each issue
   or PR it names (a bare `#n` after "gate", "build", "run" and the like is a build number and links nothing). Answers
   are collected across the asks, the way a question tool collects every question's before one submit: the role's
-  **Submit answers** sends them as one message with a wake, a line per answered ask (`re ask <n>: <choice>. <note>`,
-  either part alone when only one is given; unanswered asks are left out), planned as a dry run first so the message is
-  read before Confirm, and the answers stay until it lands (Clear drops them). **The dialog's size**: the platform
+  **Submit answers** sends them as one message with a wake, a line per answered ask
+  (`re ask <n> [<id>] "<opening words>": <choice>. <note>`, the ask named by its id from the CLI and its opening words,
+  so the role's `next` matches it to the ask it answers even after the role reorders or replaces its asks; either part
+  alone when only one is given; unanswered asks are left out), planned as a dry run first so the message is
+  read before Confirm, and the answers stay until it lands (Clear drops them). A role whose session holds an open
+  question is still answered here: its watcher closes that question and resumes the turn with the answer, unless a
+  client is attached (the line under the role's name says so, and the sent message's result says what becomes of it). **The dialog's size**: the platform
   sizes an overlay only when it opens and has no resize by drag, so the header's `⤢` cycles normal (640 by 600),
   large and full (shares of the window), reopening the dialog at the new size on the same target and verb with the
   answers kept; the size is remembered for the person (`shared("shoal-actions.size")`), and a dialog opened at another

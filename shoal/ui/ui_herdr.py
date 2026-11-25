@@ -1650,7 +1650,8 @@ def act(verb: str, sid: str = "", slug: str = "") -> int:
                 print(f"\n{r['slug']}  (runs on {remote[r['slug']]}: answer by mail with a wake here, or attach from that "
                       f"host's viewer)")
             else:
-                print(f"\n{r['slug']}" + ("  (blocked on a question in its session: attach to answer it)"
+                print(f"\n{r['slug']}" + ("  (a question is open in its session: attach to answer it, or send the "
+                                          "answer as mail with a wake, which closes that question)"
                                           if "blocked-on-question" in r["can_progress"]["reasons"] else
                                           "  (says it waits on you, with no prompt: answer by mail with a wake, or attach and type)"
                                           if "blocked-says-waiting" in r["can_progress"]["reasons"] else ""))

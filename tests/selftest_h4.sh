@@ -77,6 +77,7 @@ python3 "$TESTD/test_efficiency_review.py" || fail "ci efficiency review"
 python3 "$TESTD/test_pool_metrics.py" || fail "pool imbalance over compatible demand"
 python3 "$TESTD/test_resume_missing_cwd.py" || fail "resume restores a missing session directory"
 python3 "$TESTD/test_claude_daemon.py" || fail "the durable Claude daemon service (tests/test_claude_daemon.py)"
+python3 "$TESTD/test_ask_answers.py" || fail "answers name their asks by id and reach a role at an open question (tests/test_ask_answers.py)"
 
 echo "== 1 working context: scope derives, migrate converts and removes scope"
 check '"tl-4-migration": 3.0' $H context show --shoal $SID --spec "$SPEC" --slug tl
@@ -1579,7 +1580,8 @@ for eco in ("muse", "codex"):
     r.ecosystem = eco
     hb = briefs.brief_for(r, spec)
     assert "question-tool call" not in hb and "AskUserQuestion" not in hb and "ask the maintainer directly" not in hb, eco
-    missing = [x for x in ("re ask <n>: <choice>", "Never clear a still-valid ask", "queue --answered <n>") if x not in hb]
+    missing = [x for x in ('re ask <n> [<id>] "<opening words>": <choice>', "never by its number", "names an ask you no longer have",
+                           "Never clear a still-valid ask", "queue --answered <id>") if x not in hb]
     assert not missing, (eco, missing, hb[:300])
     # no in-turn waiter: a `job wait` run inside a headless turn dies with it (a Codex role's three ended exit -1)
     jb = briefs.h4_disciplines(r, types.SimpleNamespace(sid=spec.sid, features={"jobs": True}))
@@ -1590,6 +1592,8 @@ cj = briefs.h4_disciplines(r, types.SimpleNamespace(sid=spec.sid, features={"job
 assert "as your background waiter" in cj and "A KILL IS A WAKE" in cj, "a Claude role keeps its in-session waiter"
 cb = briefs.brief_for(r, spec)
 assert "one question-tool call per set" in cb and "ask the maintainer directly with decline/hold" in cb, "claude brief changed"
+# a prompting role is answered from the Asks dialog too: by id and words, and through an open question
+assert "YOUR OPEN QUESTION WAS CLOSED" in cb and "never by its number" in cb, "claude brief lacks the dialog's answer form"
 spec.features = feats
 r.ecosystem = "muse"
 import worker

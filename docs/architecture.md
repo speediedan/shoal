@@ -188,9 +188,11 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
 **The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),
 `idle`, `offline` or `parked`, from its last `state` event, else its queue version's `status`. It is the canonical
 role state; `session` is the harness's status of the session, and the agents list's `agent` (group and state) is a
-reading derived from both. A message you write to a role after its last write that names its asks (`re ask <n>`) or
-wakes it answers them (`ui_status.reply_answer`): while its next turn takes the reply up, the role reads `waiting`,
-`answered`, not `asked` ([`ui.md`](ui.md), Answered). It was called "posture" until 2026-11-11: queue events written before then store the
+reading derived from both. A message you write to a role after its last write that names its asks (`re ask <n> [<id>]
+"<opening words>"`, matched by id or words as `ask_answers.resolve` reads it, so a line naming an ask the role has since
+replaced answers nothing) or wakes it answers them (`ui_status.reply_answer`; a status row keeps each ask's id in
+`ask_ids` beside the asks it cuts short, and the reply hint keeps each line's `refs`): while its next turn takes the
+reply up, the role reads `waiting`, `answered`, not `asked` ([`ui.md`](ui.md), Answered). It was called "posture" until 2026-11-11: queue events written before then store the
 field as `posture`, and the readers of ledger history take `status`, then `posture`.
 
 **Every turn ends in a sleep status:** `queue --wait <sub> --holder <who> --target <kind:ref>`
@@ -247,8 +249,23 @@ one by one took 33 s of GitHub reads and wake texts, past the Herdr app's 30 s e
 3.5 s this way. A headless role (a `codex exec` or `muse exec` turn) has no question
 tool, so its brief (`briefs.raise_clause`) has it keep the asks recorded instead: the viewer's Asks view shows each one
 with the answer set `shoal asks` would put to the question tool (`worker.ask_options`: grant, defer, delegate review and
-deny for a merge), and the maintainer's answers reach the role as mail with a wake, `re ask <n>: <choice>. <note>` a
-line per answered ask, every ask's answer sent at once from the role's Submit answers (`model.batchAnswerText`). Each
+deny for a merge), and the maintainer's answers reach the role as mail with a wake, `re ask <n> [<id>] "<opening
+words>": <choice>. <note>` a line per answered ask, every ask's answer sent at once from the role's Submit answers
+(`model.batchAnswerText`). **An answer names its ask by id and words, not by number** (`shoal/ask_answers.py`): a role
+re-raises and reorders its asks, and a number alone named a different ask three minutes later (measured 2026-11-25:
+both of a role's merge asks were replaced at the same numbers after an answer). `<id>` is `ask_id`, the first six hex
+digits of the SHA-1 of the ask's text with whitespace collapsed; the CLI sends each ask's id with the Asks view
+(`ids`), and the dialog quotes the opening words the way `ask_lead` cuts them (at most eight words, sixty characters,
+double quotes made single; `model.askLead` mirrors it). Under a maintainer's message `next` prints, for each `re ask`
+line, which of the role's current asks it answers (`ask_answers.next_lines`): by id; by its quote when it carries no id;
+by number only for a line with neither (typed by hand, or an older dialog), which it says; a quote that opens an ask
+whose text has changed (`reworded`, a new head SHA say) is pointed at but not counted answered; a quote that opens
+several asks is ambiguous; and a line that names no open ask is NOT one of its open asks, so the role tells the
+maintainer instead of applying it to another ask. `queue --answered` takes an ask's id, which a removal before it does
+not shift as it does a number, and `shoal asks --question-json` carries each question's `id` too. `next` prints every
+unread message of the maintainer's beside the newest five (it marks them all read). A
+prompting role is answered this way as well (`briefs.ANSWER_MAIL` in both briefs), and the answer reaches it through an
+open question (Wakes held for a person at the session, below). Each
 ask's note box is made when the Asks view arrives (`makeNoteInputs`), never while it draws: the app refuses an
 `InputState` made during render, which broke the dialog on its first ask. The
 restart brief's GRANTS NEEDED block says the same to a headless role: record the grants as one ask, not one question. Nor does a headless turn run a waiter: a background command ends with its exec process, so its JOBS clause (`briefs.h4_disciplines`) records a `job:` wait and ends the turn for the watcher to wake it on the verdict, where a Claude role follows its job with an in-session `job wait` (a Codex role's in-turn waiters each ended `exit -1`). Every role's JOBS clause sends a CPU-only suite to the pool (`--cpu-light --place auto --repo`): on 2026-11-18 local `cpu-light` lease waits ran a median 66 min on the host where most suites were started, against 13 on the other.
@@ -730,6 +747,42 @@ from it would be held too, and its page would say "woken Nx without effect" of w
 the client exits, each held ladder starts over from that moment, so it counts only wakes the role actually received.
 An open question is the role's own ask, which the daily digest already carries, so it pages nothing of its own; a page
 that falls due while one holds the wakes says they wait undelivered at the question instead of "without effect".
+
+**The maintainer's answer goes through an open question.** A Claude role raises its recorded asks as an in-chat
+question, and the maintainer may answer the same asks from the Asks dialog. That answer is a woken `user` msg, which a
+watcher held until the question was answered in the chat too (measured 2026-11-25: an answer sat undelivered behind the
+role's own question for the same two merges for 5 min, and nothing said so). So a `--wake direct` watcher delivers it
+through the question: `ClaudeBackend.deliver(..., through_question=True, confirm=...)` stops the turn held there and
+resumes the same conversation with the wake, which starts with `QUESTION_CLOSED_NOTE` (YOUR OPEN QUESTION WAS CLOSED:
+take the answers from `next`, raise again only what is still open). Every other event keeps waiting for the question: a
+broadcast, an offer, a queue order, a plain note. `ledger_watch.through_question` decides, and goes on only when all of
+these hold:
+
+- the answer is for an ask the role has now (`is_answer`: a `user` msg to the role itself, sent with a wake, not a
+  request, naming an ask by its id or opening words). A number alone, or an ask since answered, replaced or reworded,
+  stops nothing: it waits, and `next` reports it;
+- the turn sits at a question of its own (`question_stays`): the transcript ends at an AskUserQuestion with no result
+  (not a permission prompt), nothing is in flight in the background but the role's own waiters, no `claude attach`
+  client holds the session on this host (the person there answers in the chat; a session that cannot be read counts as
+  held), and `features.health.direct_wake` is not `dead`. `deliver` reads whether the session is mid-turn again and asks
+  `question_stays` again (`confirm`) right before the stop, so a question answered in the chat meanwhile is left alone and
+  the answer is read at the role's boundary;
+- it has not closed another question already: the sidecar's `through` keeps `<msg>@<question>` of the last answer
+  delivered this way, beside the `delivered` ids.
+
+A resume that fails after the stop returns `FAILED after stop ...` (it read `stop+FAILED ...` and counted as delivered),
+so the watcher retries it at its next tick as a resume of a session with no worker, with the same note: the note goes on
+whenever the transcript ends at a question nobody answered. A CLI call that times out counts as a failure too. The closed
+question's tool use stays in the transcript without a result, so `health.claude_open_prompt` also reads a prompt after
+it (a `user` entry that is no tool result, meta or sidechain entry) as closing it; a message queued while a question is
+open is a queue operation there, never such an entry. What this cannot see: a person at the session from another client
+than `claude attach` (Remote Control).
+
+`shoal msg --by user --wake` naming asks prints what becomes of the answer, in its dry run too
+(`ledger_cli._answer_notes`, shown in the Asks dialog before and after Confirm): each line that names none of the role's
+asks now, and, for a Claude role at an open question, that its watcher closes the question at its next tick or why the
+answer waits. The dialog says the same under the role's name (`model.askWhy`), and health's page for a hold at a question
+names the dialog as a way through.
 
 **A card's client left attached while the maintainer is offline (`features.health.detach_cards`, default on).** A
 person who opens a role's session from its card (`i` in a Codex or Muse card's observer, Enter on a Claude card), answers
