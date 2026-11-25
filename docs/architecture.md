@@ -1053,6 +1053,14 @@ default `~/.codex`).
   `quota_cooldown_min` (60), so readings and the role count catch up between moves; `[accounts] pin` lists roles kept
   on their own provider, as a role's provider pin keeps it (above). `shoal accounts` prints each account's units and plan, and each account's roles against its
   share.
+- **Readings on every host.** Balancing reads only the host's cached usage readings, which the UI feeder filled, and
+  the feeder runs only on the operator's machine: measured 2026-11-25, a second host running five roles had no reading
+  for a week, so its quorum never moved a role off an account near its limit, an automatic restart there could only
+  fall back to the default account, and its declared accounts' sign-ins were never kept. Each health run on a host with
+  a local role now calls `accounts.refresh_readings` when `quota_handoff`, `rebalance` or `keepalive` is on:
+  `subscription_usage.collect` over every account balancing may choose among, under its host-wide lock and per-account
+  poll interval (so at most one read per account per interval, beside the feeder's), with `keepalive` before a Claude
+  account's read.
 
 `doctor` prints every resolved value, the host profile (the harnesses of the roles that run here) and
 the clock state. The providers (resource leases, wait targets, the board

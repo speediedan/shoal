@@ -1837,6 +1837,12 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     led = Ledger(spec.sid, root=spec.ledger_dir)
     led.pull()
     view = View(led, spec)
+    if not dry_run and is_local_any(spec):
+        try:  # balancing reads this host's cached usage: keep it current here, not only where the UI feeder runs
+            import accounts
+            accounts.refresh_readings()
+        except Exception as exc:  # noqa: BLE001 - a usage read never breaks a health run
+            acts.append(("health", "usage readings", f"skipped ({str(exc)[:80]})"))
     cbusy = claude_busy()
     conds = evaluate(spec, view, cbusy)
     conds += restart_retries(spec, spec_path, conds, cbusy, state, acts, dry_run)

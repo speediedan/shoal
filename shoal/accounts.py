@@ -454,6 +454,27 @@ def rank(provider: str, now: float | None = None, snap: list | None = None) -> l
     return sorted(out, key=lambda r: (r["weighted"] is None, -(r["weighted"] or 0), -(r["held"] or 0)))
 
 
+def refresh_readings(collect=None) -> str:
+    """Refresh this host's cached usage readings when they are due (`subscription_usage.collect`: one host-wide lock and
+    the per-account poll interval, so a call between polls reads nothing), for every account balancing may choose among.
+    Balancing only reads the cache, and only the UI feeder filled it, which runs on the operator's machine: measured
+    2026-11-25, a second host running five roles had no reading for a week, so its health quorum never moved a role off
+    an account near its limit, an automatic restart there could only fall back to the default account, and its
+    declared accounts' sign-ins were never kept (the meter runs `keepalive` before a read). The health quorum calls this
+    once per run on every host with a local role. Nothing is read unless `[accounts] quota_handoff`, `rebalance` or
+    `keepalive` is on. Says what it did."""
+    if not (quota_handoff_on() or rebalance_on() or keepalive_on()):
+        return ""
+    keys = list(dict.fromkeys(usage_key(p, a) for p in pool() for a in of(p)))
+    if not keys:
+        return ""
+    if collect is None:
+        import subscription_usage
+        collect = subscription_usage.collect
+    collect(keys)
+    return f"usage readings due refreshed ({', '.join(keys)})"
+
+
 USAGE_KEYS = {"opencode": "opencode-go"}  # a provider whose usage reading has another name
 
 
