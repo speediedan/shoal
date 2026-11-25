@@ -712,6 +712,28 @@ assert "provider: " in ledger.render_role(view, "beta") and "[accounts] pin" in 
 os.environ.pop("SHOAL_CONFIG"); config._CACHE.clear()
 print("provider pin ok")
 PY3
+echo "== usage readings: the health quorum keeps each host's readings due, only when balancing or keepalive is on"
+python3 - "$SHOALD" "$S" <<'PYU' || fail "usage readings refresh"
+import os, sys; sys.path.insert(0, sys.argv[1])
+import accounts, config
+accounts.pool = lambda providers=None: ["claude", "codex"]
+accounts.of = lambda p: ["", "claude-2"] if p == "claude" else [""]
+calls = []
+cfg = os.path.join(sys.argv[2], "usage-host.toml")
+for body, want in (("", None), ('[accounts]\nquota_handoff = false\n', None), ('[accounts]\nrebalance = true\n', 1),
+                   ('[accounts]\nkeepalive = true\n', 1), ('[accounts]\nquota_handoff = true\n', 1)):
+    open(cfg, "w").write(body)
+    os.environ["SHOAL_CONFIG"] = cfg
+    config._CACHE.clear()
+    calls.clear()
+    said = accounts.refresh_readings(collect=calls.append)
+    if want is None:
+        assert calls == [] and said == "", (body, calls, said)
+    else:
+        assert calls == [["claude", "claude-2", "codex"]] and "claude-2" in said, (body, calls, said)
+os.environ.pop("SHOAL_CONFIG"); config._CACHE.clear()
+print("usage readings ok")
+PYU
 echo "== matcher transport: model calls go through openchamber, never the opencode CLI"
 mkdir -p "$S/ocstub"
 cat > "$S/ocstub/openchamber" <<'SH'
