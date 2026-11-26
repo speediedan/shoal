@@ -124,8 +124,8 @@ class DetachedOfflineTests(unittest.TestCase):
 
 
 class FakeView:
-    def __init__(self, asks, offline=True):
-        self.asks, self.offline, self.done = asks, offline, {}
+    def __init__(self, asks, offline=True, states=None):
+        self.asks, self.offline, self.done, self.states = asks, offline, {}, states or {}
 
     def user_offline(self):
         return {"ts": "2026-11-20T00:00:00Z"} if self.offline else None
@@ -134,17 +134,22 @@ class FakeView:
         return {"asks": self.asks.get(slug, [])}
 
     def role_state(self, slug):
-        return {}
+        return self.states.get(slug, {})
 
 
 class OfflineOffTests(unittest.TestCase):
     """`offline off` on a synthetic shoal: the record first, the wakes a few at a time, the listing bounded."""
 
-    def run_off(self, asks, wake, states, budget=5.0, dry_run=False):
+    def run_off(self, asks, wake, states, budget=5.0, dry_run=False, role_states=None, features=None):
         events, lock = [], threading.Lock()
         spec = types.SimpleNamespace(sid="alpha-20261101-000000", ledger_dir="", effective_repos=["example/app"],
-                                     roles=[types.SimpleNamespace(slug=s) for s in ("r1", "r2", "r3", "r4", "idle")])
-        led = types.SimpleNamespace(append=lambda *a, **k: events.append(("record", k.get("state"))) or {"id": "ev1"})
+                                     roles=[types.SimpleNamespace(slug=s) for s in ("r1", "r2", "r3", "r4", "idle")],
+                                     features=features or {})
+
+        def append(by, typ, **k):
+            events.append(("record", k.get("state")) if typ == "system" else (typ, by, k.get("to"), k.get("wake")))
+            return {"id": "ev1"}
+        led = types.SimpleNamespace(append=append)
 
         def ref_state(ref, live=True):
             if ref in states and live:
@@ -163,7 +168,7 @@ class OfflineOffTests(unittest.TestCase):
         a = types.SimpleNamespace(sid=spec.sid, spec="", state="off", until="", note="", force=False, dry_run=dry_run,
                                   no_sync=True, ledger_dir="")
         out = io.StringIO()
-        with patch.object(worker, "_load", return_value=(spec, led, FakeView(asks))), \
+        with patch.object(worker, "_load", return_value=(spec, led, FakeView(asks, states=role_states))), \
              patch.object(worker, "View", return_value=FakeView({}, offline=False)), \
              patch.object(worker, "known_repos", return_value={}), patch.object(worker, "ref_state", side_effect=ref_state), \
              patch.object(worker, "HINT_BUDGET_S", budget), patch.object(health, "request_wake", side_effect=request_wake), \
@@ -209,6 +214,24 @@ class OfflineOffTests(unittest.TestCase):
         self.assertIn("  ASK r1 [1]: merge #1 (LIKELY STALE: app#1 merged)\n", out)
         self.assertIn("  ASK r2 [1]: merge #9 (not checked: GitHub was slow)\n", out)
         self.assertIn("2 recorded ask(s), 1 likely stale, 1 not checked against GitHub within 0.4 s.", out)
+
+    def test_the_return_wakes_only_roles_with_asks_or_a_user_wait_and_mails_the_rest(self):
+        # measured 2026-11-20..26: 25 return wakes, about 3M cost-eq each and mostly cold; a role with nothing for the
+        # maintainer reads the return as mail at its next boundary
+        waits = {"r2": {"state": "waiting", "sub": "user-design"}, "r3": {"state": "waiting", "sub": "remote-ci"},
+                 "idle": {"state": "idle"}}
+        rc, out, events, _ = self.run_off({"r1": ["merge #1"]}, lambda s: "wake-file", {}, role_states=waits,
+                                          features={"workwake": True})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(e[1] for e in events if e[0] == "wake"), ["r1", "r2"], "asks, or a user-* wait")
+        self.assertEqual([e for e in events if e[0] == "msg"], [("msg", "shoal", "*", None)],
+                         "one mail to every role, never a wake")
+        kinds = [e[0] for e in events]
+        self.assertLess(kinds.index("record"), kinds.index("msg"), "the mode's record first")
+        self.assertIn("re-verify what you deferred", worker.RETURN_MAIL)
+        # without workwake every msg wakes its role: no mail then
+        _, _, events, _ = self.run_off({"r1": ["merge #1"]}, lambda s: "wake-file", {}, role_states=waits)
+        self.assertFalse([e for e in events if e[0] == "msg"], events)
 
     def test_dry_run_records_nothing_and_wakes_nobody(self):
         rc, out, events, _ = self.run_off({"r1": ["merge #1"]}, lambda s: "wake-file", {"example/app#1": (0, "MERGED")},

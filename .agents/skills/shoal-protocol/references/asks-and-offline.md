@@ -77,7 +77,9 @@ The maintainer runs `shoal offline on` before stepping away and `shoal offline o
 - Record each blocking ask with `queue --ask`, stack PRs where work depends on an unmerged one,
   and take the next unblocked item.
 
-**On return** (and whenever `next` prints ASKS TO RAISE):
+**On return** (and whenever `next` prints ASKS TO RAISE). A role holding asks, or waiting on the
+maintainer, is woken for this; every other role gets the return as mail, no wake, and at its next
+boundary re-verifies what it deferred while they were away (recording any question as an ask).
 1. Re-verify every recorded ask against current state. The LIKELY-STALE hints in `next` (merged
    or closed PRs, finished items) are a start, not a verdict.
 2. Drop the ones that no longer apply, with a reason.

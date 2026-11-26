@@ -46,7 +46,8 @@ classes are `out-of-lane`, `blocked`, `needs-maintainer`, `needs-hardware` and
 day, an `out-of-lane` one three days, the rest a week; a fill change clears them all), and a
 `suggest=` routes the item toward the named role. If you fill your own queue and are short of work,
 items you passed on as out of lane or blocked come back as weak `declined-earlier` candidates: take
-them rather than leave your queue short, since an imperfect lane fit beats an idle role. Use
+them rather than leave your queue short, since an imperfect lane fit beats an idle role. Weak
+candidates never wake you; they wait in `next`'s BOARD list for your next boundary. Use
 `out-of-lane` only when another role clearly owns the item. Silence about an unworkable item is the
 failure this exists to prevent.
 

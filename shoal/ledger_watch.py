@@ -9,7 +9,8 @@ and compute what needs THIS role's attention:
   - a foreign claim on an item it holds (claim lost / contested),
   - a withdraw of an item it holds or was offered,
   - board candidates when fill=self and its queue is empty (checked every
-    BOARD_INTERVAL, not every tick).
+    BOARD_INTERVAL, not every tick); from a digest, only strong ones (a weak
+    or declined-earlier candidate waits in `next`).
 Each event id is delivered at most once (sidecar `delivered=`); nothing
 else wakes the session. On a wake the watcher fires ONE wake adapter and
 exits — the session re-arms as its first act after acting:
@@ -173,8 +174,12 @@ def actionable(view: View, slug: str, role, spec, board: bool) -> list[tuple[str
                 from digest import candidates as digest_candidates, fmt_candidate
                 dig = digest_candidates(spec.sid, slug, taken, declined, limit=5)
             if dig is not None:  # shared digest: no GitHub call from this watcher
+                # a weak candidate (no lane fit, or one the role passed on earlier) is no wake: it stays in `next`'s
+                # BOARD list for the role's next boundary (measured 2026-11-20..26: 42 of 65 board wakes named only weak
+                # or declined-earlier candidates, and 35 of those 42 turns did nothing)
                 for c in dig:
-                    out.append((f"board:{c['item']}", fmt_candidate(c)))
+                    if not c.get("weak"):
+                        out.append((f"board:{c['item']}", fmt_candidate(c)))
             else:
                 from sources import candidates
                 for c in candidates(spec.sources, getattr(role, "scope", None), taken, declined, limit=3):
