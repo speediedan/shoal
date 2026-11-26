@@ -2564,6 +2564,18 @@ if shutil.which("node"):
           'eq([shoalClientNeed(b("d1")), shoalRank(b("d1"), 4)], ["", SHOAL_RANK.dismissed], "a dismissed row stays dismissed");\n'
           'eq([shoalClientNeed(b("c1")), shoalRank(b("c1"), 2)], ["", SHOAL_RANK.working], "the card\'s own report is not the client\'s");\n'
           'eq(shoalClientNeed(b("s2")), "", "a seat\'s card reports its own");\n'
+          # and the other way: the client's turn runs after you answered there, while the labels still say asked
+          'Object.assign(T, { n1: { "shoal.group": "needs-you", "shoal.state": "asked", "shoal.pane": "alpha/core" },\n'
+          '                   n2: { "shoal.group": "needs-you", "shoal.state": "no-work", "shoal.pane": "alpha/core" },\n'
+          '                   n3: { "shoal.group": "needs-you", "shoal.state": "question", "shoal.pane": "alpha/core" } });\n'
+          'Q.n1 = { app: "claude-code", kind: "" }; Q.n2 = { app: "claude-code" }; Q.n3 = { app: "core" };\n'
+          'eq([shoalRank(b("n1", "working"), 2), shoalMore(b("n1", "working"), { role: "core" }, true, "x"), shoalStale(b("n1", "working"))],\n'
+          '   [SHOAL_RANK.working, "alpha \\u00b7 answered", SHOAL_STALE.answered], "answered in its client: working, greyed, until the labels catch up");\n'
+          'eq(shoalTrackKey(b("n1", "working")), "shoal:working", "and its clock restarts there");\n'
+          'Q.n1 = { app: "claude-code", kind: "question" };\n'
+          'eq(shoalRank(b("n1"), 4), SHOAL_RANK["needs-you"], "the client asks again: needs you");\n'
+          'eq(shoalRank(b("n2", "working"), 2), SHOAL_RANK["needs-you"], "a need that is not an ask stays");\n'
+          'eq(shoalRank(b("n3", "working"), 2), SHOAL_RANK["needs-you"], "the card\'s own report is not the client\'s");\n'
           # one list a render: after shoalIndex no row reads the list again
           'shoalIndex(terminals());\n'
           'reads = 0;\n'
@@ -3311,6 +3323,80 @@ with backends.agents_memo():
 assert len(calls) == 1, calls
 assert backends.memo_rows((True, None)) is None, "nothing kept after the pass"
 print("answered, refreshing ok")
+PY2
+# answered in the client, read before the answer (maintainer, 2026-11-26: a role on another host, whose question was
+# answered in its client attached under the card, came back into Needs you with the chime for one rebuild): the
+# status's live fields were read up to its host's pull age and READ_LAG_S before its time, and the client's own report
+# of its turn, newer than that read, keeps the row working; the card reports `working`, never `blocked`
+HC_TERMINAL_ID=t9 env -u SHOAL_FAKE_SESSIONS python3 - "$SHOALD" "$S/answered-client" <<'PY2' || fail "answered in the client"
+import datetime, io, os, sys, time, types
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+os.environ["XDG_RUNTIME_DIR"] = sys.argv[2]
+import ui_app, ui_herdr, ui_status, ui_view
+t = lambda iso: datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+# the synthetic timeline: question answered 12:00:30; the other host's pull, 4 s old at the rebuild of 12:00:38, was
+# listed before the answer reached its service
+row = {"slug": "r", "ecosystem": "claude", "session": "blocked", "needs_you": True, "asks": ["Where may I render the notebook?"],
+       "status": "active", "sub": None, "wait": None, "as_of": "2026-01-05T12:00:38Z",
+       "remote_status": {"ok": True, "age_s": 4, "stale": False},
+       "agent": {"group": "needs-you", "state": "asked", "detail": "Where may I render the notebook?"},
+       "can_progress": {"ok": False, "reasons": ["blocked-on-question", "waiting-on-you"]}}
+assert ui_status.row_read_at(row) == t("2026-01-05T12:00:38Z") - 4 - ui_status.READ_LAG_S
+assert ui_status.row_read_at(dict(row, remote_status=None)) == t("2026-01-05T12:00:38Z") - ui_status.READ_LAG_S
+assert ui_status.row_read_at(dict(row, as_of=None)) is None
+answered = {"session": "working", "prompt": False, "t": t("2026-01-05T12:00:30Z")}
+v, why = ui_status.card_view(row, None, answered)
+assert why == "answered" and (v["agent"]["group"], v["agent"]["state"]) == ("working", "answered") and not v["needs_you"], v
+assert ui_herdr.herdr_state(v) == "working", "no blocked report, so no chime"
+later = dict(row, as_of="2026-01-05T12:01:20Z", remote_status={"ok": True, "age_s": 2, "stale": False})
+assert ui_status.card_view(later, None, answered) == (later, ""), "a row read after the answer is the status's to show"
+assert ui_status.card_view(row, None, dict(answered, session="blocked", prompt=True)) == (row, ""), "the client asks again"
+# the client's report as the card reads it from the core: its own report and none say nothing
+cores = {"now": {"status": {"app": "claude-code", "state": "working"}, "status_ms": 1767614430000}}
+def hc_get(term):
+    if cores["now"] is None:
+        raise RuntimeError("no core")
+    return cores["now"]
+app = types.SimpleNamespace(hc_get=hc_get)
+assert ui_view._client_turn(app, "r") == {"session": "working", "prompt": False, "t": 1767614430.0}
+cores["now"] = {"status": {"app": "claude-code", "state": "blocked", "kind": "question"}, "status_ms": 1767614440000}
+assert ui_view._client_turn(app, "r")["prompt"] is True
+cores["now"] = {"status": {"app": "r", "state": "blocked"}, "status_ms": 1767614440000}
+assert ui_view._client_turn(app, "r") is None, "the card's own report is not the client's"
+cores["now"] = {"status": None}
+assert ui_view._client_turn(app, "r") is None
+cores["now"] = None
+assert ui_view._client_turn(app, "r") is None and ui_view._client_turn(types.SimpleNamespace(), "r") is None
+# _card_row: the client's read is the only one for a role on another host, and the newer one for a local role
+ui_status.read_reply = lambda sid, slug: None
+remote = dict(row, session="remote")
+assert ui_view._card_row("s", "r", "", remote)[1] == "", "no client read: the status only"
+assert ui_view._card_row("s", "r", "", remote, answered)[1] == "answered"
+ui_status.live_turn = lambda sid, slug, spec="": {"session": "blocked", "prompt": True, "t": t("2026-01-05T12:00:20Z")}
+assert ui_view._card_row("s", "r", "", row, answered)[1] == "answered", "the listing was older than the client's report"
+ui_status.live_turn = lambda sid, slug, spec="": {"session": "blocked", "prompt": True, "t": t("2026-01-05T12:00:35Z")}
+assert ui_view._card_row("s", "r", "", row, answered)[1] == "", "a newer listing with the question open wins"
+# through an attach: the card reads the client's report before it reports, so it writes working (the status still
+# says asked), and hands that read on for after the detach
+ui_view.CARD_REFRESH_S = 0.05
+ui_herdr.shoal_tag = lambda sid: "tag"
+ui_view.card = lambda sid, slug, force=False, rows=None: rows.append(dict(remote)) or ""
+cores["now"] = {"status": {"app": "claude-code", "state": "working"}, "status_ms": 1767614430000}
+fake = types.SimpleNamespace(ATTACH_LABEL=ui_app.ATTACH_LABEL, hc_get=hc_get, hc_label=lambda term, labels: None,
+                             report_text=lambda r, tag: f"<{ui_herdr.herdr_state(r)}>")
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", fake) as seen:
+        time.sleep(0.2)
+finally:
+    sys.stdout = real
+assert out.getvalue() == "<working>", out.getvalue()
+assert seen["client"] == {"session": "working", "prompt": False, "t": 1767614430.0}, seen
+with ui_view._report_during("s", "r", None) as none:
+    pass
+assert none == {}, "outside the app: nothing read"
+print("answered in the client ok")
 PY2
 # the agents list: the badge opens Asks for every role row, the row's time is time in its section, the header says how
 # old the status is and counts it up each second (a fake timer drives it), and a row shown ahead of its status is

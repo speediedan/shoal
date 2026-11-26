@@ -932,14 +932,36 @@ def _epoch(ts: str) -> float | None:
         return None
 
 
+# How much earlier than its status time (`as_of`) a row's live fields may have been read: a status pass lists the
+# sessions before it builds the rows, a role on another host was listed there before the pull returned, and the
+# Claude service writes a session's turn state a few seconds after it changes. A row read before your answer then
+# came back as asking after it (measured 2026-11-26: a question answered at 19:42:31Z, whose service state was next
+# written at 19:42:39Z, chimed back into Needs you on the following rebuild).
+READ_LAG_S = 10
+
+
+def row_read_at(row: dict) -> float | None:
+    """When a status row's live fields (session, question, group) were read at the latest, as an epoch: its status
+    time, less the age of its host's pull for a role on another host (`remote_status.age_s`), less READ_LAG_S. None
+    without a status time."""
+    as_of = _epoch(row.get("as_of") or "")
+    if as_of is None:
+        return None
+    rs = row.get("remote_status")
+    age = rs.get("age_s") if isinstance(rs, dict) else None
+    return as_of - (age if isinstance(age, (int, float)) and age > 0 else 0) - READ_LAG_S
+
+
 def card_view(row: dict, reply: dict | None = None, live: dict | None = None) -> tuple[dict, str]:
     """(row, why) a card shows: the status row (`as_of`: when the status it came from was read), or, while that row
     still says the role needs your answer, what the card knows sooner, with why (CARD_AHEAD): your reply newer than
-    the status (`reply`, `read_reply`) moves it to waiting, `answered`; its session running again, newer than the
-    status (`live`, `live_turn`) moves it to working, `answered` when its open question closed and `resumed` otherwise.
-    Never the other way: a new ask, or a question still open, is the status's to show, and it shows it as asked."""
+    the row's read (`reply`, `read_reply`) moves it to waiting, `answered`; its session running again, newer than the
+    row's read (`live`: `live_turn`, or the client attached under the card reporting a turn) moves it to working,
+    `answered` when its open question closed and `resumed` otherwise. The row's read is `row_read_at`, so a row read
+    before your answer never brings the question back. Never the other way: a new ask, or a question still open, is
+    the status's to show, and it shows it as asked."""
     agent = row.get("agent") if isinstance(row.get("agent"), dict) else {}
-    as_of = _epoch(row.get("as_of") or "")
+    as_of = row_read_at(row)
     if agent.get("group") != "needs-you" or agent.get("state") not in ("asked", "question") or as_of is None:
         return row, ""
     reasons = list((row.get("can_progress") or {}).get("reasons") or [])

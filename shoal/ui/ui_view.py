@@ -713,6 +713,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
     latch = ui_app.DoneLatch() if ui_app is not None else None
     sent = None
     need = None  # the labels last written (shoal.need, shoal.asks); None: not yet written, so stale ones are cleared
+    client = None  # the session's turn as the last attach's client reported it (`_client_turn`)
     while True:
         watch.check()
         # re-read each tick: a role moved to another host (its spec `server`) is attached there at once
@@ -729,7 +730,7 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
         if ui_app is not None and rows:
             try:
                 import ui_herdr
-                row, ahead = _card_row(sid, slug, spec_path, rows[0])
+                row, ahead = _card_row(sid, slug, spec_path, rows[0], client)
                 osc = ui_app.report_text(row, ui_herdr.shoal_tag(sid), latch, sent)
                 sent = osc or sent
                 now = _card_labels(ui_app, row, ahead)
@@ -758,8 +759,9 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             continue  # nothing to attach here: the session lives on another host with no route from here
         if k in ("\r", "\n") and routed:
             flush_input()
-            with _report_during(sid, slug, ui_app):
+            with _report_during(sid, slug, ui_app) as seen:
                 remote_attach(remote, sid, slug)
+            client = seen.get("client") or client
             sent = _after_attach(ui_app)
             if latch is not None:
                 latch.looked()
@@ -770,8 +772,9 @@ def _stub_loop(sid: str, slug: str, spec_path: str, watch, ui_app) -> int:
             flush_input()
             # a fresh process, so the attach always runs the current code: a card lives for days, and
             # an in-process viewer kept a fixed bug alive in every open card (measured 2026-10-12)
-            with _report_during(sid, slug, ui_app):
+            with _report_during(sid, slug, ui_app) as seen:
                 run_attached(_view_cmd(sid, slug, spec_path))
+            client = seen.get("client") or client
             sent = _after_attach(ui_app)
             if latch is not None:
                 latch.looked()
@@ -792,16 +795,20 @@ def _card_labels(ui_app, row: dict, ahead: str = "") -> dict:
             ui_app.STALE_LABEL: ahead or ui_status.row_stale(row)}
 
 
-def _card_row(sid: str, slug: str, spec_path: str, row: dict) -> tuple[dict, str]:
+def _card_row(sid: str, slug: str, spec_path: str, row: dict, client: dict | None = None) -> tuple[dict, str]:
     """(row, why) this card shows: its status row, or what it knows sooner while that row still says the role needs
     your answer (`ui_status.card_view`): your reply written on this host, or the role's session running again. Only
-    then does it read the session itself, through the listing the host's cards share, so a quiet card costs nothing."""
+    then does it read the session itself, through the listing the host's cards share, so a quiet card costs nothing.
+    `client`: the session's turn as the client attached under this card last reported it (`_client_turn`), the newer
+    of the two reads, and the only one for a role on another host."""
     import ui_status
     agent = row.get("agent") if isinstance(row.get("agent"), dict) else {}
     if agent.get("group") != "needs-you" or agent.get("state") not in ("asked", "question"):
         return row, ""
     try:
         live = ui_status.live_turn(sid, slug, spec_path) if row.get("session") != "remote" else None
+        if client and (live is None or float(client.get("t") or 0) > float(live.get("t") or 0)):
+            live = client
         return ui_status.card_view(row, ui_status.read_reply(sid, slug), live)
     except Exception:  # noqa: BLE001 - the status row is always there to show
         return row, ""
@@ -862,6 +869,26 @@ def _core_status(ui_app) -> tuple[bool, dict | None]:
     return True, t["status"] if isinstance(t["status"], dict) else None
 
 
+def _client_turn(ui_app, own: str) -> dict | None:
+    """The session's turn as the client attached under this card reports it, in `live_turn`'s form {session, prompt,
+    t}: Claude Code's attach client reports its session itself (`app=claude-code`), at once, and `t` is when the core
+    took that report (`status_ms`). None while the core holds the card's own report (`own`, the card's app) or none, or
+    the terminal cannot be read. The status a card reads can have been read before your answer in that client, so this
+    is what says the question closed (measured 2026-11-26: a role's card read its question still open from the other
+    host for one rebuild after the answer, and wrote `blocked` over the client's `working`: the row chimed back into
+    Needs you)."""
+    try:
+        t = ui_app.hc_get(os.environ["HC_TERMINAL_ID"])
+    except Exception:  # noqa: BLE001 - an unread terminal says nothing
+        return None
+    rep = t.get("status") if isinstance(t, dict) else None
+    if not isinstance(rep, dict) or not rep.get("app") or rep.get("app") == own:
+        return None
+    state, ms = str(rep.get("state") or ""), t.get("status_ms")
+    return {"session": state, "prompt": state == "blocked" and rep.get("kind") == "question",
+            "t": ms / 1000 if isinstance(ms, (int, float)) and ms > 0 else time.time()}
+
+
 _OSC_APP = re.compile(r"[;:]app=([^:\x1b]*)")
 
 
@@ -892,9 +919,14 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     `make`: what the card would report now, as (osc, writes_changes); the role's own by default. The agents list's
     labels are another matter: they go through the core, not the terminal, so a role card keeps them current through an
     attach whatever its harness (measured 2026-11-10: three attached cards had no group, so their rows sat in the old
-    sections until a detach)."""
+    sections until a detach).
+
+    Yields a dict that holds, as `client`, the session's turn as the attached client last reported it (`_client_turn`):
+    the card shows the row from it here and after the attach, so an answer given in the client is not undone by a
+    status read before it."""
+    seen: dict = {}
     if ui_app is None:
-        yield
+        yield seen
         return
     import ui_herdr
     stop = threading.Event()
@@ -906,7 +938,10 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
         card(sid, slug, False, rows)
         if not rows:
             return None, False
-        row, ahead = _card_row(sid, slug, "", rows[0])
+        got = _client_turn(ui_app, slug)
+        if got is not None:
+            seen["client"] = got
+        row, ahead = _card_row(sid, slug, "", rows[0], seen.get("client"))
         try:
             labels = _card_labels(ui_app, row, ahead)
             if labels != marked[0]:
@@ -951,7 +986,7 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     t = threading.Thread(target=report, daemon=True)
     t.start()
     try:
-        yield
+        yield seen
     finally:
         stop.set()
         t.join(1)

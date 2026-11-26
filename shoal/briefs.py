@@ -173,7 +173,9 @@ def raise_clause(role: Role, sid: str) -> str:
                 "still-valid ask only to record it again. " + ANSWER_MAIL)
     return (f"build the sets with `{SHOAL_CLI} asks --shoal {sid} --slug {role.slug} --question-json` (live PR "
             "labels: never describe a PR from memory), and raise EVERY set, one question-tool call per set of at most "
-            "four; remove answered asks with `queue --answered <n>`. The maintainer may answer from the Asks dialog "
+            "four; remove answered asks with `queue --answered <id>` in the same write that records what you do next "
+            "(with its `--wait` or `--active`), run unpiped (through grep or head, an ERROR that wrote nothing is "
+            "hidden). The maintainer may answer from the Asks dialog "
             "instead, even while your question is open (shoal then closes it and resumes you: the wake says YOUR OPEN "
             "QUESTION WAS CLOSED). " + ANSWER_MAIL + " BEFORE ANY PROMPTED QUESTION (merge asks "
             "included): run `next` unpiped (never through head/grep: MAIL and banners print first); if it says USER "

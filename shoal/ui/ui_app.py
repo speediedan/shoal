@@ -1797,14 +1797,27 @@ function shoalRole(a) {
 // beside it while the session sat in its question. The card's own report (app: the role's name) is not this, and a
 // dismissed row stays dismissed: you have said no to it, and only the status knows whether something new was raised.
 const SHOAL_CLIENT_ASKS = { question: "question", permission: "permission" };
-function shoalClientNeed(a) {
-  if (a.status !== "blocked") return "";
+// The terminal of a role card whose report is the attached client's (not the card's own), or null.
+function shoalClientTerm(a) {
   const term = shoalTerm(a.address);
   const label = term?.labels?.["shoal.pane"] ?? "";
   const cut = label.lastIndexOf("/");
-  if (cut < 0 || label.startsWith("standalone/") || term?.labels?.["shoal.group"] === "dismissed") return "";
+  if (cut < 0 || label.startsWith("standalone/") || term?.labels?.["shoal.group"] === "dismissed") return null;
   const app = term?.report?.app ?? a.app ?? "";
-  return app && app !== label.slice(cut + 1) ? SHOAL_CLIENT_ASKS[term?.report?.kind] ?? "" : "";
+  return app && app !== label.slice(cut + 1) ? term : null;
+}
+function shoalClientNeed(a) {
+  if (a.status !== "blocked") return "";
+  return SHOAL_CLIENT_ASKS[shoalClientTerm(a)?.report?.kind] ?? "";
+}
+// And the other way: the client says its turn runs while the card's labels still say the role asks you (asked, or an
+// open question). You answered in that client, and the status the labels came from was read before that, so the row is
+// working, greyed as answered, until the card's next read (measured 2026-11-26: an answered question came back into
+// Needs you, with the chime, for one rebuild).
+const SHOAL_ANSWERABLE = { asked: true, question: true };
+function shoalClientAnswered(a) {
+  return a.status === "working" && shoalLabel(a, "shoal.group") === "needs-you"
+    && Boolean(SHOAL_ANSWERABLE[shoalLabel(a, "shoal.state")]) && shoalClientTerm(a) !== null;
 }
 
 // A row shows its role. Focus alone moves to a pane the zoom hides, so a zoomed view stays zoomed, on this role:
@@ -1863,9 +1876,10 @@ const SHOAL_SECTION_STATUS = { 10: "blocked", 9: "working", 8: "done" };
 function shoalLabel(a, key) {
   return shoalTerm(a.address)?.labels?.[key] ?? "";
 }
-// The row's group: the session's own client asking you (shoalClientNeed) first, then the card's label.
+// The row's group: the session's own client asking you (shoalClientNeed) first, or its turn running after you answered
+// there (shoalClientAnswered), then the card's label.
 function shoalGroup(a) {
-  return shoalClientNeed(a) ? "needs-you" : shoalLabel(a, "shoal.group");
+  return shoalClientNeed(a) ? "needs-you" : shoalClientAnswered(a) ? "working" : shoalLabel(a, "shoal.group");
 }
 function shoalRank(a, herdr) {
   return SHOAL_RANK[shoalGroup(a)] ?? HERDR_RANK[herdr] ?? 0;
@@ -1876,7 +1890,8 @@ const SHOAL_STALE = { starting: "its card is reading the status", unread: "its h
   "host-old": "its host did not answer the last read", old: "its status is old",
   answered: "you answered; the status is catching up", resumed: "its session is running again; the status is catching up" };
 function shoalStale(a) {
-  const why = shoalClientNeed(a) ? "" : shoalLabel(a, "shoal.stale"); // the client's own report is live
+  // the client's own report is live
+  const why = shoalClientNeed(a) ? "" : shoalClientAnswered(a) ? "answered" : shoalLabel(a, "shoal.stale");
   return why ? SHOAL_STALE[why] ?? why : "";
 }
 // A card with a client attached under it (its shoal.attached label): the person is in that session. The row says so in
@@ -1990,7 +2005,8 @@ function shoalStop(view) {
 // A row's detail in the priority view: a role's space and its state; a seat's state in place of its tab; `attached` after
 // either while a client is attached under its card.
 function shoalMore(a, sr, full, fallback) {
-  const state = shoalClientNeed(a) || shoalLabel(a, "shoal.state"), att = shoalAttached(a);
+  const state = shoalClientNeed(a) || (shoalClientAnswered(a) ? "answered" : shoalLabel(a, "shoal.state"));
+  const att = shoalAttached(a);
   if (sr) return full ? [a.space_name, state, att].filter(Boolean).join(" \u00b7 ") || null : null;
   return full && (state || att) ? [state, att].filter(Boolean).join(" \u00b7 ") : fallback;
 }

@@ -262,7 +262,11 @@ by number only for a line with neither (typed by hand, or an older dialog), whic
 whose text has changed (`reworded`, a new head SHA say) is pointed at but not counted answered; a quote that opens
 several asks is ambiguous; and a line that names no open ask is NOT one of its open asks, so the role tells the
 maintainer instead of applying it to another ask. `queue --answered` takes an ask's id, which a removal before it does
-not shift as it does a number, and `shoal asks --question-json` carries each question's `id` too. `next` prints every
+not shift as it does a number, and `shoal asks --question-json` carries each question's `id` too. The protocol has a
+role remove an answered ask in the same `queue` write that records its next wait or active item (one event: a write
+between the answer and the removal shows the answered ask as a need again), run unpiped, since an `--answered` number
+out of range is an `ERROR` that writes nothing (2026-11-26: `--answered 2` of one ask, piped through grep, left the
+ask in the next write for 11 s). `next` prints every
 unread message of the maintainer's beside the newest five (it marks them all read). A
 prompting role is answered this way as well (`briefs.ANSWER_MAIL` in both briefs), and the answer reaches it through an
 open question (Wakes held for a person at the session, below). Each
@@ -2239,7 +2243,9 @@ attach client reports its session itself (`app=claude-code`) and clears that rep
 under it, which took an attached seat's row off the agents list while the person worked in it (measured 2026-11-25), and
 the app lists no agent for a terminal with no report, whatever its labels; an attached row reads `attached` after its
 state and before its tooltip (`shoal.attached`, `shoalAttached`), and one whose client reports a question or permission
-is in Needs you at once, ahead of its labels (`shoalClientNeed`; a dismissed row stays dismissed); the clone reads the
+is in Needs you at once, ahead of its labels (`shoalClientNeed`; a dismissed row stays dismissed), while one whose client
+reports its turn running under labels that still say `asked` or `question` is in Working, `answered`, greyed, until the
+card's next read (`shoalClientAnswered`: you answered there); the clone reads the
 terminal list once a render and not on the tick (`shoalIndex`; each row read it about 13 times, so a render took 44 ms or
 more where Herdr's own takes 3 ms); a question from ledger asks also labels their count (`shoal.asks`), which the agents list's badge opens in the
 actions dialog's Asks (per ask: Reply, and the issues or PRs it names); a blocked role names `auth`, `question` or `permission` (the only kinds herdr-core keeps), or, for a dead
@@ -2247,8 +2253,12 @@ session, a dead watcher or a blocker that cannot move, sets the terminal label `
 live (`starting` from its start until its first status read lands, since a card back after a restart reads the status
 cold for tens of seconds under the labels its last run left; `answered` or `resumed` while it shows the row ahead of
 its status: your reply written on this host (`shoal msg --by user` leaves `/tmp/<id>/reply-<role>.json` beside the
-ledger event) or the role's session running again, newer than the status, while the status still says it needs your
-answer (`ui_status.card_view`), so the row leaves Needs you within one card refresh of the answer; else
+ledger event) or the role's session running again (the host's listing, or the client attached under the card, whose
+report the card reads before each of its own through an attach and keeps after it, `ui_view._client_turn`: the only
+read for a role on another host), newer than the row's read, while the status still says it needs your answer
+(`ui_status.card_view`), so the row leaves Needs you within one card refresh of the answer, and a status read before
+the answer never brings it back with a `blocked` report and its chime (`ui_status.row_read_at`: the status time less
+its host's pull age and `READ_LAG_S`, measured 2026-11-26 on an answered question that came back for a rebuild); else
 `ui_status.row_stale`), and `shoal-agents` greys that
 row, marks its name with `⟳` and puts why before the last known detail on its tooltip; the first card on a host to
 read each status rebuild labels its time (`shoal.asof`, `ui_status.claim_asof`), and the list's header says how old the

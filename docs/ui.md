@@ -784,18 +784,30 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   your answer, from what it knows sooner (`ui_status.card_view`): your reply written on this host (`shoal msg --by
   user` leaves a hint, `/tmp/<id>/reply-<role>.json`, beside the ledger event) moves it to Waiting, state `answered`;
   its session running again (Claude from the listing the host's cards share, at most 25 s old, with its open question
-  read from the transcript; Codex and Muse from their turn lock) moves it to Working, state `answered` when its open
-  question closed and `working` otherwise. Each sets `shoal.stale` (`answered` or `resumed`), so the row is greyed with
-  `⟳` and its tooltip says "you answered; the status is catching up". So the row leaves Needs you within one card
-  refresh (15 s) of your answer, and a row still in Needs you, not greyed, is one the status says asks you now (a new
-  ask, or one you have not answered). Only rows that need your answer are read this way, and never toward needs you: a
-  new ask is the status's to show. The status catches up within one rebuild and the mark goes.
+  read from the transcript; Codex and Muse from their turn lock; for any role, the client attached under its card
+  reporting its turn, `ui_view._client_turn`, the only read for a role on another host) moves it to Working, state
+  `answered` when its open question closed and `working` otherwise. Each sets `shoal.stale` (`answered` or `resumed`),
+  so the row is greyed with `⟳` and its tooltip says "you answered; the status is catching up". So the row leaves Needs
+  you within one card refresh (15 s) of your answer, and a row still in Needs you, not greyed, is one the status says
+  asks you now (a new ask, or one you have not answered). Only rows that need your answer are read this way, and never
+  toward needs you: a new ask is the status's to show. The status catches up within one rebuild and the mark goes.
+- **A status read before your answer.** What a row is compared with is when its live fields were read
+  (`ui_status.row_read_at`), not its status time: that time less the age of its host's pull for a role on another
+  host, less `READ_LAG_S` (10 s: a status pass lists the sessions before it builds the rows, the other host listed them
+  before the pull returned, and Claude's service writes a turn's state seconds after it changes). A question answered
+  in the client attached under a role's card on another host came back as asking on the next rebuild, and the card
+  wrote `blocked` over the client's `working`: the row went back to Needs you, with the chime, for about ten seconds
+  (2026-11-26). Now the card reads the client's report before each report of its own, through an attach and after it,
+  so that row reads Working, `answered`, and the card reports `working`, until a status read after the answer shows
+  the role as it is.
 - **Asked in an open client.** A row moves to Needs you at once when the client attached under its card (Claude Code's
   own, `app=claude-code`) reports itself blocked on a question or a permission prompt: that report is live, while the
   card's labels wait for the next rebuild (a row read `working · attached` while its session sat in its question,
   2026-11-25). Its state reads `question` (or `permission`), its tooltip says `its session asks you now`, and it goes
-  back to its labels when the client reports something else. A dismissed row stays dismissed, and a seat's card reports
-  its own.
+  back to its labels when the client reports something else. The other way too: when that client reports its turn
+  running while the labels still say `asked` or `question` (you answered there), the row is in Working at once, state
+  `answered`, greyed "you answered; the status is catching up" (`shoalClientAnswered`), until the card's next read. A
+  dismissed row stays dismissed, and a seat's card reports its own.
 - **A row's time** (`6m`) is how long the row has been in its section, as the list saw it move there (Herdr's own
   stamp, kept across app restarts, keyed in `shoal-agents` on the card's `shoal.group`, `shoalTrackKey`): in Needs you,
   how long it has needed you since it last went there; it starts again when the row moves (answered, working, asked
