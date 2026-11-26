@@ -797,9 +797,10 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   before the pull returned, and Claude's service writes a turn's state seconds after it changes). A question answered
   in the client attached under a role's card on another host came back as asking on the next rebuild, and the card
   wrote `blocked` over the client's `working`: the row went back to Needs you, with the chime, for about ten seconds
-  (2026-11-26). Now the card reads the client's report before each report of its own, through an attach and after it,
-  so that row reads Working, `answered`, and the card reports `working`, until a status read after the answer shows
-  the role as it is.
+  (2026-11-26). Now the card reads the client's report each second through an attach (a turn that moves sends a report
+  at once) and once more as the attach ends, and keeps it after: read only at each refresh, a detach seconds after the
+  answer left the card with the question still open (2026-11-26). So that row reads Working, `answered`, and the card
+  reports `working`, until a status read after the answer shows the role as it is.
 - **Asked in an open client.** A row moves to Needs you at once when the client attached under its card (Claude Code's
   own, `app=claude-code`) reports itself blocked on a question or a permission prompt: that report is live, while the
   card's labels wait for the next rebuild (a row read `working · attached` while its session sat in its question,

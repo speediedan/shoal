@@ -921,9 +921,9 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     attach whatever its harness (measured 2026-11-10: three attached cards had no group, so their rows sat in the old
     sections until a detach).
 
-    Yields a dict that holds, as `client`, the session's turn as the attached client last reported it (`_client_turn`):
-    the card shows the row from it here and after the attach, so an answer given in the client is not undone by a
-    status read before it."""
+    Yields a dict that holds, as `client`, the session's turn as the attached client last reported it (`_client_turn`,
+    read each second and once more as the attach ends): the card shows the row from it here and after the attach, so an
+    answer given in the client is not undone by a status read before it."""
     seen: dict = {}
     if ui_app is None:
         yield seen
@@ -933,14 +933,20 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     _mark_attached(ui_app, "1")
     marked: list = [None]  # the labels last written by this attach
 
+    def sample() -> bool:
+        """Read the client's report into `seen`; True when its turn moved (a question opened or closed)."""
+        got = _client_turn(ui_app, slug)
+        if got is None:
+            return False
+        was, seen["client"] = seen.get("client"), got
+        return was is None or (was.get("session"), was.get("prompt")) != (got.get("session"), got.get("prompt"))
+
     def role_osc() -> tuple[str | None, bool]:
         rows: list = []
         card(sid, slug, False, rows)
         if not rows:
             return None, False
-        got = _client_turn(ui_app, slug)
-        if got is not None:
-            seen["client"] = got
+        sample()
         row, ahead = _card_row(sid, slug, "", rows[0], seen.get("client"))
         try:
             labels = _card_labels(ui_app, row, ahead)
@@ -975,10 +981,13 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
                         last = osc
             except Exception:  # noqa: BLE001 - a report never breaks an attach
                 pass
-            # the next refresh: CARD_REFRESH_S on, or the status's next rebuild, as the card's own loop does
+            # the next refresh: CARD_REFRESH_S on, the status's next rebuild, as the card's own loop does, or the
+            # client's turn moving: read each second, so an answer in the client moves the row at once and is in hand
+            # when the person detaches seconds later (measured 2026-11-26: read only at each refresh, the last read
+            # before a quick detach still had the question open, and the row sat in Needs you until a rebuild)
             end, rebuilt = time.time() + CARD_REFRESH_S, rebuilt_since(stamp)
             while not stop.wait(max(0.0, min(REBUILD_POLL_S, end - time.time()))):
-                if time.time() >= end or rebuilt():
+                if time.time() >= end or rebuilt() or (make is None and sample()):
                     break
             if stop.is_set():
                 return
@@ -990,6 +999,11 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     finally:
         stop.set()
         t.join(1)
+        if make is None:
+            try:
+                sample()  # the client's last word, for the card after the detach
+            except Exception:  # noqa: BLE001 - an unread terminal says nothing
+                pass
         _mark_attached(ui_app, "")
 
 
