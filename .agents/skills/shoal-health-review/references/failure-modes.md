@@ -269,10 +269,11 @@ Status is `open` (detected by this review only), `guarded` (a check or refusal i
   sent SIGTERM to that client only, and the held wakes and the restart went through.
 - **Second guard:** while the maintainer is offline, the quorum does the same
   (`features.health.detach_cards`, default on): a card's client held past 60 min (15 min for a
-  Claude context restart at twice its limit) gets one SIGTERM, recorded as a msg to `user`
+  Claude context restart at 1.3x its limit) gets one SIGTERM, recorded as a msg to `user`
   ("<role>: detached the card's interactive client (pid N, ...)"). A client whose parents do not
   reach the role's card is never touched; the run says "not a card's viewer". Online, it is paged
-  only.
+  only, except a context restart held at 1.3x its limit: one page that the restart is pending, then
+  the card's client is ended 15 min after that page.
 - **Status:** guarded for role-card observation; ended automatically for a card's client while the
   maintainer is offline; paged otherwise (online, or a client launched outside SHOAL), which still
   requires `/exit` before automatic wakes can proceed.

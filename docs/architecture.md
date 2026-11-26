@@ -183,7 +183,10 @@ carrying the `order`, which `next` shows first as `QUEUE-ORDER`. The role applie
   gets back, last and weak, the items it passed on as out of lane or blocked, so a fill=self queue stays full: an
   imperfect lane match beats an idle role. With the semantic matcher the same holds: a lane short of fitting work also
   gets the board's other workable items the matcher scored as no fit for it. `digest.candidates` fills its limit with weaker rows after the strong ones
-  instead of showing the strong ones alone.
+  instead of showing the strong ones alone. Weak rows (no lane fit, or passed on earlier) are listed, never a wake: a
+  role's watcher wakes it only for strong digest candidates, and the weak ones wait in `next`'s BOARD list for its next
+  boundary (measured 2026-11-20..26: 42 of 65 board wakes named only weak or declined-earlier candidates, and 35 of
+  those 42 turns did nothing, 14.3M cost-eq).
 
 **The role's status** is its own declared word: `active`, `waiting` with a substate (`wait` in the read models),
 `idle`, `offline` or `parked`, from its last `state` event, else its queue version's `status`. It is the canonical
@@ -217,7 +220,8 @@ the 118 distinct holds recorded that day described the item's own job, hosted ru
 one as blocked), so `queue` notes each hold it records and `next` prints `HOLD UNREFERENCED`: name another issue
 (`<role>:<repo#n>`, `upstream:gh-issue:..`), the maintainer (`ask`), or the item's own run instead; work the item needs
 that has no issue yet is done within the item, or filed as an issue of its own and referenced. A stale (cleared or expired) blocker parks nothing: `next` prints `BLOCKER
-STALE`, the idle gate and `parked-work` treat its item as free, `blocker-resolved` wakes the role once if a role or provider blocker cleared, and recording a blocker that has
+STALE`, the idle gate and `parked-work` treat its item as free, `blocker-resolved` wakes the role once if a role or provider blocker cleared (not when the role already has that news:
+the blocker is its wait target, or the watcher or `wait-resolved` told it of that target), and recording a blocker that has
 already cleared is refused. So is a `<role>:<repo#n>` blocker naming a `fill=assigned` or `fill=none`
 role that holds no offer, handoff or claim for the item: nothing could ever end that wait (FM-4). Re-recording a blocker is its re-verification. A hold kept past
 `hold_page_min` wakes the role to convert it, then pages the maintainer 240 minutes later if it still stands (`hold-long`). With the feature on, `queue --idle` is also
@@ -229,7 +233,7 @@ blockers that were all stale, beside 2 and 8 eligible candidates. With
 woken to continue after `after_min` (default 5).
 
 **Wakes are work-only.** A role's `ledger-watch` wakes it for: an offer to it or to `*` while it is
-idle, or a `--now` offer at any time; board candidates when it is idle with nothing queued; a lost
+idle, or a `--now` offer at any time; strong board candidates when it is idle with nothing queued; a lost
 claim on, or withdrawal of, its active item; a health wake request. **Msgs are mail**: `next`
 prints them, and they wake nobody unless `user` sends one with `--wake`.
 
@@ -238,8 +242,11 @@ never to wait on the maintainer, to record each blocking ask with `queue --ask`,
 work depends on an unmerged one, and to keep working. Roles waiting on the maintainer are woken
 once to pivot, and maintainer pages are deferred. `offline off` prints every recorded ask per role,
 with a likely-stale hint where the named item is merged, closed or done, wakes each role holding
-asks to re-verify, drop or raise them as prompted question sets (at most four questions per set),
-and delivers the deferred pages as one summary. The mode's record is written (and pushed) before any wake; the wakes
+asks (or waiting on the maintainer) to re-verify, drop or raise them as prompted question sets (at most four questions
+per set), and delivers the deferred pages as one summary. Nobody else is woken: a return wake is a cold turn of about
+3M cost-eq (25 of them, 74M, 2026-11-20..26, every one to a role holding asks). With `workwake` the others get one msg
+to `*` from `shoal` (`worker.RETURN_MAIL`, mail, no wake) to re-verify what they deferred at their next boundary;
+without it every msg wakes, so none is sent. The mode's record is written (and pushed) before any wake; the wakes
 then run four at a time (`worker.OFFLINE_WAKES_AT_ONCE`: a direct Claude wake can stop and resume a session, seconds
 each) and each prints how it was delivered (`woke <role>: <channel>`), the offline banner they carry read once, not per
 wake. The hint's GitHub reads (one per referenced item, cached per process) run eight at a time
@@ -743,8 +750,8 @@ attempt(s)"). A restart already under way (the role's restart lock) is not a fai
 | `wait-expired` (`waitdiscipline`) | a waiting status past its capped rescan | wake 0, wake 60, page 120 |
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
-| `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:`, `lease:` or own-run (`job:`, `gh-run:`, `az-build:`, `time:`) blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded. Not held while offline, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
-| `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
+| `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:`, `lease:` or own-run (`job:`, `gh-run:`, `az-build:`, `time:`) blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded: `queue` refuses to record a blocker that has cleared, so a new `since` means the role saw it pending again (a lease taken again, a build or run re-run under its id), and the same instance is woken at most once per `rewake_min`. Skipped, said once, when the role already has the news: the blocker is the target the role waits on (its waiter, the watcher's WAIT RESOLVED and `wait-resolved` cover that), the watcher delivered WAIT RESOLVED for it (its sidecar's `waitdone:` ids), or a `wait-resolved` wake named it (the quorum's `told`, kept `rewake_min`). Measured 2026-11-20..26: 165 such wakes, 59 naming the role's wait target; where one blocker cleared twice, it was mostly a re-run under one id that the role also waited on. A `time:` blocker the role set itself was the only one in 20 of the 165, so `time:` blockers are not held while offline; nor is the condition, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
+| `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks (or waiting on the maintainer) has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
 | `asks-unraised` | the maintainer is online and a role holds open asks while at a quiet boundary with no question open, 10 min after its last write (an ask recorded before a CI wait otherwise showed as needs-you with nothing to answer); keyed by its asks, so a new ask raises again. The wake keeps the role's recorded wait (no user-auth wait over it). Never for a headless role (Codex, Muse: no question tool; its asks are answered from the Asks view) | wake, again at 120 min |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
@@ -810,11 +817,13 @@ long as it stays. Measured 2026-11-22..24: a Codex role stalled for hours twice 
 attached, growing to about 913k tokens of a 1M window, before the operator ended each client by hand; the held wakes and
 the restart then went through. The quorum does the same, when all of these hold:
 
-1. the maintainer is offline (`shoal offline on`; online, the hold is only paged, as above);
+1. the maintainer is offline (`shoal offline on`; online, the hold is only paged, as above, except far past the limit:
+   below);
 2. the hold has lasted `CARD_DETACH_MIN` (60 min, `{"after_min": N}` sets another), counted from when the watcher first
    held an event (`held_since`) or the restart was first held. An hour is twice the hold's page, so a maintainer who is
-   online always hears of a hold first. A Claude context restart whose context is at twice its limit or more uses
-   `CARD_DETACH_FAR_MIN` (15 min): each turn then costs at least two fresh sessions' worth, and the model's window is near;
+   online always hears of a hold first. A Claude context restart whose context is at `CARD_DETACH_FAR_X` (1.3) times its
+   limit or more uses `CARD_DETACH_FAR_MIN` (15 min), counted from the hold's first sighting at that size (kept per session
+   in the quorum's state as `far_holds`, since the condition and its ladder lapse each time the role takes a turn);
 3. the client is a card's, positively: walking its parents (`ledger_watch.card_client`, at most 8) reaches the role's
    observer with native access allowed (`codex-tail --allow-interactive` or `muse-tail --allow-interactive` with the
    role's `--session`) or `shoal view` of the role (`<shoal> <role>`, or its session or job id), and it is this user's
@@ -832,6 +841,19 @@ quorum's next run. The card stays usable: a Codex or Muse observer prints "The n
 back on its live read-only view, with the terminal's settings restored (a client killed outright leaves the tty raw); a
 Claude card's `shoal view` says the client was ended, does not reattach, and exits 0, so the card is back on its card.
 `detach_cards: false` turns it off for a spec.
+
+**A held context restart far past its limit, while the maintainer is online.** Online, a hold had no bound: the person
+attached is the one who would detach, and a client left open while they work elsewhere let a role run on far past its
+limit (2026-11-23/24: a role held overnight made 758 calls above 500k, up to 945k, about 43M cost-eq more than a
+restart; 27 holds that week). Once the context reaches `CARD_DETACH_FAR_X` (1.3) times the limit, the attached person is
+told by one page per hold (`page_user`: the page channels and the inbox): "<role>: context Nk is past 1.3x its Mk limit
+and its context restart is pending, held by an attached client: <client>. Every turn re-reads that context. Detach the
+client (its card or terminal) and it restarts at its next quiet boundary; a card's client is ended for it 15 min after
+this page". `CARD_DETACH_FAR_MIN` after that page, a card's client is ended as above (only at a quiet boundary, since the
+condition exists only then) and recorded as a msg to `user` ("... detached the card's interactive client (pid N, `claude
+attach <job>`) M min after the page that its context passed 1.3x its limit; it held its context restart ..."); the card's
+`shoal view` says the client was ended and is back on its card, and the restart runs at the quorum's next run. A client
+started by hand is never ended: the page is all it gets. `detach_cards: false` leaves the page alone.
 
 A role waiting on the maintainer is woken only by `wait-expired`, and the maintainer gets one daily
 digest page listing each role's open ask.
@@ -959,7 +981,7 @@ The quorum's wakes follow these rules (all under `features.health`):
 | `online_settle_min` | 20 | no health wake for this long after the maintainer comes back (`offline off` already woke every role holding asks) |
 | `wake_gap_min` | 30 | at least this long between two health wakes of one role |
 | `wake_off` | none | conditions that never wake, only page (for example `["parked-work", "hold-long"]`) |
-| `detach_cards` | on | while the maintainer is offline, a role card's native client left attached past 60 min (`{"after_min": N}`; 15 min for a Claude context restart at twice its limit) is ended with SIGTERM, so the wakes or the restart it holds go through; recorded as a msg to `user`. Only a client whose parents reach the role's card (its observer or `shoal view`) is touched (§7, "A card's client left attached") |
+| `detach_cards` | on | while the maintainer is offline, a role card's native client left attached past 60 min (`{"after_min": N}`; 15 min for a Claude context restart at 1.3x its limit, and online too 15 min after the page that says so) is ended with SIGTERM, so the wakes or the restart it holds go through; recorded as a msg to `user`. Only a client whose parents reach the role's card (its observer or `shoal view`) is touched (§7, "A card's client left attached") |
 | `stale_upkeep` | on | respawn an idle Claude worker that runs an older Claude Code than the installed one (no turn); report a busy one once per version. An old worker's updater keeps reinstalling the current version, and each reinstall restarts the background service and drops attached clients ([`handover.md`](handover.md), "Related upkeep") |
 
 And every run sends **at most one wake per role**, carrying every condition then due.
@@ -979,7 +1001,7 @@ session at a quiet boundary rather than carried forward (`shoal/context.py`).
 | key (`features.health`) | default | effect |
 | --- | --- | --- |
 | `context_restart_k` | 300 | the context size, in thousands of tokens, past which a role is advised to hand over; 0 is off. A dict sets it per role, with `"*"` as the default: `{"*": 300, "<slug>": 0}` exempts a session that needs a large context |
-| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. While a client is attached to a Claude role's session (a card's `claude attach`), the restart is held rather than tried: an attached client keeps the worker alive, so the stop would fail and the ladder would move on to its page with no retry. It restarts once the client detaches, and pages once if the hold lasts 30 minutes; while the maintainer is offline, a card's client is ended after 60 minutes (15 at twice the limit: `detach_cards`). A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
+| `context_restart` | `page` | `page`: the quorum pages the operator to restart a restart-ready role. `auto`: the quorum stops the old session and its detached watcher, then runs `restart --only <role>`. While a client is attached to a Claude role's session (a card's `claude attach`), the restart is held rather than tried: an attached client keeps the worker alive, so the stop would fail and the ladder would move on to its page with no retry. It restarts once the client detaches, and pages once if the hold lasts 30 minutes; while the maintainer is offline, a card's client is ended after 60 minutes (15 at 1.3x the limit: `detach_cards`). At 1.3x the limit the hold is bounded online too: one page that the restart is pending, and a card's client ended 15 minutes after it. A dict sets it per role: `{"*": "page", "<slug>": "auto"}` |
 
 1. Past the limit, `next` and every wake carry a `CONTEXT <n>k (limit <m>k)` line (`next` records when the session was first
    shown it). No extra wake is spent on it. In `auto` it says the handover comes at the next quiet boundary on the start

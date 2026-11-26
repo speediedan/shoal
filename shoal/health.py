@@ -18,7 +18,10 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   wait-resolved      a machine-checkable wait target is no longer pending, or every reservation  wake@15 restart@60
                      a research wait on a `time:` target names has ended
   asks-on-return     the maintainer came back; a role holding asks has not written since    wake@3 (once a return)
+                     (or one waiting on the maintainer)
   blocker-resolved   a next item's role or provider blocker cleared                         wake@0
+                     (none when it is the role's wait target, or the watcher or wait-resolved already told the
+                     role of that target)
   wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V restart@3V
                      (not a target its provider confirms pending, under wait discipline; a restart is held
                      mid-turn, and pages only when it fails)
@@ -26,7 +29,9 @@ boundary), so a new instance restarts the ladder and one instance never escalate
   watcher-dead       ledger-watch pid gone, session between turns                          wake@10 page@40
   wakes-held         the role's live watcher holds new events for an attached client       page@30 (once a hold)
                      (`codex resume`, `muse resume`); while it holds, the role's other ladders hold too.
-                     Offline, a card's client is ended at 60 (detach_cards; a held Claude restart too)
+                     Offline, a card's client is ended at 60 (detach_cards; a held Claude restart too). A context
+                     restart held at 1.3x its limit or more: offline ended at 15; online paged once, then ended
+                     15 min after that page
   stale-active       status active, no ledger write, session between turns                wake@90 page@180
   user-waits         waiting on the maintainer: never wakes the role; one daily digest page
   restart-retry      a restart that failed (restart_record), its Claude session not running    restart after its backoff
@@ -76,10 +81,12 @@ ATTACHED_PAGE_MIN = 30  # a restart held for an attached client pages once after
 # read-only view), so the wakes or the restart it holds go through (2026-11-22..24: three stalls of hours, each ended by
 # hand the same way). An hour is twice the hold's page, so an online maintainer always hears of a hold first
 CARD_DETACH_MIN = 60
-# a Claude context restart held for a context at CARD_DETACH_FAR_X times its limit or more: every turn then costs at
-# least that many fresh sessions' worth, and the model's window is near (2026-11-24: about 913k of a 1M window)
+# a Claude context restart held for a context at CARD_DETACH_FAR_X times its limit or more has a bound whether or not
+# the maintainer is online: every turn re-reads that context (2026-11-23/24: a session held overnight made 758 calls
+# above 500k, to 945k, about 43M cost-eq above a restart's). Offline a card's client is ended CARD_DETACH_FAR_MIN into the
+# hold; online the person is paged once when it passes, and a card's client is ended CARD_DETACH_FAR_MIN after that page
 CARD_DETACH_FAR_MIN = 15
-CARD_DETACH_FAR_X = 2
+CARD_DETACH_FAR_X = 1.3
 CARD_DETACH_WAIT_S = 5.0
 LADDERS = {
     "unacked-work": [(10, "wake"), (30, "wake"), (60, "page")],
@@ -254,9 +261,10 @@ def own_process(pid: int) -> bool:
 
 
 def card_detach(spec: ShoalSpec, role, find, since: str, held: str, lad: dict, acts: list, step: str, offline: bool,
-                dry_run: bool = False, far: bool = False) -> bool:
+                dry_run: bool = False, far: bool = False, online: bool = False) -> bool:
     """End a role card's native client that holds `held` (its wakes, or its restart) since `since`, when the maintainer
-    is offline, features.health.detach_cards is on and the hold has outlived its grace (CARD_DETACH_MIN, or
+    is offline (or `online`: a context restart held far past its limit, `since` being the page that said so),
+    features.health.detach_cards is on and the hold has outlived its grace (CARD_DETACH_MIN, or
     CARD_DETACH_FAR_MIN when `far`). Only a client positively identified as a card's (ledger_watch.card_client: its
     parents reach the role's observer or `shoal view`, naming the role or one of its session ids) and owned by this user on
     this host is signalled, once per hold and with SIGTERM only; a client started by hand is never touched. Records the
@@ -265,9 +273,9 @@ def card_detach(spec: ShoalSpec, role, find, since: str, held: str, lad: dict, a
     restart), so the caller's ladder waits for that rather than paging the hold."""
     if lad.get("detached") or lad.get("detach_failed"):
         # once a hold: a client that would not go is the page's to raise, and so is one opened after the maintainer is back
-        return bool(lad.get("detached")) and offline
+        return bool(lad.get("detached")) and (offline or online)
     cfg = detach_cfg(spec)
-    if cfg is None or not offline or role is None:
+    if cfg is None or not (offline or online) or role is None:
         return False
     grace = min(cfg["after_min"], CARD_DETACH_FAR_MIN) if far else cfg["after_min"]
     held_min = age_min(since) or 0.0
@@ -293,8 +301,10 @@ def card_detach(spec: ShoalSpec, role, find, since: str, held: str, lad: dict, a
                                           "(a client started by hand is left to its owner)"))
         return False
     cmd = lw.client_cmd(lw.proc_argv(client)) or "?"
-    text = (f"{role.slug}: detached the card's interactive client (pid {client}, `{cmd}`) after {held_min:.0f} min while "
-            f"you were offline; it held {held}; the card is back to its read-only view")
+    when = (f"after {held_min:.0f} min while you were offline" if offline else
+            f"{held_min:.0f} min after the page that its context passed {CARD_DETACH_FAR_X:g}x its limit")
+    text = (f"{role.slug}: detached the card's interactive client (pid {client}, `{cmd}`) {when}; it held {held}; the "
+            f"card is back to its read-only view")
     if dry_run:
         acts.append((role.slug, step, f"would detach (dry-run): {text}"))
         return False
@@ -875,13 +885,32 @@ def validity_applies(sub: str, target: str, pending, disciplined: bool) -> bool:
     return sub in CI_WAITS + ("research-proto", "research-window") or target.split(":", 1)[0] in providers.kinds()
 
 
+def blocker_covered(blocker: str, target: str, role_status: str, sub: str, delivered: list[str]) -> str:
+    """Why a cleared next-item blocker needs no blocker-resolved wake of its own ('' when it does): it names the target
+    the role waits on, which its own waiter, the watcher's WAIT RESOLVED and wait-resolved already cover, or the watcher
+    has delivered WAIT RESOLVED for it (its sidecar's `waitdone:<since>:<target>` ids). Most blockers that clear are the
+    item's own run, recorded as both its blocker and the role's wait: measured 2026-11-20..26, 59 of 165 blocker-resolved
+    wakes named the role's wait target, a second turn for news the role already had."""
+    if not blocker:
+        return ""
+    import blockers as _bl
+    names = {blocker, _bl.provider_target(blocker)} - {""}
+    if target and target in names and role_status == "waiting" and sub not in USER_WAITS:
+        return f"it is your {sub} wait's target, which wakes you itself"
+    if any(d.startswith("waitdone:") and any(d.endswith(":" + n) for n in names) for d in delivered):
+        return "the watcher delivered WAIT RESOLVED for it"
+    return ""
+
+
 def return_condition(view, slug: str, q: dict) -> dict | None:
-    """`asks-on-return` for a role holding asks that has not written since the maintainer came back. `offline off`
-    wakes only the roles on the host it ran on, so a role on another host was never woken and raised nothing
-    (measured 2026-11-08); its own host's quorum wakes it here, once per return."""
+    """`asks-on-return` for a role holding asks (or waiting on the maintainer) that has not written since the maintainer
+    came back. `offline off` wakes only the roles on the host it ran on, so a role on another host was never woken and
+    raised nothing (measured 2026-11-08); its own host's quorum wakes it here, once per return."""
     um = (getattr(view, "modes", None) or {}).get("user-offline") or {}
     back = str(um.get("ts") or "")
-    if um.get("state") != "off" or um.get("by") != "user" or not back or not q.get("asks"):
+    st = (view.role_state(slug) or {}) if hasattr(view, "role_state") else {}
+    user_wait = st.get("state") == "waiting" and st.get("sub") in USER_WAITS
+    if um.get("state") != "off" or um.get("by") != "user" or not back or not (q.get("asks") or user_wait):
         return None
     age = age_min(back)
     if age is None or not RETURN_GRACE_MIN <= age < RETURN_WINDOW_MIN or view.last_by.get(slug, "") >= back:
@@ -1081,12 +1110,17 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
             from ledger import item_key
             meta = q.get("next_blocked_meta") or {}
             news = _bl.cleared(stale_nb, q)
+            delivered = (sc.get("delivered") or "").split(",")
             for x in free:
                 k = item_key(x)
                 if k in news:
                     b = (q.get("next_blocked") or {}).get(k, "")
+                    # keyed by when the blocker was recorded too: `queue` refuses to record one that has cleared, so a
+                    # new `since` means the role saw it pending again (a lease taken again, a build or run re-run under
+                    # its id), and its clearing is news again; the same instance is woken once (REWAKE_CONDS)
                     out.append({"slug": slug, "condition": "blocker-resolved", "first_seen": True,
-                                "key": f"cleared:{k}:{b}:{(meta.get(k) or {}).get('since', '')}",
+                                "key": f"cleared:{k}:{b}:{(meta.get(k) or {}).get('since', '')}", "blocker": b,
+                                "covered": blocker_covered(b, target, role_status, sub, delivered),
                                 "since": boundary or iso(),
                                 "detail": f"{x}: its blocker {b[:120]} cleared ({news[k][:160]}). That is not by itself "
                                           f"a go: read your mail and the item's latest notes, then take it "
@@ -1920,6 +1954,17 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
     woke = state.setdefault("woke", {})
     for k_ in [k_ for k_, t_ in woke.items() if (age_min(t_) or 0.0) >= rewake_min]:
         del woke[k_]
+    # `slug|target`: the wait targets a wait-resolved wake told the role of, so a next-item blocker naming the same
+    # target clearing is not news to it (blocker-resolved skips it); kept as long as `woke`
+    told = state.setdefault("told", {})
+    for k_ in [k_ for k_, t_ in told.items() if (age_min(t_) or 0.0) >= rewake_min]:
+        del told[k_]
+    # slug -> {session, since, paged}: a context restart held far past its limit, from its first sighting; a new session
+    # (the restart done) ends the record
+    far_holds = state.setdefault("far_holds", {})
+    for k_ in [k_ for k_, v_ in far_holds.items() if spec.role(k_) is None
+               or (spec.role(k_).session or "") != (v_ or {}).get("session")]:
+        del far_holds[k_]
     last_wake = state.setdefault("last_wake", {})
     merged: dict[str, list] = {}  # slug -> [(condition, detail, act index)]: one wake per role per run
     quota_done = False  # one quota handoff per run
@@ -2023,9 +2068,30 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ov = c.get("over") or ()
                 far = c["condition"] == "context-restart" and len(ov) == 2 and ov[0] >= CARD_DETACH_FAR_X * ov[1]
                 what = "its context restart" if c["condition"] == "context-restart" else f"its restart ({c['condition']})"
-                if card_detach(spec, role_, lambda: claude_clients(role_), held, what, lad, acts,
-                               f"{c['condition']}:detach", offline, dry_run, far):
+                since_ = held
+                if far:
+                    # far past its limit the hold has a bound online too. The condition lapses while the role is mid-turn,
+                    # and its ladder (with `attached`) with it, so the hold's start is kept here, per session
+                    fh = far_holds.get(c["slug"])
+                    if not fh or fh.get("session") != role_.session:
+                        fh = far_holds[c["slug"]] = {"session": role_.session, "since": held}
+                    since_ = min(held, fh["since"])
+                    if not offline:
+                        if not fh.get("paged"):
+                            fh["paged"] = iso()
+                            ends = (f"; a card's client is ended for it {CARD_DETACH_FAR_MIN} min after this page"
+                                    if detach_cfg(spec) is not None else "")
+                            acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:page", page_user(
+                                spec, f"{c['slug']}: context {ov[0]}k is past {CARD_DETACH_FAR_X:g}x its {ov[1]}k limit "
+                                f"and its context restart is pending, held by an attached client: {client}. Every turn "
+                                f"re-reads that context. Detach the client (its card or terminal) and it restarts at its "
+                                f"next quiet boundary{ends}", state, dry_run)))
+                        since_ = fh["paged"]
+                if card_detach(spec, role_, lambda: claude_clients(role_), since_, what, lad, acts,
+                               f"{c['condition']}:detach", offline, dry_run, far, online=far):
                     break
+                if far and not offline:
+                    break  # paged once above, for the whole hold
                 if (age_min(held) or 0.0) >= ATTACHED_PAGE_MIN and not lad.get("attached_paged"):
                     lad["attached_paged"] = iso()
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:page", page_user(
@@ -2052,6 +2118,16 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     break
             if action == "wake":
                 fp = f"{c['slug']}|{c['condition']}|{c.get('fp') or c['key']}"
+                if c["condition"] == "blocker-resolved":
+                    import blockers as _bl
+                    b_ = c.get("blocker", "")
+                    t_ = told.get(f"{c['slug']}|{b_}") or told.get(f"{c['slug']}|{_bl.provider_target(b_)}")
+                    why_ = c.get("covered") or (f"woken for it as a wait target at {t_}" if t_ else "")
+                    if why_:
+                        # the role has this news already: a second wake for it cost a turn that did nothing
+                        acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", f"skipped ({why_})"))
+                        lad["step"] += 1
+                        break
                 hold = ""
                 if offline and c["condition"] in offline_hold:
                     # the maintainer is away: a role re-woken about a parked queue or a long hold finds the
@@ -2067,6 +2143,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                         acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake", f"held ({hold})"))
                     break
                 lad.pop("quiet", None)
+                if c["condition"] == "wait-resolved" and c["key"].startswith("target:"):
+                    told[f"{c['slug']}|{c['key'][len('target:'):]}"] = iso()
                 if c["condition"] in REWAKE_CONDS and fp in woke:
                     # the same parked set or hold already had its wake: nothing has moved it since
                     acts.append((c["slug"], f"{c['condition']} step{lad['step'] + 1}:wake",

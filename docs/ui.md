@@ -507,8 +507,8 @@ shoal view --harness claude|opencode --session <id> [--label NAME] [--stub] [--d
   by the maintainer); `/exit` on its own was not tested, so prefer Ctrl+Z.
 - **A client left attached while you are offline.** An attached client holds a Codex or Muse role's wakes, and a
   Claude role's automatic restart, until it exits. While the maintainer is offline (`shoal offline on`), the health
-  quorum ends a card's client left attached for an hour (15 min for a Claude context restart at twice its limit) with a
-  SIGTERM to that client only, and records it as a msg to `user` (`features.health.detach_cards`, default on;
+  quorum ends a card's client left attached for an hour (15 min for a Claude context restart at 1.3x its limit; online
+  too, 15 min after the page that says so) with a SIGTERM to that client only, and records it as a msg to `user` (`features.health.detach_cards`, default on;
   [architecture](architecture.md) §7). The session is untouched. A Codex or Muse card's observer says "The native
   client was ended (SIGTERM)" and is back on its live read-only view; a Claude card's `shoal view` says the client was
   ended, does not reattach, and the card comes back. A client started by hand in a terminal is never touched.
