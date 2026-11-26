@@ -1137,8 +1137,11 @@ default `~/.codex`).
   and `shoal accounts` prints every score. `select = "default"` suggests the provider's default. The CLI never changes
   an account unasked: a handoff with no `--account` keeps the current one. **Rebalance** (`[accounts] rebalance = true`,
   opt-in): the health quorum's automatic context restart (`features.health.context_restart = "auto"`) starts the new
-  session on the account `choose` picks now, within the role's provider (`health.rebalance`), and says so in its
-  action; never onto a Claude account that has not trusted the shoal's folder, and never for another host's role.
+  session on the account the quota handoff's pick moves the role to (`accounts.balance_pick`, below), within the role's
+  provider (`health.rebalance`), else on the account it had, and says so in its action; never onto a Claude account
+  that has not trusted the shoal's folder, and never for another host's role. It took the best-scored account
+  (`choose`) until 2026-11-26, and the share move then sent the role back: one rule now serves both, so neither undoes
+  the other. A new session placed by hand (`--account auto`, the dialog) still takes `choose`.
   **The pool** is every provider in use on
   the host (`ui set ecosystems`) less `[accounts] exclude` (a list of providers): `--ecosystem auto` on handoff and
   add-role takes the account with the most headroom of any provider in it (`accounts.choose_any`), the dialog names it
@@ -1159,27 +1162,54 @@ default `~/.codex`).
   moves without one and clears one the role had, as `--ecosystem auto` (balancing's own pick) does; a handoff naming no
   provider leaves it. `shoal show` prints it on the role's row (`fill`, pinned to <provider>) and, with `--slug`, on a
   `provider:` line, which names `[accounts] pin` too. `[accounts] pin` still works, with no spec change.
-- **Quota handoff** (`[accounts] quota_handoff = true`, opt-in). Each account's share of the roles is its weighted
-  headroom over its windows of a day or more (`headroom(held=True)`: a 5 h window moves placed roles only at its
-  reserve, so its swings within a few hours do not churn them; capped at its units, so an account near its reset with
-  room to spare does not draw every role) over the pool's total, times the roles running on the pool (counted from
-  every live shoal's spec, whichever host a role runs on; `accounts.shares`). The share fades to nothing as a window
-  reaches the reserve, so crossing it is no jump that could pull a role back; an account with little left and days to
-  its reset (nothing to lose by waiting) so cedes a share to one whose quota would expire, by whole roles. A role at a quiet boundary moves
-  (`accounts.quota_pick`, the health condition `quota-handoff`) off an account near a limit (a window at 98% used,
-  100 less the reserve, outside its reset grace; an explicit `near_5h` or `near_week` still overrides, so a config
-  written for the old 70 and 85 keeps them) to the account furthest under its share that is not near one and can take
-  a new session now, or off an account carrying at least one whole role over its share to one at
-  least one under (shares rounded to whole roles, so an account whose share is most of a role, as a Codex Plus one's
-  among two Max plans and nine roles, draws one back once its window resets), so a move never only swaps which side is
-  over. `[accounts.prefer] <provider> = [<slugs>]` names the roles that may be moved onto that provider (a small plan
-  suits roles with short items). It is handed over as a context restart is: in `auto`
-  context mode at any quiet boundary once its start doc meets its contract, else when it marked itself restart-ready;
-  through `park.move_args`, as `shoal handoff` builds a move, so a role taken to another provider gets that provider's
-  `[provider_defaults]` model and effort. At most one quota move per quorum run, and none for a role moved within
-  `quota_cooldown_min` (60), so readings and the role count catch up between moves; `[accounts] pin` lists roles kept
-  on their own provider, as a role's provider pin keeps it (above). `shoal accounts` prints each account's units and plan, and each account's roles against its
-  share.
+- **Quota handoff** (`[accounts] quota_handoff = true`, opt-in). Each account's share is its weighted headroom over
+  its windows of a day or more (`headroom(held=True)`: a 5 h window moves placed roles only at its reserve, so its
+  swings within a few hours do not churn them; capped at a fresh window's, its units over 100, so an account near its
+  reset with room to spare does not draw every role) over the pool's total, times the load running on the pool
+  (`accounts.shares`). The share fades to nothing as a window reaches the reserve, so crossing it is no jump that could
+  pull a role back; an account with little left and days to its reset (nothing to lose by waiting) so cedes a share to
+  one whose quota would expire. The cap was the units themselves until 2026-11-26, against a score in plans, so it
+  never bound: a week half left a day before its reset scored 3.4 against a fresh week's 0.98, and on 2026-11-23 each
+  account's share swung between 3.8 and 7.3 of eleven roles within a day.
+  - **Load is spend** (`accounts.balance_load`, `role_spend.py`): each role weighs its cost-equivalent per day over the
+    last `[accounts] spend_window_h` (24) hours, in M base input tokens (the `context_cost` weights), summed over every
+    session it held in that window (the current one and those its spec's generations name) with their subagents. Only
+    this host's transcripts are read, incrementally (a byte offset per transcript in `role-spend.json` beside the usage
+    cache); each host's quorum publishes its roles' spend on its `host-beat` (`spend`), and another host weighs those
+    roles by the newest beat (the ledger stays the only path between hosts). A role whose spend is not known (another
+    provider; a single-host shoal on another host, which does not beat) weighs as the mean known role; with none known
+    every role weighs 1, the role count as before. Counting roles moved a quiet role as readily as a busy one: on
+    2026-11-23 a role that spent 21M all week was moved 10 times in a day, each move a fresh session with nothing to do.
+  - **One pick** (`accounts.balance_pick`, the health condition `quota-handoff` at a quiet boundary and `rebalance` at a
+    context restart). Off an account near a limit (a window at 98% used, 100 less the reserve, outside its reset grace;
+    an explicit `near_5h` or `near_week` still overrides) to the account furthest under its share that is not near one
+    and can take a new session now, whatever the role spends. For share, only with hysteresis: the role's account over
+    its share by the margin (`[accounts] share_margin_pct`, 10% of the pool's load), over by it for `share_hold_min`
+    (30 min, recorded by each run in the health state, `balance_over`), and the move must cut the imbalance (|over
+    here| + |over there|, less both after the move) by the margin too. So the role's own spend, its account's excess and
+    the destination's shortfall must each be at least half the margin: a quiet role is never moved for share, and no
+    move overshoots so far that a move back would pay. A move back to the account the role left within 24 h needs twice
+    the margin. The shares are over the whole pool; a pinned role (below) takes destinations on its own provider only,
+    and rebalance takes them on the role's provider only.
+  - **Holds** (`health.balance_hold`). At most one quota move per quorum run. A share move also waits out the role's
+    `quota_cooldown_min` (360, was 60) since its last move of any kind, and this host's settle: 15 min since any
+    shoal's share move here (`balance-moves.json` beside the usage cache), so the specs and readings catch up before
+    the next pick (on 2026-11-23 two shoals' quorums moved a role each in the same minute, and a third moved one back
+    three minutes later). A restart's share move waits out the settle but not the cooldown (the restart is no extra
+    session); a move off a limit waits for neither.
+  - **Replayed** on the week to 2026-11-26 (the health journals' moves and recorded shares, each role's spend from its
+    transcripts): 86 Claude account moves happened, 55 of them back within 6 h, with a mean spend imbalance of 16% of
+    the pool. The new rule made 13 (3 off a limit, 10 for share), none back, at a mean imbalance of 6.5% (no moves at
+    all: 22%); asked at each of the 86 moments, it would have made 9 and held 7 more by the cooldown. A 5% margin made
+    26 moves (and bounces with a 60 min cooldown), 20% made 8 at an 11% imbalance; the 6 h cooldown changed nothing at
+    10% and removed the bounces at 5%, so it stays as the backstop.
+
+  `[accounts.prefer] <provider> = [<slugs>]` names the roles that may be moved onto that provider (a small plan suits
+  roles with short items). A role is handed over as a context restart is: in `auto` context mode at any quiet boundary
+  once its start doc meets its contract, else when it marked itself restart-ready; through `park.move_args`, as
+  `shoal handoff` builds a move, so a role taken to another provider gets that provider's `[provider_defaults]` model
+  and effort. `[accounts] pin` lists roles kept on their own provider, as a role's provider pin keeps it (above).
+  `shoal accounts` prints each account's units and plan, and each account's roles and spend against its share.
 - **Readings on every host.** Balancing reads only the host's cached usage readings, which the UI feeder filled, and
   the feeder runs only on the operator's machine: measured 2026-11-25, a second host running five roles had no reading
   for a week, so its quorum never moved a role off an account near its limit, an automatic restart there could only

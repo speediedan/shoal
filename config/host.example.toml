@@ -155,12 +155,15 @@
 # select = "balance"       # the suggested account: the most quota to use before its reset (default), or "default"
 # exclude = ["opencode"]   # providers kept out of balancing (`--ecosystem auto` never picks them)
 # keepalive = true         # the usage meter refreshes a lapsing Claude sign-in through the CLI (a tiny call, ~3/day)
-# rebalance = true         # the quorum's automatic context restart moves a role to the balanced account of its provider
-# quota_handoff = true     # a quiet role moves off an account near a limit, or over its share, to the one most under
+# rebalance = true         # the quorum's automatic context restart takes the quota handoff's pick within its provider
+# quota_handoff = true     # a quiet role moves off an account near a limit, or clearly over its share, to one under
 # reserve_pct = 2          # percent of a window kept back to restart elsewhere: a role leaves an account only then
 # reset_grace_min = 30     # a window resetting this soon counts as fresh: its roles ride it out (default 30)
 # near_5h = 70             # optional explicit override of 100 - reserve_pct for a 5 h window; near_week likewise
-# quota_cooldown_min = 60  # a role moved for quota is not moved again sooner (default 60)
+# share_margin_pct = 10    # a share move needs its account over by this % of the pool's spend, and to cut that much
+# share_hold_min = 30      # ... over by it for this long first (several health runs)
+# spend_window_h = 24      # a role's spend (its share weight) is its cost-equivalent per day over these hours
+# quota_cooldown_min = 360 # a role moved for share is not moved for share again sooner (default 360, was 60)
 # pin = ["<role-slug>"]    # roles balancing keeps on their own provider
 # [accounts.capacity]      # what each plan buys, in units where a Claude Max plan is 100 (Codex Plus 18, Pro 125)
 # claude = "max"           # a default account by its provider's name; a plan, a number, or { plan = "plus", units = 20 }

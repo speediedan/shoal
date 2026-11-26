@@ -2842,6 +2842,8 @@ PY2
 
 echo "== 42 accounts: none declared is the old path; a second account's jobs, transcripts, roster and usage are read from its own directory"
 python3 "$TESTD/test_accounts.py" || fail "provider accounts (tests/test_accounts.py)"
+echo "== 42b balancing: one pick for restarts and quota moves, hysteresis, weighed by each role's spend"
+python3 "$TESTD/test_balance.py" || fail "quota balancing (tests/test_balance.py)"
 
 echo "== 43 a watcher holding wakes for an attached client: recorded, paged once, never counted as a wake without effect"
 # measured 2026-11-22: a client opened from a role's card (`codex resume <thread>`) held a user offer for 6 h; the

@@ -729,8 +729,8 @@ os.environ["SHOAL_CONFIG"] = cfg
 config._CACHE.clear()
 assert accounts.pin_of(spec.role("beta")) == "[accounts] pin" and accounts.pinned("beta")
 seen = []
-accounts.quota_pick = lambda p, a, load, pinned=False, providers=None, now=None, snap=None, slug="": seen.append((slug, pinned))
-accounts.role_load = lambda specs=None: {}
+accounts.balance_pick = lambda p, a, load, pinned=False, providers=None, now=None, snap=None, slug="", **kw: seen.append((slug, pinned))
+accounts.balance_load = lambda specs=None, now=None: ({}, {}, {}, "roles")
 roles.is_local = health.is_local = lambda r, s=None: True
 spec.role("beta").session = "bbbb0001"
 for r_ in (role, spec.role("beta")):

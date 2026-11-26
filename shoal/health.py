@@ -128,8 +128,9 @@ LADDERS = {
     "asks-on-return": [(0, "wake")],
     # open asks with no question on screen while the maintainer is online (`unraised_condition`): raised again, twice
     "asks-unraised": [(0, "wake"), (120, "wake")],
-    # [accounts] quota_handoff: a role at a quiet boundary whose account nears a 5 h or weekly limit, or carries more
-    # than its share, is handed to the account balancing picks (accounts.quota_pick); held through its cooldown
+    # [accounts] quota_handoff: a role at a quiet boundary whose account nears a 5 h or weekly limit, or is clearly over
+    # its share, is handed to the account balancing picks (accounts.balance_pick); a share move is held through the
+    # role's cooldown and this host's settle (balance_hold)
     "quota-handoff": [(0, "restart")],
     # a restart that failed (restart_record) whose role no other restarting condition covers this run: tried again once
     # its backoff has passed, and paged after RESTART_FAIL_PAGE failures in a row
@@ -1316,13 +1317,12 @@ def quota_condition(spec: ShoalSpec, role, q: dict, auto: bool) -> dict | None:
     if not (q.get("restart_ready") or auto):
         return None
     try:
-        pick = accounts.quota_pick(role.ecosystem, role.account, accounts.role_load(), bool(accounts.pin_of(role)),
-                                   slug=role.slug)
+        pick = balance_pick(spec, role, bool(accounts.pin_of(role)))
     except Exception:  # noqa: BLE001 - no usage cache or specs: the role stays
         return None
     if pick is None:
         return None
-    p, acct, why = pick
+    p, acct, why, kind = pick
     import park
     new_eco = p if p != role.ecosystem else ""
     if new_eco and park._ecosystem_refusal(new_eco):
@@ -1337,23 +1337,100 @@ def quota_condition(spec: ShoalSpec, role, q: dict, auto: bool) -> dict | None:
             return None  # no blind handover: the role's own boundary (context-doc) gets its doc fixed first
     extra = park.move_args(role, new_eco, acct)[0]
     return {"slug": role.slug, "condition": "quota-handoff", "key": f"session:{role.session}:{p}/{acct}",
-            "since": q.get("ts") or iso(), "first_seen": True, "extra": extra,
+            "since": q.get("ts") or iso(), "first_seen": True, "extra": extra, "kind": kind,
+            "from": f"{role.ecosystem}/{role.account or ''}",
             "detail": f"{accounts.name(role.ecosystem, role.account)} -> {accounts.name(p, acct)}: {why}"}
 
 
+# This run's balancing inputs (`balance_observe`, once per run before the conditions): the load every pick of the run
+# reads, and the health state the persistence, cooldown and return records live in. Empty outside a run: a pick then
+# skips the persistence check (tests call the conditions directly).
+_BALANCE: dict = {}
+
+
+def balance_observe(state: dict) -> str:
+    """Once per run, with `[accounts] quota_handoff` or `rebalance` on: read the load (accounts.balance_load: spend per
+    account) for every pick this run, and record since when each account has been over its share by the margin
+    (state["balance_over"]), which a share move needs for `share_hold_min`. Says what it found."""
+    _BALANCE.clear()
+    if not (accounts.quota_handoff_on() or accounts.rebalance_on()):
+        state.pop("balance_over", None)
+        return ""
+    load, counts, per, unit = accounts.balance_load()
+    prev = state.get("balance_over") or {}
+    over = {f"{p}/{a}": prev.get(f"{p}/{a}") or iso() for p, a in accounts.over_accounts(load)}
+    state["balance_over"] = over
+    _BALANCE.update(load=load, counts=counts, per=per, unit=unit, state=state)
+    return (f"{', '.join(f'{k} since {v}' for k, v in sorted(over.items()))} over its share" if over else "")
+
+
+def balance_pick(spec: ShoalSpec, role, pinned: bool) -> tuple[str, str, str, str] | None:
+    """(provider, account, why, kind) from accounts.balance_pick for this role, kind "limit" (off an account near a
+    limit) or "share"; None to stay. The same pick for the quota handoff and the rebalanced context restart."""
+    if _BALANCE.get("off"):
+        return None
+    if _BALANCE:
+        load, counts, per, unit, st = (_BALANCE[k] for k in ("load", "counts", "per", "unit", "state"))
+        since = (st.get("balance_over") or {}).get(f"{role.ecosystem}/{role.account or ''}")
+        over_for = (age_min(since) or 0.0) if since else 0.0
+        lr = (st.get("quota_left") or {}).get(role.slug) or {}
+        left = tuple(lr["from"].split("/", 1)) if lr.get("from") and \
+            (age_min(lr.get("at", "")) or 1e9) < accounts.RETURN_H * 60 else None
+    else:
+        load, counts, per, unit = accounts.balance_load()
+        over_for, left = None, None
+    pick = accounts.balance_pick(role.ecosystem, role.account, load, pinned, slug=role.slug,
+                                 weight=per.get((spec.sid, role.slug), 1.0 if unit == "roles" else 0.0),
+                                 counts=counts, unit=unit, left=left, over_for_min=over_for)
+    if pick is None:
+        return None
+    return (*pick, "limit" if " is near its limit (" in pick[2] else "share")
+
+
+def balance_hold(kind: str, slug: str, state: dict, quota_done: bool) -> str:
+    """Why a balancing move of `kind` is held this run ("" when it is not): one quota move per quorum run; a share move
+    also waits out the role's `quota_cooldown_min` since its last move and this host's settle (accounts.SETTLE_MIN since
+    any shoal's share move here), so the specs and readings catch up. A move off an account near its limit waits for
+    neither."""
+    if quota_done:
+        return "another role moved this run"
+    if kind != "share":
+        return ""
+    since = age_min((state.get("quota_moved") or {}).get(slug, ""))
+    if since is not None and since < accounts.quota_cooldown_min():
+        return f"moved {since:.0f} min ago (cooldown {accounts.quota_cooldown_min():g})"
+    settle = age_min(accounts.last_share_move())
+    if settle is not None and settle < accounts.SETTLE_MIN:
+        return f"a role on this host moved for share {settle:.0f} min ago (settle {accounts.SETTLE_MIN:g})"
+    return ""
+
+
+def balance_moved(state: dict, slug: str, kind: str, src: str, what: str) -> None:
+    """Record a balancing move: the role's cooldown and the account it left (for the return margin), and for a share
+    move this host's settle."""
+    state.setdefault("quota_moved", {})[slug] = iso()
+    state.setdefault("quota_left", {})[slug] = {"from": src, "at": iso()}
+    if kind == "share":
+        accounts.note_share_move(iso(), what)
+
+
 def rebalance(spec: ShoalSpec, role) -> tuple[str, ...]:
-    """`[accounts] rebalance`: (the restart argument, what it does) to start this role's automatic restart on the account
-    the selection policy picks now (`accounts.choose`, same provider), or () to keep its account: the setting off,
-    another host's role, the pick its account already, or a Claude account that does not trust the shoal's folder (the
-    restart would stop the old session, then fail to start the new one)."""
-    import accounts
+    """`[accounts] rebalance`: (the restart argument, what it does, kind, the account left) to start this role's
+    automatic restart on the account `balance_pick` moves it to within its provider (the quota handoff's pick: one
+    rule, so neither undoes the other), or () to keep its account: the setting off, another host's role, no move due, a
+    share move held (`balance_hold`: this host's settle; the restart itself is no extra session, so the role's cooldown
+    does not hold it), or a Claude account that does not trust the shoal's folder (the restart would stop the old
+    session, then fail to start the new one)."""
     if role is None or not accounts.rebalance_on() or not is_local(role, spec):
         return ()
     try:
-        acct, why = accounts.choose(role.ecosystem)
+        pick = balance_pick(spec, role, True)
     except Exception:  # noqa: BLE001 - no usage cache or settings: the account stays
         return ()
-    if acct == (role.account or ""):
+    if pick is None or pick[0] != role.ecosystem or pick[1] == (role.account or ""):
+        return ()
+    _p, acct, why, kind = pick
+    if balance_hold(kind, "", {}, False):
         return ()
     if role.ecosystem == "claude":
         from backends import claude_untrusted
@@ -1361,7 +1438,7 @@ def rebalance(spec: ShoalSpec, role) -> tuple[str, ...]:
             return ()
     return (f"--set-account={role.slug}:{acct or role.ecosystem}",
             f"account {accounts.name(role.ecosystem, role.account)} -> {accounts.name(role.ecosystem, acct)} "
-            f"([accounts] rebalance: {why})")
+            f"([accounts] rebalance: {why})", kind, f"{role.ecosystem}/{role.account or ''}")
 
 
 # A restart that fails stays due: the role keeps a record of it (restart_record) and the quorum tries again after a
@@ -1796,7 +1873,7 @@ def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list
         last = state.get("host_beat", "")
         if not dry_run and (not last or (age_min(last) or 0.0) >= beat_min):
             try:
-                led.append("shoal", "system", kind="host-beat", host=me, instance=host_instance())
+                led.append("shoal", "system", kind="host-beat", host=me, instance=host_instance(), **beat_spend(spec))
                 state["host_beat"] = iso()
             except Exception as exc:  # noqa: BLE001 - a beat must never stop the quorum
                 print(f"{iso()} health: host-beat write failed: {exc}")
@@ -1817,6 +1894,20 @@ def host_beats(spec: ShoalSpec, led, state: dict, dry_run: bool = False) -> list
                                   f"no health quorum and nothing on {me} can wake them. Asleep or offline is fine; "
                                   f"otherwise check its timers (`ssh {h} systemctl --user list-timers 'shoal-*'`)"})
     return out
+
+
+def beat_spend(spec: ShoalSpec) -> dict:
+    """{"spend": {slug: M cost-eq per day}} of this shoal's local Claude roles for its host-beat, with `[accounts]
+    quota_handoff` or `rebalance` on: another host's balancing weighs this host's roles by it (role_spend.beats). {}
+    when balancing is off or nothing is measured; a measurement that fails never stops the beat."""
+    if not (accounts.quota_handoff_on() or accounts.rebalance_on()):
+        return {}
+    try:
+        import role_spend
+        got = role_spend.beat(spec)
+    except Exception:  # noqa: BLE001 - the beat is liveness first
+        return {}
+    return {"spend": got} if got else {}
 
 
 def maintenance_window(led, server: str) -> dict | None:
@@ -1911,6 +2002,14 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
             accounts.refresh_readings()
         except Exception as exc:  # noqa: BLE001 - a usage read never breaks a health run
             acts.append(("health", "usage readings", f"skipped ({str(exc)[:80]})"))
+    _BALANCE.clear()
+    if is_local_any(spec):
+        try:  # one load for every balancing pick this run, and since when each account is over its share
+            balance_observe(state)
+        except Exception as exc:  # noqa: BLE001 - balancing inputs never break a health run: no share move this run
+            _BALANCE.clear()
+            _BALANCE["off"] = True
+            acts.append(("health", "balance", f"skipped ({str(exc)[:80]})"))
     cbusy = claude_busy()
     conds = evaluate(spec, view, cbusy)
     conds += restart_retries(spec, spec_path, conds, cbusy, state, acts, dry_run)
@@ -2159,14 +2258,10 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 break
             n_before = int(restart_record(spec.sid, c["slug"]).get("fails") or 0) if action == "restart" else 0
             if action == "restart" and c["condition"] == "quota-handoff":
-                # one quota move per run, and none for a role moved within its cooldown: the readings and the load the
-                # next pick reads catch up with each move first, so roles do not swing between accounts
-                import accounts as _ac
-                moved_at = state.setdefault("quota_moved", {})
-                since = age_min(moved_at.get(c["slug"], ""))
-                hold = ("another role moved this run" if quota_done else
-                        f"moved {since:.0f} min ago (cooldown {_ac.quota_cooldown_min():g})"
-                        if since is not None and since < _ac.quota_cooldown_min() else "")
+                # one quota move per run; a share move also waits out the role's cooldown and this host's settle: the
+                # readings and the load the next pick reads catch up with each move first (balance_hold)
+                kind = c.get("kind", "share")
+                hold = balance_hold(kind, c["slug"], state, quota_done)
                 if hold:
                     if lad.get("quiet") != hold.split(" ")[0]:
                         lad["quiet"] = hold.split(" ")[0]
@@ -2174,7 +2269,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                     break
                 ch = context_restart(spec, spec_path, role_, dry_run, tuple(c.get("extra") or ()))
                 if not ch.startswith("FAILED"):
-                    moved_at[c["slug"]] = iso()
+                    if not dry_run:
+                        balance_moved(state, c["slug"], kind, c.get("from", ""), f"{spec.sid}/{c['slug']}")
                     quota_done = True
                     ch += f"; {c['detail']}"
             elif action == "restart" and c["condition"] == "restart-retry":
@@ -2184,6 +2280,8 @@ def run(spec: ShoalSpec, instance: str, dry_run: bool = False, spec_path: str = 
                 ch = context_restart(spec, spec_path, role_, dry_run, moved[:1])
                 if moved and not ch.startswith("FAILED"):
                     ch += f"; {moved[1]}"
+                    if not dry_run and len(moved) > 3:  # the quota handoff's cooldown and return margin see it
+                        balance_moved(state, c["slug"], moved[2], moved[3], f"{spec.sid}/{c['slug']}")
                 if c["condition"] in RESTART_NOT_PAGE and not ch.startswith("FAILED"):
                     ch = f"woken {lad['step']}x without effect: {ch}"
             elif c["condition"] in ("host-silent", "host-name-clash", "context-restart", "checkout-stuck", "lease-orphan",
