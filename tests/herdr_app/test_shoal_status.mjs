@@ -94,4 +94,26 @@ assert.equal(M.shoalInView([{ id: "s5", active: true, tabs: [] }], terms), null,
 assert.deepEqual(M.needsYouOrder([{ address: "b", pane: "p", status: "blocked" }, { address: "a", pane: "q", status: "blocked", seq: 0 }]).map((a) => a.address), ["a", "b"], "no seq reads as 0: a stable order");
 assert.deepEqual(M.usageMachines([{ active: true, machine: null }], ["lane-a", null]), ["lane-a", null]);
 assert.deepEqual(M.usageMachines([], []), [null]);
+// a reading over an hour old is not drawn as a value (2026-11-26: the app's computer held claude 6 days old and claude-2
+// 8 days old, and the bar showed those percentages while the other machines' answers were on their way)
+const aged = (provider, age_s, extra = {}) => ({ provider, age_s, stale: age_s > 900, ...extra, rows: [{ windows: [{ name: "5h", used_percent: 41 }] }] });
+const laptop = M.usageRows({ accounts: [aged("codex", 222), aged("claude", 571281, { error: "HTTP 401" }), aged("claude-2", 762713), aged("muse", 1800)] });
+assert.deepEqual(laptop.map((u) => [u.name, Boolean(u.old), u.windows.length]), [["codex", false, 1], ["claude", true, 0], ["claude-2", true, 0], ["muse", false, 1]]);
+assert.equal(laptop[3].stale, true, "a little old: still drawn, dimmed");
+assert.match(M.usageTip(laptop[2], 0), /^claude-2: last read 8d 19h ago; waiting for a fresh reading$/);
+assert.match(laptop[1].error, /\(HTTP 401\)/, "an old reading's own error is kept in the hover");
+assert.ok(!/\d+%/.test(M.usageTip(laptop[1], 0)));
+assert.equal(M.USAGE_MAX_AGE_S, 3600);
+assert.equal(M.usageRows({ accounts: [aged("x", 3600)] })[0].old, undefined, "the bound itself still draws");
+assert.deepEqual(M.usageScore(laptop), [2, 1], "an old reading counts as unread");
+const remote = M.usageRows({ accounts: [aged("codex", 71), aged("claude", 71), aged("claude-2", 71), aged("muse", 268)] });
+assert.equal(M.bestUsage([laptop, remote]), remote, "the fresh machine wins over this computer's old cache");
+assert.ok(M.usageComplete(remote) && !M.usageComplete(laptop));
+// before a reading lands the bar draws as refreshing (null), and keeps doing so through the warm-up
+assert.equal(M.usageShown(null, null, true), null);
+assert.deepEqual(M.usageShown(null, null, false), [], "after the warm-up, nothing to draw");
+assert.equal(M.usageShown(null, laptop, true), laptop);
+assert.equal(M.usageShown(remote, null, true), remote, "a failed pass keeps the last good rows");
+assert.ok(M.usageRetry(laptop, 1000) && M.usageRetry(null, 1000), "warming up: a pass with no complete answer is tried again soon");
+assert.ok(!M.usageRetry(remote, 1000) && !M.usageRetry(laptop, M.USAGE_WARM_MS), "a complete answer, or past the warm-up: the timer's pace");
 console.log("shoal-status: ok");

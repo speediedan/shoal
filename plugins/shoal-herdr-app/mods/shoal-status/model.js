@@ -9,15 +9,27 @@ export function usageColor(pct) {
 }
 
 /**
+ * A reading older than this (seconds) is not drawn as a value: twelve polls (subscription_usage.POLL_S), four times the
+ * age at which it turns stale and is dimmed (STALE_S). A host whose cache no feed refreshes keeps its last reading for
+ * days, and the bar showed those percentages while the other machines' answers were on their way (measured 2026-11-26:
+ * the app's own computer held a claude reading 6 days old and a claude-2 one 8 days old).
+ */
+export const USAGE_MAX_AGE_S = 3600;
+
+/**
  * `shoal ui usage --json` as one entry per provider and bucket: {name, stale, error, windows: [{name, pct, color,
  * resetsAt}]}, only the windows with a reading. An entry with neither windows nor an error says nothing and is left out.
+ * An account whose reading is older than `maxAge` (its `age_s`) keeps its entries with no windows (`old`: drawn as
+ * waiting, never as its old percentages), so it counts as unread and a fresher machine's answer wins.
  */
-export function usageRows(doc) {
+export function usageRows(doc, maxAge = USAGE_MAX_AGE_S) {
   const out = [];
   for (const a of arr(doc?.accounts)) {
     if (!a || typeof a.provider !== "string") continue;
     const rows = arr(a.rows);
     const stale = a.stale === true;
+    const age = typeof a.age_s === "number" && Number.isFinite(a.age_s) ? a.age_s : null;
+    const old = age !== null && age > maxAge;
     if (!rows.length && a.error) out.push({ name: a.provider, stale, error: String(a.error), windows: [] });
     for (const r of rows) {
       const windows = [];
@@ -29,7 +41,13 @@ export function usageRows(doc) {
       }
       if (!windows.length) continue;
       const bucket = r?.bucket && r.bucket !== a.provider ? `/${r.bucket}` : "";
-      out.push({ name: `${a.provider}${bucket}`, stale, error: "", windows });
+      const name = `${a.provider}${bucket}`;
+      if (old) {
+        out.push({ name, stale: true, old: true, windows: [],
+                   error: `${name}: last read ${untilText(age)} ago${a.error ? ` (${a.error})` : ""}; waiting for a fresh reading` });
+        continue;
+      }
+      out.push({ name, stale, error: "", windows });
     }
   }
   return out;
@@ -100,9 +118,31 @@ export function bestUsage(candidates) {
   return best;
 }
 
+/** How long after the bar starts a pass that found no complete answer is tried again soon (USAGE_RETRY_MS): the other
+ * machines' connections are still coming up, so the first pass hears only this computer. */
+export const USAGE_WARM_MS = 120000;
+export const USAGE_RETRY_MS = 5000;
+
 /**
- * Where usage may be read, in order: the machine of the space in view, the other machines, this computer (null). Not every
- * host keeps a live usage cache, so each is asked until one is complete (usageComplete) and the best answer wins (bestUsage).
+ * What the bar shows after a pass (`best`, bestUsage of the answers; `prev`, what it showed, null while it has shown no
+ * reading): the best rows; else the last good ones; else, while it is warming up (`warm`), still null (drawn as
+ * refreshing, never as a value), and after that nothing.
+ */
+export function usageShown(prev, best, warm) {
+  if (best) return best;
+  if (prev) return prev;
+  return warm ? null : [];
+}
+
+/** Whether a pass is tried again soon: nothing complete yet, inside the warm-up (`sinceMs` since the bar started). */
+export function usageRetry(best, sinceMs) {
+  return !usageComplete(best) && sinceMs < USAGE_WARM_MS;
+}
+
+/**
+ * Where usage may be read: the machine of the space in view, the other machines, this computer (null). Not every host
+ * keeps a live usage cache, so all are asked at once (the first complete answer, usageComplete, is drawn as it lands) and
+ * the best answer wins (bestUsage; on a tie the earlier in this order).
  */
 export function usageMachines(spaces, machineNames) {
   const active = arr(spaces).find((s) => s?.active)?.machine;

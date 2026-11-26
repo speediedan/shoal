@@ -1010,10 +1010,10 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   none of these falls back to the dialog's actions, with a line saying so (`asksFallback`). The row's right-click
   still opens its asks when it has some) or a design or
   feedback wait, `permission` for a pending grant. When the role finishes an item (a `done` newer than any the card has
-  seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished, with its sound, until
+  seen) and rests, the card says `done` instead of `idle`, once: the app shows it as finished (silently: Sounds below), until
   you look, and anything the role does next, or an attach, replaces it. A card restarted by an upgrade (every card re-execs
   on new code) forgets a `done` not yet seen. The app then shows the role in its agents list, colors the
-  space and tab dots, plays its sound and posts a toast that leads to the card. Leaving the card clears the
+  space and tab dots, plays its sound (the needs-you one; a finished one is silent) and posts a toast that leads to the card. Leaving the card clears the
   report. The 0.9.3 feeder's socket push is not used here.
 - **The pin.** The app downloads its own updates and then updates herdr-core, and no setting stops it.
   `app-start` runs it as the user unit `shoal-herdr-app` with `HERDR_RELEASES_URL` pointed at a dead loopback
@@ -1032,6 +1032,15 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   time to its reset, such as `claude: 5h resets in 2h 14m, wk resets in 3d 4h`), and the window's mark (top left) is
   SHOAL and its icon (`shoal-chrome`, a patched copy of `workspace-chrome` that carries the icon file, since the app
   loads no picture through a link).
+- **Usage in the status bar.** The bar asks every machine for `shoal ui usage --json` at once and keeps the best
+  answer (most accounts read, then most fresh), drawing the first complete one as it lands; until a reading lands it
+  says a pulsing `usage …`, never a cached value. A reading over an hour old (`USAGE_MAX_AGE_S`, twelve polls) is drawn
+  as an empty bar and `…`, its hover saying how old it is; a reading only a little old (past the 15-minute stale mark)
+  is dimmed. In the first two minutes a pass with no complete answer is tried again every 5 s: the other machines'
+  connections are still coming up, and the first pass hears only this computer, whose cache no feed may refresh
+  (measured 2026-11-26: the app's own computer held readings 6 and 8 days old, and the bar showed them while the other
+  machines' answers were on their way). The `usage` dashboard reads the same way (its Refresh asks one machine at a
+  time, since it reads the account APIs) and shows such an account's card as waiting.
 - **The home space** (`SHOAL-home`, on this machine): the `shoal-home` mod when it is installed, else the terminal
   chooser, plus the global `lattice` tab, which reads a shoal home's feed when this host is no shoal's home, and the
   `usage` tab (the `shoal-usage` dashboard: a card per provider with each window's meter, reset and pace, the tightest
@@ -1058,6 +1067,17 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   `settings.json.bak-shoal-theme` first); a theme you picked stays. Only one app should show a machine's
   spaces at a time: herdr-core sizes each terminal for one viewer, so a second window on the same spaces makes
   the cards wrap at its size.
+- **Sounds.** Herdr plays `done` when an agent finishes while you are not looking at it and `blocked` when one needs
+  you, and a running shoal finishes things all day (a role's card at each item, a standalone seat's after each reply,
+  an attached client at each turn that ends unwatched). Herdr has no switch per kind, only files that replace its sounds, so `app-install` writes a
+  silent MP3 to the app's `shoal-sounds/silent.mp3` and points `settings.json`'s `sounds.done` at it (a one-time
+  `settings.json.bak-shoal-sounds` first; every other key, `sounds.enabled` and `sounds.blocked` included, is kept). A
+  finished agent then makes no sound but still posts its toast (Herdr has no setting for the toast); one that needs you
+  keeps Herdr's sound. A `done` file you chose stays. `shoal ui set app_done_sound herdr` and a rerun of `app-install`
+  restore Herdr's own sound (`silent` is the default). A card writes the same report on every refresh, and Herdr keeps
+  attention per tab by its state word (`view.json` `attention`: `{word, seen}`), so a role still needing you does not
+  ding again on a refresh, nor when what it needs changes (a question, then a grant, stays `blocked`): it dings when
+  its tab turns `blocked`.
 - **Actions.** Ctrl+Alt+S (set by `app-install` when free) opens the `shoal-actions` dialog, as does a
   right-click in the lattice: on a role, on a shoal's circle (that shoal), or anywhere else (every shoal), or on a machine
   in Spaces (its shoals). **Handoff** first requests a restart-ready checkpoint if needed, then hands the role

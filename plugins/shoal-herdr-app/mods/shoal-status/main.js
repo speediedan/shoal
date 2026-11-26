@@ -2,12 +2,14 @@
 // as in Herdr's own bar, plus two things that are always within reach: the way back to a lattice (a button and
 // Ctrl+Alt+L: `shoal ui app-lattice` reopens a closed tab) and each provider's usage. Ctrl+Alt+N, or a click on the
 // needs-you count, goes to the next agent that needs you, in the lattice pulse's order. Reads usage from the cached
-// `shoal ui usage --json` (no model turns), and on a slow timer runs `shoal ui app-sync`, so roles tabs follow the roles.
+// `shoal ui usage --json` (no model turns) of every machine at once, saying `usage …` until a reading lands and drawing
+// no percentage from a reading over an hour old, and on a slow timer runs `shoal ui app-sync`, so roles tabs follow the roles.
 
 import { View, div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, agents, machines, terminals, panes, theme, run, exec, nextCommand, props, setShared } from "herdr";
-import { parseUsage, usageMachines, usageComplete, bestUsage, usageTip, nextNeedsYou, latticeTab, homeTab, shoalInView } from "./model.js";
+import { parseUsage, usageMachines, usageComplete, bestUsage, usageShown, usageRetry, USAGE_RETRY_MS, USAGE_WARM_MS, usageTip, nextNeedsYou, latticeTab, homeTab,
+  shoalInView } from "./model.js";
 
 const USAGE_MS = 60000;
 const SYNC_MS = 120000;
@@ -22,7 +24,9 @@ const safe = (f, d) => {
 
 export default class ShoalStatus extends View {
   init(_props, cx) {
-    this.rows = [];
+    this.rows = null;  // no reading yet: the meters draw as refreshing
+    this.born = Date.now();
+    this.reading = 0;  // when the pass in flight started
     this.note = null;
     this.readUsage(cx);
     cx.timer.every(USAGE_MS, (cx) => this.readUsage(cx));
@@ -41,25 +45,39 @@ export default class ShoalStatus extends View {
   }
 
   readUsage(cx) {
+    // a warm-up retry and the timer do not overlap; a pass stuck on a machine that never answers holds the next one back
+    // for one interval only
+    if (this.reading && Date.now() - this.reading < USAGE_MS) return;
+    const pass = this.reading = Date.now();
     const where = usageMachines(safe(spaces, []), safe(machines, []).map((m) => m.name));
     cx.spawn(async (cx) => {
-      const seen = [];
-      for (const on of where) {
+      // every machine at once: asked in turn, a slow ssh answer held the fresh one back
+      const seen = where.map(() => null);
+      let drawn = false;
+      await Promise.all(where.map(async (on, i) => {
         let reply = null;
         try {
           reply = await exec("shoal", ["ui", "usage", "--json"], on ? { on } : {});
         } catch (_e) {
           reply = null;
         }
-        seen.push(parseUsage(reply));
-        if (usageComplete(seen[seen.length - 1])) break;  // every account read and fresh: no other machine does better
-      }
+        seen[i] = parseUsage(reply);
+        if (!drawn && usageComplete(seen[i])) {  // every account read and fresh: drawn as it lands
+          drawn = true;
+          this.rows = seen[i];
+          cx.notify();
+        }
+      }));
+      if (this.reading === pass) this.reading = 0;
       // the best machine's rows, not the first to answer: a host whose cache no feed refreshes answers stale rows
       const best = bestUsage(seen);
-      if (best) {  // no machine has rows: the last good rows stay
-        this.rows = best;
+      const since = Date.now() - this.born;
+      const rows = usageShown(this.rows, best, since < USAGE_WARM_MS);
+      if (rows !== this.rows) {
+        this.rows = rows;
         cx.notify();
       }
+      if (usageRetry(best, since)) cx.timer.after(USAGE_RETRY_MS, (cx) => this.readUsage(cx));
     });
   }
 
@@ -155,6 +173,8 @@ export default class ShoalStatus extends View {
     const row = h_flex().id(`u-${u.name}`).gap(5).items_center().flex_none()
       .tooltip(usageTip(u, Date.now() / 1000))
       .child(div().text_color(u.stale ? t.dim : t.muted).child(u.name));
+    // a reading too old to draw: an empty bar and an ellipsis, not its old percentages (the hover says how old)
+    if (u.old) return row.child(div().w(42).h(6).rounded(3).bg(t.border)).child(div().text_size(10).text_color(t.dim).child("…"));
     if (u.error) return row.child(div().text_color(t.dim).child("?"));
     for (const w of u.windows) {
       row.child(h_flex().gap(3).items_center()
@@ -193,6 +213,11 @@ export default class ShoalStatus extends View {
         .child(this.button("to-usage", "Usage", "the usage dashboard", (_e, cx) => { this.usage(cx); cx.notify(); }, t)))
       .when(Boolean(this.note), (el) => el.child(div().min_w(0).truncate().text_color(t.dim).child(this.note)))
       .child(div().flex_1());
+    if (this.rows === null) {  // no reading has landed yet: a pulsing notice, never the old percentages a cache holds
+      bar.child(div().id("u-loading").flex_none().text_size(10.5).text_color(t.dim).tooltip("reading usage from each machine")
+        .loop("opacity", { from: 0.35, to: 1, period: 1200, easing: "ease-in-out" }).child("usage …"));
+      return bar;
+    }
     for (const u of this.rows) bar.child(this.meter(u, t));
     return bar;
   }

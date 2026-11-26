@@ -1749,7 +1749,8 @@ def cmd_app_install(a) -> int:
                 line = install_mod(name, a.dry_run)
                 if line:
                     print(line)
-        for line in install_keys(a.dry_run) + install_theme(a.dry_run) + install_layout(a.dry_run) + install_icon(a.dry_run):
+        for line in (install_keys(a.dry_run) + install_theme(a.dry_run) + install_sounds(a.dry_run) + install_layout(a.dry_run)
+                     + install_icon(a.dry_run)):
             print(line)
     return 0
 
@@ -2261,6 +2262,99 @@ def theme_state() -> tuple[bool, str]:
     return have == THEME and present, f"settings theme = {have or 'unset'}; {THEME}.json {'present' if present else 'missing'}"
 
 
+# Herdr's attention sounds (settings.json `sounds`): `done` when an agent finishes while you are not looking at it,
+# `blocked` when one needs you. A role card reports done for every item it finishes (DoneLatch), a standalone seat's card
+# after every reply, and an attached client at every turn that ends unwatched, so a running shoal dinged all day (2026-11-26, the
+# maintainer: dings only when you are needed). Herdr has no per-kind switch, only files that replace its sounds, so
+# `done` gets a silent one; `blocked` keeps Herdr's. The done toast still posts (it has no setting of its own).
+SILENT_SOUND = "shoal-sounds/silent.mp3"  # relative to the app home, as settings.json takes it
+DONE_SOUNDS = ("silent", "herdr")  # `shoal ui set app_done_sound`; silent by default
+
+
+def silent_mp3() -> bytes:
+    """A quarter second of silence: ten MPEG-1 Layer III frames (32 kbit/s, 44.1 kHz, mono) whose side info and main data
+    are all zero, so every sample decodes as zero. Herdr plays a sound file with paplay (libsndfile), else pw-play, ffplay,
+    mpg123 or mpv; libsndfile and ffmpeg both read these frames (checked 2026-11-26: 11520 samples, peak 0)."""
+    return (bytes([0xFF, 0xFB, 0x10, 0xC0]) + bytes(100)) * 10
+
+
+def done_sound_mode() -> str:
+    import ui_status
+    mode = ui_status.ui_config().get("app_done_sound")
+    return mode if mode in DONE_SOUNDS else "silent"
+
+
+def _done_is_ours(have) -> bool:
+    return isinstance(have, str) and bool(have) and \
+        os.path.normpath(os.path.join(app_home(), have)) == os.path.normpath(os.path.join(app_home(), SILENT_SOUND))
+
+
+def install_sounds(dry_run: bool = False) -> list[str]:
+    """settings.json's `sounds.done` -> shoal's silent file (written beside the app's own files), unless the person chose
+    a file of their own; `app_done_sound = herdr` takes shoal's back out. Every other key is kept, `sounds.enabled` and
+    `sounds.blocked` included, and the file is backed up once before shoal's first rewrite of it."""
+    mode = done_sound_mode()
+    out, pre = [], "[dry-run] " if dry_run else ""
+    path = os.path.join(app_home(), "settings.json")
+    try:
+        text = open(path).read()
+        doc = json.loads(text)
+    except FileNotFoundError:
+        text, doc = None, {}
+    except ValueError as exc:
+        return [f"sounds: {path} is not valid JSON ({exc}): left as it is"]
+    if not isinstance(doc, dict) or not isinstance(doc.get("sounds", {}), dict):
+        return [f"sounds: {path} has a sounds entry shoal can edit that is not an object: left as it is"]
+    sounds = doc.setdefault("sounds", {})
+    have = sounds.get("done")
+    if mode == "herdr":
+        if not _done_is_ours(have):
+            return []
+        del sounds["done"]
+        out.append(pre + "sounds: done -> Herdr's own (app_done_sound = herdr)")
+    else:
+        dest = os.path.join(app_home(), SILENT_SOUND)
+        if (open(dest, "rb").read() if os.path.exists(dest) else None) != silent_mp3():
+            out.append(pre + f"sounds: write {dest}")
+            if not dry_run:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest + ".tmp", "wb") as fh:
+                    fh.write(silent_mp3())
+                os.replace(dest + ".tmp", dest)
+        if _done_is_ours(have):
+            return out
+        if have not in (None, ""):
+            return out + [f"sounds: settings.json done plays {have!r}, your own: left as it is"]
+        sounds["done"] = SILENT_SOUND
+        out.append(pre + f"sounds: done -> {SILENT_SOUND} (a finished agent is silent, one that needs you keeps "
+                         "its sound; `shoal ui set app_done_sound herdr` restores Herdr's)")
+    if not dry_run:
+        backup = path + ".bak-shoal-sounds"
+        if text is not None and not os.path.exists(backup):
+            with open(backup, "w") as fh:
+                fh.write(text)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "w") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(path + ".tmp", path)
+    return out
+
+
+def sounds_state() -> tuple[bool, str]:
+    mode = done_sound_mode()
+    try:
+        have = (json.load(open(os.path.join(app_home(), "settings.json"))).get("sounds") or {}).get("done")
+    except (OSError, ValueError, AttributeError):
+        have = None
+    ours = _done_is_ours(have)
+    present = os.path.exists(os.path.join(app_home(), SILENT_SOUND))
+    own = bool(have) and not ours  # a file the person chose is theirs, whatever the setting
+    ok = own or ((ours and present) if mode == "silent" else not ours)
+    return ok, f"app_done_sound = {mode}; settings sounds.done = {have or 'unset (Herdr default)'}" + \
+        ("" if present or mode != "silent" or own else f"; {SILENT_SOUND} missing")
+
+
 def keys_state() -> tuple[bool, str]:
     try:
         term = (json.load(open(os.path.join(app_home(), "keys.json"))).get("terminal") or {})
@@ -2336,6 +2430,7 @@ def doctor_checks() -> list[tuple[str, bool, str]]:
                 out.append((f"app mod {name} installed from this checkout",) + link_state(name))
         out.append(("app paste keys as in 0.9.3",) + keys_state())
         out.append(("app theme (shoal ocean)",) + theme_state())
+        out.append(("app done sound",) + sounds_state())
         path = os.path.join(app_home(), "layouts", f"{SHOAL_LAYOUT}.json")
         out.append((f"app layout {SHOAL_LAYOUT}", os.path.exists(path), path if os.path.exists(path) else "missing (rerun `shoal ui app-install`)"))
     if has_core:
