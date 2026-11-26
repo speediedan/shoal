@@ -342,12 +342,15 @@ check(any(c.startswith(f"{D2}|-p ") for c in calls()) and accounts.token_hours("
       f"the meter refreshes a lapsed account before it reads: {calls()}")
 use(TWO_CFG)
 
-# ---- rebalance: the quorum's automatic restart takes the account balance picks now ------------------------------------
+# ---- rebalance: the quorum's automatic restart takes the quota handoff's pick (balance_pick) ---------------------------
 RSPEC = ShoalSpec(sid="acct-reb", dir=T, roles=[Role(slug="x", ecosystem="claude", account="claude-2"),
                                                Role(slug="c", ecosystem="codex", account="")])
-_snapshot = subscription_usage.snapshot
+_snapshot, _bload = subscription_usage.snapshot, accounts.balance_load
 subscription_usage.snapshot = lambda keys, now=None: {"accounts": [dict(reading(0, 132), provider="claude"),
                                                                    dict(reading(90, 140), provider="claude-2")]}
+# claude-2, with a tenth of the headroom, carries two of the three roles: clearly over its share
+accounts.balance_load = lambda specs=None, now=None: ({("claude", ""): 1, ("claude", "claude-2"): 2},
+                                                      {("claude", ""): 1, ("claude", "claude-2"): 2}, {}, "roles")
 check(not accounts.rebalance_on() and health.rebalance(RSPEC, RSPEC.roles[0]) == (), "rebalance is opt-in")
 REB_CFG = os.path.join(T, "reb.toml")
 open(REB_CFG, "w").write(open(TWO_CFG).read().replace('select = "balance"', 'select = "balance"\nrebalance = true'))
@@ -356,13 +359,21 @@ json.dump({"projects": {}}, open(os.path.join(HOME, ".claude.json"), "w"))
 check(health.rebalance(RSPEC, RSPEC.roles[0]) == (), "never onto an account that has not trusted the folder")
 json.dump({"projects": {T: {"hasTrustDialogAccepted": True}}}, open(os.path.join(HOME, ".claude.json"), "w"))
 moved = health.rebalance(RSPEC, RSPEC.roles[0])
-check(moved and moved[0] == "--set-account=x:claude" and "claude-2 -> claude" in moved[1], f"moved: {moved}")
+check(moved and moved[0] == "--set-account=x:claude" and "claude-2 -> claude" in moved[1] and moved[2:] ==
+      ("share", "claude/claude-2"), f"moved: {moved}")
 check(health.rebalance(RSPEC, RSPEC.roles[1]) == (), "a provider with its pick already on record stays")
 RSPEC.roles[0].account = ""
 check(health.rebalance(RSPEC, RSPEC.roles[0]) == (), "a role already on the pick stays")
+RSPEC.roles[0].account = "claude-2"
+accounts.balance_load = lambda specs=None, now=None: ({("claude", ""): 10, ("claude", "claude-2"): 1},
+                                                      {("claude", ""): 10, ("claude", "claude-2"): 1}, {}, "roles")
+check(health.rebalance(RSPEC, RSPEC.roles[0]) == (),
+      "an account at its share keeps its role through a restart, however much better another scores (the restart "
+      "used to take the best-scored account, which the quota handoff then moved back)")
+RSPEC.roles[0].account = ""
 out = health.context_restart(RSPEC, "/s.json", RSPEC.roles[0], True, ("--set-account=x:claude-2",))
 check(out.endswith("--set-account=x:claude-2"), f"the restart carries the account: {out}")
-subscription_usage.snapshot = _snapshot
+subscription_usage.snapshot, accounts.balance_load = _snapshot, _bload
 use(TWO_CFG)
 
 # ---- capacity: a plan's units weigh its headroom; shares and the quota handoff ---------------------------------------
@@ -402,38 +413,43 @@ sh = accounts.shares(load, ["claude", "codex"], NOW, snap)
 check(round(sh[("codex", "")]["target"], 1) == 0.9 and round(sh[("claude", "")]["target"], 1) == 5.0,
       f"each account's share of the roles follows its weighted capacity: {sh}")
 check(sh[("codex", "codex-b")]["target"] == 0 and sh[("codex", "codex-b")]["load"] == 0, "an unread account takes no share")
-pick = accounts.quota_pick("codex", "", load, False, ["claude", "codex"], NOW, snap)
+pick = accounts.balance_pick("codex", "", load, False, ["claude", "codex"], NOW, snap)
 check(pick and pick[:2] == ("claude", "claude-2") and "3 roles against a 0.9-role share" in pick[2],
       f"a role over its account's share moves to the account furthest under: {pick}")
-check(accounts.quota_pick("claude", "claude-2", load, False, ["claude", "codex"], NOW, snap) is None,
+check(accounts.balance_pick("claude", "claude-2", load, False, ["claude", "codex"], NOW, snap) is None,
       "a role on an account under its share stays")
 even = {("claude", ""): 5, ("claude", "claude-2"): 5, ("codex", ""): 1}
-check(accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW, snap) is None,
+check(accounts.balance_pick("claude", "", even, False, ["claude", "codex"], NOW, snap) is None,
       "under a whole role either way, nothing moves (no swaps)")
-# shares round to whole roles: Codex Plus's 0.9-role share is a role, so an idle Codex account draws one back
-back = {("claude", ""): 6, ("claude", "claude-2"): 5, ("codex", ""): 0}
-pick = accounts.quota_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="short")
-check(pick and pick[:2] == ("codex", ""), f"the account under by a whole (rounded) role takes it: {pick}")
+# hysteresis: one role over a 5.0-role share is no clear margin (10% of the pool's eleven), so nothing moves
+check(accounts.balance_pick("claude", "", {("claude", ""): 6, ("claude", "claude-2"): 5, ("codex", ""): 0}, False,
+                            ["claude", "codex"], NOW, snap) is None, "a one-role excess is not a clear margin")
+# 1.5 roles over: a move to claude-2 (0.5 under) would cut the imbalance by 1.0, under the 1.2 margin; Codex Plus,
+# idle against its 1.0-role share, takes the role (a cut of 2.0)
+back = {("claude", ""): 7, ("claude", "claude-2"): 5, ("codex", ""): 0}
+pick = accounts.balance_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="short")
+check(pick and pick[:2] == ("codex", "") and "cuts the imbalance by 2.0 (margin 1.2)" in pick[2],
+      f"the move that cuts the imbalance most, by at least the margin: {pick}")
 PREF_CFG = os.path.join(T, "pref.toml")
 open(PREF_CFG, "w").write(open(CAP_CFG).read() + '\n[accounts.prefer]\ncodex = ["short"]\n')
 use(PREF_CFG)
 check(accounts.preferred("codex") == ["short"] and accounts.preferred("claude") is None, "[accounts.prefer] by provider")
-check(accounts.quota_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="short")[:2] == ("codex", ""),
+check(accounts.balance_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="short")[:2] == ("codex", ""),
       "a preferred role may move onto the provider")
-check(accounts.quota_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="long") is None,
+check(accounts.balance_pick("claude", "", back, False, ["claude", "codex"], NOW, snap, slug="long") is None,
       "a role the provider does not name never moves onto it (and claude-2 is at its share)")
 use(CAP_CFG)
 hot = [dict(five(80, 2), provider="claude"), dict(five(10, 4), provider="claude-2"), dict(five(10, 4), provider="codex")]
-pick = accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW, hot)
+pick = accounts.balance_pick("claude", "", even, False, ["claude", "codex"], NOW, hot)
 check(pick and pick[:2] == ("claude", "claude-2") and "near its limit (5h 80% used)" in pick[2],
       f"an account near a limit hands its role to one with room: {pick}")
-pick = accounts.quota_pick("codex", "", even, True, ["claude", "codex"], NOW,
+pick = accounts.balance_pick("codex", "", even, True, ["claude", "codex"], NOW,
                            [dict(five(90, 2), provider="codex"), dict(five(10, 4), provider="claude")])
 check(pick is None, "a pinned role never leaves its provider (and Codex has no other account with a reading)")
 allhot = [dict(five(90, 2), provider="claude"), dict(five(90, 2), provider="claude-2"), dict(five(90, 2), provider="codex")]
-check(accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW, allhot) is None,
+check(accounts.balance_pick("claude", "", even, False, ["claude", "codex"], NOW, allhot) is None,
       "every account near its limit: nowhere better, the role stays")
-check(accounts.quota_pick("claude", "", even, False, ["claude", "codex"], NOW,
+check(accounts.balance_pick("claude", "", even, False, ["claude", "codex"], NOW,
                           [{"provider": "claude", "stale": True}, dict(five(10, 4), provider="claude-2")]) is None,
       "no fresh reading of its own account: the role stays")
 
@@ -450,8 +466,8 @@ json.dump({"projects": {T: {"hasTrustDialogAccepted": True}}}, open(os.path.join
 QSPEC = ShoalSpec(sid="acct-quota", dir=T, roles=[Role(slug="q1", ecosystem="claude", account="", session="s-q1"),
                                                  Role(slug="pinned", ecosystem="codex", account="", session="s-p")])
 subscription_usage.snapshot = lambda keys, now=None: {"accounts": hot}
-_load, _ref = accounts.role_load, __import__("park")._ecosystem_refusal
-accounts.role_load = lambda specs=None: even
+_load, _ref = accounts.balance_load, __import__("park")._ecosystem_refusal
+accounts.balance_load = lambda specs=None, now=None: (even, even, {}, "roles")
 __import__("park")._ecosystem_refusal = lambda eco: ""
 c = health.quota_condition(QSPEC, QSPEC.roles[0], {}, False)
 check(c is None, "page mode: only a role that marked itself restart-ready is handed over")
@@ -472,7 +488,7 @@ open(off, "w").write(open(CAP_CFG).read().replace("quota_handoff = true\n", ""))
 use(off)
 check(health.quota_condition(QSPEC, QSPEC.roles[0], {"restart_ready": True}, False) is None, "quota_handoff is opt-in")
 use(CAP_CFG)
-accounts.role_load, __import__("park")._ecosystem_refusal = _load, _ref
+accounts.balance_load, __import__("park")._ecosystem_refusal = _load, _ref
 subscription_usage.snapshot = _snapshot
 use(TWO_CFG)
 
@@ -484,10 +500,10 @@ pair = {("claude", ""): 2, ("claude", "claude-2"): 2}
 a_snap = [dict(reading(90, 15), provider="claude-2"), dict(reading(50, 120), provider="claude")]
 check(accounts.choose("claude", NOW, a_snap)[0] == "claude-2", f"(a) chosen: {accounts.choose('claude', NOW, a_snap)}")
 check(accounts.near_limit(reading(90, 15), NOW) == "", "(a) not near its limit")
-check(accounts.quota_pick("claude", "claude-2", pair, False, ["claude"], NOW, a_snap) is None, "(a) keeps its roles")
+check(accounts.balance_pick("claude", "claude-2", pair, False, ["claude"], NOW, a_snap) is None, "(a) keeps its roles")
 # (b) at 98.5% used its roles move off, and a new session goes elsewhere
 b_snap = [dict(reading(98.5, 15), provider="claude-2"), dict(reading(50, 120), provider="claude")]
-pick = accounts.quota_pick("claude", "claude-2", pair, False, ["claude"], NOW, b_snap)
+pick = accounts.balance_pick("claude", "claude-2", pair, False, ["claude"], NOW, b_snap)
 check(pick and pick[:2] == ("claude", "") and "near its limit (week 98.5% used)" in pick[2], f"(b) moves off: {pick}")
 check(accounts.choose("claude", NOW, b_snap)[0] == "", "(b) new sessions avoid it")
 spent = [dict(reading(98.5, 15), provider="claude-2"), dict(reading(99, 120), provider="claude")]
@@ -508,7 +524,7 @@ moves = []
 for used in seq:
     snap_d = [dict(reading(used, 15), provider="claude-2"), dict(reading(50, 120), provider="claude")]
     for acct in ("claude-2", ""):
-        if load[("claude", acct)] and (pick := accounts.quota_pick("claude", acct, load, False, ["claude"], NOW, snap_d)):
+        if load[("claude", acct)] and (pick := accounts.balance_pick("claude", acct, load, False, ["claude"], NOW, snap_d)):
             load[("claude", acct)] -= 1
             load[pick[:2]] = load.get(pick[:2], 0) + 1
             moves.append((acct, pick[1]))
@@ -530,8 +546,8 @@ check(accounts.near_limit(ride, NOW) == "", "a 5 h window at its limit but reset
 check(accounts.headroom(ride, NOW)[0] == 0.0, "but a new session does not start there")
 check(accounts.near_limit(both(99, 2, 40, 100), NOW) == "5h 99% used", "with 2 h to go it is near, and its roles move")
 r_snap = [dict(ride, provider="claude-2"), dict(reading(40, 100), provider="claude")]
-check(accounts.quota_pick("claude", "claude-2", pair, False, ["claude"], NOW, r_snap) is None, "no churn at a 5 h reset")
-check(accounts.quota_pick("claude", "", pair, False, ["claude"], NOW, r_snap) is None,
+check(accounts.balance_pick("claude", "claude-2", pair, False, ["claude"], NOW, r_snap) is None, "no churn at a 5 h reset")
+check(accounts.balance_pick("claude", "", pair, False, ["claude"], NOW, r_snap) is None,
       "nor onto it: an account within its reserve now takes no new session")
 part = both(70, 3, 40, 100)
 check(accounts.headroom(part, NOW, held=True)[1].startswith("week") and accounts.headroom(part, NOW)[1].startswith("5h"),

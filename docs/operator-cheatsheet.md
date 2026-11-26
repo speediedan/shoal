@@ -45,7 +45,11 @@ export S=<id> SPEC=<path to the group's spec>
 - Accounts and quota balance: each account's sign-in, units and headroom, where a new session would go,
   and each account's roles against its share (architecture doc, "Balance (spend down)"). An account is
   spent down: its roles stay until a window has `[accounts] reserve_pct` (2) percent left, then move
-  at a quiet boundary; the account whose quota would expire unused soonest is preferred:
+  at a quiet boundary; the account whose quota would expire unused soonest is preferred. Shares are of
+  each role's spend (cost-equivalent per day over `spend_window_h`, 24), not of role counts, and a role
+  moves for share only when its account is over by `share_margin_pct` (10) percent of the pool's spend
+  for `share_hold_min` (30) minutes and the move cuts that much; then it stays `quota_cooldown_min`
+  (360) minutes. A context restart (`rebalance`) uses the same pick:
 
     ```bash
     shoal accounts [--check] [--json]

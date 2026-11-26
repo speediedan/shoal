@@ -269,15 +269,16 @@ def keepalive_on() -> bool:
 
 def rebalance_on() -> bool:
     """`[accounts] rebalance = true`: the health quorum's automatic restart of a role (past its context limit, at a quiet
-    boundary) starts the new session on the account the selection policy picks now, within the role's provider, rather
-    than the one it had. Every other restart and handoff keeps the account unless one is named."""
+    boundary) starts the new session on the account `balance_pick` moves it to, within the role's provider (the same
+    pick as the quota handoff, so one never undoes the other), else on the one it had. Every other restart and handoff
+    keeps the account unless one is named."""
     t = config.file_values().get("accounts")
     return isinstance(t, dict) and t.get("rebalance") is True
 
 
 def quota_handoff_on() -> bool:
     """`[accounts] quota_handoff = true`: the health quorum hands a role at a quiet boundary to another account or
-    provider when its own nears a 5 h or weekly limit, or carries more than its share (`quota_pick`)."""
+    provider when its own nears a 5 h or weekly limit, or carries more than its share (`balance_pick`)."""
     t = config.file_values().get("accounts")
     return isinstance(t, dict) and t.get("quota_handoff") is True
 
@@ -300,7 +301,11 @@ def pin_of(role) -> str:
     return "[accounts] pin" if pinned(getattr(role, "slug", "")) else ""
 
 
-QUOTA_COOLDOWN_MIN = 60  # a role moved for quota is not moved again sooner (`[accounts] quota_cooldown_min`)
+# a role moved for share is not moved for share again sooner (`[accounts] quota_cooldown_min`): 360 since 2026-11-26
+# (was 60). Shares follow windows of a day or more, so a share that turns within 6 h is noise, and every share move is
+# a fresh session with nothing else to do (about 0.5M cost-eq each, measured). A move off an account near its limit is
+# never held by it.
+QUOTA_COOLDOWN_MIN = 360
 
 
 def quota_cooldown_min() -> float:
@@ -601,24 +606,30 @@ def near_limit(usage_row: dict, now: float | None = None) -> str:
 
 
 def shares(load: dict, providers: list[str] | None = None, now: float | None = None,
-           snap: list | None = None) -> dict[tuple[str, str], dict]:
-    """{(provider, account): {load, share, target, units, weighted, near, open, binding}} over the balancing pool: each
-    account's share of the roles is its capacity-weighted held headroom (`weighted`: `headroom(held=True)`, over its
-    windows of a day or more, so a 5 h window moves roles only at its reserve; at most its units, so an account near its
-    reset with room to spare does not draw every role) over the pool's total, and `target` that share of the roles
-    running on the pool now (`load`, from the specs). `open`: a new session may start there now (its score above 0). An
-    account with no fresh reading takes no share and keeps its load."""
+           snap: list | None = None, counts: dict | None = None) -> dict[tuple[str, str], dict]:
+    """{(provider, account): {load, roles, share, target, units, weighted, near, open, binding}} over the balancing pool:
+    each account's share is its capacity-weighted held headroom (`weighted`: `headroom(held=True)`, over its windows of
+    a day or more, so a 5 h window moves roles only at its reserve; at most a fresh window's, its units over BASE_UNITS,
+    so an account near its reset with room to spare does not draw every role) over the pool's total, and `target` that
+    share of the load on the pool now (`load`: the roles' spend per account, or their count, from `balance_load`;
+    `counts`, the roles, for display). `open`: a new session may start there now (its score above 0). An account with no
+    fresh reading takes no share and keeps its load.
+
+    The cap was `units` until 2026-11-26, against a weighted score in plans (score x units / BASE_UNITS), so it never
+    bound: a week with half its quota left a day before its reset scored 3.4 against a fresh week's 0.98, and each
+    account's share swung between 3.8 and 7.3 of eleven roles within a day (2026-11-23)."""
     rows = []
     for p in pool(providers):
         for r in rank(p, now, snap):
-            w = 0.0 if r["held"] is None or r["near"] else min(r["held"], float(r["units"]))
+            w = 0.0 if r["held"] is None or r["near"] else min(r["held"], r["units"] / BASE_UNITS)
             rows.append(((p, r["account"]), w, r))
     total_w = sum(w for _, w, _ in rows)
     n = sum(load.get(k, 0) for k, _, _ in rows)
     out = {}
     for k, w, r in rows:
         share = w / total_w if total_w else 0.0
-        out[k] = {"load": load.get(k, 0), "share": share, "target": share * n, "units": r["units"],
+        out[k] = {"load": load.get(k, 0), "roles": (counts if counts is not None else load).get(k, 0),
+                  "share": share, "target": share * n, "units": r["units"],
                   "weighted": w, "near": r["near"], "open": bool(r["score"]), "binding": r["binding"]}
     return out
 
@@ -627,15 +638,7 @@ def role_load(specs: list | None = None) -> dict[tuple[str, str], int]:
     """{(provider, account): roles running on it} over every live shoal the viewer shows (`ui_status.discover`): a role
     with a session counts on its recorded account, whichever host it runs on (an account is named alike on every host)."""
     if specs is None:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
-        import ui_status
-        from roles import ShoalSpec
-        specs = []
-        for path in ui_status.discover(config.ledger_dir()):
-            try:
-                specs.append(ShoalSpec.load(path))
-            except (OSError, ValueError):
-                continue
+        specs = live_specs()
     out: dict[tuple[str, str], int] = {}
     for spec in specs:
         for r in spec.roles:
@@ -654,33 +657,172 @@ def preferred(provider: str) -> list[str] | None:
     return [str(x) for x in roles] if isinstance(roles, list) else None
 
 
-def quota_pick(provider: str, account: str, load: dict, pinned: bool = False, providers: list[str] | None = None,
-               now: float | None = None, snap: list | None = None, slug: str = "") -> tuple[str, str, str] | None:
-    """(provider, account, why) a role on `provider`/`account` should move to now, or None to stay: off an account near
-    a limit (within the reserve) to the account furthest under its share that is not and can take a new session; else
-    off an account carrying at least one role over its share to one at least one role under (shares rounded to whole
-    roles, so an account whose share is most of a role gets one, and a move never just swaps which side is over).
-    `pinned`: its own provider's accounts only; `slug`: a provider with `[accounts.prefer]` takes only the roles it
-    names. None when this account has no fresh reading."""
-    plan = shares(load, [provider] if pinned else providers, now, snap)
-    here = plan.get((provider, account or ""))
+# ---- the balancing pick ---------------------------------------------------------------------------------------------
+# One picker (`balance_pick`) serves both automatic moves: the quiet-boundary quota handoff and the account a context
+# restart starts on (`[accounts] rebalance`). Until 2026-11-26 the restart took the best-scored account (`choose`) and
+# the handoff the account under its share, so each undid the other: 88 moves in a week, 55 of them back to the account
+# the role had left within 6 h, one quiet role moved 10 times in a day. Now both move a role only off an account near a
+# limit, or for share with hysteresis, weighed by spend rather than role count (`balance_load`).
+SHARE_MARGIN_PCT = 10  # a share move needs its account over by this share of the pool's load, and to cut that much
+SHARE_HOLD_MIN = 30  # ... with its account over by that margin for this long (several quorum runs)
+RETURN_FACTOR = 2  # a move back to the account the role left within RETURN_H needs this many margins
+RETURN_H = 24
+SPEND_WINDOW_H = 24  # a role's spend is its cost-equivalent per day over this many hours (role_spend)
+SETTLE_MIN = 15  # after a share move on this host, no other share move here sooner: the specs and readings catch up
+
+
+def share_margin_pct() -> float:
+    """`[accounts] share_margin_pct` (default 10): the margin of a share move, as a percent of the pool's load."""
+    return _num_setting("share_margin_pct", SHARE_MARGIN_PCT, 0.0, 100.0)
+
+
+def share_hold_min() -> float:
+    """`[accounts] share_hold_min` (default 30): how long an account must stay over its share by the margin."""
+    return _num_setting("share_hold_min", SHARE_HOLD_MIN, 0.0, 1440.0)
+
+
+def spend_window_h() -> float:
+    """`[accounts] spend_window_h` (default 24): the hours a role's spend is averaged over (role_spend)."""
+    return _num_setting("spend_window_h", SPEND_WINDOW_H, 1.0, 168.0)
+
+
+def live_specs() -> list:
+    """Every live shoal's spec the viewer shows (`ui_status.discover`)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui"))
+    import ui_status
+    from roles import ShoalSpec
+    specs = []
+    for path in ui_status.discover(config.ledger_dir()):
+        try:
+            specs.append(ShoalSpec.load(path))
+        except (OSError, ValueError):
+            continue
+    return specs
+
+
+def balance_load(specs: list | None = None, now: float | None = None):
+    """(load, counts, per_role, unit) over every live shoal the viewer shows: `load` {(provider, account): the spend of
+    the roles running on it, M cost-eq per day} (role_spend), `counts` the roles there, `per_role` {(shoal id, slug):
+    the weight each counts with}. A role whose spend is not known weighs as the mean known role; with none known at all
+    every role weighs 1 and `unit` is "roles" (a count, as before spend was measured), else "M/day"."""
+    if specs is None:
+        specs = live_specs()
+    try:
+        import role_spend
+        known = role_spend.weights(specs, now)
+    except Exception:  # noqa: BLE001 - no transcripts or cache: balance by count
+        known = {}
+    vals = [v for v in known.values() if v is not None]
+    unit = "M/day" if vals else "roles"
+    mean = sum(vals) / len(vals) if vals else 1.0
+    load: dict[tuple[str, str], float] = {}
+    counts: dict[tuple[str, str], int] = {}
+    per: dict[tuple[str, str], float] = {}
+    for spec in specs:
+        for r in spec.roles:
+            if r.session and r.ecosystem:
+                k, w = (r.ecosystem, r.account or ""), known.get((spec.sid, r.slug))
+                w = (mean if w is None else w) if vals else 1.0
+                per[(spec.sid, r.slug)] = w
+                load[k] = load.get(k, 0.0) + w
+                counts[k] = counts.get(k, 0) + 1
+    return load, counts, per, unit
+
+
+def _amt(x: float, unit: str) -> str:
+    return f"{round(x, 1):g}M/day" if unit != "roles" else f"{round(x, 1):g} role{'' if round(x, 1) == 1 else 's'}"
+
+
+def _share(x: float, unit: str) -> str:
+    return f"a {round(x, 1):g}M/day share" if unit != "roles" else f"a {round(x, 1):g}-role share"
+
+
+def over_accounts(load: dict, providers: list[str] | None = None, now: float | None = None, snap: list | None = None
+                  ) -> set[tuple[str, str]]:
+    """The accounts over their share by the margin now (`share_margin_pct` of the pool's load): the quorum records since
+    when, and `balance_pick` moves a role off one for share only once it has stayed over for `share_hold_min`."""
+    plan = shares(load, providers, now, snap)
+    m = share_margin_pct() / 100 * sum(v["load"] for v in plan.values())
+    return {k for k, v in plan.items() if m > 0 and v["weighted"] > 0 and v["load"] - v["target"] >= m}
+
+
+def balance_pick(provider: str, account: str, load: dict, pinned: bool = False, providers: list[str] | None = None,
+                 now: float | None = None, snap: list | None = None, slug: str = "", *, weight: float = 1.0,
+                 counts: dict | None = None, unit: str = "roles", left: tuple | None = None,
+                 over_for_min: float | None = None) -> tuple[str, str, str] | None:
+    """(provider, account, why) a role on `provider`/`account` should move to now, or None to stay. One rule for the
+    quiet-boundary quota handoff and the account a context restart starts on, so neither undoes the other:
+
+    - near a limit (a window within the reserve): off, whatever the role spends, to the account furthest under its share
+      that is not near one and can take a new session;
+    - for share, only with hysteresis. Its account is over its share by the margin (`share_margin_pct` of the pool's
+      load; `load` is spend per account from `balance_load`, or role counts) and has been for `share_hold_min`
+      (`over_for_min`, from the quorum; None skips that check), and the move cuts the imbalance by the margin too:
+      |over here| + |over there|, less both after the move. So the role's own spend (`weight`), its account's excess
+      and the destination's shortfall must each be at least half the margin: a quiet, cheap role is never moved for
+      share, and no move overshoots so far that a move back would pay. A move back to the account the role left within
+      RETURN_H (`left`, that account's key) needs RETURN_FACTOR margins.
+
+    The shares are over the whole pool; `pinned`: only the role's own provider's accounts are destinations; `slug`: a
+    provider with `[accounts.prefer]` takes only the roles it names. None when this account has no fresh reading."""
+    plan = shares(load, providers, now, snap, counts)
+    key = (provider, account or "")
+    here = plan.get(key)
     if here is None or (not here["near"] and here["weighted"] == 0 and here["binding"] == "no fresh reading"):
         return None
-    room = [(k, v) for k, v in plan.items() if k != (provider, account or "") and v["weighted"] > 0 and v["open"]
-            and not v["near"]
-            and (k[0] == provider or preferred(k[0]) is None or slug in preferred(k[0]))]
+    room = [(k, v) for k, v in plan.items() if k != key and v["weighted"] > 0 and v["open"] and not v["near"]
+            and (k[0] == provider if pinned else (k[0] == provider or preferred(k[0]) is None or slug in preferred(k[0])))]
     if not room:
         return None
-    (p, a), v = max(room, key=lambda kv: (round(kv[1]["target"]) - kv[1]["load"], kv[1]["weighted"]))
-    under = round(v["target"]) - v["load"]
     if here["near"]:
+        (p, a), v = max(room, key=lambda kv: (kv[1]["target"] - kv[1]["load"], kv[1]["weighted"]))
         return p, a, f"{name(provider, account)} is near its limit ({here['near']}); {name(p, a)} has room " \
-                     f"({v['load']} of a {v['target']:.1f}-role share, {v['units']} units)"
-    over = here["load"] - round(here["target"])
-    if over >= 1 and under >= 1:
-        return p, a, f"{name(provider, account)} carries {here['load']} roles against a {here['target']:.1f}-role " \
-                     f"share; {name(p, a)} {v['load']} against {v['target']:.1f}"
-    return None
+                     f"({_amt(v['load'], unit)} of {_share(v['target'], unit)}, {v['units']} units)"
+    m = share_margin_pct() / 100 * sum(v["load"] for v in plan.values())
+    over = here["load"] - here["target"]
+    if m <= 0 or over < m or (over_for_min is not None and over_for_min < share_hold_min()):
+        return None
+    best = None
+    for k, v in room:
+        under = v["load"] - v["target"]
+        gain = abs(over) + abs(under) - abs(over - weight) - abs(under + weight)
+        need = m * (RETURN_FACTOR if left is not None and tuple(left) == k else 1)
+        if over >= need and gain >= need - 1e-9 and (best is None or (gain, v["weighted"]) > (best[0], best[2]["weighted"])):
+            best = (gain, k, v)
+    if best is None:
+        return None
+    gain, (p, a), v = best
+    def carries(v_: dict) -> str:
+        return _amt(v_["load"], unit) + (f" ({v_['roles']} roles)" if unit != "roles" else "")
+    return p, a, (f"{name(provider, account)} carries {carries(here)} against {_share(here['target'], unit)}; "
+                  f"{name(p, a)} {carries(v)} against {round(v['target'], 1):g}; moving this role "
+                  f"({_amt(weight, unit)}) cuts the imbalance by {gain:.1f} (margin {m:.1f})")
+
+
+def settle_path() -> str:
+    import subscription_usage
+    return os.path.join(os.path.dirname(str(subscription_usage.cache_path())), "balance-moves.json")
+
+
+def last_share_move() -> str:
+    """When this host's last share move was made, by any shoal's quorum ("" for none known)."""
+    import json
+    try:
+        return str(json.load(open(settle_path())).get("at") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def note_share_move(at: str, what: str) -> None:
+    import json
+    try:
+        os.makedirs(os.path.dirname(settle_path()), exist_ok=True)
+        tmp = settle_path() + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"at": at, "what": what}, fh)
+        os.replace(tmp, settle_path())
+    except OSError:
+        pass
 
 
 def cmd_accounts(a) -> int:
@@ -749,9 +891,15 @@ def cmd_accounts(a) -> int:
     except Exception:  # noqa: BLE001 - no usage cache or settings: the pool line is a convenience
         pass
     try:
-        for (p, acct), v in sorted(shares(role_load()).items()):
-            print(f"  share {name(p, acct)}: {v['load']} role(s) running, {v['target']:.1f} its share"
+        load, counts, _per, unit = balance_load()
+        for (p, acct), v in sorted(shares(load, counts=counts).items()):
+            print(f"  share {name(p, acct)}: {v['roles']} role(s) running"
+                  + (f", {v['load']:.1f}M/day spent against a {v['target']:.1f}M/day share" if unit != "roles"
+                     else f", {v['target']:.1f} its share")
                   + (f" (near its limit: {v['near']})" if v["near"] else ""))
+        print(f"  a share move needs its account over by {share_margin_pct():g}% of the pool's load for "
+              f"{share_hold_min():g} min and the move to cut that much; a role moved for share stays "
+              f"{quota_cooldown_min():g} min")
     except Exception:  # noqa: BLE001 - no specs or usage cache: the share lines are a convenience
         pass
     return 0
