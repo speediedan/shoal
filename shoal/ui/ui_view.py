@@ -500,7 +500,8 @@ def run_viewer(harness: str, session: str, label: str, job: str = "", model: str
         r = subprocess.run(argv, env=env)
     if ended_by_term(r.returncode):
         print(f"shoal view: the client was ended (SIGTERM); the session keeps running. The health quorum ends a card's "
-              f"client left attached while the maintainer is offline, so the wakes or the restart it held go through")
+              f"client left attached while the maintainer is offline, or one holding a context restart far past its "
+              f"limit (after a page), so the wakes or the restart it held go through")
         return 0
     if r.returncode != 0 and binary and replaced(binary):
         # Claude Code updated itself while attached: the running client's own binary is gone, so its reconnect

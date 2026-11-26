@@ -37,7 +37,7 @@ import ask_answers  # noqa: E402
 import config  # noqa: E402
 
 from ledger import (DEFAULT_PRIO, QUEUE_NEXT_MAX, queue_next_max, Ledger, LedgerError, View, fmt_item,  # noqa: E402
-                    item_key, short, split_item, sync_push)
+                    item_key, short, split_item, sync_push, SYSTEM_WRITER)
 from roles import ShoalSpec, find_spec, mail_read_since, state_dir  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
@@ -90,8 +90,15 @@ def offline_banner(view: View) -> str:
     note = f" ({m['note']})" if m.get("note") else ""
     return (f"USER OFFLINE since {m['ts']}{until}{note}: do not wait on the maintainer and raise NO prompted "
             f"question now (merge asks included). Record each blocking auth/design ask with `queue --ask`, stack "
-            f"PRs where the work depends on an unmerged one, and proceed with unblocked items. You will be woken "
-            f"when they return.")
+            f"PRs where the work depends on an unmerged one, and proceed with unblocked items. A role holding asks "
+            f"(or waiting on the maintainer) is woken when they return; every other role reads the return in its "
+            f"mail.")
+
+
+RETURN_MAIL = ("USER-ONLINE: the maintainer is back. Roles holding asks or waiting on them were woken to raise them; "
+               "this is mail for the rest, no wake: at your next boundary, re-verify what you deferred while they were "
+               "away (stacked PRs, merge or design questions you did not record as asks) and record any as `queue "
+               "--ask`.")
 
 
 ASK_REF = re.compile(r"(?<![\w/])(?:(?P<owner>[A-Za-z0-9_.-]+)/)?(?P<repo>[A-Za-z0-9_.-]+)?#(?P<n>\d+)")
@@ -1046,14 +1053,15 @@ def _offline_one(a) -> int:
         print("maintainer already online; nothing to do")
         return 0
     # who to wake: going offline -> roles waiting on the user (so they pivot);
-    # coming back -> roles holding open asks (so they raise them now)
+    # coming back -> roles holding open asks or waiting on the user (so they raise them now). Nobody else: a return
+    # wake is a cold turn of about 3M cost-eq (measured 2026-11-20..26: 25 of them, 74M), so every other role reads the
+    # return as mail at its next boundary
     targets = []
     for r in spec.roles:
         q = view.current_queue(r.slug) or {}
         st = view.role_state(r.slug) or {}
-        if on and st.get("state") == "waiting" and st.get("sub") in ("user-auth", "user-design", "user-feedback"):
-            targets.append(r.slug)
-        if not on and q.get("asks"):
+        user_wait = st.get("state") == "waiting" and st.get("sub") in ("user-auth", "user-design", "user-feedback")
+        if (on and user_wait) or (not on and (q.get("asks") or user_wait)):
             targets.append(r.slug)
     asks = [] if on else [(r.slug, i, ask) for r in spec.roles
                           for i, ask in enumerate((view.current_queue(r.slug) or {}).get("asks") or [], 1)]
@@ -1070,6 +1078,10 @@ def _offline_one(a) -> int:
     try:
         # the record first: every wake below reads, and a role woken by it finds, the new mode in the ledger
         ev = led.append("user", "system", mode="user-offline", state=a.state, until=a.until or None, note=a.note or None)
+        if not on and (getattr(spec, "features", None) or {}).get("workwake"):
+            # mail, never a wake (features.workwake): the roles not woken re-verify what they deferred at their next
+            # boundary. Without workwake every msg wakes its role, so none is sent
+            led.append(SYSTEM_WRITER, "msg", to="*", kind="info", text=RETURN_MAIL)
         reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL)
         from health import request_wake
         if targets:

@@ -148,6 +148,25 @@ OUT=$($H ledger-watch --shoal $SID --spec "$SPEC" --slug tl --wake exit --interv
 grep -q "score=" <<<"$OUT" || fail "watch wake did not carry digest candidates :: $OUT"
 grep -q "VERDICT WAKE" <<<"$OUT" || fail "no exit verdict line :: $OUT"
 grep -q "^exit=.* WAKE " /tmp/$SID/ledger-watch-tl.state || fail "sidecar lacks exit verdict"
+# a weak digest candidate (no lane fit, or passed on earlier) is no wake: it waits in `next` (measured 2026-11-20..26:
+# 35 of the 42 board wakes that named only weak or declined-earlier candidates did nothing)
+python3 - "$SHOALD" "$SPEC" <<'PY' || fail "a weak board candidate woke its role"
+import sys; sys.path.insert(0, sys.argv[1])
+import digest
+from ledger import Ledger, View
+from ledger_watch import actionable
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2]); view = View(Ledger(spec.sid, root=spec.ledger_dir, sync=False), spec)
+rows = [{"item": "app#91", "verb": "fix", "pos": 1, "score": 2.0, "why": ["sem:2"], "weak": False},
+        {"item": "app#92", "verb": "fix", "pos": 2, "score": 0.0, "why": ["sem:0"], "weak": True},
+        {"item": "app#93", "verb": "fix", "pos": 3, "score": 0.0, "why": ["declined-earlier:out-of-lane"], "weak": True,
+         "declined": "out-of-lane"}]
+digest.candidates = lambda *a, **k: [dict(r) for r in rows]
+board = lambda: [i for i, _ in actionable(view, "tl", spec.role("tl"), spec, board=True) if i.startswith("board:")]
+assert board() == ["board:app#91"], board()
+rows[0]["weak"] = True
+assert board() == [], "only weak candidates: no wake"
+PY
 
 echo "== 6 job units: success, failure exit code, external kill, idempotent waiter"
 check "\[dry-run\] systemd-run --user --unit shoal-$SID-tl-ok" $H job run --shoal $SID --slug tl --name ok --dry-run -- true
@@ -1199,6 +1218,12 @@ grep -q "BLOCKER STALE app#9902 <- lease:gpu (resolved: lease gpu free" <<<"$OUT
 check "tl blocker-resolved step1:wake" $H health --spec "$SPEC" --instance a --dry-run
 OUT=$(env LEASE_STUB=held $H health --spec "$SPEC" --instance a --dry-run 2>&1)
 ! grep -q "blocker-resolved" <<<"$OUT" || fail "a blocker still held read as cleared :: $OUT"
+# the same target is the role's wait: its waiter, the watcher and wait-resolved wake it for that, so no second wake
+check "status=waiting" env LEASE_STUB=held $Q --slug tl --wait research-proto --holder "the gpu lease" --target lease:gpu \
+  --next app#9902 --blocked "app#9902=lease:gpu"
+check "tl blocker-resolved step1:wake -> skipped (it is your research-proto wait's target, which wakes you itself)" \
+  $H health --spec "$SPEC" --instance a --dry-run
+check "status=idle" env LEASE_STUB=held $Q --slug tl --idle --next app#9902 --blocked "app#9902=lease:gpu"
 # the item's own run (job, hosted run, gate, window) is a checkable blocker as well: malformed is refused, one that has
 # already ended is refused, a pending one parks the item and prints as recorded (normalized)
 check "gh-run target 'nope' is not" $Q --slug tl --idle --blocked "app#9902=gh-run:nope"
@@ -1745,6 +1770,29 @@ assert "skipped (woken for the same at" in out, out
 MODES["user-offline"] = {"mode": "user-offline", "state": "off", "ts": ago(60)}
 out, st = run(spec_with(wake_off=["blocker-resolved"]), {})
 assert ":wake" not in out and ":page" not in out, out
+# no second wake for news the role has (measured 2026-11-20..26: 59 of 165 blocker-resolved wakes named the role's own
+# wait target): skipped once when evaluate says it is covered, or when a wait-resolved wake already named that target
+spec = spec_with()
+COND[:] = [dict(br("cleared:b#5:job:x:t1"), blocker="job:x", covered="it is your remote-ci wait's target, which wakes you itself")]
+out, st = run(spec, {})
+assert "tl blocker-resolved step1:wake -> skipped (it is your remote-ci wait's target" in out and "wake-file" not in out, out
+out, st = run(spec)
+assert "blocker-resolved" not in out, out
+COND[:] = [{"slug": "tl", "condition": "wait-resolved", "key": "target:az-build:7", "since": ago(20), "detail": "az-build:7 done"}]
+out, st = run(spec, {})
+assert "tl wait-resolved step1:wake -> " in out and "tl|az-build:7" in st["told"], (out, st.get("told"))
+COND[:] = [dict(br("cleared:b#6:az-build:7:t2"), blocker="az-build:7", covered="")]
+out, st = run(spec, dict(st, last_wake={}, ladders={}))
+assert "tl blocker-resolved step1:wake -> skipped (woken for it as a wait target at" in out, out
+COND[:] = [dict(br("cleared:b#7:az-build:8:t3"), blocker="az-build:8", covered="")]
+out, st = run(spec, dict(st, last_wake={}))
+assert "tl blocker-resolved step1:wake -> " in out and "skipped" not in out, "another target is news"
+bc = health.blocker_covered
+assert bc("job:x", "job:x", "waiting", "local-ci", []) and not bc("job:x", "job:x", "idle", "", [])
+assert not bc("job:x", "job:x", "waiting", "user-auth", []), "a maintainer wait wakes nobody"
+assert bc("upstream:gh-pr:o/r#1", "gh-pr:o/r#1", "waiting", "upstream", []), "an upstream blocker names its provider target"
+assert bc("job:x", "job:y", "waiting", "local-ci", ["waitdone:2026-01-01T00:00:00Z:job:x"]).startswith("the watcher delivered")
+assert not bc("job:x", "", "idle", "", ["waitdone:2026-01-01T00:00:00Z:job:xy"]) and not bc("", "", "idle", "", [])
 print("wake economy ladders ok")
 # dormant: a dead watcher on an idle role with nothing actionable raises nothing (lazy_rearm)
 import importlib; importlib.reload(health)
@@ -3074,18 +3122,46 @@ assert RESTARTS == ["up"] and len(KILLS) == 1, (RESTARTS, out)
 KILLS.clear(); RESTARTS.clear()
 TREE.update({ME: (300, CLAUDE), 300: (1, ["python3", "/opt/<prefix>/bin/shoal", "view", spec.sid, "up"])})
 seed = lambda: {"ladders": {K: {"since": ago(30), "step": 0, "attached": ago(20), "attached_said": f"a client (pid {ME}) is attached"}}}
-ctx(400, 300)
+ctx(380, 300)
 out, st = run(seed())
 assert not KILLS, out
-ctx(650, 300)
+ctx(400, 300)  # 1.3x and more is far
 out, st = run(seed())
 assert KILLS == [ME] and "after 20 min" in out, (KILLS, out)
-# online: held and paged as before, never killed
+# online and far past its limit: the hold has a bound too (measured 2026-11-23/24: a held session ran 758 calls above
+# 500k, to 945k). One page at once that the restart is pending; a card's client is ended 15 min after that page
 KILLS.clear(); PAGES.clear()
 offline(False)
 out, st = run(seed())
+assert not KILLS and not RESTARTS and len(PAGES) == 1, (KILLS, PAGES, out)
+assert "context 400k is past 1.3x its 300k limit and its context restart is pending, held by an attached client" in PAGES[0] \
+    and "a card's client is ended for it 15 min after this page" in PAGES[0], PAGES
+out, st = run()
+assert not KILLS and len(PAGES) == 1, ("one page a hold", PAGES, out)
+# the condition (and its ladder) lapses while the role takes a turn: the hold and its page are kept per session
+st["ladders"] = {}; st["far_holds"]["up"]["paged"] = ago(16)
+out, st = run(st)
+assert KILLS == [ME] and len(PAGES) == 1 and not RESTARTS, (KILLS, PAGES, out)
+assert records()[-1]["text"] == (f"up: detached the card's interactive client (pid {ME}, `claude attach bbbb2222`) 16 min "
+                                 "after the page that its context passed 1.3x its limit; it held its context restart; the "
+                                 "card is back to its read-only view"), records()[-1]
+TREE.clear()
+out, st = run()
+assert RESTARTS == ["up"], (RESTARTS, out)
+# not so far: held and paged as before, never killed
+KILLS.clear(); PAGES.clear(); RESTARTS.clear()
+TREE.update({ME: (300, CLAUDE), 300: (1, ["python3", "/opt/<prefix>/bin/shoal", "view", spec.sid, "up"])})
+ctx(380, 300)
+out, st = run(seed())
 out, st = run({"ladders": {K: {"since": ago(70), "step": 0, "attached": ago(65), "attached_said": f"a client (pid {ME}) is attached"}}})
 assert not KILLS and not RESTARTS and any("its automatic restart is held" in p for p in PAGES), (KILLS, PAGES, out)
+# far, online, with detach_cards off: the page only, and it says nothing about ending a client
+PAGES.clear(); ctx(650, 300)
+spec.features["health"]["detach_cards"] = False
+out, st = run(seed())
+assert not KILLS and len(PAGES) == 1 and "ended for it" not in PAGES[0], (KILLS, PAGES)
+del spec.features["health"]["detach_cards"]
+ctx(380, 300)
 # a terminal `claude attach` (not under a card's `shoal view`): never killed
 offline(True)
 TREE[300] = (1, ["-bash"])
