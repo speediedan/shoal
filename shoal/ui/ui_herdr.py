@@ -366,7 +366,9 @@ UI_SETTINGS = {"roles_per_tab": "cards per roles tab (default 4: a 2x2 grid)",
                "overview_ledger": "true | false (default): the Herdr app's overview tab keeps a ledger tail pane; else the dashboard's `l` shows it",
                "agent_sort": "priority (default: needs-you first, Herdr's attention queue) | spaces (grouped by shoal)",
                "line_width": "columns the tab-bar status line may use (default 80); wider shows more shoals in full",
-               "image_paste_key": "Herdr's remote image paste key (default alt+v; Ctrl+V pastes text in the kitty window)"}
+               "image_paste_key": "Herdr's remote image paste key (default alt+v; Ctrl+V pastes text in the kitty window)",
+               "app_done_sound": "silent (default) | herdr: the Herdr app's sound for a finished agent (`ui app-install` "
+                                 "applies it); one that needs you always keeps its sound"}
 
 
 def cmd_set(a) -> int:
@@ -375,6 +377,9 @@ def cmd_set(a) -> int:
     key, _, sub = a.key.partition(".")
     if key not in UI_SETTINGS or (key == "role_order") != bool(sub):
         print("ui set: one of " + ", ".join(UI_SETTINGS) + " (role_order needs .<shoal>)")
+        return 1
+    if key == "app_done_sound" and a.value not in ("", "silent", "herdr"):
+        print("ui set: app_done_sound is silent or herdr")
         return 1
     if key == "usage_bridge":
         if a.value:
@@ -451,6 +456,8 @@ def cmd_set(a) -> int:
             lines = [f"run `shoal ui open` to lay the roles out again ({exc})"]
         for line in lines or ["roles tabs already match"]:
             print(line)
+    elif key == "app_done_sound":
+        print("run `shoal ui app-install` where the Herdr app runs: it applies at once (Herdr reads its sounds live)")
     else:
         print("on the laptop: re-run shoal-herdr-setup.sh, then relaunch (the launcher resolves a % width)")
     return 0

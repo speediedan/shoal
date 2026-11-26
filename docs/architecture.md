@@ -2112,7 +2112,9 @@ and the contract are in [`ui.md`](ui.md).
   fixtures.
 - **Herdr app usage dashboard** (`plugins/shoal-herdr-app/mods/shoal-usage/`): the home space's `usage` tab, opened by
   the top bar's Usage (`shoal-status.usage`, else `ui app-usage`). It reads `shoal ui usage --json` (the cached meters;
-  Refresh adds `--refresh`, the account APIs, never a model turn) from the first machine with a reading. Each provider
+  Refresh adds `--refresh`, the account APIs, never a model turn, one machine at a time) from every machine at once,
+  keeping the best answer (`bestDoc`, as the status bar); an account read over an hour ago is a card that waits, with
+  no meters (`USAGE_MAX_AGE_S`). Each provider
   account is a card of windows: used percent, reset (with its wall-clock time in the app machine's zone, from its
   offset: `clockTime`), and pace (how far into the window against how much is used, so a
   meter heading past 100% before its reset says when it runs out). The tightest meter is the headline. Panels by shoal,
@@ -2207,7 +2209,7 @@ block on Herdr's mod), and name each role in its shoal's color on its real host,
 report and registry entry: a Claude seat's job state with its background tasks and last turn's end, a Muse or Codex seat's
 status line (`native_report`), the wait it declared with `ui wait`, and a reply dismissed with `dismiss --session`,
 [`ui.md`](ui.md)), with Herdr's status on the same scale for a row that has none;
-`shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage (its hover gives each window's time to reset, not the percentages the bars show; read with `ui usage --json` from the machine of the space in view, then each other machine and this computer, keeping the best answer: most accounts read, then most fresh, stopping at one where every account is read and fresh, since a host whose cache no UI feed refreshes answers with stale rows and `not collected yet`), and runs `ui app-sync` on a
+`shoal-status` adds the next needs-you agent (Ctrl+Alt+N, in the pulse's order), the way back to home (`ui app-home`) and to a lattice (`ui app-lattice`) and per-provider usage (its hover gives each window's time to reset, not the percentages the bars show; read with `ui usage --json` from every machine at once, keeping the best answer: most accounts read, then most fresh, the machine of the space in view first on a tie, and drawing at once one where every account is read and fresh, since a host whose cache no UI feed refreshes answers with stale rows and `not collected yet`; until a reading lands it says `usage …`, a reading over an hour old, `USAGE_MAX_AGE_S`, is drawn as waiting and not as a value, and in its first two minutes a pass with no complete answer is retried every 5 s while the other machines' connections come up), and runs `ui app-sync` on a
 slow timer so roles tabs follow the roles, and this computer's copied mods and patched clones follow its checkout
 (`refresh_app_mods`: a pull updates the linked mods but left the copies on the last install's code). A roles tab is rebuilt only when every card in it is idle. The work is split where the data lives. `ui app-plan` runs on the host with the shoals
 and prints the spaces it wants (one per shoal: `overview` and the `roles` tabs of cards; one per saved standalone
@@ -2267,7 +2269,9 @@ and every such card on a host shares one listing (`ui_status.claude_rows_cached`
 unit with its release feed pointed at a dead loopback URL (the pin: the app otherwise updates itself and then
 its core), then opens a home space. `ui app-install` writes the `shoal-graph-feed` unit, installs the mods
 into the app's home, and sets the 0.9.3 paste keys, the actions key and the `shoal-ocean` theme where the
-person has not chosen their own; it also installs the `shoal` icon (`shoal/ui/assets/shoal.svg`) into the user's icon
+person has not chosen their own, and points `settings.json`'s `sounds.done` at a silent MP3 it writes there
+(`install_sounds`, `ui set app_done_sound herdr` undoes it), so a finished agent is silent and only one that needs you
+plays Herdr's sound; it also installs the `shoal` icon (`shoal/ui/assets/shoal.svg`) into the user's icon
 theme for every `Icon=shoal` launcher. `ui launch` in an app terminal opens the chosen host in the app, and `ui
 launch --list --json [--summary]` gives the host list the app's home screen reads. Nothing here wakes a role,
 types into a pane or writes the ledger; herdr 0.9.3 is untouched.

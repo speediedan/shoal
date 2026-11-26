@@ -96,3 +96,22 @@ test("the reply and the argv", () => {
   assert.equal(M.duration(3 * 86400 + 4 * 3600 + 5), "3d 4h");
   assert.equal(M.duration(-1), "");
 });
+
+test("a reading over an hour old shows as waiting, and the best machine's answer wins", () => {
+  const acct = (provider, age_s, extra = {}) => ({ provider, source: "account API", age_s, stale: age_s > 900, error: "",
+    ...extra, rows: [{ bucket: provider, plan: "pro", windows: [win("5h", 41, 3600, 300)] }] });
+  const laptop = { accounts: [acct("codex", 222), acct("claude", 571281, { error: "HTTP 401" }), acct("claude-2", 762713)] };
+  const remote = { accounts: [acct("codex", 71), acct("claude", 71), acct("claude-2", 71)] };
+  const cs = M.cards(laptop, NOW);
+  assert.deepEqual(cs.map((c) => [c.title, Boolean(c.old), c.windows.length]), [["codex", false, 1], ["claude", true, 0], ["claude-2", true, 0]]);
+  assert.equal(cs[2].error, "last read 8d 19h ago: waiting for a fresh reading");
+  assert.match(cs[1].error, /\(HTTP 401\)/);
+  assert.equal(M.tightest(cs).card.title, "codex", "an old reading is never the headline");
+  assert.deepEqual(M.docScore(laptop), [1, 1]);
+  assert.deepEqual(M.docScore(remote), [3, 3]);
+  assert.ok(M.docComplete(remote) && !M.docComplete(laptop) && !M.docComplete(null) && !M.docComplete({ accounts: [] }));
+  assert.equal(M.bestDoc([laptop, null, remote]), remote, "this computer's old cache loses");
+  assert.equal(M.bestDoc([remote, { accounts: [acct("codex", 1), acct("claude", 1), acct("claude-2", 1)] }]), remote, "a tie keeps the earlier");
+  assert.equal(M.bestDoc([null, { accounts: [] }]), null);
+  assert.equal(M.cards(DOC, NOW).some((c) => c.old), false, "fresh readings are drawn as before");
+});

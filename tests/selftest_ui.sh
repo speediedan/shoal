@@ -4318,6 +4318,41 @@ assert ui_app.install_theme() == []
 json.dump({"theme": "paper"}, open(sp, "w"))
 assert "left as it is" in ui_app.install_theme()[0] and json.load(open(sp))["theme"] == "paper"
 print("theme ok")
+# Herdr's done sound: a silent file shoal writes, so only a needs-you dings; every other key is kept, the file is backed
+# up once, a file the person chose is theirs, and `app_done_sound = herdr` takes shoal's back out
+os.environ["XDG_CONFIG_HOME"] = os.path.join(S, "xdg-sounds")
+import ui_status
+person = {"zoom": 1.0, "theme": "paper", "sounds": {"enabled": True, "blocked": "mine/ask.mp3"}}
+json.dump(person, open(sp, "w"))
+for f in (sp + ".bak-shoal-sounds",):
+    if os.path.exists(f): os.remove(f)
+assert ui_app.install_sounds(dry_run=True) and json.load(open(sp)) == person, "a dry run writes nothing"
+lines = ui_app.install_sounds()
+got = json.load(open(sp))
+assert got == {**person, "sounds": {"enabled": True, "blocked": "mine/ask.mp3", "done": ui_app.SILENT_SOUND}}, (got, lines)
+assert json.load(open(sp + ".bak-shoal-sounds")) == person
+mp3 = open(os.path.join(S, "apphome-mods", ui_app.SILENT_SOUND), "rb").read()
+assert mp3 == ui_app.silent_mp3() and mp3[:2] == b"\xff\xfb" and len(mp3) == 1040 and not mp3[4:104].strip(b"\0"), "MPEG-1 Layer III frames, all zero"
+assert ui_app.sounds_state()[0] and ui_app.install_sounds() == [], "idempotent"
+got["sounds"]["done"] = "mine/done.mp3"; json.dump(got, open(sp, "w"))
+assert "your own" in ui_app.install_sounds()[0] and json.load(open(sp))["sounds"]["done"] == "mine/done.mp3"
+assert ui_app.sounds_state()[0], "the person's own file is theirs"
+got["sounds"]["done"] = ui_app.SILENT_SOUND; json.dump(got, open(sp, "w"))
+import types
+assert ui_herdr.cmd_set(types.SimpleNamespace(key="app_done_sound", value="loud")) == 1 and ui_status.ui_config() == {}
+assert ui_herdr.cmd_set(types.SimpleNamespace(key="app_done_sound", value="herdr")) == 0
+assert ui_status.ui_config() == {"app_done_sound": "herdr"} and ui_app.done_sound_mode() == "herdr"
+assert not ui_app.sounds_state()[0]
+lines = ui_app.install_sounds()
+assert json.load(open(sp)) == person and ui_app.sounds_state()[0], (lines, json.load(open(sp)))
+assert ui_app.install_sounds() == []
+assert json.load(open(sp + ".bak-shoal-sounds")) == person, "the backup is the first one"
+ui_status.save_ui_config({})
+json.dump({"sounds": "loud"}, open(sp, "w"))
+assert "left as it is" in ui_app.install_sounds()[0] and json.load(open(sp)) == {"sounds": "loud"}
+os.remove(sp)
+assert ui_app.install_sounds()[-1].startswith("sounds: done ->") and json.load(open(sp)) == {"sounds": {"done": ui_app.SILENT_SOUND}}, "no settings yet"
+print("done sound ok")
 PY9
 # the plugin wrapper (every 0.9.3 pane, app card and unit runs it) finds the Python of the `shoal` on PATH: from a
 # python shebang, or from the exec line of a shell wrapper `shoal` (running cli.py under sh broke a host's units)

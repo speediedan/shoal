@@ -113,8 +113,20 @@ export function windowNote(v, clock = null, now = null) {
   return bits.join(" · ");
 }
 
-/** The dashboard's cards: one per provider account and bucket, with an error card for an account that has no reading. */
-export function cards(doc, now) {
+/**
+ * A reading older than this (seconds) is not drawn as a value, as in the status bar (shoal-status USAGE_MAX_AGE_S): a host
+ * whose cache no feed refreshes keeps its last reading for days (measured 2026-11-26: 6 and 8 days on the app's computer).
+ */
+export const USAGE_MAX_AGE_S = 3600;
+// as the status bar: a pass with no complete answer is tried again soon while the other machines' connections come up
+export const WARM_MS = 120000;
+export const RETRY_MS = 5000;
+
+/**
+ * The dashboard's cards: one per provider account and bucket, with an error card for an account that has no reading. An
+ * account read longer ago than `maxAge` keeps its cards with no meters (`old`), saying how old its reading is.
+ */
+export function cards(doc, now, maxAge = USAGE_MAX_AGE_S) {
   const out = [];
   for (const a of arr(doc?.accounts)) {
     if (!a || typeof a.provider !== "string") continue;
@@ -126,8 +138,15 @@ export function cards(doc, now) {
                  error: base.error || "no reading yet" });
       continue;
     }
+    const old = base.ageS !== null && base.ageS > maxAge;
     for (const r of rows) {
       const bucket = str(r?.bucket);
+      if (old) {
+        out.push({ ...base, id: `${a.provider}/${bucket || "-"}`, title: bucket && bucket !== a.provider ? `${a.provider} · ${bucket}` : a.provider,
+                   plan: str(r?.plan), blocked: false, windows: [], stale: true, old: true,
+                   error: `last read ${duration(base.ageS)} ago${base.error ? ` (${base.error})` : ""}: waiting for a fresh reading` });
+        continue;
+      }
       const windows = arr(r?.windows).filter((w) => num(w?.used_percent) !== null).map((w) => windowView(w, now));
       out.push({ ...base, id: `${a.provider}/${bucket || "-"}`, title: bucket && bucket !== a.provider ? `${a.provider} · ${bucket}` : a.provider,
                  plan: str(r?.plan), blocked: r?.blocked === true, windows, error: windows.length ? base.error : base.error || "no meters" });
@@ -165,6 +184,33 @@ export function breakdownRows(doc, key) {
 export function updatedAge(doc) {
   const ages = arr(doc?.accounts).map((a) => num(a?.age_s)).filter((v) => v !== null);
   return ages.length ? Math.min(...ages) : null;
+}
+
+/**
+ * How good one machine's document is: [accounts with a reading young enough to draw, of them not stale]. Not every host
+ * keeps a live cache, so the dashboard takes the best machine's answer, not the first with rows (the first was this
+ * computer's cache, days old, while the other machines' connections came up).
+ */
+export function docScore(doc, maxAge = USAGE_MAX_AGE_S) {
+  const read = arr(doc?.accounts).filter((a) => arr(a?.rows).length && !(num(a?.age_s) !== null && a.age_s > maxAge));
+  return [read.length, read.filter((a) => a.stale !== true).length];
+}
+
+/** Every account read and fresh: nothing another machine could improve on. */
+export function docComplete(doc) {
+  const [read, fresh] = docScore(doc);
+  return arr(doc?.accounts).length > 0 && read === arr(doc.accounts).length && fresh === read;
+}
+
+/** The best of several machines' documents (each null for no answer): most accounts read, then most fresh; the earlier on a tie. */
+export function bestDoc(docs) {
+  let best = null, bs = [-1, -1];
+  for (const d of arr(docs)) {
+    if (!d || !arr(d.accounts).length) continue;
+    const s = docScore(d);
+    if (s[0] > bs[0] || (s[0] === bs[0] && s[1] > bs[1])) [best, bs] = [d, s];
+  }
+  return best;
 }
 
 /** The CLI's reply as a document, or null for a failed or unreadable one (the last good one then stays). */

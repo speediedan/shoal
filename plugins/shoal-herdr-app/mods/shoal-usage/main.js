@@ -3,7 +3,8 @@
 // A thin View: model.js turns `shoal ui usage --json` (cached meters, no model turns) into cards, each window with its
 // reset and its pace, the tightest meter as the headline, and the decomposition panels (by shoal, by role, standalone
 // seats) that fill in once the document carries a `breakdown`. It reads on a timer and on Refresh (`--refresh`: the
-// providers' account APIs, still no model turn), from the first machine with a usage cache.
+// providers' account APIs, still no model turn, one machine at a time), from every machine at once, keeping the best
+// answer (model.js bestDoc); a reading over an hour old is shown as waiting, not as its old percentages.
 //
 // props:
 //   source: {argv?: [...], on?: machine} (default: shoal ui usage --json, tried on every machine, then here)
@@ -12,7 +13,8 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { exec, props, theme, machines, nextCommand } from "herdr";
-import { cards, tightest, windowNote, breakdownRows, updatedAge, parseReply, usageArgv, duration, BREAKDOWNS, localClock } from "./model.js";
+import { cards, tightest, windowNote, breakdownRows, updatedAge, parseReply, usageArgv, duration, BREAKDOWNS, localClock, docComplete, bestDoc,
+  WARM_MS, RETRY_MS } from "./model.js";
 
 const UI = "Geist";
 const MONO = "Geist Mono";
@@ -45,6 +47,7 @@ export default class Usage extends View {
     this.readAt = null;
     this.note = "reading usage…";
     this.busy = false;
+    this.born = Date.now();
     this.read(cx, false);
     cx.timer.every(Math.max(15000, Number(p.poll_ms) || 60000), (cx) => this.read(cx, false));
     cx.spawn(async (cx) => {
@@ -67,33 +70,53 @@ export default class Usage extends View {
     this.busy = true;
     if (refresh) this.note = "refreshing from the account APIs…";
     cx.spawn(async (cx) => {
-      let got = null;
-      for (const on of this.where()) {
-        let reply = null;
+      const argv = usageArgv(this.source, refresh);
+      const ask = async (on) => {
         try {
-          reply = await exec(usageArgv(this.source, refresh)[0], usageArgv(this.source, refresh).slice(1), on ? { on } : {});
+          return parseReply(await exec(argv[0], argv.slice(1), on ? { on } : {}));
         } catch (_e) {
-          reply = null;
+          return null;
         }
-        const doc = parseReply(reply);
-        if (doc && doc.accounts.some((a) => Array.isArray(a?.rows) && a.rows.length)) {
-          got = doc;
-          break;
+      };
+      const where = this.where();
+      const seen = where.map(() => null);
+      if (refresh) {
+        // a refresh reads the account APIs: one machine at a time, until one answers in full
+        for (let i = 0; i < where.length; i++) {
+          seen[i] = await ask(where[i]);
+          if (docComplete(seen[i])) break;
         }
-        got = got ?? doc;
+      } else {
+        // a cached read: every machine at once, the first complete answer drawn as it lands
+        let drawn = false;
+        await Promise.all(where.map(async (on, i) => {
+          seen[i] = await ask(on);
+          if (!drawn && docComplete(seen[i])) {
+            drawn = true;
+            this.show(seen[i]);
+            cx.notify();
+          }
+        }));
       }
       this.busy = false;
+      const got = bestDoc(seen) ?? seen.find(Boolean) ?? null;
+      const since = Date.now() - this.born;
       if (got) {
-        this.doc = got;
-        this.readAt = Date.now() / 1000;
-        this.note = null;
+        this.show(got);
       } else if (!this.doc) {
-        this.note = "no usage reading on any machine yet (`shoal ui usage --refresh` reads one)";
+        this.note = since < WARM_MS ? "reading usage…" : "no usage reading on any machine yet (`shoal ui usage --refresh` reads one)";
       } else {
         this.note = "the last read failed: showing the previous reading";
       }
       cx.notify();
+      if (!refresh && !docComplete(got) && since < WARM_MS) cx.timer.after(RETRY_MS, (cx) => this.read(cx, false));
     });
+  }
+
+  show(doc) {
+    this.doc = doc;
+    this.readAt = Date.now() / 1000;
+    this.note = null;
   }
 
   bar(id, w, c) {
