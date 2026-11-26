@@ -11,6 +11,7 @@ from unittest.mock import patch
 PACKAGE = Path(__file__).resolve().parents[1] / "shoal"
 sys.path[:0] = [str(PACKAGE), str(PACKAGE / "ui")]
 import blockers
+import pool_reserve
 import providers
 import state
 import ui_app
@@ -74,6 +75,93 @@ class ResearchWindow(unittest.TestCase):
         self.assertIn("research-window wait needs", state.check_target("research-window", "", "role")[2])
         self.assertIn("wait on it as research-window", state.check_target("local-ci", "time:2030-01-01T00:00:00Z", "role")[2])
         self.assertEqual(state.check_target("research-window", "time:2030-01-01T00:00:00Z", "role")[2], "")
+
+
+class GpuWaits(unittest.TestCase):
+    """A research wait on GPUs another role reserved (measured 2026-11-26): `resv:` targets, reservations a holder
+    names, and the note to queue a request of one's own."""
+    RID = "r11260937-8e64"
+
+    def rows(self, *recs, bad=()):
+        return patch.object(pool_reserve, "live_records", return_value=([dict(r) for r in recs], list(bad)))
+
+    def other(self, **kw):
+        return dict({"id": self.RID, "for": "example/peer", "state": "held", "host": "hostb", "until": "job:x"}, **kw)
+
+    def test_a_resv_target_is_pending_while_another_roles_reservation_stands(self):
+        self.assertEqual(providers.normalize(f"resv:{self.RID}"), (f"resv:{self.RID}", ""))
+        self.assertTrue(providers.normalize("resv:tonight")[1], "not a reservation id")
+        with self.rows(self.other()):
+            self.assertIs(providers.resolve(f"resv:{self.RID}", "role", "example")[0], True)
+        with self.rows(self.other(state="waiting", waiting="behind an earlier request")):
+            self.assertIs(providers.resolve(f"resv:{self.RID}", "role", "example")[0], True)
+        with self.rows(self.other(**{"for": "example/role"})):
+            self.assertEqual(providers.resolve(f"resv:{self.RID}", "role", "example"), (False, f"{self.RID} granted on hostb"))
+        with self.rows():
+            self.assertIs(providers.resolve(f"resv:{self.RID}", "role", "example")[0], False)
+        with self.rows(bad=["hostb"]):
+            self.assertIsNone(providers.resolve(f"resv:{self.RID}", "role", "example")[0], "a host unread is unknown")
+        import role_time
+        self.assertEqual(role_time.blocker_event(f"resv:{self.RID}"), "research-window")
+
+    def test_a_time_wait_naming_reservations_is_unproven_once_they_all_end(self):
+        st = {"state": "waiting", "sub": "research-window", "target": "time:2099-01-01T00:00:00Z", "ts": ago(100),
+              "holder": f"hostb: both GPUs reserved by peer ({self.RID}, back-to-back legs)"}
+        with self.rows(self.other()):
+            self.assertTrue(state.wait_proven(SPEC, View(), "role", st)[0], "still reserved: the time proves it")
+            self.assertEqual(state.named_ended("research-window", st["target"], st["holder"]), ([], ""))
+        with self.rows():
+            ok, why = state.wait_proven(SPEC, View(), "role", st)
+            self.assertFalse(ok)
+            self.assertIn(self.RID, why)
+            self.assertEqual(state.named_ended("research-window", st["target"], st["holder"])[0], [self.RID])
+        with self.rows(bad=["hostb"]):
+            self.assertTrue(state.wait_proven(SPEC, View(), "role", st)[0], "unknown is never ended")
+        with self.rows():
+            self.assertTrue(state.wait_proven(SPEC, View(), "role", dict(st, holder="overnight GPU window"))[0])
+            self.assertEqual(state.named_ended("local-ci", "job:x", st["holder"]), ([], ""), "only a research wait on a time")
+
+    def test_a_wait_on_another_roles_reservation_is_told_to_queue_a_request(self):
+        holder = f"GPUs reserved by peer ({self.RID})"
+        with self.rows(self.other()):
+            notes = state.gpu_wait_notes("research-window", "time:2099-01-01T00:00:00Z", holder, "role", "example")
+            self.assertEqual(len(notes), 2, notes)
+            self.assertIn(f"--target resv:{self.RID}", notes[0])
+            self.assertIn("pool reserve --host hostb --resources gpus:<N> --for example/role", notes[1])
+            notes = state.gpu_wait_notes("research-window", f"resv:{self.RID}", "peer's run", "role", "example")
+            self.assertEqual(len(notes), 1, notes)
+            self.assertIn("no pool request of yours is queued", notes[0])
+        mine = self.other(id="r11261223-d13b", state="waiting", **{"for": "example/role"})
+        with self.rows(self.other(), mine):
+            self.assertEqual(len(state.gpu_wait_notes("research-proto", "time:2099-01-01T00:00:00Z", holder, "role",
+                                                      "example")), 1, "a request of its own is queued")
+        with self.rows(self.other(), bad=["hostc"]):
+            self.assertEqual(len(state.gpu_wait_notes("research-window", "time:2099-01-01T00:00:00Z", holder, "role",
+                                                      "example")), 1, "a host unread may hold its request")
+        with self.rows(self.other()):
+            self.assertEqual(state.gpu_wait_notes("research-window", "time:2099-01-01T00:00:00Z", "overnight window",
+                                                  "role", "example"), [], "a scheduled window names no reservation")
+            self.assertEqual(state.gpu_wait_notes("local-ci", "job:x", holder, "role", "example"), [])
+
+    def test_the_pool_is_read_across_hosts_and_an_unread_host_is_reported(self):
+        import pool_cli
+        here = {"id": "r11260900-aaaa", "for": "example/peer", "state": "held", "alive": True}
+        there = {"id": self.RID, "for": "example/peer", "state": "held", "alive": True}
+        gone = {"id": "r11260800-bbbb", "alive": False}
+        with patch.object(pool_reserve.config, "server", return_value="hosta"), \
+                patch.object(pool_reserve, "report", return_value=[here, gone]), \
+                patch.object(pool_cli, "pool_names", return_value=["hosta", "hostb", "hostc"]), \
+                patch.object(pool_cli, "gather", return_value={"hostb": {"reservations": [there]},
+                                                               "hostc": {"error": "unreachable"}}) as g:
+            rows, bad = pool_reserve.live_records()
+            self.assertEqual(([(r["id"], r["host"]) for r in rows], bad),
+                             ([(here["id"], "hosta"), (self.RID, "hostb")], ["hostc"]))
+            g.assert_called_once_with(only=["hostb", "hostc"])
+            g.reset_mock()
+            pool_reserve.live_records(lambda rs: any(r["id"] == here["id"] for r in rs))
+            g.assert_not_called()
+        self.assertEqual(pool_reserve.named(f"by peer (r11260730-15d1, then {self.RID}; r11260730-15d1)"),
+                         ["r11260730-15d1", self.RID])
 
 
 class ProvenBlockers(unittest.TestCase):

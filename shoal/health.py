@@ -15,7 +15,8 @@ boundary), so a new instance restarts the ladder and one instance never escalate
 
   condition          evidence                                   ladder (minutes since evidence)
   unacked-work       open offer to an idle role (or --now) newer than its queue version   wake@10 wake@30 page@60
-  wait-resolved      a machine-checkable wait target is no longer pending                  wake@15 restart@60
+  wait-resolved      a machine-checkable wait target is no longer pending, or every reservation  wake@15 restart@60
+                     a research wait on a `time:` target names has ended
   asks-on-return     the maintainer came back; a role holding asks has not written since    wake@3 (once a return)
   blocker-resolved   a next item's role or provider blocker cleared                         wake@0
   wait-validity      any CI / lease / job wait, every validity_wake_min (default 90)       wake@V  wake@2V restart@3V
@@ -924,7 +925,7 @@ def keep_wait_protocol(protocol: str) -> str:
 
 def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
     """[{slug, condition, key, since, detail}] for every live condition instance."""
-    from state import read_wait, wait_discipline
+    from state import named_ended, read_wait, wait_discipline
     out = []
     cfg = health_cfg(spec)
     validity = float(cfg.get("validity_wake_min", 90))
@@ -976,6 +977,17 @@ def evaluate(spec: ShoalSpec, view, cbusy: dict[str, str]) -> list[dict]:
                                    f"re-point your wait at one still running (`queue --wait local-ci --target job:{sib[0]}`)")
                 out.append({"slug": slug, "condition": "wait-resolved", "key": f"target:{target}", "since": iso(),
                             "detail": detail, "first_seen": True, "between": between})
+            # a research wait on a guessed `time:` that names the reservations it really waits on: resolved when they
+            # end, though the time is still ahead (measured 2026-11-26: four runs read such a wait ok while the GPUs it
+            # waited on stood free)
+            ended, ewhy = named_ended(sub, target, st.get("holder") or w.get("holder") or "")
+            if ended:
+                out.append({"slug": slug, "condition": "wait-resolved", "key": f"resv:{','.join(ended)}",
+                            "since": iso(), "first_seen": True, "between": between,
+                            "detail": f"the reservation(s) your {sub} wait names ended ({ewhy}), ahead of {target}: "
+                                      f"what you waited for may be free. Read `shoal pool status`, then reserve it, "
+                                      f"or queue your own request behind the one now ahead and wait on "
+                                      f"`--target resv:<its id>`"})
             # `upstream` waits resolve through their target (wait-resolved), not a periodic re-verify.
             # The ladder is keyed by the target, so re-declaring the same wait keeps escalating: keyed
             # by the boundary, every rewrite restarted it at step 1 and it never paged (measured

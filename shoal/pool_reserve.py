@@ -816,6 +816,39 @@ def report() -> list[dict]:
     return [{k: r.get(k) for k in keys} | {"state": state_of(r), "alive": alive(r)} for r in load().values()]
 
 
+# a reservation or request id as `reserve` makes it (r<MMDDHHMM>-<4 hex>), the ref of a `resv:` wait target
+RID_RE = re.compile(r"\br\d{8}-[0-9a-f]{4}\b")
+
+
+def named(text: str) -> list[str]:
+    """The reservation ids a text (a wait's holder) names, in order, once each."""
+    return list(dict.fromkeys(RID_RE.findall(str(text or ""))))
+
+
+def live_records(enough=None) -> tuple[list[dict], list[str]]:
+    """(the live reservations and waiting requests on the pool's hosts, each row with its `host`; the pool hosts that
+    could not be read). This host's file is read directly, the others through their cached `pool probe`, and only while
+    `enough(rows)` is not yet true. Reservations are host-local, so a role on one host waits on GPUs reserved on another
+    (measured 2026-11-26), and an id found nowhere is ended only when every host was read."""
+    import pool_cli
+    home = config.server()
+    rows, bad = [], []
+    try:
+        rows = [dict(r, host=home) for r in report() if r.get("alive")]
+    except Exception:  # noqa: BLE001 - unreadable here is unknown, never ended
+        bad.append(home)
+    if enough is not None and enough(rows):
+        return rows, bad
+    others = [n for n in pool_cli.pool_names() if n != home]
+    for n, p in (pool_cli.gather(only=others) if others else {}).items():
+        res = (p or {}).get("reservations")
+        if (p or {}).get("error") or not isinstance(res, list) or any(r.get("error") for r in res if isinstance(r, dict)):
+            bad.append(n)
+            continue
+        rows += [dict(r, host=n) for r in res if isinstance(r, dict) and r.get("alive", True)]
+    return rows, bad
+
+
 def _emit(rec: dict, kind: str, note: str) -> None:
     import jobs
     sid, _, role = str(rec.get("for") or "/").partition("/")

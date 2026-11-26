@@ -39,7 +39,7 @@ ASK_KINDS = ("ask", "user")
 # a bare provider target names the item's own run (kind `run`): what most free-text holds said in prose (measured
 # 2026-11-19: 80 of the 118 distinct holds recorded that day named the item's own job, hosted run or gate), which the
 # board then read as blocked
-RUN_KINDS = ("job", "gh-run", "az-build", "time")
+RUN_KINDS = ("job", "gh-run", "az-build", "time", "resv")  # resv: the reservation the run waits for
 
 
 def cfg(spec) -> dict | None:

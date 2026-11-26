@@ -739,6 +739,41 @@ check "handed app#9401 to tl" $H release --shoal $SID --spec "$SPEC" --slug up -
 check "OFFER app#9401.* by=up" $H next --shoal $SID --spec "$SPEC" --slug tl --no-sync --peek
 check "claimed app#9401" $H claim --shoal $SID --spec "$SPEC" --slug tl --item app#9401:fix --no-sync
 
+echo "== 12b GPU waits: another role's reservation, a time guess that outlives it, a request of one's own"
+# a synthetic reservation on this host held by another shoal's role: its holder pidfile names this shell (alive)
+RID=r11260937-8e64
+mkdir -p "$S/data/_pool"; echo $$ > "$S/hold.pid"
+printf '{"%s": {"id": "%s", "for": "othershoal/peer", "state": "held", "until": "job:peer-run", "holds": [{"pidfile": "%s"}], "devices": [{"uuid": "GPU-x"}]}}\n' \
+  "$RID" "$RID" "$S/hold.pid" > "$S/data/_pool/reservations.json"
+OUT=$($H queue --shoal $SID --spec "$SPEC" --slug up --active app#9301:fix --next "" --wait research-window \
+  --holder "both GPUs reserved by peer ($RID, back-to-back legs)" --target time:2099-01-01T00:00:00Z --no-sync 2>&1)
+grep -q "wait on \`--target resv:$RID\`" <<<"$OUT" || fail "a time wait naming a reservation was not pointed at resv: :: $OUT"
+grep -q "no pool request of yours is queued" <<<"$OUT" || fail "a GPU wait with no request of its own was not told to queue one :: $OUT"
+python3 - "$SHOALD" "$SPEC" "$SID" "$RID" "$S/data/_pool/reservations.json" <<'PY' || fail "a wait on another role's reservation was not resolved when it ended"
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import health, providers, state
+from ledger import Ledger, View
+from roles import ShoalSpec
+spec = ShoalSpec.load(sys.argv[2])
+sid, rid = sys.argv[3], sys.argv[4]
+v = View(Ledger(sid, root=spec.ledger_dir, sync=False), spec)
+def resolved():
+    return [c for c in health.evaluate(spec, v, {}) if c["slug"] == "up" and c["condition"] == "wait-resolved"]
+assert providers.resolve(f"resv:{rid}", "up", sid)[0] is True
+assert state.wait_proven(spec, v, "up", v.role_state("up"))[0], "reserved: the time target proves the wait"
+assert not resolved(), resolved()
+os.remove(sys.argv[5])  # the reservation ends, hours before the guessed time
+assert providers.resolve(f"resv:{rid}", "up", sid)[0] is False
+ok, why = state.wait_proven(spec, v, "up", v.role_state("up"))
+assert not ok and rid in why, (ok, why)
+c = resolved()
+assert len(c) == 1 and c[0]["key"] == f"resv:{rid}" and "pool status" in c[0]["detail"], c
+PY
+check "wait target resv:$RID is already resolved" $H queue --shoal $SID --spec "$SPEC" --slug up --active app#9301:fix --next "" \
+  --wait research-window --holder "peer's reservation" --target resv:$RID --no-sync
+$H queue --shoal $SID --spec "$SPEC" --slug up --active app#9301:fix --next "" --reason test --no-sync >/dev/null
+
 echo "== 13 continuation: a turn that ends while active is woken to continue (not after 90 min)"
 python3 - "$SPEC" <<'PY'
 import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["features"]["continuation"]={"after_min":5}; json.dump(d,open(p,"w"),indent=1)
