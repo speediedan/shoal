@@ -255,6 +255,14 @@ def pull_hosts(spec, dry_run: bool = False) -> int:
 def cmd_upgrade(a) -> int:
     if getattr(a, "pull_only", False):
         rc, what, moved = pull_here(a.dry_run)
+        if rc == 0 and not a.dry_run:
+            # this host's sessions load their skills from the user-scope copies, which only an upgrade run here synced:
+            # the home host's `--pull` left them stale on every other host (measured 2026-11-26: a role host's
+            # shoal-protocol copies were several merged protocol changes behind). On the line `--pull` prints.
+            import skills as _skills
+            synced = _skills.sync()
+            if synced:
+                what += f"; skills: synced {len(synced)} cop{'y' if len(synced) == 1 else 'ies'}"
         print(what)
         if moved and not a.dry_run:  # a host the upgrade does not run on: its feeds load the pulled code here
             for unit in ui_feeds_active():
