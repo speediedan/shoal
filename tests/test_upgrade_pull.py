@@ -67,13 +67,21 @@ def fake_run(argv, **_kw):
 with patch.object(upgrade.subprocess, "run", fake_run):
     assert upgrade.ui_feeds_active() == ["shoal-graph-feed.service"]
     calls.clear()
-    with patch.object(upgrade, "pull_here", return_value=(0, "pulled", True)):
+    import contextlib  # noqa: E402
+    import io  # noqa: E402
+    import skills  # noqa: E402
+    out = io.StringIO()
+    with patch.object(upgrade, "pull_here", return_value=(0, "pulled", True)), \
+            patch.object(skills, "sync", return_value=["h/a", "h/b"]) as synced, contextlib.redirect_stdout(out):
         assert upgrade.cmd_upgrade(types.SimpleNamespace(pull_only=True, dry_run=False)) == 0
+    # the host's own skill copies are synced, on the line `--pull` prints from it
+    assert synced.called and out.getvalue().splitlines()[0] == "pulled; skills: synced 2 copies", out.getvalue()
     assert ["systemctl", "--user", "restart", "shoal-graph-feed.service"] in calls, calls
     assert not any(c[2] == "restart" and c[3] == "shoal-ui-feed.service" for c in calls), "an inactive feed stays"
     calls.clear()
-    with patch.object(upgrade, "pull_here", return_value=(0, "already at", False)):
+    with patch.object(upgrade, "pull_here", return_value=(0, "already at", False)), \
+            patch.object(skills, "sync", return_value=[]):
         upgrade.cmd_upgrade(types.SimpleNamespace(pull_only=True, dry_run=False))
     assert not any(c[2] == "restart" for c in calls), "nothing moved: nothing restarts"
 
-print("upgrade --pull: current, behind, dirty, detached and not a clone ok; UI feeds restart where code moved")
+print("upgrade --pull: current, behind, dirty, detached and not a clone ok; UI feeds restart and skills sync where pulled")

@@ -1488,8 +1488,9 @@ The command refuses a dirty package tree, runs the four selftests, diffs the pac
 spec's recorded `tooling.sha`, applies `--enable`, `--disable` and `--set` feature edits, records
 the new sha with a ledger `system` event, and re-arms per `--rearm`. It also syncs the user-scope
 copies of the package's skills into every `skill_homes` entry: sessions load `shoal-protocol` from
-those copies, so a merged protocol change otherwise never reaches them. `doctor` warns while any
-copy is stale.
+those copies, so a merged protocol change otherwise never reaches them. `--pull-only` syncs its host's copies
+too, so `--pull` from the home host reaches the skills on every host it pulls (they were left stale there until an
+upgrade ran on that host). `doctor` warns while any copy is stale.
 
 `restart --only <slugs>` relaunches a subset. Its start-doc checks fail only on the roles it
 relaunches; a problem in a kept role's doc prints as info. Once any session has launched, the spec
