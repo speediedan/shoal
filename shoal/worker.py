@@ -103,7 +103,8 @@ RETURN_PROTOCOL = (
     "LIKELY-STALE hints are a starting point, not a verdict. (2) Build the question sets with `shoal asks "
     "--question-json` (live PR titles and checks; never label a PR from memory), record a user-auth wait, "
     f"then raise EVERY set, one question-tool call per set (at most {ASKS_PER_SET} questions each). (3) Remove "
-    "each answered ask with `queue --answered <n>`; disclose any DROPPED ASKS in your last set.")
+    "each answered ask with `queue --answered <n>`, in the same write that records your next wait or active item; "
+    "disclose any DROPPED ASKS in your last set.")
 
 
 def ask_refs(ask: str, default_repo: str, known: dict[str, str] | None = None) -> list[str]:
@@ -257,7 +258,8 @@ def question_sets(spec: ShoalSpec, view: View, slug: str) -> dict:
     return {"role": slug, "sets": sets, "dropped_unanswered": recent_drops(view, slug),
             "rule": (f"Raise every set, one question-tool call per set, in order; at most {ASKS_PER_SET} per set. "
                      "Before the first call record a user-auth wait (`queue --wait user-auth ...`): the question "
-                     "tool blocks your turn. After the answers, `queue --answered N` per answered ask. Disclose "
+                     "tool blocks your turn. After the answers, `queue --answered N` per answered ask, in the same "
+                     "write that records your next wait or active item. Disclose "
                      "every dropped_unanswered ask in the last set.")}
 
 

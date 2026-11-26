@@ -19,8 +19,12 @@ where you sit, and a question buried in a status report is not an ask.
 4. **Every merge ask offers grant, defer, delegate and deny,** and names the stacked or parallel
    work you will do meanwhile. Never leave a bare merge-or-nothing choice.
 5. **After the answers,** remove each answered ask with `queue --answered <n>` (or its id, which does
-   not shift as you remove others). An ask whose answer
-   was a condition stays recorded until the condition holds.
+   not shift as you remove others), in the same `queue` write that records what you do next
+   (`queue --answered <id> --wait remote-ci ...`, or with `--active`): one event. A write between
+   the answer and the removal can show the maintainer the answered ask again, as a need. Run that
+   `queue` unpiped, never through grep or head: an `ERROR` (an ask number out of range) is the only
+   sign that it wrote nothing. An ask whose answer was a condition stays recorded until the
+   condition holds.
 
 ## Answers from the Asks dialog
 
