@@ -3393,6 +3393,34 @@ finally:
     sys.stdout = real
 assert out.getvalue() == "<working>", out.getvalue()
 assert seen["client"] == {"session": "working", "prompt": False, "t": 1767614430.0}, seen
+# the client's turn is read each second, not only at a refresh: an answer moves the report at once, and a detach seconds
+# after it still hands the card the answer (measured 2026-11-26: the last refresh's read still had the question open)
+ui_view.CARD_REFRESH_S, ui_view.REBUILD_POLL_S = 30, 0.02
+ui_view._cache_stamp = lambda: 0
+cores["now"] = {"status": {"app": "claude-code", "state": "blocked", "kind": "question"}, "status_ms": 1767614420000}
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", fake) as seen:
+        time.sleep(0.15)
+        cores["now"] = {"status": {"app": "claude-code", "state": "working"}, "status_ms": 1767614430000}
+        time.sleep(0.15)
+finally:
+    sys.stdout = real
+assert out.getvalue() == "<blocked><working>", out.getvalue()
+assert seen["client"]["session"] == "working", seen
+cores["now"] = {"status": {"app": "claude-code", "state": "blocked", "kind": "question"}, "status_ms": 1767614420000}
+ui_view.REBUILD_POLL_S = 30  # no tick before the detach: only the read as the attach ends sees the answer
+out = io.StringIO()
+real, sys.stdout = sys.stdout, out
+try:
+    with ui_view._report_during("s", "r", fake) as seen:
+        time.sleep(0.05)
+        cores["now"] = {"status": {"app": "claude-code", "state": "working"}, "status_ms": 1767614430000}
+finally:
+    sys.stdout = real
+assert seen["client"] == {"session": "working", "prompt": False, "t": 1767614430.0}, seen
+ui_view.REBUILD_POLL_S = 1.0
 with ui_view._report_during("s", "r", None) as none:
     pass
 assert none == {}, "outside the app: nothing read"

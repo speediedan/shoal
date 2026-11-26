@@ -2255,7 +2255,7 @@ live (`starting` from its start until its first status read lands, since a card 
 cold for tens of seconds under the labels its last run left; `answered` or `resumed` while it shows the row ahead of
 its status: your reply written on this host (`shoal msg --by user` leaves `/tmp/<id>/reply-<role>.json` beside the
 ledger event) or the role's session running again (the host's listing, or the client attached under the card, whose
-report the card reads before each of its own through an attach and keeps after it, `ui_view._client_turn`: the only
+report the card reads each second through an attach, and once more as it ends, and keeps after it, `ui_view._client_turn`: the only
 read for a role on another host), newer than the row's read, while the status still says it needs your answer
 (`ui_status.card_view`), so the row leaves Needs you within one card refresh of the answer, and a status read before
 the answer never brings it back with a `blocked` report and its chime (`ui_status.row_read_at`: the status time less
