@@ -73,7 +73,8 @@ STATUS_WAITS = ("local-ci", "remote-ci", "research-proto", "research-window", "u
 BLOCKER_EVENT = {"role": "session-blocked", "upstream": "upstream", "lease": "lease", "ask": "user-ask",
                  "hold": "hold", "run": "remote-ci"}
 # a `run` blocker (the item's own run) by its provider: a job is local, a hosted run or gate remote, a time a window
-RUN_EVENT = {"job": "local-ci", "gh-run": "remote-ci", "az-build": "remote-ci", "time": "research-window"}
+RUN_EVENT = {"job": "local-ci", "gh-run": "remote-ci", "az-build": "remote-ci", "time": "research-window",
+             "resv": "research-window"}
 
 
 def blocker_event(blocker: str) -> str:

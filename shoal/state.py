@@ -175,6 +175,57 @@ CI_SUBS = ("local-ci", "remote-ci")
 # apart so research does not read as CI time or CI demand. A research window (research-window) is research that is
 # scheduled, not yet running: a time window or a reservation to open, on a `time:` target (or the queued job or lease)
 RUN_SUBS = CI_SUBS + ("research-proto", "research-window")
+RESEARCH_SUBS = ("research-proto", "research-window")
+
+
+def named_ended(sub: str, target: str, holder: str) -> tuple[list[str], str]:
+    """(ids, why) when a research wait on a `time:` target names reservations in its holder and every one has ended
+    (known: every pool host was read); ([], "") otherwise. The time is then the role's guess at when they end, and the
+    guess outlived them: measured 2026-11-26, a wait naming another role's reservation passed its rescan at 12:13, the
+    reservation ended before 12:22, and four health runs read the wait as proven by its 12:45 time target."""
+    if sub not in RESEARCH_SUBS or not str(target or "").startswith("time:"):
+        return [], ""
+    import pool_reserve
+    ids = pool_reserve.named(holder)
+    if not ids:
+        return [], ""
+    try:
+        rows, bad = pool_reserve.live_records(lambda rs: any(r.get("id") in ids for r in rs))
+    except Exception:  # noqa: BLE001 - the pool unreadable is unknown, never ended
+        return [], ""
+    if bad or any(r.get("id") in ids for r in rows):
+        return [], ""
+    return ids, f"{', '.join(ids)} no longer on any pool host"
+
+
+def gpu_wait_notes(sub: str, target: str, holder: str, slug: str, sid: str) -> list[str]:
+    """Notes for a research wait on another role's reservation (its `resv:` target, or one its holder names on a
+    `time:` target). A named one is better waited on as `resv:<id>`; and a role with no pool request of its own is told
+    to queue one, which the pool grants in fair order and which wakes it when granted (measured 2026-11-26: a role
+    waited twice on GPUs another role held, with no request queued, until the maintainer woke it)."""
+    kind, _, ref = str(target or "").partition(":")
+    if sub not in RESEARCH_SUBS or kind not in ("time", "resv") or not sid:
+        return []
+    import pool_reserve
+    want = set(pool_reserve.named(holder)) | ({ref} if kind == "resv" else set())
+    if not want:
+        return []  # a scheduled window (an overnight GPU slot) names no reservation to wait on
+    owner = f"{sid}/{slug}"
+    rows, bad = pool_reserve.live_records()
+    others = {r["id"]: r for r in rows if r.get("id") in want and r.get("for") != owner}
+    notes = []
+    if kind == "time" and others:
+        notes.append(f"your holder names reservation {', '.join(others)}: wait on `--target resv:{next(iter(others))}` "
+                     f"instead, which wakes you when it ends rather than at a guessed time")
+    if bad or not others or any(r.get("for") == owner for r in rows):
+        return notes
+    host = sorted({r["host"] for r in others.values()})[0]
+    notes.append(f"no pool request of yours is queued: queue one now (`shoal pool reserve --host {host} --resources "
+                 f"gpus:<N> --for {owner} --until job:<name>` as the first step of a launcher job; it holds nothing "
+                 f"while it waits, and the pool grants requests in order), then wait on `--target resv:<its id>` "
+                 f"(resolved when granted) or the launcher's `job:<name>`. Without one, the GPUs can pass to the next "
+                 f"request each time they free")
+    return notes
 
 
 def wait_proven(spec, view, slug: str, st: dict, q: dict | None = None, pending=None) -> tuple[bool, str]:
@@ -209,6 +260,9 @@ def wait_proven(spec, view, slug: str, st: dict, q: dict | None = None, pending=
     target = st.get("target", "")
     if not target:
         return False, "no target"
+    ended, why = named_ended(sub, target, st.get("holder", ""))
+    if ended:
+        return False, f"the reservations it names ended ({why})"
     if pending is None:
         import providers
         pending, why = providers.resolve(target, slug, spec.sid, upstream=(sub == "upstream"))
@@ -224,11 +278,12 @@ def wait_targets(spec) -> bool:
 
 
 def check_target(sub: str, target: str, slug: str, sid: str = "",
-                 require_ci: bool = False) -> tuple[str, list[str], str]:
+                 require_ci: bool = False, holder: str = "") -> tuple[str, list[str], str]:
     """(canonical target, notes, refusal) for a wait target. A malformed target is refused (nothing
     could ever check it), and so is one already resolved (there is nothing left to wait on). With
     `require_ci` a CI wait without a target is refused too: nothing can tell when it ends (measured
-    2026-10-01: a job finished 27 s into a target-less local-ci wait and the role slept on)."""
+    2026-10-01: a job finished 27 s into a target-less local-ci wait and the role slept on). `holder` adds the notes
+    for a wait on another role's reservation (gpu_wait_notes)."""
     import providers
     if not target:
         if sub == "upstream":
@@ -236,7 +291,7 @@ def check_target(sub: str, target: str, slug: str, sid: str = "",
                             "(or gh-pr:, gh-run:) so the quorum wakes you when it resolves")
         if sub == "research-window":
             return "", [], ("a research-window wait needs what opens it: --target time:<ISO UTC> (a scheduled window), "
-                            "or the queued job:<name> or lease:<key> it waits for")
+                            "or the queued job:<name>, lease:<key> or resv:<id> (a pool reservation) it waits for")
         if require_ci and sub in RUN_SUBS:
             return "", [], (f"a {sub} wait needs a checkable target: --target job:<name> (a `job run` unit), "
                             f"lease:<key>, az-build:<id>, gh-run:<owner/repo>:<id> or gh-pr:<owner/repo>#<n>, "
@@ -270,6 +325,10 @@ def check_target(sub: str, target: str, slug: str, sid: str = "",
     if pending is None:
         notes.append(f"target {canon} cannot be checked now ({why}); the quorum will keep asking you to "
                      f"re-verify this wait")
+    try:
+        notes += gpu_wait_notes(sub, canon, holder, slug, sid)
+    except Exception:  # noqa: BLE001 - advice never blocks a wait
+        pass
     return canon, notes, ""
 
 
@@ -353,7 +412,7 @@ def cmd_transition(a: argparse.Namespace) -> int:
             print(f"note: target {a.target} carried forward from the current {sub} wait")
     if a.to == "waiting":
         a.target, tnotes, trefusal = check_target(sub, getattr(a, "target", "") or "", a.slug, sid,
-                                                  require_ci=wait_targets(spec))
+                                                  require_ci=wait_targets(spec), holder=a.holder)
         for n in tnotes:
             print(f"note: {n}")
         if trefusal:

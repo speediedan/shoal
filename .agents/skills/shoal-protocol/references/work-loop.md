@@ -15,7 +15,7 @@
    - `--blocked ITEM=<blocker>` (repeatable; `ITEM=` clears): why a next item cannot start. The
      blocker is `<role>:<repo#n>` (that role sees `BLOCKING`), `ask[:<n>]`, `user`,
      `upstream:<target>`, `lease:<key>`, the item's own run (`job:<name>`,
-     `gh-run:<owner/repo>:<id>`, `az-build:<id>`, `time:<ISO UTC>`) or `hold:<why>`. Recorded
+     `gh-run:<owner/repo>:<id>`, `az-build:<id>`, `time:<ISO UTC>`, `resv:<id>`) or `hold:<why>`. Recorded
      blockers carry forward while the item stays in `next`. Where the group verifies blockers, prefer
      a checkable one (a peer item, an upstream target, a lease, the run): it clears itself. An `ask`
      or `user` blocker needs the ask recorded (`--ask`). A `hold` expires and must be re-verified;
@@ -66,8 +66,9 @@ Sleep only on a real wait or an empty queue:
   The substates are `local-ci`, `remote-ci`, `research-proto`, `research-window`, `session-blocked`,
   `upstream`, `user-auth`, `user-design` and `queue-empty`. The target lets the health quorum check the wait for you
   (`job:<name>`, `lease:<key>`, `gh-run:<owner/repo>:<id>`, `gh-pr:<owner/repo>#<n>`,
-  `gh-issue:<owner/repo>#<n>`, `az-build:<id>`, `time:<ISO UTC>`). A malformed target is refused, and so is one that
-  is already resolved (a merged PR, a finished run): there is nothing left to wait on.
+  `gh-issue:<owner/repo>#<n>`, `az-build:<id>`, `time:<ISO UTC>`, `resv:<reservation id>`). A malformed
+  target is refused, and so is one that is already resolved (a merged PR, a finished run): there is nothing
+  left to wait on.
 - **CI or research:** `local-ci` and `remote-ci` are for CI only: a suite, a build or a check that
   validates a change. A run that answers a research question or tries out a prototype (an experiment,
   a sweep, a recovery or ablation run, a benchmark for a design, a PR or issue prototype) is
@@ -77,7 +78,10 @@ Sleep only on a real wait or an empty queue:
   queues actually go.
 - **A research window:** research that is scheduled but not running yet (an overnight GPU window, a
   reservation to open) is `research-window` on `--target time:<ISO UTC>`, or on the queued `job:` or
-  `lease:` it waits for. Never cover a window with a timer job (`job run` sleeping until a time) as a
+  `lease:` it waits for. GPUs another role reserved are a wait on that reservation, never a guessed time:
+  queue a request of your own (`shoal pool reserve`, from a launcher job) and wait on `--target resv:<its id>`
+  (resolved when granted) or the launcher's `job:`; at the least, wait on the holder's `resv:<id>`, which
+  resolves when it ends. Never cover a window with a timer job (`job run` sleeping until a time) as a
   `local-ci` wait: it is not CI, and shoal wakes you itself when the window opens.
 - **Which substate:** `session-blocked` is for another role in this shoal (`--blocked-on
   <role>:<item>`, never yourself). Your item waiting on something outside the shoal, such as an

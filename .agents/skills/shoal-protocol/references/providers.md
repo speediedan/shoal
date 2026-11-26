@@ -36,6 +36,7 @@ serializes access to shared resources by key.
 | `gh-run:<repo>:<run id>` | a GitHub Actions run |
 | `gh-pr:<repo>#<n>` | a PR's checks (an empty check list is unknown, never green) |
 | `az-build:<id>` | an Azure Pipelines build (optional provider) |
+| `resv:<id>` | a pool reservation or request (`pool status` lists the ids): another role's while it stands, yours until granted |
 
 **Behaviour:**
 - A target reported resolved (or invalid) triggers a wake.

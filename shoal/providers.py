@@ -19,6 +19,8 @@ Kinds shipped here:
   az-build  an Azure Pipelines build, `[<project>/]<id>`, via `az pipelines build show` (optional: needs `az`)
   offer     <role>, via the shoal's ledger: resolved once an open offer is addressed to that role
   time      an ISO UTC time (`2026-11-11T02:00:00Z`): pending until then, the target of a research window
+  resv      a pool reservation or request id (`pool reserve` prints it), on any pool host: another role's is pending
+            while it stands, the waiter's own request until it is granted
 """
 from __future__ import annotations
 
@@ -83,6 +85,8 @@ def normalize(target: str) -> tuple[str, str]:
         return target, "offer target needs a role: offer:<role>"
     if kind == "az-build" and not re.fullmatch(r"(?:[\w.-]+/)?\d+", ref):
         return target, f"az-build target {ref!r} is not [<project>/]<build id>"
+    if kind == "resv" and not re.fullmatch(r"r\d{8}-[0-9a-f]{4}", ref.strip()):
+        return target, f"resv target {ref!r} is not a reservation id (r<MMDDHHMM>-<hex>, as `pool status` lists it)"
     if kind == "time":
         at = _utc(ref)
         if at is None:
@@ -114,6 +118,27 @@ def time_at(ref: str, slug: str, sid: str) -> Result:
         return None, f"not a time: {ref}"
     left = (at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
     return (True, f"opens in {left / 3600:.1f} h") if left > 0 else (False, f"opened {ref}")
+
+
+@register("resv")
+def resv(ref: str, slug: str, sid: str) -> Result:
+    """A pool reservation or request, by its id, on whichever pool host holds it. Another role's is pending while it
+    stands (held, kept for a job still on it, or waiting for its grant) and resolved once it is gone, so a role waiting
+    on GPUs another role reserved is woken when they free, not at a guessed time (measured 2026-11-26: a role slept
+    99 min, then 10 min past the end of the reservation it named, on `time:` targets). The waiter's own request is
+    pending while it waits and resolved when it is granted. Unknown when it is found nowhere and a pool host could not
+    be read."""
+    import pool_reserve
+    rid = ref.strip()
+    rows, bad = pool_reserve.live_records(lambda rs: any(r.get("id") == rid for r in rs))
+    r = next((x for x in rows if x.get("id") == rid), None)
+    if r is None:
+        return (None, f"{rid} not found; {', '.join(bad)} unreadable") if bad else (False, f"{rid} ended")
+    if r.get("state", "held") == "held":
+        if sid and r.get("for") == f"{sid}/{slug}":
+            return False, f"{rid} granted on {r['host']}"
+        return True, f"{rid} held by {r.get('for')} on {r['host']} until {r.get('until')}"
+    return True, f"{rid} for {r.get('for')} waiting on {r['host']} ({r.get('waiting') or r.get('state')})"
 
 
 @register("offer")

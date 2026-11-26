@@ -42,7 +42,7 @@ from roles import ShoalSpec, find_spec, mail_read_since, state_dir  # noqa: E402
 
 PASS_CLASSES = ("out-of-lane", "blocked", "needs-maintainer", "needs-hardware", "duplicate-or-stale")
 # the item's own run as a next-item blocker (blockers.RUN_KINDS): the board reads it in progress, not blocked
-RUN_FORMS = "job:<name>, gh-run:<owner/repo>:<id>, az-build:<id> or time:<ISO UTC>"
+RUN_FORMS = "job:<name>, gh-run:<owner/repo>:<id>, az-build:<id>, time:<ISO UTC> or resv:<reservation id>"
 # a free-text hold names nothing shoal can check, and the board can only read it as blocked (measured 2026-11-19: most
 # holds described the item's own CI or job, and one described work that belonged in the issue itself or in an issue of
 # its own), so `queue` and `next` say what to record instead
@@ -717,7 +717,7 @@ def cmd_queue(a) -> int:  # noqa: C901 - one verb, one commit, deliberately line
             print(f"ERROR: {refusal} (nothing written)")
             return 3
         a.target, tnotes, trefusal = _st.check_target(a.wait, a.target or "", slug, spec.sid,
-                                                      require_ci=_st.wait_targets(spec))
+                                                      require_ci=_st.wait_targets(spec), holder=a.holder or "")
         for n in tnotes:
             print(f"note: {n}")
         if trefusal:

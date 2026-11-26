@@ -207,8 +207,8 @@ queue event (`next_blocked_meta`: `since` it was last recorded, `first` it block
 re-records), and `shoal/blockers.py` judges it by kind. `<role>:<repo#n>` clears once that item is
 done; `upstream:<target>` and `lease:<key>` clear when their provider says the target is no longer
 pending (an upstream `gh-pr` target stays pending while the PR is open, whatever its checks say); `ask:`/`user:` holds only while the queue records an ask, and is refused without one;
-a bare provider target, `job:<name>`, `gh-run:<owner/repo>:<id>`, `az-build:<id>` or `time:<ISO UTC>` (kind
-`run`), is the item's own run (its PR's CI, a gate, a research job or window): not a dependency, so the board reads the
+a bare provider target, `job:<name>`, `gh-run:<owner/repo>:<id>`, `az-build:<id>`, `time:<ISO UTC>` or
+`resv:<reservation id>` (kind `run`), is the item's own run (its PR's CI, a gate, a research job or window): not a dependency, so the board reads the
 item in progress, and it clears, waking the role once, when its provider says the run ended. `queue` normalizes it and
 refuses a malformed one.
 `hold:<why>` is unverifiable, so it expires after `hold_ttl_min`, and role and provider blockers
@@ -550,10 +550,24 @@ helper; without `--place` a job runs exactly as above. `shoal/pool.py` is the pu
   excuse parked next items.
 - **Research windows.** Research that is scheduled but not yet running (an overnight GPU window, a reservation
   to open) is `research-window`, on a `time:<ISO UTC>` target (the `time` provider: pending until then) or on the
-  queued `job:` or `lease:` it waits for. It needs a target, it is counted in role time's `research` group beside
-  `research-proto`, and a `time:` target on any other substate is refused. It replaces the timer job (a `job run`
+  queued `job:`, `lease:` or `resv:` it waits for. It needs a target, it is counted in role time's `research` group
+  beside `research-proto`, and a `time:` target on any other substate is refused. It replaces the timer job (a `job run`
   sleeping until the window) that read as `local-ci` and was re-verified every 3 h (measured 2026-11-10: 4 to 6 turns
   a night for one role).
+- **GPU waits on another role's reservation.** The `resv:<id>` target (the `resv` provider) is a pool reservation or
+  request by id, read on whichever pool host holds it (`pool_reserve.live_records`: this host's file, the others'
+  cached `pool probe`): another role's is pending while it stands (held, kept for a job on it, or waiting) and resolved
+  once it is gone; the waiter's own request is pending until granted; found nowhere with a pool host unread is
+  unknown. Measured 2026-11-26: a role waited twice on GPUs another role held, with no request of its own and a
+  `time:` target guessing when they would free, and slept 99 min, then on past the reservation's end (four health runs
+  read `ok`): its rescan passed, but the pending `time:` target proved the wait (`state.wait_proven`) and kept off the
+  validity wakes. Now (`state.named_ended`) a research wait on a `time:` target whose holder names reservation ids is
+  unproven once every one has ended (known on every host), and health raises `wait-resolved` keyed `resv:<ids>`
+  for it; and the write of a research wait on another role's reservation (its `resv:` target, or one its holder names
+  on a `time:` target) gets notes (`state.gpu_wait_notes`): wait on `resv:<id>` rather than a guessed time, and, when
+  the pool shows no request of the role's own, queue one (`pool reserve` from a launcher job), so the pool grants it in
+  order and its `resv:` wait resolves at the grant. A note at the write, not a health nudge: every such wait passes
+  through `queue --wait`, and a nudge would cost a cold turn each rescan on a role that chose not to queue.
 - **Research reservations** (`shoal/pool_reserve.py`). `shoal pool reserve [--host H] --resources
   gpu@<uuid>,...|gpus:N|cpu-heavy --for <shoal>/<role> --until <ISO|job:NAME> [--note] [--timeout-min M]` takes
   the leases on H with the helper's background-holder mode (`--hold --pidfile`): one hold per device (a
@@ -687,7 +701,7 @@ run takes at most one step per instance, and a cleared condition resets its ladd
 | condition | evidence | ladder (minutes) |
 | --- | --- | --- |
 | `unacked-work` | an unacknowledged operational request in any status, an offer to an idle role, a `--now` offer, or an outstanding wake request | wake 10, wake 30, page 60 |
-| `wait-resolved` | a checkable wait target is no longer pending; a `job:` wait whose job ended while the role's other jobs run here names them (`jobs.running_siblings`), so the role re-points its wait | wake 15, restart 60 |
+| `wait-resolved` | a checkable wait target is no longer pending, or every reservation a research wait on a `time:` target names in its holder has ended (`state.named_ended`); a `job:` wait whose job ended while the role's other jobs run here names them (`jobs.running_siblings`), so the role re-points its wait | wake 15, restart 60 |
 | `wait-validity` | any CI, lease or job wait (not `upstream`, and under wait discipline not one whose target is confirmed pending), every `validity_wake_min` (default 90); the ladder is keyed by the target, so re-declaring the same wait keeps escalating | wake, wake, restart, one interval apart |
 | `lease-orphan` (when `watch_leases` is on) | a lease its provider marks `orphan` (the holder's owner is gone, such as an abandoned CI build whose container still holds the lock), one per holder, counted from when the owner ended; the provider's reaper had its window | page 30 |
 
