@@ -109,6 +109,9 @@ QUESTION_SUBS = ("user-ask", "user-prompt", "user-design", "user-feedback")
 # Herdr's own sections, by its reported status (a status without the derived state, or a harness that reports nothing)
 GROUP_LABEL = "shoal.group"
 STATE_LABEL = "shoal.state"
+# the host the role runs on, for the row while its attach client's report (which names no host) is the terminal's: the
+# card's own report says it in its title (`@<host>`), and without this the row read the card's machine instead
+HOST_LABEL = "shoal.host"
 DETAIL_LABEL = "shoal.detail"  # the row's tooltip: the ask's first line, the blocker or target
 DETAIL_MAX = 200
 # why the row's state is not live yet ("" when it is): `starting` until the card's first status read lands (a card that
@@ -796,7 +799,7 @@ def _is_shell(argv) -> bool:
 
 # the labels a card keeps on its terminal while it runs; one leaving with `q` clears the status ones on its way out
 CARD_LABELS = ("shoal.attached", "shoal.need", "shoal.asks", "shoal.asks-badge", "shoal.group", "shoal.state",
-               "shoal.detail", "shoal.stale", "shoal.asof")
+               "shoal.detail", "shoal.stale", "shoal.asof", "shoal.host")
 
 
 def foreground_kind(t: dict) -> str:
@@ -1788,7 +1791,9 @@ function shoalRole(a) {
   const title = term?.report?.title ?? "";
   const at = title.indexOf("@");
   const stored = (SHOAL_COLORS ?? shared("space.colors") ?? {})[a.space] ?? "ansi6";
-  return { role: label.slice(cut + 1), host: at >= 0 ? title.slice(at + 1) : null, color: stored.startsWith("#") ? stored : SHOAL_MARK[stored] ?? null };
+  // the host from the card's own report title, else its host label (an attach client's report names no host)
+  const host = at >= 0 ? title.slice(at + 1) : term?.labels?.["shoal.host"] || null;
+  return { role: label.slice(cut + 1), host, color: stored.startsWith("#") ? stored : SHOAL_MARK[stored] ?? null };
 }
 
 // The session's own client asks you now: a client attached under a role's card (Claude Code's attach client reports its

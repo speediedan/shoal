@@ -87,6 +87,31 @@ for pending in (True, False):
     assert ("blocked-on-question" in role["can_progress"]["reasons"]) == pending, role
 print("idle prompt classification ok")
 PY2
+# a stopped session while a restart holds the role's lock is the restart's window, not a dead worker: no Needs you
+# (measured 2026-11-27: each handoff put its role in Needs you as dead-worker for about a minute)
+python3 - "$SHOALD" "$ROOT" "$SID" <<'PY2' || fail "restart window reads restarting"
+import fcntl, os, sys
+sys.path[:0] = [sys.argv[1], sys.argv[1] + "/ui"]
+import ui_status
+from roles import state_dir
+os.makedirs(state_dir(sys.argv[3]), exist_ok=True)
+lock = open(os.path.join(state_dir(sys.argv[3]), "context-restart-dead.lock"), "a")
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+try:
+    doc = ui_status.status([sys.argv[3]], root=sys.argv[2], opencode_probe=False)
+    role = next(r for r in doc["shoals"][0]["roles"] if r["slug"] == "dead")
+    reasons = role["can_progress"]["reasons"]
+    assert "restarting" in reasons and "dead-worker" not in reasons, role
+    assert role["needs_you"] is False and role["agent"]["group"] == "working", role
+    assert role["agent"]["state"] == "restarting" and ui_status.status_label(role) == "RESTARTING", role
+finally:
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+doc = ui_status.status([sys.argv[3]], root=sys.argv[2], opencode_probe=False)
+role = next(r for r in doc["shoals"][0]["roles"] if r["slug"] == "dead")
+assert "dead-worker" in role["can_progress"]["reasons"], "with no restart running it is dead again"
+print("restart window ok")
+PY2
 # the overview table carries each role's ecosystem (claude, opencode, codex, muse) as its own column
 TXT=$($H ui status --shoal $SID --ledger-root "$ROOT" --width 200) || fail "ui status text rc"
 grep -Eq '\| role +\| host +\| ecosystem +\| status' <<<"$TXT" || fail "overview table has no host and ecosystem columns: $TXT"
@@ -2564,6 +2589,12 @@ if shutil.which("node"):
           'eq([shoalClientNeed(b("d1")), shoalRank(b("d1"), 4)], ["", SHOAL_RANK.dismissed], "a dismissed row stays dismissed");\n'
           'eq([shoalClientNeed(b("c1")), shoalRank(b("c1"), 2)], ["", SHOAL_RANK.working], "the card\'s own report is not the client\'s");\n'
           'eq(shoalClientNeed(b("s2")), "", "a seat\'s card reports its own");\n'
+          # the row's host: the card's report title, else its host label (an attach client's report names none)
+          'Object.assign(T, { h1: { "shoal.pane": "alpha/core", "shoal.host": "far" } });\n'
+          'Q.h1 = { app: "core", title: "alpha/core@far2" };\n'
+          'eq(shoalRole({ address: "h1" }).host, "far2", "the card\'s own report names the host");\n'
+          'Q.h1 = { app: "claude-code", kind: "question" };\n'
+          'eq(shoalRole({ address: "h1" }).host, "far", "under the client\'s report, the host label");\n'
           # and the other way: the client's turn runs after you answered there, while the labels still say asked
           'Object.assign(T, { n1: { "shoal.group": "needs-you", "shoal.state": "asked", "shoal.pane": "alpha/core" },\n'
           '                   n2: { "shoal.group": "needs-you", "shoal.state": "no-work", "shoal.pane": "alpha/core" },\n'
@@ -3112,9 +3143,16 @@ X = ui_app.osc7501("idle", "", "standalone/seat", "between turns", app="seat")
 got = attach([lambda: None, lambda: core.update(status=None), lambda: None])
 assert got == W * 2, repr(got)
 assert gets and set(gets) == {"t9"}, "it reads its own terminal"
-# and while the client reports the session itself, the card leaves an unchanged report alone
-got = attach([lambda: core.update(status={"app": "claude-code", "state": "working"}), lambda: None])
-assert got == W, repr(got)  # the first, as before: nothing had been written by this attach
+# and when the client reports the session itself, the card writes its own back (once: the core holds the card's again),
+# so the row keeps the role's account badge and host (measured 2026-11-27: the row flipped at each turn boundary)
+got = attach([lambda: None, lambda: core.update(status={"app": "claude-code", "state": "working"}), lambda: None])
+assert got == W * 2, repr(got)
+assert core["status"]["app"] == "seat", core
+# but a client at a question or permission prompt keeps its report: the live signal of a question asked in it
+got = attach([lambda: None, lambda: core.update(status={"app": "claude-code", "state": "blocked", "kind": "question"}),
+              lambda: None])
+assert got == W, repr(got)  # the first only
+assert core["status"]["app"] == "claude-code", core
 # a `done` already written (the card's text is "" after it) comes back as it was
 seq = iter([ui_app.osc7501("done", "", "standalone/seat", "done its turn", app="seat")] + [""] * 1000)
 got = attach([lambda: None, lambda: core.update(status=None), lambda: None], make=lambda: (next(seq), True))
@@ -3167,6 +3205,8 @@ row = {"slug": "r", "session": "remote", "host": "far", "agent": {"group": "need
        "can_progress": {"ok": True, "reasons": []}}
 ui_app.card_report = lambda r, tag: {"need": "", "asks": 0, "asks_badge": False}
 assert ui_view._card_labels(ui_app, row)[ui_app.STALE_LABEL] == "unread"
+# and the role's host, for the row while the attach client's report (no host in it) is the terminal's
+assert ui_app.HOST_LABEL in ui_app.CARD_LABELS and ui_view._card_labels(ui_app, row)[ui_app.HOST_LABEL] == "far"
 assert ui_view._card_labels(ui_app, dict(row, session="blocked", remote_status={"ok": True}))[ui_app.STALE_LABEL] == ""
 # a card starts `starting` (in the call that clears a stale attached mark: no extra label write) and its first read
 # clears it; `q` clears it too

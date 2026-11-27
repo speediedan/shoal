@@ -793,7 +793,7 @@ def _card_labels(ui_app, row: dict, ahead: str = "") -> dict:
     return {ui_app.NEED_LABEL: rep.get("need", ""), ui_app.ASKS_LABEL: str(rep.get("asks") or ""),
             ui_app.ASKS_BADGE_LABEL: "1" if rep.get("asks_badge") else "", ui_app.GROUP_LABEL: group,
             ui_app.STATE_LABEL: state, ui_app.DETAIL_LABEL: detail,
-            ui_app.STALE_LABEL: ahead or ui_status.row_stale(row)}
+            ui_app.STALE_LABEL: ahead or ui_status.row_stale(row), ui_app.HOST_LABEL: str(row.get("host") or "")}
 
 
 def _card_row(sid: str, slug: str, spec_path: str, row: dict, client: dict | None = None) -> tuple[dict, str]:
@@ -915,7 +915,8 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
     (measured 2026-11-25: a seat attached through its card read `agent: null` from the restart on, its labels still
     `working`), and a card that writes only changes never wrote its unchanged report again. So each refresh reads what
     the core holds for the terminal (`hc get`), and when it holds no report the card writes its own again, whatever the
-    harness; a report the client wrote is left to it.
+    harness. A Claude card also writes its own over a report its client wrote, once it has read that report's turn,
+    unless the client is at a question or permission prompt; another harness's client report is left to it.
 
     `make`: what the card would report now, as (osc, writes_changes); the role's own by default. The agents list's
     labels are another matter: they go through the core, not the terminal, so a role card keeps them current through an
@@ -979,6 +980,15 @@ def _report_during(sid: str, slug: str, ui_app, make=None):
                         last = osc or last
                     elif read and osc and osc != last and _osc_app(osc) and held.get("app") == _osc_app(osc):
                         write(osc)  # the core holds the card's report, not the client's: keep it current
+                        last = osc
+                    elif read and osc and changes and _osc_app(osc) and held.get("app") not in ("", _osc_app(osc)) \
+                            and held.get("state") != "blocked":
+                        # a Claude card takes the row back from its attach client's report (read into `seen` above):
+                        # that report names no role, so the row showed the provider's plain icon and the card's machine
+                        # in place of the role's account badge and host, flipping at each turn boundary (measured
+                        # 2026-11-27: two roles on another host read as moving between accounts). A client at a question
+                        # or permission prompt keeps its report: that is the live signal of a question asked in it
+                        write(osc)
                         last = osc
             except Exception:  # noqa: BLE001 - a report never breaks an attach
                 pass

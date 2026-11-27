@@ -1982,7 +1982,8 @@ and the contract are in [`ui.md`](ui.md).
   additive) for every non-retired shoal under the ledger clone. Each role row is folded by
   `ledger.View` and probed the way the health quorum probes it (`claude agents --json --all`, the
   OpenChamber status, the watcher sidecar). Rows carry status, active and next items with
-  blockers, asks, offers, liveness and `can_progress` with reasons: `dead-worker`,
+  blockers, asks, offers, liveness and `can_progress` with reasons: `dead-worker` (or `restarting` while a
+  restart holds the role's restart lock, `health.restart_lock_held`: not a need),
   `blocked-on-question`, `watcher-dead`, `blocker-role-cannot-take`, `parked-work` and
   `waiting-on-you`. `watcher-dead` and `parked-work` call the quorum's own predicates
   (`health.watcher_dead` gated by `health.watcher_dormant`, else the informational `watcher-dormant`;
