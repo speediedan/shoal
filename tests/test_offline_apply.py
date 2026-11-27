@@ -140,16 +140,22 @@ class FakeView:
 class OfflineOffTests(unittest.TestCase):
     """`offline off` on a synthetic shoal: the record first, the wakes a few at a time, the listing bounded."""
 
-    def run_off(self, asks, wake, states, budget=5.0, dry_run=False, role_states=None, features=None):
+    def run_off(self, asks, wake, states, budget=5.0, dry_run=False, role_states=None, features=None, roles=None,
+                remote=None, sync=True):
         events, lock = [], threading.Lock()
+        roles = roles or [types.SimpleNamespace(slug=s) for s in ("r1", "r2", "r3", "r4", "idle")]
         spec = types.SimpleNamespace(sid="alpha-20261101-000000", ledger_dir="", effective_repos=["example/app"],
-                                     roles=[types.SimpleNamespace(slug=s) for s in ("r1", "r2", "r3", "r4", "idle")],
-                                     features=features or {})
+                                     roles=roles, features=features or {}, path="/specs/alpha/shoal.json")
 
         def append(by, typ, **k):
             events.append(("record", k.get("state")) if typ == "system" else (typ, by, k.get("to"), k.get("wake")))
             return {"id": "ev1"}
-        led = types.SimpleNamespace(append=append)
+        led = types.SimpleNamespace(append=append, sync=sync)
+
+        def wakes_on_host(host, sid, state):
+            with lock:
+                events.append(("host", host))
+            return (remote or {}).get(host, "woke nobody")
 
         def ref_state(ref, live=True):
             if ref in states and live:
@@ -172,7 +178,8 @@ class OfflineOffTests(unittest.TestCase):
              patch.object(worker, "View", return_value=FakeView({}, offline=False)), \
              patch.object(worker, "known_repos", return_value={}), patch.object(worker, "ref_state", side_effect=ref_state), \
              patch.object(worker, "HINT_BUDGET_S", budget), patch.object(health, "request_wake", side_effect=request_wake), \
-             contextlib.redirect_stdout(out):
+             patch.object(worker, "wakes_on_host", side_effect=wakes_on_host), \
+             patch.object(worker.config, "server", return_value="host-a"), contextlib.redirect_stdout(out):
             t = time.monotonic()
             rc = worker._offline_one(a)
             took = time.monotonic() - t
@@ -232,6 +239,84 @@ class OfflineOffTests(unittest.TestCase):
         # without workwake every msg wakes its role: no mail then
         _, _, events, _ = self.run_off({"r1": ["merge #1"]}, lambda s: "wake-file", {}, role_states=waits)
         self.assertFalse([e for e in events if e[0] == "msg"], events)
+
+    def roles_across_hosts(self):
+        ns = types.SimpleNamespace
+        return [ns(slug="r1"), ns(slug="r2", server="host-b"), ns(slug="r3", server="host-b"),
+                ns(slug="r4", parked={"at": "2026-11-27T02:54:00Z"}), ns(slug="idle", server="host-c")]
+
+    def test_the_return_asks_each_other_host_to_wake_its_roles_and_names_a_parked_one(self):
+        # measured 2026-11-27: two roles on another host were left to its quorum (a 3 min grace, then its next tick) and
+        # raised their asks 7 min after the return; a parked role holding an ask got a wake that did nothing
+        asks = {"r1": ["merge #1"], "r2": ["merge #2"], "r3": ["design call"], "r4": ["merge #4"]}
+        rc, out, events, _ = self.run_off(asks, lambda s: "wake-file", {}, roles=self.roles_across_hosts(),
+                                          remote={"host-b": "waking r2, r3 | woke ['r2', 'r3']"})
+        self.assertEqual(rc, 0, out)
+        self.assertEqual([s for k, s in events if k == "wake"], ["r1"], "only this host's role is woken from here")
+        self.assertEqual([h for k, h in events if k == "host"], ["host-b"], "one call per other host holding targets")
+        kinds = [e[0] for e in events]
+        self.assertLess(kinds.index("record"), kinds.index("host"), "the record before another host is asked")
+        self.assertIn("  on host-b (r2, r3): waking r2, r3 | woke ['r2', 'r3']", out)
+        self.assertIn("  r4: parked, so not woken; it holds 1 ask(s) and raises them once back "
+                      "(`shoal unpark --spec /specs/alpha/shoal.json --only r4`)", out)
+        self.assertIn("woke ['r1', 'r2', 'r3']; parked, not woken: ['r4']", out)
+        _, out, events, _ = self.run_off(asks, lambda s: "wake-file", {}, roles=self.roles_across_hosts(), dry_run=True)
+        self.assertEqual(events, [])
+        self.assertIn("would wake ['r1']; would ask host-b to wake r2, r3; would list 4 recorded ask(s)", out)
+        self.assertIn("  r4: parked, so not woken", out)
+
+    def test_an_unpushed_record_asks_no_other_host(self):
+        rc, out, events, _ = self.run_off({"r2": ["merge #2"]}, lambda s: "wake-file", {},
+                                          roles=self.roles_across_hosts(), sync=False)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse([e for e in events if e[0] in ("host", "wake")], events)
+        self.assertIn("--no-sync: the record is not pushed, so host-b cannot read it yet", out)
+
+    def test_wakes_here_wakes_only_this_hosts_roles_that_have_not_written_since(self):
+        ns = types.SimpleNamespace
+        roles = [ns(slug="r1"), ns(slug="r2"), ns(slug="r3", server="host-b"), ns(slug="r4", parked={"at": "x"})]
+        spec = ns(sid="alpha-20261101-000000", roles=roles, path="")
+        view = FakeView({"r1": ["merge #1"], "r2": ["merge #2"], "r3": ["merge #3"], "r4": ["merge #4"]}, offline=False)
+        view.modes = {"user-offline": {"ts": "2026-11-27T18:09:12Z", "by": "user", "state": "off"}}
+        view.last_by = {"r2": "2026-11-27T18:09:40Z", "r1": "2026-11-27T17:00:00Z"}
+        woken = []
+
+        def wake_here(spec_, led, slugs, on):
+            woken.extend(slugs)
+        a = ns(sid=spec.sid, spec="", state="off", dry_run=False, no_sync=True, ledger_dir="", wakes_here=True)
+        out = io.StringIO()
+        with patch.object(worker, "_load", return_value=(spec, ns(sync=False), view)), \
+             patch.object(worker, "_wake_here", side_effect=wake_here), \
+             patch.object(worker.config, "server", return_value="host-a"), contextlib.redirect_stdout(out):
+            self.assertEqual(worker._offline_one(a), 0)
+        self.assertEqual(woken, ["r1"], "r2 wrote since the return, r3 is another host's, r4 is parked")
+        self.assertIn("woke ['r1']; written since, not woken: ['r2']; parked: ['r4']", out.getvalue())
+        # the ledger here has not caught up: nothing is woken, and the quorum covers it later
+        view.modes = {"user-offline": {"ts": "2026-11-27T02:56:00Z", "by": "user", "state": "on"}}
+        woken.clear()
+        out = io.StringIO()
+        with patch.object(worker, "_load", return_value=(spec, ns(sync=False), view)), \
+             patch.object(worker, "_wake_here", side_effect=wake_here), contextlib.redirect_stdout(out):
+            self.assertEqual(worker._offline_one(a), 0)
+        self.assertEqual(woken, [])
+        self.assertIn("does not show user-offline off yet", out.getvalue())
+
+    def test_another_hosts_wakes_run_its_own_offline_over_its_route(self):
+        import routes
+        seen = {}
+
+        def run(argv, **kw):
+            seen["argv"], seen["timeout"] = argv, kw.get("timeout")
+            return types.SimpleNamespace(returncode=0, stdout="waking r2\n  woke r2: stop+resume\nwoke ['r2']\n", stderr="")
+        with patch.object(routes, "route", return_value={"ssh": "user@host-b"}), \
+             patch.object(routes, "resolve_host", return_value=""), patch("subprocess.run", side_effect=run):
+            got = worker.wakes_on_host("host-b", "alpha-20261101-000000", "off")
+        self.assertEqual(got, "waking r2 | woke r2: stop+resume | woke ['r2']")
+        self.assertIn("user@host-b", seen["argv"])
+        self.assertIn("offline off --shoal alpha-20261101-000000 --wakes-here", seen["argv"][-1])
+        self.assertEqual(seen["timeout"], worker.REMOTE_WAKE_TIMEOUT_S)
+        with patch.object(routes, "route", return_value=None):
+            self.assertIn("no route to host-b", worker.wakes_on_host("host-b", "alpha-20261101-000000", "off"))
 
     def test_dry_run_records_nothing_and_wakes_nobody(self):
         rc, out, events, _ = self.run_off({"r1": ["merge #1"]}, lambda s: "wake-file", {"example/app#1": (0, "MERGED")},

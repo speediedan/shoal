@@ -131,7 +131,9 @@ export S=<id> SPEC=<path to the group's spec>
   `--all` takes the otherwise-default arguments; standing defaults live in the viewer config
   (`~/.config/shoal/ui.json`, key `offline_defaults`: `{"until": ..., "note": ...}`) and
   `--until`/`--note` on the command line override them. Hidden and retired shoals are left out.
-  `offline off` says how it woke each role (`woke <role>: <channel>`), then lists every ask; an ask whose
+  `offline off` says how it woke each role (`woke <role>: <channel>`; a role on another host is woken by that host,
+  over its route, and its line reads `on <host> (<roles>): ...`), names each parked role still holding asks with
+  the `unpark` line that brings it back to raise them, then lists every ask; an ask whose
   GitHub state did not come back within 20 s is listed without a stale hint, marked `(not checked: GitHub was slow)`.
   From the app (Actions, Offline), the change runs in the background: close the dialog if you like, and open
   Offline again on the same shoal or scope to follow it or read who was woken and the asks.
@@ -172,7 +174,8 @@ export S=<id> SPEC=<path to the group's spec>
     ```bash
     shoal park --spec <spec> --only <role> --note "<why>" [--until gh-pr:<owner/repo>#<n>] [--dry-run]
     # features.autopark parks an idle role with nothing queued, until offer:<role>; offering to it relaunches it
-    shoal unpark --spec <spec> --only <role>      # restart --only <role>
+    shoal unpark --spec <spec> --only <role> [--account <name>]   # restart --only <role>; --account: relaunch on
+                                                  # that account of its provider, not the one it recorded
     shoal handoff --spec <spec> --only <role> [--ecosystem E] [--model M] [--effort X] [--force] [--dry-run]
                                                   # a fresh session from its start doc, on its own host
     shoal remove-role --spec <spec> --only <role> [--force] [--dry-run]    # out for good; the ledger keeps its history
