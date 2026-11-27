@@ -1037,8 +1037,120 @@ REF_READS_AT_ONCE = 8  # GitHub reads for the return listing's staleness hints
 HINT_BUDGET_S = 20.0  # how long the listing waits for them; an ask not checked by then is listed without a hint
 
 
+def offline_targets(spec, view, on: bool) -> list[str]:
+    """Who an offline toggle wakes. Going offline: roles waiting on the user (so they pivot). Coming back: roles holding
+    open asks or waiting on the user (so they raise them now). Nobody else: a return wake is a cold turn of about 3M
+    cost-eq (measured 2026-11-20..26: 25 of them, 74M), so every other role reads the return as mail at its next
+    boundary."""
+    out = []
+    for r in spec.roles:
+        q = view.current_queue(r.slug) or {}
+        st = view.role_state(r.slug) or {}
+        user_wait = st.get("state") == "waiting" and st.get("sub") in ("user-auth", "user-design", "user-feedback")
+        if (on and user_wait) or (not on and (q.get("asks") or user_wait)):
+            out.append(r.slug)
+    return out
+
+
+def split_targets(spec, targets: list[str]) -> tuple[list[str], dict[str, list[str]], list[str]]:
+    """(woken on this host, {other host: its roles}, parked roles). A remote role is woken by its own host, never this
+    one. A parked role has no session to wake: it raises what it holds once unparked, so the toggle names it rather
+    than report a wake that did nothing (measured 2026-11-27: a parked role holding a merge ask)."""
+    from roles import host_of, is_local
+    roles = {r.slug: r for r in spec.roles}
+    here, remote, parked = [], {}, []
+    for slug in targets:
+        r = roles[slug]
+        if getattr(r, "parked", None):
+            parked.append(slug)
+        elif is_local(r, spec):
+            here.append(slug)
+        else:
+            remote.setdefault(host_of(r, spec), []).append(slug)
+    return here, remote, parked
+
+
+def parked_note(spec, view, slug: str, on: bool) -> str:
+    if on:
+        return "parked: no session to wake"
+    n = len((view.current_queue(slug) or {}).get("asks") or [])
+    held = f"{n} ask(s)" if n else "a wait on you"
+    path = getattr(spec, "path", "") or "<spec>"
+    return f"parked, so not woken; it holds {held} and raises them once back (`shoal unpark --spec {path} --only {slug}`)"
+
+
+REMOTE_WAKE_TIMEOUT_S = 300  # another host's wakes: a few Claude stop+resumes of up to a minute each, a few at a time
+
+
+def wakes_on_host(host: str, sid: str, state: str) -> str:
+    """Ask `host` to wake its own roles for the toggle just recorded (`offline <state> --wakes-here`, which pulls the
+    ledger first). Returns what it printed, or why it could not; its quorum still wakes them on a failure."""
+    import subprocess
+    import routes
+    later = "its quorum wakes them within minutes"
+    r = routes.route(host)
+    if r is None:
+        return f"no route to {host} (`[hosts.{host}]` in the host config); {later}"
+    argv = routes.ssh_argv(r) + [routes.remote_cmd(r, "offline", state, "--shoal", sid, "--wakes-here")]
+    try:
+        p = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=REMOTE_WAKE_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"FAILED ({str(exc)[:120]}); {later}"
+    out = " | ".join(x.strip() for x in (p.stdout + p.stderr).splitlines() if x.strip())
+    return (out or "done") if p.returncode == 0 else f"FAILED rc={p.returncode} ({out[-200:]}); {later}"
+
+
+def _wake_here(spec, led, slugs: list[str], on: bool) -> None:
+    """Wake each of this host's `slugs` for the toggle, a few at a time; one role's failure never stops the rest."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from health import request_wake
+    reason = "USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL
+    condition = f"user-offline-{'on' if on else 'off'}"
+    banner = offline_banner(View(led, spec))  # read once (after the record), not once per wake
+    print(f"waking {', '.join(slugs)}", flush=True)
+    with ThreadPoolExecutor(max_workers=OFFLINE_WAKES_AT_ONCE) as pool:
+        woken = {pool.submit(request_wake, spec, s, reason, condition, False, banner): s for s in slugs}
+        for f in as_completed(woken):
+            try:
+                how = f.result()
+            except Exception as exc:  # noqa: BLE001 - one role's wake never stops the others or the listing
+                how = f"FAILED ({str(exc)[:120]})"
+            print(f"  woke {woken[f]}: {how}", flush=True)
+
+
+def _wakes_here(a) -> int:
+    """`offline <state> --wakes-here`: this host's half of a toggle recorded on another one. It wakes this host's
+    roles for the mode the ledger now shows and records nothing. A role that has written since the toggle has read it
+    already, and is skipped."""
+    try:
+        spec, led, view = _load(a)
+    except (LedgerError, OSError) as exc:
+        print(f"ERROR: {exc}")
+        return 1
+    on = a.state == "on"
+    m = (getattr(view, "modes", None) or {}).get("user-offline") or {}
+    if m.get("state") != a.state or m.get("by") != "user":
+        print(f"the ledger here does not show user-offline {a.state} yet; the quorum wakes these roles once it does")
+        return 0
+    since = str(m.get("ts") or "")
+    here, _remote, parked = split_targets(spec, offline_targets(spec, view, on))
+    fresh = [s for s in here if not (since and (view.last_by.get(s, "") or "") >= since)]
+    if a.dry_run:
+        print(f"[dry-run] would wake {fresh or 'nobody'}")
+        return 0
+    if fresh:
+        _wake_here(spec, led, fresh, on)
+    skipped = [s for s in here if s not in fresh]
+    print(f"woke {fresh or 'nobody'}" + (f"; written since, not woken: {skipped}" if skipped else "")
+          + (f"; parked: {parked}" if parked else ""))
+    return 0
+
+
 def _offline_one(a) -> int:
     from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+    if getattr(a, "wakes_here", False):
+        return _wakes_here(a)
     try:
         spec, led, view = _load(a)
     except (LedgerError, OSError) as exc:
@@ -1052,22 +1164,16 @@ def _offline_one(a) -> int:
     if not on and cur is None:
         print("maintainer already online; nothing to do")
         return 0
-    # who to wake: going offline -> roles waiting on the user (so they pivot);
-    # coming back -> roles holding open asks or waiting on the user (so they raise them now). Nobody else: a return
-    # wake is a cold turn of about 3M cost-eq (measured 2026-11-20..26: 25 of them, 74M), so every other role reads the
-    # return as mail at its next boundary
-    targets = []
-    for r in spec.roles:
-        q = view.current_queue(r.slug) or {}
-        st = view.role_state(r.slug) or {}
-        user_wait = st.get("state") == "waiting" and st.get("sub") in ("user-auth", "user-design", "user-feedback")
-        if (on and user_wait) or (not on and (q.get("asks") or user_wait)):
-            targets.append(r.slug)
+    targets = offline_targets(spec, view, on)
+    here, remote, parked = split_targets(spec, targets)
     asks = [] if on else [(r.slug, i, ask) for r in spec.roles
                           for i, ask in enumerate((view.current_queue(r.slug) or {}).get("asks") or [], 1)]
     if a.dry_run:
-        print(f"[dry-run] user-offline {a.state}; would wake {targets or 'nobody'}"
+        print(f"[dry-run] user-offline {a.state}; would wake {here or 'nobody'}"
+              + "".join(f"; would ask {h} to wake {', '.join(ss)}" for h, ss in sorted(remote.items()))
               + (f"; would list {len(asks)} recorded ask(s)" if asks else ""))
+        for slug in parked:
+            print(f"  {slug}: {parked_note(spec, view, slug, on)}")
         return 0
     default, known = (spec.effective_repos or [""])[0], known_repos(spec)
     refs_of = [ask_refs(ask, default, known) for _, _, ask in asks]
@@ -1082,21 +1188,25 @@ def _offline_one(a) -> int:
             # mail, never a wake (features.workwake): the roles not woken re-verify what they deferred at their next
             # boundary. Without workwake every msg wakes its role, so none is sent
             led.append(SYSTEM_WRITER, "msg", to="*", kind="info", text=RETURN_MAIL)
-        reason = ("USER-OFFLINE: the maintainer is away" if on else "USER-ONLINE: " + RETURN_PROTOCOL)
-        from health import request_wake
-        if targets:
-            banner = offline_banner(View(led, spec))  # read once (after the record), not once per wake
-            print(f"waking {', '.join(targets)}", flush=True)
-            with ThreadPoolExecutor(max_workers=OFFLINE_WAKES_AT_ONCE) as pool:
-                woken = {pool.submit(request_wake, spec, s, reason, f"user-offline-{a.state}", False, banner): s
-                         for s in targets}
-                for f in as_completed(woken):
-                    try:
-                        how = f.result()
-                    except Exception as exc:  # noqa: BLE001 - one role's wake never stops the others or the listing
-                        how = f"FAILED ({str(exc)[:120]})"
-                    print(f"  woke {woken[f]}: {how}", flush=True)
-        print(f"user-offline {a.state} [{ev['id']}]; woke {targets or 'nobody'}", flush=True)
+        for slug in parked:
+            print(f"  {slug}: {parked_note(spec, view, slug, on)}", flush=True)
+        if remote and not led.sync:
+            print(f"  --no-sync: the record is not pushed, so {', '.join(sorted(remote))} cannot read it yet; each "
+                  f"host's quorum wakes its roles after `shoal sync`", flush=True)
+            remote = {}
+        with ThreadPoolExecutor(max_workers=max(1, len(remote))) as hosts:
+            # every other host wakes its own roles at once (a remote role is woken by its own host, never this one):
+            # left to that host's quorum, after its grace and its next tick, a return reached them 7 min late
+            # (measured 2026-11-27)
+            asked = {hosts.submit(wakes_on_host, h, spec.sid, a.state): h for h in sorted(remote)}
+            if here:
+                _wake_here(spec, led, here, on)
+            for f in as_completed(asked):
+                h = asked[f]
+                print(f"  on {h} ({', '.join(remote[h])}): {f.result()}", flush=True)
+        woke = here + [s for h in sorted(remote) for s in remote[h]]
+        print(f"user-offline {a.state} [{ev['id']}]; woke {woke or 'nobody'}"
+              + (f"; parked, not woken: {parked}" if parked else ""), flush=True)
         if asks:
             wait(list(pending.values()), timeout=HINT_BUDGET_S)
             late = {ref for ref, f in pending.items() if not f.done()}
@@ -1201,4 +1311,5 @@ def add_parsers(sub) -> None:
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-sync", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--wakes-here", action="store_true", help=argparse.SUPPRESS)  # this host's half of a remote toggle
     p.set_defaults(func=cmd_offline)

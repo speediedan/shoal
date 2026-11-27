@@ -168,13 +168,17 @@ def unpark_argv(spec_path: str, slugs: list[str]) -> list[str]:
     return shlex.split(config.cli()) + ["restart", "--spec", spec_path, "--only", ",".join(slugs)]
 
 
-def unpark(spec, spec_path: str, slugs: list[str], dry_run: bool = False) -> int:
+def unpark(spec, spec_path: str, slugs: list[str], dry_run: bool = False, account: str = "") -> int:
+    """`account`: relaunch each role on that account of its provider (restart's `--set-account`, which checks it)
+    instead of the one it recorded. Without it a role parked to spare a nearly spent account came back on that same
+    account and needed a forced handoff at once (measured 2026-11-27: four roles)."""
     not_parked = [s for s in slugs if spec.role(s) is None or spec.role(s).session]
     if not_parked:
         print(f"unpark: {', '.join(not_parked)} not parked (unknown, or it has a session): use restart for those")
         return 1
-    argv = unpark_argv(spec_path, slugs) + (["--dry-run"] if dry_run else [])
-    print("unpark: " + " ".join(argv[-5 if not dry_run else -6:]))
+    base = unpark_argv(spec_path, slugs)
+    argv = base + [f"--set-account={s}:{account}" for s in slugs if account] + (["--dry-run"] if dry_run else [])
+    print("unpark: " + " ".join(argv[len(base) - 5:]))
     return subprocess.run(argv).returncode
 
 
@@ -398,7 +402,7 @@ def cmd_unpark(a) -> int:
     if not slugs:
         print("unpark: --only ROLE[,ROLE] is required")
         return 2
-    return unpark(spec, a.spec, slugs, dry_run=a.dry_run)
+    return unpark(spec, a.spec, slugs, dry_run=a.dry_run, account=getattr(a, "account", ""))
 
 
 def session_held(role, repo_dir: str = "") -> bool:
@@ -895,5 +899,7 @@ def add_parser(sub) -> None:
     p = sub.add_parser("unpark", help="relaunch a parked role (restart --only)")
     p.add_argument("--spec", required=True)
     p.add_argument("--only", required=True, help="comma slugs")
+    p.add_argument("--account", default="", help="relaunch on this account of each role's provider (`shoal accounts`), "
+                                                 "not the one it recorded")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_unpark)

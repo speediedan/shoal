@@ -249,7 +249,12 @@ to `*` from `shoal` (`worker.RETURN_MAIL`, mail, no wake) to re-verify what they
 without it every msg wakes, so none is sent. The mode's record is written (and pushed) before any wake; the wakes
 then run four at a time (`worker.OFFLINE_WAKES_AT_ONCE`: a direct Claude wake can stop and resume a session, seconds
 each) and each prints how it was delivered (`woke <role>: <channel>`), the offline banner they carry read once, not per
-wake. The hint's GitHub reads (one per referenced item, cached per process) run eight at a time
+wake. A role on another host is woken by that host, never this one: the toggle asks each such host over its route
+(`offline <state> --shoal <id> --wakes-here`, run there after the push) to pull the ledger and wake its own targets,
+skipping a role that has written since the toggle, and prints each host's answer (`on <host> (<roles>): ...`). Left
+to that host's quorum (`asks-on-return`, after its 3 min grace and its next tick) the return reached two roles 7
+min late (2026-11-27); the quorum stays the fallback when a host cannot be reached. A parked role holding asks has no
+session to wake: the toggle names it with the `unpark` line that brings it back to raise them. The hint's GitHub reads (one per referenced item, cached per process) run eight at a time
 (`REF_READS_AT_ONCE`) from before the record is written, and the listing waits at most `HINT_BUDGET_S` (20 s) for
 them: an ask whose item was not read by then is listed `(not checked: GitHub was slow)`. Two shoals with 28 asks read
 one by one took 33 s of GitHub reads and wake texts, past the Herdr app's 30 s exec limit (measured 2026-11-20), and
@@ -751,7 +756,7 @@ attempt(s)"). A restart already under way (the role's restart lock) is not a fai
 | `blocking-unscheduled` (`waitdiscipline`) | a peer's `session-blocked` wait names this role's item and the item is not in its queue | wake 30, page 120 |
 | `parked-work` | idle, or waiting on anything but `local-ci`, while a next item has no recorded blocker, or (`blockers`) only a stale one (not `fill=none`, not during a freeze); keyed by the items | wake 30, wake 90, page 180 |
 | `blocker-resolved` (`blockers`) | as `parked-work`, for a next item whose `<role>:<repo#n>`, `upstream:`, `lease:` or own-run (`job:`, `gh-run:`, `az-build:`, `time:`) blocker cleared (not one that expired, not an `ask:`); keyed by item, blocker and when it was recorded: `queue` refuses to record a blocker that has cleared, so a new `since` means the role saw it pending again (a lease taken again, a build or run re-run under its id), and the same instance is woken at most once per `rewake_min`. Skipped, said once, when the role already has the news: the blocker is the target the role waits on (its waiter, the watcher's WAIT RESOLVED and `wait-resolved` cover that), the watcher delivered WAIT RESOLVED for it (its sidecar's `waitdone:` ids), or a `wait-resolved` wake named it (the quorum's `told`, kept `rewake_min`). Measured 2026-11-20..26: 165 such wakes, 59 naming the role's wait target; where one blocker cleared twice, it was mostly a re-run under one id that the role also waited on. A `time:` blocker the role set itself was the only one in 20 of the 165, so `time:` blockers are not held while offline; nor is the condition, since it needs only the role. The wake asks the role to look (mail, the item's notes) before starting: a cleared blocker is not by itself a go | wake at sighting, once; `parked-work` escalates if the role does nothing |
-| `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks (or waiting on the maintainer) has not written since; keyed by the return. `offline off` wakes only the roles on the host it ran on, so each host's quorum wakes its own; not held by the settle window | wake, once a return |
+| `asks-on-return` | the maintainer came back (`user-offline` off, 3 min to 12 h ago) and a role holding asks (or waiting on the maintainer) has not written since; keyed by the return. `offline off` asks each other host to wake its own roles at once; this is the fallback when a host could not be reached; not held by the settle window | wake, once a return |
 | `asks-unraised` | the maintainer is online and a role holds open asks while at a quiet boundary with no question open, 10 min after its last write (an ask recorded before a CI wait otherwise showed as needs-you with nothing to answer); keyed by its asks, so a new ask raises again. The wake keeps the role's recorded wait (no user-auth wait over it). Never for a headless role (Codex, Muse: no question tool; its asks are answered from the Asks view) | wake, again at 120 min |
 | `hold-long` (`blockers`) | a `hold:` blocker kept past `hold_page_min` since it first blocked the item; keyed by item and first time | wake at sighting (convert it to an ask or a checkable blocker), page 240 later |
 
@@ -864,7 +869,9 @@ left out of the daily digest, and reads `parked (no session)` in the heartbeat c
 leftover sidecar says. `shoal park` makes a role so on purpose (`park.py`): it stops the session, ends its
 watchers with SIGKILL (no exit path can deliver a wake to the stopped session) and records `parked` {at, by,
 note, until} beside the empty session, which `show` prints. A full restart keeps a parked role parked; naming
-it (`restart --only`, `unpark`) relaunches it and clears the record. `shoal remove-role` takes a role out for good (stops its session and watchers, prunes its incarnations
+it (`restart --only`, `unpark`) relaunches it and clears the record. A relaunch starts on the account the role recorded;
+`unpark --account <name>` passes restart's `--set-account` for each role, so a role parked to spare a nearly spent
+account comes back on another one, not on the account it was parked to spare. `shoal remove-role` takes a role out for good (stops its session and watchers, prunes its incarnations
 on every harness, withdraws the offers addressed to it so those items can be filled again, releases its claims so they stay
 gone if the slug ever returns, removes it from the spec, writes
 `role-removed`; the ledger keeps its history), and `shoal remove-session`

@@ -905,8 +905,9 @@ def blocker_covered(blocker: str, target: str, role_status: str, sub: str, deliv
 
 def return_condition(view, slug: str, q: dict) -> dict | None:
     """`asks-on-return` for a role holding asks (or waiting on the maintainer) that has not written since the maintainer
-    came back. `offline off` wakes only the roles on the host it ran on, so a role on another host was never woken and
-    raised nothing (measured 2026-11-08); its own host's quorum wakes it here, once per return."""
+    came back. `offline off` asks each other host to wake its own roles (`--wakes-here`); a host it could not reach, or a
+    role that did not write after that wake, is woken here by its own host's quorum, once per return (measured
+    2026-11-08: before either, a role on another host was never woken and raised nothing)."""
     um = (getattr(view, "modes", None) or {}).get("user-offline") or {}
     back = str(um.get("ts") or "")
     st = (view.role_state(slug) or {}) if hasattr(view, "role_state") else {}

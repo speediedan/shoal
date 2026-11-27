@@ -2288,6 +2288,9 @@ check "parked (no session) since .*: research hold; until gh-pr:acme/app#9703" \
 check "QUEUE .*app#9702" $H next --shoal $SID --spec "$SPEC" --slug up --no-sync --peek
 check "parked role(s) up stay parked" env SHOAL_FAKE_SESSIONS="$FS0" $H restart --spec "$SPEC" --dry-run --stages restart
 check "unpark: .*restart --spec .* --only up" env SHOAL_FAKE_SESSIONS="$FS0" $H unpark --spec "$SPEC" --only up --dry-run
+# --account relaunches on another account of the role's provider: restart's --set-account, which checks the name
+check "unpark: .*restart --spec .* --only up --set-account=up:claude --dry-run" \
+  env SHOAL_FAKE_SESSIONS="$FS0" $H unpark --spec "$SPEC" --only up --account claude --dry-run
 [ "$(rc_of $H unpark --spec "$SPEC" --only tl --dry-run)" = 1 ] || fail "unpark accepted a role with a session"
 python3 - "$SHOALD" "$SPEC" <<'PY2' || fail "auto unpark"
 import sys; sys.path.insert(0, sys.argv[1])
