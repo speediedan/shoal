@@ -420,6 +420,11 @@ def role_row(spec: ShoalSpec, view, role, rows: list[dict], now: datetime.dateti
             # retired by the background service while idle; its detached watcher resumes it on work
             # (direct wake), so nothing is stuck and nothing is due from the maintainer
             reasons.append("dormant")
+        elif sess == "dead" and not remote and _h.restart_lock_held(spec.sid, slug):
+            # a restart or handoff has stopped the old session and not yet bound the new one (it holds the role's
+            # restart lock throughout): nothing is dead and nothing is the maintainer's to do (measured 2026-11-27:
+            # three handoffs each put a role in Needs you as dead-worker for a minute)
+            reasons.append("restarting")
         elif sess == "dead":
             reasons.append("dead-worker")
         # A confirmed prompt can coexist with any live turn state, including idle tempo or
@@ -1062,6 +1067,8 @@ def status_label(r: dict) -> str:
     reasons = r["can_progress"]["reasons"]
     if "dead-worker" in reasons:
         return "DEAD"
+    if "restarting" in reasons:
+        return "RESTARTING"
     if "dormant" in reasons:
         return "DORMANT"
     if working_wait(r):
@@ -1419,6 +1426,8 @@ def agent_state(role, role_status: str, sub: str, st: dict, q: dict, reasons: li
         return g("needs-you", "asked", ("parked; " if "parked" in r else "") + said + also + str(asks[0]))
     if "parked" in r:
         return g("held", "parked", "parked by the operator: no session, no wakes")
+    if "restarting" in r:
+        return g("working", "restarting", "a restart is replacing its session")
     if "blocked-on-question" in r:
         return g("needs-you", "question", "an open question prompt in its session")
     if sub in USER_WAITS:

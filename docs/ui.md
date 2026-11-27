@@ -73,7 +73,7 @@ nothing assigned, held and handoff pending alike). The first match decides, in t
 | Group | Whose move | States |
 |---|---|---|
 | `needs-you` | the maintainer's: it moves on only through you | `asked` (an open ask, a parked role's included, or a user wait), `question` (an open prompt), `dead-worker`, `blocker-role-cannot-take`, `wake-held` (its wait ended, an attached client holds the wake), `wakes-held` (its watcher holds new events for a client attached to its session, as the watcher's sidecar records; the quorum pages it once: exit the client. While you are offline, a card's client is ended after an hour), `handoff-pending` (restart-ready, and the shoal's context restart is `page`, so the operator restarts it; in `auto` mode a restart-ready role needs nobody), `restart-held` (its automatic restart is held for an attached client: detach it; while you are offline, a card's client is ended after an hour), `says-waiting` (Claude reads the session as `blocked`: its last turn ended sounding like it waits on you, with no prompt open and no ask recorded; only when the ledger has no reason of its own, a recorded wait or a blocker on every next item, in which case the role reads by the ledger with those words in its detail), `no-work` (fill=assigned, empty queue, no offer) |
-| `working` | the role's, now | `working` |
+| `working` | the role's, now | `working`, `restarting` (a restart is replacing its session) |
 | `waiting` | nobody's: it resumes by itself | `answered` (you replied to every open ask since its last write; see Answered below), the wait's substate (`local-ci`, `remote-ci`, `research-proto`, `research-window`, ...), `<sub>: resolved` while its wake is due, `work-due` (a blocker resolved, its wake is due) |
 | `blocked` | another role's or the outside world's | `session-blocked`, `upstream`, `blocked: role`, `blocked: upstream`, `blocked: lease` (a blocker only past its daily look says so in `detail`, still blocked) |
 | `held` | the maintainer's, by choice | `parked`, `held` (a `hold:` blocker), `observer` (fill=none) |
@@ -139,6 +139,9 @@ their records as activity.
 **`can_progress` reasons** are the stalls measured on a live group:
 
 - `dead-worker`: the session is listed with no worker process.
+- `restarting`: the session has no worker while a restart or handoff holds the role's restart lock (from the old
+  session's stop until the new one is bound). Not a need: the row reads `working`, state `restarting`, with no
+  badge (measured 2026-11-27: each handoff put its role in Needs you as `dead-worker` for about a minute).
 - `context-large`: the session's context is past its `context_restart_k` limit (informational; the row's
   `context_k` holds the size in thousands of tokens).
 - `dormant`: a Claude session with no worker (the background service retired it idle) behind a live
@@ -925,7 +928,12 @@ shoal ui queue --shoal ID --role R [--json]        # one role's queue and its ca
   then keeps it current while the core holds it, until the client reports again. Claude Code's attach client reports its
   session itself (`app=claude-code`) and clears that report when the background service restarts under it (an update),
   while it stays attached; the app then lists no agent for the terminal, so the row left the agents list exactly while you
-  worked in that session (measured 2026-11-25). An attached row says so: `attached` after its state in the priority view
+  worked in that session (measured 2026-11-25). While it holds a report of its own, a Claude card writes its report back
+  within a second (after reading the client's turn from it): the client's report names no role, so the row drew the
+  provider's plain icon and the card's machine in place of the role's account badge and host, flipping at each turn
+  boundary (measured 2026-11-27: two roles read as moving between accounts). A client at a question or permission prompt
+  keeps its report, the live signal of a question asked there; the row's host then comes from the card's `shoal.host`
+  label (the card's own report says it in its title, `@<host>`). An attached row says so: `attached` after its state in the priority view
   and before its tooltip (the `shoal.attached` label). After any attach the card writes its report again, even an unchanged `done` (a Codex client takes its own report with it when it exits, which left the role off the agents list), and clears the `shoal.attached` label again. The card also sets the `shoal.attached` label for the length of an attach, since the core still names
   the card as the terminal's foreground under a client, and a rebuild of the roles tabs leaves a labelled pane open. That hold covers every roles tab of the shoal until the last card detaches: a
   removed role's card goes, and the grid is laid out again, at the next sync after that, so the grid can change just after a detach.
